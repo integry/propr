@@ -292,6 +292,9 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(inspected).toHaveText(/Run 3 of 8 · Completed/);
   await expect(inspected.getByRole('button')).toHaveCount(0);
   await expect(details.getByRole('heading', { name: 'FILES CHANGED (Run 3)' })).toBeVisible();
+  // A review's log is never called an implementation log, and wire payloads never reach it.
+  await expect(details.getByRole('heading', { name: 'REVIEW FINDINGS' }).filter({ visible: true })).toHaveCount(1);
+  await expect(details.getByRole('region', { name: 'Task implementation log' })).not.toContainText(/"content"|local preview omitted|IMPLEMENTATION/);
   await expect(details.locator('#execution-event-log-section')).toContainText(/(EXECUTION LOG|TERMINAL OUTPUT) \(Run 3 · /);
   const timelineHeader = details.getByText('TIMELINE', { exact: true }).filter({ visible: true }).locator('..');
   const backToNewest = timelineHeader.getByRole('button', { name: 'Return to live Run 8' });

@@ -239,4 +239,40 @@ describe('ThinkingLog', () => {
     rerender(<ThinkingLog events={events} />);
     expect(screen.queryByRole('note')).toBeNull();
   });
+  it('folds consecutive reasoning into one timed disclosure and keeps actions in the flow', () => {
+    render(<ThinkingLog events={[
+      { id: 'a1', type: 'thought', content: 'Reading the handler first.', timestamp: '2026-09-10T00:00:00.000Z' },
+      { id: 'a2', type: 'thought', content: 'The label check is too loose.', timestamp: '2026-09-10T00:00:06.000Z' },
+      { id: 'b1', type: 'thought', content: 'Update the label check and rerun lint.', timestamp: '2026-09-10T00:00:14.000Z' },
+    ]} />);
+    const toggle = screen.getByRole('button', { name: 'Thought for 14s (2 analysis steps)' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Reading the handler first.')).toBeNull();
+    expect(screen.getByText('Update the label check and rerun lint.')).toBeInTheDocument();
+    expect(screen.queryByText('Thinking Process')).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const panel = document.getElementById(toggle.getAttribute('aria-controls')!)!;
+    expect(panel).toHaveClass('border-l-2', 'border-slate-200', 'ml-2', 'pl-3');
+    expect(panel).toHaveTextContent('Reading the handler first.');
+  });
+
+  it('keeps the newest reasoning open while the run streams', () => {
+    const events: LiveEvent[] = [{ id: 'a1', type: 'thought', content: 'Dependencies are missing; installing them.' }];
+    const { rerender } = render(<ThinkingLog events={events} streaming />);
+    expect(screen.getByRole('button', { name: 'Thought (1 analysis step)' })).toHaveAttribute('aria-expanded', 'true');
+    rerender(<ThinkingLog events={[...events, { id: 'b1', type: 'thought', content: 'Update the lockfile.' }]} streaming />);
+    expect(screen.getByRole('button', { name: 'Thought (1 analysis step)' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('never shows a raw tool response payload', () => {
+    render(<ThinkingLog events={[
+      { id: 'leak', type: 'thought', content: '{"content":[{"type":"text","text":"[local preview omitted]"}]}' },
+      { id: 'wrapped', type: 'thought', content: '{"content":[{"type":"text","text":"Update the review summary."}]}' },
+    ]} />);
+    expect(document.body.textContent).not.toContain('"content"');
+    expect(document.body.textContent).not.toContain('local preview omitted');
+    expect(screen.getByText('Update the review summary.')).toBeInTheDocument();
+  });
 });

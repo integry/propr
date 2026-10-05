@@ -21,7 +21,8 @@ interface TaskSplitWorkspaceProps {
 }
 
 /** Window controls: compact icon buttons docked in the pane's header, not a row of their own. */
-const PANE_ACTION_CLASSES = 'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500';
+// Ghost icon buttons with a fixed 28px hit box, matching the weight of the task's own actions.
+const PANE_ACTION_CLASSES = 'inline-flex h-7 w-7 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500';
 
 /** A dialog or a field handles its own Escape. */
 const escapeBelongsElsewhere = (event: KeyboardEvent): boolean =>

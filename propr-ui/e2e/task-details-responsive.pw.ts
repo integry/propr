@@ -201,7 +201,7 @@ for (const viewport of [
       await expectReachableWithin(page.getByText('Timeline final checkpoint'), workspace);
       await expectReachableWithin(summarySection.getByText(/Implementation summary final marker/), workspace);
       await expectReachableWithin(output.getByText(/Implementation log final marker/), workspace);
-      await expect(workspace.getByText('IMPLEMENTATION', { exact: true })).toBeVisible();
+      await expect(workspace.getByText('EXECUTION TRACE', { exact: true })).toBeVisible();
     } else {
       const timelineMetrics = await scrollRegionMetrics(timeline);
       const outputMetrics = await scrollRegionMetrics(output);

@@ -1,9 +1,11 @@
-import React, { useMemo } from 'react';
+import React, { useId, useMemo, useState } from 'react';
 import { LiveEvent, TodoItem } from './types';
 import { renderMarkdown } from './renderMarkdown';
-import { Lightbulb, Wrench, Search, CheckCircle2, MessageSquare } from 'lucide-react';
+import { Lightbulb, Wrench, Search, CheckCircle2, MessageSquare, ChevronRight } from 'lucide-react';
 import { formatReviewPromptOverview } from './reviewPromptOverview';
 import { HISTORY_TRUNCATED_NOTICE } from './liveDetailsMerge';
+import { readableThoughts } from './thoughtContent';
+import { formatRelativeTime } from './utils';
 import {
   CheckpointLogEntry,
 } from './CheckpointLogEntry';
@@ -35,8 +37,8 @@ interface ThinkingLogProps {
   events: ThinkingLogEvent[];
   todos?: TodoItem[];
   highlightedTodoId?: string | null;
-  /** Surfaces that own the "Implementation log" utility header themselves (and the controls beside it) opt out of this one. */
-  showHeader?: boolean;
+  /** The run is still producing output: its newest reasoning stays open while it streams. */
+  streaming?: boolean;
   /** Earlier output was discarded by the server, so the oldest messages may be missing. */
   historyTruncated?: boolean;
   /** Durable worker state for the newest agent checkpoint declaration, when the payload matches. */
@@ -191,15 +193,87 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
   );
 };
 
+/** Reasoning entries; actions, findings, checkpoints and operator messages stay in the main flow. */
+const isAnalysisEntry = (event: PreparedThinkingLogEvent): boolean => {
+  if (event.type === 'user_input' || event.checkpoint) return false;
+  const displayContent = formatReviewPromptOverview(event.content) ?? event.content;
+  return detectThoughtType(displayContent || '') === 'analysis';
+};
+
+type LogSegment =
+  | { kind: 'entry'; start: number; event: PreparedThinkingLogEvent }
+  | { kind: 'thoughts'; start: number; events: PreparedThinkingLogEvent[]; durationMs: number | null };
+
+const timeOf = (event?: PreparedThinkingLogEvent): number | null => {
+  const time = event?.timestamp ? Date.parse(event.timestamp) : NaN;
+  return Number.isFinite(time) ? time : null;
+};
+
+/** Folds each run of consecutive reasoning entries into one segment, timed until the step that followed it. */
+const segmentEvents = (events: PreparedThinkingLogEvent[]): LogSegment[] => {
+  const segments: LogSegment[] = [];
+  events.forEach((event, index) => {
+    const previous = segments[segments.length - 1];
+    if (!isAnalysisEntry(event)) {
+      segments.push({ kind: 'entry', start: index, event });
+    } else if (previous?.kind === 'thoughts') {
+      previous.events.push(event);
+    } else {
+      segments.push({ kind: 'thoughts', start: index, events: [event], durationMs: null });
+    }
+  });
+  for (const segment of segments) {
+    if (segment.kind !== 'thoughts') continue;
+    const begin = timeOf(segment.events[0]);
+    const end = timeOf(events[segment.start + segment.events.length]) ?? timeOf(segment.events[segment.events.length - 1]);
+    segment.durationMs = begin !== null && end !== null && end > begin ? end - begin : null;
+  }
+  return segments;
+};
+
+/** A one-line disclosure over a run of reasoning entries, so they never push the actions down the page. */
+const ThoughtDisclosure: React.FC<{ events: PreparedThinkingLogEvent[]; durationMs: number | null; autoOpen: boolean }> = ({ events, durationMs, autoOpen }) => {
+  // Open while it is the newest reasoning of a live run, until the reader decides otherwise.
+  const [choice, setChoice] = useState<boolean | null>(null);
+  const open = choice ?? autoOpen;
+  const panelId = useId();
+  const steps = `${events.length} analysis step${events.length === 1 ? '' : 's'}`;
+  const thought = durationMs !== null && durationMs >= 1000 ? `Thought for ${formatRelativeTime(durationMs)}` : 'Thought';
+  return (
+    <div data-testid="thought-disclosure" className="py-1">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setChoice(!open)}
+        className="-mx-1 flex h-6 items-center gap-1.5 rounded px-1 text-xs text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+      >
+        <ChevronRight className={`h-3 w-3 flex-none transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
+        <span className="font-medium">{thought}</span>{' '}
+        <span className="text-slate-400">({steps})</span>
+      </button>
+      {open && (
+        <div id={panelId} className="ml-2 border-l-2 border-slate-200 pl-3">
+          {events.map((event, index) => <TerminalLogEntry key={index} event={event} />)}
+        </div>
+      )}
+    </div>
+  );
+};
+
 interface ThoughtGroupProps {
-  title: string;
+  /** A todo's name; the untitled group is the whole log and needs no heading. */
+  title?: string;
   events: PreparedThinkingLogEvent[];
   isCompleted: boolean;
   todoId?: string;
   isHighlighted?: boolean;
+  /** Whether this group ends the log of a run that is still streaming. */
+  streamingTail?: boolean;
 }
 
-const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted, todoId, isHighlighted }) => {
+const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted, todoId, isHighlighted, streamingTail = false }) => {
+  const segments = useMemo(() => segmentEvents(events), [events]);
   if (events.length === 0) return null;
 
   return (
@@ -211,31 +285,22 @@ const ThoughtGroup: React.FC<ThoughtGroupProps> = ({ title, events, isCompleted,
       data-todo-id={todoId}
       data-todo-content={title}
     >
-      {/* Group Header - todo subheader style with better prominence */}
-      <div className="flex items-center gap-2 py-2.5 px-3 bg-slate-50/80 border-l-2 border-slate-400 mb-1 mt-4 first:mt-0">
-        {isCompleted ? (
-          <CheckCircle2 className="h-4 w-4 text-slate-500 flex-shrink-0" />
-        ) : (
-          <div className="h-4 w-4 rounded-full border-2 border-blue-400 bg-blue-50 flex-shrink-0" />
-        )}
-        <span className={`text-sm font-semibold ${isCompleted ? 'text-slate-600' : 'text-slate-700'}`}>
-          {title}
-        </span>
-        <span className="text-[10px] text-slate-400 font-mono ml-auto flex-shrink-0">
-          ({events.length})
-        </span>
-      </div>
+      {title && (
+        <div className="mt-3 flex items-center gap-2 py-1 first:mt-0">
+          {isCompleted ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" aria-hidden="true" />
+          ) : (
+            <span className="h-3.5 w-3.5 rounded-full border-2 border-blue-400 flex-shrink-0" aria-hidden="true" />
+          )}
+          <span className="min-w-0 truncate text-xs font-semibold text-slate-600">{title}</span>
+        </div>
+      )}
 
       {/* Log entries - gutter style layout */}
       <div>
-        {events.map((event, index) => (
-          <TerminalLogEntry
-            key={index}
-            event={event}
-            todoContext={undefined}
-            isHighlighted={false}
-          />
-        ))}
+        {segments.map((segment, index) => segment.kind === 'entry'
+          ? <TerminalLogEntry key={segment.start} event={segment.event} todoContext={undefined} isHighlighted={false} />
+          : <ThoughtDisclosure key={segment.start} events={segment.events} durationMs={segment.durationMs} autoOpen={streamingTail && index === segments.length - 1} />)}
       </div>
     </div>
   );
@@ -245,19 +310,19 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({
   events,
   todos = [],
   highlightedTodoId,
-  showHeader = true,
+  streaming = false,
   historyTruncated = false,
   checkpointOutcome,
 }) => {
   const preparedEvents = useMemo(() => {
-    return prepareCheckpointEvents(events, checkpointOutcome);
+    return prepareCheckpointEvents(readableThoughts(events), checkpointOutcome);
   }, [checkpointOutcome, events]);
 
   // Group events by todo items if available
   const groupedEvents = useMemo(() => {
     if (todos.length === 0) {
       // No todos, just show all events ungrouped
-      return [{ title: 'Thinking Process', events: preparedEvents, isCompleted: false, todoId: undefined }];
+      return [{ events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
     // For now, create logical groups based on event timing and todo completion
@@ -269,14 +334,14 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({
 
     // If we have events but no clear grouping, show them in a single group
     if (completedTodos.length === 0 && !inProgressTodo) {
-      return [{ title: 'Initial Analysis', events: preparedEvents, isCompleted: false, todoId: undefined }];
+      return [{ events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
     // Simple strategy: split events roughly equally among completed todos + current
     const totalGroups = completedTodos.length + (inProgressTodo ? 1 : 0);
 
     if (totalGroups === 0 || preparedEvents.length === 0) {
-      return [{ title: 'Thinking Process', events: preparedEvents, isCompleted: false, todoId: undefined }];
+      return [{ events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
     const eventsPerGroup = Math.ceil(preparedEvents.length / totalGroups);
@@ -312,30 +377,19 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({
 
     // If no groups were created, show all events
     if (groups.length === 0) {
-      return [{ title: 'Thinking Process', events: preparedEvents, isCompleted: false, todoId: undefined }];
+      return [{ events: preparedEvents, isCompleted: false, todoId: undefined }];
     }
 
     return groups;
   }, [preparedEvents, todos]);
 
-  if (events.length === 0) {
+  if (preparedEvents.length === 0) {
     return null;
   }
 
   return (
     <div id="thinking-log-section" className="min-w-0 overflow-hidden">
-      {/* Section Header */}
-      {showHeader && (
-        <div className="mb-4 flex items-center gap-2">
-          <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500 m-0">
-            IMPLEMENTATION LOG
-          </h4>
-          <div className="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-500 font-mono text-[10px] font-bold">
-            {events.length}
-          </div>
-        </div>
-      )}
-
+      {/* The surface above owns the log's single header (its label, step count and view switch). */}
       {historyTruncated && (
         <p role="note" className="mb-3 text-xs text-slate-500">
           {HISTORY_TRUNCATED_NOTICE} The oldest messages may be missing.
@@ -343,7 +397,7 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({
       )}
 
       {/* Grouped Events - terminal style log feed */}
-      <div className="space-y-3 min-w-0">
+      <div className="space-y-1 min-w-0">
         {groupedEvents.map((group, index) => (
           <ThoughtGroup
             key={group.todoId || index}
@@ -352,6 +406,7 @@ const ThinkingLog: React.FC<ThinkingLogProps> = ({
             isCompleted={group.isCompleted}
             todoId={group.todoId}
             isHighlighted={highlightedTodoId === group.todoId}
+            streamingTail={streaming && index === groupedEvents.length - 1}
           />
         ))}
       </div>

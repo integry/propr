@@ -52,7 +52,7 @@ const ContextGroup: React.FC<{ label: string; divided?: boolean; children: React
   if (!items.length) return null;
   return (
     <div role="group" aria-label={label} className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
-      {divided && <span aria-hidden="true" data-testid="context-divider" className="mr-1.5 h-3 w-px flex-none bg-slate-200" />}
+      {divided && <span aria-hidden="true" data-testid="context-divider" className="mr-1.5 inline-block h-3 w-px flex-none self-center bg-slate-200 align-middle" />}
       {items}
     </div>
   );
@@ -112,7 +112,7 @@ const LinkedIssueChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
 const ModelChip: React.FC<{ modelName: string; duration?: number | null; synthetic?: boolean }> = ({ modelName, duration, synthetic }) => (
   <>
     <span
-      className="inline-flex items-center gap-1 bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded font-mono text-xs"
+      className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-800"
       title={modelName}
     >
       {synthetic

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { LiveDetails, LiveEvent, HistoryItem } from './types';
 import { formatRelativeTime } from './utils';
+import { readableThoughtContent, readableThoughts } from './thoughtContent';
 
 interface ThinkingLogEvent extends LiveEvent {
   relativeTime?: string | null;
@@ -51,8 +52,9 @@ export const useThinkingLog = (liveDetails: LiveDetails, history: HistoryItem[])
   const [lastThought, setLastThought] = useState<string | null>(null);
   const [eventsCollapsed, setEventsCollapsed] = useState<boolean>(true);
 
+  // Raw wire payloads and redaction placeholders never reach the human-readable log.
   const thinkingLogEvents = useMemo(() => {
-    return liveDetails.events.filter(e => e.type === 'thought');
+    return readableThoughts(liveDetails.events.filter(e => e.type === 'thought'));
   }, [liveDetails.events]);
 
   const executionStartTime = history.find(item => item.state?.toUpperCase() === 'CLAUDE_EXECUTION')?.timestamp;
@@ -74,7 +76,7 @@ export const useThinkingLog = (liveDetails: LiveDetails, history: HistoryItem[])
   useEffect(() => {
     if (liveDetails.events.length > 0) {
       const lastThoughtEvent = [...liveDetails.events].reverse().find(e => e.type === 'thought');
-      setLastThought(lastThoughtEvent?.content ?? null);
+      setLastThought(readableThoughtContent(lastThoughtEvent?.content));
     } else {
       setLastThought(null);
     }
@@ -82,6 +84,7 @@ export const useThinkingLog = (liveDetails: LiveDetails, history: HistoryItem[])
 
   const toggleEventsCollapse = () => setEventsCollapsed(!eventsCollapsed);
   const collapseEvents = () => setEventsCollapsed(true);
+  const expandEvents = () => setEventsCollapsed(false);
 
   return {
     thinkingLogWithTimestamps,
@@ -89,6 +92,7 @@ export const useThinkingLog = (liveDetails: LiveDetails, history: HistoryItem[])
     eventsCollapsed,
     toggleEventsCollapse,
     collapseEvents,
+    expandEvents,
     extractedSummary
   };
 };

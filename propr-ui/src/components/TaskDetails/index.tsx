@@ -13,7 +13,7 @@ import ActionBar from './ActionBar';
 import TaskHeader, { ReturnToRunButton } from './TaskHeader';
 import ProgressBar from './ProgressBar';
 import LeftPaneBody from './LeftPaneBody';
-import SectionLabelHeader from './SectionLabelHeader';
+import SectionLabelHeader, { EXECUTION_LOG_CONTROL_ATTRIBUTE, type LogView } from './SectionLabelHeader';
 import TaskVisualPreviews from './TaskVisualPreviews';
 import { useTaskData, usePromptData, useLogFilesData } from './hooks';
 import { useThinkingLog } from './useThinkingLog';
@@ -23,7 +23,7 @@ import { useToast } from '../ui/useToast';
 import { postTaskFollowup } from '../../api/proprApi';
 import { useConsumedReviewCommentIds, useTokenUsage } from './useDerivedTaskData';
 import { useClickOutsideCollapse } from './useClickOutsideCollapse';
-import { sanitizeTaskTitle, type TaskRunEntry } from '../TaskList/rowModel';
+import { isReviewRun, sanitizeTaskTitle, type TaskRunEntry } from '../TaskList/rowModel';
 import DesktopTaskHeader from './DesktopTaskHeader';
 import { useTaskHeaderView } from './useTaskHeaderView';
 import { useLiveRunStop } from './useLiveRunStop';
@@ -122,6 +122,12 @@ interface TaskDetailsProps {
   paneControls?: React.ReactNode;
 }
 
+/** The run's kind for its log's header; the run list knows a review by its type even when the task's own record doesn't say. */
+const getLogCommandMode = (commandMode: string | undefined, runs: TaskRunEntry[] | undefined, taskId: string | undefined) => {
+  if (commandMode === 'review' || isReviewRun(runs?.find(run => run.task.id === taskId)?.type)) return 'review';
+  return commandMode;
+};
+
 /** Drops a desktop-only (`lg:`) class list when the details sit in a pane. */
 const wideOnly = (embedded: boolean, classes: string) => (embedded ? '' : ` ${classes}`);
 
@@ -184,6 +190,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   const executionLogRef = useClickOutsideCollapse(
     thinkingLog.eventsCollapsed,
     thinkingLog.collapseEvents,
+    EXECUTION_LOG_CONTROL_ATTRIBUTE,
   );
 
   const statusView = renderTaskDetailsStatus(
@@ -215,6 +222,15 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
     headActive: inspection.headActive,
     onBack: () => onSelectRun(inspection.head.task.id),
   } : null;
+  // One header names the log, counts its steps and switches to the raw terminal drawer below.
+  const logHeaderProps = {
+    commandMode: getLogCommandMode(taskData.taskInfo?.commandMode, runs, taskId),
+    ultrafixCycle: taskData.taskInfo?.ultrafixCycle,
+    inspection: inspectionContext,
+    stepCount: thinkingLog.thinkingLogWithTimestamps.length,
+    view: (thinkingLog.eventsCollapsed ? 'readable' : 'terminal') as LogView,
+    onViewChange: (view: LogView) => (view === 'terminal' ? thinkingLog.expandEvents() : thinkingLog.collapseEvents()),
+  };
   const actionBarProps = {
     currentStatus: derivedData.currentStatus,
     historyItemWithPaths: derivedData.historyItemWithPaths,
@@ -271,9 +287,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
             {inspectionContext && <ReturnToRunButton {...inspectionContext} />}
           </div>
           <SectionLabelHeader
-            commandMode={taskData.taskInfo?.commandMode}
-            ultrafixCycle={taskData.taskInfo?.ultrafixCycle}
-            inspection={inspectionContext}
+            {...logHeaderProps}
             className={`hidden flex-1 px-4 items-center gap-3${wideOnly(embedded, 'lg:flex')}`}
           />
         </div>
@@ -316,9 +330,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
           <div className={`flex flex-col min-w-0${wideOnly(embedded, 'lg:flex-1 lg:min-h-0 lg:overflow-hidden')}`}>
             {/* Mobile section header */}
             <SectionLabelHeader
-              commandMode={taskData.taskInfo?.commandMode}
-              ultrafixCycle={taskData.taskInfo?.ultrafixCycle}
-              inspection={inspectionContext}
+              {...logHeaderProps}
               className={`flex flex-shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-2 sm:sticky sm:top-0 sm:z-[1] sm:bg-white${wideOnly(embedded, 'lg:hidden')}`}
             />
             {/* Scrollable Content Area - Summary + Thinking Log in same scroll flow */}
@@ -338,6 +350,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
                     events={thinkingLog.thinkingLogWithTimestamps}
                     todos={taskData.liveDetails.todos}
                     highlightedTodoId={highlightedTodoId}
+                    streaming={derivedData.isTaskActive}
                     historyTruncated={taskData.liveDetails.historyTruncated}
                   />
                 </div>

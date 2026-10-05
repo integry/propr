@@ -157,7 +157,7 @@ const TaskOverflowMenu: React.FC<React.ComponentProps<typeof DeleteButton>> = pr
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        className="flex items-center rounded p-1.5 text-slate-500 hover:bg-white hover:text-slate-900"
+        className="flex h-7 w-7 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
         onClick={() => setOpen(value => !value)}
         onKeyDown={event => {
           if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true); }
@@ -243,7 +243,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
 
       {/* Divider before destructive actions, only when it divides them from something */}
       {taskBusy && (historyItemWithPaths?.promptPath || historyItemWithPaths?.logsPath) && (
-        <div className="h-4 w-px bg-slate-300 mx-1" />
+        <div aria-hidden="true" className="h-4 w-px bg-slate-200 mx-1" />
       )}
 
       <StopExecutionButton

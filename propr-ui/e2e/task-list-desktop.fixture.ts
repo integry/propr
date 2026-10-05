@@ -101,6 +101,8 @@ export const historicalHistory = [
   { state: 'COMPLETED', timestamp: ago(36), metadata: { model: 'gpt-6-astra', tokenUsage: { input_tokens: 420_000, output_tokens: 12_000 } } },
 ];
 export const historicalEvents = [
+  // A tool response that reached the stream serialized, with its preview redacted.
+  { id: 'review-leak-1', type: 'thought', timestamp: ago(38.2), content: '{"content":[{"type":"text","text":"[local preview omitted]"}]}' },
   { id: 'review-thought-1', type: 'thought', timestamp: ago(38), content: 'The label check also matches unrelated labels; flagging it as a finding.' },
   { id: 'review-tool-1', toolUseId: 'review-tool-1', type: 'tool_use', timestamp: ago(37.5), toolName: 'Bash', input: { command: 'grep -rn withdraw src/jobs' } },
   { id: 'review-result-1', toolUseId: 'review-tool-1', type: 'tool_result', timestamp: ago(37.4), result: 'src/jobs/withdrawalHandlers.ts:14: if (label.includes(\'withdraw\'))' },

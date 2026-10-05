@@ -56,23 +56,34 @@ async function capture(page: Page, name: string) {
 const noHorizontalOverflow = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
 
 for (const width of [320, 390, 1024, 1440, 2560]) {
-  test(`renders one full-width preview per row at ${width}px`, async ({ page }) => {
+  test(`frames one capture at a time in a fixed-height canvas at ${width}px`, async ({ page }) => {
     await fixture(page);
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`/tasks/${taskId}`);
-    const section = page.getByRole('region', { name: 'Visual Previews' });
-    await expect(section.getByAltText('Task queue at desktop width')).toBeVisible();
-    const figures = section.locator('figure');
-    await expect(figures).toHaveCount(3);
-    const column = await figures.first().evaluate(figure => figure.parentElement!.getBoundingClientRect().width);
-    const boxes = await figures.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON() as DOMRect));
-    for (const [index, box] of boxes.entries()) {
-      expect(Math.abs(box.width - column)).toBeLessThanOrEqual(1);
-      if (index) expect(box.top).toBeGreaterThanOrEqual(boxes[index - 1].bottom);
+    const section = page.getByRole('region', { name: /Visual evidence/ });
+    await expect(section.getByRole('heading', { name: 'Visual evidence (3 captures)' })).toBeVisible();
+    const image = section.getByAltText('Task queue at desktop width');
+    await expect(image).toBeVisible();
+    const canvas = section.getByTestId('visual-evidence-canvas');
+    const canvasBox = (await canvas.boundingBox())!;
+    if (width >= 640) {
+      // Side by side: the framed capture takes three fifths, its description the rest, 224px tall.
+      expect(Math.abs(canvasBox.height - 224)).toBeLessThanOrEqual(1);
+      const imageBox = (await image.boundingBox())!;
+      expect(imageBox.width / canvasBox.width).toBeGreaterThan(0.55);
+      expect(imageBox.width / canvasBox.width).toBeLessThan(0.62);
+    } else {
+      expect(canvasBox.height).toBeLessThanOrEqual(420);
     }
+    await expect(section.getByText('Private PR evidence served through the authenticated application media path.')).toBeVisible();
+    await expect(section.locator('img, video')).toHaveCount(1);
+
+    const switcher = section.getByRole('group', { name: 'Captures' });
+    await switcher.getByRole('button', { name: 'Capture 2' }).click();
     await expect(section.locator('video[controls]')).toHaveCount(1);
-    const imageBox = await section.getByAltText('Task queue at desktop width').boundingBox();
-    expect(imageBox!.height).toBeLessThanOrEqual(900 * 0.65 + 1);
+    expect(Math.abs((await canvas.boundingBox())!.height - canvasBox.height)).toBeLessThanOrEqual(1);
+    await switcher.getByRole('button', { name: 'Desktop' }).click();
+    await expect(image).toBeVisible();
     expect(await noHorizontalOverflow(page)).toBe(true);
     if (width === 390 || width === 1440) await capture(page, `task-visual-previews-${width}`);
   });
@@ -120,9 +131,11 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toHaveCount(0);
-    await expect(trigger).toBeFocused();
+    // Focus returns to the frame, which now shows the capture the lightbox was left on.
+    const frame = page.getByRole('button', { name: 'Open full-size preview: Goal workspace' });
+    await expect(frame).toBeFocused();
 
-    await trigger.click();
+    await frame.click();
     const stage = page.getByTestId('preview-lightbox-stage');
     await stage.click({ position: { x: 4, y: 4 } });
     await expect(page.getByRole('dialog')).toHaveCount(0);
