@@ -40,14 +40,16 @@ test('global search opens a master-preview palette with category scopes', async 
   await expect(preview.getByRole('heading')).toHaveText(plans[1].name);
   await expect(preview.getByTestId('global-search-description')).toHaveText(plans[1].initial_prompt);
   await expect(preview.getByTestId('repository-chip')).toHaveText('workspace');
+  await expect(preview.getByTestId('repository-chip-icon')).toBeVisible();
+  await expect(palette.getByRole('button', { name: 'View all results for "mcp" →' })).toBeVisible();
   await expect(preview.getByText('Review', { exact: true })).toBeVisible();
 
-  // Flush under the toolbar and centred on it, not hung off the input.
+  // Left edge flush with the search input, 8px below it.
   const box = (await palette.boundingBox())!;
-  const toolbar = (await page.locator('header[aria-label="Application toolbar"]').boundingBox())!;
+  const field = (await input.locator('xpath=../..').boundingBox())!;
   expect(box.width).toBe(640);
-  expect(Math.round(box.y)).toBe(Math.round(toolbar.y + toolbar.height));
-  expect(Math.abs(box.x + box.width / 2 - (toolbar.x + toolbar.width / 2))).toBeLessThanOrEqual(1);
+  expect(Math.abs(box.x - field.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(box.y - (field.y + field.height + 8))).toBeLessThanOrEqual(1);
   await captureTarget(page.locator('body'), 'global-search-palette-plan');
 
   await input.press('Tab');
@@ -55,6 +57,7 @@ test('global search opens a master-preview palette with category scopes', async 
   await input.press('Tab');
   await input.press('ArrowDown');
   await expect(palette.getByRole('option')).toHaveCount(3);
+  await expect(palette.getByRole('button', { name: 'Search all tasks for "mcp" →' })).toBeVisible();
   await expect(preview.getByRole('heading')).toHaveText(tasks[1].title);
   await expect(preview.getByText('Failed', { exact: true })).toBeVisible();
   await expect(preview.getByTestId('global-search-failure').locator('code')).toHaveText('src/mcp/activity.ts');

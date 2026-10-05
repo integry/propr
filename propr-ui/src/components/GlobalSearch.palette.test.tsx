@@ -10,7 +10,10 @@ vi.mock('../api/proprApi', () => ({ getInstanceCatalog: vi.fn(), getTasks: vi.fn
 
 const LONG_PLAN_TITLE = 'Sequential MCP Epic Execution and Observability across every connected client';
 
-const Location = () => <div data-testid="location">{useLocation().pathname}</div>;
+const Location = () => {
+  const { pathname, search } = useLocation();
+  return <div data-testid="location">{pathname}{search}</div>;
+};
 
 async function renderWithResults() {
   render(
@@ -103,6 +106,7 @@ describe('GlobalSearch palette', () => {
     const preview = screen.getByTestId('global-search-preview');
     expect(within(preview).getByTestId('global-search-description')).toHaveTextContent('Run epics in order');
     expect(within(preview).getByTestId('repository-chip')).toHaveTextContent(/^propr$/);
+    expect(within(within(preview).getByTestId('repository-chip')).getByTestId('repository-chip-icon')).toBeInTheDocument();
     expect(within(preview).getByText('Review')).toHaveClass('rounded-full');
   });
 
@@ -128,5 +132,28 @@ describe('GlobalSearch palette', () => {
     await renderWithResults();
     fireEvent.mouseDown(screen.getByTestId('global-search-backdrop'));
     expect(screen.queryByTestId('global-search-palette')).not.toBeInTheDocument();
+  });
+
+  it('labels the footer link for the active scope', async () => {
+    const input = await renderWithResults();
+    expect(screen.getByRole('button', { name: 'View all results for "mcp" →' })).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: 'Tab' });
+    fireEvent.keyDown(input, { key: 'Tab' });
+    expect(screen.getByRole('button', { name: 'Search all plans for "mcp" →' })).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: 'Tab' });
+    fireEvent.click(screen.getByRole('button', { name: 'Search all tasks for "mcp" →' }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/tasks?search=mcp');
+  });
+
+  it('hangs the palette left-aligned under the search input', async () => {
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      { left: 200, right: 648, top: 10, bottom: 46, width: 448, height: 36, x: 200, y: 10, toJSON: () => ({}) } as DOMRect,
+    );
+    await renderWithResults();
+    const palette = screen.getByTestId('global-search-palette');
+    expect(palette.style.left).toBe('200px');
+    expect(palette.style.top).toBe('54px');
+    expect(palette).not.toHaveClass('-translate-x-1/2');
+    rect.mockRestore();
   });
 });

@@ -11,6 +11,7 @@ import {
   getCategoryCounts,
   getItemGithubUrl,
   getItemPath,
+  getScopeAction,
   searchOptionId,
 } from './globalSearchModel';
 import { SearchPreview, SearchResultList } from './GlobalSearchResults';
@@ -33,24 +34,34 @@ function getSearchResultState(
   return hasResults ? 'results' : 'idle';
 }
 
-/** Where the palette hangs: flush under the toolbar, centred on it. */
+const PALETTE_WIDTH = 640;
+const VIEWPORT_GUTTER = 16;
+
+/**
+ * Where the palette hangs: its left edge flush with the search input, 8px below it. It only
+ * shifts left when the viewport is too narrow to fit it. The backdrop starts under the toolbar.
+ */
 interface PaletteAnchor {
   top: number;
-  centerX: number;
+  left: number;
+  backdropTop: number;
 }
 
 function measureAnchor(container: HTMLElement | null): PaletteAnchor {
-  const bar = (container?.closest('header') ?? container)?.getBoundingClientRect();
-  if (!bar) return { top: 0, centerX: window.innerWidth / 2 };
-  return { top: bar.bottom, centerX: bar.left + bar.width / 2 };
+  const input = container?.getBoundingClientRect();
+  if (!input) return { top: 0, left: VIEWPORT_GUTTER, backdropTop: 0 };
+  const bar = container?.closest('header')?.getBoundingClientRect();
+  const maxLeft = window.innerWidth - Math.min(PALETTE_WIDTH, window.innerWidth - 2 * VIEWPORT_GUTTER) - VIEWPORT_GUTTER;
+  return {
+    top: input.bottom + 8,
+    left: Math.max(VIEWPORT_GUTTER, Math.min(input.left, maxLeft)),
+    backdropTop: bar ? bar.bottom : input.bottom,
+  };
 }
 
-/**
- * The palette is centred under the toolbar rather than hung off the narrow
- * input, so track the toolbar's edge while it is open.
- */
+/** Track the input's position while the palette is open (the toolbar differs between web and desktop). */
 function usePaletteAnchor(containerRef: React.RefObject<HTMLElement | null>, open: boolean): PaletteAnchor {
-  const [anchor, setAnchor] = useState<PaletteAnchor>({ top: 0, centerX: 0 });
+  const [anchor, setAnchor] = useState<PaletteAnchor>({ top: 0, left: 0, backdropTop: 0 });
   useLayoutEffect(() => {
     if (!open) return;
     const update = () => setAnchor(measureAnchor(containerRef.current));
@@ -143,6 +154,12 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
     clearSearch();
   }, [navigate, clearSearch, query]);
 
+  const scopeAction = getScopeAction(category, query);
+  const handleScopeAction = useCallback(() => {
+    navigate(scopeAction.path);
+    clearSearch();
+  }, [navigate, clearSearch, scopeAction.path]);
+
   const selectCategory = (next: SearchCategory) => {
     setCategory(next);
     setActiveIndex(0);
@@ -228,22 +245,22 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
       </div>
 
       {/* Results palette: the Studio mega-dropdown (640px wide, up to 70vh tall),
-          snapped flush to the toolbar's bottom edge and centred on it, over a
-          dimmed backdrop. Clicking the backdrop closes it. */}
+          left-aligned with the search input just below it, over a dimmed backdrop.
+          Clicking the backdrop closes it. */}
       {showDropdown && (
         <div
           data-testid="global-search-backdrop"
           aria-hidden="true"
           onMouseDown={() => setIsOpen(false)}
           className="fixed inset-x-0 bottom-0 z-40 bg-black/40 backdrop-blur-sm"
-          style={{ top: anchor.top }}
+          style={{ top: anchor.backdropTop }}
         />
       )}
       {showDropdown && (
         <div
           data-testid="global-search-palette"
-          className="desktop-toolbar-popover fixed z-50 flex max-h-[70vh] w-[640px] max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-col overflow-hidden rounded-b-md border border-t-0 border-slate-200 bg-white shadow-2xl ring-1 ring-black/5"
-          style={{ top: anchor.top, left: anchor.centerX }}
+          className="desktop-toolbar-popover fixed z-50 flex max-h-[70vh] w-[640px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-2xl ring-1 ring-black/5"
+          style={{ top: anchor.top, left: anchor.left }}
         >
           {resultState === 'loading' && (
             <div className="px-4 py-8 text-center">
@@ -321,10 +338,10 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
                 <button
                   type="button"
                   onMouseDown={e => e.preventDefault()}
-                  onClick={handleViewAllTasks}
-                  className="ml-auto text-primary-600 hover:text-primary-700"
+                  onClick={handleScopeAction}
+                  className="ml-auto min-w-0 truncate text-primary-600 hover:text-primary-700"
                 >
-                  Search all tasks →
+                  {scopeAction.label} →
                 </button>
               </div>
             </>

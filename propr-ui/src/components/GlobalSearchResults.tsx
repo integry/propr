@@ -49,9 +49,13 @@ const StatusPill: React.FC<{ status: string }> = ({ status }) => {
   );
 };
 
-/** Repository chip with the owner stripped, matching the result list; the tooltip keeps the full slug. */
+/** Repository chip with the owner stripped and the ⎇ mark, matching the result list; the tooltip keeps the full slug. */
 const RepoChip: React.FC<{ repository: string }> = ({ repository }) => (
-  <RepositoryChip repository={repository} label={getRepoName(repository)} />
+  <RepositoryChip
+    repository={repository}
+    label={getRepoName(repository)}
+    icon={<GitBranch data-testid="repository-chip-icon" className="h-3 w-3 flex-shrink-0 self-center text-slate-500" aria-hidden="true" />}
+  />
 );
 
 /** A failure reason as a diagnostic finding: icon, label, and file paths as code. */

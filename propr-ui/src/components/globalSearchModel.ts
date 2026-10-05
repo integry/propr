@@ -76,6 +76,26 @@ export function getItemPath(item: SearchItem): string {
   }
 }
 
+/**
+ * The footer escape hatch for the active scope: its label names what it searches and its route
+ * is the full page for that scope. There is no combined results page, so "All" lands on the
+ * task search, the only page that searches across every repository.
+ */
+export function getScopeAction(category: SearchCategory, query: string): { label: string; path: string } {
+  const term = query.trim();
+  const search = `search=${encodeURIComponent(term)}`;
+  switch (category) {
+    case 'all':
+      return { label: `View all results for "${term}"`, path: `/tasks?${search}` };
+    case 'repositories':
+      return { label: 'View all repositories', path: '/repositories' };
+    case 'plans':
+      return { label: `Search all plans for "${term}"`, path: `/plans?${search}` };
+    case 'tasks':
+      return { label: `Search all tasks for "${term}"`, path: `/tasks?${search}` };
+  }
+}
+
 /** GitHub page for an item, when it has one. */
 export function getItemGithubUrl(item: SearchItem): string | null {
   switch (item.kind) {
