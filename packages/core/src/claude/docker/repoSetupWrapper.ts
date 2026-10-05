@@ -1,3 +1,4 @@
+import { repositoryWorkflowExecution, buildWorkflowWrapper, markWorkflowWrapperBuilt } from '../../workflow/workflowExecution.js';
 import type { AgentType } from '../../agents/types.js';
 import { buildAgentContainerResourceArgs } from '../../agents/agentContainerResources.js';
 
@@ -89,13 +90,18 @@ export function wrapDockerRunArgsWithRepoSetup(
         ? [beforeImage[0], ...resourceArgs, ...setupEnv, ...beforeImage.slice(1)]
         : [...resourceArgs, ...setupEnv, ...beforeImage];
 
-    return [
+    const execution = repositoryWorkflowExecution.getStore();
+    const args = [
         ...beforeImageWithSetupEnv,
         '--entrypoint', '/bin/bash',
         dockerImage,
         '-lc',
-        REPO_SETUP_WRAPPER_SCRIPT,
+        execution
+            ? buildWorkflowWrapper(execution.workflow, execution.marker)
+            : REPO_SETUP_WRAPPER_SCRIPT,
         ENTRYPOINT_PATHS[agentType],
         ...afterImage
     ];
+    if (execution) markWorkflowWrapperBuilt(args);
+    return args;
 }

@@ -119,6 +119,8 @@ propr init
 cd .propr && npm install <package>
 ```
 
+The generated `.propr/workflow.yml` scaffolds optional, versioned hooks, instructions, validation, previews and concurrency limits. See the [Repository workflow file reference](https://docs.propr.dev/docs/features/repository-workflow).
+
 The generated `.propr/setup.sh` runs before each implementation execution. Use it for repository-local setup such as npm helper packages; install Debian system tools at the ProPR installation level with `propr runtime packages add <package> --wait`.
 
 ## Agent Runtime Packages

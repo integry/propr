@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { refineWorkflowPreviews, repositoryWorkflowPrompt } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import { after, beforeEach, mock, test } from 'node:test';
 import knex from 'knex';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -93,6 +94,7 @@ await mock.module('@propr/core', { namedExports: {
     ensureGitRepository: async () => { calls.push({ operation: 'ensureGitRepository', args: [] }); }, createLogFiles: noOp, UsageLimitError: class extends Error {},
     recordLLMMetrics: noOp, loadPrimaryProcessingLabels: async () => ['propr'], sanitizeAgentReport,
     loadRepositoryVisualPreviewSettings: noOp,
+    refineWorkflowPreviews, repositoryWorkflowPrompt,
     prepareVisualPreviewEvidence: async () => { calls.push({ operation: 'prepareVisualPreviewEvidence', args: [] }); return { evidence: { assets: [], toolSuggestions: [] } }; },
     cleanupPreparedVisualPreviewEvidence: noOp,
     appendVisualPreviewSection: (body: string) => body,
@@ -226,6 +228,19 @@ const octokit = {
     },
 };
 const modules: Record<string, Record<string, unknown>> = {
+    // Publication fixtures have no repository workflow policy.
+    repositoryWorkflow: {
+        prepareRepositoryWorkflow: noOp,
+        withRepositoryWorkflowAdmission: async (_options: unknown, execute: () => Promise<unknown>) => execute(),
+        reconcileRepositoryWorkflowAdmission: async (workflow: unknown) => workflow,
+        deferRepositoryWorkflowJob: async (_job: unknown, execute: () => Promise<unknown>) => execute(),
+        RepositoryWorkflowCapacityError: class extends Error {},
+        resolveRepositoryWorkflow: async (_data: unknown, _base: unknown, prepare: () => Promise<unknown>) => prepare(),
+        resolveAttemptRepositoryWorkflow: async (_data: unknown, _base: unknown, prepare: () => Promise<unknown>) => ({ workflow: await prepare(), admitted: prepare }),
+        nonRetryableRepositoryWorkflowError: (error: unknown) => error,
+        repositoryWorkflowDeferralData: () => ({}), repositoryWorkflowHistoryMetadata: () => ({}), CLEARED_REPOSITORY_WORKFLOW_DEFERRAL: {},
+        persistRepositoryWorkflowDeferral: noOp,
+    },
     // The follow-up CI suspension is covered by test/followupCiSuspension.test.ts.
     followupCiSuspension: { suspendObsoleteValidationForImplementation: noOp, releaseFollowupCiSuspensionsForTask: noOp },
     prCommentJobHelpers: {

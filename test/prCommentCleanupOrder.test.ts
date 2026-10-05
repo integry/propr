@@ -25,13 +25,15 @@ await mock.module('../src/jobs/prContributionDiscussion.js', { namedExports: { l
 const { cleanupJob } = await import('../src/jobs/prCommentJobUtils.js');
 after(async () => { await core.closeConnection?.(); });
 
-test('the PR lock is held until the worktree holding the PR branch is removed', async () => {
+for (const deferred of [false, true]) test(`the PR lock is held until the worktree holding the PR branch is removed (capacity deferred: ${deferred})`, async () => {
+    events.length = 0;
     const log = { debug: noOp, info: noOp, warn: noOp, error: noOp };
     await cleanupJob({
+        skipPendingCommentFollowup: deferred,
         stateManager: { getTaskState: async () => null } as never, lockKey: 'lock:pr:acme:web:42', lockToken: 'token', taskId: 'task-1',
         localRepoPath: '/repo', worktreeInfo: { worktreePath: '/worktrees/pr-42', branchName: 'feature' } as never,
         repoOwner: 'acme', repoName: 'web', pullRequestNumber: 42, jobBranchName: 'feature', jobLlm: null,
-        correlatedLogger: log as never, redisClient: { llen: async () => 0 } as never,
+        correlatedLogger: log as never, redisClient: { llen: async () => { assert.equal(deferred, false, 'a delayed job must own the retry without enqueueing pending comments'); return 0; } } as never,
     });
     // The next job for this PR can only start once the branch is free again.
     assert.deepEqual(events, ['ci-released', 'worktree-removed', 'lock-released']);

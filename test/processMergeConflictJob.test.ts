@@ -231,6 +231,14 @@ await mock.module('@propr/core', {
     }
 });
 
+// Merge jobs are outside repository workflow policy and must never acquire slots.
+await mock.module('../src/jobs/repositoryWorkflow.js', {
+    namedExports: {
+        runRepositoryWorkflow: async () => assert.fail('merge job entered repository workflow execution'),
+        withRepositoryWorkflowAdmission: async () => assert.fail('merge job entered repository workflow admission'),
+    },
+});
+
 // Mock helpers
 await mock.module('../src/jobs/prCommentJobHelpers.js', {
     namedExports: {
@@ -428,6 +436,15 @@ describe('processMergeConflictJob', () => {
         mockStateManager.getTaskState.mock.mockImplementation(async () => null);
         mockOctokit.request.mock.mockImplementation(async (route: string) => defaultOctokitRequest(route));
     });
+
+    for (const state of ['completed', 'failed', 'cancelled']) {
+        test(`merge execution stays outside workflow admission with a ${state} task record`, async () => {
+            mockStateManager.getTaskState.mock.mockImplementation(async () => ({ state }) as never);
+            const result = await processMergeConflictJob(createMockJob());
+            assert.equal(result.status, 'complete');
+            assert.equal(mockAgent.executeTask.mock.callCount(), 1);
+        });
+    }
 
     test('clean merge: commits and pushes after agent verification', async () => {
         const job = createMockJob();

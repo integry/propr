@@ -27,10 +27,12 @@ describe("scaffoldProprDirectory", () => {
         "README.md",
         "package.json",
         "setup.sh",
+        "workflow.yml",
       ]);
       assert.deepStrictEqual(result.skipped, []);
       assert.deepStrictEqual(result.overwritten, []);
 
+      assert.ok(fs.existsSync(path.join(proprDir, "workflow.yml")));
       assert.ok(fs.existsSync(path.join(proprDir, "setup.sh")));
       assert.ok(fs.existsSync(path.join(proprDir, "package.json")));
       assert.ok(fs.existsSync(path.join(proprDir, ".gitignore")));

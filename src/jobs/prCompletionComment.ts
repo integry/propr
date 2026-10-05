@@ -8,7 +8,7 @@ import {
 import { buildMetricsSection } from './prCommentJobUtils.js';
 import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
-import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths } from '@propr/core';
+import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, redactSecrets, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths } from '@propr/core';
 
 /** Build the processing comment IDs suffix, or empty string if no real comments */
 function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
@@ -155,6 +155,10 @@ function buildAddressedFeedbackLine(addressed: ReviewFeedbackSelection | undefin
     return `> Addressed ${describeReviewFeedbackSelection(addressed)}\n\n`;
 }
 
+function buildRepositoryValidationSection(report: string | undefined): string {
+    return report ? `${redactSecrets(report)}\n\n` : '';
+}
+
 export async function buildCompletionComment(
     commitResult: CommitResult | null,
     unprocessedComments: UnprocessedComment[],
@@ -209,6 +213,7 @@ export async function buildCompletionComment(
             prCommentBody += `${visualPreviewSection}\n\n`;
         }
 
+        prCommentBody += buildRepositoryValidationSection(claudeResult.repositoryValidation);
         prCommentBody += await buildMetricsSection(claudeResult, llm, authorsText, false);
 
         if (undoContext) {
@@ -239,6 +244,7 @@ export async function buildCompletionComment(
         noChangesBody += visualPreviewSection
             ? `No code changes were necessary based on the current state of the branch. Visual preview results are included below.\n\n${visualPreviewSection}\n\n`
             : `No code changes were necessary based on the current state of the branch.\n\n`;
+        noChangesBody += buildRepositoryValidationSection(claudeResult.repositoryValidation);
         noChangesBody += await buildMetricsSection(claudeResult, llm, authorsText, true);
 
         if (taskUrl) {

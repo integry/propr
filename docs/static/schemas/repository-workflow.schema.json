@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://docs.propr.dev/schemas/repository-workflow.schema.json",
+  "title": "ProPR repository workflow",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "after_create": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        },
+        "before_run": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        },
+        "after_run": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        },
+        "before_remove": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Per-command timeout, capped at 600000 ms."
+        }
+      }
+    },
+    "instructions": {
+      "allOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        },
+        {
+          "pattern": "^(?=[\\s\\S]*\\S)(?!/)(?![\\s\\S]*\\\\)(?![\\s\\S]*(?:^|/)\\.{1,2}(?:/|$))(?![\\s\\S]*//)(?![\\s\\S]*/$)[^\\u0000]+$"
+        }
+      ]
+    },
+    "validation": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+      }
+    },
+    "previews": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "types": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "image",
+              "video"
+            ]
+          }
+        },
+        "instructions": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=[\\s\\S]*\\S)[^\\u0000]+$"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_parallel_tasks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Repository-wide execution cap, bounded by instance worker_concurrency."
+        }
+      }
+    }
+  }
+}

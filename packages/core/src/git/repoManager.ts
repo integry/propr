@@ -215,6 +215,13 @@ interface CreateWorktreeOptions {
     baseBranch?: string | null;
     octokit?: InstanceType<typeof Octokit> | null;
     modelName?: string | null;
+    /**
+     * Start from this already-resolved commit of `branch` (for example, the commit the
+     * repository workflow policy was read from) instead of the branch's latest head.
+     * Creation fails when the worktree resolves to another branch or the commit is not on
+     * it, so the run never applies policy from one commit to another commit's code.
+     */
+    startRevision?: { branch: string; revision: string } | null;
 }
 
 export interface WorktreeResult {
@@ -224,9 +231,37 @@ export interface WorktreeResult {
 
 export type WorktreeInfo = WorktreeResult;
 
+/**
+ * Hooks, instructions and validation were read from `startRevision`. Starting anywhere
+ * else would apply that policy to code it was not read from, so a base that moved away
+ * from it (force-push, a branch that appeared after the policy fell back to the default
+ * branch) stops preparation; a retry reads the policy again from the current base.
+ */
+async function resolveIssueStartPoint(
+    git: SimpleGit, issueId: number | string, baseBranch: string, startRevision: CreateWorktreeOptions['startRevision'],
+): Promise<string> {
+    const branchHead = `origin/${baseBranch}`;
+    if (!startRevision) return branchHead;
+    const unusable = (reason: string) => new Error(`Cannot start issue ${issueId} from repository workflow revision ${startRevision.revision} `
+        + `(read from '${startRevision.branch}'): ${reason}. The base branch changed after the workflow policy was read.`);
+    if (startRevision.branch !== baseBranch) throw unusable(`the worktree base branch is '${baseBranch}'`);
+    if (!/^[0-9a-f]{40,64}$/i.test(startRevision.revision)) throw unusable('it is not a commit id');
+    // `merge-base --is-ancestor` reports "no" only through its exit code, which
+    // simple-git does not reject without stderr; compare the merge base instead.
+    let onBranch = false;
+    try {
+        const commit = (await git.revparse([`${startRevision.revision}^{commit}`])).trim();
+        onBranch = (await git.raw(['merge-base', commit, branchHead])).trim() === commit;
+    } catch (error) {
+        logger.warn({ baseBranch, startRevision: startRevision.revision, error: (error as Error).message }, 'Requested start revision could not be resolved');
+    }
+    if (!onBranch) throw unusable(`it is not on the fetched '${baseBranch}' branch`);
+    return startRevision.revision;
+}
+
 export async function createWorktreeForIssue(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions = {}): Promise<WorktreeResult> {
     const { issueId, issueTitle, owner, repoName } = issueInfo;
-    const { baseBranch = null, octokit = null, modelName = null } = options;
+    const { baseBranch = null, octokit = null, modelName = null, startRevision = null } = options;
     assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, owner, repoName);
 
     const sanitizedTitle = issueTitle.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').substring(0, 25);
@@ -291,11 +326,13 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
             throw fetchError;
         }
 
+        const startPoint = await resolveIssueStartPoint(git, issueId, resolvedBaseBranch, startRevision);
+
         await addWorktreeWithoutTracking(
             git,
             worktreePath,
             branchName,
-            { startPoint: `origin/${resolvedBaseBranch}` },
+            { startPoint },
         );
         await setupWorktreePermissions(worktreePath, branchName, issueId);
         await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId });

@@ -12,7 +12,7 @@ import type { SubscriptionUsageMetrics } from './formatSubscriptionUsage.js';
 import { describeAgentTermination, resolveAgentTerminationReason } from '../../agents/termination.js';
 import { sanitizeAgentReport } from '../../agents/agentReportSanitizer.js';
 import { redactVisualPreviewPaths } from '../../services/visualPreviewPaths.js';
-import { redactSecrets } from './secretRedaction.js';
+import { redactSecrets } from '../secretRedaction.js';
 
 export { redactSecrets };
 
@@ -40,6 +40,8 @@ interface FinalResult {
 }
 
 interface ClaudeResult {
+    /** Container-observed workflow validation report, independent of agent prose. */
+    repositoryValidation?: string;
     success?: boolean;
     sessionId?: string | null;
     conversationId?: string | null;
@@ -364,6 +366,7 @@ export async function generateCompletionComment(
     const result: ClaudeResult = (claudeResultInput as ClaudeResult) || { success: false };
     let comment = await buildExecutionDetails(result, issueRef, timestamp);
     comment += buildSummarySection(result);
+    if (result.repositoryValidation) comment += `${redactSecrets(result.repositoryValidation)}\n\n`;
     try {
         const logFiles = await createLogFiles(result, issueRef);
         comment += buildLogFilesSection(logFiles, result);

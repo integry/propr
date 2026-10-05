@@ -22,6 +22,11 @@ export interface UsageMetrics {
 }
 
 export interface HistoryItemMetadata {
+  repositoryWorkflow?: { path: string; baseBranch: string; revision: string; fileRevision: string; maxParallelTasks: number; timeoutMs: number };
+  /** Admission refusals so far for a task waiting on repository workflow capacity. */
+  repositoryWorkflowDeferrals?: number;
+  /** ISO timestamp of the next admission attempt. */
+  repositoryWorkflowRetryAt?: string;
   terminalReason?: string;
   model?: string;
   pr?: { url?: string; number?: number };

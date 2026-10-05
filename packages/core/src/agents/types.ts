@@ -254,6 +254,8 @@ export interface AnalyzeOptions {
 }
 
 export interface AgentExecutionResult {
+    /** Container-observed workflow validation report, independent of agent prose. */
+    repositoryValidation?: string;
     success: boolean;
     logs: string;           // Full stderr/stdout logs
     summary?: string;       // Extracted summary of work
