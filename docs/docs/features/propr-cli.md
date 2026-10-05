@@ -257,6 +257,7 @@ propr goal create -p owner/repo -a codex -m <model> "Add audit logging"   # Crea
 propr goal list --state active                # Your goals (--project, --state, --limit, --offset)
 propr goal attention                          # Goals waiting on you: pauses, provider questions and approvals, with the command that resolves each
 propr goal inspect <goal-id>                  # State, narration, progress, checkpoints, pending input, model, failures, PRs
+propr goal wait <goal-id> --until terminal --timeout 3600   # Wait, with a finite deadline, for a confirmed state or a new checkpoint
 propr goal input <goal-id> "Also cover the admin endpoints"   # Correction or question (or --file / --stdin / --canned done|left)
 propr goal inputs <goal-id>                   # Input delivery history, newest first (--limit, --offset)
 propr goal pause <goal-id>
@@ -298,9 +299,50 @@ If the outcome still cannot be confirmed, the command exits 1 with `outcome_unce
 
 ### JSON output
 
-Every goal command accepts `--json` and prints a versioned document: `{ "version": 1, "kind": ... }` with kinds `goal-capabilities`, `goal-create`, `goal-list`, `goal-detail`, `goal-input`, `goal-inputs` and `goal-control`. Goal, task, session and input identifiers are preserved. Lists return `offset`, `limit` and `nextOffset` (`null` on the last page).
+Every goal command accepts `--json` and prints a versioned document: `{ "version": 1, "kind": ... }` with kinds `goal-capabilities`, `goal-create`, `goal-list`, `goal-detail`, `goal-input`, `goal-inputs`, `goal-control` and `goal-wait`. Goal, task, session and input identifiers are preserved. Lists return `offset`, `limit` and `nextOffset` (`null` on the last page).
 
-Failures exit 1. With `--json` they print a `goal-error` document to stdout whose `error.code` is one of `invalid_arguments`, `validation_failed`, `unauthorized`, `forbidden`, `not_found`, `idempotency_conflict`, `agent_not_goal_capable`, `state_conflict`, `outcome_uncertain`, `server_error`, `network_error` or `request_failed`, plus the server message, HTTP status, idempotency key and recovery hint where relevant. Another user's goal reads as `not_found`.
+### Waiting for a goal
+
+`propr goal wait <goal-id>` blocks until the goal reaches a state or records a new durable event, and always stops at a finite deadline. It never changes the goal: Ctrl-C only stops waiting.
+
+| Option | Meaning |
+| --- | --- |
+| `--until <condition>` | `completed`, `failed`, `cancelled` (the goal's persisted result), `paused` (a pause the worker confirmed), `terminal` (any of completed, failed or cancelled) or `checkpoint` (a checkpoint published after the cursor). Omit it to wait for any new goal event. |
+| `--after-cursor <cursor>` | Only count events after this cursor, as printed by an earlier wait. |
+| `--timeout <seconds>` | Overall deadline, `0`–`86400` (default `300`). `0` checks once without waiting. |
+| `-j, --json` | Print a `goal-wait` document: `outcome`, `condition`, `cursor`, `matchedImmediately`, the triggering `event`, the current `goal` projection, `requests` and `exitCode`. The timeout and Ctrl-C variants are described below. |
+
+Requested controls never satisfy a wait: `--until paused` ignores a pause that has only been requested, `--until cancelled` ignores a requested cancellation, and a finished child task or an idle agent never counts as goal completion.
+
+**Cursors.** Without `--after-cursor`, a state condition that already holds matches immediately (`matchedImmediately: true`); otherwise only events after the current boundary count, so `--until checkpoint` never reports a checkpoint that already existed. With `--after-cursor`, only newer events count, and transitions that happened while nothing was waiting are replayed in order. Every result prints a cursor: pass it to the next wait to continue without missing or repeating a transition. Once a wait has reported the goal's completed, failed or cancelled event, a wait resumed from that cursor is `unreachable`, because a finished goal records nothing further. A cursor for a different goal, a malformed cursor or one this instance no longer has history for fails with `invalid_cursor` or `cursor_expired`; re-run without `--after-cursor` and check `propr goal inspect`.
+
+**Bounded requests and retries.** The CLI chains server requests of at most 30 seconds each until the deadline, carrying the cursor between them. Without `--after-cursor`, a first non-blocking request fixes the starting cursor, so a retry never moves the boundary past a checkpoint published while the wait was in flight. That first request is itself never retried, because a repeat would be answered with a later boundary: if it fails before a cursor arrives, the wait exits 1 with the error code `boundary_not_established`. Check `propr goal inspect` for the current state and checkpoints, then re-run the wait. Once a cursor is held, transient network failures and 502/503/504 responses are retried with the same cursor, so re-running a wait with the last printed cursor is always safe. The deadline is enforced even while a request or retry is pending: at `--timeout`, plus up to 2 seconds for a reply already in flight, the CLI abandons the request and reports `timed_out` with the last cursor.
+
+**Concurrency.** One user may hold at most 16 open waits on each API server. The limit is shared with MCP `wait_goal`, so CLI follow loops and MCP agents count together; a wait over the limit fails with HTTP 429 and the error code `wait_limit`, reports how many are open and is not retried. The limit is temporary: re-run the same command once another wait has ended.
+
+**JSON documents.** A completed wait prints the full document above. Two variants omit information:
+
+- `timed_out` before any request completed (for example an unresponsive server): `goal` is `null`, and `cursor` is `null` unless `--after-cursor` was given.
+- Ctrl-C prints only `{ "version": 1, "kind": "goal-wait", "goalId", "outcome": "interrupted", "condition", "cursor", "exitCode": 130 }`. It has no `event`, `goal`, `matchedImmediately` or `requests`, and `cursor` is `null` when no request completed and no `--after-cursor` was given.
+
+**Exit codes:** `0` matched, `2` timed out (a timeout is not a goal failure; the reported `goal` state is current and may already be terminal, so check it and retry with the printed cursor), `3` unreachable (the goal ended and no event after the cursor can match, for example `--until paused` on a completed goal, or `--until terminal` with the cursor of the goal's own completion event; the wait returns at once instead of running to `--timeout`), `130` interrupted with Ctrl-C (the last cursor is printed), `1` error.
+
+```bash
+# Block a script until the goal finishes, for at most an hour.
+propr goal wait "$GOAL" --until terminal --timeout 3600 --json > result.json
+case $? in
+  0) jq -r '.goal.lifecycleState' result.json ;;   # completed, failed or cancelled
+  2) echo "still running; resume with --after-cursor $(jq -r .cursor result.json)" ;;
+esac
+
+# Follow published checkpoints without ever re-reporting an old one.
+cursor=""
+while out=$(propr goal wait "$GOAL" --until checkpoint --timeout 900 --json ${cursor:+--after-cursor "$cursor"}); do
+  cursor=$(jq -r .cursor <<<"$out"); jq -r '.event.checkpoint.commitSha' <<<"$out"
+done
+```
+
+Failures exit 1. With `--json` they print a `goal-error` document to stdout whose `error.code` is one of `invalid_arguments`, `validation_failed`, `unauthorized`, `forbidden`, `not_found`, `idempotency_conflict`, `agent_not_goal_capable`, `state_conflict`, `outcome_uncertain`, `invalid_cursor`, `cursor_expired`, `wait_limit`, `boundary_not_established`, `server_error`, `network_error` or `request_failed`, plus the server message, HTTP status, idempotency key and recovery hint where relevant. Another user's goal reads as `not_found`.
 
 ## Tasks
 
@@ -373,7 +415,7 @@ Visual previews are also per-repository and **off by default**. `--preview-types
 ```bash
 propr agent list
 propr agent add my-claude -t claude -m model1,model2 -d model1
-propr agent add test -t antigravity -m antigravity-gemini-3.1-pro-high --disabled
+propr agent add test -t antigravity -m antigravity-gemini-3.1-pro --disabled
 propr agent add opencode -t opencode -m opencode-big-pickle \
   -d opencode-big-pickle --config-path ~/.config/opencode
 propr agent add --file agent-config.json     # From a JSON file (or `-` for stdin)
@@ -437,7 +479,7 @@ Settings keys:
 | `planner_generation_model` | Model for planner generation |
 | `auto_resolve_merge_conflicts` | Automatically resolve merge conflicts |
 | `dashboard_summary_enabled` | Enable AI-generated dashboard activity summaries |
-| `model_reasoning_level` | Reasoning level for GPT and Claude agents (empty = agent default) |
+| `model_reasoning_level` | System reasoning preference for Claude, Codex, and Antigravity, resolved against the selected model's supported levels (empty = default effort; model overrides and explicit run / `level-*` selections take precedence). See [Reasoning Levels](./agents-and-models.md#reasoning-levels). |
 | `usage_tips_enabled` | Show daily documentation tips on the dashboard |
 | `usage_tips_dismissal_cooldown_days` | Base dismissal cooldown for tips (1–365 days) |
 | `pr_review_model` | Model for full PR reviews |

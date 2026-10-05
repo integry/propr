@@ -1,3 +1,4 @@
+import { antigravitySupportedModel } from '../../agents/impl/antigravityModelIds.js';
 import fs from 'fs';
 import path from 'path';
 import type { Logger } from 'pino';
@@ -107,7 +108,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       const directAgent = registry.getAgentByAlias(member.directAgentAlias);
       return member.enabled
         && directAgent?.config.enabled
-        && directAgent.config.supportedModels.includes(member.model);
+        && antigravitySupportedModel(directAgent.config, member.model);
     }) ?? [];
     if (enabledMembers.length > 0) {
       const conservativeMember = enabledMembers.reduce((smallest, member) =>

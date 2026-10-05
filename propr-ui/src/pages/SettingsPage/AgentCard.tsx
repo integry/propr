@@ -67,10 +67,7 @@ const LEGACY_MODEL_IDS: Partial<Record<AgentType, ReadonlySet<string>>> = {
     'gpt-5.3-codex', 'gpt-5.3-codex-spark', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano',
   ]),
   antigravity: new Set([
-    'antigravity-gemini-3.6-flash-medium', 'antigravity-gemini-3.6-flash-high',
-    'antigravity-gemini-3.6-flash-low', 'antigravity-gemini-3.5-flash-medium',
-    'antigravity-gemini-3.5-flash-high', 'antigravity-gemini-3.5-flash-low',
-    'antigravity-gemini-3.1-pro-low', 'antigravity-gemini-3.1-pro-high',
+    'antigravity-gemini-3.1-pro',
   ]),
 };
 

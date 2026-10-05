@@ -17,6 +17,7 @@ import {
   GOAL_LAUNCH_STRATEGIES,
   GOAL_LIST_STATES,
   GoalMutationUncertainError,
+  GoalWaitBoundaryError,
   cancelGoal,
   createGoal,
   getGoalCapabilities,
@@ -29,6 +30,8 @@ import {
   resumeGoal,
   sendGoalInput,
   setGoalModel,
+  waitGoalUntil,
+  GOAL_WAIT_REPLY_GRACE_MS,
   type CreateGoalRequest,
   type Goal,
   type GoalAttentionEntry,
@@ -38,8 +41,10 @@ import {
   type GoalLaunchStrategy,
   type GoalListState,
   type GoalMutationResult,
+  type GoalWaitChainResult,
 } from "../api/goals.js";
-import type { GoalBlocker, GoalBlockerAction } from "@propr/shared";
+import { RequestCancelledError } from "../api/errors.js";
+import { GOAL_WAIT_CONDITIONS, GOAL_WAIT_MAX_TIMEOUT_SECONDS, type GoalBlocker, type GoalBlockerAction, type GoalWaitCondition } from "@propr/shared";
 import { resolveTextInput } from "./taskCommands.js";
 
 /** Version of every `propr goal ... --json` document. Bump only on breaking shape changes. */
@@ -59,6 +64,10 @@ export type GoalFailureCode =
   | "agent_not_goal_capable"
   | "state_conflict"
   | "outcome_uncertain"
+  | "invalid_cursor"
+  | "cursor_expired"
+  | "wait_limit"
+  | "boundary_not_established"
   | "server_error"
   | "network_error"
   | "request_failed";
@@ -354,8 +363,13 @@ interface FailureContext {
 function failureCode(error: unknown, command: string): { code: GoalFailureCode; status?: number } {
   if (error instanceof GoalUsageError || error instanceof ProjectResolutionError) return { code: "invalid_arguments" };
   if (error instanceof GoalMutationUncertainError) return { code: "outcome_uncertain" };
+  if (error instanceof GoalWaitBoundaryError) return { code: "boundary_not_established" };
   const classification = classifyApiError(error);
   const status = classification.status;
+  const serverCode = error instanceof ApiError ? (error.response as { code?: unknown } | undefined)?.code : undefined;
+  if (serverCode === "CURSOR_INVALID" || serverCode === "CURSOR_WRONG_GOAL") return { code: "invalid_cursor", status };
+  if (serverCode === "CURSOR_EXPIRED") return { code: "cursor_expired", status };
+  if (serverCode === "WAIT_LIMIT") return { code: "wait_limit", status };
   if (classification.kind === "unauthorized") return { code: "unauthorized", status };
   if (classification.kind === "forbidden") return { code: "forbidden", status };
   if (status === 400) return { code: "validation_failed", status };
@@ -381,6 +395,17 @@ function recoveryHint(error: unknown, context: FailureContext, code: GoalFailure
       : `The request may already have been accepted. ${rerun} the same command with --idempotency-key ${error.idempotencyKey}; it will not be applied twice.`;
   }
   if (code === "idempotency_conflict") return "Use a new --idempotency-key for a different request, or repeat the original request exactly.";
+  if (code === "invalid_cursor" || code === "cursor_expired") {
+    const recovery = error instanceof ApiError ? (error.response as { recovery?: unknown } | undefined)?.recovery : undefined;
+    return `${typeof recovery === "string" ? `${recovery} ` : ""}Re-run 'propr goal wait' without --after-cursor and check 'propr goal inspect'.`;
+  }
+  if (code === "boundary_not_established") {
+    return `No starting cursor was received, so events published since this command started may not be reported by a new wait. Check 'propr goal inspect${context.goalId ? ` ${context.goalId}` : ""}' for the current state and checkpoints, then re-run 'propr goal wait'; pass --after-cursor from an earlier wait to resume from a known boundary.`;
+  }
+  if (code === "wait_limit") {
+    const recovery = error instanceof ApiError ? (error.response as { recovery?: unknown } | undefined)?.recovery : undefined;
+    return `${typeof recovery === "string" ? `${recovery} ` : ""}The limit is temporary: re-run the same 'propr goal wait' command once another wait has ended.`;
+  }
   return null;
 }
 
@@ -487,6 +512,62 @@ function parseBoundedInteger(value: string, name: string, min: number, max: numb
   }
   if (parsed < min || parsed > max) throw new GoalUsageError(`${name} must be an integer from ${min} to ${max}.`);
   return parsed;
+}
+
+/** Default and maximum overall `goal wait` deadline; waits are always finite. */
+export const GOAL_WAIT_DEFAULT_DEADLINE_SECONDS = 300;
+export const GOAL_WAIT_MAX_DEADLINE_SECONDS = 86_400;
+
+/** Documented `propr goal wait` exit codes. Errors keep the shared exit code 1. */
+export const GOAL_WAIT_EXIT_CODES = { matched: 0, timed_out: 2, unreachable: 3, interrupted: 130 } as const;
+
+function parseWaitCondition(value: string | undefined): GoalWaitCondition | undefined {
+  if (value === undefined) return undefined;
+  if (!(GOAL_WAIT_CONDITIONS as readonly string[]).includes(value)) {
+    throw new GoalUsageError(`--until must be one of: ${GOAL_WAIT_CONDITIONS.join(", ")}.`);
+  }
+  return value as GoalWaitCondition;
+}
+
+function goalWaitJson(goalId: string, result: GoalWaitChainResult, exitCode: number): Record<string, unknown> {
+  return {
+    kind: "goal-wait",
+    goalId,
+    outcome: result.outcome,
+    condition: result.condition,
+    cursor: result.cursor,
+    matchedImmediately: result.matchedImmediately,
+    event: result.event,
+    goal: result.goal,
+    requests: result.requests,
+    exitCode,
+  };
+}
+
+function printGoalWait(goalId: string, result: GoalWaitChainResult): void {
+  const condition = result.condition ?? "a new event";
+  if (result.outcome === "matched") {
+    const what = result.event?.kind === "checkpoint"
+      ? `checkpoint ${result.event.checkpoint?.commitSha ?? result.event.checkpoint?.id ?? ""}`.trim()
+      : result.event?.state ?? result.goal?.lifecycleState;
+    console.log(`Matched ${condition}: ${what}${result.matchedImmediately ? " (already true)" : ""}.`);
+  } else if (result.outcome === "unreachable") {
+    console.log(`Cannot match ${condition}: the goal is ${result.goal?.lifecycleState} and records no further events after this cursor.`);
+  } else if (!result.goal) {
+    console.log(`Timed out waiting for ${condition} before the server answered. This says nothing about the goal's state.`);
+  } else {
+    // The projection can be newer than the events this wait examined, so it may already be terminal.
+    console.log(`Timed out waiting for ${condition}. The timeout itself is not a goal failure. The goal is currently ${result.goal.lifecycleState}.`);
+  }
+  if (!result.goal) {
+    console.log(`Goal:   ${goalId}`);
+  } else {
+    console.log(`Goal:   ${goalId}${result.goal.title ? ` (${result.goal.title})` : ""}`);
+    console.log(`State:  ${result.goal.lifecycleState}${result.goal.resultState ? ` (result: ${result.goal.resultState})` : ""}`);
+    if (result.goal.failureReason) console.log(`Failure: ${result.goal.failureReason}`);
+    if (result.goal.finalPr) console.log(`PR:     #${result.goal.finalPr.number}${result.goal.finalPr.url ? ` ${result.goal.finalPr.url}` : ""}`);
+  }
+  if (result.cursor) console.log(`Cursor: ${result.cursor}`);
 }
 
 function parseIdempotencyKey(value: string | undefined): string {
@@ -1029,6 +1110,99 @@ States:
       } catch (error) {
         fail(error, { command: "inputs", json: options.json, goalId });
       }
+    });
+
+  goal
+    .command("wait <goal-id>")
+    .description("Wait, with a finite deadline, for a confirmed goal state or a new durable goal event")
+    .option("--until <condition>", `Condition: ${GOAL_WAIT_CONDITIONS.join(", ")} (default: any new event)`)
+    .option("--after-cursor <cursor>", "Only count events after this cursor (from an earlier wait)")
+    .option("--timeout <seconds>", `Overall deadline in seconds, 0-${GOAL_WAIT_MAX_DEADLINE_SECONDS}`, String(GOAL_WAIT_DEFAULT_DEADLINE_SECONDS))
+    .option("-j, --json", "Output the version 1 goal-wait JSON document")
+    .addHelpText("after", `
+Conditions:
+  completed, failed, cancelled   The goal's persisted result.
+  paused                         A pause the worker confirmed (a pause request alone does not match).
+  terminal                       Any of completed, failed or cancelled.
+  checkpoint                     A checkpoint published after the cursor; never an older one.
+  (none)                         Any new durable goal event after the cursor.
+
+Without --after-cursor, a state condition that already holds matches at once;
+otherwise only events after the current boundary count. With --after-cursor,
+only newer events count. Every result prints a cursor: pass it to the next
+wait to resume without missing or repeating a transition. A finished child
+task or an idle agent never counts as goal completion.
+
+The wait chains bounded server requests (${GOAL_WAIT_MAX_TIMEOUT_SECONDS}s each) until --timeout. Without
+--after-cursor, a first non-blocking request establishes the cursor, so
+retries never move the starting boundary. That first request is never
+retried: if it fails before a cursor arrives, the wait fails with the error
+code boundary_not_established rather than start from a later boundary. Later
+transient network failures are retried with the same cursor, so re-running a
+wait with the last printed cursor is always safe. At --timeout (plus ${GOAL_WAIT_REPLY_GRACE_MS / 1000}s for a reply already in
+flight) the wait stops even if the server has not answered, and exits ${GOAL_WAIT_EXIT_CODES.timed_out}
+with the last cursor. Ctrl-C only stops waiting; the goal keeps running.
+
+The limit of concurrent waits per user is shared with MCP wait_goal and
+counted per API server. A wait over the limit fails with the error code
+wait_limit; it is temporary, so re-run the command once another wait ends.
+
+Exit codes:
+  ${GOAL_WAIT_EXIT_CODES.matched}    matched
+  ${GOAL_WAIT_EXIT_CODES.timed_out}    timed out (not a goal failure; check the reported state and retry with the printed cursor)
+  ${GOAL_WAIT_EXIT_CODES.unreachable}    unreachable (the goal ended and no event after the cursor can match)
+  ${GOAL_WAIT_EXIT_CODES.interrupted}  interrupted (Ctrl-C)
+  1    error
+
+JSON:
+  { "version": 1, "kind": "goal-wait", "goalId", "outcome": "matched" | "timed_out" | "unreachable",
+    "condition", "cursor", "matchedImmediately", "event", "goal", "requests", "exitCode" }
+  "goal" is null, and "cursor" may be null, when the deadline passed before any
+  request completed.
+  Ctrl-C prints a shorter document with only these fields:
+  { "version": 1, "kind": "goal-wait", "goalId", "outcome": "interrupted", "condition",
+    "cursor", "exitCode": ${GOAL_WAIT_EXIT_CODES.interrupted} }
+  "cursor" is null when no request completed and no --after-cursor was given.
+
+Examples:
+  propr goal wait <id> --until terminal --timeout 3600
+  propr goal wait <id> --until checkpoint --after-cursor <cursor> --json
+`)
+    .action(async (goalId: string, options: { until?: string; afterCursor?: string; timeout: string; json?: boolean }) => {
+      const controller = new AbortController();
+      let lastCursor = options.afterCursor ?? null;
+      const interrupt = () => controller.abort();
+      process.once("SIGINT", interrupt);
+      let exitCode: number = GOAL_WAIT_EXIT_CODES.matched;
+      try {
+        const until = parseWaitCondition(options.until);
+        const deadlineSeconds = parseNonNegativeInteger(options.timeout, "--timeout");
+        if (deadlineSeconds > GOAL_WAIT_MAX_DEADLINE_SECONDS) {
+          throw new GoalUsageError(`--timeout must be at most ${GOAL_WAIT_MAX_DEADLINE_SECONDS} seconds.`);
+        }
+        const result = await waitGoalUntil(goalId, {
+          until, afterCursor: options.afterCursor, deadline: Date.now() + deadlineSeconds * 1000,
+        }, { signal: controller.signal, onCursor: (cursor) => { lastCursor = cursor; } });
+        exitCode = GOAL_WAIT_EXIT_CODES[result.outcome];
+        if (options.json) printJson(goalWaitJson(goalId, result, exitCode));
+        else printGoalWait(goalId, result);
+      } catch (error) {
+        if (error instanceof RequestCancelledError) {
+          if (options.json) {
+            printJson({ kind: "goal-wait", goalId, outcome: "interrupted", condition: options.until ?? null,
+              cursor: lastCursor, exitCode: GOAL_WAIT_EXIT_CODES.interrupted });
+          } else {
+            console.error("Stopped waiting. The goal is unaffected.");
+            if (lastCursor) console.error(`Resume with: propr goal wait ${goalId}${options.until ? ` --until ${options.until}` : ""} --after-cursor ${lastCursor}`);
+          }
+          exitCode = GOAL_WAIT_EXIT_CODES.interrupted;
+        } else {
+          fail(error, { command: "wait", json: options.json, goalId });
+        }
+      } finally {
+        process.removeListener("SIGINT", interrupt);
+      }
+      if (exitCode !== GOAL_WAIT_EXIT_CODES.matched) process.exit(exitCode);
     });
 
   for (const spec of CONTROL_SPECS) addControlCommand(goal, spec);

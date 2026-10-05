@@ -62,10 +62,13 @@ const { ClaudeAgent } = await import('../packages/core/src/agents/impl/ClaudeAge
 const { AntigravityAgent } = await import('../packages/core/src/agents/impl/AntigravityAgent.js');
 const { CodexAgent } = await import('../packages/core/src/agents/impl/CodexAgent.js');
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
-const config = (type: AgentConfig['type']): AgentConfig => ({
-    id: type, type, alias: type, enabled: true, dockerImage: 'test-agent', configPath: root,
-    supportedModels: ['test-model'], defaultModel: 'test-model',
-});
+const config = (type: AgentConfig['type']): AgentConfig => {
+    const model = type === 'antigravity' ? 'antigravity-gemini-3.8-flash' : 'test-model';
+    return {
+        id: type, type, alias: type, enabled: true, dockerImage: 'test-agent', configPath: root,
+        supportedModels: [model], defaultModel: model,
+    };
+};
 const control = {
     load: async () => ({ desiredState: 'running', pendingInputs: [], pendingCheckpoints: [], pendingStop: null }),
     setActiveTurn: async () => {}, appendOutput: async () => {},

@@ -11,8 +11,9 @@ import {
   ultrafixProgress,
 } from './commandProgress.js';
 import { reconcileTerminalSubmissionProgress, type SubmissionProgress } from './submissionProgress.js';
+import { isUltrafixCommandTool } from './ultrafix.js';
 
-const commentTools = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request'];
+const commentTools = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'start_ultrafix', 'comment_on_pull_request'];
 const trackedTools = ['create_task', 'retry_task_submission', ...commentTools, 'send_task_followup', 'revert_pull_request_commit', 'index_repository'];
 const terminalStates = ['completed', 'failed', 'cancelled'];
 
@@ -293,7 +294,7 @@ async function trackTask(deps: ToolDeps, row: Operation, { task, result, receipt
     : commentTools.includes(row.tool) ? 'running'
     : !event || event.state === 'pending' ? 'queued' : 'running';
   if (event?.state === 'completed' && result.reviewResults?.length && result.reviewResults.every(review => !review.success)) receipt.state = 'failed';
-  if (row.tool === 'run_ultrafix') await trackUltrafix(deps, row, { task, result, receipt });
+  if (isUltrafixCommandTool(row.tool)) await trackUltrafix(deps, row, { task, result, receipt });
 }
 
 async function trackQueuedJob(row: Operation, jobId: string, receipt: Record<string, unknown>): Promise<void> {

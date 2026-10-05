@@ -116,6 +116,22 @@ after(async () => {
 });
 
 describe('SyntheticRoutingService', () => {
+  test('retained Antigravity member routes use base-model eligibility and context capacity', async () => {
+    const db = await database();
+    const base = 'antigravity-gemini-3.8-flash';
+    const legacy = `${base}-high`;
+    const agy = direct('large', base);
+    agy.config.type = 'antigravity';
+    const pool = config();
+    pool.models[0].members = [{ id: MEMBER_A, directAgentAlias: 'large', model: legacy, enabled: true, priority: 100 }];
+    const router = service(db, pool, [agy]);
+    const session = router.begin({ requestedAgentAlias: 'pool', requestedModel: 'smart', requiredTokens: 300000 });
+    const selected = await session.select();
+    assert.equal(selected.physicalAgent, agy);
+    await session.analyze('test');
+    assert.equal(agy.analyzeCalls[0].model, legacy);
+  });
+
   test('passes direct-agent requests through unchanged', async () => {
     const db = await database();
     const large = direct('large', 'claude-opus-4-6');

@@ -292,8 +292,9 @@ test('new optional schema fields preserve the pre-upgrade parsed payload and rec
   assert.equal(Object.hasOwn(parsed, 'epicExecution'), false);
   assert.equal(Object.hasOwn(parsed, 'epicAdvanceOn'), false);
   const operations = new McpOperations(database);
+  // An omitted ultrafixGoal has no literal default: it resolves from the instance rating goal only when ultrafix runs.
   const previous = { repository, planId, idempotencyKey: 'epic-request-1', issues: [40, 10, 30], models,
-    useEpic: true, autoMerge: false, runUltrafix: false, ultrafixGoal: 9, ultrafixMaxCycles: 3 };
+    useEpic: true, autoMerge: false, runUltrafix: false, ultrafixMaxCycles: 3 };
   assert.deepEqual(parsed, previous);
   const before = await operations.run(principal, { tool: 'implement_plan', args: previous, repository }, async () => ({ status: 202, data: { planId, issues: previous.issues } }));
   const replay = await operations.replay(principal, 'implement_plan', parsed);

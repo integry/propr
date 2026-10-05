@@ -20,6 +20,7 @@ export {
   InternalServerError,
   NetworkError,
   TimeoutError,
+  RequestCancelledError,
   createApiError,
 } from "./errors.js";
 

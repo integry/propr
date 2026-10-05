@@ -9,9 +9,10 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { GoalAttention } from "@propr/shared";
+import { GOAL_WAIT_MAX_TIMEOUT_SECONDS } from "@propr/shared";
+import type { GoalAttention, GoalWaitCondition, GoalWaitEvent, GoalWaitOutcome } from "@propr/shared";
 import { ApiClient, createApiClient } from "./client.js";
-import { ApiError, NetworkError, TimeoutError } from "./errors.js";
+import { ApiError, NetworkError, RequestCancelledError, TimeoutError } from "./errors.js";
 
 export const GOAL_LAUNCH_STRATEGIES = ["direct", "orchestrate"] as const;
 export type GoalLaunchStrategy = typeof GOAL_LAUNCH_STRATEGIES[number];
@@ -465,4 +466,184 @@ export function setGoalModel(
   options: GoalApiOptions = {},
 ): Promise<GoalMutationResult> {
   return goalMutation(goalId, { method: "PATCH", suffix: "/model", body: { model } }, idempotencyKey, options);
+}
+
+/** One bounded server-side wait, as returned by `GET /api/goals/:goalId/wait`. */
+export interface GoalWaitResponse {
+  outcome: GoalWaitOutcome;
+  condition: GoalWaitCondition | null;
+  cursor: string;
+  event: GoalWaitEvent | null;
+  matchedImmediately: boolean;
+  goal: {
+    id: string;
+    repository: string;
+    title: string | null;
+    lifecycleState: string;
+    requestedState: string;
+    resultState: string | null;
+    terminal: boolean;
+    goalCompleted: boolean;
+    pauseConfirmed: boolean;
+    currentTaskId: string | null;
+    checkpoint: { count: number; lastAt: string | null };
+    finalPr: { number: number; url: string | null } | null;
+    failureReason: string | null;
+    updatedAt: string | null;
+    completedAt: string | null;
+  };
+  waitedMs: number;
+  timeoutSeconds: number;
+}
+
+/** Extra time the HTTP request may take beyond the server-side wait. */
+const GOAL_WAIT_REQUEST_GRACE_MS = 15_000;
+
+/**
+ * A wait without a cursor failed before the server's answer arrived, so the
+ * boundary the server may have established is unknown. Sending the request
+ * again would establish a later boundary and silently skip every event
+ * published in between, so the wait stops here instead of retrying.
+ */
+export class GoalWaitBoundaryError extends Error {
+  constructor(readonly cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`Could not establish where this wait starts: the first request failed before a cursor was received (${detail}).`);
+    this.name = "GoalWaitBoundaryError";
+  }
+}
+
+/**
+ * One bounded wait request (at most {@link GOAL_WAIT_MAX_TIMEOUT_SECONDS} seconds).
+ *
+ * A request without `afterCursor` asks the server to establish a new boundary,
+ * so it is sent exactly once: a repeat would be answered with a later boundary.
+ * A request with a cursor is replayable and keeps the client's GET retries.
+ */
+export async function waitGoalOnce(
+  goalId: string,
+  request: { until?: GoalWaitCondition; afterCursor?: string; timeoutSeconds: number },
+  options: GoalApiOptions & { signal?: AbortSignal } = {},
+): Promise<GoalWaitResponse> {
+  const client = await resolveClient(options);
+  const timeoutSeconds = Math.min(Math.max(0, request.timeoutSeconds), GOAL_WAIT_MAX_TIMEOUT_SECONDS);
+  const response = await client.get<GoalWaitResponse>(goalPath(goalId, "/wait"), {
+    params: { until: request.until, afterCursor: request.afterCursor, timeoutSeconds },
+    timeout: timeoutSeconds * 1000 + GOAL_WAIT_REQUEST_GRACE_MS,
+    signal: options.signal,
+    retry: request.afterCursor !== undefined,
+  });
+  return response.data;
+}
+
+/**
+ * Time the last request's reply may take to arrive after the overall deadline
+ * before the CLI abandons it, so `--timeout 0` can still check once and a
+ * server answering exactly at the deadline is not discarded.
+ */
+export const GOAL_WAIT_REPLY_GRACE_MS = 2_000;
+
+export interface GoalWaitChainResult extends Omit<GoalWaitResponse, "cursor" | "goal"> {
+  /** Last cursor the server returned (or the caller supplied); null when no request completed. */
+  cursor: string | null;
+  /** Current goal projection; null when the deadline passed before any request completed. */
+  goal: GoalWaitResponse["goal"] | null;
+  /** Bounded requests issued to reach this result. */
+  requests: number;
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+/**
+ * Chain bounded wait requests until the condition matches, the goal can no
+ * longer match, or the overall deadline passes. The cursor returned by each
+ * request is carried into the next, so nothing between requests is missed or
+ * reported twice. Without a caller cursor, a non-blocking request first
+ * establishes the baseline cursor, so every blocking request, and every retry
+ * of one, keeps the original observation boundary. Transient transport
+ * failures are retried with the same cursor until the deadline; one still
+ * failing at the deadline resolves as `timed_out`.
+ *
+ * The baseline request itself is never retried, here or in the HTTP client:
+ * its reply may be lost after the server fixed a boundary, and a repeat would
+ * fix a later one, hiding any event published in between. A transient failure
+ * before the first cursor arrives rejects with {@link GoalWaitBoundaryError}.
+ *
+ * The deadline aborts in-flight requests and retry delays (after
+ * {@link GOAL_WAIT_REPLY_GRACE_MS}) and resolves as `timed_out` with the last
+ * cursor; aborting `signal` (Ctrl-C) only stops waiting and rejects with
+ * {@link RequestCancelledError}.
+ */
+// eslint-disable-next-line complexity -- one loop keeps baseline, deadline, retry and cancellation handling auditable together
+export async function waitGoalUntil(
+  goalId: string,
+  request: { until?: GoalWaitCondition; afterCursor?: string; deadline: number },
+  options: GoalApiOptions & {
+    signal?: AbortSignal;
+    now?: () => number;
+    retryDelayMs?: number;
+    replyGraceMs?: number;
+    /** Called with every cursor the server returns, so an interrupted wait can still resume. */
+    onCursor?: (cursor: string) => void;
+  } = {},
+): Promise<GoalWaitChainResult> {
+  const now = options.now ?? Date.now;
+  const startedAt = now();
+  let cursor = request.afterCursor;
+  let requests = 0;
+  let last: GoalWaitResponse | null = null;
+  const expired = new AbortController();
+  const stopAfterMs = Math.max(0, request.deadline - startedAt) + (options.replyGraceMs ?? GOAL_WAIT_REPLY_GRACE_MS);
+  const expiry = setTimeout(() => expired.abort(), stopAfterMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, expired.signal]) : expired.signal;
+  const timedOut = (): GoalWaitChainResult => ({
+    outcome: "timed_out",
+    condition: request.until ?? null,
+    cursor: cursor ?? null,
+    event: null,
+    matchedImmediately: false,
+    goal: last?.goal ?? null,
+    waitedMs: now() - startedAt,
+    timeoutSeconds: Math.max(0, request.deadline - startedAt) / 1000,
+    requests,
+  });
+  try {
+    for (;;) {
+      const remainingSeconds = Math.max(0, (request.deadline - now()) / 1000);
+      try {
+        requests++;
+        last = await waitGoalOnce(goalId, {
+          until: request.until, afterCursor: cursor,
+          // The baseline request never blocks, which keeps the window for losing its reply short.
+          timeoutSeconds: cursor === undefined ? 0 : Math.min(remainingSeconds, GOAL_WAIT_MAX_TIMEOUT_SECONDS),
+        }, { ...options, signal });
+      } catch (error) {
+        if (options.signal?.aborted) throw error instanceof RequestCancelledError ? error : new RequestCancelledError();
+        if (!isTransientFailure(error) && !expired.signal.aborted) throw error;
+        // A deadline reached while a request or its transient retries were pending is a timeout, not an error.
+        if (expired.signal.aborted || request.deadline - now() <= 0) return timedOut();
+        // Only a request carrying a cursor is replayable; repeating the baseline would move the boundary.
+        if (cursor === undefined) throw new GoalWaitBoundaryError(error);
+        await abortableSleep(Math.min(options.retryDelayMs ?? GOAL_MUTATION_RETRY_DELAY_MS, Math.max(0, request.deadline - now())), signal);
+        continue;
+      }
+      cursor = last.cursor;
+      options.onCursor?.(cursor);
+      if (last.outcome !== "timed_out" || request.deadline - now() <= 0) return { ...last, requests };
+    }
+  } finally {
+    clearTimeout(expiry);
+  }
 }

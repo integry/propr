@@ -130,7 +130,7 @@ describe('review input capacity resolution', () => {
     });
 
     test('applies a larger runtime reserve to catalog windows of unverified runtimes', () => {
-        const gemini = resolveReviewInputCapacity({ agentType: 'antigravity', model: 'antigravity-gemini-3.8-flash-high' });
+        const gemini = resolveReviewInputCapacity({ agentType: 'antigravity', model: 'antigravity-gemini-3.8-flash' });
         assert.equal(gemini.source, 'catalog');
         assert.equal(gemini.contextWindow, 1000000);
         assert.equal(gemini.runtimeOverheadReserve, 100000);

@@ -71,8 +71,11 @@ a plan or goal. Repository write access is required. Optional `agentAlias` and
 
 Optional automation matches `implement_plan`. `runUltrafix` (review scope) runs
 the review/fix loop on the resulting pull request as soon as it opens, bounded by
-`ultrafixGoal` (1-10, default 9) and `ultrafixMaxCycles` (1-10, default 3); both
-bounds apply only when `runUltrafix` is true. `autoMerge` (merge scope) merges
+`ultrafixGoal` (1-10, defaults to the instance `ultrafix_rating_goal`) and
+`ultrafixMaxCycles` (1-10, default 3); both bounds apply only when `runUltrafix`
+is true. An omitted `ultrafixGoal` is resolved from the instance setting when
+the call is made, so it always matches what the Settings page shows; the same
+holds for `implement_plan`, `run_ultrafix` (`goal`) and `start_ultrafix`. `autoMerge` (merge scope) merges
 the pull request once it is ready. Both opt-ins are applied as the shared
 `ultrafix` and `auto-merge` issue labels, so removing a label stops the
 automation exactly as it does for planned work.
@@ -82,7 +85,7 @@ automation exactly as it does for planned work.
   "repository": "owner/repo",
   "instruction": "Fix the invoice date format",
   "runUltrafix": true,
-  "ultrafixGoal": 9,
+  "ultrafixGoal": 8,
   "ultrafixMaxCycles": 3,
   "idempotencyKey": "invoice-date-fix-001"
 }
@@ -227,6 +230,23 @@ a draft; `publish_plan` creates GitHub issues with the non-executing
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
 
+`generate_repository_improvements` answers "what should we work on next?"
+with the same generator as the web UI **Improve** tab. Pass `categories`
+(`code-quality`, `performance`, `security`, `testing`, `documentation`,
+`architecture`, `new-features`, `tech-debt`, `ux-ui`, `scalability`) and/or a
+non-blank `customPrompt`, plus optional `branch`, `referenceRepository` (also
+checked against your grant), `model` and `contextLevel` (0–100, default 50).
+It needs `plan` scope and returns an `accepted` receipt without waiting for
+the model. Poll `get_operation`: the lifecycle moves to `running`, then
+`completed` with `result.suggestions` (`{ title, description }`),
+`result.metadata` and the `estimatedDurationMs`/`actualDurationMs`/
+`isHistoricalEstimate` timings, or `failed` with a structured error such as
+`IMPROVEMENTS_OUTPUT_INVALID`. Generation runs in the API process; a receipt
+that has not settled after 30 minutes (for example after a restart) becomes
+`unknown` with `IMPROVEMENTS_OUTCOME_UNAVAILABLE`, and a new key starts a new
+generation. Suggestions are not saved anywhere else; turn the ones you want
+into work with `create_task`, `create_plan` or `create_goal`.
+
 `create_goal` accepts the same creation contract as the goal API and web UI;
 `get_goal_capabilities` returns it as `creation` beside the supported agents
 and models. `launchStrategy` is `direct` or `orchestrate`. `maxParallelTasks`
@@ -365,7 +385,7 @@ work completed.
 
 The lifecycle includes `acceptedAt`, `startedAt` and `finishedAt` timestamps,
 plus stable `artifacts` such as submission, task, comment and pull-request
-identities. Its `progress` is tool-specific. For `run_ultrafix`, progress names
+identities. Its `progress` is tool-specific. For `run_ultrafix` and `start_ultrafix`, progress names
 the goal, maximum cycles, current `cycle`, phase, last score, per-cycle review
 and fix task IDs, and terminal outcome (`goal_reached`, `cycles_exhausted`,
 `stopped` or `failed`). The lifecycle summary distinguishes reaching the goal
@@ -492,6 +512,68 @@ recent terminal transitions, elapsed time and checkpoint state), `pendingInput`
 `latestEvents`, `currentActivity`, `timing`, `changesSummary` counts and the
 task's `pullRequest`. `changesSummary` is `null` when nothing is persisted — it
 never reports zero for unknown.
+
+#### Waiting for goal progress
+
+Instead of polling `get_goal`, call `wait_goal`. It blocks for at most
+`timeoutSeconds` (default 15, maximum 30) and returns an ordinary structured
+result either way:
+
+```json
+{ "repository": "acme/web", "goalId": "0d6e1f7c-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+  "until": "terminal", "timeoutSeconds": 30 }
+```
+
+| `until` | Matches |
+| --- | --- |
+| `completed`, `failed`, `cancelled` | The goal's persisted result. A cancellation request is not `cancelled`. |
+| `paused` | A pause the worker confirmed with no queued resume. A pause request is not `paused`. |
+| `terminal` | Any of completed, failed or cancelled. |
+| `checkpoint` | A checkpoint published after the cursor — never an older one. |
+| omitted | Any new durable goal event after the cursor. |
+
+The result carries `outcome` (`matched`, `timed_out` or `unreachable`),
+`cursor`, `condition`, `matchedImmediately`, the triggering `event` (`kind`
+`lifecycle` with `state`/`previousState`, or `checkpoint` with the commit and
+pull request) and the current `goal` projection (`lifecycleState`,
+`requestedState`, `resultState`, `goalCompleted`, `pauseConfirmed`, checkpoint
+count, final PR). `timed_out` is not a goal failure: call `wait_goal` again with
+the returned cursor. The `goal` projection is current, so on a timeout it can
+already show a state such as `failed` whose event the next call reports. `unreachable` means the goal ended and no event after the
+cursor can ever match, so retrying with that cursor is futile. That covers a
+condition the final state can never satisfy, such as `paused` on a completed
+goal, and a terminal event that is already at or behind `afterCursor`, such as
+`terminal` resumed from the cursor of the goal's completion event. It returns
+at once instead of waiting out the timeout.
+
+Every field of the `goal` projection is read from one goal row, so
+`lifecycleState`, `resultState`, `terminal` and `goalCompleted` always agree
+with each other. The `event` is history and may be older than the projection.
+`event.occurredAt` uses the same UTC `YYYY-MM-DD HH:MM:SS` format as the
+projection's `updatedAt` and `completedAt`.
+
+Events come from a durable, monotonic per-goal journal that the database appends
+in the same transaction as each goal or checkpoint write, so a finished child
+task, an idle agent turn or a duplicate notification can never create one.
+Without `afterCursor`, a state condition that already holds matches immediately;
+otherwise only events after the current boundary count. With `afterCursor`, only
+newer events count and transitions that happened between calls are replayed in
+order, so retrying or reconnecting with the last cursor never misses or repeats a
+transition. A malformed cursor or a position never issued for this goal
+(`CURSOR_INVALID`), another goal's cursor (`CURSOR_WRONG_GOAL`) or one whose
+history this goal's journal no longer holds (`CURSOR_EXPIRED`) fails with
+`details.recovery` instead of silently skipping history: omit `afterCursor` and
+read the goal with `get_goal`.
+
+Every call re-checks repository authorization and goal ownership, and an open
+wait re-checks ownership and the grant before each read, so a revoked grant
+stops receiving events. Closing the HTTP connection releases the wait; it never
+pauses or cancels the goal. The endpoint is stateless, so a
+`notifications/cancelled` message arrives on a separate request and cannot reach
+an open wait: disconnecting is the way to cancel one early. One user may hold at
+most 16 concurrent waits on each API server (`WAIT_LIMIT`, HTTP 429). The count
+is shared with `propr goal wait`, so CLI follow loops and MCP waits draw on the
+same 16, and the error message reports how many are open.
 
 Before sending a correction, read what has already been sent with
 `list_goal_inputs`, then:
@@ -704,10 +786,10 @@ Account-level limits, such as a model the provider account cannot run, show up
 as that model's failed review rather than as a rejection at call time.
 
 The state-changing `merge_pull_request`, `update_pull_request_branch`,
-`stop_ultrafix`, `set_pull_request_model` and `revert_pull_request_commit`
-tools still require `expectedHead`. The pin prevents them from acting on unseen
-code; for `stop_ultrafix`, a moved head may contain a human fix the loop should
-still review.
+`start_ultrafix`, `stop_ultrafix`, `set_pull_request_model` and
+`revert_pull_request_commit` tools still require `expectedHead`. The pin
+prevents them from acting on unseen code; for `start_ultrafix` and
+`stop_ultrafix`, a moved head may contain a fix the loop should still see.
 
 `set_pull_request_model` routes the PR to exactly one enabled model by
 converging the managed `llm-*` labels the repository already defines:
@@ -733,6 +815,28 @@ additionally requires review scope, and requires
 `expectedHead` plus `idempotencyKey`. Its receipt reports `wasActive` and
 `circuitBreaker: "cleared"` and says plainly that a cycle already running may
 still finish — inspect the pull request to confirm.
+
+`start_ultrafix` is its counterpart: it re-arms the loop on an open pull request
+without anyone typing `/ultrafix` in GitHub. It takes the same `repository`,
+`pullRequest`, required `expectedHead` and `idempotencyKey`, plus optional
+`ultrafixGoal` and `ultrafixMaxCycles` that default to the instance
+`ultrafix_rating_goal` and `ultrafix_max_cycles`. A moved head fails with
+`STALE_HEAD` before anything is posted. The tool posts the same `/ultrafix`
+command a hand-typed comment does, so the normal intake re-adds the `ultrafix`
+label and starts the loop exactly as it would from GitHub. It is listed under
+execute scope and additionally requires review scope.
+
+```json
+{ "repository": "acme/web", "pullRequest": 42,
+  "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
+  "idempotencyKey": "pr-42-ultrafix-restart-1" }
+```
+
+The receipt reports the resolved `goal` and `maxCycles`, the posted
+`commentId`, `wasActive` (whether the label was already present) and
+`circuitBreaker: "requested"`. Follow it with `get_operation`; its lifecycle and
+progress are the same as `run_ultrafix`, and `stop_ultrafix` marks it as
+stopping.
 
 **5. Follow a one-off task.** After `create_task`, keep both the returned
 `operationId` and `submissionId`. The submission view explains the handoff from

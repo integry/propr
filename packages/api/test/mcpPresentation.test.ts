@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { presentResultText } from '../mcp/presentation.js';
+import { presentResult, presentResultText } from '../mcp/presentation.js';
+import type { McpTool } from '../mcp/tools.js';
 import { compactText, planRelationLimit, summarizeGoal, summarizePlan, summarizeTask, summarizeTodo } from '../mcp/listSummaries.js';
 
 test('text fallback includes repository handles and links from structured results', () => {
@@ -247,4 +248,20 @@ test('MCP TODO and goal summaries omit duplicate text while retaining longer con
   assert.equal(summarizeGoal({ title: 'Short title', objective: 'Additional context' }).summary, 'Additional context');
   assert.equal(summarizeTodo({}).summary, null);
   assert.equal(summarizeGoal({}).summary, null);
+});
+
+test('a wait_goal timeout summary reports the returned lifecycle state without denying a goal failure', () => {
+  const tool = { name: 'wait_goal', readOnly: true } as McpTool;
+  const config = { instanceId: 'example', origin: 'https://propr.example' };
+  const summarize = (lifecycleState: string) => presentResult(tool, { repository: 'acme/api', goalId: 'goal-1' }, {
+    outcome: 'timed_out', condition: 'checkpoint', cursor: 'gwc1.bound', event: null, matchedImmediately: false,
+    goal: { id: 'goal-1', lifecycleState, resultState: lifecycleState === 'failed' ? 'failed' : null }, waitedMs: 15_000, timeoutSeconds: 15,
+  }, config).summary;
+
+  // The projection may be newer than the examined journal prefix: the goal failed after the last read.
+  const failed = summarize('failed');
+  assert.equal(failed, 'Goal wait for checkpoint timed out after 15s. The timeout itself is not a goal failure; the goal is currently failed. Retry with cursor gwc1.bound.');
+  assert.doesNotMatch(failed, /not failed|has not failed|did not fail/);
+
+  assert.match(summarize('running'), /The timeout itself is not a goal failure; the goal is currently running\./);
 });

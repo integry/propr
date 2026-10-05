@@ -4,7 +4,7 @@ import { after, test } from 'node:test';
 import { randomBytes } from 'node:crypto';
 import knex from 'knex';
 import { z } from 'zod';
-import { associateSubmissionTask, closeConnection } from '@propr/core';
+import { associateSubmissionTask, closeConnection, loadUltrafixRatingGoal } from '@propr/core';
 import { up as mcpMigration } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
 import { up as lifecycleMigration } from '../../core/src/db/migrations/20261001000000_add_mcp_operation_lifecycle.js';
 import { up as submissionMigration } from '../../core/src/db/migrations/20260922000000_add_task_submissions.js';
@@ -474,7 +474,8 @@ test('create_task requests ultrafix and auto-merge through the shared issue labe
   const scenarios = [
     { key: 'plain-task', args: {}, labels: [...routing, ['AI']], automation: {} },
     { key: 'ultrafix-defaults', args: { runUltrafix: true }, labels: [...routing, ['ultrafix'], ['AI']],
-      automation: { runUltrafix: true, ultrafixGoal: 9, ultrafixMaxCycles: 3 } },
+      // An omitted goal is the instance rating goal, not a literal of its own.
+      automation: { runUltrafix: true, ultrafixGoal: await loadUltrafixRatingGoal(), ultrafixMaxCycles: 3 } },
     { key: 'ultrafix-explicit', args: { runUltrafix: true, ultrafixGoal: 6, ultrafixMaxCycles: 2, autoMerge: true },
       labels: [...routing, ['auto-merge'], ['ultrafix'], ['AI']],
       automation: { autoMerge: true, runUltrafix: true, ultrafixGoal: 6, ultrafixMaxCycles: 2 } },

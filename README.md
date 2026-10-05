@@ -2,233 +2,371 @@
   <img src="media/logo-and-name.png" alt="ProPR" width="360" />
 </p>
 
-<p align="center"><strong>Manage AI coding agents like human engineers — plan, implement, review, and ship every change as a real pull request.</strong></p>
+<h1 align="center">GitHub orchestration for AI coding agents</h1>
+
+<p align="center">
+  Run Claude Code, Codex and other coding agents on your own server.<br />
+  Every task runs in an isolated workspace and lands as a pull request you refine in GitHub.
+</p>
+
+<p align="center">
+  <a href="#quickstart"><strong>Quickstart</strong></a> ·
+  <a href="https://docs.propr.dev/docs/intro"><strong>Docs</strong></a> ·
+  <a href="https://demo.propr.dev"><strong>Live demo</strong></a> ·
+  <a href="https://propr.dev"><strong>Website</strong></a> ·
+  <a href="https://discord.gg/5FjuaQBud"><strong>Discord</strong></a> ·
+  <a href="https://propr.dev/proof/"><strong>Built with ProPR</strong></a>
+</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache 2.0" /></a>
   <a href="https://www.npmjs.com/package/propr-cli"><img src="https://img.shields.io/npm/v/propr-cli?label=propr-cli" alt="npm: propr-cli" /></a>
   <a href="https://github.com/integry/propr/releases"><img src="https://img.shields.io/github/v/release/integry/propr" alt="Latest release" /></a>
   <a href="https://github.com/integry/propr/commits/main"><img src="https://img.shields.io/github/commit-activity/m/integry/propr" alt="Commit activity" /></a>
+  <a href="https://discord.gg/5FjuaQBud"><img src="https://img.shields.io/badge/discord-join-7289da" alt="Discord" /></a>
+</p>
+
+<br />
+
+<!--
+  Hero video. GitHub only renders an inline player for videos uploaded through its web editor.
+  Upload github-orchestration-loop.mp4, then replace the linked poster below with:
+  <div align="center"><video src="https://github.com/user-attachments/assets/..." width="720" controls></video></div>
+-->
+<p align="center">
+  <a href="https://propr.dev/assets/videos/github-orchestration-loop.mp4">
+    <img src="media/readme-demo-poster.jpg" alt="Watch the 68-second demo: a GitHub issue gets the AI label, ProPR opens a pull request, a review comment becomes a follow-up commit, and a human merges." width="720" />
+  </a>
 </p>
 
 <p align="center">
-  <a href="https://propr.dev">Website</a> ·
-  <a href="https://docs.propr.dev/docs/intro">Documentation</a> ·
-  <a href="https://demo.propr.dev">Live demo</a> ·
-  <a href="https://discord.gg/5FjuaQBud">Discord</a> ·
-  <a href="https://propr.dev/proof/">Built with ProPR</a>
+  <em>▶ Watch the 68-second demo — from a labeled GitHub issue to a reviewed, merged pull request.</em>
 </p>
 
----
+<p align="center">
+  <a href="#quickstart"><strong>Install in two commands →</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="https://demo.propr.dev"><strong>Explore the live demo →</strong></a>
+</p>
 
-ProPR is a **self-hosted platform** that runs AI coding agents like Claude Code and Codex through the GitHub pull-request workflow. It monitors issues and PRs, runs your choice of agents in isolated Docker containers and Git worktrees on your own server, and drives the complete path from an issue to a reviewed pull request — with a Web UI available for configuration and monitoring and a CLI that doubles as the local control plane. You bring your existing AI subscriptions or API keys; ProPR never marks up tokens.
+<br />
+
+## What is ProPR?
+
+ProPR is an **open-source, self-hosted platform** that manages AI coding agents the way you manage engineers: through issues, pull requests and code review. Claude Code, Codex and other agents write the code. ProPR gives them a shared engineering process — a plan, an isolated workspace, a pull request, and a review loop — on your own server, with the AI subscriptions or API keys you already have.
+
+**Label a GitHub issue and get a pull request back.**
+
+|        | Step                        | What happens                                                                                             |
+| ------ | --------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **01** | Label an issue              | Add the `AI` label to a normal GitHub issue. Add a model label such as `llm-claude-opus55` to pick the agent. |
+| **02** | Get a pull request          | The agent works in its own Docker container and Git worktree, then ProPR opens a PR with the diff and a run summary: status, duration, token cost and model. Full prompts and logs stay in the ProPR Web UI. |
+| **03** | Review, refine and merge    | Leave ordinary review comments or use `/review`, `/fix` and `/ultrafix`. The agent pushes follow-up commits. You make the merge decision. |
+
+<br />
+
+<p align="center">
+  <strong>Works with</strong><br />
+  <a href="https://docs.propr.dev/docs/features/agents-and-models">Claude Code</a> ·
+  <a href="https://docs.propr.dev/docs/features/agents-and-models">OpenAI Codex</a> ·
+  <a href="https://docs.propr.dev/docs/features/agents-and-models">Google Antigravity</a> ·
+  <a href="https://docs.propr.dev/docs/features/agents-and-models">OpenCode</a> ·
+  <a href="https://docs.propr.dev/docs/features/agents-and-models">Mistral Vibe</a>
+</p>
+
+<p align="center"><em>Bring your own subscription or API key. ProPR never marks up tokens.</em></p>
+
+<br />
+
+## ProPR is right for you if
+
+- ✅ You want AI-written code to arrive as **reviewable pull requests**, not terminal scrollback
+- ✅ You run **several agent sessions at once** and lose track of what each one is doing
+- ✅ You want to use the **Claude, ChatGPT or other subscriptions you already pay for**
+- ✅ You want repositories, logs and credentials to **stay on your own server**
+- ✅ You want to **mix agents** — implement with one, review with another, fix with a third
+- ✅ You want to delegate a task, **walk away, and review the PR** when it is ready
+- ✅ You want to see **what every run cost** and what it did
+
+<br />
+
+## Features
+
+<table>
+<tr>
+<td align="center" width="33%" valign="top">
+<h3>🏷️ Issue to pull request</h3>
+Label a GitHub issue and an agent implements it, then opens a PR linked back to the issue. State labels track progress automatically.
+</td>
+<td align="center" width="33%" valign="top">
+<h3>🗺️ Planner Studio</h3>
+Turn an idea into review-sized tasks with acceptance criteria. <a href="https://docs.propr.dev/docs/tutorials/planner-studio">Refine the plan in chat</a>, then create the GitHub issues.
+</td>
+<td align="center" width="33%" valign="top">
+<h3>🔍 AI code review</h3>
+Comment <code>/review</code> on any PR for severity-grouped findings and a score. <a href="https://docs.propr.dev/docs/features/pr-commands">Apply them with <code>/fix</code></a>.
+</td>
+</tr>
+<tr>
+<td align="center" valign="top">
+<h3>🔁 Ultrafix</h3>
+An automated review, repair and re-review loop that runs until the PR reaches the score you set, then hands it back for a human merge.
+</td>
+<td align="center" valign="top">
+<h3>🤖 Bring your own agent</h3>
+<a href="https://docs.propr.dev/docs/features/agents-and-models">Five agents, selectable per issue</a>. Several model labels on one issue produce separate PRs to compare.
+</td>
+<td align="center" valign="top">
+<h3>📦 Isolated execution</h3>
+Every run gets its own branch, Git worktree and Docker container, so <a href="https://docs.propr.dev/docs/features/execution-safety">parallel agents never collide</a> with each other or your checkout.
+</td>
+</tr>
+<tr>
+<td align="center" valign="top">
+<h3>🎯 Tasks and goals</h3>
+Start a single instruction, or <a href="https://docs.propr.dev/docs/features/goals">steer a long-running agent session</a> with corrections while it works.
+</td>
+<td align="center" valign="top">
+<h3>💰 Run record and cost</h3>
+Each task keeps its prompts, streamed logs, commits and per-call model cost. <a href="https://docs.propr.dev/docs/features/web-ui">Watch it all in the Web UI</a>.
+</td>
+<td align="center" valign="top">
+<h3>💬 Control from chat</h3>
+Connect a chat client over <a href="https://docs.propr.dev/docs/features/mcp">authenticated MCP</a> to plan issues, check what is running, send a correction or request a merge.
+</td>
+</tr>
+<tr>
+<td align="center" valign="top">
+<h3>📥 Inbox and push</h3>
+<a href="https://docs.propr.dev/docs/features/inbox">Follow work</a> across browser, installed PWA and desktop, with notification controls per person and per repository.
+</td>
+<td align="center" valign="top">
+<h3>⌨️ CLI control plane</h3>
+<a href="https://docs.propr.dev/docs/features/propr-cli">One command</a> sets up, verifies, starts and stops the stack, and drives plans, tasks and repositories.
+</td>
+<td align="center" valign="top">
+<h3>🧩 Sequenced delivery</h3>
+Epic mode runs a multi-issue plan in order. Each PR merges before the next implementation starts, so a large change ships as reviewable diffs.
+</td>
+</tr>
+</table>
+
+**Adopt one stage or all of them.** Plan, implement, review and operate are independent — use ProPR only to review existing PRs, only to plan, or for the whole path.
+
+<br />
+
+## Problems ProPR solves
+
+| Without ProPR | With ProPR |
+| --- | --- |
+| ❌ Agent output lives in terminal scrollback and chat history that nobody else can review. | ✅ Every change is a pull request with the diff, run summary and discussion in GitHub. Full prompts and logs are in the ProPR Web UI on your server. |
+| ❌ You sit in a terminal approving commands and edits one at a time. | ✅ Approval moves to the pull request. Label the issue, walk away, review the result. |
+| ❌ Parallel agent sessions step on each other's files and branches. | ✅ Each run has its own branch, worktree and container. |
+| ❌ A hosted agent service needs your code on its servers and bills tokens at its own rates. | ✅ ProPR runs on your server with your own subscriptions or API keys, at no markup. |
+| ❌ The agent that wrote the code is also the only one checking it. | ✅ A different agent can review the PR, and Ultrafix repeats review and repair until it passes. |
+| ❌ A change too big for one PR becomes one unreviewable diff. | ✅ Planning splits it into review-sized tasks, and Epic mode ships them in order. |
+
+<br />
+
+## We build everything with ProPR
+
+Since May 2025, [2,100+ merged pull requests](https://propr.dev/proof/) across its author's products have shipped through ProPR — including [690+ merged pull requests in this repository](https://github.com/integry/propr/pulls?q=is%3Apr+is%3Amerged). Follow one from start to finish: [issue #1601](https://github.com/integry/propr/issues/1601) → [pull request #1613](https://github.com/integry/propr/pull/1613).
 
 <p align="center">
   <img src="media/readme-real-pr.png" alt="A real pull request built by ProPR: the AI Implementation Summary posted on GitHub with status, execution time, token cost, and model." width="720" />
 </p>
 
-<p align="center"><em>A real PR, planned, implemented, and reviewed by ProPR — every run posts its full record to the pull request.</em></p>
+<p align="center"><em>Every run posts a summary to the pull request. The full prompts and logs stay in the ProPR Web UI.</em></p>
 
-ProPR builds itself: since May 2025, [2,100+ merged pull requests](https://propr.dev/proof/) across its author's products have shipped through it — including [690+ merged pull requests in this repository](https://github.com/integry/propr/pulls?q=is%3Apr+is%3Amerged).
+<p align="center">
+  <img src="docs/static/img/screenshots/0.9.0/plan.png" alt="Planner Studio: review implementation tasks and refine the complete plan through chat." width="720" />
+</p>
 
-## Adopt one stage or all of them
+<p align="center"><em>Planner Studio — shape the plan before any code is written.</em></p>
 
-<details>
-<summary><strong>More screenshots</strong> — Planner Studio, dashboard, AI review</summary>
+<p align="center">
+  <img src="docs/static/img/screenshots/0.9.0/dashboard.png" alt="ProPR dashboard: activity summary, attention queue, running work, completed results and historical stats." width="720" />
+</p>
+
+<p align="center"><em>The dashboard — what is running, what needs attention, and what it cost.</em></p>
+
 <br />
-<p align="center"><img src="docs/static/img/screenshots/0.9.0/plan.png" alt="Current Planner Studio: review implementation tasks and refine the complete plan through chat." width="720" /></p>
-<p align="center"><img src="docs/static/img/screenshots/0.9.0/dashboard.png" alt="Current dashboard: activity summary, attention queue, running work, completed results and historical stats." width="720" /></p>
-<p align="center"><img src="media/readme-review.png" alt="Historical GitHub review example. Current reviews use numbered F findings and S suggestions." width="720" /></p>
-</details>
 
-ProPR is a set of stages you can adopt independently — use one or all:
+## Quickstart
 
-- **Plan** — turn an issue or idea into a reviewable implementation plan (Planner Studio)
-- **Implement** — add label to an issue and let an agent open a PR for it
-- **Review & fix** — drive existing PRs with slash commands (`/review`, `/fix`, `/ultrafix`, model routing)
-- **Operate** — monitor tasks, costs, logs, and agent capacity from the Web UI
-
-The GitHub PR and review images above are historical examples; the dashboard and Planner Studio captures show the 0.9.0 source UI with safe fixture data. Current review selection uses [F# and S# identifiers](docs/docs/features/pr-commands.md#fix).
-
-## Highlights
-
-- **[Tasks and goals](docs/docs/features/launching-work.md)**: start a single instruction or steer a long-running native agent session with corrective inputs.
-- **[Inbox and push](docs/docs/features/inbox.md)**: follow work across browser, installed PWA and desktop, with personal and repository notification controls.
-- **[MCP connections](docs/docs/features/mcp.md)**: authorize connected apps and use scoped tools for activity, plans, goals, tasks and PRs.
-
-- **Multi-agent**: Claude Code, OpenAI Codex, Google Antigravity, OpenCode, and Mistral Vibe — all first-class, selectable per issue
-- **Label-based model routing**: pick the agent/model per issue with `llm-<agent>-<model>` labels; multiple labels fan out into parallel jobs
-- **Web UI dashboard**: configure repositories, branches, labels, agents, and defaults; watch tasks, logs, commits, and cost in real time
-- **CLI control plane**: scaffold, verify, start, and stop the local Docker stack — and drive plans, issues, tasks, and repos against the backend
-- **GitHub PR automation**: slash commands, automatic state labels, and PR follow-ups
-- **Deterministic git workflow**: isolated worktrees, model-specific branches, and a strict setup → implement → finalize pipeline
-- **MCP operator surface**: connect a chat client over authenticated MCP and ask what is running right now, drill into a goal, task or PR, send a correction, reroute a model, or stop an ultrafix loop — with every call recorded in an admin-readable access log ([docs/mcp.md](docs/mcp.md))
-- **Production-ready**: Docker-isolated agent execution, Redis-backed job state, retries with backoff, and Agent Tank subscription capacity/rate-limit tracking
-
-## Quick start (recommended: CLI)
-
-You need a Linux `amd64` host with a maintained Docker Engine release, direct access to its Docker socket, **Node.js 22 or 24**, GitHub access, and a provider account for at least one coding agent. Reserve 2 vCPU, 4 GB RAM, and 20 GB of free disk for a single-task evaluation; 8 GB RAM or more is recommended for normal or concurrent use. The full Docker, platform, capacity, and network contract is in [System Requirements](https://docs.propr.dev/docs/tutorials/setup#system-requirements).
-
-Reuse a host login (`claude auth login`, `agy login`, …), create one through the agent image with `propr agent login <agent>`, or add the agent in the Web UI and log in directly to an isolated ProPR-managed credential directory.
+Open source. Self-hosted. Free.
 
 ```bash
 npm install -g propr-cli
-
-propr setup   # guided one-pass: verify host, authorize agents, connect GitHub, start
+propr setup
 ```
 
-`propr setup` is re-runnable and wraps the individual steps (`propr init stack`, `propr check`, `propr start`), which remain available for scripting.
-During interactive setup, ProPR can also install its bundled operator Agent Skill into detected tools after showing the exact destinations. Manage it separately with `propr skill install|status|remove`; non-interactive setup does not write agent homes unless `--install-skill <targets>` is explicit.
+`propr setup` verifies the host, authorizes your agents, connects GitHub and starts the stack. Then open **http://localhost:5173** and add a repository.
 
-### Desktop release candidate
+<!--
+  CLI setup video. Upload propr-cli-setup.mp4 through the GitHub web editor, then replace the linked poster below with:
+  <div align="center"><video src="https://github.com/user-attachments/assets/..." width="720" controls></video></div>
+-->
+<p align="center">
+  <a href="https://propr.dev/assets/videos/propr-cli-setup.mp4">
+    <img src="media/readme-cli-setup-poster.jpg" alt="Watch the setup walkthrough: installing propr-cli and running propr setup through to the Web UI." width="720" />
+  </a>
+</p>
 
-ProPR Desktop packages the same Web UI for `linux-x64`, `linux-arm64`, `darwin-x64`, and `darwin-arm64`. On Linux,
-first launch can guide a new, isolated local stack through Docker checks, installation, authentication, startup, and a
-normal saved-profile connection. On macOS the app makes no local-stack changes; connect it to an existing HTTPS ProPR
-instance or a loopback instance instead. Windows packaging is deferred and is not part of the first public release.
+<p align="center"><em>▶ Watch the setup walkthrough (69 seconds).</em></p>
 
-Desktop credentials are held by the operating-system credential facility, never by renderer storage. Manual endpoints,
-ProPR Connect discovery candidates, and `propr://connect` links require confirmation; a changed tunnel identity requires
-a fresh browser pairing. See the [desktop install, connection, security, and troubleshooting guide](apps/desktop/README.md)
-for unsigned internal-RC installation and the protected macOS release requirements.
+**You need:** a Linux `amd64` host with Docker, **Node.js 22 or 24**, GitHub access, and an account with at least one coding-agent provider. Allow 2 vCPU, 4 GB RAM and 20 GB of disk for a single-task evaluation; 8 GB RAM or more for regular use. See the full [system requirements](https://docs.propr.dev/docs/tutorials/setup#system-requirements).
 
-Delegating setup to an AI coding agent? Use the copyable [safe agent installation prompt](https://docs.propr.dev/docs/tutorials/setup#give-this-to-your-coding-agent) so GitHub authorization, App scope, Connect/tunnel choices, provider logins, and existing stack data stay under human control.
+| If you want to… | Go to |
+| --- | --- |
+| Follow the full local walkthrough | [Local setup](https://docs.propr.dev/docs/tutorials/setup-local) |
+| Run it for a team or in production | [Server setup](https://docs.propr.dev/docs/tutorials/setup-server) · [Secure VPS deployment](https://docs.propr.dev/docs/tutorials/setup-vps) |
+| Have your coding agent install it | [Safe agent installation prompt](https://docs.propr.dev/docs/tutorials/setup#give-this-to-your-coding-agent) |
+| Install without Node.js on the host | [Launch from the `propr/launcher` image](https://docs.propr.dev/docs/tutorials/setup) |
+| Use the desktop app (release candidate) | [Desktop guide](apps/desktop/README.md) |
+| Look around before installing | [Live demo](https://demo.propr.dev) |
 
-Then open the Web UI at **http://localhost:5173** and add a repository and an agent (`propr repo add`, `propr agent add`, or via the UI).
-
-See the [Local Setup tutorial](https://docs.propr.dev/docs/tutorials/setup-local) for the full walkthrough, [Server Setup](https://docs.propr.dev/docs/tutorials/setup-server) for shared/production hosts, and [Secure VPS Deployment](https://docs.propr.dev/docs/tutorials/setup-vps) for a hardened install.
-
-> **No Node.js on the host?** The stack can also be launched from the prebuilt `propr/launcher` image with a single `docker run`. Docker Compose is only required for source development. See [Setup](https://docs.propr.dev/docs/tutorials/setup).
-
-## Supported agents
-
-| Agent | Type | Provider | Execution image |
-|---|---|---|---|
-| Claude Code | `claude` | Anthropic | `propr/agent` |
-| Codex | `codex` | OpenAI | `propr/agent` |
-| Antigravity | `antigravity` | Google (multi-model) | `propr/agent` |
-| OpenCode | `opencode` | OpenCode (multi-provider) | `propr/agent` |
-| Mistral Vibe | `vibe` | Mistral | `propr/agent` |
-
-You supply your own provider credentials. The full model catalog, per-agent credential setup, and label formats live in [Agents & Models](https://docs.propr.dev/docs/features/agents-and-models).
-
-### Selecting a model with labels
-
-Add an `llm-<agent>-<model>` label to an issue to choose who processes it:
-
-- `llm-claude-opus55` — Claude Opus 5.5 (the default Claude model)
-- `llm-claude-fable51` — Claude Fable 5.1
-- `llm-codex-astra` — Codex GPT-6 Astra
-- `llm-opencode-big-pickle` — OpenCode Big Pickle
-- `llm-antigravity-flash38-high` — Antigravity Gemini 3.8 Flash High
-- `llm-antigravity-opus46-thinking` — Antigravity Claude Opus 4.6 Thinking
-
-Multiple model labels on one issue create one independent job (and branch) per model. Add a `base-<branch>` label to target a non-default branch.
+<br />
 
 ## How it works
 
-Each labeled issue runs through a deterministic three-phase pipeline:
+GitHub is the control plane. ProPR is a Docker stack on your server that watches your repositories and runs each task through a deterministic three-phase pipeline:
 
-1. **Pre-agent setup** — clone/update the repo, create an isolated worktree on a model-specific branch, and push it to GitHub.
-2. **AI implementation** — run the selected agent in a sandboxed container with implementation-only prompts and full issue + comment context.
-3. **Post-agent finalization** — commit changes, push, and open a pull request linked to the issue (`Closes #123`), then manage state labels.
+```
+   GitHub issue + label
+           │
+           ▼
+┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────────┐
+│  1. Setup           │   │  2. Implementation  │   │  3. Finalization    │
+│  Clone or update,   │──▶│  The selected agent │──▶│  Commit, push and   │
+│  create an isolated │   │  runs in a sandboxed│   │  open a PR linked   │
+│  worktree + branch  │   │  Docker container   │   │  to the issue       │
+└─────────────────────┘   └─────────────────────┘   └─────────────────────┘
+                                                               │
+           ┌───────────────────────────────────────────────────┘
+           ▼
+   Pull request  ◀──▶  review comments, /review, /fix, /ultrafix  ──▶  human merge
+```
 
-Branches follow `<issueId>/<model>-<sanitized-title>-<YYYYMMDD-HHMM>-<random>`, e.g. `349/claude-opus5-feat-implement-onboarding-20260529-1506-3he`.
+ProPR performs the branch, commit and push operations itself; the agent only writes code. Read more in [how the pieces fit together](https://docs.propr.dev/docs/architecture/overview) and the [security overview](https://docs.propr.dev/docs/concepts/security-overview).
 
-State labels are derived from the trigger label, so an issue labeled `AI` moves through `AI-processing` → `AI-waiting` → `AI-done` / `AI-failed-*`, while a `propr`-labeled issue uses the `propr-*` set. Configure trigger labels in the UI or via `PRIMARY_PROCESSING_LABELS`.
+<br />
+
+## ProPR and direct agent sessions
+
+You don't have to choose. Direct agents fit live exploration; ProPR fits planned development that needs a visible task history and GitHub review.
+
+|                              |                                                                                                                                   |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **Use a direct agent**       | While you are still thinking through the code: hot-reloading servers, log tailing, tight interaction with a live environment.      |
+| **Use ProPR**                | When the change needs a plan, isolated execution and a clean pull request with the diff, run summary and review in GitHub, plus the full prompts and logs in the ProPR Web UI. |
+
+**How does ProPR compare?**
+[vs Claude Code](https://propr.dev/compare/claude-code/) ·
+[vs Codex](https://propr.dev/compare/codex/) ·
+[vs GitHub Copilot](https://propr.dev/compare/github-copilot/) ·
+[vs Cursor](https://propr.dev/compare/cursor-background-agents/) ·
+[vs Devin](https://propr.dev/compare/devin/) ·
+[vs CodeRabbit](https://propr.dev/compare/coderabbit/) ·
+[all comparisons](https://propr.dev/compare/)
+
+<br />
+
+## FAQ
+
+<details>
+<summary><strong>What does it cost?</strong></summary>
+<br />
+
+ProPR is free and open source under Apache 2.0. You pay your AI provider directly, through a subscription you already have (such as Claude Pro or ChatGPT Plus) or a metered API key. ProPR never marks up tokens. The optional hosted relay, [ProPR Connect](https://propr.dev/connect/), is free for up to 3 users, and you can skip it by bringing your own GitHub App.
+
+</details>
+
+<details>
+<summary><strong>Where does my code go?</strong></summary>
+<br />
+
+Agents run on your server. Repositories, task history, logs and credentials stay there. Your code reaches the AI provider you chose, as it would if you ran that agent yourself. See the [security overview](https://docs.propr.dev/docs/concepts/security-overview) for the full data boundary, including the optional Connect relay and MCP gateway.
+
+</details>
+
+<details>
+<summary><strong>Is it safe to let agents run on their own?</strong></summary>
+<br />
+
+Each task runs away from your main checkout in its own Git worktree, branch and Docker container. Every result comes back as commits on a pull request that people can review, retry, discard, merge or revert. An optional allowlist firewall can restrict outbound access; it is off by default. Details are in [execution safety](https://docs.propr.dev/docs/features/execution-safety).
+
+</details>
+
+<details>
+<summary><strong>How is this different from running the agent in my terminal?</strong></summary>
+<br />
+
+A terminal session asks you to approve commands and edits as it goes. ProPR delegates that control to the isolated workspace and moves your approval to the pull request. Scope the task well and it works like delegating to another engineer: label the issue, walk away, review the PR.
+
+</details>
+
+<details>
+<summary><strong>Can I switch agents during the same change?</strong></summary>
+<br />
+
+Yes. A PR can start with one agent, get reviewed by another, and receive a follow-up from a third. The branch, commits and pull request give every agent the same starting point.
+
+</details>
+
+<details>
+<summary><strong>Does it work with GitLab or Bitbucket?</strong></summary>
+<br />
+
+No. ProPR is built on GitHub pull requests, review comments, status checks and comment commands. See the [roadmap](ROADMAP.md) for current direction.
+
+</details>
+
+More answers in the [full FAQ](https://docs.propr.dev/docs/faq).
+
+<br />
 
 ## Documentation
 
-| Topic | Link |
-|---|---|
-| Introduction | https://docs.propr.dev/docs/intro |
-| Feature overview | https://docs.propr.dev/docs/features/overview |
-| Local setup (recommended) | https://docs.propr.dev/docs/tutorials/setup-local |
-| Server setup | https://docs.propr.dev/docs/tutorials/setup-server |
-| Secure VPS deployment | https://docs.propr.dev/docs/tutorials/setup-vps |
-| Daily usage | https://docs.propr.dev/docs/tutorials/usage |
-| Tasks and goals | [Launch work](docs/docs/features/launching-work.md) · [Goals](docs/docs/features/goals.md) |
-| Inbox and notifications | [Guide](docs/docs/features/inbox.md) |
-| 0.9.0 preparation | [Changelog](CHANGELOG.md) · [Coverage audit](docs/release-0.9.0-audit.md) |
-| Planner Studio | https://docs.propr.dev/docs/tutorials/planner-studio |
-| Desktop application | [apps/desktop/README.md](apps/desktop/README.md) |
-| CLI reference | https://docs.propr.dev/docs/features/propr-cli |
-| Agents & models | https://docs.propr.dev/docs/features/agents-and-models |
-| Web UI guide | https://docs.propr.dev/docs/features/web-ui |
-| PR slash commands | https://docs.propr.dev/docs/features/pr-commands |
-| FAQ | https://docs.propr.dev/docs/faq |
-| Security overview | https://docs.propr.dev/docs/concepts/security-overview |
-| Troubleshooting | https://docs.propr.dev/docs/operations/troubleshooting |
-| GitHub authentication | https://docs.propr.dev/docs/operations/github-auth |
-| Deployment | https://docs.propr.dev/docs/operations/deployment |
-| Architecture | https://docs.propr.dev/docs/architecture/overview |
-| Authenticated MCP | [docs/mcp.md](docs/mcp.md) |
+| Start here | Use it | Run it |
+| --- | --- | --- |
+| [Introduction](https://docs.propr.dev/docs/intro) | [Daily usage](https://docs.propr.dev/docs/tutorials/usage) | [Deployment](https://docs.propr.dev/docs/operations/deployment) |
+| [Feature overview](https://docs.propr.dev/docs/features/overview) | [PR slash commands](https://docs.propr.dev/docs/features/pr-commands) | [GitHub authentication](https://docs.propr.dev/docs/operations/github-auth) |
+| [Local setup](https://docs.propr.dev/docs/tutorials/setup-local) | [Agents and models](https://docs.propr.dev/docs/features/agents-and-models) | [Troubleshooting](https://docs.propr.dev/docs/operations/troubleshooting) |
+| [Planner Studio](https://docs.propr.dev/docs/tutorials/planner-studio) | [CLI reference](https://docs.propr.dev/docs/features/propr-cli) | [Architecture](https://docs.propr.dev/docs/architecture/overview) |
 
-The docs site also ships inside the stack — run `propr docs` to open the bundled copy.
+The docs also ship inside the stack — run `propr docs` to open the bundled copy.
 
-## Configuration
+<br />
 
-Bootstrap credentials and infrastructure paths are set once via a `.env` file (GitHub App ID/key, OAuth, session secret, storage paths). Everything operational — repositories, branches, labels, agents, supported models, defaults — is managed in the Web UI or via the CLI.
+## Development
 
-Start from [`.env.example`](.env.example) and see [GitHub authentication](https://docs.propr.dev/docs/operations/github-auth) and [Deployment](https://docs.propr.dev/docs/operations/deployment) for the full reference.
-
-## Prebuilt images
-
-ProPR ships its prebuilt images on Docker Hub, orchestrated by the `propr/launcher` umbrella image:
-
-| Image | Contents |
-|---|---|
-| `propr/launcher` | Orchestrator that spawns the stack |
-| `propr/app` | Server — daemon / workers / API (role selected at launch) |
-| `propr/ui` | Web UI static bundle |
-| `propr/docs` | Docusaurus documentation site (optional) |
-| `propr/agent` | Unified execution container for every supported coding agent |
-
-End users must supply their own provider API credentials and accept those providers' terms. Bundled third-party attributions are preserved at `/usr/share/licenses/propr/` in each image; offline copies are in [`NOTICE`](NOTICE) and [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
-
-## Developing from source
-
-A source checkout is only needed to modify ProPR itself (requires Node.js, Redis, Git, and Docker).
+A source checkout is only needed to change ProPR itself.
 
 ```bash
+git clone https://github.com/integry/propr.git
+cd propr
 npm ci                 # install workspace dependencies
+mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe /tmp/propr-vibe-prompts  # agent credential dirs, before first start
 npm run compose:up     # build and run the full stack from source
 npm test               # run the test suite
 ```
 
-Common workspace scripts:
+Log in to each agent you plan to run before starting it, so its credential directory holds real auth state.
 
-```bash
-npm run daemon:dev     # issue-detection daemon (debug logging)
-npm run worker:dev     # job worker (debug logging)
-npm run dashboard:dev  # dashboard API
-npm run images:build   # build all Docker images locally
-npm run images:smoke   # smoke-test locally built images
-```
-
-See the [source setup tutorial](https://docs.propr.dev/docs/tutorials/setup-source) for the development flow and the [architecture docs](https://docs.propr.dev/docs/architecture/overview) for how the pieces fit together.
-
-### Project structure
-
-```
-propr/
-├── src/            # Daemon, workers, jobs, polling, GitHub handling
-├── packages/
-│   ├── core/       # Git/worktree management, agents, queue, config, DB migrations
-│   ├── api/        # Dashboard REST API, webhooks, authentication
-│   ├── cli/        # The `propr` command (published to npm as propr-cli)
-│   └── shared/     # Shared model catalog and types
-├── propr-ui/       # Web UI (React + Vite)
-├── docs/           # Docusaurus documentation site
-├── docker/         # Launcher and production app images
-├── scripts/        # Agent entrypoints, build/compose/release helpers
-└── docker-compose*.yml
-```
-
-## License
-
-ProPR is free and open source under the [Apache License 2.0](LICENSE). The optional hosted relay, [ProPR Connect](https://propr.dev/connect/), is a separate service — free for up to 3 users — and you can skip it entirely by bringing your own GitHub App.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the project structure, workspace scripts and pull request checklist, and the [source setup tutorial](https://docs.propr.dev/docs/tutorials/setup-source) for the full development flow.
 
 ## Contributing
 
-Contributions are welcome. Please follow existing code patterns, keep tests passing, update docs alongside code, and use the structured logger for output. See [`CHANGELOG.md`](CHANGELOG.md) for release history.
+Contributions are welcome — bug reports, documentation fixes, and code. Start with [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues privately as described in [SECURITY.md](SECURITY.md).
+
+## Community
+
+- [Discord](https://discord.gg/5FjuaQBud) — questions, setup help and feedback
+- [GitHub Issues](https://github.com/integry/propr/issues) — bugs and feature requests
+- [Roadmap](ROADMAP.md) — where ProPR is heading, with a public issue behind each item
+- [Changelog](CHANGELOG.md) — release history
+
+## License
+
+ProPR is free and open source under the [Apache License 2.0](LICENSE). You supply your own AI provider credentials and accept those providers' terms. Third-party attributions are in [`NOTICE`](NOTICE) and [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).

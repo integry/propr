@@ -1,3 +1,4 @@
+import { ANTIGRAVITY_MODEL_LABELS, getAntigravityCompatibilityRoute } from '../agents/impl/antigravityModelIds.js';
 /**
  * Forward migrations applied to saved agent configs on load.
  *
@@ -159,15 +160,36 @@ function updateDefaultCliVersion(agent: AgentConfig): boolean {
     return migrated;
 }
 
-function updateAntigravityDefaults(agent: AgentConfig): boolean {
+function migrateAntigravityModels(agent: AgentConfig): boolean {
     let migrated = false;
+    const models = new Set([...agent.supportedModels, ...(agent.defaultModel ? [agent.defaultModel] : []),
+        ...Object.keys(agent.modelReasoningLevels ?? {})]);
+    const ordered = [...models].sort((a, b) => Number(b === agent.defaultModel) - Number(a === agent.defaultModel));
+    for (const oldModel of ordered) {
+        const route = getAntigravityCompatibilityRoute(oldModel);
+        if (!route) continue;
+        agent.modelReasoningLevels ??= {};
+        agent.modelReasoningLevels[route.model] ??= agent.modelReasoningLevels[oldModel] ?? route.effort;
+        delete agent.modelReasoningLevels[oldModel];
+        migrated = true;
+    }
+    // Keep custom-label keys: each old ID carries its own effort and is a durable route.
+    agent.supportedModels = [...new Set(agent.supportedModels.map(id => getAntigravityCompatibilityRoute(id)?.model ?? id))];
+    if (agent.defaultModel) agent.defaultModel = getAntigravityCompatibilityRoute(agent.defaultModel)?.model ?? agent.defaultModel;
+    return migrated;
+}
 
+function updateAntigravityDefaults(agent: AgentConfig): boolean {
     if (agent.type !== 'antigravity') {
         return false;
     }
 
-    if (!agent.configPath || agent.configPath === '~/.antigravity' || agent.configPath.endsWith('/.antigravity')) {
-        agent.configPath = '~/.gemini';
+    let migrated = migrateAntigravityModels(agent);
+
+    if (!agent.configPath || /(?:^|\/)\.antigravity\/?$/.test(agent.configPath)) {
+        agent.configPath = agent.configPath
+            ? agent.configPath.replace(/\.antigravity\/?$/, '.gemini')
+            : '~/.gemini';
         migrated = true;
     }
 
@@ -255,7 +277,7 @@ function removeDeprecatedModels(agent: AgentConfig): boolean {
     // removed hosted defaults, preserving user-defined models and their defaults.
     const isRetired = (model: string) => agent.type === 'vibe'
         ? RETIRED_VIBE_MODELS.has(model)
-        : !MODEL_INFO_MAP[model];
+        : !MODEL_INFO_MAP[model] && !(agent.type === 'antigravity' && Object.hasOwn(ANTIGRAVITY_MODEL_LABELS, model));
     const validModels = agent.supportedModels.filter(m => !isRetired(m));
     const removedModels = agent.supportedModels.filter(isRetired);
     if (removedModels.length === 0) {

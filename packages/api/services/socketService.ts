@@ -1,5 +1,6 @@
 /* eslint-disable max-lines -- the Redis relay, its rooms and the per-event broadcasters are one transport boundary */
 import { ShellActivityBroadcaster } from './shellActivityBroadcaster.js';
+import { notifyGoalWaiters } from './goalWait.js';
 import { Server as SocketIOServer } from 'socket.io';
 import { Server as HttpServer } from 'http';
 import { Redis } from 'ioredis';
@@ -301,6 +302,9 @@ export class SocketService {
   private async handleGoalUpdate(
     payload: Partial<GoalUpdatePayload> & { goalId: string; ownerId?: string },
   ): Promise<void> {
+    // A wake only makes bounded goal waiters re-read the durable journal, so
+    // any frame naming a goal may deliver it, whatever else it carries.
+    notifyGoalWaiters(payload.goalId);
     if (!this.queueDeps || typeof payload.goalId !== 'string' || !payload.goalId
       || !isActivityTimestamp(payload.occurredAt)) return;
     // Rich transition frames must satisfy the PR contract. Bare invalidations

@@ -7,10 +7,7 @@ import { AGENT_MODELS } from '@propr/shared';
 const PROBE_MODELS: Record<AgentConfig['type'], string[]> = {
   claude: ['claude-haiku-4-5-20251001', ...AGENT_MODELS.claude.map(model => model.id).filter(id => id.includes('sonnet'))],
   codex: ['gpt-6-luna', 'gpt-5.6-luna', 'gpt-5.3-codex-spark', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5-nano', 'gpt-5-mini', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'],
-  antigravity: [
-    ...AGENT_MODELS.antigravity.map(model => model.id).filter(id => id.includes('flash') && id.endsWith('-low')),
-    ...AGENT_MODELS.antigravity.map(model => model.id).filter(id => id.includes('flash') && !id.endsWith('-low')),
-  ],
+  antigravity: AGENT_MODELS.antigravity.map(model => model.id).filter(id => id.includes('flash')),
   opencode: ['opencode-ling-3.0-flash-fin-free', 'opencode-nemotron-3.5-lightning-free', 'opencode-big-pickle', ...AGENT_MODELS.opencode.map(model => model.id)],
   vibe: ['mistral-medium-3.5'],
 };
