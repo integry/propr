@@ -60,7 +60,7 @@ ProPR is an **open-source, self-hosted platform** that manages AI coding agents 
 |        | Step                        | What happens                                                                                             |
 | ------ | --------------------------- | -------------------------------------------------------------------------------------------------------- |
 | **01** | Label an issue              | Add the `AI` label to a normal GitHub issue. Add a model label such as `llm-claude-opus55` to pick the agent. |
-| **02** | Get a pull request          | The agent works in its own Docker container and Git worktree, then ProPR opens a PR with the diff, logs and token cost. |
+| **02** | Get a pull request          | The agent works in its own Docker container and Git worktree, then ProPR opens a PR with the diff and a run summary: status, duration, token cost and model. Full prompts and logs stay in the ProPR Web UI. |
 | **03** | Review, refine and merge    | Leave ordinary review comments or use `/review`, `/fix` and `/ultrafix`. The agent pushes follow-up commits. You make the merge decision. |
 
 <br />
@@ -159,7 +159,7 @@ Epic mode runs a multi-issue plan in order. Each PR merges before the next imple
 
 | Without ProPR | With ProPR |
 | --- | --- |
-| ❌ Agent output lives in terminal scrollback and chat history that nobody else can review. | ✅ Every change is a pull request with the diff, logs, cost and discussion in GitHub. |
+| ❌ Agent output lives in terminal scrollback and chat history that nobody else can review. | ✅ Every change is a pull request with the diff, run summary and discussion in GitHub. Full prompts and logs are in the ProPR Web UI on your server. |
 | ❌ You sit in a terminal approving commands and edits one at a time. | ✅ Approval moves to the pull request. Label the issue, walk away, review the result. |
 | ❌ Parallel agent sessions step on each other's files and branches. | ✅ Each run has its own branch, worktree and container. |
 | ❌ A hosted agent service needs your code on its servers and bills tokens at its own rates. | ✅ ProPR runs on your server with your own subscriptions or API keys, at no markup. |
@@ -176,7 +176,7 @@ Since May 2025, [2,100+ merged pull requests](https://propr.dev/proof/) across i
   <img src="media/readme-real-pr.png" alt="A real pull request built by ProPR: the AI Implementation Summary posted on GitHub with status, execution time, token cost, and model." width="720" />
 </p>
 
-<p align="center"><em>Every run posts its full record to the pull request.</em></p>
+<p align="center"><em>Every run posts a summary to the pull request. The full prompts and logs stay in the ProPR Web UI.</em></p>
 
 <p align="center">
   <img src="docs/static/img/screenshots/0.9.0/plan.png" alt="Planner Studio: review implementation tasks and refine the complete plan through chat." width="720" />
@@ -259,7 +259,7 @@ You don't have to choose. Direct agents fit live exploration; ProPR fits planned
 |                              |                                                                                                                                   |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | **Use a direct agent**       | While you are still thinking through the code: hot-reloading servers, log tailing, tight interaction with a live environment.      |
-| **Use ProPR**                | When the change needs a plan, isolated execution and a clean pull request with the prompt, diff, logs, cost and review in GitHub. |
+| **Use ProPR**                | When the change needs a plan, isolated execution and a clean pull request with the diff, run summary and review in GitHub, plus the full prompts and logs in the ProPR Web UI. |
 
 **How does ProPR compare?**
 [vs Claude Code](https://propr.dev/compare/claude-code/) ·
