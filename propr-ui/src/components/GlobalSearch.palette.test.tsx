@@ -69,7 +69,8 @@ describe('GlobalSearch palette', () => {
     const preview = screen.getByTestId('global-search-preview');
     expect(within(preview).getByRole('heading')).toHaveTextContent('Add MCP connect contract reference');
     expect(within(preview).getByText('PR #2480')).toBeInTheDocument();
-    expect(within(preview).getByText('gpt-6-astra')).toBeInTheDocument();
+    expect(within(preview).getByText('GPT-6 Astra')).toBeInTheDocument();
+    expect(within(preview).queryByText('gpt-6-astra')).not.toBeInTheDocument();
     expect(input).toHaveAttribute('aria-activedescendant', 'global-search-option-task_task-1');
 
     fireEvent.keyDown(input, { key: 'Enter' });

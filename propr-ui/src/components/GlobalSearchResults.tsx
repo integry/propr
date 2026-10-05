@@ -8,6 +8,7 @@ import { ScoreBadge } from './TaskList/ScoreBadge';
 import { CodeChip } from './ui/CodeChip';
 import { ProviderLogo } from './ui/ProviderLogo';
 import { RepositoryChip } from './ui/RepositoryChip';
+import { formatModelName } from '../utils/modelDisplay';
 import {
   SearchItem,
   SECTION_LABELS,
@@ -173,9 +174,9 @@ const TaskDetails: React.FC<{ task: TaskSearchResult }> = ({ task }) => {
       <PreviewRow label="Status"><StatusPill status={task.status} /></PreviewRow>
       {model && (
         <PreviewRow label="Model">
-          <span className="inline-flex min-w-0 items-center gap-1.5 font-mono">
+          <span className="inline-flex min-w-0 items-center gap-1.5" title={model}>
             <ProviderLogo provider={model} className="h-3.5 w-3.5 flex-shrink-0 text-slate-500" />
-            <span className="truncate">{model}</span>
+            <span className="truncate">{formatModelName(model)}</span>
           </span>
         </PreviewRow>
       )}

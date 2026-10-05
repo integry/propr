@@ -62,6 +62,7 @@ test('global search opens a master-preview palette with category scopes', async 
   await expect(preview.getByRole('heading')).toHaveText(tasks[1].title);
   await expect(preview.getByText('Failed', { exact: true })).toBeVisible();
   await expect(preview.getByTestId('global-search-failure').locator('code')).toHaveText('src/mcp/activity.ts');
+  await expect(preview.getByText('GPT-6 Astra', { exact: true })).toBeVisible();
   await captureTarget(page.locator('body'), 'global-search-palette-tasks');
 
   // Shift+Enter runs the active scope's full search from the keyboard.
