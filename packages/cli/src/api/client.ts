@@ -38,8 +38,18 @@ const DEFAULT_TIMEOUT = 30000;
 const GET_REQUEST_ATTEMPTS = 3;
 const GET_RETRY_BASE_DELAY_MS = 250;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** Resolves after `ms`, or as soon as `signal` aborts so a cancelled request never sits in a retry delay. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**
@@ -211,7 +221,7 @@ export class ApiClient {
             : null;
 
         if (retryableError && attempt < maxAttempts) {
-          await sleep(GET_RETRY_BASE_DELAY_MS * attempt);
+          await sleep(GET_RETRY_BASE_DELAY_MS * attempt, signal);
           continue;
         }
 

@@ -310,13 +310,20 @@ Every goal command accepts `--json` and prints a versioned document: `{ "version
 | `--until <condition>` | `completed`, `failed`, `cancelled` (the goal's persisted result), `paused` (a pause the worker confirmed), `terminal` (any of completed, failed or cancelled) or `checkpoint` (a checkpoint published after the cursor). Omit it to wait for any new goal event. |
 | `--after-cursor <cursor>` | Only count events after this cursor, as printed by an earlier wait. |
 | `--timeout <seconds>` | Overall deadline, `0`–`86400` (default `300`). `0` checks once without waiting. |
-| `-j, --json` | Print a `goal-wait` document: `outcome`, `condition`, `cursor`, `matchedImmediately`, the triggering `event`, the current `goal` projection, `requests` and `exitCode`. |
+| `-j, --json` | Print a `goal-wait` document: `outcome`, `condition`, `cursor`, `matchedImmediately`, the triggering `event`, the current `goal` projection, `requests` and `exitCode`. The timeout and Ctrl-C variants are described below. |
 
 Requested controls never satisfy a wait: `--until paused` ignores a pause that has only been requested, `--until cancelled` ignores a requested cancellation, and a finished child task or an idle agent never counts as goal completion.
 
 **Cursors.** Without `--after-cursor`, a state condition that already holds matches immediately (`matchedImmediately: true`); otherwise only events after the current boundary count, so `--until checkpoint` never reports a checkpoint that already existed. With `--after-cursor`, only newer events count, and transitions that happened while nothing was waiting are replayed in order. Every result prints a cursor: pass it to the next wait to continue without missing or repeating a transition. A cursor for a different goal, a malformed cursor or one this instance no longer has history for fails with `invalid_cursor` or `cursor_expired`; re-run without `--after-cursor` and check `propr goal inspect`.
 
-**Bounded requests and retries.** The CLI chains server requests of at most 30 seconds each until the deadline, carrying the cursor between them. Transient network failures and 502/503/504 responses are retried with the same cursor, so re-running a wait with the last printed cursor is always safe.
+**Bounded requests and retries.** The CLI chains server requests of at most 30 seconds each until the deadline, carrying the cursor between them. Without `--after-cursor`, a first non-blocking request fixes the starting cursor, so a retry never moves the boundary past a checkpoint published while the wait was in flight. Transient network failures and 502/503/504 responses are retried with the same cursor, so re-running a wait with the last printed cursor is always safe. The deadline is enforced even while a request or retry is pending: at `--timeout`, plus up to 2 seconds for a reply already in flight, the CLI abandons the request and reports `timed_out` with the last cursor.
+
+**Concurrency.** One user may hold at most 16 open waits on each API server. The limit is shared with MCP `wait_goal`, so CLI follow loops and MCP agents count together; a wait over the limit fails with HTTP 429 and reports how many are open.
+
+**JSON documents.** A completed wait prints the full document above. Two variants omit information:
+
+- `timed_out` before any request completed (for example an unresponsive server): `goal` is `null`, and `cursor` is `null` unless `--after-cursor` was given.
+- Ctrl-C prints only `{ "version": 1, "kind": "goal-wait", "goalId", "outcome": "interrupted", "condition", "cursor", "exitCode": 130 }`. It has no `event`, `goal`, `matchedImmediately` or `requests`, and `cursor` is `null` when no request completed and no `--after-cursor` was given.
 
 **Exit codes:** `0` matched, `2` timed out (the goal did not fail; retry with the printed cursor), `3` unreachable (the goal ended in a state that can never match, for example `--until paused` on a completed goal), `130` interrupted with Ctrl-C (the last cursor is printed), `1` error.
 

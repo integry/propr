@@ -641,3 +641,31 @@ test("Ctrl-C stops waiting, releases the request and prints a resumable cursor",
   assert.match(stderr.join("\n"), /--until completed --after-cursor gwc1\.progress/);
   assert.equal(process.listenerCount("SIGINT"), sigintListeners, "the SIGINT handler is removed");
 });
+
+test("goal wait exits as timed out at its deadline when the server never answers", async () => {
+  const stdout: string[] = [];
+  let exitCode: number | undefined;
+  let aborted = false;
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => await new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => { aborted = true; reject(Object.assign(new Error("aborted"), { name: "AbortError" })); });
+  })) as typeof fetch;
+  console.log = (...values: unknown[]) => { stdout.push(values.map(String).join(" ")); };
+  process.exit = ((code?: string | number | null) => {
+    exitCode = Number(code ?? 0);
+    throw new CommandExit(exitCode);
+  }) as typeof process.exit;
+  const started = Date.now();
+  try {
+    await createGoalCommand().parseAsync(["wait", "goal-1", "--until", "checkpoint", "--timeout", "0", "--json"], { from: "user" });
+  } catch (error) {
+    if (!(error instanceof CommandExit)) throw error;
+  }
+  assert.ok(Date.now() - started < 5_000, "the reply grace bounds the wait, not the HTTP timeout");
+  assert.equal(aborted, true);
+  assert.equal(exitCode, 2);
+  const output = JSON.parse(stdout.join("\n"));
+  assert.equal(output.outcome, "timed_out");
+  assert.equal(output.goal, null);
+  assert.equal(output.cursor, null, "no request completed and no cursor was supplied");
+  assert.equal(output.exitCode, 2);
+});

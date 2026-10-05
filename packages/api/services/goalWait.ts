@@ -8,6 +8,13 @@
  * taken from persisted rows. A waiter registers for wake-ups before its first
  * read, so a transition that commits between the read and the wait still wakes
  * it, and a slow fallback poll covers a notification that never arrives.
+ *
+ * Each decision is taken against one snapshot bound: the goal's newest journal
+ * sequence read first. SQLite serializes writers and assigns sequences in
+ * commit order, so every event at or below that bound is already visible and
+ * the prefix never changes. Immediate matches, event matching and terminal
+ * reachability are all evaluated within that prefix, so a transition committed
+ * between two reads is never judged by one query and missed by another.
  */
 import { EventEmitter } from 'node:events';
 import type { Knex } from 'knex';
@@ -25,7 +32,11 @@ import {
 
 /** Fallback re-read interval when no notification arrives. Not a busy poll. */
 export const GOAL_WAIT_POLL_INTERVAL_MS = 2_500;
-/** Concurrent waits one owner may hold open on this process. */
+/**
+ * Concurrent waits one owner may hold open on this API process. The count is
+ * shared by REST (`propr goal wait`) and MCP `wait_goal`, and each API replica
+ * keeps its own count.
+ */
 export const GOAL_WAIT_MAX_CONCURRENT_PER_OWNER = 16;
 const EVENT_PAGE = 100;
 const CURSOR_PREFIX = 'gwc1.';
@@ -250,8 +261,9 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
   const limit = options.maxConcurrentPerOwner ?? GOAL_WAIT_MAX_CONCURRENT_PER_OWNER;
   const active = activeByOwner.get(ownerId) ?? 0;
   if (active >= limit) {
-    throw new GoalWaitError('WAIT_LIMIT', `At most ${limit} goal waits may be open at once.`, 429,
-      'Let an existing wait finish or cancel it before starting another.');
+    throw new GoalWaitError('WAIT_LIMIT',
+      `At most ${limit} goal waits may be open at once per owner on this server; ${active} are open across propr goal wait and MCP wait_goal.`, 429,
+      'Let an existing wait finish or cancel it before starting another. The limit counts CLI and MCP waits together.');
   }
   activeByOwner.set(ownerId, active + 1);
 
@@ -272,8 +284,21 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
     return goal;
   };
 
-  const latestLifecycleState = async (goal: GoalWaitGoalRow): Promise<GoalWaitLifecycleState> => {
-    const latest = await db('goal_events').where({ goal_id: goalId, kind: 'lifecycle' }).orderBy('sequence', 'desc').first('state');
+  /** Newest journal position for this goal: the snapshot bound for one round of decisions. */
+  const journalBound = async (): Promise<number> => {
+    const newest = await db('goal_events').where({ goal_id: goalId }).max({ sequence: 'sequence' }).first();
+    return Number(newest?.sequence ?? 0);
+  };
+
+  /** Newest lifecycle event, optionally at or below a snapshot bound. */
+  const lifecycleEvent = async (bound?: number): Promise<GoalEventRow | undefined> => {
+    const query = eventQuery(db, goalId).where('goal_events.kind', 'lifecycle');
+    if (bound !== undefined) query.where('goal_events.sequence', '<=', bound);
+    return await query.orderBy('goal_events.sequence', 'desc').first() as GoalEventRow | undefined;
+  };
+
+  const latestLifecycleState = async (goal: GoalWaitGoalRow, bound?: number): Promise<GoalWaitLifecycleState> => {
+    const latest = await lifecycleEvent(bound);
     return (latest?.state as GoalWaitLifecycleState | undefined) ?? goalWaitLifecycleState(goal);
   };
 
@@ -285,7 +310,7 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
     return {
       outcome: result.outcome,
       condition: until ?? null,
-      // An immediate match resumes from the captured boundary, never from an older event.
+      // An immediate match resumes from the captured boundary, which is at or after the event it reports.
       cursor: encodeGoalWaitCursor(goalId, result.event && !result.matchedImmediately ? Number(result.event.sequence) : result.boundary),
       event: result.event ? eventView(result.event) : null,
       matchedImmediately: result.matchedImmediately ?? false,
@@ -300,19 +325,21 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
     let boundary: number;
     if (options.afterCursor !== undefined) {
       boundary = decodeGoalWaitCursor(options.afterCursor, goalId);
-      const issued = await db('goal_events').where({ goal_id: goalId, sequence: boundary }).first('sequence');
-      if (!issued) {
-        const newest = await db('goal_events').max({ sequence: 'sequence' }).first();
-        if (boundary > Number(newest?.sequence ?? 0)) throw cursorError('CURSOR_INVALID', 'afterCursor is ahead of this instance\'s goal history.');
+      const issued = await db('goal_events').where({ sequence: boundary }).first('goal_id');
+      if (!issued || issued.goal_id !== goalId) {
+        // A position recorded for another goal was never issued for this one.
+        if (issued || boundary > await journalBound()) {
+          throw cursorError('CURSOR_INVALID', 'afterCursor does not match this goal\'s history.');
+        }
         throw cursorError('CURSOR_EXPIRED', 'afterCursor refers to goal history that is no longer available.', 410);
       }
     } else {
-      // Capture the current boundary; only events after it count as new.
-      const latest = await eventQuery(db, goalId).orderBy('goal_events.sequence', 'desc').first() as GoalEventRow | undefined;
-      boundary = Number(latest?.sequence ?? 0);
+      // Capture the current boundary; only events after it count as new. The
+      // immediate check reads the state as of that boundary, so a transition
+      // committed after it is reported later as an event, with its own cursor.
+      boundary = await journalBound();
       if (until && until !== 'checkpoint') {
-        const lifecycle = await eventQuery(db, goalId).where('goal_events.kind', 'lifecycle')
-          .orderBy('goal_events.sequence', 'desc').first() as GoalEventRow | undefined;
+        const lifecycle = await lifecycleEvent(boundary);
         const state = lifecycle?.state ?? goalWaitLifecycleState(goal);
         if (goalWaitStateMatches(until, state)) {
           return await finish({ outcome: 'matched', boundary, event: lifecycle, matchedImmediately: true });
@@ -322,14 +349,19 @@ export async function waitForGoal(options: GoalWaitOptions): Promise<GoalWaitRes
 
     for (;;) {
       woken = false;
+      // Fix the snapshot first: events and reachability are judged within it.
+      const bound = await journalBound();
       const events = await eventQuery(db, goalId).where('goal_events.sequence', '>', boundary)
+        .where('goal_events.sequence', '<=', bound)
         .orderBy('goal_events.sequence', 'asc').limit(EVENT_PAGE) as GoalEventRow[];
       for (const event of events) {
         if (eventQualifies(event, until)) return await finish({ outcome: 'matched', boundary, event });
         boundary = Number(event.sequence);
       }
       if (events.length === EVENT_PAGE) continue;
-      if (!goalWaitConditionReachable(until, await latestLifecycleState(goal))) {
+      // Every event through the bound has been examined and none qualified.
+      boundary = Math.max(boundary, bound);
+      if (!goalWaitConditionReachable(until, await latestLifecycleState(goal, bound))) {
         return await finish({ outcome: 'unreachable', boundary });
       }
       const remaining = deadline - Date.now();

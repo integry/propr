@@ -30,6 +30,7 @@ import {
   sendGoalInput,
   setGoalModel,
   waitGoalUntil,
+  GOAL_WAIT_REPLY_GRACE_MS,
   type CreateGoalRequest,
   type Goal,
   type GoalAttentionEntry,
@@ -536,18 +537,24 @@ function printGoalWait(goalId: string, result: GoalWaitChainResult): void {
   if (result.outcome === "matched") {
     const what = result.event?.kind === "checkpoint"
       ? `checkpoint ${result.event.checkpoint?.commitSha ?? result.event.checkpoint?.id ?? ""}`.trim()
-      : result.event?.state ?? result.goal.lifecycleState;
+      : result.event?.state ?? result.goal?.lifecycleState;
     console.log(`Matched ${condition}: ${what}${result.matchedImmediately ? " (already true)" : ""}.`);
   } else if (result.outcome === "unreachable") {
-    console.log(`Cannot match ${condition}: the goal is ${result.goal.lifecycleState}.`);
+    console.log(`Cannot match ${condition}: the goal is ${result.goal?.lifecycleState}.`);
+  } else if (!result.goal) {
+    console.log(`Timed out waiting for ${condition} before the server answered. This says nothing about the goal's state.`);
   } else {
     console.log(`Timed out waiting for ${condition}. The goal is ${result.goal.lifecycleState}; it has not failed.`);
   }
-  console.log(`Goal:   ${goalId}${result.goal.title ? ` (${result.goal.title})` : ""}`);
-  console.log(`State:  ${result.goal.lifecycleState}${result.goal.resultState ? ` (result: ${result.goal.resultState})` : ""}`);
-  if (result.goal.failureReason) console.log(`Failure: ${result.goal.failureReason}`);
-  if (result.goal.finalPr) console.log(`PR:     #${result.goal.finalPr.number}${result.goal.finalPr.url ? ` ${result.goal.finalPr.url}` : ""}`);
-  console.log(`Cursor: ${result.cursor}`);
+  if (!result.goal) {
+    console.log(`Goal:   ${goalId}`);
+  } else {
+    console.log(`Goal:   ${goalId}${result.goal.title ? ` (${result.goal.title})` : ""}`);
+    console.log(`State:  ${result.goal.lifecycleState}${result.goal.resultState ? ` (result: ${result.goal.resultState})` : ""}`);
+    if (result.goal.failureReason) console.log(`Failure: ${result.goal.failureReason}`);
+    if (result.goal.finalPr) console.log(`PR:     #${result.goal.finalPr.number}${result.goal.finalPr.url ? ` ${result.goal.finalPr.url}` : ""}`);
+  }
+  if (result.cursor) console.log(`Cursor: ${result.cursor}`);
 }
 
 function parseIdempotencyKey(value: string | undefined): string {
@@ -1113,10 +1120,16 @@ only newer events count. Every result prints a cursor: pass it to the next
 wait to resume without missing or repeating a transition. A finished child
 task or an idle agent never counts as goal completion.
 
-The wait chains bounded server requests (${GOAL_WAIT_MAX_TIMEOUT_SECONDS}s each) until --timeout. Transient
-network failures are retried with the same cursor, so re-running a wait with
-the last printed cursor is always safe. Ctrl-C only stops waiting; the goal
-keeps running.
+The wait chains bounded server requests (${GOAL_WAIT_MAX_TIMEOUT_SECONDS}s each) until --timeout. Without
+--after-cursor, a first non-blocking request establishes the cursor, so
+retries never move the starting boundary. Transient network failures are
+retried with the same cursor, so re-running a wait with the last printed
+cursor is always safe. At --timeout (plus ${GOAL_WAIT_REPLY_GRACE_MS / 1000}s for a reply already in
+flight) the wait stops even if the server has not answered, and exits ${GOAL_WAIT_EXIT_CODES.timed_out}
+with the last cursor. Ctrl-C only stops waiting; the goal keeps running.
+
+The limit of concurrent waits per user is shared with MCP wait_goal and
+counted per API server.
 
 Exit codes:
   ${GOAL_WAIT_EXIT_CODES.matched}    matched
@@ -1128,6 +1141,12 @@ Exit codes:
 JSON:
   { "version": 1, "kind": "goal-wait", "goalId", "outcome": "matched" | "timed_out" | "unreachable",
     "condition", "cursor", "matchedImmediately", "event", "goal", "requests", "exitCode" }
+  "goal" is null, and "cursor" may be null, when the deadline passed before any
+  request completed.
+  Ctrl-C prints a shorter document with only these fields:
+  { "version": 1, "kind": "goal-wait", "goalId", "outcome": "interrupted", "condition",
+    "cursor", "exitCode": ${GOAL_WAIT_EXIT_CODES.interrupted} }
+  "cursor" is null when no request completed and no --after-cursor was given.
 
 Examples:
   propr goal wait <id> --until terminal --timeout 3600

@@ -19,7 +19,11 @@
  * the cancelled result.
  */
 
-/** Lifecycle state of a goals row, evaluated against NEW or OLD in a trigger. */
+/**
+ * Lifecycle state of a goals row, evaluated against NEW or OLD in a trigger.
+ * Must stay identical to `goalWaitLifecycleState` in @propr/shared; a resumed
+ * goal reads `running` (started_at is kept) before a worker claims it.
+ */
 const lifecycleState = row => `CASE
   WHEN ${row}.result_state IN ('completed', 'failed', 'cancelled') THEN ${row}.result_state
   WHEN ${row}.desired_state = 'cancelled' THEN 'cancelling'

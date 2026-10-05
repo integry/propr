@@ -114,6 +114,13 @@ export interface GoalWaitLifecycleColumns {
 /**
  * The journal lifecycle state of a goal row. Mirrors the `goal_events` trigger
  * expression exactly; the journal remains authoritative for waits.
+ *
+ * After a resume re-enqueues an attempt, `claimed_at` is cleared but
+ * `started_at` stays set, so the state goes from `resuming` straight to
+ * `running` before a worker claims the attempt, and the later claim appends
+ * no event. This matches `goalActivityState`. A `queued -> running`
+ * distinction on resume would require changing this function and the trigger
+ * expression in `20261004000000_create_goal_events.js` together.
  */
 export function goalWaitLifecycleState(goal: GoalWaitLifecycleColumns): GoalWaitLifecycleState {
   if (goal.result_state === 'completed' || goal.result_state === 'failed' || goal.result_state === 'cancelled') return goal.result_state;

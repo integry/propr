@@ -9,9 +9,10 @@ import {
   resolveIdempotencyKey,
   sendGoalInput,
   setGoalModel,
+  waitGoalUntil,
 } from "./goals.js";
 import { ApiClient } from "./client.js";
-import { ApiError, NetworkError } from "./errors.js";
+import { ApiError, NetworkError, RequestCancelledError } from "./errors.js";
 import type { ConfigManager } from "../config/index.js";
 
 interface RecordedRequest {
@@ -225,6 +226,134 @@ test("list and input history requests carry filters and bounded pages", async ()
     assert.deepEqual(Object.fromEntries(requests[1].url.searchParams), { offset: "0", limit: "20" });
     assert.equal(requests[2].url.pathname, "/api/goals/goal-1/inputs");
     assert.deepEqual(Object.fromEntries(requests[2].url.searchParams), { offset: "5", limit: "5" });
+  } finally {
+    restore();
+  }
+});
+
+/** A client whose responder may also leave a request hanging until it is aborted. */
+function waitClient(responder: (url: URL, attempt: number) => { status?: number; body?: unknown } | Error | "hang") {
+  const requests: URL[] = [];
+  const aborted: number[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    requests.push(url);
+    const attempt = requests.length;
+    const result = responder(url, attempt);
+    if (result === "hang") {
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          aborted.push(attempt);
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        });
+      });
+    }
+    if (result instanceof Error) throw result;
+    return new Response(JSON.stringify(result.body ?? {}), {
+      status: result.status ?? 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  const configManager = { getRemoteUrl: () => "http://propr.test", getGithubToken: () => "token" } as unknown as ConfigManager;
+  return { client: new ApiClient(configManager), requests, aborted, restore: () => { globalThis.fetch = originalFetch; } };
+}
+
+const waitGoal = {
+  id: "goal-1", repository: "acme/repo", title: null, lifecycleState: "running", requestedState: "running", resultState: null,
+  terminal: false, goalCompleted: false, pauseConfirmed: false, currentTaskId: null, checkpoint: { count: 0, lastAt: null },
+  finalPr: null, failureReason: null, updatedAt: null, completedAt: null,
+};
+const waitResponse = (overrides: Record<string, unknown> = {}) => ({
+  outcome: "timed_out", condition: "checkpoint", cursor: "gwc1.base", event: null, matchedImmediately: false,
+  goal: waitGoal, waitedMs: 0, timeoutSeconds: 0, ...overrides,
+});
+const checkpointMatch = waitResponse({
+  outcome: "matched", cursor: "gwc1.checkpoint",
+  event: { cursor: "gwc1.checkpoint", sequence: 9, kind: "checkpoint", state: null, previousState: null, checkpoint: null, occurredAt: "now" },
+});
+
+test("waitGoalUntil stops at the deadline while a request is unanswered and reports a timeout with the last cursor", async () => {
+  const { client, requests, aborted, restore } = waitClient(() => "hang");
+  const started = Date.now();
+  try {
+    const result = await waitGoalUntil("goal-1", { until: "checkpoint", afterCursor: "gwc1.keep", deadline: Date.now() + 100 },
+      { client, replyGraceMs: 50 });
+    assert.ok(Date.now() - started < 1_000, "the unanswered request is abandoned at the deadline, not after its HTTP timeout");
+    assert.equal(result.outcome, "timed_out");
+    assert.equal(result.cursor, "gwc1.keep");
+    assert.equal(result.goal, null, "no request completed, so there is no goal projection");
+    assert.equal(result.event, null);
+    assert.deepEqual(aborted, [1], "the in-flight request is aborted");
+    assert.equal(requests.length, 1);
+  } finally {
+    restore();
+  }
+});
+
+test("waitGoalUntil's deadline also interrupts HTTP and wait-chain retry delays", async () => {
+  const network = waitClient(() => new TypeError("fetch failed"));
+  let started = Date.now();
+  try {
+    const result = await waitGoalUntil("goal-1", { afterCursor: "gwc1.keep", deadline: Date.now() + 100 }, { client: network.client, replyGraceMs: 50 });
+    assert.equal(result.outcome, "timed_out");
+    assert.equal(result.cursor, "gwc1.keep");
+    assert.ok(Date.now() - started < 500, "the HTTP client's retry backoff is abandoned at the deadline");
+  } finally {
+    network.restore();
+  }
+
+  const gateway = waitClient((_url, attempt) => attempt === 1 ? { body: waitResponse({ cursor: "gwc1.progress" }) } : { status: 503, body: {} });
+  started = Date.now();
+  try {
+    const result = await waitGoalUntil("goal-1", { afterCursor: "gwc1.keep", deadline: Date.now() + 150 },
+      { client: gateway.client, replyGraceMs: 50, retryDelayMs: 60_000 });
+    assert.equal(result.outcome, "timed_out");
+    assert.equal(result.cursor, "gwc1.progress", "the last cursor the server returned is kept");
+    assert.equal(result.goal?.lifecycleState, "running", "the last projection is kept when one was received");
+    assert.ok(Date.now() - started < 1_000);
+  } finally {
+    gateway.restore();
+  }
+});
+
+test("Ctrl-C during a wait-chain retry delay stops at once and is distinguished from the deadline", async () => {
+  const { client, requests, restore } = waitClient(() => ({ status: 503, body: {} }));
+  const controller = new AbortController();
+  const started = Date.now();
+  setTimeout(() => controller.abort(), 30);
+  try {
+    await assert.rejects(
+      waitGoalUntil("goal-1", { afterCursor: "gwc1.keep", deadline: Date.now() + 60_000 }, { client, signal: controller.signal, retryDelayMs: 60_000 }),
+      RequestCancelledError,
+    );
+    assert.ok(Date.now() - started < 1_000, "the backoff does not delay interruption");
+    assert.equal(requests.length, 1, "no request follows the interruption");
+  } finally {
+    restore();
+  }
+});
+
+test("without a cursor, a non-blocking baseline request fixes the boundary every blocking retry keeps", async () => {
+  // Attempt 1 is the baseline. The first blocking reply is lost three times
+  // (exhausting the HTTP client's retries), then the wait-chain retry succeeds.
+  const { client, requests, restore } = waitClient((_url, attempt) => {
+    if (attempt === 1) return { body: waitResponse() };
+    if (attempt <= 4) return new TypeError("socket hang up");
+    return { body: checkpointMatch };
+  });
+  const cursors: string[] = [];
+  try {
+    const result = await waitGoalUntil("goal-1", { until: "checkpoint", deadline: Date.now() + 60_000 },
+      { client, retryDelayMs: 1, onCursor: (cursor) => cursors.push(cursor) });
+    assert.equal(result.outcome, "matched");
+    assert.equal(result.cursor, "gwc1.checkpoint");
+    assert.equal(requests[0].searchParams.get("afterCursor"), null);
+    assert.equal(requests[0].searchParams.get("timeoutSeconds"), "0", "the cursorless request never blocks");
+    assert.deepEqual(requests.slice(1).map((url) => url.searchParams.get("afterCursor")), ["gwc1.base", "gwc1.base", "gwc1.base", "gwc1.base"],
+      "every blocking attempt, including HTTP and wait-chain retries, keeps the baseline cursor");
+    assert.ok(requests.slice(1).every((url) => Number(url.searchParams.get("timeoutSeconds")) > 0));
+    assert.deepEqual(cursors, ["gwc1.base", "gwc1.checkpoint"]);
   } finally {
     restore();
   }

@@ -555,9 +555,13 @@ read the goal with `get_goal`.
 
 Every call re-checks repository authorization and goal ownership, and an open
 wait re-checks ownership and the grant before each read, so a revoked grant
-stops receiving events. Cancelling the MCP request or closing the HTTP
-connection releases the wait; it never pauses or cancels the goal. A client may
-hold at most 16 concurrent waits (`WAIT_LIMIT`).
+stops receiving events. Closing the HTTP connection releases the wait; it never
+pauses or cancels the goal. The endpoint is stateless, so a
+`notifications/cancelled` message arrives on a separate request and cannot reach
+an open wait: disconnecting is the way to cancel one early. One user may hold at
+most 16 concurrent waits on each API server (`WAIT_LIMIT`, HTTP 429). The count
+is shared with `propr goal wait`, so CLI follow loops and MCP waits draw on the
+same 16, and the error message reports how many are open.
 
 Before sending a correction, read what has already been sent with
 `list_goal_inputs`, then:

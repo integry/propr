@@ -55,6 +55,30 @@ function wait(options: Partial<GoalWaitOptions> = {}) {
   return waitForGoal({ db, ownerId, goalId, repository, timeoutSeconds: 0.3, pollIntervalMs: 25, ...options });
 }
 
+/**
+ * A view of `db` that commits `write` immediately before the first journal
+ * query whose SQL matches `pattern` executes, simulating a worker commit
+ * landing between two of the waiter's awaited reads.
+ */
+function interleaveBeforeQuery(pattern: RegExp, write: () => Promise<unknown>): Knex {
+  let pending = true;
+  return new Proxy(db, {
+    apply(target, thisArg, args: unknown[]) {
+      const builder = Reflect.apply(target, thisArg, args) as Knex.QueryBuilder;
+      if (args[0] !== 'goal_events') return builder;
+      const run = builder.then.bind(builder);
+      Object.assign(builder, {
+        then(onFulfilled?: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) {
+          if (!pending || !pattern.test(builder.toString())) return run(onFulfilled, onRejected);
+          pending = false;
+          return write().then(() => run(onFulfilled, onRejected), onRejected);
+        },
+      });
+      return builder;
+    },
+  });
+}
+
 const journal = async (id = goalId) =>
   (await db('goal_events').where({ goal_id: id }).orderBy('sequence')).map(row => row.kind === 'checkpoint' ? `checkpoint:${row.checkpoint_id}` : row.state);
 
@@ -265,9 +289,51 @@ test('invalid, wrong-goal, foreign and expired cursors fail with recovery instru
   await rejects(foreign, 'CURSOR_WRONG_GOAL');
   await rejects(encodeGoalWaitCursor(goalId, 9_999_999), 'CURSOR_INVALID');
   const sequence = Number(JSON.parse(Buffer.from(own.slice(5), 'base64url').toString()).s);
+  // This goal's ID with another goal's position was never issued for this goal.
+  const foreignSequence = Number(JSON.parse(Buffer.from(foreign.slice(5), 'base64url').toString()).s);
+  await rejects(encodeGoalWaitCursor(goalId, foreignSequence), 'CURSOR_INVALID');
   await update({ desired_state: 'paused' });
   await db('goal_events').where({ sequence }).delete();
   await rejects(own, 'CURSOR_EXPIRED');
+});
+
+test('a checkpoint and completion committed between journal reads are matched, not declared unreachable', async () => {
+  await update({ claimed_at: '2026-10-04 10:00:00', started_at: '2026-10-04 10:00:00' });
+  const cursor = (await wait({ until: 'checkpoint', timeoutSeconds: 0 })).cursor;
+  // The worker publishes a checkpoint and then completes the goal after the
+  // waiter's event read and before its terminal-reachability read.
+  const result = await wait({
+    db: interleaveBeforeQuery(/'lifecycle'/, async () => {
+      await insertCheckpoint('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'completed');
+      await update({ result_state: 'completed', completed_at: '2026-10-04 10:05:00' });
+    }),
+    until: 'checkpoint', afterCursor: cursor, timeoutSeconds: 2, pollIntervalMs: 25,
+  });
+  assert.equal(result.outcome, 'matched', 'the checkpoint satisfies the wait even though the goal is now completed');
+  assert.equal(result.event?.checkpoint?.id, 'dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+  assert.equal(result.cursor, result.event?.cursor);
+  assert.equal(result.goal.lifecycleState, 'completed');
+
+  const next = await wait({ until: 'checkpoint', afterCursor: result.cursor });
+  assert.equal(next.outcome, 'unreachable', 'only after the checkpoint is consumed is the completed goal unreachable');
+  assert.equal(next.event, null);
+});
+
+test('a transition committed after the cursorless boundary is reported once, with its own cursor', async () => {
+  await update({ claimed_at: '2026-10-04 10:00:00', started_at: '2026-10-04 10:00:00' });
+  // Pause is confirmed after the boundary is captured and before the immediate-match read.
+  const result = await wait({
+    db: interleaveBeforeQuery(/'lifecycle'/, () => update({ desired_state: 'paused', pause_confirmed_at: '2026-10-04 10:01:00' })),
+    until: 'paused', timeoutSeconds: 2, pollIntervalMs: 25,
+  });
+  assert.equal(result.outcome, 'matched');
+  assert.equal(result.event?.state, 'paused');
+  assert.equal(result.matchedImmediately, false, 'the pause happened after the boundary, so it is a new event');
+  assert.equal(result.cursor, result.event?.cursor, 'the returned cursor includes the reported event');
+
+  const resumed = await wait({ until: 'paused', afterCursor: result.cursor });
+  assert.equal(resumed.outcome, 'timed_out', 'resuming never replays the reported transition');
+  assert.equal(resumed.event, null);
 });
 
 test('every read checks ownership, repository and caller authorization; revocation ends an open wait', async () => {
@@ -310,7 +376,12 @@ test('cancellation, timeouts and concurrent waits release every listener and tim
   assert.equal(activeGoalWaiterCount(), 0);
 
   const limited = [wait({ timeoutSeconds: 0.2, maxConcurrentPerOwner: 2 }), wait({ timeoutSeconds: 0.2, maxConcurrentPerOwner: 2 })];
-  await assert.rejects(wait({ timeoutSeconds: 0.2, maxConcurrentPerOwner: 2 }), { code: 'WAIT_LIMIT' });
+  await assert.rejects(wait({ timeoutSeconds: 0.2, maxConcurrentPerOwner: 2 }), (error: unknown) => {
+    assert.ok(error instanceof GoalWaitError);
+    assert.equal(error.code, 'WAIT_LIMIT');
+    assert.match(error.message, /2 are open across propr goal wait and MCP wait_goal/);
+    return true;
+  });
   await Promise.all(limited);
   assert.equal((await wait({ timeoutSeconds: 0, maxConcurrentPerOwner: 2 })).outcome, 'timed_out', 'slots are returned');
   assert.equal(activeGoalWaiterCount(), 0);

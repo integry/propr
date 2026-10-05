@@ -31,8 +31,12 @@ const prompts: Record<string, string> = {
 };
 
 /**
- * `connection` aborts when the HTTP request carrying this server closes, so a
- * blocking read is released on disconnect as well as on MCP cancellation.
+ * `connection` aborts when the HTTP request carrying this server closes. With
+ * `legacy: 'stateless'` that disconnect is the effective cancel path for a
+ * blocking read such as `wait_goal`: a `notifications/cancelled` message
+ * arrives on a separate HTTP request with its own server instance and cannot
+ * reach the open wait. `ctx.mcpReq.signal` is still combined in so a stateful
+ * transport's in-request cancellation would release it too.
  */
 export function buildMcpServer(principal: McpPrincipal, deps: ToolDeps, catalog: McpTool[], connection?: AbortSignal): McpServer {
   const server = new McpServer({ name: 'propr', version: packageInfo.version });
