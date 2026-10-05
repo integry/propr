@@ -58,14 +58,20 @@ export const TaskPrimaryChip: React.FC<{ task: Task; prNumber?: number | null }>
  * Visual evidence is announced, not drawn: thumbnails in a dense list render as
  * empty wireframes or black boxes until they load, and they break the row height.
  */
-export const PreviewCountBadge: React.FC<{ count: number }> = ({ count }) => count > 0 ? (
+export const PreviewCountBadge: React.FC<{
+  count: number;
+  /** `[🖼 2]`: the noun is left to the tooltip and screen readers, so the chip fits beside the entity chip. */
+  compact?: boolean;
+}> = ({ count, compact = false }) => count > 0 ? (
   <span
     data-testid="preview-count"
     className="inline-flex flex-none items-center gap-1 whitespace-nowrap rounded-sm border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[11px] leading-4 text-slate-600"
     title={`${pluralize(count, 'published visual preview')} — open the task to view`}
   >
     <Images className="h-3 w-3" aria-hidden="true" />
-    {pluralize(count, 'preview')}
+    {compact
+      ? <>{count}<span className="sr-only">{count === 1 ? ' preview' : ' previews'}</span></>
+      : pluralize(count, 'preview')}
   </span>
 ) : null;
 
@@ -99,8 +105,10 @@ export const TaskTitleLink: React.FC<{
   onRowClick: (id: string) => void;
   /** The task open beside the list: the title stays dark and gains weight instead of looking like a link. */
   selected?: boolean;
+  /** Hold the title to one line, ending in `…`, where the row is a scanning card rather than a ledger row. */
+  singleLine?: boolean;
   className?: string;
-}> = ({ title, tooltip, taskId, onRowClick, selected = false, className = 'min-w-0 flex-1' }) => (
+}> = ({ title, tooltip, taskId, onRowClick, selected = false, singleLine = false, className = 'min-w-0 flex-1' }) => (
   <Link
     to={taskPath(taskId)}
     aria-current={selected || undefined}
@@ -114,7 +122,7 @@ export const TaskTitleLink: React.FC<{
       onRowClick(taskId);
     }}
   >
-    <span className="line-clamp-2 [overflow-wrap:anywhere]">{title}</span>
+    <span className={singleLine ? 'block truncate' : 'line-clamp-2 [overflow-wrap:anywhere]'}>{title}</span>
   </Link>
 );
 

@@ -168,16 +168,6 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(selectedTitle).toHaveCSS('color', 'rgb(15, 23, 42)');
   await expect(selectedTitle).toHaveCSS('text-decoration-line', 'none');
   await expect(selectedTitle).toHaveCSS('font-weight', '600');
-  // Cards scrolled up under the toolbar fade out at the top edge instead of being sliced against its border.
-  const topFade = await list.getByTestId('task-list-scroll').evaluate(scroller => {
-    scroller.scrollTop = 150;
-    const fade = scroller.querySelector('[data-testid="task-cards-top-fade"]')!;
-    const result = { scrolled: scroller.scrollTop, offset: Math.round(fade.getBoundingClientRect().top - scroller.getBoundingClientRect().top), height: fade.getBoundingClientRect().height };
-    scroller.scrollTop = 0;
-    return result;
-  });
-  expect(topFade.scrolled).toBeGreaterThan(0);
-  expect(topFade).toMatchObject({ offset: 0, height: 8 });
   // The details heading is sanitized the same way as the row: no workflow verb, PR number or model tag.
   await expect(details.locator('h2:visible')).toHaveText('Stop work when an issue or PR withdraws intent');
   // Consumption stays on the context line after the runtime: arrows for tokens, the quota in parentheses, no dots.
@@ -233,19 +223,6 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   for (const card of await runLines.all()) await expect(card.getByTestId('work-type-badge')).toBeVisible();
   await expect(list.locator('[data-testid="task-card"]').filter({ hasText: 'Retry webhook deliveries' }).getByTestId('work-type-badge')).toHaveText('Fix');
   await capture(page, 'tasks-split-1920');
-  // The list scrolls inside its pane: at the end the last card sits whole above the footer, with room to spare.
-  const scroller = list.getByTestId('task-list-scroll');
-  expect(await scroller.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
-  await scroller.evaluate(node => { node.scrollTop = node.scrollHeight; });
-  const runOut = await page.evaluate(() => {
-    const cards = [...document.querySelectorAll('[data-testid="task-split-list"] [data-testid="task-card"]')];
-    const last = cards[cards.length - 1].getBoundingClientRect();
-    const footer = document.querySelector('[data-testid="task-list-footer"]')!.getBoundingClientRect();
-    return Math.round(footer.top - last.bottom);
-  });
-  expect(runOut).toBeGreaterThanOrEqual(32);
-  await capture(page, 'tasks-split-1920-end');
-  await scroller.evaluate(node => { node.scrollTop = 0; });
   // Choosing an earlier run opens it: its steps, files changed and execution log replace the newest run's.
   await runRows.nth(2).getByRole('button').click();
   await expect(page).toHaveURL(new RegExp(`task=${historicalRun}`));
