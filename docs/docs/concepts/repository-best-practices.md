@@ -19,6 +19,8 @@ Practical implications: keep CI **fast** (loops and merges wait on it) and **det
 
 Auto-merge removes the human from the loop once checks pass, which is appropriate for low-risk paths but not for everything. To keep a person in the loop on sensitive areas, add a [`CODEOWNERS`](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners) file and [require code-owner approval](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-pull-request-reviews-before-merging) in branch protection. Required reviews are enforced by GitHub the same way required checks are, so auto-merge waits for them too — letting you mix hands-off merging for routine changes with mandatory human sign-off on the parts that matter.
 
+ProPR adds its own guard on top: list sensitive paths under `auto_merge.protected_paths` in [`.propr/workflow.yml`](../features/repository-workflow.md#auto-merge-policy) (for example CI workflows, database migrations and dependency manifests). ProPR then never arms auto-merge for a PR that touches them; it comments on the PR and leaves the merge to a person. The policy is read from the PR's base branch, `.propr/**` is always protected, and any doubt (an unreadable policy, a diff GitHub cannot list) means auto-merge is not armed. Branch protection and code owners remain the authoritative merge controls; the policy only decides whether ProPR asks GitHub to merge automatically.
+
 ## Harden Your CI
 
 Agent-generated PRs run through the same pipelines as any other, so the usual supply-chain hygiene applies — and matters more when PRs are opened automatically:

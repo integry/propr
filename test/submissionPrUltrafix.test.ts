@@ -14,6 +14,10 @@ let submission: { payload: string } | undefined;
 let liveLabels: string[] | undefined;
 
 const findIssueSubmission = mock.fn(async () => submission);
+type GateResult = { arm: boolean; reason: string; mergeMethod?: string };
+let gateResult: GateResult = { arm: true, reason: 'armed', mergeMethod: 'SQUASH' };
+const gateAutoMergeArming = mock.fn(async (_input: Record<string, unknown>) => gateResult);
+const armedMethods: Array<string | undefined> = [];
 const processCommentEvent = mock.fn(async () => undefined);
 
 await mock.module('@propr/core', {
@@ -21,6 +25,7 @@ await mock.module('@propr/core', {
         getEpicExecutionQueue: mock.fn(async () => null),
         findIssueSubmission,
         findPlanIssueByRepoAndNumber: mock.fn(async () => undefined),
+        gateAutoMergeArming,
         generateCompletionComment: mock.fn(async () => 'Completed.'),
         getAuthenticatedOctokit: mock.fn(async () => ({
             request: async (route: string, body: Record<string, unknown>) => {
@@ -44,8 +49,9 @@ await mock.module('@propr/core', {
 });
 await mock.module('../src/github/autoMergeOperations.js', {
     namedExports: {
-        enableAutoMerge: mock.fn(async ({ prNumber }: { prNumber: number }) => {
+        enableAutoMerge: mock.fn(async ({ prNumber, mergeMethod }: { prNumber: number; mergeMethod?: string }) => {
             autoMerges.push(prNumber);
+            armedMethods.push(mergeMethod);
             return { success: true, autoMergeEnabled: true };
         }),
     },
@@ -72,6 +78,7 @@ async function runWithSubmission(
         currentIssueData: { data: { labels: labels.map(name => ({ name })) } },
         prNumber: 101,
         correlatedLogger: logger,
+        taskId: 'task-7',
     });
     return comments.filter(call => call.route.endsWith('/comments')).map(call => String(call.body.body));
 }
@@ -105,6 +112,23 @@ test('a submitted task carries its own ultrafix bounds onto the new pull request
 test('a submitted auto-merge task without ultrafix enables auto-merge on the new pull request', async () => {
     assert.deepEqual(await runWithSubmission({ instruction: 'Fix dates', autoMerge: true }, ['AI', 'auto-merge']), []);
     assert.deepEqual(autoMerges, [101]);
+});
+
+test('the repository auto-merge policy decides before auto-merge is armed', async () => {
+    gateAutoMergeArming.mock.resetCalls();
+    armedMethods.length = 0;
+    gateResult = { arm: true, reason: 'armed', mergeMethod: 'REBASE' };
+    await runWithSubmission({ instruction: 'Fix dates', autoMerge: true }, ['AI', 'auto-merge']);
+    assert.deepEqual(armedMethods, ['REBASE']);
+    assert.deepEqual(
+        { ...gateAutoMergeArming.mock.calls[0].arguments[0], log: undefined },
+        { owner: 'owner', repo: 'repo', prNumber: 101, opportunity: 'initial_pr', taskId: 'task-7', issueNumber: 42, log: undefined },
+    );
+
+    gateResult = { arm: false, reason: 'skipped_protected_path' };
+    await runWithSubmission({ instruction: 'Fix dates', autoMerge: true }, ['AI', 'auto-merge']);
+    assert.deepEqual(autoMerges, [], 'a skipped decision never arms auto-merge');
+    gateResult = { arm: true, reason: 'armed', mergeMethod: 'SQUASH' };
 });
 
 test('removing the ultrafix label before the pull request withdraws a submitted opt-in', async () => {

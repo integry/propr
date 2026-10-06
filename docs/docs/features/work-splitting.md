@@ -52,7 +52,7 @@ For larger efforts:
 5. Review the resulting PR before launching the next batch.
 6. Use PR follow-up comments for local refinements.
 
-That gives you more control than launching every generated issue at once. When the issues are genuinely sequential, Epic mode with auto-merge runs them one after another, merging each PR before starting the next issue.
+That gives you more control than launching every generated issue at once. When the issues are genuinely sequential, Epic mode with auto-merge runs them one after another, merging each PR before starting the next issue. If the repository's [auto-merge policy](./repository-workflow.md#auto-merge-policy) declines to arm auto-merge for a PR (for example because it touches a protected path), the queue waits for a person to merge that PR, shows *Waiting for human merge*, and then continues.
 
 A second kind of splitting works across models instead of across scope: add several `llm-*` labels to one issue and ProPR produces one branch and PR per model, so you can compare implementations of the same unit. See [Agents and Models](./agents-and-models.md).
 

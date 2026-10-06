@@ -21,6 +21,13 @@ previews:
   instructions: "Capture the settings page at 1280px"
 limits:
   max_parallel_tasks: 3
+auto_merge:
+  enabled: true
+  method: squash
+  protected_paths:
+    - ".github/workflows/**"
+    - "packages/core/src/db/migrations/**"
+    - "package.json"
 ```
 
 All fields are optional. Use `{}` for an empty policy; a file that is empty or contains only comments (for example, the scaffold with every section commented out) is also treated as an empty policy. See the [JSON schema](/schemas/repository-workflow.schema.json) for editor validation. Unknown fields, duplicate YAML keys, aliases, unsupported tags, invalid types and missing instruction files fail the attempt before the implementation agent starts. The task's existing issue/PR error reporting surfaces these errors once; the job is not retried, because the same base commit would fail the same way. A malformed instance `worker_concurrency` setting is not a workflow error: ProPR falls back to `WORKER_CONCURRENCY` (default 5). Files must be UTF-8 and at most 128 KiB each. Validation accepts at most 100 commands.
@@ -55,6 +62,39 @@ When `after_create` is omitted, `.propr/setup.sh` remains implicit if present an
 `validation` adds commands the agent must run and report before finishing. ProPR also executes them in order after the agent exits, with the hook timeout applied to each command, and appends the observed results to the completion summary: `Passed`, `Failed (exit N)`, `Timed out` (the command reached its time limit), `Killed (exit 137)` (killed before its limit, for example by the out-of-memory killer) or `Not run`. Validation shares the instance's overall execution timeout with the agent, so ProPR also bounds it as a whole. It stops starting commands early enough to leave time for `after_run`, `before_remove` and container teardown, and shortens a command's timeout to the remaining budget. That reserve is 30 seconds plus, for each configured `after_run` and `before_remove` hook, 60 seconds and a five-second grace period. If `hooks.timeout_ms` is set explicitly, each cleanup hook reserves its full timeout instead (still capped by the instance ceiling), so set it only when cleanup really needs that long. The remaining commands are reported as `Not run (execution time limit reached)`, and the completed agent run is kept rather than reported as an execution timeout. A failing validation command does not suppress later commands or erase implementation work. Command output is available in execution logs. Validation commands should be safe to repeat and **must not modify files**: they run in the task workspace after the agent and before ProPR commits, so changes they make (for example `lint --fix`, regenerated snapshots or build output that is not ignored) are committed with the agent's work. Use check-only variants such as `eslint .` or `prettier --check`.
 
 Results are authoritative only when the container wrapper runs as root and drops repository commands and the agent to the unprivileged `node` user, as the supported agent images do. Otherwise each result is marked `(unverified: container wrapper was not running as root)`, because an agent sharing the wrapper's user could write its own results. If an agent's transport did not capture the container output, results read `Not observed`.
+
+## Auto-merge policy
+
+`auto_merge` decides whether ProPR may arm GitHub's native auto-merge on a PR whose issue carries the `auto-merge` label (set by Planner Studio, `--auto-merge` or the MCP `autoMerge` flag). The label states intent; the policy keeps a human in the loop for sensitive changes.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | `false` never arms auto-merge, even when the label is present. |
+| `method` | repository default | `merge`, `squash` or `rebase`. Without it ProPR uses squash, as before, unless the repository disallows squash merges. |
+| `protected_paths` | none | Globs. If any changed file matches one, auto-merge is not armed. |
+
+`.propr/**` is always protected, whatever the configuration says, so an agent cannot change repository policy and merge it unattended.
+
+Globs are anchored at the repository root. `*` and `?` match within one path segment (including dotfiles), `**` matches any number of directories, and `[...]` is a character class. A pattern that matches a directory protects everything below it, so `infra`, `infra/` and `infra/**` are equivalent. `package.json` matches only the root file; use `**/package.json` to match it at any depth. Matching is case-insensitive. For renames, both the old and the new path are checked.
+
+ProPR reads the policy from the PR's **base branch** through the GitHub API, never from the PR's head branch, and lists the changed files from a fresh GitHub API fetch of the PR diff, not from the worktree the agent wrote to. A head branch that edits `.propr/workflow.yml` therefore cannot loosen its own policy.
+
+The decision fails closed. Each time ProPR would arm auto-merge (after the PR is created, after Ultrafix reaches its goal, and when an Epic queue head opens its PR) it records exactly one task timeline event with one of these reason codes:
+
+| Reason | Armed | When |
+| --- | --- | --- |
+| `armed` | yes | The policy allows auto-merge for this diff. |
+| `skipped_protected_path` | no | A changed file matches a protected path. The event lists the matching paths. |
+| `skipped_disabled` | no | `auto_merge.enabled` is `false`. |
+| `skipped_empty_diff` | no | The PR has no changed files. |
+| `skipped_policy_invalid` | no | The base branch workflow file cannot be read or is invalid (any invalid field, not just `auto_merge`, or an unknown merge method). |
+| `skipped_diff_unavailable` | no | GitHub returned an error, an incomplete file list, or the head moved while it was listed. |
+
+A missing `.propr/workflow.yml` is not an error: the defaults apply and only `.propr/**` is protected. When auto-merge is not armed, ProPR posts a one-line PR comment with the reason and leaves the `auto-merge` label in place, so a maintainer can review the PR and merge it or enable auto-merge manually. ProPR's own fallback merge for labelled PRs (when checks pass) applies the same policy.
+
+**New commits.** When an armed PR receives a new head (or is retargeted to another base), ProPR evaluates the policy again. If it no longer allows auto-merge, for example because a follow-up commit touched a protected path, ProPR disables auto-merge on the PR, records a timeline event and comments. Auto-merge that a person enabled manually is left alone.
+
+**Epic queues.** An Epic queue advances when the head's PR is merged, not when auto-merge is armed. If auto-merge is skipped for the head's PR, the queue stays active and shows *Waiting for human merge* with the reason; it resumes as soon as a person merges the PR.
 
 ## Instance defaults and hard limits
 

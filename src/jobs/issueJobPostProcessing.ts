@@ -279,7 +279,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
                 issueRef,
                 currentIssueData,
                 prNumber: postProcessingResult.pr.number,
-                correlatedLogger,
+                correlatedLogger, taskId,
             });
         }
 
