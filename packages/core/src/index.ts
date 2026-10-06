@@ -141,7 +141,7 @@ export type {
 } from './queue/taskQueue.js';
 
 export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
-export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
+export { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, triggerUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
 export * from './webhook/ciFailureFollowup.js';
 export * from './webhook/closedPullRequestCi.js';
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';

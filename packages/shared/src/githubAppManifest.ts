@@ -1,7 +1,7 @@
 /** Shared by webhook dispatch, App registration, and installation diagnostics. */
 export const SUPPORTED_WEBHOOK_EVENTS = [
   'issues', 'issue_comment', 'pull_request_review_comment',
-  'pull_request', 'check_run', 'push', 'status',
+  'pull_request', 'check_run', 'check_suite', 'push', 'status',
 ] as const;
 
 export const GITHUB_APP_PERMISSIONS = {

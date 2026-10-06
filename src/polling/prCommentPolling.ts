@@ -5,6 +5,7 @@ import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type Unproc
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
 import { extractLlmFromLabels, resolveModelAlias } from '@propr/core';
 import { hasValidTriggerLabel } from '@propr/core';
+import { areAllChecksPassing, getCurrentPRHead, triggerUltrafixCheckRunHook } from '@propr/core';
 import type { Redis } from 'ioredis';
 
 type Octokit = {
@@ -109,12 +110,40 @@ export async function pollForPullRequestComments(
         }
 
         for (const pr of prs) {
-            await processPullRequestComments(
-                octokit, pr, { owner, repo, repoFullName, correlationId }, config
-            );
+            const repoContext = { owner, repo, repoFullName, correlationId };
+            await processPullRequestComments(octokit, pr, repoContext, config);
+            await reconcileUltrafixForPR(pr, repoContext);
         }
     } catch (error) {
         handleError(error, `Error polling PR comments for repository ${repoFullName}`, { correlationId });
+    }
+}
+
+/**
+ * Polling counterpart of the check_run/check_suite webhooks: when an Ultrafix
+ * PR's head is green, fire the Ultrafix hook so a deferred loop resumes (or a
+ * stranded one is re-armed) even if no webhook delivery ever arrives.
+ */
+export async function reconcileUltrafixForPR(pr: PullRequest, repoContext: RepoContext): Promise<void> {
+    if (!pr.labels?.some(label => label.name === 'ultrafix')) return;
+
+    const { owner, repo, repoFullName, correlationId } = repoContext;
+    const correlatedLogger = logger.withCorrelation(correlationId);
+
+    try {
+        const headSha = await getCurrentPRHead(owner, repo, pr.number);
+        if (!headSha) {
+            correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number }, 'Ultrafix reconcile skipped: PR head SHA unavailable');
+            return;
+        }
+        if (!await areAllChecksPassing(owner, repo, headSha)) {
+            correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number, headSha }, 'Ultrafix reconcile: checks not green yet');
+            return;
+        }
+        correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number, headSha }, 'Ultrafix reconcile: checks green, triggering check hook');
+        await triggerUltrafixCheckRunHook(owner, repo, pr.number, headSha);
+    } catch (error) {
+        correlatedLogger.warn({ repository: repoFullName, pullRequestNumber: pr.number, error: (error as Error).message }, 'Ultrafix CI reconciliation failed');
     }
 }
 

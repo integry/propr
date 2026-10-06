@@ -21,7 +21,7 @@ import {
     postCiFailureFollowup,
     type CiFailureEvidence,
 } from './ciFailureFollowup.js';
-import type { CheckRunEvent } from '@octokit/webhooks-types';
+import type { CheckRunEvent, CheckSuiteEvent } from '@octokit/webhooks-types';
 import { getNonBlockingChecksForRepository } from '../daemon/configLoader.js';
 import { isNonBlockingCheck } from './nonBlockingChecks.js';
 
@@ -52,6 +52,28 @@ let _ultrafixCheckRunHook: UltrafixCheckRunHook | null = null;
  */
 export function setUltrafixCheckRunHook(hook: UltrafixCheckRunHook): void {
     _ultrafixCheckRunHook = hook;
+}
+
+/**
+ * Fires the registered Ultrafix hook for a PR whose checks turned green, so a
+ * deferred (or stranded) loop continuation can resume. Shared by webhook
+ * intake (check_run, check_suite, status) and the polling reconciler.
+ * Returns whether a hook was registered and completed without throwing.
+ */
+export async function triggerUltrafixCheckRunHook(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    headSha: string,
+): Promise<boolean> {
+    if (!_ultrafixCheckRunHook) return false;
+    try {
+        await _ultrafixCheckRunHook(owner, repo, prNumber, headSha);
+        return true;
+    } catch (error) {
+        logger.warn({ owner, repo, prNumber, headSha, error: (error as Error).message }, 'Ultrafix check hook failed');
+        return false;
+    }
 }
 
 interface PRContext {
@@ -262,16 +284,21 @@ export async function handleCheckRunEvent(
 
     if (payload.action !== 'completed') return;
 
+    // Check runs dispatched on branch pushes often arrive with an empty
+    // pull_requests array even though the branch backs an open PR.
     const pullRequests = payload.check_run.pull_requests;
-    if (!pullRequests || pullRequests.length === 0) {
-        log.debug({ owner, repoName }, 'check_run skipped: no associated PRs');
+    const targetPRs = (pullRequests && pullRequests.length > 0)
+        ? pullRequests.map(pr => ({ number: pr.number }))
+        : await findPRsForCommit(owner, repoName, payload.check_run.head_sha);
+    if (targetPRs.length === 0) {
+        log.debug({ owner, repoName, sha: payload.check_run.head_sha }, 'check_run skipped: no associated PRs');
         return;
     }
 
     const conclusion = payload.check_run.conclusion;
     const failure = await unlessNonBlocking(extractCheckRunFailure(payload), owner, repoName);
     if (failure) {
-        for (const pr of pullRequests) {
+        for (const pr of targetPRs) {
             try {
                 const currentPrHead = await getCurrentPRHead(owner, repoName, pr.number);
                 if (currentPrHead !== failure.sha) {
@@ -300,34 +327,72 @@ export async function handleCheckRunEvent(
         return;
     }
 
-    for (const pr of pullRequests) {
-        const prNumber = pr.number;
-        const headSha = payload.check_run.head_sha;
-
+    for (const pr of targetPRs) {
         log.debug({
             owner,
             repoName,
-            prNumber,
+            prNumber: pr.number,
             checkRunName: payload.check_run.name,
             conclusion
         }, 'Processing check run completion for PR');
 
-        try {
-            const ctx: PRContext = { owner, repoName, prNumber, log };
-            await processPRAutoMerge(ctx, headSha);
-        } catch (error) {
-            log.error({ owner, repoName, prNumber, error: (error as Error).message }, 'Error processing auto-merge for PR');
-        }
+        await processGreenCheckForPR({ owner, repoName, prNumber: pr.number, log }, payload.check_run.head_sha);
+    }
+}
 
-        // Wake any deferred ultrafix continuation for this PR.
-        // Idempotency is handled by the Redis GETDEL claim in claimDeferredContinuation.
-        if (_ultrafixCheckRunHook) {
-            try {
-                await _ultrafixCheckRunHook(owner, repoName, prNumber, headSha);
-            } catch (error) {
-                log.warn({ owner, repoName, prNumber, error: (error as Error).message }, 'Ultrafix check_run hook failed');
-            }
-        }
+/**
+ * Runs auto-merge evaluation, then wakes any deferred Ultrafix continuation.
+ * Idempotency is handled by the Redis GETDEL claim in claimDeferredContinuation.
+ */
+async function processGreenCheckForPR(ctx: PRContext, headSha: string): Promise<void> {
+    const { owner, repoName, prNumber, log } = ctx;
+    try {
+        await processPRAutoMerge(ctx, headSha);
+    } catch (error) {
+        log.error({ owner, repoName, prNumber, error: (error as Error).message }, 'Error processing auto-merge for PR');
+    }
+    await triggerUltrafixCheckRunHook(owner, repoName, prNumber, headSha);
+}
+
+/**
+ * Handles check_suite webhook events. A completed, green suite drives the same
+ * auto-merge evaluation and Ultrafix wake-up as a successful check run.
+ */
+export async function handleCheckSuiteEvent(
+    payload: CheckSuiteEvent,
+    correlationId: string
+): Promise<void> {
+    const log = logger.withCorrelation(correlationId);
+    const [owner, repoName] = payload.repository.full_name.split('/');
+    const suite = payload.check_suite;
+
+    log.debug({
+        owner,
+        repoName,
+        action: payload.action,
+        conclusion: suite.conclusion,
+        prCount: suite.pull_requests?.length ?? 0,
+    }, 'check_suite event received');
+
+    if (payload.action !== 'completed') return;
+
+    if (suite.conclusion !== 'success' && suite.conclusion !== 'neutral') {
+        log.debug({ owner, repoName, conclusion: suite.conclusion }, 'check_suite skipped: not success/neutral');
+        return;
+    }
+
+    const pullRequests = suite.pull_requests;
+    const targetPRs = (pullRequests && pullRequests.length > 0)
+        ? pullRequests.map(pr => ({ number: pr.number }))
+        : await findPRsForCommit(owner, repoName, suite.head_sha);
+    if (targetPRs.length === 0) {
+        log.debug({ owner, repoName, sha: suite.head_sha }, 'check_suite skipped: no associated PRs');
+        return;
+    }
+
+    for (const pr of targetPRs) {
+        log.debug({ owner, repoName, prNumber: pr.number, conclusion: suite.conclusion }, 'Processing check suite completion for PR');
+        await processGreenCheckForPR({ owner, repoName, prNumber: pr.number, log }, suite.head_sha);
     }
 }
 
@@ -379,10 +444,6 @@ export async function handleStatusEvent(
             continue;
         }
 
-        try {
-            await _ultrafixCheckRunHook!(owner, repoName, pr.number, payload.sha);
-        } catch (error) {
-            log.warn({ owner, repoName, prNumber: pr.number, error: (error as Error).message }, 'Ultrafix status hook failed');
-        }
+        await triggerUltrafixCheckRunHook(owner, repoName, pr.number, payload.sha);
     }
 }
