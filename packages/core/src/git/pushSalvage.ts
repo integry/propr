@@ -97,7 +97,7 @@ function errorMessage(error: unknown): string {
 /** Quotes one argument for a POSIX shell so branch names and paths stay literal when the
  * recovery command is copied into a terminal. Plain arguments are left bare for readability. */
 export function quoteShellArgument(value: string): string {
-    if (value !== '' && /^[A-Za-z0-9_\/.:@%+=,-]+$/.test(value)) return value;
+    if (value !== '' && /^[A-Za-z0-9_/.:@%+=,-]+$/.test(value)) return value;
     return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
