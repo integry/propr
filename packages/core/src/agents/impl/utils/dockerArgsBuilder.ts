@@ -172,6 +172,26 @@ function buildBaseDockerArgs(options: {
 }
 
 /**
+ * Turns the per-run tool policy into Claude CLI switches plus name-only `-e`
+ * flags; docker copies the token values from its own environment.
+ */
+function resolveClaudeToolPolicy(
+    toolPolicy: AgentToolPolicy | undefined,
+    issueNumber: DockerArgsParams['issueNumber'],
+    agentAlias: string,
+): { cliArgs: string[]; envArgs: string[] } {
+    if (!toolPolicy) return { cliArgs: [], envArgs: [] };
+    const { cliArgs, env } = claudeToolPolicyArgs(toolPolicy);
+    logger.info({
+        issueNumber,
+        allowWeb: toolPolicy.allowWeb,
+        mcpServers: toolPolicy.mcpServers?.map(server => server.name) ?? [],
+        agentAlias
+    }, 'Applying tool policy to Claude agent');
+    return { cliArgs, envArgs: Object.keys(env).flatMap(name => ['-e', name]) };
+}
+
+/**
  * Builds Docker arguments for running Claude in a container.
  *
  * This function constructs the full `docker run` command arguments including:
@@ -206,12 +226,8 @@ export function buildDockerArgs(
         ? REPOSITORY_SCOUT_CONTAINER_ROOT
         : '/home/node/workspace';
     const workerOwnedGit = !agentOwnsGit(params);
-    const policyArgs = toolPolicy ? claudeToolPolicyArgs(toolPolicy) : undefined;
-    const envVars = [
-        ...buildEnvironmentVariableArgs([config.envVars, environment], true),
-        // Name only: docker copies the value from its own environment.
-        ...Object.keys(policyArgs?.env ?? {}).flatMap(name => ['-e', name]),
-    ];
+    const policyArgs = resolveClaudeToolPolicy(toolPolicy, issueNumber, config.alias);
+    const envVars = [...buildEnvironmentVariableArgs([config.envVars, environment], true), ...policyArgs.envArgs];
     const dockerArgs = buildBaseDockerArgs({
         config,
         maxTurns,
@@ -272,15 +288,7 @@ export function buildDockerArgs(
         }, 'Using custom tools configuration');
     }
 
-    if (policyArgs) {
-        dockerArgs.push(...policyArgs.cliArgs);
-        logger.info({
-            issueNumber,
-            allowWeb: toolPolicy?.allowWeb,
-            mcpServers: toolPolicy?.mcpServers?.map(server => server.name) ?? [],
-            agentAlias: config.alias
-        }, 'Applying tool policy to Claude agent');
-    }
+    dockerArgs.push(...policyArgs.cliArgs);
 
     logger.info({
         issueNumber,

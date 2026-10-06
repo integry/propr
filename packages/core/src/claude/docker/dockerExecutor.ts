@@ -205,9 +205,7 @@ export async function inspectLegacyDockerContainerLivenessForTask(taskId: string
 function spawnCommandProcess(
     executablePath: string,
     args: string[],
-    cwd: string | undefined,
-    stdinData: string | undefined,
-    extraEnvVars?: Record<string, string>,
+    { cwd, stdinData, extraEnvVars }: { cwd?: string; stdinData?: string; extraEnvVars?: Record<string, string> },
 ): ChildProcess {
     // Extra variables reach the container through `-e NAME`, keeping their values out of the argument list.
     const env = extraEnvVars && Object.keys(extraEnvVars).length > 0 ? { ...process.env, ...extraEnvVars } : process.env;
@@ -265,7 +263,7 @@ function startDockerCommand(
         }
         const costExecution = costCap.execution;
         let child: ReturnType<typeof spawnCommandProcess>;
-        try { child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData, extraEnvVars); } catch (error) {
+        try { child = spawnCommandProcess(executablePath, executionArgs, { cwd, stdinData, extraEnvVars }); } catch (error) {
             // A container that never started must not stay registered with the guard.
             void costExecution?.finish().catch(() => null);
             throw error;
