@@ -532,3 +532,4 @@ export { withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, reconcileRep
 export * from './services/taskCancellation.js';
 export * from './services/taskIntent.js';
 export * from './services/taskPlanning/epicExecutionQueue.js';
+export * from './services/agents/agentDefinitionStore.js';
