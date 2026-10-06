@@ -62,3 +62,32 @@ describe('Task details telemetry', () => {
     expect(screen.getByRole('group', { name: 'Consumption' })).toHaveTextContent('$0.75');
   });
 });
+
+describe('Task details attempt lineage', () => {
+  it('shows the attempt and links every other attempt of an automatic-replacement lineage', () => {
+    render(<ContextStrip {...props} taskInfo={{
+      ...props.taskInfo, attemptNumber: 2, replacesTaskId: 'attempt-1', replacedByTaskId: 'attempt-3',
+      attemptLineage: [
+        { taskId: 'attempt-1', attemptNumber: 1, replacementCause: null, state: 'failed' },
+        { taskId: 'attempt-2', attemptNumber: 2, replacementCause: 'infra_lost', state: 'failed' },
+        { taskId: 'attempt-3', attemptNumber: 3, replacementCause: 'provider_transient', state: 'processing' },
+      ],
+    }} />);
+    const lineage = within(screen.getByRole('group', { name: 'Attempt lineage' }));
+    expect(lineage.getByText('Attempt 2 of 3')).toBeInTheDocument();
+    expect(lineage.getByRole('link', { name: '#1' })).toHaveAttribute('href', '/tasks/attempt-1');
+    expect(lineage.getByRole('link', { name: '#3' })).toHaveAttribute('href', '/tasks/attempt-3');
+    expect(lineage.queryByRole('link', { name: '#2' })).toBeNull();
+  });
+
+  it('links the neighbouring attempts when the full lineage is unavailable', () => {
+    render(<ContextStrip {...props} taskInfo={{ ...props.taskInfo, attemptNumber: 2, replacesTaskId: 'attempt-1', replacedByTaskId: null }} />);
+    const lineage = within(screen.getByRole('group', { name: 'Attempt lineage' }));
+    expect(lineage.getByRole('link', { name: 'replaces previous' })).toHaveAttribute('href', '/tasks/attempt-1');
+  });
+
+  it('shows nothing for a task outside a lineage', () => {
+    render(<ContextStrip {...props} taskInfo={{ ...props.taskInfo, attemptNumber: 1, replacesTaskId: null, replacedByTaskId: null }} />);
+    expect(screen.queryByRole('group', { name: 'Attempt lineage' })).toBeNull();
+  });
+});

@@ -55,6 +55,10 @@ export const SETTINGS_CATALOG: SettingEntry[] = [
   execution('models.planner_context_model', 'Planner context model', 'Settings → Models → Model selection', ['planner_context_model'], ['PLANNER_CONTEXT_MODEL']),
   execution('models.planner_generation_model', 'Planner generation model', 'Settings → Models → Model selection', ['planner_generation_model'], ['PLANNER_GENERATION_MODEL']),
   {
+    ...execution('automation.max_provider_replacements', 'Provider failure replacements', 'Settings → Automation → General configuration', ['max_provider_replacements', 'task replacement attempts', 'retry provider failures'], ['MAX_PROVIDER_REPLACEMENTS']),
+    description: 'Replacement attempts dispatched after a run ends with a transient provider error (0 disables). Infrastructure-lost replacement is controlled by INFRA_LOST_REPLACEMENT.',
+  },
+  {
     ...execution('automation.auto_resolve_merge_conflicts', 'Automatic merge-conflict resolution (default for repositories)', 'Settings → Automation → General configuration', ['auto_resolve_merge_conflicts', 'merge conflicts default']),
     description: 'Instance default for repositories without an override; a repository autoResolveMergeConflicts override takes precedence.',
   },

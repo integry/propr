@@ -193,4 +193,73 @@ terminal: the task-state reconciler replays its terminal state and reason
 rather than treating it as orphaned. Tasks parked for a provider usage limit
 (the AI-waiting label) have no running container and are never watched.
 
+### Reconciliation and automatic replacement runs
+
+Every worker runs a periodic task-state reconciler under one shared Redis lease
+(`TASK_STATE_RECONCILIATION_*` in the
+[Configuration Reference](../operations/configuration-reference.md#workers--queue)).
+It compares unfinished tasks in SQLite with their BullMQ job and task
+container. A task whose job and container have both disappeared (worker
+restart, host reboot, killed container), observed at least twice across the
+orphan grace window (60 s by default), is **orphaned**: it is marked failed
+with "Task was orphaned after worker restart…".
+
+ProPR then dispatches **replacement runs** instead of leaving that work lost:
+
+- **Infrastructure lost.** An orphaned issue task gets exactly one replacement
+  attempt for the same issue. It reuses the original agent, model and per-task
+  overrides (base branch, reasoning level, trigger label, cost cap) and
+  continues the original's work branch when that branch was pushed; otherwise it
+  starts from a fresh worktree. A second orphaning in the same lineage is final.
+  Set `INFRA_LOST_REPLACEMENT=false` to disable it.
+- **Transient provider errors.** When an issue run ends with a provider error
+  that `withRetry` treats as retryable (5xx, overloaded, connection resets,
+  timeouts) after the agent's own in-run retries, a replacement attempt is
+  dispatched, up to `MAX_PROVIDER_REPLACEMENTS` per lineage (default 2; the
+  instance setting **Provider failure replacements** overrides the
+  environment; `0` disables it). 429 and usage-limit errors are excluded: they
+  already re-queue the same task until the limit resets. Credential errors and
+  run timeouts are excluded as well. Only errors from the coding agent's own
+  execution count: a GitHub or git failure before or after the agent ran never
+  starts a replacement, whatever its status code.
+
+Attempts are linked durably: the replaced task records `replaced_by_task_id`,
+the replacement records `replaces_task_id`, `attempt_number` and its lineage
+root. Claiming `replaced_by_task_id` is atomic, so each attempt is replaced at
+most once, and caps are counted from these stamps, so they survive daemon and
+worker restarts. A replacement goes through the same repository capacity
+admission as any task and never bypasses `limits.max_parallel_tasks`. When the
+original run had a spend cap (task override, `limits.max_cost_usd` or the
+instance default), the task records the cap it resolved, and every replacement
+in the lineage is held to that cap minus what all earlier attempts spent. The
+remainder is enforced by the same run spend cap guard as any run, even if the
+workflow or instance default changes in the meantime.
+
+No replacement is dispatched for user or withdrawal cancellations
+(`cancelled_*`), tasks stopped by the stall watchdog, run timeout or cost cap,
+goal tasks (see goal recovery), issues closed in the meantime, or PR follow-up
+tasks (only issue tasks are replayable today).
+
+Each decision is written to the task timeline without changing its state:
+`replacement.dispatched`, `replacement.skipped` (with its reason:
+`cap_reached`, `user_cancelled`, `issue_closed`, `watchdog_stop`,
+`cost_cap_stop`, `budget_exhausted`, `disabled`, …) and
+`replacement.exhausted` when the cap or budget ends a lineage. The Inbox holds
+back the failure alert of a replaced attempt and shows one "Replacement
+started" card instead. The GitHub failure comment on the final failure lists
+every attempt with a link to each task. A decision interrupted by a restart
+(the failure was recorded, the replacement not yet queued) is completed by the
+reconciler on a later pass. When no replacement follows, the decision is
+released before the held-back failure alert is published, so the alert shows.
+The task keeps a durable obligation until the alert, the timeline events and
+the final comment of a lineage lost twice are delivered, and the reconciler
+retries them if the worker stops in between or GitHub rejects the comment.
+The comment's delivery is recorded separately from its timeline event. The
+comment carries a hidden marker, so a retry after an uncertain GitHub response
+finds an earlier post instead of posting a duplicate. Recovery stops retrying
+after five rejected posts.
+
+Task detail shows the attempt lineage, and `propr task get --json` includes
+`replacesTaskId`, `replacedByTaskId` and `attemptNumber`.
+
 See [Observability And Control](../features/observability.md) for the product-facing view and [Worker Runtime Reference](./worker-runtime.md) for operational details.
