@@ -1,4 +1,5 @@
-# Bounded removal of the private temporary root created by smoke-local-runtime.sh.
+# Bounded removal of the private temporary root created by smoke-local-runtime.sh
+# and by scripts/smoke-test-preview-runtime-images.sh.
 #
 # A rootful Docker daemon creates files inside the bind-mounted data root as the
 # container user (root), e.g. a 0700 `data/web-push` directory the host user
@@ -18,14 +19,15 @@ smoke_root_identity() {
 }
 
 # Refuses anything other than the exact private directory this run created:
-# a direct, non-symlink child of the canonical temporary base with the mktemp
-# name shape, owned by the current user, mode 0700 and the recorded identity.
+# a direct, non-symlink child of the canonical temporary base with one of the
+# two smoke mktemp name shapes, owned by the current user, mode 0700 and the
+# recorded identity.
 smoke_root_is_owned() {
   local root="$1" base="$2" identity="$3" parent name mode
   [[ "$base" == /* && "$root" == /* && -n "$identity" ]] || { echo "smoke cleanup: refusing non-absolute target $root" >&2; return 1; }
   name="${root##*/}"
   parent="${root%/*}"
-  if [[ "$parent" != "$base" || ! "$name" =~ ^propr-desktop-runtime-smoke\.[A-Za-z0-9]{6}$ ]]; then
+  if [[ "$parent" != "$base" || ! "$name" =~ ^propr-(desktop|preview)-runtime-smoke\.[A-Za-z0-9]{6}$ ]]; then
     echo "smoke cleanup: refusing target outside the private smoke root shape: $root" >&2
     return 1
   fi

@@ -115,6 +115,11 @@ jobs:
           SOURCE_REVISION: ${{ needs.identity.outputs.source_revision }}
         run: ./scripts/smoke-test-preview-runtime-images.sh
 
+      - name: Prove bounded cleanup of root-owned container data on this engine
+        env:
+          PREVIEW_SMOKE_CLEANUP_IMAGE: propr/app:${{ needs.identity.outputs.source_revision }}
+        run: node --test test/previewRuntimeSmokeCleanup.test.mjs
+
       - name: Package the smoke-tested native images
         env:
           RELEASE_SHA: ${{ needs.identity.outputs.source_revision }}

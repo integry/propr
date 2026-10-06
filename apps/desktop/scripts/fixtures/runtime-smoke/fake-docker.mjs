@@ -1,8 +1,8 @@
-// Stateful stand-in for a rootful Docker daemon used by the runtime smoke
-// regression.  Containers that bind-mount the smoke data root create a private
-// directory the host user cannot traverse (as root:root 0700 would be on a real
-// rootful host); the cleanup container emulates root's DAC override within its
-// single bind mount.  Every invocation is appended to FAKE_DOCKER_STATE/calls.
+// Stateful stand-in for a rootful Docker daemon used by the desktop and preview
+// runtime smoke regressions.  Containers that bind-mount the smoke data root
+// create a private directory the host user cannot traverse (as root:root 0700
+// would be on a real rootful host); the cleanup container emulates root's DAC
+// override within its single bind mount.  Every invocation is appended to FAKE_DOCKER_STATE/calls.
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -72,7 +72,9 @@ if (command === 'network' && subcommand === 'create') {
   process.stdout.write(`127.0.0.1:${process.env.FAKE_API_PORT}\n`);
 } else if (command === 'logs') {
   process.stdout.write('fake api logs\n');
-} else if (command === 'run' && args.includes('--rm')) {
+} else if (command === 'inspect') {
+  process.stdout.write('running\n');
+} else if (command === 'run' && args.includes('--rm') && args.includes('--mount')) {
   if (process.env.FAKE_DOCKER_CLEANUP === 'fail') fail('cleanup container failed');
   const mounts = option('--mount');
   if (mounts.length !== 1) fail('cleanup must mount exactly one path');
@@ -80,11 +82,12 @@ if (command === 'network' && subcommand === 'create') {
   if (!source || !existsSync(source)) fail(`invalid cleanup mount ${mounts[0]}`);
   privilegedEmpty(source);
 } else if (command === 'run') {
+  // One-shot `--rm` runs (preview migrations) leave no container behind.
   const name = option('--name')[0];
-  state.containers[name] = { labels: parseLabels() };
+  if (!args.includes('--rm')) state.containers[name] = { labels: parseLabels() };
   for (const volume of option('-v')) {
     const [source, target] = volume.split(':');
-    if (target === '/usr/src/app/data') {
+    if (target === '/usr/src/app/data' && !existsSync(join(source, 'web-push'))) {
       const webPush = join(source, 'web-push');
       mkdirSync(webPush);
       writeFileSync(join(webPush, 'vapid.json'), '{}');
