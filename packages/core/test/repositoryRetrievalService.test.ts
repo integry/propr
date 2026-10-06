@@ -529,3 +529,30 @@ test('fetches qualified branch and tag refs missing from a shallow single-branch
     ensureRepoCloned.mock.resetCalls();
   }
 });
+
+test('clones without the index branch when an explicit ref is given and no managed clone exists', async () => {
+  const managedPath = path.join(clonesBasePath, 'owner', 'managed-fresh');
+  assert.equal(fs.existsSync(managedPath), false);
+  // Mirrors cloneNewRepo: a shallow clone that passes --branch when a base branch is given.
+  ensureRepoCloned.mock.mockImplementation(async (opts: { baseBranch?: string }) => {
+    if (!fs.existsSync(managedPath)) {
+      const branchArgs = opts.baseBranch && opts.baseBranch !== 'HEAD' ? [`--branch=${opts.baseBranch}`] : [];
+      execFileSync('git', ['clone', '-q', '--depth=1', ...branchArgs, `file://${repoPath}`, managedPath], { stdio: 'pipe' });
+    }
+    return managedPath;
+  });
+  const managed = { repository: 'owner/managed-fresh', branch: 'deleted-branch' };
+  try {
+    const search = await searchRepositoryFiles({ ...managed, query: 'featureOnlyNeedle', mode: 'literal', ref: 'feature' });
+    assert.equal(search.commit, featureCommit);
+    assert.deepEqual(search.matches.map(match => match.path), ['src/feature.ts']);
+    assert.equal(ensureRepoCloned.mock.calls[0].arguments[0].baseBranch, undefined);
+
+    fs.rmSync(managedPath, { recursive: true, force: true });
+    const read = await readRepositoryFileContent({ ...managed, path: 'src/util.ts', ref: 'main' });
+    assert.equal(read.commit, headCommit);
+  } finally {
+    ensureRepoCloned.mock.restore();
+    ensureRepoCloned.mock.resetCalls();
+  }
+});

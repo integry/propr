@@ -29,7 +29,12 @@ async function resolveCloneToken(authToken?: string): Promise<string> {
   }
 }
 
-/** Clones the repository or refreshes the existing shared clone. */
+/**
+ * Clones the repository or refreshes the existing shared clone. When `ref` is
+ * given it takes precedence over `branch`, which then only names the semantic
+ * index; the clone uses the default branch so that a missing `branch` cannot
+ * fail cloning, and the caller fetches `ref` explicitly if it is still absent.
+ */
 export async function cloneOrRefresh(owner: string, repoName: string, options: RepositoryTargetOptions): Promise<{ repoPath: string; authToken: string }> {
   const authToken = await resolveCloneToken(options.authToken);
   const repoPath = await ensureRepoCloned({
@@ -37,7 +42,7 @@ export async function cloneOrRefresh(owner: string, repoName: string, options: R
     owner,
     repoName,
     authToken,
-    baseBranch: options.branch,
+    baseBranch: options.ref?.trim() ? undefined : options.branch,
   });
   return { repoPath, authToken };
 }
