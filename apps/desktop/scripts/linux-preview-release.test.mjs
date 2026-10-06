@@ -27,6 +27,7 @@ const repository = 'integry/propr';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const runtimeAppImage = `propr/app:${sourceRevision}@sha256:${'a'.repeat(64)}`;
 const runtimeUiImage = `propr/ui:${sourceRevision}@sha256:${'b'.repeat(64)}`;
+const runtimeAgentImage = `propr/agent:${sourceRevision}@sha256:${'c'.repeat(64)}`;
 
 const createValidatedInput = async root => {
   const inputDirectory = join(root, 'validated');
@@ -72,6 +73,7 @@ const createBundle = async () => {
     sourceRevision,
     runtimeAppImage,
     runtimeUiImage,
+    runtimeAgentImage,
     repository,
     workflowRunId: '1234',
     createdAt: '2026-09-12T09:00:00.000Z',
@@ -205,6 +207,113 @@ describe('Linux preview release channel', () => {
     assert.doesNotMatch(bundle.notes, /macOS|Windows/);
   });
 
+  test('binds the exact linux/amd64 managed agent beside app/UI in metadata and checksums', async () => {
+    const { directory, manifest } = await createBundle();
+    assert.equal(manifest.schemaVersion, 2);
+    assert.deepEqual(manifest.runtime, {
+      distribution: 'published',
+      appImage: runtimeAppImage,
+      uiImage: runtimeUiImage,
+      agentImage: runtimeAgentImage,
+      agentPlatforms: ['linux/amd64'],
+    });
+    const bundle = await readLinuxPreviewBundle({ directory, version, sourceRevision, repository });
+    assert.equal(bundle.manifest.runtime.agentImage, runtimeAgentImage);
+    const checksums = await readFile(join(directory, 'SHA256SUMS'), 'utf8');
+    const manifestBytes = await readFile(join(directory, 'linux-preview.json'));
+    assert.match(checksums, new RegExp(`^${digest(manifestBytes)}  linux-preview\\.json$`, 'm'));
+    assert.match(bundle.notes, /published for `linux\/amd64` only/);
+    assert.match(bundle.notes, /On an `arm64` host/);
+    assert.match(bundle.notes, /real task execution with this preview have not\nyet been validated/);
+  });
+
+  test('rejects missing, mutable, other-source, or other-repository agent references for new previews', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-linux-preview-agent-'));
+    const inputDirectory = await createValidatedInput(root);
+    const invalid = [
+      undefined,
+      '',
+      'propr/agent:0.9.0',
+      `propr/agent:${sourceRevision}`,
+      `propr/agent:${'2'.repeat(40)}@sha256:${'c'.repeat(64)}`,
+      `propr/app:${sourceRevision}@sha256:${'c'.repeat(64)}`,
+      `example/agent:${sourceRevision}@sha256:${'c'.repeat(64)}`,
+      ` ${runtimeAgentImage}`,
+    ];
+    for (const agentImage of invalid) {
+      await assert.rejects(prepareLinuxPreview({
+        inputDirectory,
+        outputDirectory: join(root, 'bundle'),
+        version,
+        sourceRevision,
+        runtimeAppImage,
+        runtimeUiImage,
+        runtimeAgentImage: agentImage,
+        repository,
+        workflowRunId: '1234',
+      }), /digest-pinned linux\/amd64 propr\/agent image/, String(agentImage));
+    }
+  });
+
+  test('refuses app/UI-only schema 1 bundles and tampered agent bindings', async () => {
+    const { directory } = await createBundle();
+    const manifestPath = join(directory, 'linux-preview.json');
+    const original = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const rewrite = async manifest => {
+      const bytes = `${JSON.stringify(manifest, null, 2)}\n`;
+      await writeFile(manifestPath, bytes);
+      const checksums = (await readFile(join(directory, 'SHA256SUMS'), 'utf8'))
+        .replace(/^[a-f0-9]{64}  linux-preview\.json$/m, `${digest(Buffer.from(bytes))}  linux-preview.json`);
+      await writeFile(join(directory, 'SHA256SUMS'), checksums);
+    };
+    const legacyRuntime = { distribution: 'published', appImage: runtimeAppImage, uiImage: runtimeUiImage };
+    await rewrite({ ...original, schemaVersion: 1, runtime: legacyRuntime });
+    await assert.rejects(readLinuxPreviewBundle({ directory, version, sourceRevision, repository }),
+      /not the managed-agent-bound schema 2/);
+    await rewrite({ ...original, runtime: legacyRuntime });
+    await assert.rejects(readLinuxPreviewBundle({ directory, version, sourceRevision, repository }),
+      /missing or unknown fields/);
+    await rewrite({ ...original, runtime: { ...original.runtime, agentPlatforms: ['linux/amd64', 'linux/arm64'] } });
+    await assert.rejects(readLinuxPreviewBundle({ directory, version, sourceRevision, repository }),
+      /not published, digest-pinned, and source-aligned/);
+    await rewrite({ ...original, runtime: { ...original.runtime, agentImage: 'propr/agent:0.9.0' } });
+    await assert.rejects(readLinuxPreviewBundle({ directory, version, sourceRevision, repository }),
+      /not published, digest-pinned, and source-aligned/);
+  });
+
+  test('never overwrites an existing app/UI-only draft at the same preview identity', async () => {
+    const { directory } = await createBundle();
+    const github = createGitHub();
+    const legacyManifest = Buffer.from('{"schemaVersion":1}\n');
+    github.release = {
+      id: 7,
+      tag_name: linuxPreviewTag(version, sourceRevision),
+      target_commitish: sourceRevision,
+      draft: true,
+      prerelease: true,
+      published_at: null,
+      name: `ProPR Desktop Linux preview ${version} (${sourceRevision.slice(0, 12)})`,
+      body: linuxPreviewInstallNotes({ version, sourceRevision, tag: linuxPreviewTag(version, sourceRevision) }),
+      upload_url: 'https://uploads.github.com/releases/7/assets{?name,label}',
+    };
+    github.assets.push({
+      id: 1,
+      name: 'linux-preview.json',
+      state: 'uploaded',
+      size: legacyManifest.length,
+      digest: `sha256:${digest(legacyManifest)}`,
+      url: 'https://api.github.com/assets/1',
+      bytes: legacyManifest,
+    });
+    await assert.rejects(stageLinuxPreviewDraft({
+      directory, version, sourceRevision, repository, token: 'token', fetchImpl: github.fetchImpl,
+    }), /asset metadata mismatch: linux-preview\.json/);
+    assert.equal(github.assets.length, 1);
+    assert.equal(github.assets[0].bytes, legacyManifest);
+    assert.equal(github.createCalls, 0);
+    assert.equal(github.patchCalls, 0);
+  });
+
   test('rejects a runtime image that is mutable or belongs to a different source revision', async () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-linux-preview-invalid-'));
     const inputDirectory = await createValidatedInput(root);
@@ -215,6 +324,7 @@ describe('Linux preview release channel', () => {
       sourceRevision,
       runtimeAppImage: `propr/app:${sourceRevision}`,
       runtimeUiImage,
+      runtimeAgentImage,
       repository,
       workflowRunId: '1234',
     }), /digest-pinned/);
@@ -303,6 +413,7 @@ describe('Linux preview release channel', () => {
       sourceRevision,
       runtimeAppImage,
       runtimeUiImage,
+      runtimeAgentImage,
       repository,
       workflowRunId: '1234',
     }), /bytes drifted/);

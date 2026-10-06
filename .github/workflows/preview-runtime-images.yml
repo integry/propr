@@ -4,13 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Validate native app/UI artifacts, or explicitly publish their full-SHA manifests
+        description: Validate (prepare) or explicitly publish native app/UI artifacts, or the separate linux/amd64 managed-agent image (prepare-agent/publish-agent)
         required: true
         type: choice
         default: prepare
         options:
           - prepare
           - publish
+          - prepare-agent
+          - publish-agent
       source_revision:
         description: Full lowercase commit SHA already reachable from main
         required: true
@@ -58,6 +60,7 @@ jobs:
 
   build-native:
     name: Build and smoke app/UI on native linux/${{ matrix.architecture }}
+    if: inputs.operation == 'prepare' || inputs.operation == 'publish'
     needs: identity
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
@@ -101,6 +104,12 @@ jobs:
           node -e 'const expected=process.env.EXPECTED_ARCHITECTURE; if(process.platform!=="linux"||process.arch!==(expected==="amd64"?"x64":"arm64")) throw new Error(`Expected native linux/${expected}, got ${process.platform}/${process.arch}`)'
           docker version
 
+      - name: Install the pinned root dependency tree for bundled notices
+        # build-images.sh regenerates THIRD_PARTY_LICENSES.md from root
+        # node_modules and bakes it into the app/UI image; the generator
+        # refuses an uninstalled or unpinned tree. No lifecycle scripts run.
+        run: node apps/desktop/scripts/retry-transient-download.mjs -- npm ci --ignore-scripts --no-audit --no-fund
+
       - name: Build only app and UI with exact local full-SHA tags
         env:
           BUILD_DATE: ${{ needs.identity.outputs.build_date }}
@@ -140,6 +149,7 @@ jobs:
 
   assemble:
     name: Verify and assemble exact two-architecture candidates
+    if: inputs.operation == 'prepare' || inputs.operation == 'publish'
     needs: [identity, build-native]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -260,6 +270,219 @@ jobs:
           node scripts/preview-runtime-images.mjs publish \
             --source-revision "$RELEASE_SHA" \
             --input preview-runtime-candidate \
+            --github-output "$GITHUB_OUTPUT" \
+            --step-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove isolated Docker Hub credentials
+        if: always()
+        run: |
+          if [ -z "${DOCKER_CONFIG:-}" ]; then
+            exit 0
+          fi
+          if [ -z "${RUNNER_TEMP:-}" ] || [[ "$DOCKER_CONFIG" != "$RUNNER_TEMP"/propr-preview-runtime-docker-* ]]; then
+            echo "Refusing to clean unexpected DOCKER_CONFIG path: $DOCKER_CONFIG" >&2
+            exit 1
+          fi
+          docker logout docker.io >/dev/null 2>&1 || true
+          rm -rf -- "$DOCKER_CONFIG"
+
+  # The managed agent image keeps its own linux/amd64-only contract (see
+  # Dockerfile.agent). It is prepared and published by separate operations so
+  # the app/UI two-architecture scope above is never widened or narrowed.
+  build-agent:
+    name: Build and smoke the managed agent on native linux/amd64
+    if: inputs.operation == 'prepare-agent' || inputs.operation == 'publish-agent'
+    needs: identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - name: Prove the agent source build has no publication or provider credential
+        run: |
+          node - <<'NODE'
+          const forbidden = ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'MISTRAL_API_KEY']
+            .filter(name => process.env[name]);
+          if (forbidden.length) throw new Error(`Credentials reached the agent source build: ${forbidden.join(', ')}`);
+          NODE
+
+      - name: Checkout the exact validated source with no persisted credential
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.identity.outputs.source_revision }}
+          persist-credentials: false
+
+      - name: Set up native Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          architecture: x64
+          package-manager-cache: false
+
+      - name: Verify the supported native linux/amd64 agent architecture and toolchain
+        run: |
+          node -e 'if(process.platform!=="linux"||process.arch!=="x64") throw new Error(`Expected native linux/amd64, got ${process.platform}/${process.arch}`)'
+          docker version
+
+      - name: Install the pinned root dependency tree for bundled notices
+        # build-images.sh regenerates THIRD_PARTY_LICENSES.md from root
+        # node_modules and bakes it into the agent image; the generator
+        # refuses an uninstalled or unpinned tree. No lifecycle scripts run.
+        run: node apps/desktop/scripts/retry-transient-download.mjs -- npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build only the managed agent with an exact local full-SHA tag
+        env:
+          BUILD_DATE: ${{ needs.identity.outputs.build_date }}
+          DOCKERHUB_NS: propr
+          GIT_SHA: ${{ needs.identity.outputs.source_revision }}
+        run: ./scripts/build-images.sh --sha-only --only agent --platform linux/amd64
+
+      - name: Run the credential-free agent CLI/artifact/runtime smoke contract
+        env:
+          AGENT_IMAGE: propr/agent:${{ needs.identity.outputs.source_revision }}
+          SOURCE_REVISION: ${{ needs.identity.outputs.source_revision }}
+          SMOKE_EVIDENCE: ${{ runner.temp }}/propr-preview-agent-smoke.json
+        run: ./scripts/smoke-test-preview-agent-image.sh
+
+      - name: Package the smoke-tested native agent image
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.source_revision }}
+        run: |
+          node scripts/preview-runtime-images.mjs package-agent \
+            --source-revision "$RELEASE_SHA" \
+            --smoke-evidence "$RUNNER_TEMP/propr-preview-agent-smoke.json" \
+            --output preview-agent-native
+
+      - name: Upload native agent evidence without publishing it
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-preview-agent-amd64-${{ needs.identity.outputs.source_revision }}-${{ github.run_id }}
+          path: preview-agent-native
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  assemble-agent:
+    name: Verify and assemble the exact linux/amd64 agent candidate
+    needs: [identity, build-agent]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout only the reviewed workflow helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install pinned OCI assembly client
+        uses: regclient/actions/regctl-installer@78eb729dbdb4ef6480e85ff697b4410e22112583
+        with:
+          release: v0.11.5
+
+      - name: Download the native agent evidence artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-preview-agent-amd64-${{ needs.identity.outputs.source_revision }}-${{ github.run_id }}
+          path: preview-agent-native
+
+      - name: Validate checksum, source labels, smoke evidence, and linux/amd64-only scope
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.source_revision }}
+        run: |
+          node scripts/preview-runtime-images.mjs assemble-agent \
+            --source-revision "$RELEASE_SHA" \
+            --input preview-agent-native \
+            --output preview-agent-candidate
+
+      - name: Upload validation-only agent candidate
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-preview-agent-candidate-${{ needs.identity.outputs.source_revision }}-${{ github.run_id }}
+          path: preview-agent-candidate
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Summarize validation-only agent preparation
+        if: inputs.operation == 'prepare-agent'
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.source_revision }}
+        run: |
+          {
+            echo '### Preview managed-agent preparation verified'
+            echo
+            echo "The native linux/amd64 managed-agent image for \`$RELEASE_SHA\` passed the credential-free smoke and immutable candidate validation."
+            echo 'The managed agent is linux/amd64 only; no arm64 agent image was built or labelled.'
+            echo 'No registry tag, npm package, stable release, desktop release, version tag, or latest tag was published.'
+            echo 'Use a separate `publish-agent` dispatch for this SHA after protected-environment approval.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-agent:
+    name: Explicitly publish the exact full-SHA linux/amd64 agent manifest
+    if: inputs.operation == 'publish-agent'
+    needs: [identity, assemble-agent]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: desktop-linux-preview-runtime-publication
+    permissions:
+      contents: read
+    outputs:
+      runtime_agent_image: ${{ steps.publish.outputs.runtime_agent_image }}
+    steps:
+      - name: Require the configured protected publication environment
+        env:
+          PUBLICATION_AUTHORIZED: ${{ vars.PROPR_DESKTOP_LINUX_PREVIEW_RUNTIME_PUBLICATION_AUTHORIZED }}
+        run: |
+          if [ "$PUBLICATION_AUTHORIZED" != 1 ]; then
+            echo 'Configure protected environment reviewers and PROPR_DESKTOP_LINUX_PREVIEW_RUNTIME_PUBLICATION_AUTHORIZED=1 before runtime publication.' >&2
+            exit 1
+          fi
+
+      - name: Checkout only the reviewed publication helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install pinned OCI publication client
+        uses: regclient/actions/regctl-installer@78eb729dbdb4ef6480e85ff697b4410e22112583
+        with:
+          release: v0.11.5
+
+      - name: Download only the verified agent candidate
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-preview-agent-candidate-${{ needs.identity.outputs.source_revision }}-${{ github.run_id }}
+          path: preview-agent-candidate
+
+      - name: Prepare isolated Docker Hub credentials
+        run: |
+          docker_config="$RUNNER_TEMP/propr-preview-runtime-docker-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+          install -d -m 700 "$docker_config"
+
+      - name: Authenticate only after agent source build and candidate verification
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          test -n "$DOCKERHUB_USERNAME" && test -n "$DOCKERHUB_TOKEN" || {
+            echo 'Protected Docker Hub credentials are required.' >&2
+            exit 1
+          }
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Preflight the immutable agent tag, publish it if missing, and emit its verified digest
+        id: publish
+        env:
+          RELEASE_SHA: ${{ needs.identity.outputs.source_revision }}
+        run: |
+          node scripts/preview-runtime-images.mjs publish-agent \
+            --source-revision "$RELEASE_SHA" \
+            --input preview-agent-candidate \
             --github-output "$GITHUB_OUTPUT" \
             --step-summary "$GITHUB_STEP_SUMMARY"
 

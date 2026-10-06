@@ -9,12 +9,37 @@ import {
   createIsolatedSetupEnvironment,
   createLinuxSetupIsolation,
   createInterruptedRelaunchDiagnostics,
+  dockerOperation,
   dockerWrapperSource,
   parseDockerEvents,
   probeDockerSupport,
   reserveFreeLoopbackPorts,
   validateSourceSha,
 } from './packaged-linux-setup-lifecycle.mjs';
+
+const digest = `sha256:${'a'.repeat(64)}`;
+
+const rejectedDockerCommands = [
+  ['image', 'tag', 'propr/app:test', 'propr/app:mutated'],
+  ['image', 'inspect', 'propr/app:test', '--format', '{{.Id}}'],
+  ['image', 'inspect', '--help'],
+  ['image', 'inspect', '--format', '{{json .}}', 'propr/app:test'],
+  ['image', 'inspect', '--format', '{{.Id}} ', 'propr/app:test'],
+  ['image', 'inspect', '-f', '{{.Id}}', 'propr/app:test'],
+  ['image', 'inspect', '--format={{.Id}}', 'propr/app:test'],
+  ['image', 'inspect', '--format', '{{.Id}}'],
+  ['image', 'inspect', '--format', '{{.Id}}', ''],
+  ['image', 'inspect', '--format', '{{.Id}}', ' propr/app:test'],
+  ['image', 'inspect', '--format', '{{.Id}}', '--type=image'],
+  ['image', 'inspect', '--format', '{{.Id}}', 'propr/app:test', 'propr/ui:test'],
+  ['image', 'inspect', '--format', '{{.Id}}', '--format', 'propr/app:test'],
+  ['inspect', '--format', '{{.Id}}', 'propr/app:test'],
+  ['run', `propr/agent:0123abc@${digest}`],
+  ['build', '-t', 'propr/app:test', '.'],
+  ['rmi', 'propr/app:test'],
+  ['image', 'rm', 'propr/app:test'],
+  ['network', 'create', 'propr-test'],
+];
 
 const waitForEventCount = async (path, count) => {
   const deadline = Date.now() + 5_000;
@@ -80,6 +105,17 @@ describe('real packaged Linux setup lifecycle harness', () => {
     assert.equal(environment.PATH, '/tmp/propr-desktop-smoke-private/wrapper:/usr/bin:/bin');
   });
 
+  it('classifies only exact read-only image inspection forms as image-inspect', () => {
+    assert.equal(dockerOperation(['image', 'inspect', 'propr/agent:0123abc']), 'image-inspect');
+    assert.equal(dockerOperation(['image', 'inspect', `propr/agent:0123abc@${digest}`]), 'image-inspect');
+    assert.equal(dockerOperation(['image', 'inspect', '--format', '{{.Id}}', 'propr/agent:0123abc']), 'image-inspect');
+    assert.equal(dockerOperation(['image', 'inspect', '--format', '{{.Id}}', `propr/agent:0123abc@${digest}`]), 'image-inspect');
+    assert.equal(dockerOperation(['image', 'inspect', '--format', '{{.Id}}', `propr/agent@${digest}`]), 'image-inspect');
+    for (const args of rejectedDockerCommands) {
+      assert.equal(dockerOperation(args), 'rejected', JSON.stringify(args));
+    }
+  });
+
   it('delegates read-only Docker inspection, holds pull, and rejects mutations', async () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-linux-setup-wrapper-test-'));
     const wrapper = join(root, 'docker');
@@ -89,7 +125,12 @@ describe('real packaged Linux setup lifecycle harness', () => {
     try {
       await writeFile(realDocker, `#!/usr/bin/env node
 'use strict';
-process.stdout.write(JSON.stringify(process.argv.slice(2)));
+const args = process.argv.slice(2);
+if (args.at(-1) === 'propr/agent:missing') {
+  process.stderr.write('Error: No such image: propr/agent:missing\\n');
+  process.exit(1);
+}
+process.stdout.write(JSON.stringify(args));
 `, { mode: 0o700 });
       await writeFile(wrapper, dockerWrapperSource({ realDockerPath: realDocker, eventPath: eventsPath }), { mode: 0o700 });
       await chmod(realDocker, 0o700);
@@ -108,10 +149,24 @@ process.stdout.write(JSON.stringify(process.argv.slice(2)));
       assert.deepEqual(JSON.parse(inspectOutput), ['image', 'inspect', 'propr/app:test']);
 
       for (const args of [
-        ['image', 'tag', 'propr/app:test', 'propr/app:mutated'],
-        ['image', 'inspect', 'propr/app:test', '--format', '{{.Id}}'],
-        ['image', 'inspect', '--help'],
+        ['image', 'inspect', '--format', '{{.Id}}', 'propr/agent:0123abc'],
+        ['image', 'inspect', '--format', '{{.Id}}', `propr/agent:0123abc@${digest}`],
       ]) {
+        const formatted = spawn(process.execPath, [wrapper, ...args]);
+        let formattedOutput = '';
+        formatted.stdout.on('data', chunk => { formattedOutput += chunk.toString('utf8'); });
+        assert.deepEqual(await once(formatted, 'close'), [0, null]);
+        assert.deepEqual(JSON.parse(formattedOutput), args);
+      }
+
+      // A delegated nonzero result (absent image) must surface unchanged.
+      const missing = spawn(process.execPath, [wrapper, 'image', 'inspect', '--format', '{{.Id}}', 'propr/agent:missing']);
+      let missingError = '';
+      missing.stderr.on('data', chunk => { missingError += chunk.toString('utf8'); });
+      assert.deepEqual(await once(missing, 'close'), [1, null]);
+      assert.match(missingError, /No such image: propr\/agent:missing/);
+
+      for (const args of rejectedDockerCommands) {
         const rejected = spawn(process.execPath, [wrapper, ...args]);
         assert.deepEqual(await once(rejected, 'close'), [97, null]);
       }
@@ -129,15 +184,19 @@ fs.appendFileSync = (...args) => {
 };
 `);
       const held = spawn(process.execPath, ['--require', slowEventWriter, wrapper, 'pull', 'propr/app:test']);
-      const events = await waitForEventCount(eventsPath, 9);
+      const admittedBeforePull = 5 + rejectedDockerCommands.length * 2;
+      const events = await waitForEventCount(eventsPath, admittedBeforePull + 1);
       assert.equal(events.at(-1).operation, 'pull');
       held.kill('SIGTERM');
       assert.deepEqual(await once(held, 'close'), [143, null]);
-      const final = await waitForEventCount(eventsPath, 10);
+      const final = await waitForEventCount(eventsPath, admittedBeforePull + 2);
       assert.equal(final.at(-1).event, 'sigterm');
       assert.deepEqual(final.filter(event => event.event === 'invoked').map(event => event.operation), [
-        'version', 'image-inspect', 'rejected', 'rejected', 'rejected', 'pull',
+        'version', 'image-inspect', 'image-inspect', 'image-inspect', 'image-inspect',
+        ...rejectedDockerCommands.map(() => 'rejected'), 'pull',
       ]);
+      assert.equal(final.filter(event => event.event === 'rejected').length, rejectedDockerCommands.length);
+      assert.equal(final.some(event => event.event === 'delegate-error'), false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
