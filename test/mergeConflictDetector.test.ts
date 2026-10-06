@@ -79,11 +79,17 @@ await mock.module('../packages/core/src/utils/logger.js', {
 });
 
 // Stored configuration: the instance default row and the monitored repositories.
+// Keys in failingConfigReads behave like a failed DB read: the lenient reader
+// returns its fallback (as configStore does), the strict reader throws.
 const storedConfig = new Map<string, unknown>();
+const failingConfigReads = new Set<string>();
 await mock.module('../packages/core/src/config/configStore.js', {
     namedExports: {
-        getConfig: mock.fn(async (key: string, fallback: unknown) => (storedConfig.has(key) ? storedConfig.get(key) : fallback)),
-        getConfigStrict: mock.fn(async (key: string, fallback: unknown) => (storedConfig.has(key) ? storedConfig.get(key) : fallback)),
+        getConfig: mock.fn(async (key: string, fallback: unknown) => (!failingConfigReads.has(key) && storedConfig.has(key) ? storedConfig.get(key) : fallback)),
+        getConfigStrict: mock.fn(async (key: string, fallback: unknown) => {
+            if (failingConfigReads.has(key)) throw new Error(`read failed: ${key}`);
+            return storedConfig.has(key) ? storedConfig.get(key) : fallback;
+        }),
         getConfigWithClient: mock.fn(async (_key: string, fallback: unknown) => fallback),
         saveConfig: mock.fn(async () => true),
     }
@@ -252,6 +258,7 @@ function resetMocks() {
     mockQueueAdd.mock.mockImplementation(async () => {});
     for (const fn of Object.values(mockLoggerInstance)) fn.mock.resetCalls();
     storedConfig.clear();
+    failingConfigReads.clear();
     taskRows.length = 0;
     sleeps.length = 0;
     enableInstance(true);
@@ -290,6 +297,28 @@ describe('mergeConflictDetector - pull_request events', () => {
         const result = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
         assert.equal(result?.reason, 'auto_resolve_disabled');
         assert.equal(mockOctokit.request.mock.callCount(), 0);
+    });
+
+    test('a failed repository config read does not fall back to an enabled instance default', async () => {
+        storedConfig.set('repos_to_monitor', [{ id: '1', name: 'test-owner/test-repo', enabled: true, autoResolveMergeConflicts: false }]);
+        failingConfigReads.add('repos_to_monitor');
+        routeGitHub({ 42: [{}] });
+        await assert.rejects(handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps), /repos_to_monitor/);
+        assert.equal(mockOctokit.request.mock.callCount(), 0);
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('a stored repository config that is not a list stops detection', async () => {
+        storedConfig.set('repos_to_monitor', { name: 'test-owner/test-repo', autoResolveMergeConflicts: false });
+        routeGitHub({ 42: [{}] });
+        await assert.rejects(handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps), /not a list/);
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('a missing repository config row inherits the enabled instance default', async () => {
+        routeGitHub({ 42: [{}] });
+        const result = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
+        assert.equal(result?.outcome, 'queued');
     });
 
     test('irrelevant actions are ignored', async () => {
@@ -435,6 +464,15 @@ describe('mergeConflictDetector - pull_request events', () => {
 describe('mergeConflictDetector - push events', () => {
     beforeEach(resetMocks);
 
+    test('a failed repository config read stops push fan-out', async () => {
+        storedConfig.set('repos_to_monitor', [{ id: '1', name: 'test-owner/test-repo', enabled: true, autoResolveMergeConflicts: false }]);
+        failingConfigReads.add('repos_to_monitor');
+        routeGitHub({ 42: [{}] });
+        await assert.rejects(handlePushConflictDetection(createMockPushEvent(), createMockRedis(), 'cid', deps), /repos_to_monitor/);
+        assert.equal(mockOctokit.request.mock.callCount(), 0);
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+    });
+
     test('disabled setting costs no GitHub calls', async () => {
         enableInstance(false);
         const results = await handlePushConflictDetection(createMockPushEvent(), createMockRedis(), 'cid', deps);
@@ -524,6 +562,15 @@ describe('mergeConflictDetector - sweep', () => {
         const results = await sweepConflictedPullRequests({ repositories: ['test-owner/test-repo'], redisClient: redis, deps });
         assert.deepEqual(results.map(result => [result.prNumber, result.outcome]), [[42, 'queued']]);
         assert.equal(redis._store.get('merge-conflict-fanout-cursor:test-owner/test-repo:*'), '1');
+    });
+
+    test('a failed repository config read stops the sweep instead of using the enabled instance default', async () => {
+        storedConfig.set('repos_to_monitor', [{ id: '1', name: 'test-owner/test-repo', enabled: true, autoResolveMergeConflicts: false }]);
+        failingConfigReads.add('repos_to_monitor');
+        routeGitHub({ 42: [{}] });
+        await assert.rejects(sweepConflictedPullRequests({ repositories: ['test-owner/test-repo'], redisClient: createMockRedis(), deps }), /repos_to_monitor/);
+        assert.equal(mockOctokit.request.mock.callCount(), 0);
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
     });
 
     test('runs every 5 minutes in polling mode and every 15 minutes otherwise', () => {

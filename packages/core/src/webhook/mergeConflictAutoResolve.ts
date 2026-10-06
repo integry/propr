@@ -1,9 +1,8 @@
 import logger, { generateCorrelationId } from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadValidTriggerLabels } from '../config/configManager.js';
-import { getConfig } from '../config/configStore.js';
-import type { RepoToMonitor } from '../config/configManager.js';
 import {
+    loadAutoResolveRepositoryConfigs,
     loadEffectiveAutoResolveMergeConflicts,
     loadInstanceAutoResolveMergeConflicts,
     resolveAutoResolveMergeConflicts,
@@ -453,14 +452,14 @@ export async function sweepConflictedPullRequests(options: {
     const correlationId = options.correlationId ?? generateCorrelationId();
     const log = logger.withCorrelation(correlationId);
     const [repos, instanceDefault] = await Promise.all([
-        getConfig<RepoToMonitor[]>('repos_to_monitor', []),
+        loadAutoResolveRepositoryConfigs(),
         loadInstanceAutoResolveMergeConflicts(),
     ]);
     const results: ConflictDetectionResult[] = [];
     for (const repository of new Set(options.repositories.map(name => name.trim()).filter(Boolean))) {
         const [owner, repoName] = repository.split('/');
         if (!owner || !repoName) continue;
-        const setting = resolveAutoResolveMergeConflicts({ repos: Array.isArray(repos) ? repos : [], repository, instanceDefault });
+        const setting = resolveAutoResolveMergeConflicts({ repos, repository, instanceDefault });
         if (!setting.enabled) {
             log.debug({ repository, trigger: 'sweep', reason: 'auto_resolve_disabled', source: setting.source }, 'Merge conflict sweep: repository disabled');
             continue;
