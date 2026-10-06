@@ -97,6 +97,9 @@ export function redisTerminalTransition(task: TaskStateData): PersistedTaskTermi
             finalizedBy: 'redis_terminal_reconciliation',
             redisUpdatedAt: task.updatedAt,
             redisVersion: task.version ?? null,
+            // Keep why the task ended (a watchdog stop, a timeout, a
+            // cancellation) so the replay stays terminal, not orphaned.
+            ...(task.terminalReason ? { terminalReason: task.terminalReason } : {}),
         },
     };
 }

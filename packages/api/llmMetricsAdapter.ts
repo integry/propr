@@ -13,6 +13,8 @@ const connectionOptions = {
 };
 
 let metricsRedis: Redis | null = null;
+/** Mirrors the core watchdog rules counted under `llm:metrics:watchdog:<rule>`. */
+const WATCHDOG_RULES = ['inactivity', 'tool_inactivity', 'degenerate_output'] as const;
 
 function getMetricsRedis(): Redis | null {
     if (isDemoMode()) return null;
@@ -77,6 +79,8 @@ interface LLMMetricsSummary {
     modelBreakdown: Record<string, ModelMetrics>;
     dailyMetrics: DailyMetric[];
     recentHighCostAlerts: HighCostAlert[];
+    /** Agent runs stopped by the stall/degenerate-output watchdog, per rule. */
+    watchdogTrips: Record<string, number>;
     lastUpdated: string;
 }
 
@@ -169,6 +173,11 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
         const highCostAlerts = await getRedisListRange('llm:metrics:alerts:highcost', 0, 9);
         const parsedAlerts = parseHighCostAlerts(highCostAlerts);
 
+        const watchdogTrips: Record<string, number> = {};
+        for (const rule of WATCHDOG_RULES) {
+            watchdogTrips[rule] = parseInt(await getRedisString(`llm:metrics:watchdog:${rule}`) || '0');
+        }
+
         return {
             summary: {
                 totalRequests,
@@ -184,6 +193,7 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummary> {
             modelBreakdown: modelMetrics,
             dailyMetrics,
             recentHighCostAlerts: parsedAlerts,
+            watchdogTrips,
             lastUpdated: new Date().toISOString()
         };
     } catch (error) {

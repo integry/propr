@@ -39,6 +39,7 @@ import type { PullRequestPublication, PublicationSalvage } from './prPublication
 import { recordPushSalvageEvent } from './pushSalvageTimeline.js';
 import { savePublicationCheckpoint } from './prContinuation.js';
 import { buildWorkNotificationRecap } from './notificationRecap.js';
+import { taskTerminalReasonForAgentTermination } from './agentTerminalReason.js';
 
 interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
@@ -358,7 +359,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
             reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
             commitHash: commitResult?.commitHash,
-            ...(terminationReason === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
+            ...(taskTerminalReasonForAgentTermination(terminationReason) ? { terminalReason: taskTerminalReasonForAgentTermination(terminationReason)! } : {}),
             historyMetadata: {
                 commandMode: job.data.commandMode || 'default',
                 continuation: context.publication.continuation ? {

@@ -14,9 +14,10 @@ import {
 } from './dockerExecutionOwnership.js';
 import { plannerAbortSignalKeyForTask, scheduleForceKill, setupAbortChecker } from './dockerAbortController.js';
 import { BoundedDiagnosticTail, BoundedProviderRecordBuffer, boundedProviderOutput } from '../../agents/impl/utils/boundedProviderOutput.js';
-import { LiveOutputLog } from '../../agents/impl/utils/liveOutputLog.js';
-import { buildLiveOutputSnapshot } from './dockerLiveOutputSnapshot.js';
+import { startLiveOutputStreaming } from './dockerLiveOutputStreaming.js';
 import { inspectSessionMessageLine, SessionLineInspectionContext } from './dockerSessionOutput.js';
+import type { AgentWatchdogTrip } from './agentActivityWatchdog.js';
+import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
@@ -44,6 +45,8 @@ export interface ExecutionResult {
     /** Set when ProPR stopped the process after its configured execution deadline. */
     timedOut?: boolean;
     timeoutMs?: number;
+    /** Set when the stall/degenerate-output watchdog stopped the process. */
+    watchdogTrip?: AgentWatchdogTrip;
 }
 export interface RunningTaskContainer { id: string; name: string; }
 export type TaskContainerLiveness = 'running' | 'stopped' | 'not_found' | 'unavailable';
@@ -53,7 +56,12 @@ export interface TaskContainerInspection {
 }
 export type LegacyTaskContainerLiveness = 'running' | 'not_found' | 'unavailable';
 
-export interface DockerCommandOptions {
+/**
+ * `watchdog` / `onWatchdogTrip` control the stall and degenerate-output
+ * watchdog (see {@link startExecutionWatchdog}); it is on by default for
+ * streamed agent runs that preserve partial output.
+ */
+export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'watchdog' | 'onWatchdogTrip'> {
     timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
     /** Resolve with buffered output on timeout so implementation jobs can publish partial work. */
     preserveOutputOnTimeout?: boolean;
@@ -61,13 +69,6 @@ export interface DockerCommandOptions {
     extraMounts?: string[]; extraEnvVars?: Record<string, string>; streamExtraOutput?: () => string;
     /** Cancels the spawned process and its Docker container when the protected execution loses ownership. */
     signal?: AbortSignal;
-}
-
-// ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
-const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
-
-function stripAnsiCodes(text: string): string {
-    return text.replace(ANSI_REGEX, '');
 }
 
 function resolveDockerPath(command: string): string {
@@ -257,6 +258,15 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 },
             );
         };
+        const watchdog = startExecutionWatchdog(options, () => {
+            // A run already being stopped (deadline, user, ownership) keeps that outcome.
+            if (state.aborted.value || state.timedOut) return false;
+            clearTimeout(timeoutHandle);
+            timeoutInitiatedAbort = true;
+            // Same subprocess-scoped stop path as the execution deadline.
+            abortExecution(true);
+            return true;
+        });
         const preserveOwnershipFailure = (error: unknown): void => {
             if (hasOwnershipFailure) return;
             hasOwnershipFailure = true;
@@ -292,10 +302,12 @@ export function executeDockerCommand(command: string, args: string[], options: D
             if (flush && remainder) lines.push(remainder);
             for (const line of lines) {
                 inspectSessionMessageLine(line, timestamp, sessionInspectionContext);
+                watchdog.observeLine(line);
             }
         };
         executionSignal?.addEventListener('abort', abortForExecutionSignal, { once: true });
         const timeoutHandle = setTimeout(() => {
+            if (watchdog.trip) return;
             state.timedOut = true;
             timeoutInitiatedAbort = !state.aborted.value;
             abortExecution(true);
@@ -312,7 +324,9 @@ export function executeDockerCommand(command: string, args: string[], options: D
             })
             : null;
 
-        const liveOutput = startLiveOutputStreaming({ taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow: warnFromLiveOutput }, readStdout, () => stderrTail.value);
+        const recordWatchdogActivity = (): void => watchdog.recordActivity();
+
+        const liveOutput = startLiveOutputStreaming({ taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow: warnFromLiveOutput, onActivity: recordWatchdogActivity, onTranscriptRecord: watchdog.observeLine }, readStdout, () => stderrTail.value);
         if (command === 'docker' && args[0] === 'run' && worktreePath) {
             containerDetectionTimer = detectContainerId(
                 worktreePath,
@@ -324,12 +338,14 @@ export function executeDockerCommand(command: string, args: string[], options: D
 
         child.stdout?.on('data', (data: Buffer) => {
             const chunk = stdoutDecoder.write(data), ts = new Date().toISOString();
+            recordWatchdogActivity();
             stdoutBuffer.append(chunk);
             liveOutput?.stdout(chunk);
             inspectSessionLines(chunk, ts);
         });
         child.stderr?.on('data', (data: Buffer) => {
             const chunk = stderrDecoder.write(data);
+            recordWatchdogActivity();
             stderrTail.append(chunk);
             workflowMarkers?.append(chunk);
             liveOutput?.stderr(chunk);
@@ -337,6 +353,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
 
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
+            watchdog.stop();
             const finalStdout = stdoutDecoder.end();
             if (finalStdout) stdoutBuffer.append(finalStdout);
             const finalStderr = stderrDecoder.end();
@@ -350,6 +367,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             if (abortChecker) await abortChecker.close();
             await Promise.allSettled([...pendingCallbacks]);
             if (state.teardownPromise) await state.teardownPromise;
+            await watchdog.settled();
             executionSignal?.removeEventListener('abort', abortForExecutionSignal);
             try { await liveOutput?.close(); }
             catch (error) { logger.warn({ error: (error as Error).message, taskId }, 'Failed to publish final live output'); }
@@ -362,6 +380,10 @@ export function executeDockerCommand(command: string, args: string[], options: D
             if (processError) { reject(processError); return; }
             if (state.aborted.value && !timeoutInitiatedAbort) {
                 reject(new ExecutionAbortedError());
+                return;
+            }
+            if (watchdog.trip) {
+                settleWatchdogStop(watchdog.trip, { exitCode, stdout: readStdout(), stderr, messageTimestamps }, preserveOutputOnTimeout, { resolve, reject });
                 return;
             }
             if (state.timedOut) {
@@ -380,6 +402,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             // close may run during cleanup; capture the process result before awaiting.
             processError = error;
             clearTimeout(timeoutHandle);
+            watchdog.stop();
             inspectSessionLines('', new Date().toISOString(), true);
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
             executionSignal?.removeEventListener('abort', abortForExecutionSignal);
@@ -392,40 +415,16 @@ export function executeDockerCommand(command: string, args: string[], options: D
     });
 }
 
-interface LiveOutputStreaming { stdout(chunk: string): void; stderr(chunk: string): void; close(): Promise<void> }
-
-/**
- * The task's live log is append-only: each record is sent once, as it arrives,
- * and a new execution replaces what an earlier one left. Providers whose
- * readable transcript only exists as a whole snapshot (Vibe's session
- * messages) publish that snapshot in place of the previous one instead.
- */
-function startLiveOutputStreaming(
-    options: Pick<DockerCommandOptions, 'taskId' | 'streamToRedis' | 'streamStderrToRedis' | 'streamExtraOutput' | 'stripAnsi'> & { onOverflow: (error: Error) => void },
-    readStdout: () => string,
-    readStderr: () => string,
-): LiveOutputStreaming | null {
-    const { taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow } = options;
-    if (!streamToRedis || !taskId) return null;
-    const log = new LiveOutputLog(taskId, { reset: true, onOverflow, ...(stripAnsi ? { transformRecord: stripAnsiCodes } : {}) });
-    if (!streamExtraOutput) {
-        return { stdout: chunk => log.append(chunk, 'stdout'), stderr: chunk => { if (streamStderrToRedis) log.append(chunk, 'stderr'); }, close: () => log.close() };
-    }
-    let previous = '';
-    const publish = () => {
-        let extraOutput = '';
-        try { extraOutput = streamExtraOutput(); }
-        catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to read extra streaming output'); }
-        const snapshot = buildLiveOutputSnapshot(extraOutput, readStdout(), streamStderrToRedis ? readStderr() : '');
-        if (snapshot.text !== previous) log.replace(snapshot.text, { discarded: snapshot.discarded });
-        previous = snapshot.text;
-    };
-    const interval = setInterval(publish, 2000);
-    return {
-        stdout: () => undefined,
-        stderr: () => undefined,
-        close: async () => { clearInterval(interval); publish(); await log.close(); },
-    };
+/** Like a deadline stop: partial output is kept for callers that publish it. */
+function settleWatchdogStop(
+    trip: AgentWatchdogTrip,
+    result: ExecutionResult,
+    preserveOutput: boolean,
+    { resolve, reject }: { resolve: (result: ExecutionResult) => void; reject: (error: Error) => void },
+): void {
+    if (!preserveOutput) { reject(new Error(trip.message)); return; }
+    const stderr = result.stderr.trim() ? `${result.stderr.trimEnd()}\n${trip.message}` : trip.message;
+    resolve({ ...result, stderr, watchdogTrip: trip });
 }
 
 function detectContainerId(

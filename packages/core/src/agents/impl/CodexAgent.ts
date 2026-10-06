@@ -134,6 +134,7 @@ export class CodexAgent implements Agent {
         const { parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics } = params;
         const terminationReason = resolveAgentTerminationReason({
             timedOut: result.timedOut,
+            watchdogTrip: result.watchdogTrip,
             error: parsedOutput.error || result.stderr
         });
         return {

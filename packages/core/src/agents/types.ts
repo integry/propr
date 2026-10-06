@@ -292,7 +292,11 @@ export interface AgentExecutionResult {
     conversationLog?: any[];
 }
 
-export type AgentTerminationReason = 'timeout' | 'max_turns';
+/**
+ * `stalled` and `degenerate_output` are set when the activity watchdog stopped
+ * a live run (no output past its threshold, or a run of whitespace-only deltas).
+ */
+export type AgentTerminationReason = 'timeout' | 'max_turns' | 'stalled' | 'degenerate_output';
 
 export interface Agent {
     readonly config: AgentConfig;
