@@ -1,8 +1,35 @@
 import type { Knex } from 'knex';
 import type { IssueJobData } from '@propr/core';
-import type { ReplacementCause } from './policy.js';
+import type { ReplacementCause, ReplacementSkipReason } from './policy.js';
 
 export type ReplacementState = 'pending' | 'dispatched' | 'skipped' | 'exhausted';
+
+/** What a replacement re-runs, with the spend cap its lineage is budgeted from. */
+export type ReplayJobData = IssueJobData & {
+    /** Effective spend cap the lineage's first attempt resolved; earlier attempts' spend is subtracted from it. */
+    lineageCostCapUsd?: number;
+};
+
+/**
+ * A released decision whose follow-up is not finished yet: its timeline events,
+ * and the held-back failure alert when one must be published. It is recorded with
+ * the state that releases the decision and cleared only after the follow-up ran,
+ * so recovery repeats whatever an interruption skipped.
+ */
+export interface FailureNoticeRecord {
+    id: string;
+    cause: ReplacementCause;
+    /** Why no replacement supersedes the failure; absent for a withdrawn decision. */
+    reason?: ReplacementSkipReason;
+    exhausted?: boolean;
+    maxReplacements?: number;
+    failure?: string;
+    replacementTaskId?: string;
+    attemptNumber?: number;
+    /** Whether the task's failure alert was held back and must be published. */
+    publish: boolean;
+    recordedAt: string;
+}
 
 export interface ReplacementRequestRecord {
     cause: ReplacementCause;
@@ -15,6 +42,8 @@ export interface ReplacementRequestRecord {
     finalizedBy?: string;
     /** Set with the claim; kept until queue delivery of the replacement is confirmed. */
     dispatch?: ReplacementDispatchRecord;
+    /** Follow-up of the released decision, kept until it was delivered. */
+    failureNotice?: FailureNoticeRecord;
 }
 
 /** What redelivering a claimed replacement needs, persisted in the claim's transaction. */
@@ -42,7 +71,7 @@ export interface ReplaceableTask {
     replacementCause: ReplacementCause | null;
     replacementState: ReplacementState | null;
     replacementRequest: ReplacementRequestRecord | null;
-    replayJobData: IssueJobData | null;
+    replayJobData: ReplayJobData | null;
     branchName: string | null;
     latestState: string | null;
     latestTerminalReason: string | null;
@@ -67,7 +96,7 @@ export interface CreateReplacementInput {
     cause: ReplacementCause;
     jobData: IssueJobData;
     /** What a later replacement of this attempt re-runs; keeps the lineage's original cost cap. */
-    replayData: IssueJobData;
+    replayData: ReplayJobData;
     timestamp: string;
     maxReplacements: number;
     remainingBudgetUsd?: number;
@@ -81,8 +110,11 @@ export interface TimelineEvent {
     reason: string;
     metadata: Record<string, unknown>;
     timestamp: string;
-    /** Record the event only if the task does not have it yet, so recovery can repeat it. */
-    once?: boolean;
+    /**
+     * Record the event only if the task does not have it yet, so recovery can repeat it.
+     * A string limits the check to events carrying it as their `noticeId`.
+     */
+    once?: boolean | string;
 }
 
 export interface PendingReplacementRequest {
@@ -94,19 +126,33 @@ export interface PendingReplacementRequest {
     replacedByTaskId: string | null;
 }
 
+export interface PendingFailureNotice {
+    taskId: string;
+    notice: FailureNoticeRecord;
+}
+
 export interface TaskReplacementStore {
     loadTask(taskId: string): Promise<ReplaceableTask | null>;
     loadLineage(rootTaskId: string): Promise<LineageAttempt[]>;
     markRequested(taskId: string, request: ReplacementRequestRecord): Promise<boolean>;
     setState(taskId: string, state: ReplacementState | null): Promise<void>;
+    /** Releases the decision as skipped or exhausted together with the follow-up it still owes. */
+    recordSkipped(taskId: string, state: 'skipped' | 'exhausted', notice: FailureNoticeRecord): Promise<void>;
+    /** Clears a delivered follow-up, unless a newer one replaced it. */
+    clearFailureNotice(taskId: string, noticeId: string): Promise<void>;
+    listFailureNotices(recordedBefore: string, limit: number): Promise<PendingFailureNotice[]>;
     /**
      * Claims the original's single replacement slot and persists the new attempt
      * together with its dispatch record; the original stays `pending` until delivery is confirmed.
      */
     createReplacement(input: CreateReplacementInput): Promise<boolean>;
-    /** Clears a pending decision only while it is still exactly `request` and unclaimed. */
-    withdrawRequest(taskId: string, request: ReplacementRequestRecord): Promise<boolean>;
-    appendEvent(entry: TimelineEvent): Promise<void>;
+    /**
+     * Clears a pending decision only while it is still exactly `request` and unclaimed,
+     * keeping `notice` until its held-back failure was published.
+     */
+    withdrawRequest(taskId: string, request: ReplacementRequestRecord, notice: FailureNoticeRecord): Promise<boolean>;
+    /** Returns whether the event was recorded (false when `once` found it already). */
+    appendEvent(entry: TimelineEvent): Promise<boolean>;
     /**
      * Whether the task recorded a transition after it was queued that no reconciler
      * wrote: evidence that a worker (or a user) acted on it, unlike a reconciler's finalization.
@@ -116,17 +162,17 @@ export interface TaskReplacementStore {
 }
 
 /** Fields that describe one queue delivery rather than the task, or are re-read on every run. */
-const TRANSIENT_JOB_FIELDS = ['issuePayload', 'repoPayload', 'isRetryFromRateLimit', 'replacementBranch'] as const;
+const TRANSIENT_JOB_FIELDS = ['issuePayload', 'repoPayload', 'isRetryFromRateLimit', 'replacementBranch', 'costBudgetTaskIds'] as const;
 
 /** The queue payload a replacement re-runs: agent/model selection and per-task overrides. */
-export function replayJobData(data: IssueJobData): IssueJobData {
+export function replayJobData(data: ReplayJobData): ReplayJobData {
     const replay: Record<string, unknown> = { ...data };
     for (const field of TRANSIENT_JOB_FIELDS) delete replay[field];
     // Repository workflow policy and capacity deferrals are resolved again by every run.
     for (const field of Object.keys(replay)) {
         if (field.startsWith('repositoryWorkflow')) delete replay[field];
     }
-    return replay as unknown as IssueJobData;
+    return replay as unknown as ReplayJobData;
 }
 
 function parseJson<T>(value: unknown): T | null {
@@ -185,7 +231,7 @@ function taskFromRow(row: Record<string, unknown>): ReplaceableTask {
         replacementCause: text(row.replacement_cause) as ReplacementCause | null,
         replacementState: text(row.replacement_state) as ReplacementState | null,
         replacementRequest: parseJson<ReplacementRequestRecord>(row.replacement_request),
-        replayJobData: parseJson<IssueJobData>(row.replay_job_data),
+        replayJobData: parseJson<ReplayJobData>(row.replay_job_data),
         branchName: text(row.branch_name),
         latestState: text(row.latest_state),
         latestTerminalReason: typeof latestMetadata?.terminalReason === 'string' ? latestMetadata.terminalReason : null,
@@ -256,6 +302,31 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
             await database('tasks').where({ task_id: taskId }).update({ replacement_state: state });
         },
 
+        async recordSkipped(taskId, state, notice) {
+            await database('tasks').where({ task_id: taskId }).update({
+                replacement_state: state,
+                replacement_request: database.raw("json_set(COALESCE(replacement_request, '{}'), '$.failureNotice', json(?))", [JSON.stringify(notice)]),
+            });
+        },
+
+        async clearFailureNotice(taskId, noticeId) {
+            const remaining = "json_remove(replacement_request, '$.failureNotice')";
+            await database('tasks').where({ task_id: taskId })
+                .whereRaw("json_extract(replacement_request, '$.failureNotice.id') = ?", [noticeId])
+                // A withdrawn decision kept nothing but its follow-up.
+                .update({ replacement_request: database.raw(`CASE WHEN ${remaining} = '{}' THEN NULL ELSE ${remaining} END`) });
+        },
+
+        async listFailureNotices(recordedBefore, limit) {
+            const rows = await database('tasks')
+                .whereRaw("json_extract(replacement_request, '$.failureNotice.recordedAt') <= ?", [recordedBefore])
+                .select('task_id', 'replacement_request').orderBy('task_id').limit(limit) as Array<Record<string, unknown>>;
+            return rows.flatMap(row => {
+                const notice = parseJson<ReplacementRequestRecord>(row.replacement_request)?.failureNotice;
+                return notice && typeof notice.id === 'string' ? [{ taskId: String(row.task_id), notice }] : [];
+            });
+        },
+
         async createReplacement(input) {
             const { original, replacementTaskId, jobId, correlationId, attemptNumber, cause, jobData, replayData, timestamp } = input;
             const dispatch: ReplacementDispatchRecord = {
@@ -310,21 +381,21 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
             });
         },
 
-        async withdrawRequest(taskId, request) {
+        async withdrawRequest(taskId, request, notice) {
             const updated = await database('tasks')
                 .where({ task_id: taskId, replacement_state: 'pending', replacement_request: JSON.stringify(request) })
                 .whereNull('replaced_by_task_id')
-                .update({ replacement_state: null, replacement_request: null });
+                .update({ replacement_state: null, replacement_request: JSON.stringify({ failureNotice: notice }) });
             return updated > 0;
         },
 
         async appendEvent({ taskId, event, reason, metadata, timestamp, once }) {
             if (once) {
-                const existing = await database('task_history')
+                const query = database('task_history')
                     .where({ task_id: taskId })
-                    .whereRaw("json_extract(metadata, '$.event') = ?", [event])
-                    .first('history_id');
-                if (existing) return;
+                    .whereRaw("json_extract(metadata, '$.event') = ?", [event]);
+                if (typeof once === 'string') query.whereRaw("json_extract(metadata, '$.noticeId') = ?", [once]);
+                if (await query.first('history_id')) return false;
             }
             // Timeline events repeat the task's current state so they never change it.
             const latest = await database('task_history')
@@ -338,6 +409,7 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
                 reason,
                 metadata: JSON.stringify({ ...metadata, event }),
             });
+            return true;
         },
 
         async hasRunTransition(taskId) {
@@ -394,6 +466,18 @@ export async function recordReplayableIssueTask(
             replacement_cause: data.replacementCause ?? null,
         });
     }
+}
+
+/**
+ * Records the spend cap an original attempt resolved, so its replacements are budgeted
+ * from it. A replacement keeps the cap its lineage started with.
+ */
+export async function recordLineageCostCap(database: Knex, taskId: string, capUsd: number | null): Promise<void> {
+    await database('tasks').where({ task_id: taskId }).whereNull('replaces_task_id').whereNotNull('replay_job_data').update({
+        replay_job_data: capUsd === null
+            ? database.raw("json_remove(replay_job_data, '$.lineageCostCapUsd')")
+            : database.raw("json_set(replay_job_data, '$.lineageCostCapUsd', ?)", [capUsd]),
+    });
 }
 
 /** Records the pushed work branch so a replacement can continue on it. */

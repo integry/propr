@@ -7,7 +7,7 @@ import { up as addLineage } from '../packages/core/src/db/migrations/20261006000
 await mock.module('@propr/core', { namedExports: { isDefaultRetryableError } });
 
 const { createTaskReplacementService, PENDING_REPLACEMENT_RECOVERY_MS, REPLACEMENT_JOB_NAME } = await import('../src/taskReplacement/service.js');
-const { createTaskReplacementStore, recordReplayableIssueTask } = await import('../src/taskReplacement/store.js');
+const { createTaskReplacementStore, recordLineageCostCap, recordReplayableIssueTask } = await import('../src/taskReplacement/store.js');
 const { isTransientProviderError, resolveMaxProviderReplacements, stopReasonExclusion, infraLostReplacementEnabled } = await import('../src/taskReplacement/policy.js');
 
 type Enqueued = { jobName: string; data: Record<string, unknown>; jobId: string };
@@ -238,20 +238,30 @@ test('transient provider failures are replaced up to the cap, counted from durab
 
 test('the replacement cost cap is the original cap minus what earlier attempts spent', async () => {
     const database = await createDatabase();
-    await seedTask(database, 'task-1', { state: 'failed', job: { costCapUsd: 5 } });
+    await seedTask(database, 'task-1', { state: 'failed', job: { maxCostUsd: 5 } });
+    // What the original run's spend cap guard resolved (here: the task override).
+    await recordLineageCostCap(database, 'task-1', 5);
     await database('llm_executions').insert([{ task_id: 'task-1', cost_usd: 1.25 }, { task_id: 'task-1', cost_usd: 0.75 }]);
     const { service, enqueued } = harness(database);
     const outcome = await service.complete({ taskId: 'task-1', cause: 'provider_transient' });
     assert.ok(outcome.action === 'dispatched');
-    assert.equal(enqueued[0].data.costCapUsd, 3);
+    assert.equal(enqueued[0].data.maxCostUsd, 5, 'the guard enforces the original cap');
+    assert.deepEqual(enqueued[0].data.costBudgetTaskIds, ['task-1'], 'less what the earlier attempts spent');
+    assert.equal('lineageCostCapUsd' in enqueued[0].data, false);
+    assert.equal((await events(database, 'task-1'))[0].remainingBudgetUsd, 3);
 
     const stored = JSON.parse(String((await task(database, outcome.replacementTaskId)).replay_job_data));
-    assert.equal(stored.costCapUsd, 5, 'later attempts are budgeted from the original cap');
+    assert.equal(stored.lineageCostCapUsd, 5, 'later attempts are budgeted from the original cap');
+    assert.equal('costBudgetTaskIds' in stored, false, 'budget task IDs are recomputed for every replacement');
+    await recordLineageCostCap(database, outcome.replacementTaskId, 9);
+    assert.equal(JSON.parse(String((await task(database, outcome.replacementTaskId)).replay_job_data)).lineageCostCapUsd, 5,
+        'a replacement\'s own cap resolution keeps the lineage\'s original cap');
     await markState(database, outcome.replacementTaskId, 'failed');
     await database('llm_executions').insert({ task_id: outcome.replacementTaskId, cost_usd: 1 });
     const third = await service.complete({ taskId: outcome.replacementTaskId, cause: 'provider_transient' });
     assert.ok(third.action === 'dispatched');
-    assert.equal(enqueued[1].data.costCapUsd, 2, 'cap minus everything the lineage spent');
+    assert.equal(enqueued[1].data.maxCostUsd, 5);
+    assert.deepEqual(enqueued[1].data.costBudgetTaskIds, ['task-1', outcome.replacementTaskId], 'cap minus everything the lineage spent');
     await markState(database, third.replacementTaskId, 'failed');
     await database('llm_executions').insert({ task_id: third.replacementTaskId, cost_usd: 2 });
     const spent = await harness(database, { maxProvider: 5 }).service.complete({ taskId: third.replacementTaskId, cause: 'provider_transient' });
@@ -547,4 +557,123 @@ test('replacement configuration resolves the saved setting, then the environment
     assert.equal(stopReasonExclusion('cancelled_issue_closed'), 'user_cancelled');
     assert.equal(stopReasonExclusion('pr_merged'), null);
     assert.equal(stopReasonExclusion('cost_cap_exceeded'), 'cost_cap_stop', 'a run stopped at its cost cap is never replaced');
+});
+
+/** Captures the original's replacement state at the moment each failure alert is published. */
+function projectingHarness(database: Knex, options: { now: Date; failPublish?: () => boolean }) {
+    const seen: Array<{ taskId: string; replacementState: unknown; notice: unknown }> = [];
+    const comments: string[] = [];
+    const service = createTaskReplacementService({
+        store: createTaskReplacementStore(database),
+        enqueue: async () => {},
+        loadMaxProviderReplacements: async () => 2,
+        infraLostEnabled: () => true,
+        readIssueState: async () => ({ state: 'open' }),
+        async publishTaskUpdate(payload) {
+            if (payload.state !== 'failed') return true;
+            // What the notification projection reads when it handles this update.
+            const row = await task(database, payload.taskId);
+            seen.push({
+                taskId: payload.taskId, replacementState: row.replacement_state,
+                notice: JSON.parse(String(row.replacement_request ?? '{}')).failureNotice,
+            });
+            if (options.failPublish?.()) throw new Error('worker lost while publishing the failure');
+            return true;
+        },
+        postIssueComment: async (_owner, _repo, _number, body) => { comments.push(body); },
+        randomId: () => `replacement-correlation-${++ids}`,
+        now: () => options.now,
+    });
+    return { service, seen, comments };
+}
+
+const decidedAt = new Date('2026-10-06T08:00:00.000Z');
+const recoveredAt = new Date(decidedAt.getTime() + PENDING_REPLACEMENT_RECOVERY_MS + 1);
+
+test('a skipped decision is released before its held-back failure is published, on every skip path', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'unsupported');
+    await seedTask(database, 'withdrawn');
+    await seedTask(database, 'not-started');
+    const live = projectingHarness(database, { now: decidedAt });
+    // recordSkip: the decision was pending, then completion found the task unsupported.
+    await live.service.prepare({ taskId: 'unsupported', cause: 'provider_transient' });
+    await database('tasks').where({ task_id: 'unsupported' }).update({ replay_job_data: null });
+    await markState(database, 'unsupported', 'failed');
+    await live.service.complete({ taskId: 'unsupported', cause: 'provider_transient' });
+    // withdraw: another writer's failure pre-empted the reconciler's.
+    const orphan = await live.service.prepare({ taskId: 'withdrawn', cause: 'infra_lost', finalizedBy: 'orphan_reconciliation' });
+    await markState(database, 'withdrawn', 'failed');
+    assert.equal(await live.service.withdraw('withdrawn', orphan.eligible ? orphan.request! : assert.fail()), true);
+    // releaseNotStarted: the claimed replacement was finalized by reconciliation before it started.
+    const replacementTaskId = await crashAfterClaim(database, 'not-started', decidedAt);
+    await markFinalizedBy(database, replacementTaskId, 'orphan_reconciliation');
+    const recovery = projectingHarness(database, { now: recoveredAt });
+    await recovery.service.resumePending();
+
+    const seen = [...live.seen, ...recovery.seen];
+    assert.deepEqual(seen.map(({ taskId, replacementState }) => [taskId, replacementState]),
+        [['unsupported', 'skipped'], ['withdrawn', null], ['not-started', 'skipped']], 'the projection never reads `pending`');
+    assert.ok(seen.every(({ notice }) => notice), 'the publication obligation is durable while the alert is published');
+    for (const taskId of ['unsupported', 'withdrawn', 'not-started']) {
+        const request = (await task(database, taskId)).replacement_request;
+        assert.equal(request === null ? undefined : JSON.parse(String(request)).failureNotice, undefined, `${taskId}: delivered obligation is cleared`);
+    }
+    assert.deepEqual(await recovery.service.resumePending(), { resumed: 0, cleared: 0 });
+});
+
+test('a failure alert interrupted after the skip was recorded is published by recovery, once', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1');
+    let failures = 1;
+    const live = projectingHarness(database, { now: decidedAt, failPublish: () => failures-- > 0 });
+    await live.service.prepare({ taskId: 'task-1', cause: 'infra_lost' });
+    await markState(database, 'task-1', 'failed');
+    // The lineage already used its single infra-lost replacement.
+    await database('tasks').insert({
+        task_id: 'task-0', repository: 'integry/propr', issue_number: 2739, task_type: 'issue', replaced_by_task_id: 'task-1',
+    });
+    await database('tasks').where({ task_id: 'task-1' }).update({ replaces_task_id: 'task-0', lineage_root_task_id: 'task-0', attempt_number: 2, replacement_cause: 'infra_lost' });
+    await assert.rejects(live.service.complete({ taskId: 'task-1', cause: 'infra_lost' }), /worker lost/);
+    const interrupted = await task(database, 'task-1');
+    assert.equal(interrupted.replacement_state, 'exhausted', 'the skip is recorded before the alert');
+    assert.ok(JSON.parse(String(interrupted.replacement_request)).failureNotice, 'and the alert is still owed');
+    assert.equal(live.comments.length, 1);
+
+    const early = projectingHarness(database, { now: new Date(decidedAt.getTime() + 1000) });
+    assert.deepEqual(await early.service.resumePending(), { resumed: 0, cleared: 0 }, 'a follow-up still in flight is left alone');
+    const recovery = projectingHarness(database, { now: recoveredAt });
+    assert.deepEqual(await recovery.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.deepEqual(recovery.seen.map(({ taskId, replacementState }) => [taskId, replacementState]), [['task-1', 'exhausted']]);
+    assert.equal(recovery.comments.length, 0, 'the final comment is not posted again');
+    assert.deepEqual((await events(database, 'task-1')).map(entry => [entry.event, entry.reason]),
+        [['replacement.skipped', 'cap_reached'], ['replacement.exhausted', 'cap_reached']], 'timeline events are recorded once');
+    assert.equal(JSON.parse(String((await task(database, 'task-1')).replacement_request)).failureNotice, undefined);
+    assert.deepEqual(await recovery.service.resumePending(), { resumed: 0, cleared: 0 });
+});
+
+test('a skip interrupted before its timeline events keeps them recoverable', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1', { job: { agentAlias: '' } });
+    const store = createTaskReplacementStore(database);
+    const crashing = createTaskReplacementService({
+        store: { ...store, appendEvent: async () => { throw new Error('worker lost after the skip was recorded'); } },
+        enqueue: async () => {},
+        loadMaxProviderReplacements: async () => 2,
+        infraLostEnabled: () => true,
+        publishTaskUpdate: async () => assert.fail('nothing is published before the events'),
+        randomId: () => `replacement-correlation-${++ids}`,
+        now: () => decidedAt,
+    });
+    await crashing.prepare({ taskId: 'task-1', cause: 'provider_transient' });
+    await database('tasks').where({ task_id: 'task-1' }).update({ replacement_state: 'pending', replacement_request: JSON.stringify({ cause: 'provider_transient', requestedAt: decidedAt.toISOString() }) });
+    await markState(database, 'task-1', 'failed');
+    await assert.rejects(crashing.complete({ taskId: 'task-1', cause: 'provider_transient', error: '529 Overloaded' }), /worker lost/);
+    assert.equal((await task(database, 'task-1')).replacement_state, 'skipped');
+
+    const recovery = projectingHarness(database, { now: recoveredAt });
+    assert.deepEqual(await recovery.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.deepEqual((await events(database, 'task-1')).map(entry => [entry.event, entry.reason, entry.failure]),
+        [['replacement.skipped', 'unsupported_task', '529 Overloaded']]);
+    assert.deepEqual(recovery.seen.map(({ taskId, replacementState }) => [taskId, replacementState]), [['task-1', 'skipped']]);
 });

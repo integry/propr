@@ -11,7 +11,7 @@ import {
   UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
 import type { TaskStateData, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult, RunCostGuard } from '@propr/core';
-import { issueRunCostCapTarget, withRunCostCap, type CommentOctokit } from './runCostCap.js';
+import { issueRunCostCapDeps, issueRunCostCapTarget, withRunCostCap, type CommentOctokit } from './runCostCap.js';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
@@ -355,7 +355,7 @@ async function withIssueRunCostCap(
     return await withRunCostCap(await issueRunCostCapTarget(job.data, context, () => octokit as unknown as CommentOctokit), guard => {
       started = true;
       return operation(guard);
-    });
+    }, issueRunCostCapDeps());
   } catch (error) {
     // The run's own failures are already handled inside it.
     if (started) throw error;

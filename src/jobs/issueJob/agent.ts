@@ -12,7 +12,6 @@ import { localizeContentImages } from '../issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from '../issueJobCallbacks.js';
 import { runRepositoryWorkflow } from '../repositoryWorkflow.js';
 import { redisClient } from './config.js';
-import { costCapExecutionOptions } from './costCap.js';
 
 export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
   return {
@@ -72,16 +71,13 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   if (!agent) {
     throw new Error(`Agent not found: ${agentAlias}`);
   }
-  // Checked before any work so a capped run is never started without enforcement.
-  const costCap = costCapExecutionOptions(agent, issueRef);
 
   correlatedLogger.info({
     agentAlias,
     agentType: agent.config.type,
     modelName,
     issueNumber: issueRef.number,
-    reasoningLevel: issueRef.reasoningLevel,
-    ...(costCap.costCapUsd === undefined ? {} : { costCapUsd: costCap.costCapUsd })
+    reasoningLevel: issueRef.reasoningLevel
   }, 'Executing task with agent');
   const agentIssueRef = {
     number: issueRef.number,
@@ -148,8 +144,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       reasoningLevel: issueRef.reasoningLevel,
       onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
       onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
-      taskId,
-      ...costCap
+      taskId
     }));
   } finally {
     clearInterval(fileChangesInterval);

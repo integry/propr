@@ -9,9 +9,11 @@ import {
     type ReplacementSkipReason,
 } from './policy.js';
 import type {
+    FailureNoticeRecord,
     LineageAttempt,
     ReplaceableTask,
     ReplacementRequestRecord,
+    ReplayJobData,
     TaskReplacementStore,
 } from './store.js';
 import { createReplacementDelivery, REPLACEMENT_JOB_NAME, TERMINAL_STATES } from './delivery.js';
@@ -145,11 +147,17 @@ function exclusionFor(task: ReplaceableTask, request: ReplacementRequest, maxRep
     return null;
 }
 
-/** The per-run cost cap minus what every attempt of the lineage spent, when a cap is set. */
-function remainingBudget(replay: IssueJobData, lineage: LineageAttempt[]): number | undefined {
-    if (typeof replay.costCapUsd !== 'number' || !Number.isFinite(replay.costCapUsd)) return undefined;
+function lineageCostCap(replay: ReplayJobData): number | undefined {
+    const cap = replay.lineageCostCapUsd;
+    return typeof cap === 'number' && Number.isFinite(cap) && cap > 0 ? cap : undefined;
+}
+
+/** The lineage's original cost cap minus what every attempt of the lineage spent, when a cap is set. */
+function remainingBudget(replay: ReplayJobData, lineage: LineageAttempt[]): number | undefined {
+    const cap = lineageCostCap(replay);
+    if (cap === undefined) return undefined;
     const spent = lineage.reduce((total, attempt) => total + attempt.costUsd, 0);
-    return Math.round((replay.costCapUsd - spent) * 1e6) / 1e6;
+    return Math.round((cap - spent) * 1e6) / 1e6;
 }
 
 export function createTaskReplacementService(deps: TaskReplacementDependencies): TaskReplacementService {
@@ -202,24 +210,9 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
         };
     }
 
-    async function publishFailureAgain(task: ReplaceableTask, reason: ReplacementSkipReason, timestamp: string): Promise<void> {
-        // The failure alert was held back while a replacement was expected.
-        if (task.replacementState !== 'pending' || !deps.publishTaskUpdate) return;
-        await deps.publishTaskUpdate({
-            taskId: task.taskId,
-            state: 'failed',
-            repository: task.repository,
-            ...(task.issueNumber ? { issueNumber: task.issueNumber } : {}),
-            timestamp,
-            metadata: { reason: `No replacement attempt: ${describeReplacementSkip(reason)}`, replacementSkipped: reason },
-        });
-    }
-
-    const delivery = createReplacementDelivery(deps, { now, publishFailureAgain });
-
-    async function postExhaustedComment(task: ReplaceableTask, lineage: LineageAttempt[], request: ReplacementRequest): Promise<void> {
+    async function postExhaustedComment(task: ReplaceableTask, lineage: LineageAttempt[], cause: ReplacementCause): Promise<void> {
         const repository = splitRepository(task.repository);
-        if (!deps.postIssueComment || !repository || !task.issueNumber || request.cause !== 'infra_lost') return;
+        if (!deps.postIssueComment || !repository || !task.issueNumber || cause !== 'infra_lost') return;
         const body = `❌ **Failed to process this issue after ${lineage.length} attempts**\n\n`
             + 'The last attempt was lost with its worker (no queue job or running task container remained), '
             + 'and a second loss in the same lineage is final.\n\n'
@@ -232,32 +225,88 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
         }
     }
 
+    function lineageOrSelf(task: ReplaceableTask, lineage: LineageAttempt[]): LineageAttempt[] {
+        return lineage.length > 0 ? lineage : [{
+            taskId: task.taskId, attemptNumber: task.attemptNumber, replacementCause: task.replacementCause, state: task.latestState, costUsd: 0,
+        }];
+    }
+
+    function newNotice(task: ReplaceableTask, fields: Omit<FailureNoticeRecord, 'id' | 'publish' | 'recordedAt'>): FailureNoticeRecord {
+        // The failure alert was held back only while a replacement was expected.
+        return { id: (deps.randomId ?? randomUUID)(), ...fields, publish: task.replacementState === 'pending', recordedAt: now().toISOString() };
+    }
+
+    /**
+     * Runs the follow-up of a released decision: its timeline events, the final
+     * comment of an exhausted lineage, and the held-back failure alert. The decision
+     * is already released, so the alert projects as final; the notice is cleared
+     * only afterwards, and recovery repeats an interrupted follow-up.
+     */
+    async function deliverFailureNotice(task: ReplaceableTask, notice: FailureNoticeRecord, knownLineage?: LineageAttempt[]): Promise<void> {
+        const { reason, cause, recordedAt: timestamp } = notice;
+        if (reason) {
+            await deps.store.appendEvent({
+                taskId: task.taskId, event: 'replacement.skipped', reason: `Replacement skipped: ${describeReplacementSkip(reason)}`, timestamp,
+                once: notice.id,
+                metadata: {
+                    reason, cause, noticeId: notice.id,
+                    ...(notice.maxReplacements === undefined ? {} : { maxReplacements: notice.maxReplacements }),
+                    ...(notice.failure ? { failure: notice.failure } : {}),
+                    ...(notice.replacementTaskId ? { replacementTaskId: notice.replacementTaskId, attemptNumber: notice.attemptNumber } : {}),
+                },
+            });
+        }
+        if (reason && notice.exhausted) {
+            const lineage = lineageOrSelf(task, knownLineage ?? await deps.store.loadLineage(task.lineageRootTaskId));
+            const recorded = await deps.store.appendEvent({
+                taskId: task.taskId, event: 'replacement.exhausted', reason: `All ${lineage.length} attempts failed`, timestamp,
+                once: notice.id,
+                metadata: {
+                    reason, cause, noticeId: notice.id,
+                    ...(notice.maxReplacements === undefined ? {} : { maxReplacements: notice.maxReplacements }),
+                    attempts: lineage.map(({ taskId, attemptNumber, state }) => ({ taskId, attemptNumber, state })),
+                },
+            });
+            // Posted at most once: a repeated follow-up finds the event already recorded.
+            if (recorded) await postExhaustedComment(task, lineage, cause);
+        }
+        // A withdrawn decision awaited a failure that may never have been written.
+        if (notice.publish && (reason || task.latestState === 'failed')) await deps.publishTaskUpdate?.({
+            taskId: task.taskId,
+            state: 'failed',
+            repository: task.repository,
+            ...(task.issueNumber ? { issueNumber: task.issueNumber } : {}),
+            timestamp: now().toISOString(),
+            ...(reason ? { metadata: { reason: `No replacement attempt: ${describeReplacementSkip(reason)}`, replacementSkipped: reason } } : {}),
+        });
+        await deps.store.clearFailureNotice(task.taskId, notice.id);
+    }
+
+    /** Releases the decision as skipped (or exhausted) before anything projects its failure. */
+    async function releaseSkipped(
+        task: ReplaceableTask,
+        state: 'skipped' | 'exhausted',
+        fields: Omit<FailureNoticeRecord, 'id' | 'publish' | 'recordedAt'>,
+        lineage?: LineageAttempt[],
+    ): Promise<void> {
+        const notice = newNotice(task, fields);
+        await deps.store.recordSkipped(task.taskId, state, notice);
+        await deliverFailureNotice(task, notice, lineage);
+    }
+
+    const delivery = createReplacementDelivery(deps, { now, releaseSkipped });
+
     async function recordSkip(
         evaluation: Extract<ReplacementEvaluation, { eligible: false; task: ReplaceableTask }>,
         request: ReplacementRequest,
     ): Promise<ReplacementOutcome> {
         const { task, reason, maxReplacements } = evaluation;
-        const lineage = evaluation.lineage.length > 0 ? evaluation.lineage : [{
-            taskId: task.taskId, attemptNumber: task.attemptNumber, replacementCause: task.replacementCause, state: task.latestState, costUsd: 0,
-        }];
+        const lineage = lineageOrSelf(task, evaluation.lineage);
         const exhausted = EXHAUSTING_REASONS.has(reason);
-        const timestamp = now().toISOString();
-        await deps.store.setState(task.taskId, exhausted ? 'exhausted' : 'skipped');
-        await deps.store.appendEvent({
-            taskId: task.taskId, event: 'replacement.skipped', reason: `Replacement skipped: ${describeReplacementSkip(reason)}`, timestamp,
-            metadata: { reason, cause: request.cause, maxReplacements, ...(request.error ? { failure: request.error.slice(0, 500) } : {}) },
-        });
-        if (exhausted) {
-            await deps.store.appendEvent({
-                taskId: task.taskId, event: 'replacement.exhausted', reason: `All ${lineage.length} attempts failed`, timestamp,
-                metadata: {
-                    reason, cause: request.cause, maxReplacements,
-                    attempts: lineage.map(({ taskId, attemptNumber, state }) => ({ taskId, attemptNumber, state })),
-                },
-            });
-            await postExhaustedComment(task, lineage, request);
-        }
-        await publishFailureAgain(task, reason, timestamp);
+        await releaseSkipped(task, exhausted ? 'exhausted' : 'skipped', {
+            cause: request.cause, reason, exhausted, maxReplacements,
+            ...(request.error ? { failure: request.error.slice(0, 500) } : {}),
+        }, lineage);
         deps.logger?.info({ taskId: task.taskId, cause: request.cause, reason, exhausted }, 'Task replacement skipped');
         return { action: 'skipped', reason, exhausted, lineage };
     }
@@ -267,7 +316,10 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
         request: ReplacementRequest,
     ): Promise<ReplacementOutcome> {
         const { task, attemptNumber, remainingBudgetUsd } = evaluation;
-        const replay = task.replayJobData!;
+        const originalCap = lineageCostCap(task.replayJobData!);
+        // Lineage bookkeeping, not queue payload: the replacement's replay data carries it on.
+        const replay: ReplayJobData = { ...task.replayJobData! };
+        delete replay.lineageCostCapUsd;
         const correlationId = (deps.randomId ?? randomUUID)();
         const replacementTaskId = buildIssueTaskId({
             repoOwner: replay.repoOwner, repoName: replay.repoName, issueNumber: replay.number,
@@ -283,11 +335,13 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
             lineageRootTaskId: task.lineageRootTaskId,
             replacementCause: request.cause,
             ...(task.branchName ? { replacementBranch: task.branchName } : {}),
-            ...(remainingBudgetUsd === undefined ? {} : { costCapUsd: remainingBudgetUsd }),
+            // The run's spend cap guard enforces the original cap minus what these attempts spent.
+            ...(originalCap === undefined ? {} : { maxCostUsd: originalCap }),
+            costBudgetTaskIds: [...new Set([...evaluation.lineage.map(attempt => attempt.taskId), task.taskId])],
         };
         const timestamp = now().toISOString();
         // Budgets are always recomputed from the original cap and the whole lineage's spend.
-        const replayData: IssueJobData = { ...jobData, ...(remainingBudgetUsd === undefined ? {} : { costCapUsd: replay.costCapUsd }) };
+        const replayData: ReplayJobData = { ...jobData, ...(originalCap === undefined ? {} : { lineageCostCapUsd: originalCap }) };
         const failure = request.error?.slice(0, 500);
         const claimed = await deps.store.createReplacement({
             original: task, replacementTaskId, jobId, correlationId, attemptNumber, cause: request.cause, jobData, replayData, timestamp,
@@ -318,17 +372,14 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
     }
 
     async function withdraw(taskId: string, request: ReplacementRequestRecord): Promise<boolean> {
-        if (!await deps.store.withdrawRequest(taskId, request)) return false;
-        deps.logger?.info({ taskId, cause: request.cause, finalizedBy: request.finalizedBy }, 'Withdrew replacement decision');
         // The failure alert was held back while this decision was pending.
+        const notice: FailureNoticeRecord = {
+            id: (deps.randomId ?? randomUUID)(), cause: request.cause, publish: true, recordedAt: now().toISOString(),
+        };
+        if (!await deps.store.withdrawRequest(taskId, request, notice)) return false;
+        deps.logger?.info({ taskId, cause: request.cause, finalizedBy: request.finalizedBy }, 'Withdrew replacement decision');
         const task = await deps.store.loadTask(taskId);
-        if (task?.latestState === 'failed') await deps.publishTaskUpdate?.({
-            taskId,
-            state: 'failed',
-            repository: task.repository,
-            ...(task.issueNumber ? { issueNumber: task.issueNumber } : {}),
-            timestamp: now().toISOString(),
-        });
+        if (task) await deliverFailureNotice(task, notice);
         return true;
     }
 
@@ -394,6 +445,13 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
                     await deps.store.setState(entry.taskId, null);
                     cleared++;
                 }
+            }
+            // Released decisions whose events or failure alert an interruption left undelivered.
+            for (const { taskId, notice } of await deps.store.listFailureNotices(cutoff, options.limit ?? 20)) {
+                const task = await deps.store.loadTask(taskId);
+                if (!task) continue;
+                await deliverFailureNotice(task, notice);
+                resumed++;
             }
             return { resumed, cleared };
         },

@@ -24,7 +24,6 @@ export function resolveAgentTerminationReason(input: TerminationInput): AgentTer
     if (input.watchdogTrip) return input.watchdogTrip.terminationReason;
     if (input.timedOut) return 'timeout';
     if (input.subtype === 'error_max_turns') return 'max_turns';
-    if (input.subtype === 'error_max_budget_usd') return 'cost_cap';
 
     const error = input.error?.trim();
     if (!error) return undefined;

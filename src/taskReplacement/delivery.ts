@@ -1,6 +1,6 @@
-import { describeReplacementSkip, type ReplacementCause, type ReplacementSkipReason } from './policy.js';
+import type { ReplacementCause } from './policy.js';
 import type { TaskReplacementDependencies } from './service.js';
-import type { ReplaceableTask, ReplacementDispatchRecord } from './store.js';
+import type { FailureNoticeRecord, LineageAttempt, ReplaceableTask, ReplacementDispatchRecord } from './store.js';
 
 export const REPLACEMENT_JOB_NAME = 'processGitHubIssue';
 export const TERMINAL_STATES = new Set(['completed', 'failed', 'cancelled']);
@@ -25,11 +25,19 @@ export function createReplacementDelivery(
     deps: TaskReplacementDependencies,
     helpers: {
         now(): Date;
-        /** Publishes the original's held-back failure once no replacement supersedes it. */
-        publishFailureAgain(task: ReplaceableTask, reason: ReplacementSkipReason, timestamp: string): Promise<void>;
+        /**
+         * Releases the original's decision as skipped, then records why and publishes its
+         * held-back failure; the follow-up stays recoverable until it was delivered.
+         */
+        releaseSkipped(
+            task: ReplaceableTask,
+            state: 'skipped',
+            fields: Omit<FailureNoticeRecord, 'id' | 'publish' | 'recordedAt'>,
+            lineage?: LineageAttempt[],
+        ): Promise<void>;
     },
 ): ReplacementDelivery {
-    const { now, publishFailureAgain } = helpers;
+    const { now, releaseSkipped } = helpers;
 
     /**
      * Records a replacement whose queue delivery is confirmed, announces it, and only
@@ -74,15 +82,9 @@ export function createReplacementDelivery(
      * queue ever ran it, so the original's held-back failure is published instead.
      */
     async function releaseNotStarted(task: ReplaceableTask, cause: ReplacementCause, dispatch: ReplacementDispatchRecord): Promise<void> {
-        const reason: ReplacementSkipReason = 'replacement_not_started';
-        const timestamp = now().toISOString();
-        await deps.store.appendEvent({
-            taskId: task.taskId, event: 'replacement.skipped', reason: `Replacement skipped: ${describeReplacementSkip(reason)}`, timestamp,
-            once: true,
-            metadata: { reason, cause, replacementTaskId: dispatch.replacementTaskId, attemptNumber: dispatch.attemptNumber },
+        await releaseSkipped(task, 'skipped', {
+            cause, reason: 'replacement_not_started', replacementTaskId: dispatch.replacementTaskId, attemptNumber: dispatch.attemptNumber,
         });
-        await publishFailureAgain(task, reason, timestamp);
-        await deps.store.setState(task.taskId, 'skipped');
         deps.logger?.warn({ taskId: task.taskId, replacementTaskId: dispatch.replacementTaskId, cause },
             'Claimed replacement attempt was finalized by reconciliation before it started');
     }

@@ -1,52 +1,87 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { buildDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts';
-import { processDockerResult } from '../packages/core/src/agents/impl/utils/dockerResultProcessor.ts';
-import { ClaudeAgent } from '../packages/core/src/agents/impl/ClaudeAgent.ts';
-import type { AgentConfig } from '../packages/core/src/agents/types.ts';
-import { resolveAgentTerminationReason } from '../packages/core/src/agents/termination.ts';
-import { costCapExecutionOptions } from '../src/jobs/issueJob/costCap.ts';
-import { taskTerminalReasonForAgentTermination } from '../src/jobs/agentTerminalReason.ts';
+import knex from 'knex';
+import { closeConnection, RunCostCapExceededError } from '@propr/core';
+import type { IssueJobData } from '@propr/core';
+import { up as addLineage } from '../packages/core/src/db/migrations/20261006000000_add_task_replacement_lineage.js';
+import { issueRunCostCapDeps, issueRunCostCapTarget, withRunCostCap, type RunCostCapDeps } from '../src/jobs/runCostCap.js';
+import { createTaskReplacementService } from '../src/taskReplacement/service.js';
+import { createTaskReplacementStore, recordReplayableIssueTask } from '../src/taskReplacement/store.js';
 
-after(async () => {
-    const { closeConnection } = await import('../packages/core/src/db/connection.ts');
-    await closeConnection();
+const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+after(async () => { await database.destroy(); await closeConnection(); });
+
+await database.schema.createTable('tasks', table => {
+    table.string('task_id').primary();
+    table.string('job_id').unique();
+    table.string('correlation_id');
+    table.string('repository').notNullable();
+    table.integer('issue_number');
+    table.string('task_type').notNullable();
+    table.string('model_name');
+    table.timestamp('created_at');
+    table.json('initial_job_data');
 });
-
-const config = (type: AgentConfig['type']): AgentConfig => ({
-    id: `${type}-id`, type, alias: `${type}-test`, enabled: true, dockerImage: 'propr/agent:test',
-    configPath: `/tmp/${type}-config`, supportedModels: ['test-model'], defaultModel: 'test-model',
+await database.schema.createTable('task_history', table => {
+    table.increments('history_id').primary();
+    table.string('task_id').notNullable();
+    table.string('state').notNullable();
+    table.timestamp('timestamp').notNullable();
+    table.text('reason');
+    table.json('metadata');
 });
-
-const common = { worktreePath: '/tmp/worktree', githubToken: 'token', modelName: 'test-model', issueNumber: 2739, taskId: 'replacement-1' };
-
-test('a replacement\'s remaining budget reaches the Claude run as its spend limit', () => {
-    // The queue payload of a replacement whose lineage already spent $2 of a $5 cap.
-    const replacementJob = { costCapUsd: 3 };
-    const options = costCapExecutionOptions(new ClaudeAgent(config('claude')), replacementJob);
-    assert.deepEqual(options, { costCapUsd: 3 });
-
-    const args = buildDockerArgs(config('claude'), 100, { ...common, maxBudgetUsd: options.costCapUsd });
-    assert.deepEqual(args.slice(args.indexOf('--max-budget-usd'), args.indexOf('--max-budget-usd') + 2), ['--max-budget-usd', '3']);
-    assert.equal(buildDockerArgs(config('claude'), 100, common).includes('--max-budget-usd'), false, 'uncapped runs are unlimited');
+await database.schema.createTable('llm_executions', table => {
+    table.increments('execution_id').primary();
+    table.string('task_id').notNullable();
+    table.decimal('cost_usd', 10, 6);
 });
+await addLineage(database);
 
-test('a capped run never starts unenforced', () => {
-    assert.deepEqual(costCapExecutionOptions({ config: config('codex') }, {}), {}, 'uncapped runs need no enforcement');
-    assert.throws(() => costCapExecutionOptions({ config: config('codex') }, { costCapUsd: 3 }), /cannot enforce the 3 USD cost cap/);
-    assert.throws(() => costCapExecutionOptions({ config: config('claude'), enforcesCostCap: true }, { costCapUsd: 0 }), /no budget remains/);
-    assert.throws(() => costCapExecutionOptions({ config: config('claude'), enforcesCostCap: true }, { costCapUsd: Number.NaN }), /no budget remains/);
-});
+let instanceDefault = 5;
+const baseDeps: RunCostCapDeps = {
+    loadInstanceDefault: async () => instanceDefault,
+    async readRecordedSpend(taskIds) {
+        const row = await database('llm_executions').whereIn('task_id', taskIds).sum({ total: 'cost_usd' }).first() as { total: unknown };
+        return Number(row.total) || 0;
+    },
+    storeCap: async () => {},
+    recordExceeded: async () => {},
+    checkIntervalMs: 60_000,
+};
+const noLookups = { findSubmission: async () => undefined, readOverride: async () => undefined };
+const issueContext = (taskId: string) => ({ taskId, modelName: 'claude-opus-5-5', correlatedLogger: { warn: () => undefined } as never });
 
-test('a run stopped at its cost cap ends with the cost_cap_exceeded terminal reason', () => {
-    const stdout = [
-        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Implemented the parser.' }] } }),
-        JSON.stringify({ type: 'result', subtype: 'error_max_budget_usd', is_error: true, total_cost_usd: 3.02 }),
-    ].join('\n');
-    const { response } = processDockerResult({ stdout, stderr: '', exitCode: 1, messageTimestamps: new Map() }, 'prompt', 'test-model', 1_000);
-    assert.equal(response.success, false);
-    assert.equal(response.terminationReason, 'cost_cap');
-    assert.equal(resolveAgentTerminationReason({ subtype: 'error_max_budget_usd' }), 'cost_cap');
-    // Recorded on the task, so the stop is excluded from automatic replacement (`cost_cap_stop`).
-    assert.equal(taskTerminalReasonForAgentTermination('cost_cap'), 'cost_cap_exceeded');
+test('a replacement is held to the original run\'s effective cap minus what the lineage spent', async () => {
+    const job = {
+        repoOwner: 'integry', repoName: 'propr', number: 2739, agentAlias: 'claude', modelName: 'claude-opus-5-5', correlationId: 'original',
+    } as IssueJobData;
+    await database('tasks').insert({ task_id: 'task-1', repository: 'integry/propr', issue_number: 2739, task_type: 'issue' });
+    await recordReplayableIssueTask(database, 'task-1', job);
+    // The original run resolves its cap from the instance default, with no task override.
+    await withRunCostCap(await issueRunCostCapTarget(job, issueContext('task-1'), undefined, noLookups), async guard => {
+        assert.deepEqual(guard.cap, { capUsd: 5, source: 'instance_default' });
+    }, issueRunCostCapDeps(database, baseDeps));
+    await database('llm_executions').insert({ task_id: 'task-1', cost_usd: 2 });
+    await database('task_history').insert({ task_id: 'task-1', state: 'failed', timestamp: '2026-10-06T08:02:00.000Z', metadata: '{}' });
+
+    const enqueued: IssueJobData[] = [];
+    const service = createTaskReplacementService({
+        store: createTaskReplacementStore(database),
+        enqueue: async (_name, data) => { enqueued.push(data); },
+        loadMaxProviderReplacements: async () => 2,
+        infraLostEnabled: () => true,
+    });
+    const outcome = await service.complete({ taskId: 'task-1', cause: 'provider_transient' });
+    assert.ok(outcome.action === 'dispatched');
+
+    // The instance default changes before the replacement runs; the lineage keeps its original cap.
+    instanceDefault = 50;
+    const replacementId = outcome.replacementTaskId;
+    await withRunCostCap(await issueRunCostCapTarget(enqueued[0], issueContext(replacementId), undefined, noLookups), async guard => {
+        assert.equal(guard.cap?.capUsd, 5);
+        await database('llm_executions').insert({ task_id: replacementId, cost_usd: 2.5 });
+        await guard.admit();
+        await database('llm_executions').insert({ task_id: replacementId, cost_usd: 0.5 });
+        await assert.rejects(guard.admit(), RunCostCapExceededError, 'the $3 remainder is used up');
+    }, issueRunCostCapDeps(database, baseDeps));
 });

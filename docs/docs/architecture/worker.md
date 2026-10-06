@@ -226,11 +226,12 @@ the replacement records `replaces_task_id`, `attempt_number` and its lineage
 root. Claiming `replaced_by_task_id` is atomic, so each attempt is replaced at
 most once, and caps are counted from these stamps, so they survive daemon and
 worker restarts. A replacement goes through the same repository capacity
-admission as any task and never bypasses `limits.max_parallel_tasks`. When a
-per-run cost cap is set on the task (`costCapUsd`), the replacement's cap is
-the original cap minus what earlier attempts spent. The cap is enforced while
-the run executes: Claude agents stop at it (`--max-budget-usd`, terminal reason
-`cost_cap`), and agents that cannot enforce a cap refuse a capped run.
+admission as any task and never bypasses `limits.max_parallel_tasks`. When the
+original run had a spend cap (task override, `limits.max_cost_usd` or the
+instance default), the task records the cap it resolved, and every replacement
+in the lineage is held to that cap minus what all earlier attempts spent. The
+remainder is enforced by the same run spend cap guard as any run, even if the
+workflow or instance default changes in the meantime.
 
 No replacement is dispatched for user or withdrawal cancellations
 (`cancelled_*`), tasks stopped by the stall watchdog, run timeout or cost cap,
@@ -246,7 +247,10 @@ back the failure alert of a replaced attempt and shows one "Replacement
 started" card instead. The GitHub failure comment on the final failure lists
 every attempt with a link to each task. A decision interrupted by a restart
 (the failure was recorded, the replacement not yet queued) is completed by the
-reconciler on a later pass.
+reconciler on a later pass. When no replacement follows, the decision is
+released before the held-back failure alert is published, so the alert shows.
+The task keeps a durable obligation until the alert and timeline events are
+delivered, and the reconciler retries them if the worker stops in between.
 
 Task detail shows the attempt lineage, and `propr task get --json` includes
 `replacesTaskId`, `replacedByTaskId` and `attemptNumber`.
