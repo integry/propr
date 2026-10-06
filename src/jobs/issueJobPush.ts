@@ -21,9 +21,10 @@ export interface ImplementationPushOptions {
 export async function pushImplementationBranch(options: ImplementationPushOptions): Promise<void> {
     const { octokit, issueRef, worktreeInfo, repoUrl, taskId, stateManager, correlatedLogger } = options;
     const { worktreePath, branchName } = worktreeInfo;
-    // The token captured before agent execution may have expired while it worked.
-    const { token } = await octokit.auth({ type: 'installation' }) as GitHubToken;
     try {
+        // The token captured before agent execution may have expired while it worked; a
+        // failure to obtain a new one must reach the salvage ladder like a rejected push.
+        const { token } = await octokit.auth({ type: 'installation' }) as GitHubToken;
         await pushBranch(worktreePath, branchName, { repoUrl, authToken: token });
     } catch (error) {
         const salvageTaskId = taskId || `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;

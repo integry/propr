@@ -6,7 +6,7 @@ import { handleError } from '../utils/errorHandler.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { resolveRepositoryWorktreePath } from './repositoryPaths.js';
 import { redactAuthenticatedGitUrl } from './repoBranching.js';
-import { isSalvageRetainedWorktree } from './pushSalvage.js';
+import { isActiveSalvageRetention, isSalvageRetainedWorktree } from './pushSalvage.js';
 
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
 
@@ -170,6 +170,13 @@ async function processWorktreeItem(itemPath: string, stats: fs.Stats): Promise<C
     if (await fs.pathExists(retentionFile)) {
         try {
             const retentionInfo = await fs.readJson(retentionFile) as RetentionInfo;
+            // A push-salvage marker without a deadline (PUSH_RESCUE_RETENTION_DAYS=0) keeps
+            // the only copy of rescued commits until an operator removes it.
+            if (isActiveSalvageRetention(retentionInfo)) {
+                logger.debug({ worktreePath: itemPath, scheduledCleanup: retentionInfo.scheduledCleanup }, 'Retaining worktree kept by push salvage');
+                retained++;
+                return { cleaned, retained };
+            }
             const scheduledCleanup = new Date(retentionInfo.scheduledCleanup);
             const now = new Date();
 

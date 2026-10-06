@@ -8,10 +8,10 @@ import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import {
     salvageFailedPush, createWorktreePushSalvageOperations, PushFailedError, getPushFailure, writeSalvageRetentionMarker,
-    formatPushFailureMarkdown, type PushSalvageEvent, type PushSalvageOperations,
+    formatPushFailureMarkdown, isSalvageRetainedWorktree, type PushSalvageEvent, type PushSalvageOperations,
 } from '../packages/core/src/git/pushSalvage.js';
 import { extractUnblockUrls } from '../packages/core/src/git/pushRejection.js';
-import { cleanupWorktree } from '../packages/core/src/git/worktreeOperations.js';
+import { cleanupExpiredWorktrees, cleanupWorktree } from '../packages/core/src/git/worktreeOperations.js';
 import { pushBranch } from '../packages/core/src/git/repoBranching.js';
 
 const execGit = promisify(execFile);
@@ -229,6 +229,81 @@ test('a bundle written by the real git operations restores the branch', async ()
         await git(tempDir, ['init', restored]);
         await git(restored, ['fetch', '--', failure.bundlePath!, 'HEAD']);
         assert.equal(await git(restored, ['rev-parse', 'FETCH_HEAD']), head);
+    } finally {
+        await rm(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('PUSH_RESCUE_RETENTION_DAYS=0 retains a salvaged worktree indefinitely', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-indefinite-'));
+    const previousDays = process.env.PUSH_RESCUE_RETENTION_DAYS;
+    try {
+        const worktreePath = path.join(tempDir, 'worktree');
+        await mkdir(worktreePath);
+        process.env.PUSH_RESCUE_RETENTION_DAYS = '0';
+        await writeSalvageRetentionMarker(worktreePath, { taskId: 'task/1', branchName: '2736/salvage' });
+        const marker = JSON.parse(await readFile(path.join(worktreePath, '.retention-info.json'), 'utf8'));
+        assert.equal(marker.retentionHours, null);
+        assert.equal(marker.scheduledCleanup, null);
+        assert.equal(await isSalvageRetainedWorktree(worktreePath), true);
+
+        await cleanupWorktree(tempDir, worktreePath, '2736/salvage', { deleteBranch: true, success: false, retentionStrategy: 'always_delete' });
+        const result = await cleanupExpiredWorktrees(tempDir);
+        assert.equal(result.cleaned, 0);
+        assert.ok(existsSync(worktreePath));
+    } finally {
+        if (previousDays === undefined) delete process.env.PUSH_RESCUE_RETENTION_DAYS;
+        else process.env.PUSH_RESCUE_RETENTION_DAYS = previousDays;
+        await rm(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('a salvaged worktree past its finite retention is expired', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-expired-'));
+    try {
+        const worktreePath = path.join(tempDir, 'worktree');
+        await mkdir(worktreePath);
+        await writeSalvageRetentionMarker(worktreePath, { taskId: 'task/1', branchName: '2736/salvage', retentionHours: -1 });
+        assert.equal(await isSalvageRetainedWorktree(worktreePath), false);
+        const result = await cleanupExpiredWorktrees(tempDir);
+        assert.equal(result.cleaned, 1);
+        assert.ok(!existsSync(worktreePath));
+    } finally {
+        await rm(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('a failed credential refresh keeps the original push rejection as the diagnosis', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-refresh-'));
+    try {
+        const repo = path.join(tempDir, 'repo');
+        await git(tempDir, ['init', repo]);
+        await git(repo, ['config', 'user.email', 'test@example.com']);
+        await git(repo, ['config', 'user.name', 'Test']);
+        await writeFile(path.join(repo, 'agent.txt'), 'agent work\n');
+        await git(repo, ['add', '.']);
+        await git(repo, ['commit', '-m', 'agent work']);
+
+        let retried = false;
+        const salvage = await salvageFailedPush({
+            taskId: 'task-4', repoOwner: 'integry', repoName: 'propr', branchName: 'main', worktreePath: repo,
+            error: PROTECTION_ERROR,
+            bundleDirectory: path.join(tempDir, 'bundles'),
+            operations: createWorktreePushSalvageOperations({
+                worktreePath: repo, taskId: 'task-4', branchName: 'main', repoUrl: path.join(tempDir, 'missing.git'),
+                refreshToken: async () => { throw new Error('fatal: Authentication failed for https://github.com/integry/propr.git'); },
+                retryPush: async () => { retried = true; },
+            }),
+        }).catch((e: unknown) => e);
+
+        const failure = getPushFailure(salvage)!;
+        assert.equal(retried, false);
+        assert.equal(failure.rung, 'bundle');
+        assert.equal(failure.diagnosis.classification, 'push_protection');
+        assert.deepEqual(failure.diagnosis.unblockUrls, [UNBLOCK_URL]);
+        assert.equal(failure.attempts[0].rung, 'retry');
+        assert.match(failure.attempts[0].error ?? '', /^Credential refresh failed: fatal: Authentication failed/);
+        assert.ok((salvage as Error).message.includes(`Unblock URL: ${UNBLOCK_URL}`));
     } finally {
         await rm(tempDir, { recursive: true, force: true });
     }

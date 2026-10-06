@@ -81,6 +81,15 @@ export class PushFailedError extends Error {
     }
 }
 
+/** The salvage retry could not obtain a fresh credential, so no second push reached the
+ * remote and the original rejection remains the diagnosis. */
+export class CredentialRefreshError extends Error {
+    constructor(cause: unknown) {
+        super(`Credential refresh failed: ${errorMessage(cause)}`, { cause });
+        this.name = 'CredentialRefreshError';
+    }
+}
+
 function errorMessage(error: unknown): string {
     return redactAuthenticatedGitUrl(error instanceof Error ? error.message : String(error));
 }
@@ -198,13 +207,15 @@ export async function salvageFailedPush<T>(options: PushSalvageOptions<T>): Prom
         await emit(toEvent('retry', diagnosis));
         return result;
     } catch (retryError) {
-        pushError = retryError;
+        // A failed credential refresh says nothing about why the remote rejected the
+        // push; keep the original diagnosis and record the refresh failure as the attempt.
+        if (!(retryError instanceof CredentialRefreshError)) pushError = retryError;
         attempts.push({ rung: 'retry', succeeded: false, error: errorMessage(retryError) });
     }
 
     // Classify the latest rejection: a refreshed credential can turn an auth error
-    // into the rule violation that actually blocks the push. A retry that failed
-    // before reaching the remote (e.g. the refresh itself) keeps the original error.
+    // into the rule violation that actually blocks the push. A retry error that does
+    // not classify (it likely never reached the remote) keeps the original error.
     let diagnosis = classifyPushError(pushError);
     if (diagnosis.classification === 'unknown' && pushError !== options.error) {
         pushError = options.error;
@@ -257,23 +268,26 @@ export interface SalvageRetentionInfo {
     timestamp: string;
     issueProcessed: boolean;
     success: false;
-    retentionHours: number;
-    scheduledCleanup: string;
+    /** `null` when PUSH_RESCUE_RETENTION_DAYS=0: kept until an operator deletes it. */
+    retentionHours: number | null;
+    scheduledCleanup: string | null;
     reason: typeof SALVAGE_RETENTION_REASON;
     taskId: string;
     branchName: string;
 }
 
 /** Writes `.retention-info.json` so cleanupWorktree keeps this worktree regardless of
- * WORKTREE_RETENTION_STRATEGY, and cleanupExpiredWorktrees removes it after retention. */
-export async function writeSalvageRetentionMarker(worktreePath: string, details: { taskId: string; branchName: string; retentionHours?: number }): Promise<void> {
-    const retentionHours = details.retentionHours ?? Math.max(getRescueRetentionDays(), 1) * 24;
+ * WORKTREE_RETENTION_STRATEGY, and cleanupExpiredWorktrees removes it after retention.
+ * A retention of 0 days writes no cleanup deadline, so the worktree is never expired. */
+export async function writeSalvageRetentionMarker(worktreePath: string, details: { taskId: string; branchName: string; retentionHours?: number | null }): Promise<void> {
+    const retentionDays = getRescueRetentionDays();
+    const retentionHours = details.retentionHours !== undefined ? details.retentionHours : (retentionDays === 0 ? null : retentionDays * 24);
     const info: SalvageRetentionInfo = {
         timestamp: new Date().toISOString(),
         issueProcessed: true,
         success: false,
         retentionHours,
-        scheduledCleanup: new Date(Date.now() + retentionHours * 60 * 60 * 1000).toISOString(),
+        scheduledCleanup: retentionHours === null ? null : new Date(Date.now() + retentionHours * 60 * 60 * 1000).toISOString(),
         reason: SALVAGE_RETENTION_REASON,
         taskId: details.taskId,
         branchName: details.branchName,
@@ -281,10 +295,18 @@ export async function writeSalvageRetentionMarker(worktreePath: string, details:
     await fs.writeJson(path.join(worktreePath, '.retention-info.json'), info);
 }
 
+/** True while a salvage marker protects its worktree: indefinitely without a deadline,
+ * otherwise until the scheduled cleanup. */
+export function isActiveSalvageRetention(info: unknown): boolean {
+    if (!info || typeof info !== 'object') return false;
+    const { reason, scheduledCleanup } = info as Partial<SalvageRetentionInfo>;
+    if (reason !== SALVAGE_RETENTION_REASON) return false;
+    return scheduledCleanup === null || Date.parse(scheduledCleanup ?? '') > Date.now();
+}
+
 export async function isSalvageRetainedWorktree(worktreePath: string): Promise<boolean> {
     try {
-        const info = await fs.readJson(path.join(worktreePath, '.retention-info.json')) as Partial<SalvageRetentionInfo>;
-        return info.reason === SALVAGE_RETENTION_REASON && Date.parse(info.scheduledCleanup ?? '') > Date.now();
+        return isActiveSalvageRetention(await fs.readJson(path.join(worktreePath, '.retention-info.json')));
     } catch {
         return false;
     }
@@ -310,7 +332,11 @@ export function createWorktreePushSalvageOperations<T>(options: WorktreePushSalv
     const redact = (error: unknown) => new Error(errorMessage(error).replaceAll(token || '\0', '[REDACTED]'));
     return {
         async retryPush() {
-            token = await options.refreshToken();
+            try {
+                token = await options.refreshToken();
+            } catch (error) {
+                throw new CredentialRefreshError(error);
+            }
             return options.retryPush(token);
         },
         async pushRescueRef(ref) {
