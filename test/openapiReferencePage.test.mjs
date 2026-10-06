@@ -6,10 +6,10 @@ import { test } from 'node:test';
 
 const openapiDir = new URL('../docs/static/openapi/', import.meta.url);
 const page = await readFile(new URL('index.html', openapiDir), 'utf8');
-const scripts = [...page.matchAll(/<script\b([^>]*)>/g)].map(([, attributes]) => attributes);
+const scripts = [...page.matchAll(/<script\b([^>]*)>/gi)].map(([, attributes]) => attributes);
 
 test('the API reference page loads only the vendored renderer, with a matching SRI hash', async () => {
-  const sources = scripts.map(attributes => attributes.match(/\bsrc="([^"]+)"/)?.[1]).filter(Boolean);
+  const sources = scripts.map(attributes => attributes.match(/\bsrc="([^"]+)"/i)?.[1]).filter(Boolean);
   assert.deepEqual(sources, ['/openapi/scalar/standalone.js'], 'no script may come from a CDN; the bundled docs work offline');
   const renderer = scripts.find(attributes => attributes.includes('/openapi/scalar/standalone.js'));
   const integrity = renderer.match(/\bintegrity="(sha384-[^"]+)"/)?.[1];
