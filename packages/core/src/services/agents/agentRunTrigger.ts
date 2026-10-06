@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { JobsOptions } from 'bullmq';
 import type { Knex } from 'knex';
 import { agentTypeSupportsProprMcp, type AgentRunTrigger, type SyntheticAgentConfig } from '@propr/shared';
-import { loadMonitoredReposRaw, type RepoToMonitor } from '../../config/configManager.js';
+import { loadMonitoredReposRaw, loadSettings, type RepoToMonitor } from '../../config/configManager.js';
 import { loadAgents, type AgentConfig } from '../../config/configManagerAgents.js';
 import { loadSyntheticAgents } from '../../config/configManagerSyntheticAgents.js';
 import { getIssueQueue } from '../../queue/taskQueue.js';
@@ -60,6 +60,8 @@ export interface AgentRunTriggerDependencies {
   loadAgents?: () => Promise<AgentConfig[]>;
   loadSyntheticAgents?: () => Promise<SyntheticAgentConfig[]>;
   loadRepos?: () => Promise<RepoToMonitor[]>;
+  /** The configured default agent alias (settings.default_agent_alias), if any. */
+  loadDefaultAgentAlias?: () => Promise<string | null>;
 }
 
 export type AgentRunGateDecision =
@@ -134,14 +136,39 @@ function syntheticAgentSupportsModel(agent: SyntheticAgentConfig, modelName: str
   return agent.enabled && agent.models.some(model => model.enabled && model.id === (modelName ?? agent.defaultModel));
 }
 
-/** A synthetic model can route to any enabled member, so every one must support propr_mcp. */
+/**
+ * A synthetic model can route to any enabled member whose physical agent is
+ * enabled, so every such member must support propr_mcp. Members on a disabled
+ * or missing physical agent are never selected by routing and are ignored.
+ */
 function syntheticAgentSupportsProprMcp(agent: SyntheticAgentConfig, modelName: string | null, agents: AgentConfig[]): boolean {
   const model = agent.models.find(choice => choice.enabled && choice.id === (modelName ?? agent.defaultModel));
-  const members = model?.members.filter(member => member.enabled) ?? [];
-  return members.length > 0 && members.every(member => {
+  const selectable = (model?.members ?? []).flatMap(member => {
+    if (!member.enabled) return [];
     const direct = agents.find(candidate => candidate.alias === member.directAgentAlias);
-    return direct !== undefined && agentTypeSupportsProprMcp(direct.type);
+    return direct?.enabled ? [direct] : [];
   });
+  return selectable.length > 0 && selectable.every(direct => agentTypeSupportsProprMcp(direct.type));
+}
+
+async function loadConfiguredDefaultAgentAlias(): Promise<string | null> {
+  const alias = (await loadSettings() as Record<string, unknown>).default_agent_alias;
+  return typeof alias === 'string' && alias.trim() ? alias.trim() : null;
+}
+
+/**
+ * The agent type the worker uses when a definition names no agent, resolved
+ * like `AgentRegistry.getDefaultAgent`: the configured default alias, then the
+ * `default` alias, among enabled direct agents. With no agents configured the
+ * registry falls back to a Claude agent from the environment. Null when no
+ * default agent can be resolved.
+ */
+function defaultAgentType(agents: AgentConfig[], configuredAlias: string | null): string | null {
+  if (agents.length === 0) return 'claude';
+  const enabled = agents.filter(agent => agent.enabled);
+  const resolved = (configuredAlias ? enabled.find(agent => agent.alias === configuredAlias) : undefined)
+    ?? enabled.find(agent => agent.alias === 'default');
+  return resolved?.type ?? null;
 }
 
 /**
@@ -150,7 +177,8 @@ function syntheticAgentSupportsProprMcp(agent: SyntheticAgentConfig, modelName: 
  *
  * - every repository is an enabled monitored repository;
  * - the agent alias is enabled and supports the model (same rule as
- *   `implement_plan`); without an alias the worker uses the default agent;
+ *   `implement_plan`); without an alias the worker uses the default agent,
+ *   which must resolve when propr_mcp is needed;
  * - propr_mcp, requested by the capability or by the acting step of preview
  *   and auto runs, is only used with agent types that support it.
  */
@@ -162,6 +190,7 @@ export async function validateAgentDefinitionRuntime(
     loadRepos = loadMonitoredReposRaw,
     loadAgents: loadDirectAgents = loadAgents,
     loadSyntheticAgents: loadSynthetic = () => loadSyntheticAgents(),
+    loadDefaultAgentAlias = loadConfiguredDefaultAgentAlias,
   } = deps;
 
   if (definition.repositories.length > 0) {
@@ -172,8 +201,17 @@ export async function validateAgentDefinitionRuntime(
 
   const alias = definition.agentAlias;
   const modelName = definition.modelName;
+  const needsProprMcp = definition.capabilities.includes('propr_mcp') || definition.autonomyMode !== 'dry_run';
   if (alias === null) {
-    return modelName === null ? null : 'A model requires an agent';
+    if (modelName !== null) return 'A model requires an agent';
+    if (!needsProprMcp) return null;
+    const [agents, configuredAlias] = await Promise.all([loadDirectAgents(), loadDefaultAgentAlias()]);
+    const type = defaultAgentType(agents, configuredAlias);
+    if (type === null) return 'No default agent is configured; choose an agent that supports propr_mcp';
+    if (!agentTypeSupportsProprMcp(type)) {
+      return 'The default agent does not support propr_mcp, which the propr_mcp capability and the preview and auto acting steps require';
+    }
+    return null;
   }
 
   const [agents, synthetic] = await Promise.all([loadDirectAgents(), loadSynthetic()]);
@@ -182,7 +220,6 @@ export async function validateAgentDefinitionRuntime(
     : synthetic.find(agent => agent.alias === alias && syntheticAgentSupportsModel(agent, modelName));
   if (!direct && !syntheticAgent) return 'Choose an enabled agent and a model it supports';
 
-  const needsProprMcp = definition.capabilities.includes('propr_mcp') || definition.autonomyMode !== 'dry_run';
   if (needsProprMcp) {
     const supported = direct ? agentTypeSupportsProprMcp(direct.type)
       : syntheticAgentSupportsProprMcp(syntheticAgent!, modelName, agents);

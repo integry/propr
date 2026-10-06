@@ -143,6 +143,16 @@ describe('triggerAgentRun', () => {
     assert.equal(queue.calls.length, 0);
   });
 
+  test('a default-agent definition needing propr_mcp is rejected when the default lacks it and creates no run', async () => {
+    const definition = await define({ agentAlias: null, modelName: null, autonomyMode: 'auto' });
+    await assert.rejects(
+      triggerAgentRun({ definition, trigger: 'manual' }, deps({ loadDefaultAgentAlias: async () => 'gemini' })),
+      (error: unknown) => error instanceof AgentRunTriggerError && error.code === 'AGENT_INVALID' && error.status === 400,
+    );
+    assert.equal((await listAgentRuns(definition.id, 'alice', {}, { database })).total, 0);
+    assert.equal(queue.calls.length, 0);
+  });
+
   test('a gate returning defer creates a deferred run and enqueues nothing', async () => {
     const definition = await define();
     const until = NOW + 60_000;
@@ -251,6 +261,38 @@ describe('validateAgentDefinitionRuntime', () => {
     assert.equal(await check({ agentAlias: 'gemini', modelName: 'pro' }), null);
     assert.match(await check({ agentAlias: 'pool', modelName: 'mixed', capabilities: ['propr_mcp'] }) ?? '', /propr_mcp/);
     assert.equal(await check({ agentAlias: 'pool', modelName: 'claude-only', capabilities: ['propr_mcp'] }), null);
+  });
+
+  test('validates the default agent when propr_mcp is needed without an agent', async () => {
+    const withDefault = (agents: AgentConfig[], alias: string | null) => (overrides: Partial<StoredAgentDefinition>) =>
+      validateAgentDefinitionRuntime({ ...base, agentAlias: null, modelName: null, ...overrides },
+        { ...deps, loadAgents: async () => agents, loadDefaultAgentAlias: async () => alias });
+    const gemini = agent({ id: 'agent-ag', type: 'antigravity', alias: 'gemini', supportedModels: ['pro'] });
+
+    const geminiDefault = withDefault([agent(), gemini], 'gemini');
+    assert.match(await geminiDefault({ capabilities: ['propr_mcp'] }) ?? '', /default agent does not support propr_mcp/);
+    assert.match(await geminiDefault({ autonomyMode: 'auto' }) ?? '', /propr_mcp/);
+    assert.match(await geminiDefault({ autonomyMode: 'preview' }) ?? '', /propr_mcp/);
+    assert.equal(await geminiDefault({}), null);
+
+    assert.equal(await withDefault([agent(), gemini], 'claude')({ autonomyMode: 'auto' }), null);
+    // The `default` alias is the fallback, and a disabled configured default is skipped like in the registry.
+    assert.match(await withDefault([agent(), agent({ id: 'd', type: 'antigravity', alias: 'default' })], null)(
+      { capabilities: ['propr_mcp'] }) ?? '', /propr_mcp/);
+    assert.equal(await withDefault([agent({ alias: 'default' }), agent({ id: 'g', type: 'antigravity', alias: 'gemini',
+      enabled: false })], 'gemini')({ capabilities: ['propr_mcp'] }), null);
+    assert.match(await withDefault([agent(), gemini], null)({ capabilities: ['propr_mcp'] }) ?? '', /No default agent/);
+    // With no agents configured the registry falls back to an environment Claude agent.
+    assert.equal(await withDefault([], null)({ capabilities: ['propr_mcp'] }), null);
+  });
+
+  test('ignores synthetic members whose physical agent is disabled', async () => {
+    const withAgents = (agents: AgentConfig[]) => validateAgentDefinitionRuntime(
+      { ...base, agentAlias: 'pool', modelName: 'mixed', capabilities: ['propr_mcp'] }, { ...deps, loadAgents: async () => agents });
+    assert.equal(await withAgents([agent(),
+      agent({ id: 'agent-ag', type: 'antigravity', alias: 'gemini', supportedModels: ['pro'], enabled: false })]), null);
+    assert.match(await withAgents([agent({ enabled: false }),
+      agent({ id: 'agent-ag', type: 'antigravity', alias: 'gemini', supportedModels: ['pro'], enabled: false })]) ?? '', /propr_mcp/);
   });
 });
 
