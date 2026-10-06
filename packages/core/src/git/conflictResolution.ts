@@ -1,4 +1,5 @@
-import { readFile } from 'fs/promises';
+import { createReadStream } from 'fs';
+import { StringDecoder } from 'string_decoder';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { createHooklessGit } from './hooklessGit.js';
@@ -7,7 +8,8 @@ import { assertCommitIsAncestor, mergeBaseIntoBranch, type MergeBaseIntoBranchOp
 import { pushBranch, type PushBranchOptions } from './repoBranching.js';
 
 const CONFLICT_MARKER_PATTERN = /^(<<<<<<<|=======|>>>>>>>)($|\s)/;
-const MAX_CONFLICT_MARKER_SCAN_BYTES = 1024 * 1024;
+// Git's binary heuristic: a NUL byte in the first 8000 bytes; git writes no markers into binary files.
+const BINARY_SNIFF_BYTES = 8000;
 
 export interface ConflictResolverContext {
     worktreePath: string;
@@ -50,20 +52,47 @@ export type ConflictResolutionOutcome<R> =
     | (OutcomeBase & { status: 'unresolved'; remainingMarkers: string[]; resolverResult?: R })
     | { status: 'head_moved'; previousHeadSha: string; expectedHeadSha: string };
 
+/**
+ * Streams one file line by line, so files of any size are verified. Returns
+ * null when the file is gone (deleting a conflicted file is a valid resolution)
+ * or binary.
+ */
+async function scanFileForConflictMarkers(filePath: string, file: string): Promise<string[] | null> {
+    const markers: string[] = [];
+    const decoder = new StringDecoder('utf8');
+    let pending = '';
+    let lineNumber = 0;
+    let sniffed = 0;
+    const scanLine = (line: string) => {
+        lineNumber += 1;
+        if (CONFLICT_MARKER_PATTERN.test(line)) markers.push(`${file}:${lineNumber}:${line}`);
+    };
+    try {
+        for await (const chunk of createReadStream(filePath) as AsyncIterable<Buffer>) {
+            if (sniffed < BINARY_SNIFF_BYTES) {
+                if (chunk.subarray(0, BINARY_SNIFF_BYTES - sniffed).includes(0)) return null;
+                sniffed += chunk.length;
+            }
+            const lines = (pending + decoder.write(chunk)).split(/\r?\n/);
+            pending = lines.pop() ?? '';
+            lines.forEach(scanLine);
+        }
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+        throw error; // Unverifiable content must not be published.
+    }
+    pending += decoder.end();
+    if (pending.endsWith('\r')) pending = pending.slice(0, -1);
+    scanLine(pending);
+    return markers;
+}
+
 /** Lists `file:line:marker` entries for conflict markers left in the given files. */
 export async function findConflictMarkers(worktreePath: string, files: readonly string[]): Promise<string[]> {
     const markers: string[] = [];
     for (const file of new Set(files)) {
-        let buffer: Buffer;
-        try {
-            buffer = await readFile(path.join(worktreePath, file));
-        } catch {
-            continue; // Deleting a conflicted file is a valid resolution.
-        }
-        if (buffer.length > MAX_CONFLICT_MARKER_SCAN_BYTES || buffer.includes(0)) continue;
-        buffer.toString('utf8').split(/\r?\n/).forEach((line, index) => {
-            if (CONFLICT_MARKER_PATTERN.test(line)) markers.push(`${file}:${index + 1}:${line}`);
-        });
+        markers.push(...(await scanFileForConflictMarkers(path.join(worktreePath, file), file) ?? []));
     }
     return markers;
 }

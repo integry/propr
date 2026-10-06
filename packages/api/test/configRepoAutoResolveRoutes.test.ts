@@ -77,6 +77,30 @@ for (const { name, previousRepos, repos, expected } of [
     expected: [['repo-main', undefined], ['repo-release', undefined]]
   },
   {
+    name: 'clears the merge-conflict override when explicit null is sent for a branch entry that already omits it',
+    previousRepos: [
+      { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main' },
+      { id: 'repo-release', name: 'integry/propr', enabled: true, baseBranch: 'release', autoResolveMergeConflicts: true }
+    ],
+    repos: [
+      { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', autoResolveMergeConflicts: null },
+      { id: 'repo-release', name: 'integry/propr', enabled: true, baseBranch: 'release', autoResolveMergeConflicts: true }
+    ],
+    expected: [['repo-main', undefined], ['repo-release', undefined]]
+  },
+  {
+    name: 'keeps the merge-conflict override when the branch entry that omits it is submitted without the field',
+    previousRepos: [
+      { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main' },
+      { id: 'repo-release', name: 'integry/propr', enabled: true, baseBranch: 'release', autoResolveMergeConflicts: true }
+    ],
+    repos: [
+      { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main' },
+      { id: 'repo-release', name: 'integry/propr', enabled: true, baseBranch: 'release' }
+    ],
+    expected: [['repo-main', true], ['repo-release', true]]
+  },
+  {
     name: 'clears the merge-conflict override when a new branch entry is added with explicit null',
     previousRepos: [
       { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', autoResolveMergeConflicts: true }

@@ -64,7 +64,10 @@ export function preserveRepoAutoResolveMergeConflicts(
     const previousValue = previousEntry
       ? normalizeStoredAutoResolveMergeConflicts(previousEntry.autoResolveMergeConflicts)
       : storedByRepository.get(repositoryKey) ?? null;
-    if (previousValue !== incomingValue) changedByRepository.set(repositoryKey, incomingValue);
+    // Explicit `null` clears the effective repository-wide override even when this
+    // entry already omits the field (another branch entry may still carry it).
+    const clearsStoredOverride = incomingValue === null && (storedByRepository.get(repositoryKey) ?? null) !== null;
+    if (previousValue !== incomingValue || clearsStoredOverride) changedByRepository.set(repositoryKey, incomingValue);
   });
 
   return normalizedRepos.map(repo => {

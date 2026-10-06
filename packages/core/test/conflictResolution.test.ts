@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
 import { simpleGit } from 'simple-git';
-import { performConflictResolution } from '../src/git/conflictResolution.js';
+import { findConflictMarkers, performConflictResolution } from '../src/git/conflictResolution.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -27,7 +27,7 @@ async function remoteHead(remote: string, branch: string): Promise<string> {
  * Builds a bare "GitHub" remote with `main` and a PR branch `feature` that both
  * changed the same line after branching, plus a clone checked out on `feature`.
  */
-async function createConflictedPullRequest(): Promise<{ remote: string; worktree: string; prHead: string; baseHead: string }> {
+async function createConflictedPullRequest(padding = ''): Promise<{ remote: string; worktree: string; prHead: string; baseHead: string }> {
   const remote = await tempDir('propr-conflict-remote-');
   await simpleGit(remote).init(true, ['--initial-branch=main']);
 
@@ -36,19 +36,19 @@ async function createConflictedPullRequest(): Promise<{ remote: string; worktree
   await seedGit.clone(remote, seed);
   await configure(seedGit);
   await seedGit.checkout(['-B', 'main']);
-  await writeFile(path.join(seed, 'config.ts'), 'export const greeting = "hello";\nexport const other = 1;\n');
+  await writeFile(path.join(seed, 'config.ts'), 'export const greeting = "hello";\nexport const other = 1;\n' + padding);
   await seedGit.add('.');
   await seedGit.commit('initial');
   await seedGit.push('origin', 'main');
 
   await seedGit.checkout(['-b', 'feature']);
-  await writeFile(path.join(seed, 'config.ts'), 'export const greeting = "hello from the PR";\nexport const other = 1;\n');
+  await writeFile(path.join(seed, 'config.ts'), 'export const greeting = "hello from the PR";\nexport const other = 1;\n' + padding);
   await seedGit.commit('pr change', ['config.ts']);
   await seedGit.push('origin', 'feature');
 
   // Another PR merges into main and touches the same line.
   await seedGit.checkout('main');
-  await writeFile(path.join(seed, 'config.ts'), 'export const greeting = "hello from main";\nexport const other = 1;\n');
+  await writeFile(path.join(seed, 'config.ts'), 'export const greeting = "hello from main";\nexport const other = 1;\n' + padding);
   await seedGit.commit('base change', ['config.ts']);
   await seedGit.push('origin', 'main');
 
@@ -123,6 +123,40 @@ test('a resolver that leaves markers yields unresolved, aborts the merge and lea
   const git = simpleGit(worktree);
   await assert.rejects(git.raw(['rev-parse', '--verify', 'MERGE_HEAD']), 'no merge is left in progress');
   assert.equal((await git.revparse(['HEAD'])).trim(), prHead);
+});
+
+test('markers left in a conflicted text file larger than 1 MiB still yield unresolved without pushing', async () => {
+  const padding = '// unchanged filler line shared by both sides of the merge\n'.repeat(40_000);
+  assert.ok(padding.length > 2 * 1024 * 1024);
+  const { remote, worktree, prHead } = await createConflictedPullRequest(padding);
+  let pushed = false;
+
+  const outcome = await performConflictResolution({
+    worktreePath: worktree,
+    baseBranch: 'main',
+    branchName: 'feature',
+    commitMessage: 'merge',
+    resolveConflicts: async () => 'did nothing',
+    push: async () => { pushed = true; },
+  });
+
+  assert.equal(outcome.status, 'unresolved');
+  assert.ok(outcome.status === 'unresolved' && outcome.remainingMarkers.some(marker => marker.startsWith('config.ts:1:<<<<<<<')));
+  assert.equal(pushed, false);
+  assert.equal(await remoteHead(remote, 'feature'), prHead);
+});
+
+test('findConflictMarkers finds markers split across read chunks and skips only binary or deleted files', async () => {
+  const directory = await tempDir('propr-conflict-markers-');
+  // Places a CRLF marker line across the 64 KiB stream chunk boundary.
+  const filler = 'a'.repeat(64 * 1024 - 3) + '\r\n';
+  await writeFile(path.join(directory, 'large.txt'), filler + '=======\r\n' + 'b\n'.repeat(600_000) + '>>>>>>> main');
+  await writeFile(path.join(directory, 'binary.bin'), Buffer.concat([Buffer.from([0]), Buffer.from('\n<<<<<<< HEAD\n')]));
+
+  assert.deepEqual(await findConflictMarkers(directory, ['large.txt', 'binary.bin', 'deleted.txt']), [
+    'large.txt:2:=======',
+    'large.txt:600003:>>>>>>> main',
+  ]);
 });
 
 test('a failing resolver aborts the merge and rethrows without pushing', async () => {
