@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   operationPath,
+  PROPR_API_OPERATIONS,
   ProprClient,
   ProprClientError,
   withQuery,
   type ProprApi,
+  type ProprApiOperationId,
+  type ProprDesktopPairingComplete,
 } from '../src/index.js';
 
 interface RecordedRequest {
@@ -31,7 +34,78 @@ const submission: ProprApi.TaskSubmission = {
   taskId: 'task-1', error: null,
 };
 
+const pairingId = `dpr_${'A'.repeat(22)}`;
+const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+const pairingBinding = {
+  instanceId: 'profile-a',
+  origin: 'https://propr.example.com',
+  scope: 'desktop-instance' as const,
+  credentialGeneration: 'G'.repeat(22),
+};
+const pairing: ProprDesktopPairingComplete = {
+  token: `propr_it_${'C'.repeat(43)}`, tokenType: 'Bearer', pairingId, deviceSecret: 'B'.repeat(43),
+  activationTicket: 'T'.repeat(43), activationExpiresAt: new Date(pairingNow + 60_000).toISOString(), ...pairingBinding,
+};
+const pairingStart = {
+  pairingId, deviceSecret: 'B'.repeat(43), approvalUrl: `https://propr.example.com/api/desktop/pairings/${pairingId}/browser`,
+  expiresAt: new Date(pairingNow + 10 * 60_000).toISOString(), interval: 2,
+};
+
+/**
+ * One call per operation in the table, with the path parameters it uses. The
+ * `Record` type makes a new table entry fail to compile until it is covered.
+ */
+const OPERATION_CALLS: Record<ProprApiOperationId, {
+  parameters?: Record<string, string>;
+  call: (client: ProprClient) => Promise<unknown>;
+}> = {
+  getCompatibility: { call: client => client.negotiateCompatibility() },
+  getDesktopDiscovery: { call: client => client.discoverDesktop() },
+  startDesktopPairing: { call: client => client.startDesktopPairing('Test desktop', { binding: pairingBinding, now: () => pairingNow }) },
+  pollDesktopPairing: {
+    parameters: { pairingId },
+    call: client => client.pairDesktop('Test desktop', {
+      binding: pairingBinding, now: () => pairingNow, sleep: async () => undefined, onApprovalRequired: () => undefined,
+    }),
+  },
+  activateDesktopPairing: { parameters: { pairingId }, call: client => client.activateDesktopPairing(pairing) },
+  cancelDesktopPairing: { parameters: { pairingId }, call: client => client.cancelDesktopPairing(pairing) },
+  listTasks: { call: client => client.listTasks() },
+  getTaskHistory: { parameters: { taskId: 'task-1' }, call: client => client.getTaskHistory('task-1') },
+  createTaskSubmission: {
+    call: client => client.createTaskSubmission({ repository: 'acme/app', instruction: 'Fix it' }, { idempotencyKey: 'key-1' }),
+  },
+  getTaskSubmission: { parameters: { key: 'key-1' }, call: client => client.getTaskSubmission('key-1') },
+  retryTaskSubmission: { parameters: { key: 'key-1' }, call: client => client.retryTaskSubmission('key-1') },
+};
+
 describe('Typed dashboard API operations', () => {
+  for (const [id, { parameters, call }] of Object.entries(OPERATION_CALLS) as [ProprApiOperationId, typeof OPERATION_CALLS[ProprApiOperationId]][]) {
+    it(`sends ${id} with the method and path of the operations table`, async () => {
+      const { method } = PROPR_API_OPERATIONS[id];
+      const target = `https://propr.example.com${operationPath(id, parameters)}`;
+      const requests: RecordedRequest[] = [];
+      const client = new ProprClient({
+        baseUrl: 'https://propr.example.com',
+        authentication: { type: 'bearer', getAccessToken: () => 'gho_token' },
+        fetch: async (input, init) => {
+          const url = String(input);
+          requests.push({ url, init });
+          // Earlier steps of a flow (the pairing start before a poll) succeed;
+          // the request under test fails, which ends the call.
+          if (url.split('?')[0] !== target && url.endsWith('/api/desktop/pairings')) {
+            return new Response(JSON.stringify(pairingStart), { status: 201, headers: { 'Content-Type': 'application/json' } });
+          }
+          return new Response('{}', { status: 500, headers: { 'Content-Type': 'application/json' } });
+        },
+      });
+      await call(client).catch(() => undefined);
+      const sent = requests.filter(request => request.url.split('?')[0] === target);
+      assert.equal(sent.length, 1, `${id} should request ${target}; requested ${requests.map(request => request.url).join(', ')}`);
+      assert.equal(sent[0].init?.method ?? 'GET', method);
+    });
+  }
+
   it('expands path templates with encoded values and rejects missing parameters', () => {
     assert.equal(operationPath('getTaskHistory', { taskId: 'acme/app#1' }), '/api/task/acme%2Fapp%231/history');
     assert.throws(() => operationPath('getTaskHistory'), ProprClientError);

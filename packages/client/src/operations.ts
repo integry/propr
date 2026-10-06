@@ -58,6 +58,11 @@ export const PROPR_API_OPERATIONS = {
 
 export type ProprApiOperationId = keyof typeof PROPR_API_OPERATIONS;
 
+/** HTTP method of an operation; client requests take it from here, never spell it. */
+export function operationMethod(operationId: ProprApiOperationId): ProprApiOperation['method'] {
+  return PROPR_API_OPERATIONS[operationId].method;
+}
+
 /** Expand an operation's path template; every value is URI-encoded. */
 export function operationPath(
   operationId: ProprApiOperationId,

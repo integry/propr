@@ -37,7 +37,7 @@ import {
   requestPairingProtocol,
   type PairingProtocolRequestOptions,
 } from './pairingProtocol.js';
-import { operationPath, withQuery } from './operations.js';
+import { operationMethod, operationPath, withQuery } from './operations.js';
 import type * as ProprApi from './generated/apiTypes.js';
 
 export interface ProprClientOptions extends NormalizeApiBaseUrlOptions {
@@ -318,6 +318,7 @@ export class ProprClient {
     options: ProprCompatibilityOptions = {}
   ): Promise<ProprApiCompatibilityResult> {
     const response = await this.fetch(this.url(options.path ?? operationPath('getCompatibility')), {
+      method: operationMethod('getCompatibility'),
       credentials: this.authentication.type === 'session'
         ? (this.authentication.credentials ?? 'include')
         : undefined,
@@ -374,6 +375,7 @@ export class ProprClient {
     try {
       response = await deadline.race(
         this.fetchImplementation(this.resolveRequestTarget(this.url(operationPath('getDesktopDiscovery'))), {
+          method: operationMethod('getDesktopDiscovery'),
           cache: 'no-store',
           credentials: 'omit',
           headers: { Accept: 'application/json' },
@@ -493,7 +495,7 @@ export class ProprClient {
     const path = operationPath('startDesktopPairing');
     const expectedOrigin = this.resolveRequestOrigin(this.url(path));
     return parseDesktopPairingStart(await this.requestDesktopPairing(path, {
-      method: 'POST',
+      method: operationMethod('startDesktopPairing'),
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clientName, ...options.binding }),
       redirect: 'manual',
@@ -516,7 +518,7 @@ export class ProprClient {
     return parseDesktopPairingActivationReceipt(await this.requestDesktopPairing(
       operationPath('activateDesktopPairing', { pairingId: pairing.pairingId }),
       {
-        method: 'POST',
+        method: operationMethod('activateDesktopPairing'),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           deviceSecret: pairing.deviceSecret,
@@ -539,7 +541,7 @@ export class ProprClient {
     const value = await this.requestDesktopPairing(
       operationPath('cancelDesktopPairing', { pairingId: pairing.pairingId }),
       {
-        method: 'POST',
+        method: operationMethod('cancelDesktopPairing'),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           deviceSecret: pairing.deviceSecret,
@@ -574,12 +576,16 @@ export class ProprClient {
     query: ProprApi.ListTasksQuery = {},
     options: ProprFetchOptions = {},
   ): Promise<ProprApi.TaskPage> {
-    return this.request<ProprApi.TaskPage>(withQuery(operationPath('listTasks'), query), {}, options);
+    return this.request<ProprApi.TaskPage>(withQuery(operationPath('listTasks'), query), {
+      method: operationMethod('listTasks'),
+    }, options);
   }
 
   /** Get a task with its lifecycle events, oldest first (`GET /api/task/{taskId}/history`). */
   async getTaskHistory(taskId: string, options: ProprFetchOptions = {}): Promise<ProprApi.TaskHistory> {
-    return this.request<ProprApi.TaskHistory>(operationPath('getTaskHistory', { taskId }), {}, options);
+    return this.request<ProprApi.TaskHistory>(operationPath('getTaskHistory', { taskId }), {
+      method: operationMethod('getTaskHistory'),
+    }, options);
   }
 
   /**
@@ -598,7 +604,7 @@ export class ProprClient {
       );
     }
     return this.request<ProprApi.TaskSubmission>(operationPath('createTaskSubmission'), {
-      method: 'POST',
+      method: operationMethod('createTaskSubmission'),
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
       body: JSON.stringify(submission),
     }, options);
@@ -606,14 +612,16 @@ export class ProprClient {
 
   /** Get a task submission by its idempotency key (`GET /api/task-submissions/{key}`). */
   async getTaskSubmission(key: string, options: ProprFetchOptions = {}): Promise<ProprApi.TaskSubmission> {
-    return this.request<ProprApi.TaskSubmission>(operationPath('getTaskSubmission', { key }), {}, options);
+    return this.request<ProprApi.TaskSubmission>(operationPath('getTaskSubmission', { key }), {
+      method: operationMethod('getTaskSubmission'),
+    }, options);
   }
 
   /** Resume a task submission that stopped part way (`POST /api/task-submissions/{key}/retry`). */
   async retryTaskSubmission(key: string, options: ProprFetchOptions = {}): Promise<ProprApi.TaskSubmission> {
     return this.request<ProprApi.TaskSubmission>(
       operationPath('retryTaskSubmission', { key }),
-      { method: 'POST' },
+      { method: operationMethod('retryTaskSubmission') },
       options,
     );
   }

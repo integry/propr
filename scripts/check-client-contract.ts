@@ -7,7 +7,10 @@
  *   generated types it names must be the ones the spec uses.
  * - The `ProprClient` method of each typed operation must exist and accept and
  *   return exactly those generated types.
- * - No client source outside the operations table may spell an `/api/` path.
+ * - No client source outside the operations table may spell an `/api/` path or
+ *   an HTTP method, so every request is sent with the method checked above.
+ *   packages/client/test/apiOperations.test.ts checks that each operation's
+ *   request really goes out with that method and path.
  *
  * Request and response types themselves are generated from the same schemas by
  * `npm run gen:openapi`; `gen:openapi:check` keeps them fresh.
@@ -112,13 +115,14 @@ async function sourceFiles(directory: string): Promise<string[]> {
   return files.flat();
 }
 
-async function hardCodedPaths(): Promise<string[]> {
+async function hardCodedRequests(): Promise<string[]> {
   const errors: string[] = [];
   for (const file of await sourceFiles(CLIENT_SRC)) {
     if (file.endsWith('operations.ts') || file.includes(`${path.sep}generated${path.sep}`)) continue;
     const contents = await readFile(path.join(root, file), 'utf8');
     contents.split('\n').forEach((line, index) => {
       if (/['"`]\/api\//.test(line)) errors.push(`${file}:${index + 1}: build API paths with operationPath() from operations.ts`);
+      if (/\bmethod\s*:\s*['"`]/.test(line)) errors.push(`${file}:${index + 1}: take the HTTP method from operationMethod() in operations.ts`);
     });
   }
   return errors;
@@ -142,7 +146,7 @@ async function main(): Promise<number> {
     errors.push(...checkAgainstSpec(id, entry, operations.get(id), typeNames));
     errors.push(...checkSignature(id, entry, entry.clientMethod ? methods.get(entry.clientMethod) : undefined, client));
   }
-  errors.push(...await hardCodedPaths());
+  errors.push(...await hardCodedRequests());
 
   if (errors.length) {
     console.error('@propr/client does not match the dashboard API spec:');

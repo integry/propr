@@ -17,6 +17,7 @@ export {
 } from './client.js';
 export type * as ProprApi from './generated/apiTypes.js';
 export {
+  operationMethod,
   operationPath,
   PROPR_API_OPERATIONS,
   withQuery,

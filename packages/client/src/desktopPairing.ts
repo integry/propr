@@ -5,7 +5,7 @@ import type {
 import { canonicalProprHttpUrlOrigin, parseProprDesktopDiscovery } from '@propr/shared';
 import type { ProprClient } from './client.js';
 import { ProprClientError } from './errors.js';
-import { operationPath } from './operations.js';
+import { operationMethod, operationPath } from './operations.js';
 
 export interface ProprDesktopDiscovery extends SharedProprDesktopDiscovery {
   compatibility: ProprApiCompatibilityResult;
@@ -288,7 +288,7 @@ export const completeDesktopPairing = async (
         value = await client.requestDesktopPairing(
           operationPath('pollDesktopPairing', { pairingId: start.pairingId }),
           {
-            method: 'POST',
+            method: operationMethod('pollDesktopPairing'),
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ deviceSecret: start.deviceSecret }),
             redirect: 'manual',
