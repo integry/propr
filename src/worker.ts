@@ -429,17 +429,13 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await heartbeatRedis.quit();
     };
 
-    process.on('SIGINT', async () => {
-        logger.info('Worker received SIGINT, shutting down gracefully...');
-        await close();
-        process.exit(0);
-    });
-
-    process.on('SIGTERM', async () => {
-        logger.info('Worker received SIGTERM, shutting down gracefully...');
-        await close();
-        process.exit(0);
-    });
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+        process.on(signal, async () => {
+            logger.info(`Worker received ${signal}, shutting down gracefully...`);
+            await close();
+            process.exit(0);
+        });
+    }
 
     return { worker, runtimeBuildWorker, close };
 }
