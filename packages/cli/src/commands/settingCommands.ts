@@ -72,6 +72,7 @@ function getSettingDescription(key: SettingKey): string {
     ultrafix_max_cycles: "Maximum number of ultrafix cycles",
     ultrafix_pause_seconds: "Pause duration between ultrafix cycles",
     default_max_cost_usd: "Default per-run spend cap in USD (0 = no cap; task override and workflow.yml take precedence)",
+    ultrafix_ci_wait_timeout_ms: "Milliseconds an Ultrafix review waits for blocking CI before stopping (default 7200000)",
   };
   return descriptions[key];
 }

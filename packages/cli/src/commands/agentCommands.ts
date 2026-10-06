@@ -21,7 +21,7 @@ import {
 } from "../api/agents.js";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
-import { planAgentLogin, loginableAgents } from "./agentValidation.js";
+import { localImagePresent, planAgentLogin, loginableAgents } from "./agentValidation.js";
 import { ApiError, NetworkError, NotFoundError } from "../api/errors.js";
 import {
   printOutput,
@@ -529,7 +529,7 @@ Examples:
             process.exit(1);
           }
 
-          if (orch.docker(["images", "-q", plan.image], { capture: true }).stdout.trim().length === 0) {
+          if (!localImagePresent(orch, plan.image)) {
             console.error(`Image ${plan.image} is not present locally. Pull it first: propr images pull`);
             process.exit(1);
           }

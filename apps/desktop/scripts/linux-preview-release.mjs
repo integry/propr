@@ -25,6 +25,11 @@ const MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024;
 const PREVIEW_MANIFEST = 'linux-preview.json';
 const INSTALL_NOTES = 'INSTALL.md';
 const CHECKSUMS = 'SHA256SUMS';
+// Schema 2 adds the managed agent binding that first-user task setup needs.
+// Schema 1 app/UI-only bundles are refused: they do not prove that contract.
+const PREVIEW_SCHEMA_VERSION = 2;
+// The managed agent image is linux/amd64 only (see Dockerfile.agent).
+const MANAGED_AGENT_PLATFORMS = ['linux/amd64'];
 const execFile = promisify(execFileCallback);
 
 export const linuxPreviewTag = (version, sourceRevision) => {
@@ -122,6 +127,14 @@ There is no apt/dnf repository behind this preview and Linux self-updates are di
 from the GitHub Releases preview channel and upgrade it with the package manager. Do not mix DEB and RPM installations.
 The immutable preview identity is \`${tag}\`, and \`${PREVIEW_MANIFEST}\` binds the assets and published runtime images
 to the full source revision above.
+
+## Managed agent architecture
+
+The desktop app and its app/UI runtime images support both \`x64\` and \`arm64\`. The managed agent image that runs
+tasks is published for \`linux/amd64\` only, and \`${PREVIEW_MANIFEST}\` pins its exact digest for this source revision.
+On an \`arm64\` host, setup reports that the managed agent image could not be pulled and agent tasks cannot run; no
+emulated or substitute agent image is provided. Provider sign-in and real task execution with this preview have not
+yet been validated end to end.
 `;
 
 const validateArtifactMetadata = (artifacts, version) => {
@@ -149,11 +162,14 @@ const validateArtifactMetadata = (artifacts, version) => {
 };
 
 const validateManifest = (manifest, { version, sourceRevision, repository }) => {
+  if (manifest?.schemaVersion !== PREVIEW_SCHEMA_VERSION) {
+    throw new Error(`Linux preview manifest schema ${manifest?.schemaVersion} is not the managed-agent-bound schema ${PREVIEW_SCHEMA_VERSION}; stage a new preview`);
+  }
   exactKeys(manifest, [
     'schemaVersion', 'channel', 'trust', 'version', 'sourceRevision', 'tag', 'createdAt',
     'repository', 'workflowRunId', 'runtime', 'upgrade', 'artifacts',
   ], 'Linux preview manifest');
-  if (manifest.schemaVersion !== 1 || manifest.channel !== 'linux-preview'
+  if (manifest.channel !== 'linux-preview'
     || manifest.trust !== 'unsigned-preview' || manifest.version !== version
     || manifest.sourceRevision !== sourceRevision
     || manifest.tag !== linuxPreviewTag(version, sourceRevision)
@@ -162,10 +178,14 @@ const validateManifest = (manifest, { version, sourceRevision, repository }) => 
     || Number.isNaN(Date.parse(manifest.createdAt))) {
     throw new Error('Linux preview manifest identity is invalid');
   }
-  exactKeys(manifest.runtime, ['distribution', 'appImage', 'uiImage'], 'Linux preview runtime');
+  exactKeys(manifest.runtime, [
+    'distribution', 'appImage', 'uiImage', 'agentImage', 'agentPlatforms',
+  ], 'Linux preview runtime');
   if (manifest.runtime.distribution !== 'published'
     || !exactRuntimeImage(manifest.runtime.appImage, 'app', sourceRevision)
-    || !exactRuntimeImage(manifest.runtime.uiImage, 'ui', sourceRevision)) {
+    || !exactRuntimeImage(manifest.runtime.uiImage, 'ui', sourceRevision)
+    || !exactRuntimeImage(manifest.runtime.agentImage, 'agent', sourceRevision)
+    || JSON.stringify(manifest.runtime.agentPlatforms) !== JSON.stringify(MANAGED_AGENT_PLATFORMS)) {
     throw new Error('Linux preview runtime images are not published, digest-pinned, and source-aligned');
   }
   exactKeys(manifest.upgrade, ['selfUpdate', 'mode'], 'Linux preview upgrade policy');
@@ -193,6 +213,7 @@ export const prepareLinuxPreview = async ({
   sourceRevision,
   runtimeAppImage,
   runtimeUiImage,
+  runtimeAgentImage,
   repository,
   workflowRunId,
   createdAt = process.env.SOURCE_DATE_EPOCH
@@ -206,6 +227,9 @@ export const prepareLinuxPreview = async ({
   if (!exactRuntimeImage(runtimeAppImage, 'app', sourceRevision)
     || !exactRuntimeImage(runtimeUiImage, 'ui', sourceRevision)) {
     throw new Error('Linux preview requires exact digest-pinned propr/app and propr/ui images for the source revision');
+  }
+  if (!exactRuntimeImage(runtimeAgentImage, 'agent', sourceRevision)) {
+    throw new Error('Linux preview requires an exact digest-pinned linux/amd64 propr/agent image for the source revision so first-user task setup can pull it');
   }
   const sourceManifest = JSON.parse(await readFile(join(inputDirectory, 'desktop-release.json'), 'utf8'));
   if (sourceManifest.releaseProfile !== LINUX_PREVIEW_RELEASE_PROFILE
@@ -233,7 +257,7 @@ export const prepareLinuxPreview = async ({
   }
   const tag = linuxPreviewTag(version, sourceRevision);
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: PREVIEW_SCHEMA_VERSION,
     channel: 'linux-preview',
     trust: 'unsigned-preview',
     version,
@@ -242,7 +266,13 @@ export const prepareLinuxPreview = async ({
     createdAt,
     repository,
     workflowRunId: String(workflowRunId),
-    runtime: { distribution: 'published', appImage: runtimeAppImage, uiImage: runtimeUiImage },
+    runtime: {
+      distribution: 'published',
+      appImage: runtimeAppImage,
+      uiImage: runtimeUiImage,
+      agentImage: runtimeAgentImage,
+      agentPlatforms: [...MANAGED_AGENT_PLATFORMS],
+    },
     upgrade: { selfUpdate: false, mode: 'manual-package-manager' },
     artifacts,
   };
@@ -587,6 +617,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
         sourceRevision,
         runtimeAppImage: argument('--runtime-app-image'),
         runtimeUiImage: argument('--runtime-ui-image'),
+        runtimeAgentImage: argument('--runtime-agent-image'),
         repository,
         workflowRunId: argument('--workflow-run-id'),
       });

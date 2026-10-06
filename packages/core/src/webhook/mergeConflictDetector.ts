@@ -7,6 +7,7 @@ import { generateCorrelationId } from '../utils/logger.js';
 import type { MergeConflictJobData } from '../queue/taskQueue.types.js';
 import type { PullRequestEvent, PushEvent } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
+import { isRescueRef } from '../git/rescueRefs.js';
 
 export type ConflictDetectionOutcome =
     | 'skipped_disabled'
@@ -316,6 +317,12 @@ export async function handlePushConflictDetection(
     const log = logger.withCorrelation(correlationId);
     const [owner, repoName] = payload.repository.full_name.split('/');
     const repository = `${owner}/${repoName}`;
+
+    // Push-salvage rescue refs hold rejected work, not task branches.
+    if (isRescueRef(payload.ref)) {
+        log.debug({ repository, ref: payload.ref }, 'Merge conflict detection: ignoring push salvage rescue ref');
+        return [];
+    }
 
     // Check feature flag
     const enabled = await loadAutoResolveMergeConflicts();

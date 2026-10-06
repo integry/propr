@@ -24,6 +24,29 @@ const steps = [
 ];
 
 describe('RunTimeline', () => {
+  it('scrolls 50 runs inside a bounded list, opened on the run shown', () => {
+    const many: TaskGroup = {
+      ...group,
+      tasks: Array.from({ length: 50 }, (_, index) => ({
+        id: `many-${49 - index}`, title: 'Review PR #2664: Stop work', subtitle: `Pass ${49 - index}`, status: 'completed',
+        createdAt: new Date(Date.UTC(2026, 8, 10, 12, 49 - index)).toISOString(), prNumber: 2664,
+      })),
+    };
+    const manyRuns = buildTaskRuns(buildTaskRow(many));
+    const top = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const run = this.closest('[data-testid="run-timeline-run"]');
+      const index = run ? [...run.parentElement!.children].indexOf(run) - 1 : 0;
+      return { top: index * 30 } as DOMRect;
+    });
+    render(<RunTimeline runs={manyRuns} selectedTaskId="many-44" onSelectRun={vi.fn()}>steps</RunTimeline>);
+    top.mockRestore();
+    const scroller = screen.getByTestId('run-timeline-scroll');
+    expect(scroller).toHaveClass('max-h-[420px]', 'overflow-y-auto');
+    expect(within(scroller).getAllByTestId('run-timeline-run')).toHaveLength(50);
+    // Run 45 is the 45th row: the list scrolls to it, keeping the run before it in sight.
+    expect(scroller.scrollTop).toBe(44 * 30 - 40);
+  });
+
   it('lists every run oldest first, with only the run shown open over its steps', () => {
     render(
       <RunTimeline runs={runs} selectedTaskId="run-4" onSelectRun={vi.fn()}>
@@ -32,16 +55,19 @@ describe('RunTimeline', () => {
     );
     const rows = within(screen.getByRole('list', { name: 'Runs' })).getAllByTestId('run-timeline-run');
     expect(rows.map(row => row.querySelector('button')!.textContent)).toEqual([
-      expect.stringMatching(/^Run 1ReviewInitial review.*\[4\]$/),
-      expect.stringMatching(/^Run 2FixFixed seedCommit test.*9f3c21e$/),
-      expect.stringMatching(/^Run 3ReviewFound 2 issues.*3m 30s\[6\]$/),
-      expect.stringMatching(/^Run 4UltrafixUltrafix cycle 3 \(linting\).*Running…Active$/),
+      expect.stringMatching(/^Run 1ReviewInitial review\[4\]/),
+      expect.stringMatching(/^Run 2FixFixed seedCommit test9f3c21e/),
+      expect.stringMatching(/^Run 3ReviewFound 2 issues\[6\].*3m 30s$/),
+      expect.stringMatching(/^Run 4UltrafixUltrafix cycle 3 \(linting\)Active.*Running…$/),
     ]);
     expect(rows.map(row => row.querySelector('button')!.getAttribute('aria-expanded'))).toEqual(['false', 'false', 'false', 'true']);
     // Plain nodes on the rail: the type and the result slot say how each run went, not a coloured marker.
     expect(screen.queryAllByTestId('run-timeline-node')).toHaveLength(4);
     expect(screen.getByRole('list', { name: 'Runs' }).querySelector('[data-outcome]')).toBeNull();
+    // A closed fix keeps its commit out of the way, so its summary has the room; hovering the row shows it.
     expect(within(rows[1]).getByTestId('run-commit')).toHaveTextContent('9f3c21e');
+    expect(within(rows[1]).getByTestId('run-commit')).toHaveClass('hidden', 'group-hover:inline-flex');
+    expect(rows[1].querySelector('button')).toHaveClass('group');
     expect(within(rows[1]).queryByTitle(/score/i)).toBeNull();
     // Only the open run carries its steps, each a branch off the rail.
     const stepList = within(rows[3]).getByRole('list', { name: 'Run steps' });
@@ -58,7 +84,7 @@ describe('RunTimeline', () => {
       const queued = buildTaskRuns(buildTaskRow({ ...group, tasks: [{ ...group.tasks[0], status, processedAt: undefined }, ...group.tasks.slice(1)] }));
       const { unmount } = render(<RunTimeline runs={queued} selectedTaskId="run-3" onSelectRun={vi.fn()}>{null}</RunTimeline>);
       const newest = screen.getByRole('button', { name: /^Run 4/ });
-      expect(newest.textContent).toMatch(/QueuedWaiting$/);
+      expect(newest.textContent).toMatch(/Waiting.*Queued$/);
       expect(newest).not.toHaveTextContent(/Running…|Active/);
       expect(newest).toHaveAttribute('title', 'Run 4 waiting to start');
       unmount();
@@ -79,5 +105,12 @@ describe('RunTimeline', () => {
     expect(open).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('list', { name: 'Run steps' })).not.toBeInTheDocument();
     expect(onSelectRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a fix's commit once its run is open", () => {
+    render(<RunTimeline runs={runs} selectedTaskId="run-2" onSelectRun={vi.fn()}>{null}</RunTimeline>);
+    const commit = within(screen.getByRole('button', { name: /^Run 2/ })).getByTestId('run-commit');
+    expect(commit).toHaveClass('inline-flex');
+    expect(commit).not.toHaveClass('hidden');
   });
 });

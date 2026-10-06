@@ -35,6 +35,8 @@ it('keeps collapsed and expanded desktop usage rows inside a classic-scrollbar s
           import React from 'react';
           import { createRoot } from 'react-dom/client';
           import AgentTankSidebar from './propr-ui/src/components/AgentTankSidebar';
+          import { SocketContext } from './propr-ui/src/contexts/SocketContext';
+          import { createInertSocketContextValue } from './propr-ui/src/test/socketContext';
 
           const usage = {
             enabled: true,
@@ -61,6 +63,9 @@ it('keeps collapsed and expanded desktop usage rows inside a classic-scrollbar s
             },
           };
 
+          // The shell supplies SocketContext; useLiveResource requires it, so
+          // the fixture provides the typed inert value instead of a hand-built stub.
+          const socket = createInertSocketContextValue();
           const root = createRoot(document.getElementById('root'));
           let renderKey = 0;
           window.agentTankRefreshes = 0;
@@ -72,11 +77,13 @@ it('keeps collapsed and expanded desktop usage rows inside a classic-scrollbar s
             // rows the previous case left open.
             try { window.localStorage.clear(); } catch { /* storage may be unavailable */ }
             root.render(
-              <div className="desktop-app desktop-platform-linux" style={{ zoom }}>
-                <aside className="desktop-sidebar bg-white" style={{ width }}>
-                  <AgentTankSidebar key={renderKey} scrollable />
-                </aside>
-              </div>
+              <SocketContext.Provider value={socket}>
+                <div className="desktop-app desktop-platform-linux" style={{ zoom }}>
+                  <aside className="desktop-sidebar bg-white" style={{ width }}>
+                    <AgentTankSidebar key={renderKey} scrollable />
+                  </aside>
+                </div>
+              </SocketContext.Provider>
             );
           };
         `,
@@ -114,6 +121,16 @@ it('keeps collapsed and expanded desktop usage rows inside a classic-scrollbar s
 
     browser = await chromium.launch({ args: ['--no-sandbox'] });
     const page = await browser.newPage({ viewport: { width: 800, height: 720 } });
+    // Report renderer crashes directly instead of as a missing-row timeout.
+    const pageErrors = [];
+    let reportCrash;
+    const rendererCrashed = new Promise((_, reject) => { reportCrash = reject; });
+    rendererCrashed.catch(() => {});
+    page.on('pageerror', error => {
+      pageErrors.push(error.stack || error.message);
+      reportCrash(new Error(`Usage sidebar renderer crashed: ${error.stack || error.message}`));
+    });
+    const unlessRendererCrashed = promise => Promise.race([promise, rendererCrashed]);
     await page.setContent('<!doctype html><html lang="en"><head><title>Usage sidebar layout</title></head><body><div id="root"></div></body></html>');
     await page.addStyleTag({ content: compiledCss.css });
     await page.addStyleTag({ path: join(root, 'propr-ui/src/desktop/desktop.css') });
@@ -130,11 +147,11 @@ it('keeps collapsed and expanded desktop usage rows inside a classic-scrollbar s
     ];
 
     for (const layoutCase of layoutCases) {
-      await page.evaluate(state => window.renderUsage(state), layoutCase);
+      await unlessRendererCrashed(page.evaluate(state => window.renderUsage(state), layoutCase));
       const widget = page.getByText('Usage', { exact: true }).locator('..').locator('..');
       const scrollport = widget.locator('.agent-tank-scrollport');
       const providerRows = scrollport.locator('[role="button"][aria-expanded]');
-      await expect(providerRows).toHaveCount(3);
+      await unlessRendererCrashed(expect(providerRows).toHaveCount(3));
       await expect(providerRows.nth(0)).toContainText('Claude');
       await expect(providerRows.nth(1)).toContainText('Codex');
       await expect(providerRows.nth(2)).toContainText('Antigravity');
@@ -225,6 +242,7 @@ it('keeps collapsed and expanded desktop usage rows inside a classic-scrollbar s
       const refreshesBeforeClick = await page.evaluate(() => window.agentTankRefreshes);
       await refresh.click();
       await expect.poll(() => page.evaluate(() => window.agentTankRefreshes)).toBe(refreshesBeforeClick + 1);
+      assert.deepEqual(pageErrors, [], `${layoutCase.label}: the renderer reported no page errors`);
 
       if (process.env.PROPR_AGENT_TANK_SIDEBAR_PREVIEWS === '1') {
         const previewDirectory = join(root, '.propr/previews');

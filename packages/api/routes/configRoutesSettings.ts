@@ -217,6 +217,7 @@ async function saveNormalizedSettingsWithRollback({
     ultrafix_max_cycles,
     ultrafix_pause_seconds,
     default_max_cost_usd,
+    ultrafix_ci_wait_timeout_ms,
     ...otherSettings
   } = settings;
 
@@ -235,7 +236,8 @@ async function saveNormalizedSettingsWithRollback({
     ultrafix_rating_goal,
     ultrafix_max_cycles,
     ultrafix_pause_seconds,
-    default_max_cost_usd
+    default_max_cost_usd,
+    ultrafix_ci_wait_timeout_ms
   });
 
   if (extracted.error) {

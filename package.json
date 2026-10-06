@@ -13,6 +13,7 @@
     "@electron/packager": "20.3.0",
     "@electron/rebuild": "4.2.0",
     "hono": "4.13.12",
+    "postcss-selector-parser": "7.1.6",
     "react": "19.2.7"
   },
   "scripts": {
@@ -143,7 +144,7 @@
     "pino": "^9.7.0",
     "pino-pretty": "^13.0.0",
     "redis": "^5.0.0",
-    "simple-git": "^3.36.0",
+    "simple-git": "^4.0.2",
     "undici": "^7.30.0",
     "uuid": "^14.0.1"
   },

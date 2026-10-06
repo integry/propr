@@ -42,6 +42,8 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
     await build({
       entryPoints: [join(fixture, 'renderer.tsx')], outfile: join(directory, 'renderer.js'),
       bundle: true, platform: 'browser', format: 'iife',
+      // Match Vite/tsconfig's automatic runtime; classic JSX needs a global React.
+      jsx: 'automatic',
       // Match Vite's TypeScript resolution (TaskList has both utils.ts/.tsx).
       resolveExtensions: ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'],
       define: { 'import.meta.env': '{}', __APP_VERSION__: '"frame-test"', __PROPR_DESKTOP__: 'true' },
@@ -58,6 +60,16 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
     await expect.poll(() => application.windows().length).toBe(2);
     const page = application.windows().find(window => window.url().startsWith('frame-fixture:'));
     assert.ok(page);
+    // Surface renderer exceptions themselves instead of a later visibility timeout.
+    const rendererErrors = [];
+    let rendererFailed;
+    const rendererFailure = new Promise((_, reject) => { rendererFailed = reject; });
+    rendererFailure.catch(() => {});
+    page.on('pageerror', error => {
+      rendererErrors.push(error);
+      rendererFailed(new Error(`Renderer error: ${error.stack || error.message}`));
+    });
+    const rendered = assertion => Promise.race([assertion, rendererFailure]);
     // Production Layout/Dashboard, but never contact a developer's local API.
     await page.route('http://127.0.0.1:3000/**', route => route.fulfill({ status: 503, json: { error: 'Isolated frame fixture' } }));
     await expect(page.getByRole('heading', { name: 'Choose an instance' })).toBeVisible();
@@ -215,12 +227,12 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
     await expect(html).toHaveAttribute('data-window-expanded', 'false');
 
     await pointerClick('This computer Local instance');
-    await expect(page.getByTestId('happening-now-section')).toBeVisible();
+    await rendered(expect(page.getByTestId('happening-now-section')).toBeVisible());
     // Reload with a saved active profile so the connected shell is also tested
     // on startup, not only after the chooser-to-Dashboard transition.
     await page.reload();
-    await expect(page.getByTestId('happening-now-section')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Connected: This computer' })).toBeVisible();
+    await rendered(expect(page.getByTestId('happening-now-section')).toBeVisible());
+    await rendered(expect(page.getByRole('button', { name: 'Connected: This computer' })).toBeVisible());
     await expect(page.locator('.desktop-sidebar-header')).toHaveCount(0);
     await expect(page.locator('.desktop-sidebar img[alt="ProPR"]')).toHaveCount(0);
     await expect(page.locator('.desktop-sidebar')).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.4)');
@@ -246,8 +258,15 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
       await capture(`linux-connected-${focused ? 'active' : 'inactive'}`, `Linux connected: ${focused ? 'active' : 'inactive'}`, -128);
     }
     await native('focus');
-    await expect(page.getByRole('status', { name: 'Plans unavailable' })).toBeVisible();
-    await expect(page.getByRole('button', { name: '0 Plans' })).toHaveCount(0);
+    // Every section read hits the intercepted 503: each must say it could not
+    // load, never a false empty or zero state.
+    for (const message of ['Unable to load what needs attention', 'Unable to load running work', 'Unable to load completed work', 'Unable to load historical stats']) {
+      await rendered(expect(page.getByRole('alert').filter({ hasText: message })).toBeVisible());
+    }
+    await expect(page.getByTestId('needs-attention-empty')).toHaveCount(0);
+    await expect(page.getByTestId('happening-now-empty')).toHaveCount(0);
+    await expect(page.getByText('Nothing completed yet')).toHaveCount(0);
+    await expect(page.getByTestId('stat-completed')).toHaveCount(0);
     await pointerClick('Maximize or restore window');
     await expect(html).toHaveAttribute('data-window-expanded', 'true');
     await expect.poll(async () => (await native()).bounds).toEqual(workArea);
@@ -288,6 +307,7 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
       await pointerClick('Maximize or restore window');
       await expect(html).toHaveAttribute('data-window-expanded', 'false');
     }
+    assert.deepEqual(rendererErrors, [], 'Renderer must not throw while exercising the frame');
     await pointerClick('Close window');
     await expect.poll(() => page.isClosed()).toBe(true);
   } finally {

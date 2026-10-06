@@ -6,6 +6,7 @@ import { handleError } from '../utils/errorHandler.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { resolveRepositoryWorktreePath } from './repositoryPaths.js';
 import { redactAuthenticatedGitUrl } from './repoBranching.js';
+import { isActiveSalvageRetention, isSalvageRetainedWorktree, pruneOrphanSalvageRetentionRecords, readSalvageRetentionRecord, removeSalvageRetentionRecord } from './pushSalvage.js';
 
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
 
@@ -45,6 +46,14 @@ export async function cleanupWorktree(localRepoPath: string, worktreePath: strin
         retentionStrategy,
         retentionHours
     }, 'Cleaning up Git worktree...');
+
+    // The push salvage ladder kept this worktree because it holds the only copy of
+    // commits a rejected push could not deliver; it overrides the retention strategy.
+    // Only the worker's record outside the checkout counts, never a repository file.
+    if (await isSalvageRetainedWorktree(worktreePath)) {
+        logger.warn({ worktreePath, branchName }, 'Keeping worktree retained by push salvage');
+        return;
+    }
 
     if (!success && retentionStrategy === 'keep_on_failure') {
         logger.info({ worktreePath, branchName, retentionStrategy }, 'Keeping worktree due to failure and retention strategy');
@@ -122,6 +131,7 @@ export async function cleanupExpiredWorktrees(worktreesBasePath: string = WORKTR
         const result = await processWorktreeDirectory(worktreesBasePath);
         cleaned = result.cleaned;
         retained = result.retained;
+        await pruneOrphanSalvageRetentionRecords();
 
         logger.info({ worktreesBasePath, cleaned, retained }, 'Expired worktrees cleanup completed');
 
@@ -156,6 +166,23 @@ async function processWorktreeDirectory(dirPath: string): Promise<CleanupResult>
 async function processWorktreeItem(itemPath: string, stats: fs.Stats): Promise<CleanupResult> {
     let cleaned = 0;
     let retained = 0;
+
+    // Push salvage retention is decided by the worker's record outside the checkout; a
+    // record without a deadline (PUSH_RESCUE_RETENTION_DAYS=0) keeps the only copy of
+    // rescued commits until an operator removes it.
+    const salvage = await readSalvageRetentionRecord(itemPath);
+    if (salvage) {
+        if (isActiveSalvageRetention(salvage.record)) {
+            logger.debug({ worktreePath: itemPath, scheduledCleanup: salvage.record.scheduledCleanup }, 'Retaining worktree kept by push salvage');
+            retained++;
+        } else {
+            logger.info({ worktreePath: itemPath, scheduledCleanup: salvage.record.scheduledCleanup }, 'Cleaning up expired salvaged worktree');
+            await fs.remove(itemPath);
+            await removeSalvageRetentionRecord(salvage.recordPath);
+            cleaned++;
+        }
+        return { cleaned, retained };
+    }
 
     const retentionFile = path.join(itemPath, '.retention-info.json');
 

@@ -28,7 +28,7 @@ import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
-import { validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
+import { localImagePresent, validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 export type CheckGroup = "CLI" | "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
@@ -316,7 +316,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     const computeImageResult = async (key: string, tag: string): Promise<CheckResult> => {
       // Presence-only for third-party images and when remote checks are skipped.
       if (skipRemoteImageCheck || !isProprPublished(tag)) {
-        if (!imagePresent(orch, tag)) return missingImageResult(key, tag);
+        if (!localImagePresent(orch, tag)) return missingImageResult(key, tag);
         const detail = skipRemoteImageCheck ? `${tag} (local; remote check skipped)` : `${tag} (present)`;
         return { name: `Image ${key}`, status: "ok", detail, group: "Images" };
       }
@@ -494,7 +494,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
       if (verifiedCliKeys.has(cliKey)) continue;
       verifiedCliKeys.add(cliKey);
       const tag = cfg.images[agent.imageKey];
-      if (!tag || !imagePresent(orch, tag)) {
+      if (!tag || !localImagePresent(orch, tag)) {
         emit({
           name: `Verify: ${agent.type}`,
           status: "warn",
@@ -519,11 +519,6 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
 
   const anyFail = results.some((r) => r.status === "fail");
   return { results, cfg, rootDir, anyFail };
-}
-
-function imagePresent(orch: OrchestratorModule, tag: string): boolean {
-  const res = orch.docker(["images", "-q", tag], { capture: true });
-  return res.stdout.trim().length > 0;
 }
 
 const TRUTHY = new Set(["1", "true", "yes", "on"]);

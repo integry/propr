@@ -17,6 +17,7 @@ interface SettingFields {
   ultrafix_max_cycles?: unknown;
   ultrafix_pause_seconds?: unknown;
   default_max_cost_usd?: unknown;
+  ultrafix_ci_wait_timeout_ms?: unknown;
 }
 
 export type SettingSaveName =
@@ -34,7 +35,8 @@ export type SettingSaveName =
   | 'ultrafix_rating_goal'
   | 'ultrafix_max_cycles'
   | 'ultrafix_pause_seconds'
-  | 'default_max_cost_usd';
+  | 'default_max_cost_usd'
+  | 'ultrafix_ci_wait_timeout_ms';
 
 export interface LabeledSaveDescriptor {
   name: SettingSaveName;
@@ -154,6 +156,12 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
     if (v === null) return { error: `default_max_cost_usd must be a number from 0 (no cap) to ${MAX_RUN_COST_CAP_USD}`, saves: [], normalized };
     normalized.default_max_cost_usd = v;
     saves.push({ name: 'default_max_cost_usd' });
+  }
+  if (fields.ultrafix_ci_wait_timeout_ms !== undefined) {
+    const v = validateStrictInt(fields.ultrafix_ci_wait_timeout_ms, 1, Infinity);
+    if (v === null) return { error: 'ultrafix_ci_wait_timeout_ms must be a positive integer', saves: [], normalized };
+    normalized.ultrafix_ci_wait_timeout_ms = v;
+    saves.push({ name: 'ultrafix_ci_wait_timeout_ms' });
   }
 
   return extractEscalationSettingSaves(fields, result);

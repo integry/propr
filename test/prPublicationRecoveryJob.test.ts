@@ -13,12 +13,15 @@ import { up, down } from '../packages/core/src/db/migrations/20260914000000_add_
 import { up as checkpointUp, down as checkpointDown } from '../packages/core/src/db/migrations/20260914010000_add_pr_publication_checkpoint.js';
 
 import { up as completionUp, down as completionDown } from '../packages/core/src/db/migrations/20260914020000_add_pr_publication_completion.js';
+import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
 await up(database);
 await checkpointUp(database);
 await completionUp(database);
 const root = await mkdtemp(path.join(tmpdir(), 'pr-continuation-'));
+// A rejected final push runs the salvage ladder; keep its bundles inside the test root.
+process.env.PUSH_RESCUE_BUNDLE_DIR = path.join(root, 'rescue');
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Test Worker', '-c', 'user.email=worker@example.test', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 // All repositories are disposable fixtures; no workspace Git metadata is modified.
 git(root, 'init', '--bare', 'upstream.git');
@@ -89,6 +92,7 @@ await mock.module('../src/jobs/runCostCap.js', { namedExports: {
     pullRequestRunCostCapTarget: () => ({}),
 } });
 await mock.module('@propr/core', { namedExports: {
+    ...pushSalvageExports,
     preventWithdrawnJob: async () => null,
     db: database, AI_COMMIT_AUTHOR: { name: 'Test Worker', email: 'worker@example.test' },
     logger: { ...log, withCorrelation: () => log },
@@ -117,7 +121,7 @@ await mock.module('@propr/core', { namedExports: {
         assert.equal(pr, 100);
         return git(repoPath('upstream'), 'rev-parse', 'refs/heads/propr/continuation-pr-42');
     },
-    getCheckRunsStatus: async (_owner: string, _repo: string, sha: string) => {
+    getCheckRunsStatusForRepo: async (_owner: string, _repo: string, sha: string) => {
         events.push(`checks:${sha}`);
         const allPassing = completedCheckHeads.has(sha);
         return { count: 1, allPassing, anyPending: !allPassing, anyFailed: false };

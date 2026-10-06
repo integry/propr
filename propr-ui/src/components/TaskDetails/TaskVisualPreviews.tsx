@@ -4,11 +4,17 @@ import { trustedApplicationPreviewMediaUrl, trustedPreviewMedia, type PublishedV
 import { PreviewImage, PreviewVideo } from '../PreviewMedia';
 import PreviewLightbox from '../PreviewLightbox';
 
+/** The width a capture was taken at, when its title or description says, e.g. `1920`. */
+function captureWidth(preview: PublishedVisualPreview): string | null {
+  const text = `${preview.title} ${preview.description ?? ''}`;
+  return text.match(/\b(\d{3,4})\s*(?:px\b|[x×]\s*\d{3,4})/i)?.[1] ?? null;
+}
+
 /** The viewport a capture was taken at, when its title or description says, e.g. `Desktop 1920px`. */
 function captureViewport(preview: PublishedVisualPreview): string | null {
   const text = `${preview.title} ${preview.description ?? ''}`;
   const kind = text.match(/\b(desktop|tablet|mobile)\b/i)?.[1];
-  const width = text.match(/\b(\d{3,4})\s*(?:px\b|[x×]\s*\d{3,4})/i)?.[1];
+  const width = captureWidth(preview);
   const label = kind ? kind[0].toUpperCase() + kind.slice(1).toLowerCase() : null;
   if (label && width) return `${label} ${width}px`;
   return label ?? (width ? `${width}px` : null);
@@ -48,6 +54,7 @@ export default function TaskVisualPreviews({ previews }: { previews?: PublishedV
     setLightboxUrl(selected.url);
   };
   const viewport = captureViewport(selected);
+  const width = captureWidth(selected);
   const isImage = selected.type === 'image';
 
   return <section aria-labelledby="task-visual-previews-heading" className="border-b border-slate-200 px-4 py-3">
@@ -79,21 +86,33 @@ export default function TaskVisualPreviews({ previews }: { previews?: PublishedV
     </div>
 
     <figure data-testid="visual-evidence-canvas" className="m-0 mt-2 flex min-w-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white sm:h-56 sm:flex-row">
-      {/* A dark device frame marks the capture as an artifact, not live UI. */}
-      <div className="h-44 flex-none bg-slate-950 p-1.5 shadow-inner sm:h-full sm:w-3/5">
-        {isImage
-          ? <button type="button" aria-haspopup="dialog" aria-label={`Open full-size preview: ${selected.title}`}
-            onClick={event => openLightbox(event.currentTarget)}
-            className="group relative block h-full w-full cursor-zoom-in overflow-hidden rounded bg-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400">
-            <PreviewImage key={selected.url} preview={selected} className="h-full w-full object-cover object-left-top" />
-            <span aria-hidden="true" className="absolute inset-0 flex items-center justify-center bg-slate-950/0 opacity-0 transition group-hover:bg-slate-950/50 group-hover:opacity-100 group-focus-visible:bg-slate-950/50 group-focus-visible:opacity-100">
-              <span className="inline-flex items-center gap-1.5 rounded bg-slate-900/90 px-2.5 py-1 text-xs font-medium text-white">
-                <ZoomIn className="h-3.5 w-3.5" />
-                Click to inspect full resolution
-              </span>
+      {/* A light browser window frames the capture as an artifact, not live UI, without a block of black ink. */}
+      <div className="h-44 flex-none bg-slate-50 p-2 sm:h-full sm:w-3/5">
+        <div data-testid="visual-evidence-window" className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div aria-hidden="true" className="flex h-6 flex-none items-center justify-between gap-2 border-b border-slate-200 bg-slate-100 px-3">
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-slate-300" />
+              <span className="h-2 w-2 rounded-full bg-slate-300" />
+              <span className="h-2 w-2 rounded-full bg-slate-300" />
             </span>
-          </button>
-          : <PreviewVideo key={selected.url} preview={selected} className="h-full w-full rounded bg-black object-contain" />}
+            {width && <span data-testid="visual-evidence-window-size" className="truncate font-mono text-[10px] text-slate-400">{width}px</span>}
+          </div>
+          <div className="min-h-0 flex-1">
+            {isImage
+              ? <button type="button" aria-haspopup="dialog" aria-label={`Open full-size preview: ${selected.title}`}
+                onClick={event => openLightbox(event.currentTarget)}
+                className="group relative block h-full w-full cursor-zoom-in overflow-hidden bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400">
+                <PreviewImage key={selected.url} preview={selected} className="h-full w-full object-cover object-left-top" />
+                <span aria-hidden="true" className="absolute inset-0 flex items-center justify-center bg-slate-950/0 opacity-0 transition group-hover:bg-slate-950/40 group-hover:opacity-100 group-focus-visible:bg-slate-950/40 group-focus-visible:opacity-100">
+                  <span className="inline-flex items-center gap-1.5 rounded bg-slate-900/90 px-2.5 py-1 text-xs font-medium text-white">
+                    <ZoomIn className="h-3.5 w-3.5" />
+                    Click to inspect full resolution
+                  </span>
+                </span>
+              </button>
+              : <PreviewVideo key={selected.url} preview={selected} className="h-full w-full bg-white object-contain" />}
+          </div>
+        </div>
       </div>
       <figcaption className="h-28 min-w-0 flex-none overflow-y-auto border-t border-slate-200 p-3 sm:h-auto sm:flex-1 sm:border-l sm:border-t-0">
         <p className="m-0 break-words text-sm font-semibold text-slate-900">{selected.title}</p>

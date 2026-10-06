@@ -218,12 +218,12 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
       ) : (
         /*
          * A file tree, not a form field: the shared folder as a quiet label and
-         * the files beneath it as plain rows. A bounded list keeps large
-         * changesets from taking over the timeline.
+         * the files beneath it as plain rows. Every file is listed in full and
+         * scrolls with the timeline, never in a box of its own.
          */
-        <div role="region" aria-label="Changed files" tabIndex={0} className="max-h-48 overflow-y-auto overscroll-contain rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
+        <div role="region" aria-label="Changed files" className="rounded">
           {commonDirectory && (
-            <div className="sticky top-0 bg-white px-2 py-0.5 font-mono text-xs text-slate-400 break-all" title={commonDirectory}>
+            <div className="px-2 py-0.5 font-mono text-xs text-slate-400 break-all" title={commonDirectory}>
               {directoryLabel}
             </div>
           )}
@@ -259,7 +259,7 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
       )}
 
       {!error && fileChanges.length > 5 && (
-        <p className="mt-1.5 text-[10px] text-slate-500">Most modified first · Scroll to view all {fileChanges.length} files</p>
+        <p className="mt-1.5 text-[10px] text-slate-500">Most modified first</p>
       )}
 
       {/* Diff Viewer Overlay */}

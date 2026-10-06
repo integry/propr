@@ -6,8 +6,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Activity, AlertTriangle, Check, CheckCircle2, CircleDot, CirclePause, CirclePlay, CircleSlash, CircleStop,
-  Copy, ExternalLink, FileText, Filter, GitPullRequest, LoaderCircle, Search, Send,
-  MoreHorizontal, Target, Terminal, Trash2, X,
+  Copy, ExternalLink, FileText, Filter, GitPullRequest, LoaderCircle, Send,
+  MoreHorizontal, Target, Terminal, Trash2,
 } from 'lucide-react';
 import { getInstanceCatalog } from '../api/proprApi';
 import type { InstanceCatalogRepository } from '../api/proprTypes';
@@ -31,6 +31,8 @@ import { ProviderLogo } from '../components/ui/ProviderLogo';
 import { RepositoryChip } from '../components/ui/RepositoryChip';
 import { ListSkeleton } from '../components/ui/Skeleton';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { useIsMobile } from '../hooks/useIsMobile';
+import { ListSearchInput } from '../components/ListSearchInput';
 import { useLiveResource } from '../hooks/useLiveResource';
 import { formatAgentLabel } from '../utils/agentStatus';
 import { getModelDisplayName } from '../utils/modelDisplay';
@@ -616,6 +618,7 @@ function GoalQueueRow({ goal, goalAgents }: { goal: Goal; goalAgents: Array<{ ty
 
 function GoalList() {
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [searchParams, setSearchParams] = useSearchParams();
   const [isCreating, setIsCreating] = useState(false);
   const repositoryFilter = searchParams.get('repository') || 'all';
@@ -709,27 +712,17 @@ function GoalList() {
     setIsCreating(false);
   }, []);
   return <div className="flex h-full w-full min-w-0 flex-col bg-white">
-    <header className="flex flex-none items-center justify-between gap-2 border-b border-gray-200 bg-slate-50 px-4 py-2 sm:gap-4 sm:px-6 sm:py-4">
+    <header className="flex-none border-b border-gray-200 bg-slate-50 px-4 py-2 sm:px-6 sm:py-4">
+      <div className="flex items-center justify-between gap-2 sm:gap-4">
       <h1 id="goals-title" className="flex-none text-lg font-bold text-gray-800 sm:text-2xl">Goals</h1>
       {goals.length > 0 && <div className="flex min-w-0 flex-1 items-center justify-end gap-2 sm:gap-4">
-        <div className="relative hidden min-w-0 max-w-64 flex-1 sm:block">
-          <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={event => setSearchQuery(event.target.value)}
-            aria-label="Search goals"
-            placeholder="Search goals..."
-            className="w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-8 text-sm text-gray-700 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500"
-          />
-          {searchQuery && <button
-            type="button"
-            onClick={clearSearch}
-            title="Clear search"
-            aria-label="Clear search"
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-          ><X className="h-4 w-4" /></button>}
-        </div>
+        {!isMobile && <ListSearchInput
+          value={searchQuery}
+          onChange={setSearchQuery}
+          onClear={clearSearch}
+          label="Search goals"
+          className="hidden min-w-0 max-w-64 flex-1 sm:block"
+        />}
         <div className="flex min-w-0 items-center justify-end gap-2 sm:flex-1 sm:max-w-[480px]">
           <Filter className="hidden h-4 w-4 flex-none text-gray-500 sm:block" aria-hidden="true" />
           <select
@@ -751,6 +744,16 @@ function GoalList() {
           </div>
         </div>
       </div>}
+      </div>
+      {/* A phone has no room for search beside the filters, so it takes its own row. */}
+      {isMobile && goals.length > 0 && <ListSearchInput
+        value={searchQuery}
+        onChange={setSearchQuery}
+        onClear={clearSearch}
+        label="Search goals"
+        className="mt-2 sm:hidden"
+        touch
+      />}
     </header>
     <section aria-labelledby="goals-title" className="min-h-0 flex-1 overflow-auto pb-6">
       {error && <p role="alert" className="mx-4 my-3 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">{error}</p>}

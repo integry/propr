@@ -20,7 +20,8 @@ export const SPECIALIZED_SETTING_NAMES = [
   'ultrafix_rating_goal',
   'ultrafix_max_cycles',
   'ultrafix_pause_seconds',
-  'default_max_cost_usd'
+  'default_max_cost_usd',
+  'ultrafix_ci_wait_timeout_ms'
 ] as const;
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;

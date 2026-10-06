@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -8,6 +9,7 @@ import {
   normalizeDesktopRuntimeManifestMode,
   validateDesktopRuntimeManifest,
   validatePublishedDesktopRuntimeImageInspection,
+  validatePublishedManagedAgentInspection,
   writeDesktopRuntimeManifest,
 } from './desktop-runtime-manifest.mjs';
 
@@ -107,6 +109,106 @@ describe('desktop runtime manifest alignment', () => {
       digest,
       manifests: [{ platform: { os: 'linux', architecture: 'amd64' } }],
     }), /missing required platforms: linux\/arm64/);
+  });
+});
+
+describe('desktop runtime managed agent binding', () => {
+  const published = {
+    distribution: 'published', sourceRevision: revision,
+    appImage: `propr/app:${revision}@${digest}`,
+    uiImage: `propr/ui:${revision}@${digest}`,
+    apiCompatibility: '2026-06-27',
+  };
+  const agentImage = `propr/agent:${revision}@${digest}`;
+  const agentConfig = (overrides = {}) => ({
+    os: 'linux',
+    architecture: 'amd64',
+    config: { Labels: {
+      'org.opencontainers.image.revision': revision,
+      'org.opencontainers.image.source': 'https://github.com/integry/propr',
+      'dev.propr.agent-bundle': 'true',
+    } },
+    ...overrides,
+  });
+
+  test('embeds the exact agent reference in the launcher manifest only when explicitly bound', () => {
+    const manifest = createDesktopRuntimeManifest(base, { ...published, agentImage });
+    assert.equal(manifest.images.agent, agentImage);
+    assert.deepEqual(manifest.desktopRuntime.managedAgent, { image: agentImage, platforms: ['linux/amd64'] });
+    assert.equal(validateDesktopRuntimeManifest(manifest, { agentImage }), manifest);
+
+    const ordinary = createDesktopRuntimeManifest(base, published);
+    assert.equal(ordinary.images.agent, base.images.agent);
+    assert.equal(ordinary.desktopRuntime.managedAgent, undefined);
+    assert.throws(() => validateDesktopRuntimeManifest(ordinary, { agentImage }), /expected source-aligned managed agent/);
+  });
+
+  test('rejects missing, mutable, other-source, local, or retargeted agent bindings', () => {
+    for (const candidate of ['', 'propr/agent:0.9.0', `propr/agent:${revision}`,
+      `propr/agent:${'c'.repeat(40)}@${digest}`, `propr/app:${revision}@${digest}`]) {
+      assert.throws(() => createDesktopRuntimeManifest(base, { ...published, agentImage: candidate }),
+        /managed agent image is not published/, candidate);
+    }
+    assert.throws(() => createDesktopRuntimeManifest(base, {
+      ...published, distribution: 'local',
+      appImage: `propr-desktop-local/app:${revision}`, uiImage: `propr-desktop-local/ui:${revision}`,
+      agentImage,
+    }), /managed agent image is not published/);
+    const manifest = createDesktopRuntimeManifest(base, { ...published, agentImage });
+    assert.throws(() => validateDesktopRuntimeManifest({
+      ...manifest, images: { ...manifest.images, agent: 'propr/agent:0.9.0' },
+    }), /managed agent image is not published/);
+    assert.throws(() => validateDesktopRuntimeManifest({
+      ...manifest,
+      desktopRuntime: { ...manifest.desktopRuntime, managedAgent: { image: agentImage, platforms: ['linux/amd64', 'linux/arm64'] } },
+    }), /linux\/amd64/);
+  });
+
+  test('accepts only a registry-resolved source-labelled linux/amd64 agent', () => {
+    const index = { digest, manifests: [{ platform: { os: 'linux', architecture: 'amd64' } }] };
+    assert.equal(validatePublishedManagedAgentInspection(agentImage, revision, index, { 'linux/amd64': agentConfig() }), index);
+    assert.equal(validatePublishedManagedAgentInspection(agentImage, revision, { digest }, agentConfig()).digest, digest);
+    assert.throws(() => validatePublishedManagedAgentInspection(agentImage, revision, {
+      digest: `sha256:${'c'.repeat(64)}`,
+    }, agentConfig()), /does not resolve to configured digest/);
+    assert.throws(() => validatePublishedManagedAgentInspection(agentImage, revision, {
+      digest,
+      manifests: [
+        { platform: { os: 'linux', architecture: 'amd64' } },
+        { platform: { os: 'linux', architecture: 'arm64' } },
+      ],
+    }, { 'linux/amd64': agentConfig(), 'linux/arm64': agentConfig({ architecture: 'arm64' }) }), /exactly linux\/amd64/);
+    assert.throws(() => validatePublishedManagedAgentInspection(agentImage, revision, { digest },
+      agentConfig({ architecture: 'arm64' })), /not a linux\/amd64 image/);
+    assert.throws(() => validatePublishedManagedAgentInspection(agentImage, revision, { digest }, agentConfig({
+      config: { Labels: { ...agentConfig().config.Labels, 'org.opencontainers.image.revision': 'c'.repeat(40) } },
+    })), /not the unified agent bundle built from the release revision/);
+    assert.throws(() => validatePublishedManagedAgentInspection(agentImage, revision, { digest }, agentConfig({
+      config: { Labels: { ...agentConfig().config.Labels, 'dev.propr.agent-bundle': undefined } },
+    })), /not the unified agent bundle/);
+    assert.throws(() => validatePublishedManagedAgentInspection('propr/agent:0.9.0', revision, { digest }, agentConfig()),
+      /digest-pinned propr\/agent reference/);
+  });
+
+  test('release generation refuses an explicitly empty agent input and writes an exact binding', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'propr-desktop-runtime-agent-'));
+    const script = resolve(import.meta.dirname, 'desktop-runtime-manifest.mjs');
+    const basePath = join(directory, 'base.json');
+    writeFileSync(basePath, JSON.stringify(base));
+    const releaseArgs = [script, 'release', '--source-revision', revision,
+      '--app-image', published.appImage, '--ui-image', published.uiImage,
+      '--api-compatibility', '2026-06-27', '--base', basePath];
+    try {
+      const empty = spawnSync('node', [...releaseArgs, '--agent-image', '', '--output', join(directory, 'empty', 'manifest.json')], { encoding: 'utf8' });
+      assert.notEqual(empty.status, 0);
+      assert.match(empty.stderr, /--agent-image must be a published propr\/agent/);
+      const output = join(directory, 'bound', 'manifest.json');
+      const bound = spawnSync('node', [...releaseArgs, '--agent-image', agentImage, '--output', output], { encoding: 'utf8' });
+      assert.equal(bound.status, 0, bound.stderr);
+      assert.equal(JSON.parse(readFileSync(output, 'utf8')).images.agent, agentImage);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 
