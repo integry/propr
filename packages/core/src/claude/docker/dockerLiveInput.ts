@@ -21,8 +21,9 @@ export interface LiveInputSource {
 
 /**
  * Keeps an agent's stdin open as a control channel: the initial input is
- * written at start, claimed operator messages are written as they arrive, and
- * stdin is closed once the agent reports the end of its run.
+ * written at start, claimed operator messages are written as they arrive once
+ * the agent itself produced output, and stdin is closed once the agent reports
+ * the end of its run.
  */
 export interface LiveInputOptions {
     /** Already encoded initial input (the task prompt). */
@@ -36,7 +37,7 @@ export interface LiveInputOptions {
 }
 
 export interface LiveInputChannel {
-    /** Inspect one complete stdout record. */
+    /** Inspect one complete stdout record: the agent's own output, which proves it is running. */
     observeLine(line: string): void;
     /** Stop polling and close stdin; safe to call repeatedly. */
     close(): void;
@@ -64,6 +65,10 @@ export function startLiveInput(
     context: { taskId?: string; onDelivered?: (message: LiveInputMessage) => void },
 ): LiveInputChannel {
     let closed = false;
+    // A started `docker` client buffers input before any container runs: a
+    // write it accepts reaches no agent if startup then fails. Operator input
+    // is claimed only once the agent's own output shows it is reading.
+    let agentRunning = false;
     let polling: Promise<void> = Promise.resolve();
     const acknowledgements = new Set<Promise<void>>();
     const writable = (): boolean => !closed && !!stdin?.writable && !stdin.writableEnded;
@@ -96,9 +101,10 @@ export function startLiveInput(
     };
 
     const deliver = async (): Promise<void> => {
-        // Claim only while the input can still be written: a claimed message
-        // is settled, so claiming after the run ended would lose it.
-        if (!writable()) return;
+        // Claim only while the input can still be written and an agent reads
+        // it: a claimed message is settled, so claiming after the run ended,
+        // or before any agent ran, would lose it.
+        if (!writable() || !agentRunning) return;
         let messages: LiveInputMessage[];
         try {
             messages = await options.source.claim();
@@ -140,7 +146,10 @@ export function startLiveInput(
     }
 
     return {
-        observeLine: line => { if (!closed && options.endsInput(line)) close(); },
+        observeLine: line => {
+            agentRunning = true;
+            if (!closed && options.endsInput(line)) close();
+        },
         close,
         settled: async () => {
             await polling;

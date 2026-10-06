@@ -287,6 +287,58 @@ readline.createInterface({ input: process.stdin }).on('line', () => {
         }
     });
 
+    test('claims no steer before the agent produced output', async () => {
+        const source = new QueueSource();
+        source.pending.push({ id: 'steer-1', text: 'Use the existing helper instead.' });
+        const written: string[] = [];
+        // Accepts every write, like a pipe to a `docker` client still starting its container.
+        const stdin = new Writable({
+            write(chunk, _encoding, callback) { written.push(String(chunk)); callback(); },
+        });
+        const channel = startLiveInput(stdin, {
+            initialInput: encodeClaudeUserMessage('Implement the issue.'),
+            source,
+            encode: encodeClaudeUserMessage,
+            endsInput: isClaudeResultRecord,
+            pollIntervalMs: 10,
+        }, { taskId: 'task-1' });
+        try {
+            await new Promise(resolve => setTimeout(resolve, 60));
+            assert.deepEqual(source.claimed, []);
+            assert.equal(written.length, 1, 'only the initial prompt was written');
+            channel.observeLine(JSON.stringify({ type: 'system', subtype: 'init' }));
+            await new Promise(resolve => setTimeout(resolve, 60));
+            assert.deepEqual(source.claimed, ['steer-1']);
+            assert.deepEqual(source.acknowledged, ['steer-1']);
+        } finally {
+            channel.close();
+            await channel.settled();
+        }
+    });
+
+    test('a steer sent while startup fails stays pending for a replacement run', async () => {
+        await db('tasks').insert({ task_id: 'task-startup' });
+        await createTaskSteer(db, { taskId: 'task-startup', runKey: 'run-1', author: 'octocat', authorSource: 'session', message: 'Keep the API' });
+        // Like `docker run` pulling an image, then failing with 125: input is accepted, no agent runs.
+        const result = await executeDockerCommand(process.execPath, ['-e', 'process.stdin.resume(); setTimeout(() => process.exit(125), 200);'], {
+            timeout: 10_000,
+            liveInput: {
+                initialInput: encodeClaudeUserMessage('Implement the issue.'),
+                source: createTaskSteeringSource(db, 'task-startup'),
+                encode: encodeClaudeUserMessage,
+                endsInput: isClaudeResultRecord,
+                pollIntervalMs: 10,
+            },
+        });
+        assert.equal(result.exitCode, 125);
+        const [stored] = await listTaskSteers(db, 'task-startup');
+        assert.equal(stored!.deliveredAt, null);
+        assert.equal(stored!.acknowledgedAt, null);
+        assert.equal(await db('task_history').where('task_id', 'task-startup').count<{ count: number }[]>({ count: '*' }).then(rows => Number(rows[0]!.count)), 0);
+        const replacement = await claimTaskSteers(db, 'task-startup', 'replacement_prompt');
+        assert.deepEqual(replacement.map(steer => steer.message), ['Keep the API']);
+    });
+
     function recordingHandoff(beforeStart: () => Promise<void> = async () => undefined) {
         const events: string[] = [];
         return {

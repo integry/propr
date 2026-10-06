@@ -50,8 +50,10 @@ test('the stall watchdog treats a delivered steer as activity', async () => {
         async acknowledge() {},
         async release() {},
     };
-    // A silent agent that only reads its input: without steers it would stall at 300ms.
+    // An agent that announces itself, like Claude's init record, then only
+    // reads its input: without steers it would stall at 300ms.
     const agent = `
+console.log(JSON.stringify({ type: 'system', subtype: 'init' }));
 let received = 0;
 require('node:readline').createInterface({ input: process.stdin }).on('line', () => {
   if (++received === 6) process.exit(0);
