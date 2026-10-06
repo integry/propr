@@ -234,6 +234,54 @@ test('an exhausted retry is refused at admission, before any container is regist
     guard.close();
 });
 
+test('a capped retry whose recorded spend cannot be read fails before admitting anything', async () => {
+    const stored: unknown[] = [];
+    const exceeded: unknown[] = [];
+    const guard = new RunCostGuard({
+        taskId: 'task-1', inputs: { override: 5 }, defaultModel: 'test-model',
+        readRecordedSpend: async () => { throw new Error('database unavailable'); },
+        priceUsage: async () => 0,
+        onCapResolved: cap => { stored.push(cap); },
+        onExceeded: snapshot => { exceeded.push(snapshot); },
+        checkIntervalMs: 60_000,
+    });
+    await assert.rejects(guard.start(), /database unavailable/);
+    await assert.rejects(guard.admit(), /database unavailable/, 'admission never evaluates a zero spend');
+    assert.equal(guard.exceeded, false);
+    assert.deepEqual(exceeded, []);
+    guard.close();
+});
+
+test('admission rejects when its recorded spend read fails, instead of using the last known spend', async () => {
+    let reads = 0;
+    // The run starts uncapped and best-effort, so its spend was never read; the workflow then caps it.
+    const guard = new RunCostGuard({
+        taskId: 'task-1', inputs: {}, defaultModel: 'test-model',
+        readRecordedSpend: async () => { reads += 1; throw new Error('database unavailable'); },
+        priceUsage: async () => 0,
+        checkIntervalMs: 60_000,
+    });
+    const start = await guard.start();
+    assert.equal(start.cap, null, 'an uncapped run does not depend on the spend read');
+    await guard.setWorkflowCap(5);
+    await assert.rejects(guard.admit(), /database unavailable/);
+    assert.equal(reads, 2);
+    assert.equal(guard.exceeded, false);
+
+    // Once the read recovers, the exhausted budget is refused.
+    const recovering = new RunCostGuard({
+        taskId: 'task-1', inputs: { override: 5 }, defaultModel: 'test-model',
+        readRecordedSpend: async () => { reads += 1; if (reads === 4) throw new Error('database unavailable'); return 5; },
+        priceUsage: async () => 0,
+        checkIntervalMs: 60_000,
+    });
+    await recovering.start();
+    await assert.rejects(recovering.admit(), /database unavailable/);
+    await assert.rejects(recovering.admit(), { name: 'RunCostCapExceededError' });
+    recovering.close();
+    guard.close();
+});
+
 test('the workflow cap applies once known, unless a task override already wins', async () => {
     const guard = guardFor(() => 0, { instanceDefault: 10 });
     await guard.start();

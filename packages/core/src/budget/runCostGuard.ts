@@ -115,9 +115,14 @@ export class RunCostGuard implements ActiveRunCostCap {
     get exceeded(): boolean { return this.triggered; }
     get exceededWith(): RunCostSnapshot | null { return this.exceededSnapshot; }
 
-    /** Reads what earlier attempts spent; the cap for this attempt is what remains. */
+    /**
+     * Reads what earlier attempts spent; the cap for this attempt is what
+     * remains. A capped attempt whose spend cannot be read fails here, before
+     * any agent starts, instead of starting with an untouched budget.
+     */
     async start(): Promise<{ cap: RunCostCap | null; priorSpentUsd: number; remainingUsd: number | null }> {
-        this.priorSpentUsd = (await this.readRecorded(NO_RECORDED_SPEND)).totalUsd;
+        const recorded = this.resolvedCap ? await this.readRecordedStrict() : await this.readRecorded(NO_RECORDED_SPEND);
+        this.priorSpentUsd = recorded.totalUsd;
         // Always reconciled: an earlier attempt of this task may have stored a cap this attempt no longer has.
         await this.publishCap(true);
         const remainingUsd = this.resolvedCap ? remainingRunBudget(this.resolvedCap.capUsd, this.priorSpentUsd) : null;
@@ -142,13 +147,15 @@ export class RunCostGuard implements ActiveRunCostCap {
      * Completes the effective-cap check before a chargeable container starts.
      * A retry whose earlier attempts already used the whole budget is refused
      * here (and the stop recorded) instead of launching and being stopped later.
+     * A recorded spend that cannot be read rejects admission: the container
+     * must not start against a stale or zero spend.
      */
     async admit(): Promise<void> {
         if (!this.triggered && this.resolvedCap) {
             // A check already in flight may have read the recorded spend before
             // the latest rows were written; admission needs a fresh read.
             if (this.checking) await this.checking.catch(() => null);
-            await this.check();
+            await this.evaluate(await this.readRecordedStrict());
         }
         this.refuseIfExceeded();
     }
@@ -205,10 +212,10 @@ export class RunCostGuard implements ActiveRunCostCap {
         this.live.clear();
     }
 
-    private async evaluate(): Promise<RunCostSnapshot | null> {
+    private async evaluate(recorded?: RecordedSpend): Promise<RunCostSnapshot | null> {
         const cap = this.resolvedCap;
         if (this.triggered || !cap) return null;
-        const snapshot = await this.snapshot(cap);
+        const snapshot = await this.snapshot(cap, recorded);
         if (this.triggered || snapshot.spentUsd < cap.capUsd) return null;
         this.triggered = true;
         this.exceededSnapshot = snapshot;
@@ -228,13 +235,14 @@ export class RunCostGuard implements ActiveRunCostCap {
         return snapshot;
     }
 
-    private async snapshot(cap: RunCostCap): Promise<RunCostSnapshot> {
+    /** `recorded` is an authoritative read already taken; periodic checks read best-effort. */
+    private async snapshot(cap: RunCostCap, read?: RecordedSpend): Promise<RunCostSnapshot> {
         // Recorded rows are written only after an execution finished, so
         // reading them before capturing the live set cannot count a live
         // execution twice. Both collections are captured together, before
         // pricing awaits: an execution finishing meanwhile moves its tally
         // from live to finished and would otherwise be priced in both.
-        const recorded = await this.readRecorded(this.lastRecorded);
+        const recorded = read ?? await this.readRecorded(this.lastRecorded);
         const live = [...this.live].map(execution => execution.tally);
         const finished = [...this.finished];
         let liveUsd = 0;
@@ -260,11 +268,17 @@ export class RunCostGuard implements ActiveRunCostCap {
         return Math.max(priced, tally.reportedCostUsd);
     }
 
+    /** Throws when the recorded spend cannot be read; used where the budget decides whether to start. */
+    private async readRecordedStrict(): Promise<RecordedSpend> {
+        const recorded = normalizeRecordedSpend(await this.options.readRecordedSpend());
+        this.lastRecorded = recorded;
+        return recorded;
+    }
+
+    /** Best-effort for periodic checks: a failed read falls back to the last known spend. */
     private async readRecorded(fallback: RecordedSpend): Promise<RecordedSpend> {
         try {
-            const recorded = normalizeRecordedSpend(await this.options.readRecordedSpend());
-            this.lastRecorded = recorded;
-            return recorded;
+            return await this.readRecordedStrict();
         } catch (error) {
             logger.warn({ taskId: this.taskId, error: (error as Error).message }, 'Could not read recorded task spend');
             return fallback;

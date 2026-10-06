@@ -219,3 +219,31 @@ test('a retry whose earlier attempts used the whole budget launches no container
         fs.rmSync(bin, { recursive: true, force: true });
     }
 });
+
+test('a capped run whose recorded spend cannot be read launches no container', async () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fake-docker-'));
+    const launches = path.join(bin, 'launches');
+    fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\nfor arg; do image="$arg"; done\necho "$image" >> '${launches}'\n`, { mode: 0o755 });
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`;
+    // Earlier attempts spent the whole $5 budget, but every read of that spend fails.
+    const guard = new RunCostGuard({
+        taskId: 'docker-unreadable-retry', inputs: {}, defaultModel: 'claude-sonnet-4',
+        readRecordedSpend: async () => { throw new Error('database unavailable'); },
+        priceUsage: async () => 0,
+        checkIntervalMs: 60_000,
+    });
+    const launched = () => fs.existsSync(launches) ? fs.readFileSync(launches, 'utf8').split('\n').filter(Boolean) : [];
+    try {
+        await guard.start();
+        await guard.setWorkflowCap(5);
+        await assert.rejects(runWithActiveRunCostCap(guard, () =>
+            executeDockerCommand('docker', ['run', '--rm', 'implementation'], { timeout: 10_000, preserveOutputOnTimeout: true })), /database unavailable/);
+        assert.deepEqual(launched(), [], 'no agent container starts against an unread budget');
+        assert.equal(guard.exceeded, false);
+    } finally {
+        guard.close();
+        process.env.PATH = originalPath;
+        fs.rmSync(bin, { recursive: true, force: true });
+    }
+});
