@@ -153,8 +153,9 @@ function createRedis() {
         },
         async eval(script: string, _keyCount: number, ...args: string[]) {
             if (script.includes('-- clear rearm retry if claim held')) {
-                const [claimKey, retryKey, token] = args;
+                const [claimKey, retryKey, epochKey, token, expectedEpoch] = args;
                 if (store.get(claimKey) !== token) return 0;
+                if (expectedEpoch !== '' && (store.get(epochKey) ?? '0') !== expectedEpoch) return -1;
                 store.delete(retryKey);
                 return 1;
             }
@@ -895,6 +896,71 @@ describe('Ultrafix recovery after a CI failure', () => {
         assert.equal(recovered.length, 1);
         assert.ok(recovered[0].data.ultrafixMeta.workEpoch > currentEpoch);
         assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 126), null);
+    });
+
+    test('a manual invalidation during the re-arm enqueue acknowledgment keeps the retry', async () => {
+        const redis = await strandLoopAfterCiFailure(131);
+        ciStatus = GREEN;
+        mockQueueAdd.mock.mockImplementationOnce(async (name: string, data: Record<string, any>, opts: Record<string, any> = {}) => {
+            const handle = await addToFakeQueue(name, data, opts);
+            // An authorized manual /review fences automatic work while the insertion
+            // is outstanding; this trigger still holds its resume claim.
+            await invalidateUltrafixAutomaticWork(redis as never, OWNER, REPO, 131);
+            return handle;
+        });
+
+        const result = await checksTurnGreen(redis, 131);
+
+        assert.equal(result.continued, false, 'the fenced review does not count as continuing the loop');
+        assert.equal(result.reason, 'ultrafix_superseded');
+        const currentEpoch = await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 131);
+        assert.ok(reviewJobs(131).every(job => job.data.ultrafixMeta.workEpoch < currentEpoch), 'only a fenced review is queued');
+        const retry = await loadRearmRetry(redis as never, OWNER, REPO, 131);
+        assert.ok(retry, 'the retry obligation survives the superseded handoff');
+        assert.equal(retry.workEpoch, currentEpoch);
+
+        // The fenced review and the manual review finish without continuing the loop.
+        mockQueueAdd.mock.restore();
+        drainQueue();
+        const outcomes = await sweepUltrafixResumeCandidates(redis as never, () => logger as never);
+        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        const recovered = reviewJobs(131).filter(job => job.state !== 'completed');
+        assert.equal(recovered.length, 1);
+        assert.ok(recovered[0].data.ultrafixMeta.workEpoch > currentEpoch);
+        assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 131), null);
+    });
+
+    test('a manual invalidation during a deferred resume enqueue acknowledgment keeps a retry', async () => {
+        const redis = createRedis();
+        const { state } = await startLoop(redis as never, { owner: OWNER, repo: REPO, pr: 132, goal: 8, maxCycles: 5, pauseSeconds: 30 }, false);
+        await saveState(redis as never, { ...state, lastAction: 'fix', reviewCount: 1, fixCount: 1, cycleCount: 1 });
+        const ultrafixMeta = { mode: 'ultrafix' as const, goal: 8, maxCycles: 5, pauseSeconds: 30, instructions: '', workEpoch: state.workEpoch };
+        await saveDeferredContinuation(redis as never, {
+            owner: OWNER, repo: REPO, pr: 132, nextAction: 'review',
+            savedAt: new Date().toISOString(), reason: 'checks_not_passing', ultrafixMeta, workEpoch: state.workEpoch,
+        });
+        ciStatus = GREEN;
+        mockQueueAdd.mock.mockImplementationOnce(async (name: string, data: Record<string, any>, opts: Record<string, any> = {}) => {
+            const handle = await addToFakeQueue(name, data, opts);
+            await invalidateUltrafixAutomaticWork(redis as never, OWNER, REPO, 132);
+            return handle;
+        });
+
+        const result = await resumeDeferredContinuation({ owner: OWNER, repo: REPO, pr: 132 }, redis as never, logger as never);
+
+        assert.equal(result.continued, false);
+        assert.equal(result.reason, 'ultrafix_superseded');
+        assert.equal(await loadDeferredContinuation(redis as never, OWNER, REPO, 132), null);
+        const currentEpoch = await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 132);
+        const retry = await loadRearmRetry(redis as never, OWNER, REPO, 132);
+        assert.ok(retry, 'a retry obligation is recorded for the sweep');
+        assert.equal(retry.workEpoch, currentEpoch);
+
+        mockQueueAdd.mock.restore();
+        drainQueue();
+        const outcomes = await sweepUltrafixResumeCandidates(redis as never, () => logger as never);
+        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 132), null);
     });
 
     test('a resumed fix that completes before its enqueue error surfaces is not restored over its successor', async () => {

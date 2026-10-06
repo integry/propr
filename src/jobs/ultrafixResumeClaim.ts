@@ -21,6 +21,7 @@ import {
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction, UltrafixLoopState, UltrafixRearmRetry } from './ultrafixOrchestrationService.js';
 import type { ContinuationResult } from './ultrafixLoopContinuation.js';
+import type { RearmRetryClearOutcome } from './ultrafixDeferredContinuationStore.js';
 
 export type UltrafixPrId = { owner: string; repo: string; pr: number };
 
@@ -102,9 +103,10 @@ export interface ResumeClaim {
      * Release the PR's retry obligation, atomically conditional on this claim
      * still being held in Redis. Evidence gathered by a holder whose claim
      * expired (e.g. a late enqueue acknowledgment) cannot release an
-     * obligation a successor may have recorded since.
+     * obligation a successor may have recorded since. With `workEpoch` it is
+     * also conditional on that automatic-work epoch still being current.
      */
-    clearRetry(): Promise<boolean>;
+    clearRetry(workEpoch?: number): Promise<RearmRetryClearOutcome>;
     /**
      * Record the PR's retry obligation unless another trigger holds the claim
      * now; that holder owns the obligation. A claim lost to a renewal fault or
@@ -242,8 +244,8 @@ async function runWithHeldClaim(
             if (lost) correlatedLogger.warn({ pr: prId.pr }, 'Ultrafix resume: resume claim lost, aborting');
             return !lost;
         },
-        clearRetry() {
-            return clearRearmRetryIfClaimHeld(redisClient, prId, { key: claimKey, token });
+        clearRetry(workEpoch) {
+            return clearRearmRetryIfClaimHeld(redisClient, prId, { key: claimKey, token }, workEpoch);
         },
         saveRetry(retry) {
             return saveRearmRetryUnlessClaimTaken(redisClient, retry, { key: claimKey, token });

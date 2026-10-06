@@ -125,6 +125,11 @@ export interface ContinuationResult {
     blockingChecks?: string[];
     /** For an unsettled loop: how long the sweep should wait before retrying it. */
     retryDelayMs?: number;
+    /**
+     * Automatic-work epoch of the step this resume handed the loop to (queued
+     * or deferred). The retry obligation is only released while it is current.
+     */
+    workEpoch?: number;
 }
 
 async function deferNextAction(
@@ -426,10 +431,10 @@ export async function resumeDeferredContinuation(
             await settleRearmRetry(prId, { continued: false, reason: `resume_failed: ${(err as Error).message}` }, { redisClient, correlatedLogger, claim });
             throw err;
         }
-        scheduled ||= result.continued;
         if (!scheduled || !leavesLoopWaiting(result.reason)) {
-            await settleRearmRetry(prId, result, { redisClient, correlatedLogger, claim });
+            result = await settleRearmRetry(prId, result, { redisClient, correlatedLogger, claim });
         }
+        scheduled ||= result.continued;
         return result;
     });
 }
@@ -451,38 +456,51 @@ function leavesLoopWaiting(reason: string): boolean {
  * could not settle the loop (outstanding or unreadable work, a superseded
  * record, a failed enqueue) leaves one so the periodic sweep re-runs it
  * without waiting for another webhook; any settled outcome releases it.
+ *
+ * Returns the outcome as settled: a step handed off under an epoch that was
+ * invalidated meanwhile (e.g. a manual command while the enqueue was
+ * outstanding) will not continue the loop, so it is reported as superseded.
  */
 async function settleRearmRetry(
     prId: { owner: string; repo: string; pr: number },
     result: ContinuationResult,
     ctx: { redisClient: Redis; correlatedLogger: Logger; claim: ResumeClaim },
-): Promise<void> {
+): Promise<ContinuationResult> {
     const { owner, repo, pr } = prId;
     const { redisClient, correlatedLogger, claim } = ctx;
+    let settled = result;
     try {
         if (!leavesLoopWaiting(result.reason)) {
             // Only the current holder may release it: a takeover may have
             // recorded a newer obligation this outcome knows nothing about.
-            if (!await claim.clearRetry()) {
+            const cleared = await claim.clearRetry(result.workEpoch);
+            if (cleared === 'claim_not_held') {
                 correlatedLogger.info({ pr, reason: result.reason }, 'Ultrafix resume: resume claim no longer held, leaving retry obligation in place');
             }
-            return;
+            if (cleared !== 'superseded') return result;
+            correlatedLogger.info(
+                { pr, reason: result.reason, workEpoch: result.workEpoch },
+                'Ultrafix resume: handed-off step superseded before settlement, keeping retry obligation',
+            );
+            settled = { continued: false, reason: 'ultrafix_superseded', cycleCount: result.cycleCount };
         }
         // A trigger that took the claim over owns the obligation now.
         const saved = await claim.saveRetry({
             owner, repo, pr,
             workEpoch: await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr),
-            reason: result.reason,
+            reason: settled.reason,
             savedAt: new Date().toISOString(),
-            ...(result.retryDelayMs
-                ? { notBefore: new Date(Date.now() + result.retryDelayMs).toISOString() }
+            ...(settled.retryDelayMs
+                ? { notBefore: new Date(Date.now() + settled.retryDelayMs).toISOString() }
                 : {}),
         });
-        if (!saved) return;
-        correlatedLogger.info({ pr, reason: result.reason, retryDelayMs: result.retryDelayMs }, 'Ultrafix resume: recorded retry for unsettled loop');
+        if (saved) {
+            correlatedLogger.info({ pr, reason: settled.reason, retryDelayMs: settled.retryDelayMs }, 'Ultrafix resume: recorded retry for unsettled loop');
+        }
     } catch (err) {
         correlatedLogger.warn({ pr, error: (err as Error).message }, 'Ultrafix resume: failed to update retry obligation');
     }
+    return settled;
 }
 
 /**
@@ -639,7 +657,7 @@ async function resumeClaimedDeferredStep(
         return ci.terminal ?? {
             continued: false,
             reason: `still_deferred: ${readiness.reasons.join(', ')}`,
-            deferred: true, ...ci.extra,
+            deferred: true, workEpoch: workEpoch ?? 0, ...ci.extra,
         };
     }
 
@@ -664,5 +682,6 @@ async function resumeClaimedDeferredStep(
         reason: 'deferred_resumed',
         nextAction: deferred.nextAction,
         cycleCount: state.cycleCount,
+        workEpoch: workEpoch ?? 0,
     };
 }

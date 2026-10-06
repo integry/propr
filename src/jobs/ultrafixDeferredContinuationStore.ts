@@ -2,6 +2,7 @@ import type { Redis } from 'ioredis';
 import type { UltrafixCommandMeta } from '@propr/core';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import {
+    getUltrafixAutomaticWorkEpochKey,
     getUltrafixDeferredKey,
     saveDeferredContinuationIfCurrent,
     ULTRAFIX_DEFERRED_KEY_PREFIX,
@@ -116,6 +117,9 @@ const CLEAR_REARM_RETRY_IF_CLAIM_HELD_SCRIPT = `
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then
     return 0
 end
+if ARGV[2] ~= '' and (redis.call('GET', KEYS[3]) or '0') ~= ARGV[2] then
+    return -1
+end
 redis.call('DEL', KEYS[2])
 return 1
 `;
@@ -130,24 +134,35 @@ redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
 return 1
 `;
 
+export type RearmRetryClearOutcome = 'cleared' | 'claim_not_held' | 'superseded';
+
 /**
  * Release the retry obligation only while `claimToken` still holds the resume
  * claim at `claimKey`. A holder whose claim expired (and may have been taken
  * over) acts on stale evidence and must not erase its successor's obligation.
+ *
+ * With `workEpoch`, the release is also bound to the automatic-work epoch the
+ * attempt handed the loop to (its queued step or deferred record): work
+ * invalidated since then (e.g. a manual command) will be rejected or was
+ * removed, so the obligation is kept for the sweep.
  */
 export async function clearRearmRetryIfClaimHeld(
     redis: Redis,
     identity: { owner: string; repo: string; pr: number },
     claim: { key: string; token: string },
-): Promise<boolean> {
-    const cleared = await redis.eval(
+    workEpoch?: number,
+): Promise<RearmRetryClearOutcome> {
+    const cleared = Number(await redis.eval(
         CLEAR_REARM_RETRY_IF_CLAIM_HELD_SCRIPT,
-        2,
+        3,
         claim.key,
         getUltrafixRearmRetryKey(identity.owner, identity.repo, identity.pr),
+        getUltrafixAutomaticWorkEpochKey(identity.owner, identity.repo, identity.pr),
         claim.token,
-    );
-    return Number(cleared) === 1;
+        workEpoch === undefined ? '' : String(workEpoch),
+    ));
+    if (cleared === 1) return 'cleared';
+    return cleared === -1 ? 'superseded' : 'claim_not_held';
 }
 
 /**

@@ -210,8 +210,9 @@ function createRedis() {
         },
         async eval(script: string, _keyCount: number, ...args: string[]) {
             if (script.includes('-- clear rearm retry if claim held')) {
-                const [claimKey, retryKey, token] = args;
+                const [claimKey, retryKey, epochKey, token, expectedEpoch] = args;
                 if (store.get(claimKey) !== token) return 0;
+                if (expectedEpoch !== '' && (store.get(epochKey) ?? '0') !== expectedEpoch) return -1;
                 store.delete(retryKey);
                 return 1;
             }

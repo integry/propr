@@ -256,6 +256,7 @@ async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptRe
         reason: 'stranded_loop_rearmed',
         nextAction: 'review',
         cycleCount: owned.cycleCount,
+        workEpoch: owned.workEpoch,
     };
 }
 
@@ -301,6 +302,7 @@ async function deferRearmedReview(
         reason: `rearm_deferred: ${reasons}`,
         nextAction: 'review',
         cycleCount: owned.cycleCount,
+        workEpoch,
         ...ci.extra,
     };
 }
