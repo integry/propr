@@ -523,6 +523,28 @@ test('reports a symbolic link as a link to its target instead of returning the t
   await expectRetrievalError(readRepositoryFileContent({ ...base, path: 'util-link.ts' }), 400, /^"util-link\.ts" is a symbolic link to "src\/util\.ts", not a file/);
 });
 
+test('rejects a symbolic link the same way however its path is spelled', async () => {
+  for (const spelling of ['util-link.ts', './util-link.ts', '././util-link.ts', './/util-link.ts']) {
+    await assert.rejects(readRepositoryFileContent({ ...base, path: spelling }), (error: unknown) => {
+      assert.ok(error instanceof RepositoryRetrievalError);
+      assert.equal(error.status, 400, spelling);
+      assert.equal(error.kind, 'invalid_path', spelling);
+      assert.match(error.message, /^"util-link\.ts" is a symbolic link to "src\/util\.ts", not a file/, spelling);
+      return true;
+    });
+  }
+});
+
+test('reads a file through any equivalent spelling of its path and reports the canonical path', async () => {
+  for (const spelling of ['././src/util.ts', 'src//util.ts', 'src/./util.ts']) {
+    const result = await readRepositoryFileContent({ ...base, path: spelling });
+    assert.equal(result.path, 'src/util.ts', spelling);
+  }
+  for (const bad of ['.', './', '././']) {
+    await expectRetrievalError(readRepositoryFileContent({ ...base, path: bad }), 400, /must name a file/);
+  }
+});
+
 test('rejects binary files, directories, missing files and bad ranges with clear errors', async () => {
   await expectRetrievalError(readRepositoryFileContent({ ...base, path: 'assets/logo.bin' }), 400, /binary/);
   await expectRetrievalError(readRepositoryFileContent({ ...base, path: 'src/auth' }), 400, /directory/);

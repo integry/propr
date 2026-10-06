@@ -36,6 +36,21 @@ export function assertSafeRepositoryPath(value: string, label = 'path'): string 
   return value;
 }
 
+/**
+ * Validates a file path and returns its canonical spelling, with empty and
+ * "." segments removed. Git resolves "./a", "a//b" and "a/./b" to the same
+ * tree entry, so lookups and comparisons against tree entries must agree on
+ * one spelling.
+ */
+export function canonicalRepositoryPath(value: string, label = 'path'): string {
+  assertSafeRepositoryPath(value, label);
+  const canonical = value.split('/').filter(segment => segment !== '' && segment !== '.').join('/');
+  if (canonical === '') {
+    throw new RepositoryRetrievalError(`${label} must name a file`, 400, 'invalid_path');
+  }
+  return canonical;
+}
+
 export function normalizePathPrefix(prefix: string | undefined): string | null {
   if (prefix === undefined || prefix === null) return null;
   let trimmed = prefix.trim();

@@ -35,9 +35,9 @@ import {
 } from './repositoryRetrievalTypes.js';
 import {
   assertSafeRef,
-  assertSafeRepositoryPath,
   boundedInteger,
   buildPagination,
+  canonicalRepositoryPath,
   isFullCommitSha,
   normalizeCommitSha,
   normalizePathPrefix,
@@ -479,7 +479,7 @@ export async function searchRepositoryFiles(options: SearchRepositoryFilesOption
  * requested ref, without touching the working tree.
  */
 export async function readRepositoryFileContent(options: ReadRepositoryFileOptions): Promise<ReadRepositoryFileResult> {
-  const filePath = assertSafeRepositoryPath(options.path).replace(/^\.\//, '');
+  const filePath = canonicalRepositoryPath(options.path);
   parseRepository(options.repository);
 
   const startLine = boundedInteger(options.startLine, 'startLine', { fallback: 1, min: 1, max: Number.MAX_SAFE_INTEGER });
