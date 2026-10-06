@@ -80,6 +80,10 @@ export function validateAutoMergeConfig(value: unknown): string | null {
     return null;
 }
 
+/**
+ * Normalize a configured pattern. Only patterns are normalized: changed filenames
+ * come from Git, where a backslash or surrounding whitespace is a literal character.
+ */
 function normalizePath(path: string): string {
     return path.trim().replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+/, '').replace(/\/{2,}/g, '/');
 }
@@ -136,13 +140,16 @@ export function compileProtectedPathGlob(pattern: string): RegExp {
     return new RegExp(`^${source}(?:/.*)?$`, 'is');
 }
 
-/** Changed paths matched by any protected pattern, including the always-protected ones. */
+/**
+ * Changed paths matched by any protected pattern, including the always-protected ones.
+ * Filenames are matched verbatim: rewriting a literal `\\` to `/` would move the
+ * file into a different directory and let it slip past segment-scoped wildcards.
+ */
 export function findProtectedPaths(changedFiles: readonly string[], protectedPaths: readonly string[] = []): string[] {
     const matchers = [...ALWAYS_PROTECTED_PATHS, ...protectedPaths].map(compileProtectedPathGlob);
     const matched = new Set<string>();
     for (const file of changedFiles) {
-        const path = normalizePath(file);
-        if (matchers.some(matcher => matcher.test(path))) matched.add(file);
+        if (matchers.some(matcher => matcher.test(file))) matched.add(file);
     }
     return [...matched].sort();
 }
@@ -166,7 +173,7 @@ export function decideAutoMerge(
     if (invalid) return skip('skipped_policy_invalid', { detail: invalid });
     if (config.enabled === false) return skip('skipped_disabled');
     if (!Array.isArray(changedFiles)) return skip('skipped_diff_unavailable');
-    const files = changedFiles.filter(file => typeof file === 'string' && file.trim());
+    const files = changedFiles.filter(file => typeof file === 'string' && file !== '');
     if (files.length === 0) return skip('skipped_empty_diff');
     const matchedPaths = findProtectedPaths(files, config.protected_paths);
     if (matchedPaths.length) return skip('skipped_protected_path', { matchedPaths });

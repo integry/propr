@@ -20,7 +20,8 @@ const cases: Array<{ name: string; policy: AutoMergePolicyInput; files: string[]
     { name: 'non-string glob is an invalid policy', policy: valid({ protected_paths: [42] }), files: ['src/a.ts'], reason: 'skipped_policy_invalid' },
     { name: 'unavailable diff never arms', policy: valid(), files: null, reason: 'skipped_diff_unavailable' },
     { name: 'empty diff never arms', policy: valid(), files: [], reason: 'skipped_empty_diff' },
-    { name: 'blank paths count as an empty diff', policy: valid(), files: ['', '  '], reason: 'skipped_empty_diff' },
+    { name: 'empty paths count as an empty diff', policy: valid(), files: ['', ''], reason: 'skipped_empty_diff' },
+    { name: 'a whitespace-only Git filename is a real change', policy: valid({ protected_paths: ['[ ]'] }), files: ['src/a.ts', ' '], reason: 'skipped_protected_path', matched: [' '] },
     { name: 'workflow file is protected', policy: valid(protectedConfig), files: ['src/a.ts', '.github/workflows/ci.yml'], reason: 'skipped_protected_path', matched: ['.github/workflows/ci.yml'] },
     { name: 'nested migration is protected', policy: valid(protectedConfig), files: ['packages/core/src/db/migrations/2026/01_add.ts'], reason: 'skipped_protected_path', matched: ['packages/core/src/db/migrations/2026/01_add.ts'] },
     { name: 'root package.json is protected', policy: valid(protectedConfig), files: ['package.json'], reason: 'skipped_protected_path', matched: ['package.json'] },
@@ -42,6 +43,8 @@ const cases: Array<{ name: string; policy: AutoMergePolicyInput; files: string[]
     { name: '.propr/** matches a newline in a nested directory name', policy: valid(), files: ['.propr/x\r\ny/setup.sh'], reason: 'skipped_protected_path', matched: ['.propr/x\r\ny/setup.sh'] },
     { name: 'a trailing /** pattern matches embedded line terminators', policy: valid({ protected_paths: ['secrets/**'] }), files: ['secrets/a\u2028b.pem'], reason: 'skipped_protected_path', matched: ['secrets/a\u2028b.pem'] },
     { name: 'a directory pattern protects descendants with newlines', policy: valid({ protected_paths: ['infra'] }), files: ['infra/a\nb/main.tf'], reason: 'skipped_protected_path', matched: ['infra/a\nb/main.tf'] },
+    { name: 'a literal backslash in a filename stays in its segment', policy: valid({ protected_paths: ['config/*.env'] }), files: ['config/production\\backup.env'], reason: 'skipped_protected_path', matched: ['config/production\\backup.env'] },
+    { name: 'a literal backslash is not a directory separator', policy: valid({ protected_paths: ['config/production/**'] }), files: ['config/production\\backup.env'], reason: 'armed' },
     { name: 'an uncompilable glob is an invalid policy', policy: valid({ protected_paths: ['[z-a]'] }), files: ['src/a.ts'], reason: 'skipped_policy_invalid' },
     { name: 'disabled wins over a missing diff', policy: valid({ enabled: false }), files: null, reason: 'skipped_disabled' },
 ];
