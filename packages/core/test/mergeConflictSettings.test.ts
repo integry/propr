@@ -4,7 +4,7 @@ import {
     parseBooleanSetting,
     resolveAutoResolveMergeConflicts,
     resolveRepositoryAutoResolveMergeConflictsOverride,
-} from '../src/config/mergeConflictSettings.js';
+} from '../src/config/mergeConflictSettingsResolution.js';
 
 const repo = (name: string, autoResolveMergeConflicts?: boolean | null) => ({ name, autoResolveMergeConflicts });
 
