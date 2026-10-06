@@ -24,7 +24,7 @@ export const TaskTabBar: React.FC<TaskTabBarProps> = ({ taskTitles, taskIds, act
         const isActive = index === activeIndex;
         const title = getOutlineTitle(taskTitles[index] || `Step ${index + 1}`);
         return (
-          <li key={id} className="min-w-0 max-w-[280px] flex-shrink">
+          <li key={id} className="min-w-0 max-w-xs flex-1">
             <button
               type="button"
               onClick={() => onSelect(id, index)}

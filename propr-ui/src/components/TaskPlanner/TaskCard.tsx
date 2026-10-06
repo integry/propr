@@ -277,7 +277,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
 
         {/* SECTION 3: NOTES (Draft Style - Scratchpad) */}
         {!hideNotes && (
-          <div className="bg-white rounded-lg mt-3 mb-8 p-4 border border-dashed border-gray-300">
+          <div className="mt-3 mb-8 rounded-md border border-slate-200 bg-slate-50/50 p-3">
             <div className="flex items-start gap-3">
               <div className="mt-1 p-1.5 text-gray-400">
                 <Pencil size={16} />
@@ -292,8 +292,8 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                   className="w-full text-sm text-gray-800 bg-transparent placeholder-gray-400"
                   markdownClassName="w-full text-sm text-gray-800"
                 />
-                {/* Attachments section */}
-                <div className="mt-3">
+                {/* Attachments dock at the foot of the note */}
+                <div className="mt-3 border-t border-slate-200 pt-2">
                   <AttachmentUploader
                     files={task.attachments || []}
                     draftId={draftId}
@@ -301,6 +301,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                     onUpload={handleAttachmentUpload}
                     onRemove={handleAttachmentRemove}
                     compact
+                    docked
                   />
                 </div>
               </div>

@@ -170,17 +170,28 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
   await expect(page.getByRole('navigation', { name: 'Plan outline' })).toHaveCount(0);
   await expect(tabs.getByRole('button')).toHaveCount(3);
   await expect(tabs.getByRole('button', { name: /Shared contracts for agent definitions/ })).toHaveAttribute('aria-current', 'step');
+  // Tabs share the bar instead of stopping at a fixed width and leaving the right side empty.
+  const tabList = (await tabs.locator('ol').boundingBox())!;
+  const lastTab = (await tabs.getByRole('listitem').last().boundingBox())!;
+  expect(tabList.x + tabList.width - (lastTab.x + lastTab.width)).toBeLessThan(8);
+  const notes = page.getByText('User Notes').first().locator('xpath=ancestor::div[contains(@class, "rounded-md")][1]');
+  await expect(notes).toHaveCSS('border-top-style', 'solid');
+  await expect(notes.locator('.border-dashed')).toHaveCount(0);
   expect((await page.locator('[data-task-list]').boundingBox())!.width).toBeGreaterThan(700);
   await page.getByRole('button', { name: 'More plan actions' }).click();
   await expect(page.getByRole('menuitem', { name: 'Delete plan' })).toBeVisible();
   await page.mouse.click(5, 5);
   await capture(page, 'review-plan-tabs');
+  await notes.scrollIntoViewIfNeeded();
+  await capture(page, 'review-plan-user-notes');
 });
 
 test('execution step renders one matrix with batch controls and labelled ultrafix inputs', async ({ page }) => {
   await page.goto('/studio/plan-mcp-exec');
   await expect(page.getByRole('radio', { name: 'Execute as Individual Tasks' })).toHaveAttribute('aria-checked', 'true');
   await expect(page.getByTestId('plan-execution-matrix').getByTestId('plan-execution-row')).toHaveCount(3);
+  await expect(page.getByTestId('plan-execution-matrix').getByTestId('agent-chip')).toHaveText('Opus 5.5');
+  for (const button of await page.getByRole('button', { name: 'Implement' }).all()) await expect(button).not.toHaveClass(/amber/);
   const configButton = page.getByTestId('execution-config-button');
   await expect(configButton).toContainText('Opus 5.5 · Ultrafix (8/10) · Auto-merge');
   await expect(page.getByText('PR Options')).toHaveCount(0);

@@ -21,8 +21,8 @@ export const getImplementButtonClassName = (implementing: boolean, hasAgent: boo
     return 'bg-gray-100 text-gray-400 cursor-not-allowed';
   }
   if (!isFirstPending) {
-    // Cautionary state: Amber outline button for dependency-blocked but clickable state
-    return 'bg-white border border-amber-400 text-amber-700 hover:bg-amber-50';
+    // Out-of-order run: still a normal run trigger, so a neutral outline rather than warning amber
+    return 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50';
   }
   return 'bg-primary-600 text-white hover:bg-primary-700';
 };

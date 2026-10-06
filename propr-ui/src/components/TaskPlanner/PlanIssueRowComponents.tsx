@@ -9,7 +9,7 @@ import type { InstanceCatalogAgent } from '@propr/shared';
 import { PlanTask } from '../../api/plannerApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
-import { getModelName, getImplementButtonClassName, getImplementButtonTitle } from './planIssueRowUtils';
+import { getModelName, getShortModelName, getImplementButtonClassName, getImplementButtonTitle } from './planIssueRowUtils';
 import { AuthenticatedAttachmentImage } from './AuthenticatedAttachmentImage';
 
 interface UltrafixSettingsControlsProps { enabled: boolean; goal: number | null | undefined; maxCycles: number | null | undefined; onGoalChange: (value: number | null) => void; onMaxCyclesChange: (value: number | null) => void; goalPlaceholder: string; maxPlaceholder: string; inputClassName: string; goalInputWidthClassName: string; maxInputWidthClassName: string; containerClassName?: string; errorClassName?: string; goalLabel?: string; maxLabel?: string; }
@@ -138,7 +138,7 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
       ${pressed && !implementing && hasAgent
         ? isFirstPending
           ? 'bg-primary-700 text-white shadow-inner'
-          : 'bg-amber-100 border border-amber-600 text-amber-900'
+          : 'bg-slate-100 border border-slate-400 text-slate-800 shadow-inner'
         : getImplementButtonClassName(implementing, hasAgent, isFirstPending)}
     `}
     title={getImplementButtonTitle(hasAgent, isFirstPending)}
@@ -159,10 +159,14 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
 
 export interface AgentModelInfoProps { agentAlias: string; modelName: string | null; }
 export const AgentModelInfo: React.FC<AgentModelInfoProps> = ({ agentAlias, modelName }) => (
-  <span className="flex items-center gap-1.5 text-gray-500">
-    <ProviderLogo provider={agentAlias} className="w-3 h-3" />
-    <span>{agentAlias}</span>
-    {modelName && <><span className="text-gray-300">/</span><span>{getModelName(modelName)}</span></>}
+  // Same chip geometry as AgentOverrideChip so the agent column keeps its shape once a run starts.
+  <span
+    className="inline-flex max-w-[160px] items-center gap-1.5 rounded bg-slate-100 px-2 py-1 text-xs text-slate-600"
+    title={`${agentAlias} / ${getModelName(modelName) || 'default model'}`}
+    data-testid="agent-chip"
+  >
+    <ProviderLogo provider={agentAlias} className="w-3 h-3 flex-shrink-0" />
+    <span className="truncate">{getShortModelName(modelName) || agentAlias}</span>
   </span>
 );
 
