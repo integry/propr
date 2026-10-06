@@ -48,11 +48,18 @@ export class AgentActivityWatchdog {
     private readonly now: () => number;
     private readonly onTrip: (trip: AgentWatchdogTrip) => void;
     private lastActivityAt: number;
-    /** Running tool calls the provider identified, and those already finished (records may be seen twice). */
-    private readonly openToolIds = new Set<string>();
+    /**
+     * Running tool calls the provider identified, keyed by call id, and those
+     * already finished (records may be seen twice). Each running call keeps the
+     * scope (model message, or output line) that declared it.
+     */
+    private readonly openToolIds = new Map<string, string | undefined>();
     private readonly finishedToolIds = new Set<string>();
-    /** Running tool calls reported without an id. */
-    private anonymousTools = 0;
+    /** Scopes of the running tool calls reported without an id, oldest first. */
+    private readonly anonymousTools: (string | undefined)[] = [];
+    /** Model message the latest identified record belonged to. */
+    private currentMessageId: string | undefined;
+    private lineCount = 0;
     private whitespaceDeltas = 0;
     private tripped: AgentWatchdogTrip | null = null;
 
@@ -65,12 +72,13 @@ export class AgentActivityWatchdog {
     get trip(): AgentWatchdogTrip | null { return this.tripped; }
 
     get enabled(): boolean {
-        return this.settings.stallTimeoutMs > 0 || this.settings.degenerateOutputLimit > 0;
+        const { stallTimeoutMs, toolStallTimeoutMs, degenerateOutputLimit } = this.settings;
+        return stallTimeoutMs > 0 || toolStallTimeoutMs > 0 || degenerateOutputLimit > 0;
     }
 
     /** Number of tool calls currently running. */
     get openTools(): number {
-        return this.openToolIds.size + this.anonymousTools;
+        return this.openToolIds.size + this.anonymousTools.length;
     }
 
     /**
@@ -88,11 +96,12 @@ export class AgentActivityWatchdog {
         this.lastActivityAt = this.now();
     }
 
-    recordToolStart(id?: string): void {
+    /** `scope` identifies the model message (or output line) declaring the call; its own text does not end it. */
+    recordToolStart(id?: string, scope?: string): void {
         this.recordActivity();
         this.whitespaceDeltas = 0;
-        if (id === undefined) this.anonymousTools += 1;
-        else if (!this.finishedToolIds.has(id)) this.openToolIds.add(id);
+        if (id === undefined) this.anonymousTools.push(scope);
+        else if (!this.finishedToolIds.has(id) && !this.openToolIds.has(id)) this.openToolIds.set(id, scope);
     }
 
     recordToolEnd(id?: string): void {
@@ -102,7 +111,7 @@ export class AgentActivityWatchdog {
         // A repeated end of a finished call must not close another one.
         if (id !== undefined && this.finishedToolIds.has(id)) return;
         if (id !== undefined) this.finishedToolIds.add(id);
-        if (this.anonymousTools > 0) { this.anonymousTools -= 1; return; }
+        if (this.anonymousTools.length > 0) { this.anonymousTools.shift(); return; }
         // An end without an id closes the oldest identified call.
         if (id === undefined) {
             const oldest = this.openToolIds.values().next();
@@ -110,14 +119,23 @@ export class AgentActivityWatchdog {
         }
     }
 
-    /** Empty deltas are protocol noise and neither count nor reset the degenerate run. */
-    recordTextDelta(text: string): void {
+    /**
+     * Empty deltas are protocol noise and neither count nor reset the degenerate run.
+     * `scope` identifies the model message (or output line) the text belongs to.
+     */
+    recordTextDelta(text: string, scope?: string): void {
         this.recordActivity();
         if (text.length === 0) return;
-        // Text from the model means any tool it was waiting on has returned.
-        for (const id of this.openToolIds) this.finishedToolIds.add(id);
-        this.openToolIds.clear();
-        this.anonymousTools = 0;
+        // Text from the model means any tool it was waiting on has returned;
+        // text accompanying a call in its declaring message does not.
+        const declaredHere = (toolScope: string | undefined) => scope !== undefined && toolScope === scope;
+        for (const [id, toolScope] of this.openToolIds) {
+            if (declaredHere(toolScope)) continue;
+            this.openToolIds.delete(id);
+            this.finishedToolIds.add(id);
+        }
+        const remaining = this.anonymousTools.filter(declaredHere);
+        this.anonymousTools.splice(0, this.anonymousTools.length, ...remaining);
         if (text.trim().length > 0) {
             this.whitespaceDeltas = 0;
             return;
@@ -128,9 +146,14 @@ export class AgentActivityWatchdog {
 
     /** Classifies one complete output line and records every transition in it. */
     observeLine(line: string): void {
+        this.lineCount += 1;
+        const lineScope = `line:${this.lineCount}`;
         for (const activity of classifyAgentOutputLine(line)) {
-            if (activity.kind === 'text') this.recordTextDelta(activity.text);
-            else if (activity.kind === 'tool_start') this.recordToolStart(activity.id);
+            if (activity.kind !== 'tool_end' && activity.messageId) this.currentMessageId = activity.messageId;
+            // Unidentified records scope their transitions to the line itself.
+            const scope = activity.kind === 'tool_end' ? undefined : activity.messageId ?? this.currentMessageId ?? lineScope;
+            if (activity.kind === 'text') this.recordTextDelta(activity.text, scope);
+            else if (activity.kind === 'tool_start') this.recordToolStart(activity.id, scope);
             else if (activity.kind === 'tool_end') this.recordToolEnd(activity.id);
             else this.recordActivity();
         }
@@ -139,8 +162,8 @@ export class AgentActivityWatchdog {
     /** Silence threshold currently in force, or 0 when silence never trips. */
     currentThresholdMs(): number {
         const { stallTimeoutMs, toolStallTimeoutMs } = this.settings;
-        if (stallTimeoutMs <= 0) return 0;
-        if (this.openTools === 0) return stallTimeoutMs;
+        if (this.openTools === 0) return Math.max(stallTimeoutMs, 0);
+        // Each rule stands alone: a disabled ordinary threshold leaves the tool one in force.
         return toolStallTimeoutMs > 0 ? Math.max(stallTimeoutMs, toolStallTimeoutMs) : 0;
     }
 

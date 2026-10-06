@@ -109,6 +109,19 @@ test('disabled rules (0) never trip', () => {
     assert.equal(trips.length, 0);
 });
 
+test('a positive tool threshold stays in force when ordinary inactivity is disabled', () => {
+    for (const degenerateOutputLimit of [0, 3]) {
+        const { watchdog, advance } = harness({ stallTimeoutMs: 0, toolStallTimeoutMs: 5_000, degenerateOutputLimit });
+        assert.equal(watchdog.enabled, true, 'the tool rule alone keeps the watchdog observing');
+        assert.equal(advance(60 * 60 * 1000), null, 'ordinary silence never trips');
+        watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1' }] } }));
+        assert.equal(advance(4_999), null);
+        const trip = advance(1);
+        assert.equal(trip?.rule, 'tool_inactivity');
+        assert.equal(trip?.threshold, 5_000);
+    }
+});
+
 test('each supported agent protocol reports text, tool start and tool end', () => {
     const cases: Array<[string, unknown, string]> = [
         // Claude stream-json
@@ -176,6 +189,46 @@ test('the last outstanding result restores the ordinary stall threshold', () => 
     watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a' }] } }));
     assert.equal(watchdog.openTools, 0);
     assert.equal(advance(1_000)?.rule, 'inactivity');
+});
+
+test('text after a tool call in its declaring message does not end the call', () => {
+    const { watchdog, advance } = harness();
+    watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1' }, { type: 'text', text: 'Running the tests' }] } }));
+    assert.equal(watchdog.openTools, 1);
+    assert.equal(advance(4_999), null, 'the declared call keeps the tool threshold past the ordinary one');
+    assert.equal(advance(1)?.rule, 'tool_inactivity');
+
+    // Without a message id the declaring record itself is the message.
+    const anonymous = harness();
+    anonymous.watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use' }, { type: 'text', text: 'Running' }] } }));
+    assert.equal(anonymous.watchdog.openTools, 1);
+    assert.equal(anonymous.advance(4_999), null);
+});
+
+test('text of the declaring message in later records keeps the call; the next message ends it', () => {
+    const { watchdog, advance } = harness();
+    // Claude stream-json emits a message's blocks as separate records sharing its id, with partial deltas between them.
+    watchdog.observeLine(JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm1' } } }));
+    watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1' }] } }));
+    watchdog.observeLine(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Waiting' } } }));
+    watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'Waiting' }] } }));
+    assert.equal(watchdog.openTools, 1);
+    assert.equal(advance(4_999), null);
+
+    watchdog.observeLine(JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm2' } } }));
+    watchdog.observeLine(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Done' } } }));
+    assert.equal(watchdog.openTools, 0, 'text of a later message means the call returned');
+    assert.equal(advance(1_000)?.rule, 'inactivity');
+});
+
+test('text in a later record without message ids still ends running calls', () => {
+    const { watchdog } = harness();
+    watchdog.observeLine(JSON.stringify({ role: 'assistant', content: '', tool_calls: [{ id: 'c1' }] }));
+    watchdog.observeLine(JSON.stringify({ role: 'assistant', content: 'Next step' }));
+    assert.equal(watchdog.openTools, 0);
+    watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1' }] } }));
+    watchdog.recordTextDelta('unscoped text');
+    assert.equal(watchdog.openTools, 0);
 });
 
 test('output observed before the settings are configured keeps its time and tool state', () => {

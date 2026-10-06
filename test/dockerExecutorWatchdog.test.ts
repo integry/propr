@@ -158,6 +158,16 @@ test('a disabled watchdog never stops a run', async () => {
     assert.equal(trips.length, 0);
 });
 
+test('a tool threshold alone stops a silent tool call', async () => {
+    const tool = JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1' }, { type: 'text', text: 'Running' }] } });
+    const { execution } = runAgent('process.stdout.write(process.argv[1])', {
+        watchdog: { stallTimeoutMs: 0, toolStallTimeoutMs: 400, degenerateOutputLimit: 0 },
+    }, [`${tool}\n`]);
+    const result = await execution;
+    assert.equal(result.watchdogTrip?.rule, 'tool_inactivity');
+    assert.equal(result.watchdogTrip?.threshold, 400);
+});
+
 test('plain commands do not run the watchdog by default', async () => {
     const result = await executeDockerCommand(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 400)'], { taskId: 'plain', timeout: 10_000 });
     assert.equal(result.exitCode, 0);

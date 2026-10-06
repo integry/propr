@@ -7,12 +7,14 @@
  * activity. One record can carry several of them (a message starting two tool
  * calls), so a record classifies to a list, in record order. Tool transitions
  * carry the provider's call id when it has one, so a start and its end pair up.
+ * Records of an identified model message (Claude stream-json) carry its id, so
+ * text accompanying a tool call is told apart from the model's next turn.
  */
 export type AgentOutputActivity =
-    | { kind: 'text'; text: string }
-    | { kind: 'tool_start'; id?: string }
+    | { kind: 'text'; text: string; messageId?: string }
+    | { kind: 'tool_start'; id?: string; messageId?: string }
     | { kind: 'tool_end'; id?: string }
-    | { kind: 'activity' };
+    | { kind: 'activity'; messageId?: string };
 
 const ACTIVITY: AgentOutputActivity = { kind: 'activity' };
 const TOOL_ID_KEYS = ['tool_use_id', 'tool_call_id', 'call_id', 'callID', 'tool_id', 'id'] as const;
@@ -49,14 +51,18 @@ function toolEnd(record: JsonRecord): AgentOutputActivity {
     return id ? { kind: 'tool_end', id } : { kind: 'tool_end' };
 }
 
+function withMessageId<T extends AgentOutputActivity>(activity: T, messageId: string | undefined): T {
+    return messageId ? { ...activity, messageId } : activity;
+}
+
 /** Every tool transition in a message, in order; consecutive text blocks join into one. */
-function classifyContentBlocks(content: unknown, fromUser: boolean): AgentOutputActivity[] {
+function classifyContentBlocks(content: unknown, fromUser: boolean, messageId?: string): AgentOutputActivity[] {
     if (!Array.isArray(content)) return [];
     const activities: AgentOutputActivity[] = [];
     let text: string | null = null;
     const flushText = () => {
         // Prompts and other user turns are activity, never agent text.
-        if (text !== null) activities.push(fromUser ? ACTIVITY : { kind: 'text', text });
+        if (text !== null) activities.push(fromUser ? ACTIVITY : withMessageId({ kind: 'text', text }, messageId));
         text = null;
     };
     for (const block of content) {
@@ -65,7 +71,7 @@ function classifyContentBlocks(content: unknown, fromUser: boolean): AgentOutput
         if (type === 'text' && typeof block.text === 'string') { text = (text ?? '') + block.text; continue; }
         if (!TOOL_START_TYPES.has(type) && !TOOL_END_TYPES.has(type)) continue;
         flushText();
-        activities.push(TOOL_START_TYPES.has(type) ? toolStart(block) : toolEnd(block));
+        activities.push(TOOL_START_TYPES.has(type) ? withMessageId(toolStart(block), fromUser ? undefined : messageId) : toolEnd(block));
     }
     flushText();
     return activities;
@@ -80,7 +86,8 @@ function classifyToolPart(part: JsonRecord): AgentOutputActivity {
 function classifyMessage(event: JsonRecord, type: string): AgentOutputActivity[] {
     if (!isRecord(event.message)) return [];
     const fromUser = type === 'user' || lower(event.message.role) === 'user';
-    return classifyContentBlocks(event.message.content, fromUser);
+    const messageId = typeof event.message.id === 'string' ? event.message.id : undefined;
+    return classifyContentBlocks(event.message.content, fromUser, messageId);
 }
 
 /** OpenAI-style chat messages (Vibe session transcripts): assistant text, tool calls and tool results. */
@@ -99,8 +106,10 @@ function classifyChatMessage(event: JsonRecord): AgentOutputActivity[] | null {
     return activities.length > 0 ? activities : [ACTIVITY];
 }
 
-/** Claude partial-message stream events. */
+/** Claude partial-message stream events; the deltas that follow a `message_start` belong to its message. */
 function classifyStreamEvent(event: JsonRecord): AgentOutputActivity {
+    const message = isRecord(event.event) && isRecord(event.event.message) ? event.event.message : undefined;
+    if (message && typeof message.id === 'string' && message.id) return { kind: 'activity', messageId: message.id };
     const delta = isRecord(event.event) ? event.event.delta : undefined;
     return isRecord(delta) && typeof delta.text === 'string' ? { kind: 'text', text: delta.text } : ACTIVITY;
 }
