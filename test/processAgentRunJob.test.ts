@@ -379,6 +379,21 @@ describe('processAgentRunJob', () => {
     assert.equal(h.cleanup.mock.callCount(), 1);
   });
 
+  for (const terminationReason of ['max_turns', 'timeout'] as const) {
+    test(`a successful report that stopped on ${terminationReason} fails the run instead of completing it`, async () => {
+      const h = harness({
+        execute: async () => ({ success: true, summary: 'Partial findings', terminationReason, logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 }),
+      });
+      const result = await createAgentRunProcessor(h.deps)(job);
+      assert.equal(result.status, 'failed');
+      assert.equal(h.run().state, 'failed');
+      assert.equal(h.run().report ?? null, null);
+      assert.match(h.run().failureReason ?? '', /^Agent execution stopped before completion: /);
+      assert.ok(h.stateCalls.some(call => call[0] === 'failed'));
+      assert.equal(h.cleanup.mock.callCount(), 1);
+    });
+  }
+
   test('a provider usage limit fails the run with a retry hint and is not requeued', async () => {
     const h = harness({ execute: async () => { throw new UsageLimitError('limit', NOW + 1000); } });
     const result = await createAgentRunProcessor(h.deps)(job);

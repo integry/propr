@@ -1,5 +1,5 @@
 import { extractAgentReport } from './reportPrompt.js';
-import type { AgentExecutionResult } from '@propr/core';
+import { describeAgentTermination, resolveAgentTerminationReason, type AgentExecutionResult } from '@propr/core';
 
 /** Errors of the report-run executor and the agent result they are derived from. */
 
@@ -33,6 +33,9 @@ export class AgentRunSettlementError extends Error {
 }
 
 export function reportFromResult(result: AgentExecutionResult): string {
+    // An execution the provider stopped early is not a finished report, even with text.
+    const terminationReason = resolveAgentTerminationReason(result);
+    if (terminationReason) throw new AgentRunReportError(`Agent execution stopped before completion: ${describeAgentTermination(terminationReason)}`);
     if (!result.success) throw new AgentRunReportError(failureMessage(result));
     const report = extractAgentReport(result);
     if (!report.trim()) throw new AgentRunReportError('The agent finished without a report');
