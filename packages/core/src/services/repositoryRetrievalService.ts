@@ -207,6 +207,8 @@ async function searchSemantic({ options, query, pathPrefix, offset, limit }: Sea
     caveat = `Index for branch "${indexBranch}" was built at ${row.last_indexed_hash.slice(0, 12)}, but ${target.ref} is at ${target.commit.slice(0, 12)}; recently changed files may be ranked using outdated summaries.`;
   }
 
+  // Score against the resolved commit (not the checkout) and keep every
+  // eligible file so path filtering and pagination see the full result set.
   const relevance = await findRelevantFiles(target.repoPath, query, {
     correlationId: options.correlationId,
     useSummaryScoring: usedIndex,
@@ -214,7 +216,15 @@ async function searchSemantic({ options, query, pathPrefix, offset, limit }: Sea
     modelId: agent?.config.defaultModel,
     repoName: repository,
     branch: indexBranch,
+    commit: target.commit,
+    maxResults: Number.POSITIVE_INFINITY,
   });
+
+  if (usedIndex && !relevance.usedSummaryScoring) {
+    usedIndex = false;
+    stale = true;
+    caveat = 'File summary scoring failed or matched no indexed files, so summaries did not contribute; results use keyword, path, and git-history heuristics only.';
+  }
 
   const filtered = pathPrefix
     ? relevance.files.filter(file => file.path.startsWith(pathPrefix))
@@ -258,21 +268,28 @@ interface GrepFileMatch {
 
 /**
  * Parses `git grep -n -z <commit>` output. Each record looks like
- * `<commit>:<path>\0<line>\0<text>`; `-z` keeps paths containing ':' intact.
+ * `<commit>:<path>\0<line>\0<text>\n`. The path and line number are read up
+ * to their NUL delimiters before the text is read up to its newline, so paths
+ * containing ':' or newlines stay intact.
  */
 export function parseGitGrepOutput(output: string, commit: string, maxLineMatchesPerFile: number): GrepFileMatch[] {
   const files = new Map<string, GrepFileMatch>();
   const commitPrefix = `${commit}:`;
 
-  for (const record of output.split('\n')) {
-    if (!record) continue;
-    const firstNul = record.indexOf('\0');
-    const secondNul = firstNul === -1 ? -1 : record.indexOf('\0', firstNul + 1);
-    if (secondNul === -1) continue;
+  let position = 0;
+  while (position < output.length) {
+    const firstNul = output.indexOf('\0', position);
+    const secondNul = firstNul === -1 ? -1 : output.indexOf('\0', firstNul + 1);
+    if (secondNul === -1) break;
+    const newline = output.indexOf('\n', secondNul + 1);
+    const textEnd = newline === -1 ? output.length : newline;
 
-    let filePath = record.slice(0, firstNul);
+    let filePath = output.slice(position, firstNul);
+    const lineNumber = Number.parseInt(output.slice(firstNul + 1, secondNul), 10);
+    const text = output.slice(secondNul + 1, textEnd);
+    position = textEnd + 1;
+
     if (filePath.startsWith(commitPrefix)) filePath = filePath.slice(commitPrefix.length);
-    const lineNumber = Number.parseInt(record.slice(firstNul + 1, secondNul), 10);
     if (!filePath || !Number.isFinite(lineNumber)) continue;
 
     let entry = files.get(filePath);
@@ -282,7 +299,6 @@ export function parseGitGrepOutput(output: string, commit: string, maxLineMatche
     }
     entry.matchCount += 1;
     if (entry.lineMatches.length < maxLineMatchesPerFile) {
-      const text = record.slice(secondNul + 1);
       entry.lineMatches.push({
         lineNumber,
         text: text.length > MAX_LINE_MATCH_TEXT_LENGTH ? `${text.slice(0, MAX_LINE_MATCH_TEXT_LENGTH)}…` : text,
@@ -386,16 +402,6 @@ function splitLines(content: string): string[] {
   return lines;
 }
 
-/** Longest prefix of `text` whose UTF-8 encoding fits in `maxBytes`. */
-function truncateToBytes(text: string, maxBytes: number): string {
-  const buffer = Buffer.from(text, 'utf8');
-  if (buffer.length <= maxBytes) return text;
-  let end = maxBytes;
-  // Step back over UTF-8 continuation bytes so we never split a character.
-  while (end > 0 && (buffer[end] & 0xc0) === 0x80) end--;
-  return buffer.subarray(0, end).toString('utf8');
-}
-
 async function readBlob(repoPath: string, commit: string, filePath: string, repository: string): Promise<string> {
   const git = createHooklessGit(repoPath);
   const object = `${commit}:${filePath}`;
@@ -459,13 +465,17 @@ export async function readRepositoryFileContent(options: ReadRepositoryFileOptio
     const line = lines[lineNo - 1];
     const lineBytes = Buffer.byteLength(line, 'utf8') + (selected.length > 0 ? 1 : 0);
     if (returnedBytes + lineBytes > maxBytes) {
-      truncated = true;
       if (selected.length === 0) {
-        // A single oversized line: return its leading bytes rather than nothing.
-        const partial = truncateToBytes(line, maxBytes);
-        selected.push(partial);
-        returnedBytes = Buffer.byteLength(partial, 'utf8');
+        // Returning part of the line would leave no cursor for the rest of it.
+        const hint = lineBytes <= HARD_MAX_BYTES
+          ? `; request it with maxBytes of at least ${lineBytes}`
+          : `, which exceeds the ${HARD_MAX_BYTES}-byte read limit`;
+        throw new RepositoryRetrievalError(
+          `Line ${lineNo} of "${filePath}" is ${lineBytes} bytes and does not fit in maxBytes (${maxBytes})${hint}`,
+          413,
+        );
       }
+      truncated = true;
       break;
     }
     selected.push(line);

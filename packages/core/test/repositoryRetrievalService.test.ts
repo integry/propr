@@ -20,11 +20,17 @@ const db = mock.fn((table: string) => {
   return builder;
 });
 
-type RelevanceOptions = { useSummaryScoring?: boolean; agent?: unknown; branch?: string; repoName?: string };
+type RelevanceOptions = {
+  useSummaryScoring?: boolean; agent?: unknown; branch?: string; repoName?: string; commit?: string; maxResults?: number;
+};
 let relevanceFiles: Array<{ path: string; score: number; reason: string; signals?: string[] }> = [];
+let summaryScoringSucceeds = true;
 const findRelevantFiles = mock.fn(async (_repoPath: string, _prompt: string, options: RelevanceOptions) => {
-  void options;
-  return { files: relevanceFiles, keywordsDetected: ['auth'] };
+  return {
+    files: relevanceFiles,
+    keywordsDetected: ['auth'],
+    usedSummaryScoring: Boolean(options.useSummaryScoring) && summaryScoringSucceeds,
+  };
 });
 
 let defaultAgent: unknown = { config: { alias: 'claude', defaultModel: 'test-model' } };
@@ -71,6 +77,8 @@ write('src/auth/token.ts', 'export function validateToken() {\n  return true;\n}
 write('src/util.ts', 'export const VALIDATETOKEN_FLAG = 1;\n');
 write('docs/guide.md', 'Call validateToken before login.\n');
 write('weird:name.txt', 'validateToken in a colon path\n');
+write('nl\nname.txt', 'newlineNeedle\nnewlineNeedle again\n');
+write('name.txt', 'newlineNeedle once\n');
 write('assets/logo.bin', Buffer.from([0x89, 0x50, 0x00, 0x01, 0x02]));
 write('big.txt', Array.from({ length: 1000 }, (_, i) => `line ${i + 1}`).join('\n') + '\n');
 git('add', '-A');
@@ -86,6 +94,7 @@ after(() => fs.rmSync(repoPath, { recursive: true, force: true }));
 beforeEach(() => {
   indexRow = { indexing_status: 'completed', last_indexed_at: '2026-10-01T00:00:00.000Z', last_indexed_hash: headCommit };
   relevanceFiles = [];
+  summaryScoringSucceeds = true;
   defaultAgent = { config: { alias: 'claude', defaultModel: 'test-model' } };
   dbWhereCalls.length = 0;
   findRelevantFiles.mock.resetCalls();
@@ -120,6 +129,8 @@ test('semantic search ranks files with summary scoring when the index is fresh',
   assert.equal(options.agent, defaultAgent);
   assert.equal(options.branch, 'main');
   assert.equal(options.repoName, 'owner/repo');
+  assert.equal(options.commit, headCommit);
+  assert.equal(options.maxResults, Number.POSITIVE_INFINITY);
   assert.deepEqual(dbWhereCalls[0], { full_name: 'owner/repo', branch: 'main' });
 
   assert.deepEqual(result.matches, [
@@ -168,6 +179,23 @@ test('semantic search flags an index built from an older commit as stale', async
   assert.equal(result.freshness?.usedIndex, true);
   assert.equal(result.freshness?.stale, true);
   assert.match(result.freshness?.caveat ?? '', new RegExp(firstCommit.slice(0, 12)));
+});
+
+test('semantic search scores the resolved commit of a non-checked-out ref', async () => {
+  await searchRepositoryFiles({ ...base, query: 'login', ref: firstCommit });
+  assert.equal(findRelevantFiles.mock.calls[0].arguments[2].commit, firstCommit);
+});
+
+test('semantic search reports heuristic fallback when summary scoring does not contribute', async () => {
+  summaryScoringSucceeds = false;
+  relevanceFiles = [{ path: 'src/auth/login.ts', score: 50, reason: 'path-match' }];
+
+  const result = await searchRepositoryFiles({ ...base, query: 'login' });
+
+  assert.equal(findRelevantFiles.mock.calls[0].arguments[2].useSummaryScoring, true);
+  assert.equal(result.freshness?.usedIndex, false);
+  assert.equal(result.freshness?.stale, true);
+  assert.match(result.freshness?.caveat ?? '', /summaries did not contribute/);
 });
 
 test('semantic search falls back when no default agent is configured', async () => {
@@ -272,6 +300,22 @@ test('parseGitGrepOutput groups records by file and caps line matches', () => {
   assert.deepEqual(parseGitGrepOutput('', sha, 5), []);
 });
 
+test('literal search keeps filenames containing newlines separate from similar names', async () => {
+  const result = await searchRepositoryFiles({ ...base, query: 'newlineNeedle', mode: 'literal' });
+  const byPath = Object.fromEntries(result.matches.map(m => [m.path, m.matchCount]));
+  assert.deepEqual(byPath, { 'nl\nname.txt': 2, 'name.txt': 1 });
+});
+
+test('parseGitGrepOutput keeps filenames that contain newlines intact', () => {
+  const sha = 'b'.repeat(40);
+  const output = `${sha}:dir\nname.txt\x004\x00hit\n${sha}:name.txt\x001\x00other\n`;
+
+  assert.deepEqual(parseGitGrepOutput(output, sha, 5), [
+    { path: 'dir\nname.txt', matchCount: 1, lineMatches: [{ lineNumber: 4, text: 'hit' }] },
+    { path: 'name.txt', matchCount: 1, lineMatches: [{ lineNumber: 1, text: 'other' }] },
+  ]);
+});
+
 test('search validates its input', async () => {
   await expectRetrievalError(searchRepositoryFiles({ ...base, query: '  ' }), 400, /query is required/);
   await expectRetrievalError(searchRepositoryFiles({ ...base, query: 'x', mode: 'fuzzy' as never }), 400, /Unsupported search mode/);
@@ -338,10 +382,25 @@ test('caps output at maxLines and maxBytes', async () => {
   assert.equal(byBytes.truncated, true);
   assert.equal(byBytes.nextStartLine, 3);
 
-  const oversizedLine = await readRepositoryFileContent({ ...base, path: 'big.txt', maxBytes: 4 });
-  assert.equal(oversizedLine.content, 'line');
-  assert.equal(oversizedLine.truncated, true);
-  assert.equal(oversizedLine.nextStartLine, 2);
+});
+
+test('rejects a first line that does not fit in maxBytes instead of returning part of it', async () => {
+  await expectRetrievalError(
+    readRepositoryFileContent({ ...base, path: 'big.txt', maxBytes: 4 }),
+    413,
+    /Line 1 of "big\.txt" is 6 bytes .* maxBytes of at least 6/,
+  );
+
+  // A later oversized line ends the page before it, so the cursor points at it.
+  const beforeOversized = await readRepositoryFileContent({ ...base, path: 'big.txt', startLine: 9, maxBytes: 7 });
+  assert.equal(beforeOversized.content, 'line 9');
+  assert.equal(beforeOversized.truncated, true);
+  assert.equal(beforeOversized.nextStartLine, 10);
+  await expectRetrievalError(
+    readRepositoryFileContent({ ...base, path: 'big.txt', startLine: 10, maxBytes: 6 }),
+    413,
+    /Line 10 .* 7 bytes/,
+  );
 });
 
 test('returns empty content when startLine is past the end of the file', async () => {

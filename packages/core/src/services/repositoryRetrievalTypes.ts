@@ -103,6 +103,7 @@ export interface ReadRepositoryFileOptions extends RepositoryTargetOptions {
   /** 1-based, inclusive. Defaults to the last line. */
   endLine?: number;
   maxLines?: number;
+  /** Lines are never split; a first line larger than this is rejected with a 413. */
   maxBytes?: number;
 }
 

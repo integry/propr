@@ -247,7 +247,11 @@ export async function mineGitHistoryWithLLM(
   }
 }
 
-export async function mineGitHistory(repoPath: string, keywords: string[]): Promise<FileScore[]> {
+/**
+ * Scores files by how often they appear in commits whose messages mention a
+ * keyword. With a revision, only that commit's history is walked.
+ */
+export async function mineGitHistory(repoPath: string, keywords: string[], revision?: string): Promise<FileScore[]> {
   if (keywords.length === 0) {
     return [];
   }
@@ -264,7 +268,8 @@ export async function mineGitHistory(repoPath: string, keywords: string[]): Prom
         '--pretty=format:---COMMIT_BOUNDARY---',
         `--grep=${keyword}`,
         '-i',
-        '-n', String(MAX_COMMITS_PER_KEYWORD)
+        '-n', String(MAX_COMMITS_PER_KEYWORD),
+        ...(revision ? [revision, '--'] : [])
       ]);
 
       if (!logs.trim()) {
