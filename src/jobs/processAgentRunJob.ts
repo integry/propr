@@ -3,6 +3,7 @@ import type { Logger } from 'pino';
 import type { AgentRunState } from '@propr/shared';
 import {
     AgentRegistry,
+    enqueueAgentRunActionOrFail,
     getAgentRunById,
     getAuthenticatedOctokit,
     getStateManager,
@@ -71,6 +72,11 @@ export interface AgentRunProcessorDeps {
     /** Runs the agent inside the instance spend cap (`default_max_cost_usd`). */
     withCostCap: <T>(target: { taskId: string; repoOwner: string; repoName: string; modelName?: string; logger: Logger }, operation: () => Promise<T>) => Promise<T>;
     advanceAfterReport: (run: StoredAgentRun) => Promise<StoredAgentRun | null>;
+    /**
+     * Enqueues the action phase again for a run an interrupted attempt moved to
+     * `acting`; the deterministic job id makes a repeated enqueue a no-op.
+     */
+    resumeActing: (run: StoredAgentRun) => Promise<StoredAgentRun>;
     /** Run-scoped ProPR MCP grant for the agent container, revoked when the phase ends. */
     mcpGrants: { request: typeof requestAgentRunMcpGrant; revoke: typeof revokeAgentRunMcpGrant };
 }
@@ -111,6 +117,7 @@ export const defaultAgentRunProcessorDeps: AgentRunProcessorDeps = {
         { ...defaultRunCostCapDeps, recordExceeded: (capTarget, snapshot) => writeTimelineEvent(capTarget, snapshot) },
     ),
     advanceAfterReport: run => advanceAfterReport(run),
+    resumeActing: run => enqueueAgentRunActionOrFail(run),
     mcpGrants: { request: requestAgentRunMcpGrant, revoke: revokeAgentRunMcpGrant },
 };
 
@@ -141,6 +148,8 @@ export function agentReportRecap(report: string): string | undefined {
 }
 
 const UNREADABLE_DEFINITION_REASON = 'The agent definition snapshot is unreadable';
+/** States in which the report phase is over and its task is complete. */
+const REPORTED_RUN_STATES = new Set<AgentRunState>(['report_ready', 'awaiting_approval', 'acting', 'completed']);
 const TERMINAL_TASK_STATES = new Set<string>([TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED]);
 
 export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps> = {}) {
@@ -293,10 +302,13 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
     async function finalizeReportedRun(
         { run, taskId, stateManager, log }: { run: StoredAgentRun; taskId: string; stateManager: AgentRunStateManager; log: Logger },
     ): Promise<StoredAgentRun | null> {
-        let settled = run.state === 'report_ready' ? await deps.advanceAfterReport(run) : run;
+        let settled = run.state === 'report_ready' ? await deps.advanceAfterReport(run)
+            // Moved to acting by an interrupted attempt that may not have enqueued the action phase.
+            : run.state === 'acting' && run.actionTaskId === null ? await deps.resumeActing(run)
+            : run;
         // Another writer moved the run on; follow what it stored.
         if (!settled) settled = await deps.getRun(run.id) ?? null;
-        if (!settled || (settled.state !== 'report_ready' && settled.state !== 'completed')) {
+        if (!settled || !REPORTED_RUN_STATES.has(settled.state)) {
             await settleTaskWithRun({ runId: run.id, taskId, stateManager, log });
             return settled;
         }
@@ -326,7 +338,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
 
     function reportedRunResult(settled: StoredAgentRun | null, ids: { runId: string; taskId: string; correlationId: string }): JobResult {
         const state = settled?.state ?? null;
-        if (state === 'report_ready' || state === 'completed') return { status: 'complete', ...ids, state };
+        if (state && REPORTED_RUN_STATES.has(state)) return { status: 'complete', ...ids, state };
         return { status: state === 'failed' ? 'failed' : state === 'cancelled' ? 'cancelled' : 'skipped', ...ids };
     }
 
@@ -336,7 +348,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         { runId, correlationId, log }: { runId: string; correlationId: string; log: Logger },
     ): Promise<JobResult> {
         if (run?.state === 'running') return recoverAbandonedRun(run, correlationId, log);
-        if (run?.report != null && (run.state === 'report_ready' || run.state === 'completed')) {
+        if (run?.report != null && REPORTED_RUN_STATES.has(run.state)) {
             return recoverReportedRun(run, correlationId, log);
         }
         if (run?.state === 'failed' || run?.state === 'cancelled') return reconcileEndedRun(run, correlationId, log);
@@ -550,17 +562,3 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
 }
 
 export const processAgentRunJob = createAgentRunProcessor();
-
-/**
- * Placeholder for the acting phase (issue 10). The run is failed explicitly so
- * it does not stay `acting` forever.
- */
-export async function processAgentActionJob(job: Job<AgentRunJobData>): Promise<JobResult> {
-    const message = `Not implemented: agent run ${job.data.phase} phase`;
-    try {
-        await transitionAgentRun(job.data.runId, ['acting'], 'failed', { failureReason: message });
-    } catch (error) {
-        logger.error({ runId: job.data.runId, err: error }, 'Could not mark agent run failed');
-    }
-    throw new Error(message);
-}

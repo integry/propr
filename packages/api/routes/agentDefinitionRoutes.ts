@@ -9,6 +9,7 @@ import {
   changeAgentDefinitionAttachments,
   createAgentDefinition,
   deleteAgentDefinitionUnlessRunInStates,
+  enqueueAgentRunActionOrFail,
   getAgentDefinition,
   getAgentRun,
   listAgentDefinitions,
@@ -28,6 +29,7 @@ import {
   type TriggerAgentRunResult,
 } from '@propr/core';
 import {
+  AGENT_ACTION_OPERATOR_NOTE_MAX_CHARS,
   AGENT_DEFINITION_CONTRACT,
   DEFAULT_AGENT_PREVIOUS_REPORTS,
   MAX_AGENT_ATTACHMENTS,
@@ -80,6 +82,8 @@ export interface AgentDefinitionRouteServices {
   processUpload?: (file: MulterFile, definitionId: string) => Promise<Attachment>;
   removeTemporaryUploads?: (files: readonly MulterFile[]) => Promise<void>;
   removeAttachmentFiles?: (definitionId: string, attachments: readonly Attachment[] | 'all') => Promise<void>;
+  /** Enqueues the acting step of an approved run, failing the run when that is impossible. */
+  startActing?: (run: StoredAgentRun, operatorNote: string | null) => Promise<StoredAgentRun>;
   now?: () => number;
 }
 
@@ -234,6 +238,14 @@ function requestIdempotencyKey(req: Request): string | null {
   return key;
 }
 
+function operatorNote(body: Record<string, unknown>): string | null {
+  if (body.note === undefined || body.note === null) return null;
+  if (typeof body.note !== 'string' || body.note.length > AGENT_ACTION_OPERATOR_NOTE_MAX_CHARS) {
+    throw new RouteError(400, `note must be a string of at most ${AGENT_ACTION_OPERATOR_NOTE_MAX_CHARS} characters`);
+  }
+  return body.note.trim() || null;
+}
+
 function requestBody(req: Request): Record<string, unknown> {
   const body: unknown = req.body ?? {};
   if (typeof body !== 'object' || Array.isArray(body)) throw new RouteError(400, 'Request body must be a JSON object');
@@ -253,6 +265,8 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
   const processUpload = services.processUpload ?? defaultProcessUpload;
   const removeTemporaryUploads = services.removeTemporaryUploads ?? removeTemporaryGoalUploads;
   const removeAttachmentFiles = services.removeAttachmentFiles ?? defaultRemoveAttachmentFiles;
+  const startActing = services.startActing
+    ?? ((run: StoredAgentRun, note: string | null) => enqueueAgentRunActionOrFail(run, { ...storeDeps, operatorNote: note }));
 
   /**
    * The user's GitHub grant must be able to read every repository, exactly
@@ -520,9 +534,35 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
     res.json({ run: publicAgentRun(cancelled, { includeReport: true }) });
   });
 
+  /**
+   * Decides a preview run with a compare-and-set from `awaiting_approval`, so
+   * a double-clicked Approve moves the run (and enqueues its acting step) once.
+   */
+  async function decideRun(req: Request, owner: string, to: 'acting' | 'rejected'): Promise<StoredAgentRun> {
+    const run = await requireRun(req, owner);
+    const notAwaiting = (state: AgentRunState) => new RouteError(409, `Agent run is ${state} and is not awaiting approval`, 'AGENT_RUN_NOT_AWAITING_APPROVAL');
+    if (run.state !== 'awaiting_approval') throw notAwaiting(run.state);
+    const decided = await transitionAgentRun(run.id, ['awaiting_approval'], to, to === 'acting' ? { approvedBy: owner } : {}, storeDeps);
+    if (!decided) throw notAwaiting((await requireRun(req, owner)).state);
+    return decided;
+  }
+
+  const approveRun = handler('Failed to approve agent run', async (req, res) => {
+    const owner = requireOwner(req);
+    const note = operatorNote(requestBody(req));
+    const acting = await decideRun(req, owner, 'acting');
+    const run = await startActing(acting, note);
+    res.json({ run: publicAgentRun(run, { includeReport: true }) });
+  });
+
+  const rejectRun = handler('Failed to reject agent run', async (req, res) => {
+    const rejected = await decideRun(req, requireOwner(req), 'rejected');
+    res.json({ run: publicAgentRun(rejected, { includeReport: true }) });
+  });
+
   return {
     list, contract, create, get, update, remove,
     uploadAttachments, deleteAttachment,
-    triggerRun, listRuns, getRun, cancelRun,
+    triggerRun, listRuns, getRun, cancelRun, approveRun, rejectRun,
   };
 }

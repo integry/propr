@@ -79,6 +79,9 @@ interface Harness {
   buildPrompt: ReturnType<typeof mock.fn>;
   prepareWorkspace: ReturnType<typeof mock.fn>;
   cleanup: ReturnType<typeof mock.fn>;
+  /** Runs whose action phase was enqueued, and owners told about a preview report. */
+  enqueuedActions: string[];
+  notified: string[];
 }
 
 /** In-memory run store honouring the compare-and-set semantics of `transitionAgentRun`. */
@@ -126,10 +129,14 @@ function harness(options: {
     attachments: [], cleanup,
   })));
 
+  const enqueuedActions: string[] = [];
+  const notified: string[] = [];
+  const startActing = async (acting: StoredAgentRun) => { enqueuedActions.push(acting.id); return acting; };
+
   return {
     run: () => current,
     taskState: () => task,
-    transitions, stateCalls, executeTask, listPreviousReports, buildPrompt, prepareWorkspace, cleanup,
+    transitions, stateCalls, executeTask, listPreviousReports, buildPrompt, prepareWorkspace, cleanup, enqueuedActions, notified,
     deps: {
       getRun: async () => current,
       transitionRun,
@@ -148,7 +155,12 @@ function harness(options: {
       resolveAgent: async () => ({ agent: { executeTask } as never, alias: 'claude', model: 'opus' }),
       buildPrompt: buildPrompt as unknown as AgentRunProcessorDeps['buildPrompt'],
       withCostCap: async (_target, operation) => operation(),
-      advanceAfterReport: run => advanceAfterReport(run, { transitionRun }),
+      advanceAfterReport: run => advanceAfterReport(run, {
+        transitionRun,
+        startActing,
+        notifyAwaitingApproval: async waiting => { notified.push(waiting.ownerId); },
+      }),
+      resumeActing: startActing,
     },
   };
 }
@@ -582,11 +594,38 @@ describe('processAgentRunJob', () => {
     assert.equal(h.executeTask.mock.callCount(), 1);
   });
 
-  test('preview runs keep their report in report_ready until the acting step exists', async () => {
+  test('a preview run waits for approval with its report, its owner is notified and its report task completes', async () => {
     const h = harness({ run: storedRun({ autonomyMode: 'preview' }) });
-    await createAgentRunProcessor(h.deps)(job);
-    assert.equal(h.run().state, 'report_ready');
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.equal(h.run().state, 'awaiting_approval');
     assert.ok(h.run().report);
+    assert.deepEqual(h.notified, ['user-1']);
+    assert.deepEqual(h.enqueuedActions, []);
+    assert.equal(h.taskState(), 'completed');
+  });
+
+  test('an auto run moves straight to acting and enqueues its action phase', async () => {
+    const h = harness({ run: storedRun({ autonomyMode: 'auto' }) });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.equal(h.run().state, 'acting');
+    assert.deepEqual(h.enqueuedActions, ['run-1']);
+    assert.deepEqual(h.notified, []);
+    assert.equal(h.taskState(), 'completed');
+  });
+
+  test('a redelivered report job of an acting run whose action was never claimed enqueues the action again', async () => {
+    const taskId = agentRunReportTaskId('run-1');
+    const h = harness({
+      run: storedRun({ state: 'acting', autonomyMode: 'auto', reportTaskId: taskId, report: 'Report' }),
+      task: 'post_processing',
+    });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(h.enqueuedActions, ['run-1']);
+    assert.equal(h.transitions.length, 0);
+    assert.equal(h.taskState(), 'completed');
   });
 
   test('a redelivery after the worker stopped once the report was stored completes the dry run and its task', async () => {
@@ -627,16 +666,17 @@ describe('processAgentRunJob', () => {
     assert.equal(h.executeTask.mock.callCount(), 0);
   });
 
-  test('a redelivered preview run keeps report_ready and completes its task', async () => {
+  test('a redelivered preview run that already awaits approval only completes its task', async () => {
     const taskId = agentRunReportTaskId('run-1');
     const h = harness({
-      run: storedRun({ state: 'report_ready', autonomyMode: 'preview', reportTaskId: taskId, report: 'Report' }),
+      run: storedRun({ state: 'awaiting_approval', autonomyMode: 'preview', reportTaskId: taskId, report: 'Report' }),
       task: 'post_processing',
     });
     const result = await createAgentRunProcessor(h.deps)(job);
     assert.equal(result.status, 'complete');
-    assert.equal(h.run().state, 'report_ready');
+    assert.equal(h.run().state, 'awaiting_approval');
     assert.equal(h.transitions.length, 0);
+    assert.deepEqual(h.notified, []);
     assert.deepEqual(h.stateCalls.map(call => [call[0], call[1]]), [['completed', taskId]]);
   });
 

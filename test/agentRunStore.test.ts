@@ -6,6 +6,7 @@ import { AGENT_REPORT_MAX_CHARS, AGENT_RUN_STATES } from '@propr/shared';
 import { createAgentDefinition, type StoredAgentDefinition } from '../packages/core/src/services/agents/agentDefinitionStore.ts';
 import {
   AGENT_RUN_TRANSITIONS,
+  claimAgentRunAction,
   createAgentRun,
   getAgentRun,
   getAgentRunById,
@@ -194,6 +195,19 @@ describe('agentRunStore', () => {
     assert.equal(created.run.state, 'queued');
     assert.equal(created.run.finishedAt, null);
     assert.equal((await getAgentRunById(created.run.id, deps()))?.state, 'cancelled');
+  });
+
+  test('claimAgentRunAction claims an acting run once and only while it is acting', async () => {
+    const reported = await runWithReport('Report');
+    assert.equal(await claimAgentRunAction(reported.id, 'action-task', deps()), null);
+    await transitionAgentRun(reported.id, ['report_ready'], 'awaiting_approval', {}, deps());
+    await transitionAgentRun(reported.id, ['awaiting_approval'], 'acting', { approvedBy: 'alice' }, deps());
+    const claimed = await claimAgentRunAction(reported.id, 'action-task', deps());
+    assert.equal(claimed?.actionTaskId, 'action-task');
+    assert.equal(claimed?.state, 'acting');
+    assert.equal(claimed?.approvedBy, 'alice');
+    assert.equal(await claimAgentRunAction(reported.id, 'other-task', deps()), null);
+    assert.equal((await getAgentRunById(reported.id, deps()))?.actionTaskId, 'action-task');
   });
 
   test('rejects illegal transition pairs as programming errors', async () => {

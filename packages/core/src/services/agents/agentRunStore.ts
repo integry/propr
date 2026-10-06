@@ -301,6 +301,23 @@ export async function transitionAgentRun(
   return updated ? rowToAgentRun(updated) : null;
 }
 
+/**
+ * Claims an `acting` run for one action-phase execution by recording its task.
+ * The acting state has no separate "started" state, so `action_task_id` is
+ * the claim: only the first delivery for a run gets the row back, a later one
+ * gets null.
+ */
+export async function claimAgentRunAction(
+  id: string,
+  actionTaskId: string,
+  { database = db, now = Date.now }: AgentRunStoreDependencies = {},
+): Promise<StoredAgentRun | null> {
+  const [updated] = await database(TABLE).where({ id, state: 'acting' }).whereNull('action_task_id')
+    .update({ action_task_id: actionTaskId, updated_at: now() })
+    .returning('*') as AgentRunRow[];
+  return updated ? rowToAgentRun(updated) : null;
+}
+
 /** Owner-scoped read; another owner's run is indistinguishable from a missing one. */
 export async function getAgentRun(
   id: string,

@@ -11,6 +11,7 @@ import logger from '../../utils/logger.js';
 import type { StoredAgentDefinition } from './agentDefinitionStore.js';
 import {
   createAgentRun,
+  getAgentRunById,
   getAgentRunByIdempotencyKey,
   transitionAgentRun,
   type StoredAgentRun,
@@ -117,6 +118,7 @@ export async function enqueueAgentRunPhase(
   run: Pick<StoredAgentRun, 'id' | 'definitionId' | 'ownerId'>,
   phase: AgentRunPhase,
   { enqueue = defaultEnqueue }: Pick<AgentRunTriggerDependencies, 'enqueue'> = {},
+  { operatorNote }: { operatorNote?: string | null } = {},
 ): Promise<string> {
   const jobId = agentRunJobId(run.id, phase);
   const data: AgentRunJobData = {
@@ -125,9 +127,37 @@ export async function enqueueAgentRunPhase(
     ownerId: run.ownerId,
     phase,
     correlationId: randomUUID(),
+    ...(phase === 'action' && operatorNote ? { operatorNote } : {}),
   };
   await enqueue(AGENT_RUN_JOB_NAMES[phase], data, { ...AGENT_RUN_JOB_OPTIONS, jobId });
   return jobId;
+}
+
+export interface EnqueueAgentRunActionDependencies extends Pick<AgentRunTriggerDependencies, 'database' | 'now' | 'enqueue'> {
+  transitionRun?: typeof transitionAgentRun;
+  /** Guidance from the approver, passed to the acting prompt. */
+  operatorNote?: string | null;
+}
+
+/**
+ * Enqueues the acting step of a run that just moved to `acting` (auto mode or
+ * an approval). When the job cannot be enqueued nothing would ever pick the
+ * run up, so it is failed with the reason instead. Returns the run as stored.
+ */
+export async function enqueueAgentRunActionOrFail(
+  run: StoredAgentRun,
+  { database, now, enqueue, transitionRun = transitionAgentRun, operatorNote }: EnqueueAgentRunActionDependencies = {},
+): Promise<StoredAgentRun> {
+  try {
+    await enqueueAgentRunPhase(run, 'action', { enqueue }, { operatorNote });
+    return run;
+  } catch (error) {
+    const reason = `Could not start the acting step: ${error instanceof Error ? error.message : String(error)}`;
+    logger.error({ runId: run.id, err: error }, 'Failed to enqueue agent run acting step');
+    const failed = await transitionRun(run.id, ['acting'], 'failed', { failureReason: reason }, { database, now });
+    // Another writer moved the run first (for example a cancel); report what it stored.
+    return failed ?? await getAgentRunById(run.id, { database }) ?? run;
+  }
 }
 
 function directAgentSupportsModel(agent: AgentConfig, modelName: string | null): boolean {
