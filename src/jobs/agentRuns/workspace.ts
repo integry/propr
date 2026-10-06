@@ -93,8 +93,7 @@ export async function copyAgentInputFiles(
     workspacePath: string,
     definitionId: string,
     attachments: readonly Attachment[],
-    log: Pick<Logger, 'warn'> = defaultLogger,
-    inputRoot: string = AGENT_DEFINITION_INPUT_ROOT,
+    { log = defaultLogger, inputRoot = AGENT_DEFINITION_INPUT_ROOT }: { log?: Pick<Logger, 'warn'>; inputRoot?: string } = {},
 ): Promise<AgentReportPromptAttachment[]> {
     if (attachments.length === 0) return [];
     const sourceDir = path.join(inputRoot, path.basename(definitionId));
@@ -161,7 +160,7 @@ async function prepareRepositoryWorkspace(input: PrepareAgentRunWorkspaceInput, 
             await cloneContextRepository(repository, path.join(worktree.worktreePath, relative), githubToken);
             contextRepositories.push(relative);
         }
-        const attachments = await copyAgentInputFiles(worktree.worktreePath, definition.id, definition.attachments, log);
+        const attachments = await copyAgentInputFiles(worktree.worktreePath, definition.id, definition.attachments, { log });
         await setupWorktreePermissions(worktree.worktreePath, worktree.branchName, 'agent-run');
         return {
             worktreePath: worktree.worktreePath,
@@ -192,7 +191,7 @@ async function prepareScratchWorkspace(input: PrepareAgentRunWorkspaceInput, log
         await fs.remove(worktreePath);
         await fs.ensureDir(worktreePath);
         await createHooklessGit(worktreePath).init(['--initial-branch', branchName]);
-        const attachments = await copyAgentInputFiles(worktreePath, definition.id, definition.attachments, log);
+        const attachments = await copyAgentInputFiles(worktreePath, definition.id, definition.attachments, { log });
         await setupWorktreePermissions(worktreePath, branchName, 'agent-run');
         return {
             worktreePath,

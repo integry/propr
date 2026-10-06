@@ -143,6 +143,13 @@ function failureMessage(result: AgentExecutionResult): string {
 
 class AgentRunReportError extends Error {}
 
+function reportFromResult(result: AgentExecutionResult): string {
+    if (!result.success) throw new AgentRunReportError(failureMessage(result));
+    const report = extractAgentReport(result);
+    if (!report.trim()) throw new AgentRunReportError('The agent finished without a report');
+    return report;
+}
+
 export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps> = {}) {
     const deps: AgentRunProcessorDeps = { ...defaultAgentRunProcessorDeps, ...overrides };
 
@@ -153,6 +160,32 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         } catch (error) {
             log.error({ runId, err: error }, 'Could not mark agent run failed');
         }
+    }
+
+    /** Fails a claimed run and its task; returns the stored failure reason. */
+    async function failRunningRun(
+        { runId, taskId, stateManager, log }: { runId: string; taskId: string; stateManager: AgentRunStateManager; log: Logger },
+        error: unknown,
+    ): Promise<string> {
+        const usageLimit = error instanceof UsageLimitError;
+        const reason = usageLimit ? AGENT_RUN_USAGE_LIMIT_REASON : (error as Error).message;
+        log[error instanceof AgentRunReportError ? 'warn' : 'error']({ runId, taskId, err: error }, 'Agent run report failed');
+        await failRun(runId, ['running', 'report_ready'], reason, log);
+        try {
+            await stateManager.markTaskFailed(taskId, usageLimit ? new Error(reason) : error as Error);
+        } catch (stateError) {
+            log.error({ runId, taskId, err: stateError }, 'Could not mark agent run task failed');
+        }
+        return reason;
+    }
+
+    async function previousReportsFor(definition: StoredAgentDefinition, run: StoredAgentRun) {
+        if (!definition.includePreviousReports) return [];
+        return deps.listPreviousReports(definition.id, {
+            limit: definition.previousReportsLimit,
+            beforeCreatedAt: run.createdAt,
+            excludeRunId: run.id,
+        });
     }
 
     return async function processAgentRun(job: Job<AgentRunJobData>): Promise<JobResult> {
@@ -197,13 +230,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             workspace = await deps.prepareWorkspace({ runId, definition, githubToken: token, octokit, logger: log });
 
             // 6. Previous reports and the prompt.
-            const previousReports = definition.includePreviousReports
-                ? await deps.listPreviousReports(definition.id, {
-                    limit: definition.previousReportsLimit,
-                    beforeCreatedAt: run.createdAt,
-                    excludeRunId: runId,
-                })
-                : [];
+            const previousReports = await previousReportsFor(definition, run);
             const prompt = deps.buildPrompt({
                 definition,
                 run: { id: run.id, trigger: run.trigger, triggerSource: run.triggerSource, createdAt: run.createdAt },
@@ -233,9 +260,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             );
 
             // 8. The report is the agent's final message.
-            if (!result.success) throw new AgentRunReportError(failureMessage(result));
-            const report = extractAgentReport(result);
-            if (!report.trim()) throw new AgentRunReportError('The agent finished without a report');
+            const report = reportFromResult(result);
 
             // 9. Store the report, then advance by autonomy mode.
             await stateManager.updateTaskState(taskId, TaskStates.POST_PROCESSING, { reason: 'Storing agent report' });
@@ -251,15 +276,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             log.info({ runId, taskId, agentAlias: alias, model, state: advanced?.state ?? reported.state }, 'Agent run report stored');
             return { status: 'complete', runId, taskId, state: advanced?.state ?? reported.state, correlationId };
         } catch (error) {
-            const usageLimit = error instanceof UsageLimitError;
-            const reason = usageLimit ? AGENT_RUN_USAGE_LIMIT_REASON : (error as Error).message;
-            log[error instanceof AgentRunReportError ? 'warn' : 'error']({ runId, taskId, err: error }, 'Agent run report failed');
-            await failRun(runId, ['running', 'report_ready'], reason, log);
-            try {
-                await stateManager.markTaskFailed(taskId, usageLimit ? new Error(reason) : error as Error);
-            } catch (stateError) {
-                log.error({ runId, taskId, err: stateError }, 'Could not mark agent run task failed');
-            }
+            const reason = await failRunningRun({ runId, taskId, stateManager, log }, error);
             return { status: 'failed', runId, taskId, reason, correlationId };
         } finally {
             // 11. Nothing was committed or pushed; just remove the workspace.

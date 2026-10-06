@@ -282,7 +282,7 @@ describe('agent run workspace', () => {
 
         const copied = await copyAgentInputFiles(workspace.worktreePath, 'def-1', [{
           id: 'a1', originalName: '../notes.txt', storedPath, mimeType: 'text/plain', size: 5, tokenEstimate: 1, type: 'text',
-        }], undefined, inputs);
+        }], { inputRoot: inputs });
         assert.deepEqual(copied, [{ originalName: '../notes.txt', workspacePath: path.join(AGENT_INPUTS_DIR, 'notes.txt') }]);
         assert.equal(await fs.readFile(path.join(workspace.worktreePath, AGENT_INPUTS_DIR, 'notes.txt'), 'utf8'), 'notes');
       } finally {
@@ -303,7 +303,7 @@ describe('agent run workspace', () => {
       const warn = mock.fn();
       const copied = await copyAgentInputFiles(target, 'def-1', [{
         id: 'a1', originalName: 'secret.txt', storedPath: outside, mimeType: 'text/plain', size: 6, tokenEstimate: 1, type: 'text',
-      }], { warn } as never, inputs);
+      }], { log: { warn } as never, inputRoot: inputs });
       assert.deepEqual(copied, []);
       assert.equal(warn.mock.callCount(), 1);
     } finally {
