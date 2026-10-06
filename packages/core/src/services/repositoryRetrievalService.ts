@@ -12,12 +12,11 @@ import fs from 'fs-extra';
 import path from 'path';
 import { db } from '../db/connection.js';
 import { getAgentRegistry } from '../agents/AgentRegistry.js';
-import { getGitHubInstallationToken } from '../auth/githubAuth.js';
 import { createHooklessGit } from '../git/hooklessGit.js';
-import { ensureRepoCloned } from '../git/repoManager.js';
 import { resolveRepositoryClonePath } from '../git/repositoryPaths.js';
 import { findRelevantFiles, type RelevantFile } from './relevanceService.js';
 import logger from '../utils/logger.js';
+import { cloneOrRefresh, fetchRequestedRef } from './repositoryManagedClone.js';
 import {
   RepositoryRetrievalError,
   type ReadRepositoryFileOptions,
@@ -60,26 +59,6 @@ export { assertSafeRepositoryPath } from './repositoryRetrievalValidation.js';
 
 // --- Repository and ref resolution ---
 
-async function resolveCloneToken(authToken?: string): Promise<string> {
-  try {
-    return await getGitHubInstallationToken();
-  } catch (error) {
-    if (authToken) return authToken;
-    throw new RepositoryRetrievalError(`No GitHub credentials available to clone repository: ${(error as Error).message}`, 503);
-  }
-}
-
-async function cloneOrRefresh(owner: string, repoName: string, options: RepositoryTargetOptions): Promise<string> {
-  const authToken = await resolveCloneToken(options.authToken);
-  return ensureRepoCloned({
-    repoUrl: `https://github.com/${owner}/${repoName}.git`,
-    owner,
-    repoName,
-    authToken,
-    baseBranch: options.branch,
-  });
-}
-
 interface ResolvedTarget {
   repoPath: string;
   ref: string;
@@ -121,9 +100,15 @@ async function resolveTarget(options: RepositoryTargetOptions): Promise<Resolved
     if (commit) return { repoPath: localPath, ref, commit };
   }
 
-  // Missing clone or unknown ref: clone/fetch, then retry once.
-  const repoPath = await cloneOrRefresh(owner, repoName, options);
-  const commit = await resolveCommit(repoPath, ref);
+  // Missing clone or unknown ref: clone/fetch, then retry. The refresh only
+  // covers the clone's configured refspec (a single branch for shallow
+  // clones), so fetch the requested ref explicitly before giving up.
+  const { repoPath, authToken } = await cloneOrRefresh(owner, repoName, options);
+  let commit = await resolveCommit(repoPath, ref);
+  if (!commit) {
+    await fetchRequestedRef(repoPath, ref, authToken);
+    commit = await resolveCommit(repoPath, ref);
+  }
   if (!commit) throw new RepositoryRetrievalError(`Ref "${ref}" not found in ${options.repository}`, 404);
   return { repoPath, ref, commit };
 }
