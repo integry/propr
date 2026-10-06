@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { after, beforeEach, describe, test } from 'node:test';
 import type { Request, Response } from 'express';
 import knex from 'knex';
-import { TASK_STEER_MAX_LENGTH, TASK_STEER_MAX_PER_RUN, taskSteeringRedisKey, type TaskSteeringCapability } from '@propr/shared';
+import { AGENT_TASK_STEERING, TASK_STEER_MAX_LENGTH, TASK_STEER_MAX_PER_RUN, taskSteeringRedisKey, type TaskSteeringCapability } from '@propr/shared';
 
 const originalNodeEnv = process.env.NODE_ENV;
 const originalDbFilename = process.env.DB_FILENAME;
@@ -78,7 +78,7 @@ describe('task steering capability matrix', () => {
     assert.match(String(result.json.error), /not running/);
   });
 
-  for (const agentType of ['opencode', 'vibe', 'codex', 'antigravity']) {
+  for (const agentType of ['opencode', 'vibe']) {
     test(`rejects a running ${agentType} task whose agent declares no steering`, async () => {
       announce('none', agentType);
       const result = await call('steer', { body: { message: 'Use the helper' } });
@@ -87,6 +87,25 @@ describe('task steering capability matrix', () => {
       assert.equal(result.json.capability, 'none');
       assert.equal(result.json.agentType, agentType);
       assert.equal(await database('task_steers').count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+    });
+  }
+
+  for (const [agentType, capability] of [['claude', 'live'], ['codex', 'live'], ['antigravity', 'next-step']] as const) {
+    test(`accepts a steer for a running ${agentType} task, delivered ${capability}`, async () => {
+      announce(AGENT_TASK_STEERING[agentType], agentType);
+      const result = await call('steer', { body: { message: 'Use the helper' } });
+      assert.equal(result.status, 202);
+      assert.equal(result.json.capability, capability);
+      assert.equal(result.json.agentType, agentType);
+      assert.equal(await database('task_steers').count({ count: '*' }).first().then(row => Number(row?.count)), 1);
+    });
+
+    test(`reports the ${capability} capability of a ${agentType} task that is not running`, async () => {
+      redis.set('worker:state:task-1', JSON.stringify({ issueRef: { agentAlias: `${agentType}-default`, agentType } }));
+      const result = await call('steer', { body: { message: 'Use the helper' } });
+      assert.equal(result.status, 409);
+      assert.equal(result.json.code, 'TASK_NOT_RUNNING');
+      assert.equal(result.json.capability, capability);
     });
   }
 

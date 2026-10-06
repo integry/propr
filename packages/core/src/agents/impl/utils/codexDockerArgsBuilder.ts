@@ -225,3 +225,24 @@ export function buildCodexAppServerDockerArgs(config: AgentConfig, params: Codex
     if (codexIndex < 0) throw new Error('Codex executable was not present in App Server container arguments');
     return [...args.slice(0, codexIndex), 'codex', 'app-server'];
 }
+
+/**
+ * An ordinary task container serving Codex App Server instead of `codex exec`,
+ * so operator input can steer its turn. It keeps the task's configuration
+ * overrides (transport, reasoning effort, single-agent contract) as root
+ * `--config` flags; the model is chosen when the thread starts.
+ */
+export function buildCodexAppServerTaskDockerArgs(config: AgentConfig, params: CodexDockerArgsParams): string[] {
+    const args = buildCodexDockerArgs(config, {
+        ...params,
+        modelName: undefined,
+        jsonOutput: false,
+        executionMode: 'task',
+        resumeSessionId: undefined,
+    });
+    const codexIndex = args.lastIndexOf('codex');
+    if (codexIndex < 0) throw new Error('Codex executable was not present in App Server container arguments');
+    const cli = args.slice(codexIndex);
+    const overrides = cli.flatMap((arg, index) => arg === '--config' && index + 1 < cli.length ? ['--config', cli[index + 1]] : []);
+    return [...args.slice(0, codexIndex), 'codex', ...overrides, 'app-server'];
+}

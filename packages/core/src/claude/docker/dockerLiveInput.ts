@@ -39,17 +39,48 @@ export interface LiveInputOptions {
 export interface LiveInputChannel {
     /** Inspect one complete stdout record: the agent's own output, which proves it is running. */
     observeLine(line: string): void;
+    /**
+     * The run's output records for a raw stdout chunk: provider protocols
+     * whose stdout is not that record stream translate it here; others
+     * return it unchanged. `flush` passes the final chunk.
+     */
+    translateOutput(chunk: string, flush: boolean): string;
+    /**
+     * Whether the agent's own output showed it received its prompt, for
+     * protocols whose output starts before the prompt is handed over;
+     * without it, any output record is that evidence.
+     */
+    promptReceived?(): boolean;
     /** Stop polling and close stdin; safe to call repeatedly. */
     close(): void;
     /** Resolves once in-flight claims and acknowledgements have settled. */
     settled(): Promise<void>;
 }
 
-const DEFAULT_POLL_INTERVAL_MS = 2_000;
+export interface LiveInputContext {
+    taskId?: string;
+    /** Called for every message written, so the caller can treat operator input as run activity. */
+    onDelivered?: (message: LiveInputMessage) => void;
+}
+
+/**
+ * A provider's own live input protocol on a spawned process' stdio, for
+ * agents that do not read input as appended stdin records.
+ */
+export interface LiveInputSession {
+    start(stdin: Writable | null | undefined, context: LiveInputContext): LiveInputChannel;
+}
+
+export function isLiveInputSession(input: LiveInputOptions | LiveInputSession): input is LiveInputSession {
+    return typeof (input as LiveInputSession).start === 'function';
+}
+
+export const DEFAULT_POLL_INTERVAL_MS = 2_000;
 
 /** The channel of an execution without live input: every call is a no-op. */
 export const INACTIVE_LIVE_INPUT: LiveInputChannel = Object.freeze({
     observeLine: () => undefined,
+    translateOutput: (chunk: string) => chunk,
     close: () => undefined,
     settled: async () => undefined,
 });
@@ -62,7 +93,7 @@ export const INACTIVE_LIVE_INPUT: LiveInputChannel = Object.freeze({
 export function startLiveInput(
     stdin: Writable | null | undefined,
     options: LiveInputOptions,
-    context: { taskId?: string; onDelivered?: (message: LiveInputMessage) => void },
+    context: LiveInputContext,
 ): LiveInputChannel {
     let closed = false;
     // A started `docker` client buffers input before any container runs: a
@@ -146,6 +177,7 @@ export function startLiveInput(
     }
 
     return {
+        translateOutput: chunk => chunk,
         observeLine: line => {
             agentRunning = true;
             if (!closed && options.endsInput(line)) close();
@@ -156,4 +188,14 @@ export function startLiveInput(
             await Promise.allSettled([...acknowledgements]);
         },
     };
+}
+
+/** Open an execution's live input channel on its spawned process' stdin. */
+export function openLiveInput(
+    stdin: Writable | null | undefined,
+    input: LiveInputOptions | LiveInputSession | undefined,
+    context: LiveInputContext,
+): LiveInputChannel {
+    if (!input) return INACTIVE_LIVE_INPUT;
+    return isLiveInputSession(input) ? input.start(stdin, context) : startLiveInput(stdin, input, context);
 }

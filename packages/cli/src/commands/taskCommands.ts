@@ -1089,8 +1089,9 @@ Examples:
     .addHelpText("after", `
 Steering reaches the agent while it runs, unlike a follow-up, which is posted
 as a PR comment and processed after the run. Each message is delivered once.
-Only agents whose task runs accept live input can be steered (Claude); other
-agents and tasks that are not running are rejected with the agent's capability.
+Claude and Codex task runs receive it live, Antigravity at its next step
+boundary; other agents and tasks that are not running are rejected with the
+agent's capability.
 Messages are at most ${TASK_STEER_MAX_LENGTH} characters.
 
 Examples:

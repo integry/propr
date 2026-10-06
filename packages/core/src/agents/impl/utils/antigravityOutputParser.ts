@@ -170,7 +170,7 @@ const STREAM_EVENT_VALIDATORS: Record<string, (candidate: Record<string, unknown
     result: isStreamResultEvent,
 };
 
-function isAntigravityStreamEvent(event: unknown): event is AntigravityStreamEvent {
+export function isAntigravityStreamEvent(event: unknown): event is AntigravityStreamEvent {
     return isRecord(event) && typeof event.event === 'string' && Object.hasOwn(STREAM_EVENT_VALIDATORS, event.event)
         && STREAM_EVENT_VALIDATORS[event.event](event);
 }

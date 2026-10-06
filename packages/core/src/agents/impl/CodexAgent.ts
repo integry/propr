@@ -19,7 +19,8 @@ import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysi
 import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
-import { buildCodexDockerArgs, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
+import { buildCodexAppServerTaskDockerArgs, buildCodexDockerArgs, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
+import { CodexAppServerTaskSession } from './codexAppServerTask.js';
 import { executeCodexAppServerGoal } from './codexAppServer.js';
 
 // Re-export UsageLimitError for convenience
@@ -31,6 +32,10 @@ const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_
 type CodexExecutionOutput = Awaited<ReturnType<typeof executeDockerCommand>>;
 type CodexParsedOutput = ReturnType<typeof parseCodexStreamOutput>;
 type CodexUsageMetrics = Awaited<ReturnType<typeof executeWithUsageTracking>>['usageMetrics'];
+
+function cleanCodexModelName(model: string | undefined): string | undefined {
+    return model?.includes(':') ? model.split(':').pop() : model;
+}
 
 export class CodexAgent implements Agent {
     readonly config: AgentConfig;
@@ -69,11 +74,19 @@ export class CodexAgent implements Agent {
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
-            const dockerArgs = this.buildDockerArgs({
+            const dockerArgsParams: CodexDockerArgsParams = {
                 worktreePath, githubToken, gitMountArgs, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
                 reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId
-            });
+            };
+            // A steerable run is served by App Server, whose `turn/steer` delivers
+            // operator input into the active turn, as for native goals.
+            const appServer = options.steering
+                ? new CodexAppServerTaskSession({ prompt, model: cleanCodexModelName(effectiveModel), source: options.steering })
+                : undefined;
+            const dockerArgs = appServer
+                ? buildCodexAppServerTaskDockerArgs(this.config, dockerArgsParams)
+                : this.buildDockerArgs(dockerArgsParams);
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'codex',
@@ -85,6 +98,7 @@ export class CodexAgent implements Agent {
                     promptHandoff: options.promptHandoff,
                     worktreePath,
                     stdinData: prompt,
+                    ...(appServer ? { liveInput: appServer } : {}),
                     taskId,
                     streamToRedis: true,
                     preserveOutputOnTimeout: true,
@@ -97,7 +111,7 @@ export class CodexAgent implements Agent {
             const executionTime = Date.now() - startTime;
             const parsedOutput = parseCodexStreamOutput(result.stdout);
 
-            const response = this.buildTaskExecutionResult({ parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics });
+            const response = this.buildTaskExecutionResult({ parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics, turnIncomplete: appServer ? !appServer.completed : false });
 
             await this.persistTaskLog({
                 response, parsedOutput, executionTime, modelUsed: response.modelUsed, prompt, usageMetrics,
@@ -134,8 +148,10 @@ export class CodexAgent implements Agent {
         executionTime: number;
         prompt: string;
         usageMetrics: CodexUsageMetrics;
+        /** An App Server run whose task turn never completed did not finish the task. */
+        turnIncomplete?: boolean;
     }): AgentExecutionResult {
-        const { parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics } = params;
+        const { parsedOutput, result, effectiveModel, effectiveReasoningLevel, executionTime, prompt, usageMetrics, turnIncomplete = false } = params;
         const terminationReason = resolveAgentTerminationReason({
             timedOut: result.timedOut,
             costCapExceeded: result.costCapExceeded,
@@ -143,7 +159,7 @@ export class CodexAgent implements Agent {
             error: parsedOutput.error || result.stderr
         });
         return {
-            success: parsedOutput.success && result.exitCode === 0 && !terminationReason,
+            success: parsedOutput.success && result.exitCode === 0 && !terminationReason && !turnIncomplete,
             executionTimeMs: executionTime,
             logs: parsedOutput.logs + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
             exitCode: result.exitCode,

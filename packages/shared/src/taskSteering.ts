@@ -15,16 +15,18 @@ export const TASK_STEERING_CAPABILITIES = ['none', 'next-step', 'live'] as const
 export type TaskSteeringCapability = typeof TASK_STEERING_CAPABILITIES[number];
 
 /**
- * Steering capability of each agent's ordinary task runtime. Claude task runs
- * keep a stream-json stdin control channel open, the same channel native
- * goals use. Codex (`codex exec --ephemeral`), Antigravity (`agy --print`),
- * OpenCode and Vibe task runs are one-shot invocations that read their prompt
- * once, so they cannot be steered; their goals keep their own input paths.
+ * Steering capability of each agent's ordinary task runtime, using the
+ * mechanisms native goals use. Claude task runs keep a stream-json stdin
+ * control channel open. Codex task runs are served by Codex App Server, whose
+ * `turn/steer` delivers input into the active turn. Antigravity task runs are
+ * interrupted at the next finished step and resume the same conversation with
+ * the input. OpenCode and Vibe task runs are one-shot invocations that read
+ * their prompt once, so they cannot be steered.
  */
 export const AGENT_TASK_STEERING: Readonly<Record<AgentType, TaskSteeringCapability>> = Object.freeze({
   claude: 'live',
-  codex: 'none',
-  antigravity: 'none',
+  codex: 'live',
+  antigravity: 'next-step',
   opencode: 'none',
   vibe: 'none',
 });

@@ -28,8 +28,8 @@ Each agent declares its steering capability for ordinary task runs in its agent 
 | Agent | Capability | How a steer reaches it |
 |---|---|---|
 | Claude | `live` | Written into the running session as a user message over the stream-json stdin channel, the same channel Claude goals use. |
-| Codex | `none` | Task runs are one-shot `codex exec --ephemeral` invocations with no input channel. Codex goals remain steerable live. |
-| Antigravity | `none` | Task runs are one-shot `agy --print` invocations. Antigravity goals remain steerable at the next step boundary. |
+| Codex | `live` | Steerable task runs are served by Codex App Server, the protocol Codex goals use; the message is sent into the active turn with `turn/steer`. A message the App Server rejects (for example because the turn just ended) returns to the queue. |
+| Antigravity | `next-step` | Delivered at the next step boundary, as for Antigravity goals: once the running step finished, the invocation is interrupted and the same conversation resumes with the message (a step still running after 30 seconds is interrupted then). |
 | OpenCode | `none` | One-shot task runs. |
 | Vibe | `none` | One-shot task runs. |
 

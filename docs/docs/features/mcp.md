@@ -28,7 +28,7 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Plans by status | `list_plans` with `status`: `active`, an exact persisted status, or `all` (default) |
 | Ideas for what to work on next (the **Improve** tab) | `generate_repository_improvements`, then `get_operation` for `result.suggestions` |
 | Start a bounded change | `create_task`, then `get_operation` or `get_task_submission` |
-| Correct a running task without stopping it | `steer_task` (live for Claude task runs; other agents and tasks that are not running are rejected with the agent's steering capability), then `get_task_events` for the delivery entry |
+| Correct a running task without stopping it | `steer_task` (live for Claude and Codex task runs, at the next step boundary for Antigravity; OpenCode, Vibe and tasks that are not running are rejected with the agent's steering capability), then `get_task_events` for the delivery entry |
 | Find what you started and whether it finished | `list_operations`, then `get_operation` |
 | PR inventory and review fixes | `list_pull_requests`, `fix_review_findings` with `findingIds` and/or `suggestionIds` |
 | Visual previews published for a task or PR (images; videos are metadata only) | `list_visual_previews`, `get_visual_preview` |

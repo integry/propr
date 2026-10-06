@@ -20,7 +20,7 @@ import { detectContainerId } from './dockerContainerDetection.js';
 import type { AgentWatchdogTrip } from './agentActivityWatchdog.js';
 import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
 import { settleTimeoutStop, settleWatchdogStop } from './dockerExecutionSettlement.js';
-import { INACTIVE_LIVE_INPUT, startLiveInput, type LiveInputOptions } from './dockerLiveInput.js';
+import { openLiveInput, type LiveInputOptions, type LiveInputSession } from './dockerLiveInput.js';
 import { spawnCommandProcess } from './dockerCommandProcess.js';
 import { trackPromptHandoff, type PromptHandoff } from './dockerPromptHandoff.js';
 export { getDockerRootDir } from './dockerRootDir.js';
@@ -80,8 +80,12 @@ export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'wa
     model?: string;
     /** A container that runs no agent and spends nothing (e.g. a usage probe): not counted toward, or refused by, the run's spend cap. */
     costCapExempt?: boolean;
-    /** Keep stdin open as a live operator-input channel instead of writing `stdinData`; delivered input counts as activity. */
-    liveInput?: LiveInputOptions;
+    /**
+     * Keep stdin open as a live operator-input channel instead of writing
+     * `stdinData`, either as appended input records or as the provider's own
+     * session protocol; delivered input counts as activity.
+     */
+    liveInput?: LiveInputOptions | LiveInputSession;
     /** Delivery bookkeeping for a prompt carrying operator input: made durable before the process starts, settled by the agent's output. */
     promptHandoff?: PromptHandoff;
 }
@@ -376,9 +380,7 @@ function startDockerCommand(
 
         const recordWatchdogActivity = (): void => watchdog.recordActivity();
         // A delivered steer is activity: the agent is about to act on it.
-        const liveInput = options.liveInput
-            ? startLiveInput(child.stdin, options.liveInput, { taskId, onDelivered: recordWatchdogActivity })
-            : INACTIVE_LIVE_INPUT;
+        const liveInput = openLiveInput(child.stdin, options.liveInput, { taskId, onDelivered: recordWatchdogActivity });
 
         const liveOutput = startLiveOutputStreaming({ taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow: warnFromLiveOutput, onActivity: recordWatchdogActivity, onTranscriptRecord: watchdog.observeLine }, readStdout, () => stderrTail.value);
         if (command === 'docker' && args[0] === 'run' && worktreePath) {
@@ -391,9 +393,12 @@ function startDockerCommand(
         }
 
         child.stdout?.on('data', (data: Buffer) => {
-            const chunk = stdoutDecoder.write(data), ts = new Date().toISOString();
-            promptHandoff.output();
+            const raw = stdoutDecoder.write(data), ts = new Date().toISOString();
             recordWatchdogActivity();
+            // A session protocol's raw stdout becomes the run's output records
+            // here; its handshake is no evidence that the agent got the prompt.
+            const chunk = liveInput.translateOutput(raw, false);
+            if (chunk && (liveInput.promptReceived?.() ?? true)) promptHandoff.output();
             stdoutBuffer.append(chunk);
             liveOutput?.stdout(chunk);
             inspectSessionLines(chunk, ts);
@@ -411,7 +416,7 @@ function startDockerCommand(
             clearTimeout(timeoutHandle);
             watchdog.stop();
             liveInput.close();
-            const finalStdout = stdoutDecoder.end();
+            const finalStdout = liveInput.translateOutput(stdoutDecoder.end(), true);
             if (finalStdout) stdoutBuffer.append(finalStdout);
             const finalStderr = stderrDecoder.end();
             stderrTail.append(finalStderr);

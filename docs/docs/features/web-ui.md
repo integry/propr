@@ -53,8 +53,9 @@ Type a correction in **Steer the running agent** and choose **Send** (or press C
 
 | Agent | Capability | In the task detail page |
 |---|---|---|
-| Claude | `live` | Message box; delivered immediately into the running session. |
-| Codex, Antigravity, OpenCode, Vibe | `none` | An explanation instead of the box; send a follow-up when the run finishes. |
+| Claude, Codex | `live` | Message box; delivered immediately into the running session. |
+| Antigravity | `next-step` | Message box; delivered when the agent finishes its current step. |
+| OpenCode, Vibe | `none` | An explanation instead of the box; send a follow-up when the run finishes. |
 
 Messages are limited to 4,000 characters and 20 per run. PR comments posted during a run still wait until it finishes. See [Launching Work](./launching-work.md#steer-a-running-task) for the API, CLI and MCP equivalents.
 

@@ -65,12 +65,26 @@ for (const width of [390, 1440]) {
   });
 }
 
+for (const { agentType, capability } of [{ agentType: 'antigravity', capability: 'next-step' }, { agentType: 'codex', capability: 'live' }]) {
+  test(`a running ${agentType} task can be steered (${capability})`, async ({ page }) => {
+    await fixture(page, { ...live, steers: [], capability, agentAlias: `${agentType}-default`, agentType });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/tasks/${taskId}`);
+    const panel = page.getByTestId('task-steering-panel');
+    await panel.scrollIntoViewIfNeeded();
+    await panel.getByLabel('Steer the running agent').fill('Keep the public API unchanged.');
+    await expect(panel.getByRole('button', { name: /send/i })).toBeEnabled();
+    await expect(panel).toContainText(`Delivered once to the running ${agentType} (${capability})`);
+    await capture(page, `task-steering-${agentType}-1440`);
+  });
+}
+
 test('a running task whose agent cannot be steered explains its capability', async ({ page }) => {
-  await fixture(page, { ...live, steers: [], capability: 'none', agentAlias: 'codex-default', agentType: 'codex' });
+  await fixture(page, { ...live, steers: [], capability: 'none', agentAlias: 'opencode-default', agentType: 'opencode' });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`/tasks/${taskId}`);
   const panel = page.getByTestId('task-steering-panel');
-  await expect(panel).toContainText('The codex agent cannot receive input during a task run (steering capability: none)');
+  await expect(panel).toContainText('The opencode agent cannot receive input during a task run (steering capability: none)');
   await expect(panel.getByLabel('Steer the running agent')).toHaveCount(0);
   await capture(page, 'task-steering-unsupported-1440');
 });
