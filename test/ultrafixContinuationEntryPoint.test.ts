@@ -40,6 +40,8 @@ await mock.module('@propr/core', {
         logger: { info: () => {} },
         loadUltrafixEscalationSettings: async () => ({ enabled: escalationEnabled, models: [], patience: 3, maxReasoningLevels: 2 }),
         loadModelReasoningLevel: async () => '',
+        DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS: 2 * 60 * 60 * 1000,
+        loadUltrafixCiWaitTimeoutMs: async () => 2 * 60 * 60 * 1000,
         resolveAgentModelReasoningLevel: () => undefined,
         resolveRuntimeModelReasoningLevel: () => null,
         resolveLlmLabel: async (model: string) => ({ agentAlias: model.split(':')[0], model: model.split(':')[1] }),

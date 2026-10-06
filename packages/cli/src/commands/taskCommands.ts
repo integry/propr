@@ -25,6 +25,7 @@ import {
   TaskSummary,
   getTaskStatus,
   TaskStatus,
+  type TaskPushFailure,
 } from "../api/index.js";
 
 const TASK_LIST_STATUSES = [
@@ -164,6 +165,24 @@ function toInspectedTaskSummary(task: TaskSummary, now = Date.now()): InspectedT
   };
 }
 
+/** Prints the push rejection class, unblock URL and salvage recovery for `task get`. */
+function printPushFailure(pushFailure: TaskPushFailure): void {
+  console.log("");
+  console.log("Push Rejection:");
+  console.log("-".repeat(40));
+  console.log(`Class:        ${pushFailure.diagnosis.classification}`);
+  console.log(`Branch:       ${pushFailure.branchName}`);
+  for (const url of pushFailure.diagnosis.unblockUrls) {
+    console.log(`Unblock URL:  ${url}`);
+  }
+  if (pushFailure.rescueRef) console.log(`Rescue ref:   ${pushFailure.rescueRef}`);
+  if (pushFailure.bundlePath) console.log(`Bundle:       ${pushFailure.bundlePath}`);
+  if (pushFailure.worktreePath) console.log(`Worktree:     ${pushFailure.worktreePath}`);
+  // Printed verbatim: stripping the Markdown backticks would also strip literal backticks
+  // inside a quoted branch name or path and change the command.
+  console.log(`Recovery:     ${pushFailure.recoveryInstruction}`);
+}
+
 function taskInspectionJson(status: TaskStatus, now = Date.now()): Record<string, unknown> {
   const timing = taskTiming(status, now);
   return {
@@ -184,6 +203,7 @@ function taskInspectionJson(status: TaskStatus, now = Date.now()): Record<string
       completed: status.isCompleted,
       failed: status.isFailed,
       failureReason: status.failureReason ?? null,
+      pushFailure: status.pushFailure ?? null,
       pr: status.prNumber
         ? { number: status.prNumber, url: status.prUrl ?? null }
         : null,
@@ -400,6 +420,10 @@ function displayTaskDetails(status: TaskStatus, showInspectionTiming = false): v
     console.log("Failure Reason:");
     console.log("-".repeat(40));
     console.log(status.failureReason);
+  }
+
+  if (status.isFailed && status.pushFailure) {
+    printPushFailure(status.pushFailure);
   }
 
   if (status.history && status.history.length > 0) {

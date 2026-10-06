@@ -7,7 +7,7 @@ export { clearUltrafixStateForLabelRemoval, withUltrafixLabelTransition } from '
 export type { UltrafixLabelRemovalResult } from './utils/ultrafixLabelTransition.js';
 export type { RetryConfig, RetryOptions } from './utils/retryHandler.js';
 export * from './utils/constants.js';
-export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './utils/llmMetrics.js';
+export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId, recordAgentWatchdogTrip, agentWatchdogMetricKey, AGENT_WATCHDOG_METRIC_RULES } from './utils/llmMetrics.js';
 export { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, WORK_TYPES } from './utils/llmLogger.js';
 export type { LlmLogEntry, WorkReference, WorkType } from './utils/llmLogger.js';
 export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, HighCostAlert, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
@@ -95,6 +95,16 @@ export { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './git
 export { ensureRepoCloned, createWorktreeForIssue, getRepoUrl, fetchLatestChanges } from './git/repoManager.js';
 export type { WorktreeResult, WorktreeInfo, FetchLatestChangesOptions, FetchLatestChangesResult } from './git/repoManager.js';
 export { cleanupExistingBranch, createWorktreeFromExistingBranch } from './git/worktreeCreation.js';
+export { classifyPushError, classifyPushRejectionText, extractUnblockUrls, formatPushRejectionClass, type PushRejectionClass, type PushRejectionDiagnosis } from './git/pushRejection.js';
+export {
+    salvageFailedPush, createWorktreePushSalvageOperations, PushFailedError, getPushFailure, pushFailureHistoryMetadata,
+    formatPushFailureMessage, formatPushFailureMarkdown, buildRecoveryInstruction, writeSalvageRetentionMarker, isSalvageRetainedWorktree,
+    SALVAGE_RETENTION_REASON, type PushSalvageRung, type PushSalvageEvent, type PushFailureRecord, type PushSalvageOperations, type PushSalvageAttempt,
+} from './git/pushSalvage.js';
+export {
+    RESCUE_REF_PREFIX, rescueRefName, rescueRefCreatedAt, isRescueRef, sanitizeRescueId, getRescueRetentionDays, getRescueBundleDirectory, getSalvageRetentionRecordDirectory, rescueBundlePath,
+    pruneRescueRefs, pruneRescueBundles, createGitRescueRefPruneDependencies, type RescueRefPruneDependencies, type RemoteRescueRef,
+} from './git/rescueRefs.js';
 export { cleanupWorktree, cleanupExpiredWorktrees, safePruneWorktrees, setupWorktreePermissions, addToSafeDirectories, verifyWorktreeCreation, setupWorktreeRemote, getWorktreePath } from './git/worktreeOperations.js';
 export { isGitCorruptionError, GIT_CORRUPTION_PATTERNS, getCorruptionPatternStrings } from './git/gitCorruption.js';
 export { assertCommitIsAncestor, mergeBaseIntoBranch } from './git/mergeOperations.js';
@@ -130,7 +140,7 @@ export type {
     AutoResolveContext
 } from './queue/taskQueue.js';
 
-export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
+export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
 export * from './webhook/ciFailureFollowup.js';
 export * from './webhook/closedPullRequestCi.js';
@@ -354,6 +364,8 @@ export type { AgentImageBuildDiskSpace } from './agents/agentImageBuildCapacity.
 export * from './goalExports.js';
 export * from './agents/syntheticRouting.js';
 export { describeAgentTermination, isIncompleteAgentExecution, resolveAgentTerminationReason } from './agents/termination.js';
+export { AgentActivityWatchdog, AGENT_WATCHDOG_MESSAGE_PREFIX, describeAgentWatchdogTrip } from './claude/docker/agentActivityWatchdog.js';
+export type { AgentWatchdogRule, AgentWatchdogSettings, AgentWatchdogTrip } from './claude/docker/agentActivityWatchdog.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';
 export { AntigravityAgent } from './agents/impl/AntigravityAgent.js';

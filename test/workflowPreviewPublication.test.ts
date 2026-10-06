@@ -10,6 +10,7 @@ import {
 } from '../packages/core/src/services/visualPreviewService.js';
 import { refineWorkflowPreviews } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../packages/core/src/workflow/repositoryWorkflow.js';
+import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
 
 type Prepared = Awaited<ReturnType<typeof prepareVisualPreviewEvidence>>;
 
@@ -28,6 +29,7 @@ const log = { debug() {}, info() {}, warn() {}, error() {} };
 
 await mock.module('@propr/core', {
     namedExports: {
+        ...pushSalvageExports,
         // Real preview preparation and workflow refinement; only the evidence is recorded.
         prepareVisualPreviewEvidence: async (options: Parameters<typeof prepareVisualPreviewEvidence>[0]) => {
             const result = await prepareVisualPreviewEvidence(options);

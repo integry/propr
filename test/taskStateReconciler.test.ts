@@ -331,6 +331,37 @@ test('persists a terminal Redis state that was missed by SQLite', async () => {
     assert.equal(transitions[0].transition.state, TaskStates.COMPLETED);
 });
 
+test('treats a watchdog-stopped task as terminal instead of re-marking it orphaned', async () => {
+    for (const terminalReason of ['stalled', 'degenerate_output'] as const) {
+        const candidate = makeCandidate(`watchdog-${terminalReason}`, { state: TaskStates.CLAUDE_EXECUTION });
+        const stopped = makeRedisState(candidate, {
+            state: TaskStates.FAILED,
+            terminalReason,
+            updatedAt: new Date(NOW - 1_000).toISOString(),
+            history: [{
+                state: TaskStates.FAILED,
+                timestamp: new Date(NOW - 1_000).toISOString(),
+                reason: 'Agent watchdog stopped the run',
+            }],
+        });
+        const { store, transitions } = createStore([candidate]);
+        const getJob = mock.fn(async () => null);
+        const result = await reconcileStaleTaskStates({
+            queue: { getJob },
+            stateManager: createStateManager(new Map([[candidate.taskId, stopped]])),
+            store,
+            now: NOW,
+        });
+
+        assert.equal(result.summary.recovered, 1);
+        assert.equal(result.summary.suspected, 0);
+        assert.equal((store.recordMissing as ReturnType<typeof mock.fn>).mock.callCount(), 0, 'no orphan observation is recorded');
+        assert.equal(getJob.mock.callCount(), 0, 'a terminal task is not looked up as a possibly missing job');
+        assert.equal(transitions[0].transition.state, TaskStates.FAILED);
+        assert.equal(transitions[0].transition.metadata.terminalReason, terminalReason);
+    }
+});
+
 test('keeps a recovered Redis handoff cancellation identifiable as an operational handoff', async () => {
     const candidate = makeCandidate('redis-rescheduled', { taskType: 'pr-comment' });
     const handoffReason = 'Task job rescheduled: pr_locked_by_other_job';

@@ -360,8 +360,24 @@ export {
     loadUltrafixMaxCycles,
     saveUltrafixMaxCycles,
     loadUltrafixPauseSeconds,
-    saveUltrafixPauseSeconds
+    saveUltrafixPauseSeconds,
+    loadUltrafixCiWaitTimeoutMs,
+    saveUltrafixCiWaitTimeoutMs,
+    DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS
 } from './configManagerUltrafix.js';
+
+export {
+    AGENT_WATCHDOG_SETTING_DEFINITIONS,
+    DEFAULT_AGENT_STALL_TIMEOUT_MS,
+    DEFAULT_AGENT_TOOL_STALL_TIMEOUT_MS,
+    DEFAULT_AGENT_DEGENERATE_OUTPUT_LIMIT,
+    loadAgentWatchdogOverrides,
+    loadAgentWatchdogSettings,
+    resolveAgentWatchdogEnvDefault,
+    resolveAgentWatchdogSettings,
+    saveAgentWatchdogSetting,
+    type AgentWatchdogSettingKey
+} from './configManagerAgentWatchdog.js';
 
 export {
     loadModelReasoningLevel,

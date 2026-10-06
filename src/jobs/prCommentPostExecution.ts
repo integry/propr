@@ -35,9 +35,11 @@ import {
     isVisualPreviewUploadAuthenticationError,
     publishPullRequestCommentVisualPreviews,
 } from '../github/visualPreviewAttachments.js';
-import type { PullRequestPublication } from './prPublication.js';
+import type { PullRequestPublication, PublicationSalvage } from './prPublication.js';
+import { recordPushSalvageEvent } from './pushSalvageTimeline.js';
 import { savePublicationCheckpoint } from './prContinuation.js';
 import { buildWorkNotificationRecap } from './notificationRecap.js';
+import { taskTerminalReasonForAgentTermination } from './agentTerminalReason.js';
 
 interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
@@ -106,9 +108,9 @@ interface UndoContextParams {
 
 async function commitAndPush(
     state: ReadyPostExecutionState,
-    context: PostExecutionContext,
+    context: PostExecutionContext & { salvage?: PublicationSalvage },
     llm: string | null | undefined,
-    completionInputs: Omit<PublicationCompletion, 'commitResult' | 'changesSummary' | 'commitMessage'>
+    completionInputs: Omit<PublicationCompletion, 'commitResult' | 'changesSummary' | 'commitMessage'>,
 ) {
     if (!state.worktreeInfo) throw new Error('Cannot commit PR comment changes without a worktree');
     const changesSummary = sanitizeAgentReport(state.claudeResult.summary || state.claudeResult.finalResult?.result || '');
@@ -116,7 +118,7 @@ async function commitAndPush(
     const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, { issueNumber: context.pullRequestNumber, issueTitle: 'Follow-up changes' });
 
     if (commitResult) {
-        const pushResult = await context.publication.push(state.worktreeInfo.worktreePath, { ...completionInputs, commitResult, changesSummary, commitMessage });
+        const pushResult = await context.publication.push(state.worktreeInfo.worktreePath, { ...completionInputs, commitResult, changesSummary, commitMessage }, { salvage: context.salvage });
         if (pushResult.commitHash) {
             commitResult.commitHash = pushResult.commitHash;
         }
@@ -316,7 +318,9 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
     try {
         preparedVisualPreview = await preparePostExecutionPreviews(state, `${repoOwner}/${repoName}`, taskId, params.visualPreviewSettings);
-        const { commitResult, changesSummary, commitMessage } = params.recoveredCompletion ?? await commitAndPush(state, context, llm, {
+        const { commitResult, changesSummary, commitMessage } = params.recoveredCompletion ?? await commitAndPush(state, {
+            ...context, salvage: { taskId, onEvent: recordPushSalvageEvent(stateManager, taskId, correlatedLogger) },
+        }, llm, {
             taskId, instructionCommentIds: state.unprocessedComments.map(comment => comment.id),
             jobData: job.data, claudeResult: state.claudeResult, authorsText: state.authorsText,
             unprocessedComments: state.unprocessedComments, startingWorkComment: state.startingWorkComment,
@@ -355,7 +359,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
             reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
             commitHash: commitResult?.commitHash,
-            ...(terminationReason === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
+            ...(taskTerminalReasonForAgentTermination(terminationReason) ? { terminalReason: taskTerminalReasonForAgentTermination(terminationReason)! } : {}),
             historyMetadata: {
                 commandMode: job.data.commandMode || 'default',
                 continuation: context.publication.continuation ? {

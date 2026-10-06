@@ -3,7 +3,7 @@ import { setTimeout } from 'timers/promises';
 import type { ClaudeCodeResponse, WorktreeInfo, CommitResult, WorkerStateManager, VisualPreviewSettings } from '@propr/core';
 import {
     cleanupWorktree, cleanupPreparedVisualPreviewEvidence, commitChanges,
-    prepareVisualPreviewEvidence, pushBranch, TaskStates,
+    prepareVisualPreviewEvidence, TaskStates,
     describeAgentTermination,
     resolveAgentTerminationReason,
     sanitizeAgentReport,
@@ -18,7 +18,7 @@ import type { IssueJobData } from '@propr/core';
 import { createPullRequest, ensureEpicBaseBranchExists, type PostProcessingResult } from './issueJobHelpers.js';
 import { handleCreatedPlanIssuePR, handleNoCodeChanges } from './issueJobPostProcessingHelpers.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
-import type { GitHubToken } from './githubTypes.js';
+import { describePushFailure, formatIssuePushFailure, pushImplementationBranch, type GitHubToken } from './issueJobPush.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
@@ -134,6 +134,8 @@ async function handlePostProcessingFailure(
     canMarkDone = hasPublishableAgentWork(options.claudeResult),
 ): Promise<PostProcessingResult> {
     const { octokit, issueRef, claudeResult, AI_PROCESSING_TAG, AI_DONE_TAG, jobId, correlatedLogger } = options;
+    // A rejected push already ran the salvage ladder; the comment says how to recover.
+    const { pushFailure, failureFields } = describePushFailure(postProcessingError);
 
     correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (postProcessingError as Error).message }, 'Deterministic post-processing failed');
 
@@ -150,12 +152,12 @@ async function handlePostProcessingFailure(
             : '❌ **AI processing failed before producing publishable work.**';
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-            body: `${fallbackHeading}\n\n${formatFallbackDiagnostics(claudeResult, postProcessingError)}${completionComment}`,
+            body: `${pushFailure ? formatIssuePushFailure(pushFailure) : `${fallbackHeading}\n\n${formatFallbackDiagnostics(claudeResult, postProcessingError)}`}${completionComment}`,
         });
-        return { success: false, pr: null, updatedLabels: completedLabels, error: (postProcessingError as Error).message };
+        return { success: false, pr: null, updatedLabels: completedLabels, error: (postProcessingError as Error).message, ...failureFields };
     } catch (fallbackError) {
         correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (fallbackError as Error).message }, 'Fallback post-processing also failed');
-        return { success: false, pr: null, updatedLabels: [], error: (postProcessingError as Error).message };
+        return { success: false, pr: null, updatedLabels: [], error: (postProcessingError as Error).message, ...failureFields };
     }
 }
 
@@ -183,7 +185,7 @@ async function handleMissingCommit(options: PostProcessOptions): Promise<PostPro
 }
 
 export async function performPostProcessing(options: PostProcessOptions): Promise<PostProcessResult> {
-    const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, repoUrl, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger, taskId, stateManager, visualPreviewSettings } = options;
+    const { octokit, issueRef, worktreeInfo, currentIssueData, claudeResult, modelName, repoValidation, PR_LABEL, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger, taskId, stateManager, visualPreviewSettings } = options;
     let commitResult: CommitResult | null = null;
     let postProcessingResult: PostProcessingResult | null = null;
     let preparedVisualPreview: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>> | undefined;
@@ -228,9 +230,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             return { commitResult, postProcessingResult };
         }
 
-        // The token captured before agent execution may have expired while it worked.
-        const { token } = await octokit.auth({ type: 'installation' }) as GitHubToken;
-        await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: token });
+        await pushImplementationBranch(options);
 
         correlatedLogger.debug('Waiting for branch propagation...');
         await setTimeout(3000);
@@ -322,7 +322,8 @@ export interface PRValidationOptions {
 export async function handlePRValidation(options: PRValidationOptions): Promise<PostProcessingResult | null> {
     const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger } = options;
 
-    if (!worktreeInfo) return postProcessingResult;
+    // After a rejected push the salvage ladder already ran; another push would be refused too.
+    if (!worktreeInfo || postProcessingResult?.pushFailure) return postProcessingResult;
 
     const finalPRValidation: PRValidation = await validatePRCreation({
         owner: issueRef.repoOwner, repoName: issueRef.repoName,

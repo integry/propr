@@ -201,9 +201,21 @@ export async function getCurrentPRHead(owner: string, repoName: string, prNumber
     }
 }
 
+interface CommitStatusContext {
+    context?: string;
+    state?: string;
+}
+
 interface CommitStatusInfo {
     state: string;
     totalCount: number;
+    statuses: CommitStatusContext[];
+}
+
+interface CheckRunRecord {
+    name?: string;
+    status: string;
+    conclusion: string | null;
 }
 
 interface GitHubApiError extends Error {
@@ -220,12 +232,61 @@ async function getCommitStatusInfo(octokit: any, owner: string, repoName: string
     const statusResponse = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/status', {
         owner,
         repo: repoName,
-        ref
+        ref,
+        per_page: 100,
     });
+    const statuses = Array.isArray(statusResponse.data.statuses) ? statusResponse.data.statuses as CommitStatusContext[] : [];
     return {
         state: statusResponse.data.state as string,
         totalCount: (statusResponse.data.total_count ?? statusResponse.data.statuses?.length ?? 0) as number,
+        statuses,
     };
+}
+
+/**
+ * Fetch both CI signal types for a commit: check runs and legacy commit
+ * statuses. Either may be unavailable; only when both fail is this an error.
+ */
+async function fetchCheckSignals(
+    owner: string,
+    repoName: string,
+    ref: string,
+): Promise<{ checkRuns: CheckRunRecord[]; commitStatus: CommitStatusInfo }> {
+    const octokit = await getAuthenticatedOctokit();
+    const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
+        octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+            owner,
+            repo: repoName,
+            ref
+        }),
+        getCommitStatusInfo(octokit, owner, repoName, ref)
+    ]);
+
+    if (checkRunsResult.status === 'rejected' && commitStatusResult.status === 'rejected') {
+        throw checkRunsResult.reason;
+    }
+
+    const checkRuns: CheckRunRecord[] = checkRunsResult.status === 'fulfilled'
+        ? (checkRunsResult.value.data.check_runs ?? [])
+        : [];
+    const commitStatus = commitStatusResult.status === 'fulfilled'
+        ? commitStatusResult.value
+        : { state: 'pending', totalCount: 0, statuses: [] };
+
+    if (checkRunsResult.status === 'rejected') {
+        logger.warn({ owner, repoName, ref, error: (checkRunsResult.reason as Error).message }, 'Failed to get check runs data');
+    }
+
+    if (commitStatusResult.status === 'rejected') {
+        const error = commitStatusResult.reason as Error;
+        const logMethod = isIntegrationAccessError(error) ? 'info' : 'warn';
+        logger[logMethod](
+            { owner, repoName, ref, error: error.message },
+            'Legacy commit status unavailable, continuing with check-runs only',
+        );
+    }
+
+    return { checkRuns, commitStatus };
 }
 
 export interface CheckRunsStatus {
@@ -233,69 +294,119 @@ export interface CheckRunsStatus {
     allPassing: boolean;
     anyPending: boolean;
     anyFailed: boolean;
+    /** Names of blocking check runs/status contexts that failed. */
+    blockingFailed?: string[];
+    /** Names of blocking check runs/status contexts that have not finished. */
+    blockingPending?: string[];
+    /** Check runs/status contexts ignored because they match nonBlockingChecks. */
+    nonBlockingCount?: number;
+}
+
+const FAILED_STATUS_STATES = new Set(['failure', 'error']);
+
+function summarizeCommitStatus(commitStatus: CommitStatusInfo, nonBlockingPatterns: readonly string[]): {
+    pending: string[];
+    failed: string[];
+    nonBlocking: number;
+} {
+    if (commitStatus.totalCount === 0) return { pending: [], failed: [], nonBlocking: 0 };
+    const contexts = commitStatus.statuses;
+    const blocking = contexts.filter(status => !isNonBlockingCheck(status.context, nonBlockingPatterns));
+    const nonBlocking = contexts.length - blocking.length;
+    // Only trust per-context states when the response listed every context;
+    // otherwise the combined state is the only complete signal.
+    if (nonBlocking > 0 && contexts.length >= commitStatus.totalCount) {
+        return {
+            pending: blocking.filter(status => status.state === 'pending').map(status => status.context || 'commit status'),
+            failed: blocking.filter(status => FAILED_STATUS_STATES.has(status.state ?? '')).map(status => status.context || 'commit status'),
+            nonBlocking,
+        };
+    }
+    const named = (states: (state: string) => boolean): string[] => {
+        const names = contexts.filter(status => states(status.state ?? '')).map(status => status.context || 'commit status');
+        return names.length > 0 ? names : ['commit status'];
+    };
+    if (commitStatus.state === 'pending') return { pending: named(state => state === 'pending'), failed: [], nonBlocking: 0 };
+    if (FAILED_STATUS_STATES.has(commitStatus.state)) return { pending: [], failed: named(state => FAILED_STATUS_STATES.has(state)), nonBlocking: 0 };
+    return { pending: [], failed: [], nonBlocking: 0 };
+}
+
+/**
+ * Reduce check runs and legacy commit statuses to one readiness summary.
+ * Check runs and status contexts whose names match a non-blocking pattern
+ * neither fail nor hold the result, whether they failed or are still pending.
+ */
+export function summarizeCheckSignals(
+    checkRuns: readonly CheckRunRecord[],
+    commitStatus: CommitStatusInfo,
+    nonBlockingPatterns: readonly string[] = [],
+): CheckRunsStatus {
+    const blockingRuns = checkRuns.filter(run => !isNonBlockingCheck(run.name, nonBlockingPatterns));
+    const runPending = blockingRuns.filter(run => run.status !== 'completed').map(run => run.name || 'check run');
+    const runFailed = blockingRuns.filter(run =>
+        run.status === 'completed' && run.conclusion !== 'success' && run.conclusion !== 'skipped'
+    ).map(run => run.name || 'check run');
+    const status = summarizeCommitStatus(commitStatus, nonBlockingPatterns);
+
+    const blockingPending = [...runPending, ...status.pending];
+    const blockingFailed = [...runFailed, ...status.failed];
+    const anyPending = blockingPending.length > 0;
+    const anyFailed = blockingFailed.length > 0;
+    return {
+        count: checkRuns.length + commitStatus.totalCount,
+        allPassing: !anyPending && !anyFailed,
+        anyPending,
+        anyFailed,
+        blockingFailed,
+        blockingPending,
+        nonBlockingCount: checkRuns.length - blockingRuns.length + status.nonBlocking,
+    };
 }
 
 /**
  * Gets detailed status of check runs for a commit.
  * Always queries both the check-runs API and the legacy commit status API
  * so repos that publish both signal types are handled correctly.
+ *
+ * Pass the repository's nonBlockingChecks patterns to exclude matching check
+ * runs and status contexts from the result; see getCheckRunsStatusForRepo.
  */
-export async function getCheckRunsStatus(owner: string, repoName: string, ref: string): Promise<CheckRunsStatus> {
+export async function getCheckRunsStatus(
+    owner: string,
+    repoName: string,
+    ref: string,
+    nonBlockingPatterns: readonly string[] = [],
+): Promise<CheckRunsStatus> {
     try {
-        const octokit = await getAuthenticatedOctokit();
-        const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
-            octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
-                owner,
-                repo: repoName,
-                ref
-            }),
-            getCommitStatusInfo(octokit, owner, repoName, ref)
-        ]);
-
-        if (checkRunsResult.status === 'rejected' && commitStatusResult.status === 'rejected') {
-            throw checkRunsResult.reason;
-        }
-
-        const checkRuns = checkRunsResult.status === 'fulfilled'
-            ? checkRunsResult.value.data.check_runs
-            : [];
-        const commitStatus = commitStatusResult.status === 'fulfilled'
-            ? commitStatusResult.value
-            : { state: 'pending', totalCount: 0 };
-
-        if (checkRunsResult.status === 'rejected') {
-            logger.warn({ owner, repoName, ref, error: (checkRunsResult.reason as Error).message }, 'Failed to get check runs data');
-        }
-
-        if (commitStatusResult.status === 'rejected') {
-            const error = commitStatusResult.reason as Error;
-            const logMethod = isIntegrationAccessError(error) ? 'info' : 'warn';
-            logger[logMethod](
-                { owner, repoName, ref, error: error.message },
-                'Legacy commit status unavailable, continuing with check-runs only',
-            );
-        }
-
-        const count = checkRuns.length + commitStatus.totalCount;
-        const crPending = checkRuns.some((run: { status: string }) => run.status !== 'completed');
-        const crFailed = checkRuns.some((run: { status: string; conclusion: string | null }) =>
-            run.status === 'completed' && run.conclusion !== 'success' && run.conclusion !== 'skipped'
-        );
-
-        const hasStatusContexts = commitStatus.totalCount > 0;
-        const statusPending = hasStatusContexts && commitStatus.state === 'pending';
-        const statusFailed = hasStatusContexts && (commitStatus.state === 'failure' || commitStatus.state === 'error');
-
-        const anyPending = crPending || statusPending;
-        const anyFailed = crFailed || statusFailed;
-        const allPassing = !anyPending && !anyFailed;
-
-        logger.debug({ owner, repoName, ref, count, allPassing, anyPending, anyFailed, commitStatus: commitStatus.state, statusContexts: commitStatus.totalCount }, 'Check runs status');
-        return { count, allPassing, anyPending, anyFailed };
+        const { checkRuns, commitStatus } = await fetchCheckSignals(owner, repoName, ref);
+        const summary = summarizeCheckSignals(checkRuns, commitStatus, nonBlockingPatterns);
+        logger.debug({
+            owner, repoName, ref, ...summary, commitStatus: commitStatus.state, statusContexts: commitStatus.totalCount,
+        }, 'Check runs status');
+        return summary;
     } catch (error) {
         logger.warn({ owner, repoName, ref, error: (error as Error).message }, 'Failed to get check runs status');
         return { count: 0, allPassing: false, anyPending: false, anyFailed: false };
     }
+}
+
+/**
+ * "Is this PR ready" view of getCheckRunsStatus: resolves the repository's
+ * nonBlockingChecks patterns so those checks never gate readiness.
+ */
+export async function getCheckRunsStatusForRepo(
+    owner: string,
+    repoName: string,
+    ref: string,
+    loadNonBlockingChecks: (owner: string, repo: string) => Promise<string[]> = getNonBlockingChecksForRepository,
+): Promise<CheckRunsStatus> {
+    let patterns: string[] = [];
+    try {
+        patterns = await loadNonBlockingChecks(owner, repoName);
+    } catch (error) {
+        logger.warn({ owner, repoName, error: (error as Error).message }, 'Failed to load nonBlockingChecks; treating every check as blocking');
+    }
+    return getCheckRunsStatus(owner, repoName, ref, patterns);
 }
 
 /**
@@ -310,70 +421,27 @@ export async function areAllChecksPassing(
     loadNonBlockingChecks: (owner: string, repo: string) => Promise<string[]> = getNonBlockingChecksForRepository,
 ): Promise<boolean> {
     try {
-        const octokit = await getAuthenticatedOctokit();
-
-        const [checkRunsResult, commitStatusResult] = await Promise.allSettled([
-            octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
-                owner,
-                repo: repoName,
-                ref
-            }),
-            getCommitStatusInfo(octokit, owner, repoName, ref)
-        ]);
-
-        if (checkRunsResult.status === 'rejected' && commitStatusResult.status === 'rejected') {
-            throw checkRunsResult.reason;
-        }
-
-        const checkRuns = checkRunsResult.status === 'fulfilled'
-            ? checkRunsResult.value.data.check_runs
-            : [];
-        const commitStatus = commitStatusResult.status === 'fulfilled'
-            ? commitStatusResult.value
-            : { state: 'pending', totalCount: 0 };
-
-        if (checkRunsResult.status === 'rejected') {
-            logger.warn({ owner, repoName, ref, error: (checkRunsResult.reason as Error).message }, 'Failed to get check runs data');
-        }
-
-        if (commitStatusResult.status === 'rejected') {
-            const error = commitStatusResult.reason as Error;
-            const logMethod = isIntegrationAccessError(error) ? 'info' : 'warn';
-            logger[logMethod](
-                { owner, repoName, ref, error: error.message },
-                'Legacy commit status unavailable, continuing with check-runs only',
-            );
-        }
+        const { checkRuns, commitStatus } = await fetchCheckSignals(owner, repoName, ref);
 
         // Checks the repository marked non-blocking never hold automation back,
         // but they still count as CI signal below.
         const nonBlockingChecks = await loadNonBlockingChecks(owner, repoName);
-        const blockingCheckRuns = checkRuns.filter(
-            (run: { name?: string }) => !isNonBlockingCheck(run.name, nonBlockingChecks),
-        );
-        const allCheckRunsPass = blockingCheckRuns.length === 0 || blockingCheckRuns.every(
-            (run: { status: string; conclusion: string | null }) =>
-                run.status === 'completed' && (run.conclusion === 'success' || run.conclusion === 'skipped')
-        );
-
-        // Repos with no legacy status contexts report 'pending' — treat as passing.
-        const statusPass = commitStatus.totalCount === 0 ||
-            (commitStatus.state !== 'pending' && commitStatus.state !== 'failure' && commitStatus.state !== 'error');
+        const summary = summarizeCheckSignals(checkRuns, commitStatus, nonBlockingChecks);
         // Do not treat a commit with no CI signal at all as safe to merge.
         const hasCheckSignal = checkRuns.length > 0 || commitStatus.totalCount > 0;
-        const allPass = hasCheckSignal && allCheckRunsPass && statusPass;
+        const allPass = hasCheckSignal && summary.allPassing;
 
         logger.debug({
             owner,
             repoName,
             ref,
             totalCheckRuns: checkRuns.length,
-            nonBlockingCheckRuns: checkRuns.length - blockingCheckRuns.length,
+            nonBlockingChecks: summary.nonBlockingCount,
             commitStatus: commitStatus.state,
             statusContexts: commitStatus.totalCount,
             hasCheckSignal,
-            allCheckRunsPass,
-            statusPass,
+            blockingFailed: summary.blockingFailed,
+            blockingPending: summary.blockingPending,
             allPass
         }, 'Checked PR status');
 

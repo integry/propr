@@ -118,7 +118,26 @@ ProPR keeps Git state under `/tmp/git-processor` on the host. The launcher mount
 - `/tmp/git-processor/clones/` — cached clones, one per monitored repository (`GIT_CLONES_BASE_PATH`)
 - `/tmp/git-processor/worktrees/` — per-task worktrees (`GIT_WORKTREES_BASE_PATH`)
 
-Worktrees are removed automatically after each task finishes (controlled by `WORKTREE_RETENTION_STRATEGY`, default `always_delete`; failed-task worktrees may be retained briefly with a `.retention-info.json` marker for inspection). If disk usage grows from leftover state, stop the stack and delete stale entries under the worktrees directory; cached clones can also be deleted and are re-created on the next task for that repository.
+Worktrees are removed automatically after each task finishes (controlled by `WORKTREE_RETENTION_STRATEGY`, default `always_delete`; failed-task worktrees may be retained briefly with a `.retention-info.json` marker for inspection). A worktree kept by the [push salvage ladder](#rejected-pushes-and-the-salvage-ladder) is retained regardless of the strategy — copy its commits out before deleting it. If disk usage grows from leftover state, stop the stack and delete stale entries under the worktrees directory; cached clones can also be deleted and are re-created on the next task for that repository.
+
+## Rejected Pushes And The Salvage Ladder
+
+When the final push from a worktree fails — implementation runs, PR follow-ups, `/fix`, ultrafix cycles and merge-conflict jobs — ProPR does not discard the agent's commits with the worktree. It tries, in order:
+
+1. **Retry** the push once with a freshly refreshed installation token (tokens are short-lived and can expire during long runs).
+2. **Rescue ref:** push the same commits to `refs/propr/rescue/<taskId>--<timestamp>` on the same remote (the UTC creation time, for example `20261006T120000Z`, is part of the name). This works for non-fast-forward rejections and transient branch-level failures because the ref is new; it does not help when push protection rejects the commits themselves.
+3. **Bundle:** write a git bundle to `PUSH_RESCUE_BUNDLE_DIR` (default `<DATA_DIR>/rescue/<owner>/<repo>/<taskId>.bundle`).
+4. **Keep the worktree:** override `WORKTREE_RETENTION_STRATEGY` for that task, detach its HEAD (so the branch is free for the next job) and record the retention in `PUSH_RESCUE_WORKTREE_RECORD_DIR`, outside the checkout (an informational `.retention-info.json` with `"reason": "push_salvage"` is also written into the worktree).
+
+The rung that succeeded is recorded on the task timeline, and the task fails with the push diagnosis — the rejection class, GitHub's unblock URL for push protection, and the exact recovery command — in the task detail view, `propr task get <task-id>` (`pushFailure` in `--json`) and the GitHub failure comment. See [Troubleshooting → A Push Was Rejected](./troubleshooting.md#a-push-was-rejected) for recovering each kind.
+
+**Retention.** The daemon deletes rescue refs created more than `PUSH_RESCUE_RETENTION_DAYS` (default 14) days ago — measured from the timestamp in the ref name, not from the commit dates — from every monitored repository, together with bundles of the same age, every `PUSH_RESCUE_SWEEP_INTERVAL_MS` (default 6 hours) and once at startup. Set the retention to `0` to keep them until you delete them yourself. A retained worktree is scheduled for cleanup after the same number of days through a record in `PUSH_RESCUE_WORKTREE_RECORD_DIR` (default `<DATA_DIR>/rescue-worktrees`); the `.retention-info.json` written into the worktree is informational and does not by itself keep a worktree. To delete one rescue ref by hand:
+
+```bash
+git push origin --delete refs/propr/rescue/<taskId>--<timestamp>
+```
+
+Rescue refs live outside `refs/heads`, so GitHub never lists them as branches, normal clones do not fetch them, and ProPR ignores pushes to them for branch discovery and merge-conflict detection.
 
 ## Common Issues
 

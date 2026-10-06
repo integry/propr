@@ -14,6 +14,7 @@ import {
 import type { ClaudeCodeResponse, JobResult, WorkerStateManager, WorktreeInfo } from '@propr/core';
 import { createContainerIdCallbackForPR, createSessionIdCallbackForPR } from './prCommentJobHelpers.js';
 import type { PullRequestPublication } from './prPublication.js';
+import { recordPushSalvageEvent } from './pushSalvageTimeline.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { agentResultToClaudeResponse, toClaudeResult } from './prCommentJobUtils.js';
 import {
@@ -203,6 +204,7 @@ export async function handleMergeWithAgent(options: {
         // Rebasing replays individual commits and can drop the merge commit that proves
         // the fetched base was incorporated.
         rebaseOnNonFastForward: false,
+        salvage: { taskId, onEvent: recordPushSalvageEvent(stateManager, taskId, correlatedLogger) },
     });
     const publishedCommitHash = pushResult.commitHash || finalCommitHash;
     const publishedBranchName = publication.target.branchName;

@@ -10,7 +10,7 @@ import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes, validateDefaultAgentSetting } from './configRoutesAgents.js';
 import { createSyntheticAgentConfigRoutes } from './configRoutesSyntheticAgents.js';
-import { reviewContextBudgetSettingsResponse, saveSettingsWithRollback } from './configRoutesSettings.js';
+import { agentWatchdogSettingsResponse, reviewContextBudgetSettingsResponse, saveSettingsWithRollback } from './configRoutesSettings.js';
 import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
@@ -33,6 +33,7 @@ const DEFAULT_AUTO_FOLLOWUP_SCORE_THRESHOLD = 4;
 const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
 const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
 const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
+const DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
 function validateStringArray(value: unknown, fieldName: string): string[] | string {
   if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) return `${fieldName} must be an array of strings`;
@@ -236,7 +237,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       const ultrafixGoal = getIntegerSettingOrDefault({ name: 'ultrafix_rating_goal', value: ultrafixRatingGoal, defaultValue: DEFAULT_ULTRAFIX_RATING_GOAL, minimum: 1, maximum: 10 });
       const ultrafixCycles = getIntegerSettingOrDefault({ name: 'ultrafix_max_cycles', value: ultrafixMaxCycles, defaultValue: DEFAULT_ULTRAFIX_MAX_CYCLES, minimum: 1 });
       const ultrafixPause = getIntegerSettingOrDefault({ name: 'ultrafix_pause_seconds', value: ultrafixPauseSeconds, defaultValue: DEFAULT_ULTRAFIX_PAUSE_SECONDS, minimum: 0 });
-      for (const entry of [autoFollowup, ultrafixGoal, ultrafixCycles, ultrafixPause]) {
+      const ultrafixCiWait = getIntegerSettingOrDefault({ name: 'ultrafix_ci_wait_timeout_ms', value: await configStore.getConfig('ultrafix_ci_wait_timeout_ms', DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS), defaultValue: DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS, minimum: 1 });
+      for (const entry of [autoFollowup, ultrafixGoal, ultrafixCycles, ultrafixPause, ultrafixCiWait]) {
         if (entry.invalid) {
           invalidIntegerSettings[entry.invalid.name] = entry.invalid.value;
         }
@@ -271,6 +273,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         ultrafix_rating_goal: ultrafixGoal.value,
         ultrafix_max_cycles: ultrafixCycles.value,
         ultrafix_pause_seconds: ultrafixPause.value,
+        ultrafix_ci_wait_timeout_ms: ultrafixCiWait.value,
+        ...await agentWatchdogSettingsResponse(configStore),
         ...(Object.keys(invalidIntegerSettings).length > 0 ? { invalid_settings: invalidIntegerSettings } : {})
       });
     } catch (error) {

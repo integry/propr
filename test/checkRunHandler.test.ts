@@ -142,6 +142,8 @@ const {
     deleteBranch,
     getCurrentPRHead,
     areAllChecksPassing,
+    getCheckRunsStatus,
+    getCheckRunsStatusForRepo,
     getPRAutoMergeInfo,
     linkedIssueHasAutoMergeLabel,
     getFirstCommitMessage,
@@ -271,6 +273,155 @@ function createMockCheckRunPayload(options: {
         }
     } as CheckRunEvent;
 }
+
+// ============= Ultrafix readiness (getCheckRunsStatus + nonBlockingChecks) =============
+
+type FakeCheckRun = { name: string; status: string; conclusion: string | null };
+type FakeStatus = { context: string; state: string };
+
+function mockCheckSignals(checkRuns: FakeCheckRun[], statuses: FakeStatus[] = [], combinedState?: string): void {
+    mockOctokit.request.mock.mockImplementation(async (route: string) => {
+        if (route.includes('/status')) {
+            const state = combinedState
+                ?? (statuses.some(s => s.state === 'failure' || s.state === 'error') ? 'failure'
+                    : statuses.some(s => s.state === 'pending') ? 'pending' : 'success');
+            return { data: { state: statuses.length ? state : 'pending', total_count: statuses.length, statuses } };
+        }
+        return { data: { check_runs: checkRuns } };
+    });
+}
+
+const unsignedPatterns = ['Validate unsigned *', 'Finalize unsigned validation checksums'];
+
+describe('getCheckRunsStatus with nonBlockingChecks (Ultrafix readiness)', () => {
+    test('all passing checks are ready', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Build & Lint Check', status: 'completed', conclusion: 'success' },
+            { name: 'Optional', status: 'completed', conclusion: 'skipped' },
+        ]);
+        const status = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(status.allPassing, true);
+        assert.deepStrictEqual(status.blockingFailed, []);
+        assert.deepStrictEqual(status.blockingPending, []);
+    });
+
+    test('a failing check matching a non-blocking pattern is ready', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Build & Lint Check', status: 'completed', conclusion: 'success' },
+            { name: 'Validate unsigned darwin-arm64 package', status: 'completed', conclusion: 'failure' },
+            { name: 'Validate unsigned linux-x64 package', status: 'completed', conclusion: 'failure' },
+            { name: 'Finalize unsigned validation checksums', status: 'completed', conclusion: 'failure' },
+        ]);
+        const status = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(status.allPassing, true);
+        assert.strictEqual(status.anyFailed, false);
+        assert.strictEqual(status.nonBlockingCount, 3);
+        // Without patterns the same head is still not ready (unchanged default semantics).
+        const legacy = await getCheckRunsStatus('owner', 'repo', 'sha123');
+        assert.strictEqual(legacy.allPassing, false);
+        assert.strictEqual(legacy.anyFailed, true);
+    });
+
+    test('a failing check not matching any pattern is not ready', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Run Full Test Suite', status: 'completed', conclusion: 'failure' },
+            { name: 'Validate unsigned linux-arm64 package', status: 'completed', conclusion: 'failure' },
+        ]);
+        const status = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(status.allPassing, false);
+        assert.strictEqual(status.anyFailed, true);
+        assert.deepStrictEqual(status.blockingFailed, ['Run Full Test Suite']);
+    });
+
+    test('a pending non-blocking check is ready', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Build & Lint Check', status: 'completed', conclusion: 'success' },
+            { name: 'Validate unsigned darwin-x64 package', status: 'queued', conclusion: null },
+        ]);
+        const status = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(status.allPassing, true);
+        assert.strictEqual(status.anyPending, false);
+    });
+
+    test('a pending blocking check is not ready', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Run Full Test Suite', status: 'in_progress', conclusion: null },
+            { name: 'Validate unsigned darwin-x64 package', status: 'completed', conclusion: 'failure' },
+        ]);
+        const status = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(status.allPassing, false);
+        assert.strictEqual(status.anyPending, true);
+        assert.strictEqual(status.anyFailed, false);
+        assert.deepStrictEqual(status.blockingPending, ['Run Full Test Suite']);
+    });
+
+    test('legacy commit statuses matching a pattern are excluded; blocking ones still gate', async () => {
+        resetMocks();
+        mockCheckSignals(
+            [{ name: 'Build & Lint Check', status: 'completed', conclusion: 'success' }],
+            [
+                { context: 'ci/legacy-build', state: 'success' },
+                { context: 'Validate unsigned windows package', state: 'failure' },
+            ],
+        );
+        const ready = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(ready.allPassing, true);
+        assert.strictEqual(ready.count, 3);
+        assert.strictEqual(ready.nonBlockingCount, 1);
+        // The combined legacy state is 'failure', so without patterns it still blocks.
+        assert.strictEqual((await getCheckRunsStatus('owner', 'repo', 'sha123')).allPassing, false);
+
+        resetMocks();
+        mockCheckSignals(
+            [{ name: 'Validate unsigned darwin-arm64 package', status: 'completed', conclusion: 'failure' }],
+            [
+                { context: 'ci/legacy-build', state: 'pending' },
+                { context: 'Validate unsigned windows package', state: 'failure' },
+            ],
+        );
+        const pending = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(pending.allPassing, false);
+        assert.deepStrictEqual(pending.blockingPending, ['ci/legacy-build']);
+        assert.deepStrictEqual(pending.blockingFailed, []);
+
+        resetMocks();
+        mockCheckSignals([], [{ context: 'ci/legacy-build', state: 'error' }]);
+        const failed = await getCheckRunsStatus('owner', 'repo', 'sha123', unsignedPatterns);
+        assert.strictEqual(failed.allPassing, false);
+        assert.deepStrictEqual(failed.blockingFailed, ['ci/legacy-build']);
+    });
+
+    test('getCheckRunsStatusForRepo resolves the repository patterns', async () => {
+        resetMocks();
+        mockCheckSignals([
+            { name: 'Build & Lint Check', status: 'completed', conclusion: 'success' },
+            { name: 'Validate unsigned linux-x64 package', status: 'completed', conclusion: 'failure' },
+        ]);
+        const loader = mock.fn(async () => unsignedPatterns);
+        const status = await getCheckRunsStatusForRepo('owner', 'repo', 'sha123', loader);
+        assert.strictEqual(status.allPassing, true);
+        assert.deepStrictEqual(loader.mock.calls[0].arguments, ['owner', 'repo']);
+
+        // A loader failure falls back to treating every check as blocking.
+        const failing = await getCheckRunsStatusForRepo('owner', 'repo', 'sha123', async () => { throw new Error('db down'); });
+        assert.strictEqual(failing.allPassing, false);
+    });
+
+    test('areAllChecksPassing also ignores non-blocking legacy statuses', async () => {
+        resetMocks();
+        mockCheckSignals(
+            [{ name: 'Build & Lint Check', status: 'completed', conclusion: 'success' }],
+            [{ context: 'Finalize unsigned validation checksums', state: 'failure' }],
+        );
+        assert.strictEqual(await areAllChecksPassing('owner', 'repo', 'sha123', async () => unsignedPatterns), true);
+        assert.strictEqual(await areAllChecksPassing('owner', 'repo', 'sha123', async () => []), false);
+    });
+});
 
 // ============= areAllChecksPassing Tests =============
 

@@ -26,8 +26,7 @@ import {
     clearDeferredContinuationIfCurrent,
     isUltrafixAutomaticWorkCurrent,
 } from './ultrafixOrchestrationService.js';
-import type { UltrafixLoopState } from './ultrafixOrchestrationService.js';
-import type { UltrafixAction } from './ultrafixOrchestrationService.js';
+import type { UltrafixAction, UltrafixCheckStatus, UltrafixLoopState, UltrafixReadinessResult } from './ultrafixOrchestrationService.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
@@ -37,6 +36,7 @@ import {
     finishUltrafixLoop,
     hasUltrafixLabel,
 } from './ultrafixLoopContinuationHelpers.js';
+import { applyUltrafixCiDeferral } from './ultrafixCiWait.js';
 
 export interface UltrafixContinuationParams {
     owner: string;
@@ -60,7 +60,7 @@ export interface UltrafixContinuationParams {
 
 export type ChecksPassingFn = (owner: string, repo: string, ref: string) => Promise<boolean>;
 export type GetPRHeadFn = (owner: string, repo: string, pr: number) => Promise<string | null>;
-export type GetCheckRunsStatusFn = (owner: string, repo: string, ref: string) => Promise<{ count: number; allPassing: boolean; anyPending: boolean; anyFailed: boolean }>;
+export type GetCheckRunsStatusFn = (owner: string, repo: string, ref: string) => Promise<UltrafixCheckStatus>;
 
 let _areAllChecksPassing: ChecksPassingFn | null = null;
 let _getCurrentPRHead: GetPRHeadFn | null = null;
@@ -86,18 +86,20 @@ export interface ContinuationResult {
     outcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
     goal?: number;
     maxCycles?: number;
+    /** Blocking checks holding a deferred review back (non-blocking checks are never listed). */
+    blockingChecks?: string[];
 }
 
 async function deferNextAction(
     input: {
         params: UltrafixContinuationParams;
         nextAction: UltrafixAction;
-        reasons: string[];
+        readiness: UltrafixReadinessResult;
         latestScore: number | null;
-        cycleCount: number;
+        state: UltrafixLoopState;
     },
 ): Promise<ContinuationResult> {
-    const { params, nextAction, reasons, latestScore, cycleCount } = input;
+    const { params, nextAction, readiness, readiness: { reasons }, latestScore, state, state: { cycleCount } } = input;
     const { owner, repo, pullRequestNumber, redisClient, correlatedLogger } = params;
     const saved = await saveDeferredContinuation(redisClient, {
         owner,
@@ -115,10 +117,11 @@ async function deferNextAction(
         { pullRequestNumber, nextAction, blockingReasons: reasons },
         'Ultrafix loop: deferred continuation — waiting for readiness',
     );
-    return {
+    const ci = await applyUltrafixCiDeferral(params, readiness, { ...state, lastScore: latestScore });
+    return ci.terminal ?? {
         continued: false, deferred: true,
         reason: `deferred: ${reasons.join(', ')}`,
-        nextAction, score: latestScore, cycleCount,
+        nextAction, score: latestScore, cycleCount, ...ci.extra,
     };
 }
 
@@ -345,7 +348,7 @@ export async function continueUltrafixLoop(
     if (!readiness.ready) {
         return deferNextAction({
             params, nextAction: decision.action,
-            reasons: readiness.reasons, latestScore, cycleCount: updatedState.cycleCount,
+            readiness, latestScore, state: updatedState,
         });
     }
 
@@ -433,13 +436,12 @@ export async function resumeDeferredContinuation(
             ...deferred,
             workEpoch,
         });
-        if (!saved) {
-            return { continued: false, reason: 'deferred_cancelled' };
-        }
-        return {
+        if (!saved) return { continued: false, reason: 'deferred_cancelled' };
+        const ci = await applyUltrafixCiDeferral(params, readiness, state);
+        return ci.terminal ?? {
             continued: false,
             reason: `still_deferred: ${readiness.reasons.join(', ')}`,
-            deferred: true,
+            deferred: true, ...ci.extra,
         };
     }
 

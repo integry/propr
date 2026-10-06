@@ -9,12 +9,14 @@ import {
   PlanIssueStatus,
   updatePlanIssueStatus,
   resolveAgentTerminationReason,
-  ErrorCategories
+  ErrorCategories,
+  formatPushFailureMessage
 } from '@propr/core';
 import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
 import type { TaskCompletionParams } from './types.js';
 import { buildWorkNotificationRecap } from '../notificationRecap.js';
+import { taskTerminalReasonForAgentTermination } from '../agentTerminalReason.js';
 
 export function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
   if (postProcessingResult?.pr && claudeResult && resolveAgentTerminationReason(claudeResult)) {
@@ -44,7 +46,32 @@ function buildTerminalNotificationRecap(params: TerminalStateParams, status: str
   );
 }
 
+function terminalReasonFields(claudeResult: ClaudeCodeResponse | null) {
+  const terminalReason = claudeResult ? taskTerminalReasonForAgentTermination(resolveAgentTerminationReason(claudeResult)) : undefined;
+  return terminalReason ? { terminalReason } : {};
+}
+
+/** A rejected push is a task failure even when the agent succeeded: the work only
+ * exists in the rescue location named by the recovery instruction. */
+async function markPushFailure(params: TerminalStateParams): Promise<boolean> {
+  const { stateManager, taskId, claudeResult, postProcessingResult, commitResult } = params;
+  const pushFailure = postProcessingResult?.pr ? undefined : postProcessingResult?.pushFailure;
+  if (!pushFailure) return false;
+  const commitResultData = commitResult ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage } : null;
+  await stateManager.markTaskFailed(taskId, new Error(formatPushFailureMessage(pushFailure)), {
+    errorCategory: ErrorCategories.GIT_OPERATION,
+    prResult: { status: 'push_failed', claudeSuccess: claudeResult?.success || false, prCreated: false, commitResult: commitResultData },
+    historyMetadata: { pushFailure, commitResult: commitResultData },
+  });
+  return true;
+}
+
 export async function markTaskTerminalState(params: TerminalStateParams): Promise<void> {
+  if (await markPushFailure(params)) return;
+  await markAgentTerminalState(params);
+}
+
+async function markAgentTerminalState(params: TerminalStateParams): Promise<void> {
   const { stateManager, taskId, claudeResult, postProcessingResult, commitResult } = params;
   const status = getTaskCompletionStatus(claudeResult, postProcessingResult);
   const commitResultData = commitResult
@@ -52,7 +79,7 @@ export async function markTaskTerminalState(params: TerminalStateParams): Promis
     : null;
   const taskResult = {
     status,
-    ...(claudeResult && resolveAgentTerminationReason(claudeResult) === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
+    ...terminalReasonFields(claudeResult),
     claudeSuccess: claudeResult?.success || false,
     prCreated: !!postProcessingResult?.pr,
     prNumber: postProcessingResult?.pr?.number ?? undefined,
@@ -67,7 +94,7 @@ export async function markTaskTerminalState(params: TerminalStateParams): Promis
       new Error(claudeResult?.error || 'Agent processing failed'),
       {
         errorCategory: ErrorCategories.CLAUDE_EXECUTION,
-        ...(claudeResult && resolveAgentTerminationReason(claudeResult) === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
+        ...terminalReasonFields(claudeResult),
         prResult: taskResult,
         historyMetadata: {
           pr: (taskResult.prUrl && taskResult.prNumber)

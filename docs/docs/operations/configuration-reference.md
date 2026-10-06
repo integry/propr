@@ -106,6 +106,9 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | OpenCode task run timeout. | Optional. |
 | `VIBE_MAX_TURNS` | `1000` | Maximum agent turns per Vibe run. | Optional. |
 | `VIBE_TIMEOUT_MS` | `86400000` (24 hours) | Vibe task run timeout. | Optional. |
+| `AGENT_STALL_TIMEOUT_MS` | `600000` (10 minutes) | Stops a coding-agent run that produces no output (records, log lines, transcript updates) for this long, publishing its partial work with `terminalReason` `stalled`. `0` disables. Overridden by **Settings → Automation → Agent watchdog** (`agent_stall_timeout_ms`) without a restart; invalid values fall back to the default with a warning. | Optional tuning. |
+| `AGENT_TOOL_STALL_TIMEOUT_MS` | `1800000` (30 minutes) | Silence allowed after an agent reports a tool call started without streaming its output (builds, test suites, `npm ci`), measured from the tool start. `0` never stops a run during a tool call. Setting: `agent_tool_stall_timeout_ms`. | Optional tuning. |
+| `AGENT_DEGENERATE_OUTPUT_LIMIT` | `50` | Consecutive whitespace-only text deltas that stop a run with `terminalReason` `degenerate_output`. Empty deltas never count. `0` disables. Setting: `agent_degenerate_output_limit`. | Optional tuning. |
 | `VIBE_CONFIG_PATH` | Unset | Absolute path to your `~/.vibe` directory (no `~`). | Running a Vibe agent. |
 | `MISTRAL_API_KEY` | Unset | Vibe credentials fallback when `VIBE_CONFIG_PATH` does not provide them. | Vibe without config-dir credentials. |
 | `HOST_CLAUDE_DIR` / `HOST_CODEX_DIR` / `HOST_ANTIGRAVITY_DIR` / `HOST_VIBE_DIR` | Unset | Production launcher only — absolute host paths for reusing existing agent credential directories. ProPR-managed direct-login accounts need no `HOST_*` setting. Antigravity is Gemini-based, so its directory is `~/.gemini`. | Reusing host credentials with the launcher. |
@@ -129,10 +132,15 @@ Queue and worker behavior; see [Worker Runtime](../architecture/worker-runtime.m
 | `PR_TASK_TITLE_GENERATION_TIMEOUT_MS` | `30000` | Timeout for the lightweight agent call that titles PR comment tasks, including container startup. | Optional tuning. |
 | `SUMMARIZATION_FALLBACK_PROMOTE_THRESHOLD` | `3` | Promotes the summarization fallback to primary after this many primary quota failures for the same agent/model. | Optional. |
 | `SUMMARIZATION_QUOTA_COOLDOWN_MS` | `3600000` (1 hour) | Pauses normal summarization jobs for a repository/branch after both primary and fallback paths fail. | Optional. |
+| `ULTRAFIX_CI_WAIT_TIMEOUT_MS` | Instance setting `ultrafix_ci_wait_timeout_ms`, default `7200000` (2 hours) | How long an Ultrafix review may wait for blocking CI on the PR head before the loop stops with "CI did not settle". Overrides the instance setting when set to a positive integer. See [`/ultrafix`](../features/pr-commands.md#ultrafix). | Optional tuning. |
 | `SYSTEM_TASK_SECRET` | Empty | Signs system task requests (for example revert operations). Generate with `openssl rand -hex 32`. | System tasks (reverts). |
 | `SYSTEM_TASK_TOKEN_MAX_AGE_MS` | `7200000` (2 hours) | Maximum age for signed system task tokens. Increase if jobs expire due to queue backlog or worker downtime. | Optional. |
 | `GIT_CLONES_BASE_PATH` | `/tmp/git-processor/clones` | Where workers keep repository clones. | Optional. |
 | `GIT_WORKTREES_BASE_PATH` | `/tmp/git-processor/worktrees` | Where workers create per-job worktrees. | Optional. |
+| `PUSH_RESCUE_RETENTION_DAYS` | `14` | How long push-salvage rescue refs (`refs/propr/rescue/<taskId>--<timestamp>`, aged from the creation time in the name) and rescue bundles are kept before the daemon deletes them; also the retention of a worktree kept by the last salvage rung. `0` disables the automatic deletion. See [Maintenance → Rejected Pushes](./maintenance.md#rejected-pushes-and-the-salvage-ladder). | Optional. |
+| `PUSH_RESCUE_BUNDLE_DIR` | `<DATA_DIR>/rescue` (next to the SQLite database) | Durable directory for git bundles written when a rejected push cannot reach a rescue ref. Bundles are stored as `<dir>/<owner>/<repo>/<taskId>.bundle`. Must be visible to both the worker (which writes) and the daemon (which prunes). | Optional. |
+| `PUSH_RESCUE_WORKTREE_RECORD_DIR` | `<DATA_DIR>/rescue-worktrees` (next to the SQLite database) | Worker-controlled records of worktrees kept by the last salvage rung. Only these records keep a worktree past `WORKTREE_RETENTION_STRATEGY`; a `.retention-info.json` inside the worktree is informational, since repository contents could forge it. Must be visible to the worker and to whatever runs the expired-worktree cleanup. | Optional. |
+| `PUSH_RESCUE_SWEEP_INTERVAL_MS` | `21600000` (6 hours) | How often the daemon deletes expired rescue refs and bundles. | Optional tuning. |
 | `GIT_DEFAULT_BRANCH` | `main` | Default base branch for PRs. Per-repo overrides use `GIT_DEFAULT_BRANCH_<OWNER>_<REPO>` — see [Branch Configuration](../features/branch-config.md). | Optional. |
 | `GIT_SHALLOW_CLONE_DEPTH` | Empty (full clones) | Depth for shallow clones; leave empty to clone full history. | Optional. |
 

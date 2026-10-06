@@ -1,6 +1,7 @@
 import { test, mock, describe, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import { sanitizeAgentReport } from '../packages/core/src/agents/agentReportSanitizer.js';
+import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
 
 // --- Mock Setup ---
 
@@ -188,6 +189,7 @@ const mockRegistry = {
 // Mock @propr/core
 await mock.module('@propr/core', {
     namedExports: {
+        ...pushSalvageExports,
         logger: {
             info: mock.fn(),
             warn: mock.fn(),

@@ -22,7 +22,7 @@ import {
     setUltrafixCheckRunHook,
     areAllChecksPassing,
     getCurrentPRHead,
-    getCheckRunsStatus,
+    getCheckRunsStatusForRepo,
     loadUltrafixRatingGoal,
     loadUltrafixMaxCycles,
     loadUltrafixPauseSeconds,
@@ -45,6 +45,7 @@ import {
 } from '@propr/core';
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { sweepDraftContext } from './daemon/draftContextSweep.js';
+import { sweepPushRescues } from './daemon/rescueRefSweep.js';
 import {
     clearUltrafixStateIfCurrent,
     hasUltrafixAutomaticWork,
@@ -169,6 +170,14 @@ async function scheduleDraftContextSweep(): Promise<NodeJS.Timeout> {
     return setInterval(() => { void sweepDraftContext(); }, DRAFT_CONTEXT_SWEEP_INTERVAL_MS);
 }
 
+// Delete push-salvage rescue refs and bundles past PUSH_RESCUE_RETENTION_DAYS. Runs in the
+// background so a slow remote never delays startup.
+function schedulePushRescueSweep(): NodeJS.Timeout {
+    const PUSH_RESCUE_SWEEP_INTERVAL_MS = parseInt(process.env.PUSH_RESCUE_SWEEP_INTERVAL_MS || `${6 * 60 * 60 * 1000}`, 10);
+    void sweepPushRescues();
+    return setInterval(() => { void sweepPushRescues(); }, PUSH_RESCUE_SWEEP_INTERVAL_MS);
+}
+
 async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     // No config, queue, or event intake may start against a partially migrated schema.
     await runMigrations();
@@ -194,7 +203,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     setCheckRunDeps({
         areAllChecksPassing,
         getCurrentPRHead,
-        getCheckRunsStatus,
+        getCheckRunsStatus: getCheckRunsStatusForRepo,
     });
 
     // Wire up check_run hook to resume deferred ultrafix continuations
@@ -245,6 +254,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const heartbeatInterval = setInterval(sendHeartbeat, 30000);
 
     const draftContextSweepInterval = await scheduleDraftContextSweep();
+    const pushRescueSweepInterval = schedulePushRescueSweep();
 
     let intervalId: NodeJS.Timeout | null = null;
     let routingService: RoutingWebSocketIntakeService | null = null;
@@ -413,6 +423,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
+        clearInterval(pushRescueSweepInterval);
         // Stop the routing service first so it can drain in-flight deliveries and
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the
