@@ -26,7 +26,7 @@ const {
   createAgentRunProcessor,
 } = await import('../src/jobs/processAgentRunJob.ts');
 const { advanceAfterReport } = await import('../src/jobs/agentRuns/autonomy.ts');
-const { AGENT_CONTEXT_DIR, AGENT_INPUTS_DIR, assertContextRepositoriesAllowed, copyAgentInputFiles, prepareAgentRunWorkspace, prepareReservedDirectory } = await import('../src/jobs/agentRuns/workspace.ts');
+const { AGENT_CONTEXT_DIR, AGENT_INPUTS_DIR, assertContextRepositoriesAllowed, cloneContextRepository, copyAgentInputFiles, prepareAgentRunWorkspace, prepareReservedDirectory } = await import('../src/jobs/agentRuns/workspace.ts');
 type AgentRunProcessorDeps = import('../src/jobs/processAgentRunJob.ts').AgentRunProcessorDeps;
 type AgentRunWorkspace = import('../src/jobs/agentRuns/workspace.ts').AgentRunWorkspace;
 
@@ -241,6 +241,47 @@ describe('processAgentRunJob', () => {
     assert.equal(h.run().failureReason, 'Repositories are not enabled: acme/web');
     assert.equal(h.stateCalls.length, 0);
     assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('a definition invalidated after a failed claim fails the task the earlier delivery created', async () => {
+    const h = harness();
+    const transitionRun = h.deps.transitionRun!;
+    let outage = true;
+    h.deps.transitionRun = (async (...args: Parameters<typeof transitionRun>) => {
+      if (outage && args[2] === 'running') throw new Error('database unavailable');
+      return transitionRun(...args);
+    }) as AgentRunProcessorDeps['transitionRun'];
+    let invalid: string | null = null;
+    h.deps.validateDefinition = async () => invalid;
+    const processor = createAgentRunProcessor(h.deps);
+
+    await assert.rejects(processor(job), /database unavailable/);
+    assert.equal(h.run().state, 'queued');
+    assert.equal(h.taskState(), 'pending');
+
+    // An administrator disables a repository before the retry.
+    outage = false;
+    invalid = 'Repositories are not enabled: acme/web';
+    const retried = await processor(job);
+    assert.equal(retried.status, 'failed');
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.taskState(), 'failed');
+    assert.deepEqual(h.stateCalls.map(call => call[0]), ['create', 'failed']);
+    assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('a validation failure whose existing task cannot be ended rejects the delivery and the retry ends it', async () => {
+    const h = harness({ invalid: 'Repositories are not enabled: acme/web', task: 'pending' });
+    failTaskCallOnce(h, 'markTaskFailed');
+    const processor = createAgentRunProcessor(h.deps);
+    await assert.rejects(processor(job), AgentRunSettlementError);
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.taskState(), 'pending');
+
+    const retried = await processor(job);
+    assert.equal(retried.status, 'failed');
+    assert.equal(h.taskState(), 'failed');
+    assert.ok(!h.stateCalls.some(call => call[0] === 'create'));
   });
 
   test('a run cancelled between pickup and start cancels its task and never starts a container', async () => {
@@ -867,6 +908,40 @@ describe('agent run workspace', () => {
     // Rejected before any clone: a clone attempt would fail with a different error.
     await assert.rejects(prepared, /contextRepositories setting of acme\/web does not allow reading acme\/api/);
     assert.deepEqual(resolveContextPolicy.mock.calls.map(call => call.arguments), [['acme/web']]);
+  });
+
+  test('context clones authenticate per command and never put the token in the clone URL or config', async () => {
+    const bin = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-fake-git-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-context-'));
+    const originalPath = process.env.PATH;
+    try {
+      // Records each invocation; a clone writes its remote URL to the destination's config, as git does.
+      await fs.writeFile(path.join(bin, 'git'), [
+        '#!/bin/sh',
+        `printf '%s\\n' "$*" >> "${bin}/calls"`,
+        `printf '%s\\n' "$GIT_CONFIG_KEY_1=$GIT_CONFIG_VALUE_1" >> "${bin}/env"`,
+        'for last; do :; done',
+        'if [ "$1 $2" = "-c core.hooksPath=/dev/null" ] && [ "$3" = clone ]; then',
+        '  mkdir -p "$last/.git"',
+        '  for arg; do case "$arg" in https://*) printf \'[remote "origin"]\\n\\turl = %s\\n\' "$arg" > "$last/.git/config";; esac; done',
+        'fi',
+        '',
+      ].join('\n'), { mode: 0o755 });
+      process.env.PATH = `${bin}${path.delimiter}${originalPath}`;
+      const destination = path.join(root, 'acme__api');
+      await cloneContextRepository('acme/api', destination, 'ghs_worker_secret');
+
+      const calls = await fs.readFile(path.join(bin, 'calls'), 'utf8');
+      assert.ok(!calls.includes('ghs_worker_secret'));
+      assert.match(calls, /^-c core\.hooksPath=\/dev\/null clone .* https:\/\/github\.com\/acme\/api\.git /);
+      assert.equal(await fs.readFile(path.join(destination, '.git', 'config'), 'utf8'), '[remote "origin"]\n\turl = https://github.com/acme/api.git\n');
+      const header = `http.https://github.com/.extraheader=AUTHORIZATION: basic ${Buffer.from('x-access-token:ghs_worker_secret').toString('base64')}`;
+      assert.deepEqual((await fs.readFile(path.join(bin, 'env'), 'utf8')).trim().split('\n'), [header]);
+    } finally {
+      process.env.PATH = originalPath;
+      await fs.remove(bin);
+      await fs.remove(root);
+    }
   });
 
   test('context policy checks follow the adapter semantics', () => {

@@ -348,15 +348,31 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
     async function reconcileEndedRun(run: StoredAgentRun, correlationId: string, log: Logger): Promise<JobResult> {
         const runId = run.id;
         const taskId = run.reportTaskId ?? agentRunReportTaskId(runId);
-        const stateManager = deps.stateManager();
-        const task = await stateManager.getTaskState(taskId);
-        if (!task || TERMINAL_TASK_STATES.has(task.state)) {
+        const settled = await settleExistingTask({ runId, taskId, stateManager: deps.stateManager(), log });
+        if (settled === undefined) {
             log.info({ runId, state: run.state }, 'Agent run is not queued; skipping');
             return { status: 'skipped', runId, correlationId };
         }
-        log.warn({ runId, taskId, state: run.state, taskState: task.state }, 'Ending the task of an agent run that already ended');
-        const state = await settleTaskWithRun({ runId, taskId, stateManager, log });
-        return { status: state === 'failed' ? 'failed' : state === 'cancelled' ? 'cancelled' : 'skipped', runId, taskId, correlationId };
+        return { status: settled === 'failed' ? 'failed' : settled === 'cancelled' ? 'cancelled' : 'skipped', runId, taskId, correlationId };
+    }
+
+    /**
+     * Ends a task that already exists for a run another step ended. Returns
+     * undefined when there is no task or it already ended; otherwise the run
+     * state the task followed. Errors propagate so the delivery is retried.
+     */
+    async function settleExistingTask(context: RunContext): Promise<AgentRunState | null | undefined> {
+        const { runId, taskId, stateManager, log } = context;
+        let task: Awaited<ReturnType<AgentRunStateManager['getTaskState']>>;
+        try {
+            task = await stateManager.getTaskState(taskId);
+        } catch (error) {
+            log.error({ runId, taskId, err: error }, 'Could not read agent run task');
+            throw new AgentRunSettlementError(runId, taskId, error);
+        }
+        if (!task || TERMINAL_TASK_STATES.has(task.state)) return undefined;
+        log.warn({ runId, taskId, taskState: task.state }, 'Ending the task of an agent run that already ended');
+        return settleTaskWithRun(context);
     }
 
     /**
@@ -442,6 +458,9 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         const invalid = await invalidDefinitionReason(definition);
         if (!definition || invalid) {
             await failRun(runId, ['queued'], invalid ?? UNREADABLE_DEFINITION_REASON, log);
+            // An earlier delivery may have created the task and then failed to
+            // claim the run; that task ends with the run, but none is created.
+            await settleExistingTask({ runId, taskId: run.reportTaskId ?? agentRunReportTaskId(runId), stateManager: deps.stateManager(), log });
             return { status: 'failed', runId, reason: invalid, correlationId };
         }
 

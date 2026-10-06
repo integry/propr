@@ -17,6 +17,7 @@ import fs from 'fs-extra';
 import type { Logger } from 'pino';
 import {
     cleanupWorktree,
+    configureGitAuthentication,
     createHooklessGit,
     createWorktreeForIssue,
     ensureGitRepository,
@@ -147,20 +148,22 @@ export async function copyAgentInputFiles(
 }
 
 /**
- * Shallow, single-branch copy of an additional repository. The credential is
- * only used for the clone and removed from the copy's remote afterwards.
+ * Shallow, single-branch copy of an additional repository. The destination
+ * lies under a directory running agent containers can read, so the credential
+ * is supplied through this command's environment only: the clone URL, and so
+ * the copy's `.git/config`, never contains it, not even while the clone runs.
  */
-async function cloneContextRepository(repository: string, destination: string, githubToken: string): Promise<void> {
+export async function cloneContextRepository(repository: string, destination: string, githubToken: string): Promise<void> {
     const { owner, repo } = splitRepository(repository);
     const publicUrl = getRepoUrl({ repoOwner: owner, repoName: repo });
-    const authenticatedUrl = `https://x-access-token:${githubToken}@github.com/${owner}/${repo}.git`;
     await fs.ensureDir(path.dirname(destination));
+    const git = createHooklessGit();
+    configureGitAuthentication(git, githubToken);
     try {
-        await createHooklessGit().clone(authenticatedUrl, destination, ['--depth=1', '--single-branch', '--no-tags']);
+        await git.clone(publicUrl, destination, ['--depth=1', '--single-branch', '--no-tags']);
     } catch (error) {
         throw new Error(`Could not clone ${repository}: ${(error as Error).message.split(githubToken).join('***')}`);
     }
-    await createHooklessGit(destination).remote(['set-url', 'origin', publicUrl]);
 }
 
 /**
