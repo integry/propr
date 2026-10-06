@@ -3,8 +3,10 @@ import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import knex, { type Knex } from 'knex';
 import {
+  changeAgentDefinitionAttachments,
   createAgentDefinition,
   deleteAgentDefinition,
+  deleteAgentDefinitionUnlessRunInStates,
   getAgentDefinition,
   listAgentDefinitions,
   rowToAgentDefinition,
@@ -181,5 +183,50 @@ describe('agentDefinitionStore', () => {
     assert.equal(await deleteAgentDefinition(created.id, 'alice', deps()), true);
     assert.equal(await getAgentDefinition(created.id, 'alice', deps()), undefined);
     assert.deepEqual(await database('agent_runs').where({ definition_id: created.id }), []);
+  });
+
+  test('a guarded delete refuses while a run is in a blocking state, in the same statement', async () => {
+    const created = await createAgentDefinition({ ownerId: 'alice', name: 'Guarded', prompt: 'p' }, deps());
+    const runId = crypto.randomUUID();
+    await database('agent_runs').insert({
+      id: runId, definition_id: created.id, owner_id: 'alice', trigger: 'manual', state: 'running', autonomy_mode: 'dry_run',
+      definition_snapshot: JSON.stringify(created), created_at: NOW, updated_at: NOW,
+    });
+
+    assert.equal(await deleteAgentDefinitionUnlessRunInStates(created.id, 'bob', ['running'], deps()), 'not_found');
+    assert.equal(await deleteAgentDefinitionUnlessRunInStates(created.id, 'alice', ['running', 'acting'], deps()), 'run_active');
+    assert.ok(await getAgentDefinition(created.id, 'alice', deps()));
+
+    await database('agent_runs').where({ id: runId }).update({ state: 'completed' });
+    assert.equal(await deleteAgentDefinitionUnlessRunInStates(created.id, 'alice', ['running', 'acting'], deps()), 'deleted');
+    assert.equal(await getAgentDefinition(created.id, 'alice', deps()), undefined);
+  });
+
+  test('changing attachments retries against a list another write replaced first', async () => {
+    const created = await createAgentDefinition({ ownerId: 'alice', name: 'Files', prompt: 'p' }, deps());
+    const attachment = (id: string) => ({ id, originalName: `${id}.txt`, storedPath: `/tmp/${id}`, mimeType: 'text/plain', size: 1, tokenEstimate: 1, type: 'text' as const });
+    await setAgentDefinitionAttachments(created.id, 'alice', [attachment('a')], deps());
+
+    // A competing write lands between the first read and its conditional write.
+    const competing = new Promise<void>((resolve, reject) => {
+      const listener = (_response: unknown, query: { sql: string }) => {
+        if (!/^select .*attachments/i.test(query.sql)) return;
+        database.off('query-response', listener);
+        setAgentDefinitionAttachments(created.id, 'alice', [attachment('a'), attachment('b')], deps()).then(() => resolve(), reject);
+      };
+      database.on('query-response', listener);
+    });
+    const seen: string[][] = [];
+    const changed = await changeAgentDefinitionAttachments(created.id, 'alice', current => {
+      seen.push(current.map(item => item.id));
+      return [...current, attachment('c')];
+    }, deps());
+    await competing;
+
+    assert.deepEqual(seen, [['a'], ['a', 'b']]);
+    assert.deepEqual(changed?.previous.map(item => item.id), ['a', 'b']);
+    assert.deepEqual(changed?.definition.attachments.map(item => item.id), ['a', 'b', 'c']);
+    assert.equal(changed?.definition.revision, 0);
+    assert.equal(await changeAgentDefinitionAttachments(created.id, 'bob', current => current, deps()), undefined);
   });
 });

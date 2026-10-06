@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- one suite covers every agent definition and run route, including their race regressions */
 import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -121,6 +122,29 @@ describe('agent definition routes', () => {
     }));
     assert.equal(created.status, 201, JSON.stringify(created.body));
     return created.body.definition as { id: string; revision: number; [key: string]: unknown };
+  }
+
+  /** Run `action` as soon as a matching query has answered, before the waiting caller resumes. */
+  function afterQuery(matches: (sql: string) => boolean, action: () => Promise<unknown>): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const listener = (_response: unknown, query: { sql: string }) => {
+        if (!matches(query.sql)) return;
+        database.off('query-response', listener);
+        action().then(() => resolve(), reject);
+      };
+      database.on('query-response', listener);
+    });
+  }
+
+  function deferred() {
+    let release!: () => void;
+    const promise = new Promise<void>(resolve => { release = resolve; });
+    return { promise, release };
+  }
+
+  async function storedAttachmentIds(definitionId: string): Promise<string[]> {
+    const row = await database('agent_definitions').where({ id: definitionId }).first();
+    return (JSON.parse(row.attachments) as Attachment[]).map(attachment => attachment.id);
   }
 
   async function triggerRun(definitionId: string, key?: string, owner = 'alice') {
@@ -291,6 +315,47 @@ describe('agent definition routes', () => {
     assert.ok(await database('agent_definitions').where({ id: definition.id }).first());
   });
 
+  test('a queued run that starts while the delete is in flight blocks the delete with 409', async () => {
+    const definition = await createDefinition('alice');
+    const runId = (await triggerRun(definition.id)).body.run.id as string;
+    // The worker starts the run right after the route has read the definition.
+    const started = afterQuery(sql => /^select .*agent_definitions/i.test(sql),
+      () => transitionAgentRun(runId, ['queued'], 'running', { reportTaskId: 'task-1' }, { database }));
+
+    const refused = await call(routes.remove, request('alice', { params: { id: definition.id } }));
+    await started;
+    assert.deepEqual([refused.status, refused.body.code], [409, 'AGENT_RUN_ACTIVE']);
+    assert.equal((await database('agent_runs').where({ id: runId }).first())?.state, 'running');
+    assert.deepEqual(removedFiles, []);
+  });
+
+  test('a run starting right after the delete consults agent_runs is never orphaned', async () => {
+    const definition = await createDefinition('alice');
+    const runId = (await triggerRun(definition.id)).body.run.id as string;
+    let startedRun: StoredAgentRun | null = null;
+    // The worker starts the run right after the route's last statement that reads agent_runs.
+    const started = afterQuery(sql => /agent_runs/i.test(sql) && !/^insert/i.test(sql), async () => {
+      startedRun = await transitionAgentRun(runId, ['queued'], 'running', { reportTaskId: 'task-1' }, { database });
+    });
+
+    const result = await call(routes.remove, request('alice', { params: { id: definition.id } }));
+    await started;
+    if (result.status === 204) {
+      assert.equal(startedRun, null, 'a deleted definition leaves no run for the worker to start');
+    } else {
+      assert.deepEqual([result.status, result.body.code], [409, 'AGENT_RUN_ACTIVE']);
+      assert.equal((await database('agent_runs').where({ id: runId }).first())?.state, 'running');
+    }
+  });
+
+  test('deleting a definition whose run is only queued succeeds', async () => {
+    const definition = await createDefinition('alice');
+    await triggerRun(definition.id);
+    const removed = await call(routes.remove, request('alice', { params: { id: definition.id } }));
+    assert.equal(removed.status, 204);
+    assert.equal(await database('agent_definitions').where({ id: definition.id }).first(), undefined);
+  });
+
   test('cancel moves a queued run to cancelled without stopping a task', async () => {
     const definition = await createDefinition('alice');
     const runId = (await triggerRun(definition.id)).body.run.id as string;
@@ -310,6 +375,19 @@ describe('agent definition routes', () => {
     const cancelled = await call(routes.cancelRun, request('alice', { params: { runId } }));
     assert.equal(cancelled.body.run.state, 'cancelled');
     assert.deepEqual(stopped, ['report-task-7']);
+  });
+
+  test('cancel stops the report task of a run that started after the cancel read it as queued', async () => {
+    const definition = await createDefinition('alice');
+    const runId = (await triggerRun(definition.id)).body.run.id as string;
+    const started = afterQuery(sql => /^select .*agent_runs/i.test(sql),
+      () => transitionAgentRun(runId, ['queued'], 'running', { reportTaskId: 'report-task-9' }, { database }));
+
+    const cancelled = await call(routes.cancelRun, request('alice', { params: { runId } }));
+    await started;
+    assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
+    assert.equal(cancelled.body.run.state, 'cancelled');
+    assert.deepEqual(stopped, ['report-task-9']);
   });
 
   test('run history omits report bodies; run detail includes the report', async () => {
@@ -351,6 +429,68 @@ describe('agent definition routes', () => {
     assert.equal(removed.status, 200);
     assert.deepEqual(removed.body.definition.attachments, []);
     assert.equal((removedFiles[0]?.attachments as Attachment[])[0]?.id, 'att-notes.md');
+  });
+
+  test('concurrent input file removals keep each other\'s removal', async () => {
+    const definition = await createDefinition('alice');
+    const files = ['a.md', 'b.md'].map(name => ({ originalname: name, size: 1, path: `/tmp/${name}` }) as MulterFile);
+    await call(routes.uploadAttachments, request('alice', { params: { id: definition.id }, files }));
+
+    const results = await Promise.all(['att-a.md', 'att-b.md'].map(attachmentId =>
+      call(routes.deleteAttachment, request('alice', { params: { id: definition.id, attachmentId } }))));
+    assert.deepEqual(results.map(result => result.status), [200, 200]);
+    assert.deepEqual(await storedAttachmentIds(definition.id), []);
+    assert.deepEqual(removedFiles.flatMap(entry => (entry.attachments as Attachment[]).map(attachment => attachment.id)).sort(),
+      ['att-a.md', 'att-b.md']);
+  });
+
+  test('an upload finishing after a concurrent change appends to the current list', async () => {
+    const definition = await createDefinition('alice');
+    const seed = { originalname: 'old.md', size: 1, path: '/tmp/old' } as MulterFile;
+    await call(routes.uploadAttachments, request('alice', { params: { id: definition.id }, files: [seed] }));
+
+    const processing = deferred();
+    const slow = createAgentDefinitionRoutes({ db: database, services: {
+      ...services(),
+      processUpload: async (file, definitionId) => {
+        await processing.promise;
+        return services().processUpload!(file, definitionId);
+      },
+    } });
+    const upload = call(slow.uploadAttachments, request('alice', {
+      params: { id: definition.id }, files: [{ originalname: 'new.md', size: 1, path: '/tmp/new' } as MulterFile],
+    }));
+    const removed = await call(routes.deleteAttachment, request('alice', { params: { id: definition.id, attachmentId: 'att-old.md' } }));
+    assert.equal(removed.status, 200);
+    processing.release();
+
+    assert.equal((await upload).status, 201);
+    assert.deepEqual(await storedAttachmentIds(definition.id), ['att-new.md'], 'the removed file is not referenced again');
+  });
+
+  test('concurrent uploads are limited against the stored list, and the loser\'s files are removed', async () => {
+    const definition = await createDefinition('alice');
+    const batch = (prefix: string, count: number) =>
+      Array.from({ length: count }, (_, index) => ({ originalname: `${prefix}${index}.md`, size: 1, path: '/tmp/x' }) as MulterFile);
+    await call(routes.uploadAttachments, request('alice', { params: { id: definition.id }, files: batch('seed', 8) }));
+    removedFiles = [];
+
+    const processing = deferred();
+    const slow = createAgentDefinitionRoutes({ db: database, services: {
+      ...services(),
+      processUpload: async (file, definitionId) => {
+        await processing.promise;
+        return services().processUpload!(file, definitionId);
+      },
+    } });
+    const uploads = ['x', 'y'].map(prefix =>
+      call(slow.uploadAttachments, request('alice', { params: { id: definition.id }, files: batch(prefix, 2) })));
+    processing.release();
+
+    const statuses = (await Promise.all(uploads)).map(result => result.status).sort();
+    assert.deepEqual(statuses, [201, 400]);
+    assert.equal((await storedAttachmentIds(definition.id)).length, 10);
+    assert.equal(removedFiles.length, 1, 'the rejected upload removes the files it processed');
   });
 
   test('rejects malformed paging', async () => {

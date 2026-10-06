@@ -19,6 +19,9 @@ import type { Attachment } from '../attachmentService.js';
  */
 
 const TABLE = 'agent_definitions';
+const RUNS_TABLE = 'agent_runs';
+/** Conditional attachment writes retry this many times when another write keeps landing first. */
+const MAX_ATTACHMENT_WRITE_ATTEMPTS = 5;
 /** Schedules are evaluated in UTC in v1. */
 const SCHEDULE_TIMEZONE = 'UTC';
 export const DEFAULT_AGENT_DEFINITION_PAGE_SIZE = 50;
@@ -297,6 +300,65 @@ export async function deleteAgentDefinition(
 ): Promise<boolean> {
   const deleted = await database(TABLE).where({ id, owner_id: ownerId }).delete();
   return deleted > 0;
+}
+
+export type DeleteAgentDefinitionResult = 'deleted' | 'not_found' | 'run_active';
+
+/**
+ * Delete a definition only while it has no run in `runStates`. The run check is
+ * part of the DELETE statement, so a run entering one of those states either
+ * lands first and blocks the delete, or finds its row already cascaded away.
+ */
+export async function deleteAgentDefinitionUnlessRunInStates(
+  id: string,
+  ownerId: string,
+  runStates: readonly string[],
+  { database = db }: AgentDefinitionStoreDependencies = {},
+): Promise<DeleteAgentDefinitionResult> {
+  const query = database(TABLE).where({ id, owner_id: ownerId });
+  if (runStates.length > 0) {
+    query.whereNotExists(database(RUNS_TABLE).select(database.raw('1'))
+      .where('definition_id', id).whereIn('state', [...runStates]));
+  }
+  if (await query.delete() > 0) return 'deleted';
+  const remaining = await database(TABLE).where({ id, owner_id: ownerId }).first('id');
+  return remaining ? 'run_active' : 'not_found';
+}
+
+export interface AgentDefinitionAttachmentsChange {
+  definition: StoredAgentDefinition;
+  /** The stored list `change` was applied to. */
+  previous: Attachment[];
+}
+
+/**
+ * Atomically derive a definition's attachments from the stored list. `change`
+ * receives the current list and returns the new one, or throws to abort (for
+ * example over a limit). The write is conditional on the list it was computed
+ * from, and is retried against the fresh list when another write landed first,
+ * so concurrent additions and removals never discard each other. Like
+ * `setAgentDefinitionAttachments`, this does not bump the revision. Returns
+ * undefined when the definition does not exist for this owner.
+ */
+export async function changeAgentDefinitionAttachments(
+  id: string,
+  ownerId: string,
+  change: (current: Attachment[]) => Attachment[],
+  { database = db, now = Date.now }: AgentDefinitionStoreDependencies = {},
+): Promise<AgentDefinitionAttachmentsChange | undefined> {
+  for (let attempt = 0; attempt < MAX_ATTACHMENT_WRITE_ATTEMPTS; attempt += 1) {
+    const row = await database(TABLE).where({ id, owner_id: ownerId })
+      .first<Pick<AgentDefinitionRow, 'attachments'> | undefined>('attachments');
+    if (!row) return undefined;
+    const previous = parseJsonArray(row.attachments).filter(isAttachment);
+    const next = change(previous);
+    // RETURNING yields the row this write produced, not a later competing write.
+    const [updated] = await database(TABLE).where({ id, owner_id: ownerId, attachments: row.attachments })
+      .update({ attachments: JSON.stringify(next), updated_at: now() })
+      .returning('*') as AgentDefinitionRow[];
+    if (updated) return { definition: rowToAgentDefinition(updated), previous };
+  }
+  throw statusError('Agent input files were changed concurrently; retry', 409);
 }
 
 /**

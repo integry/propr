@@ -6,15 +6,14 @@ import type { Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import {
   AttachmentService,
+  changeAgentDefinitionAttachments,
   createAgentDefinition,
-  deleteAgentDefinition,
+  deleteAgentDefinitionUnlessRunInStates,
   getAgentDefinition,
   getAgentRun,
-  hasAgentRunInStates,
   listAgentDefinitions,
   listAgentRuns,
   logger,
-  setAgentDefinitionAttachments,
   transitionAgentRun,
   triggerAgentRun,
   updateAgentDefinition,
@@ -65,6 +64,8 @@ const IDEMPOTENCY_KEY_MAX_LENGTH = 255;
 /** Runs that own a live agent container; their definition cannot be deleted under them. */
 const ACTIVE_AGENT_RUN_STATES: readonly AgentRunState[] = ['running', 'acting'];
 const CANCELLABLE_AGENT_RUN_STATES: readonly AgentRunState[] = ['queued', 'deferred', 'running', 'awaiting_approval', 'acting'];
+/** Cancel retries when the run keeps moving between the read and the guarded transition. */
+const MAX_CANCEL_ATTEMPTS = 5;
 
 type StopTask = (taskId: string, options: Parameters<typeof stopTaskExecution>[1]) => Promise<StopTaskExecutionResult>;
 
@@ -370,10 +371,12 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
   const remove = handler('Failed to delete agent definition', async (req, res) => {
     const owner = requireOwner(req);
     const definition = await requireDefinition(req, owner);
-    if (await hasAgentRunInStates(definition.id, owner, ACTIVE_AGENT_RUN_STATES, storeDeps)) {
+    // The active-run check is part of the delete itself, so a run starting concurrently cannot be cascaded away.
+    const outcome = await deleteAgentDefinitionUnlessRunInStates(definition.id, owner, ACTIVE_AGENT_RUN_STATES, storeDeps);
+    if (outcome === 'run_active') {
       throw new RouteError(409, 'Agent has a run in progress; cancel it before deleting the agent', 'AGENT_RUN_ACTIVE');
     }
-    if (!await deleteAgentDefinition(definition.id, owner, storeDeps)) throw new RouteError(404, 'Agent definition not found');
+    if (outcome === 'not_found') throw new RouteError(404, 'Agent definition not found');
     await removeAttachmentFiles(definition.id, 'all').catch(error => {
       logger.warn({ definitionId: definition.id, err: error }, 'Failed to remove agent definition input files');
     });
@@ -398,8 +401,15 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
           throw new RouteError(400, (error as Error).message);
         }
       }
-      const updated = await setAgentDefinitionAttachments(definition.id, owner, [...definition.attachments, ...processed], storeDeps);
-      if (!updated) throw new RouteError(404, 'Agent definition not found');
+      // Append to the list stored now, not the one read before processing, and re-check the limit against it.
+      const changed = await changeAgentDefinitionAttachments(definition.id, owner, current => {
+        if (current.length + processed.length > MAX_AGENT_ATTACHMENTS) {
+          throw new RouteError(400, `An agent can have at most ${MAX_AGENT_ATTACHMENTS} input files`);
+        }
+        return [...current, ...processed];
+      }, storeDeps);
+      if (!changed) throw new RouteError(404, 'Agent definition not found');
+      const updated = changed.definition;
       const added = new Set(processed.map(attachment => attachment.id));
       res.status(201).json({
         definition: publicAgentDefinition(updated),
@@ -415,15 +425,19 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
 
   const deleteAttachment = handler('Failed to remove agent input file', async (req, res) => {
     const owner = requireOwner(req);
-    const definition = await requireDefinition(req, owner);
+    const definitionId = String(req.params.id);
     const attachmentId = String(req.params.attachmentId);
-    const attachment = definition.attachments.find(candidate => candidate.id === attachmentId);
-    if (!attachment) throw new RouteError(404, 'Attachment not found');
-    const remaining = definition.attachments.filter(candidate => candidate.id !== attachmentId);
-    const updated = await setAgentDefinitionAttachments(definition.id, owner, remaining, storeDeps);
-    if (!updated) throw new RouteError(404, 'Agent definition not found');
-    await removeAttachmentFiles(definition.id, [attachment]);
-    res.json({ definition: publicAgentDefinition(updated) });
+    let attachment: Attachment | undefined;
+    // Remove from the list stored at write time so a concurrent change is not reverted.
+    const changed = await changeAgentDefinitionAttachments(definitionId, owner, current => {
+      attachment = current.find(candidate => candidate.id === attachmentId);
+      if (!attachment) throw new RouteError(404, 'Attachment not found');
+      return current.filter(candidate => candidate.id !== attachmentId);
+    }, storeDeps);
+    if (!changed || !attachment) throw new RouteError(404, 'Agent definition not found');
+    // The file goes only once no stored list references it.
+    await removeAttachmentFiles(definitionId, [attachment]);
+    res.json({ definition: publicAgentDefinition(changed.definition) });
   });
 
   /** The trigger primitive over HTTP: run now, GitHub Actions, webhook relays and external cron. */
@@ -466,17 +480,30 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
     res.json({ run: publicAgentRun(run, { includeReport: true }) });
   });
 
+  /**
+   * Cancel first so a late worker write cannot resurrect the run, then stop its
+   * task. The transition is guarded on the exact state just read, so `run.state`
+   * is the state that was cancelled; when the run moved in between (for example
+   * queued → running), the cancel retries against the new state.
+   */
+  async function cancelCurrentState(req: Request, owner: string): Promise<{ run: StoredAgentRun; cancelled: StoredAgentRun }> {
+    for (let attempt = 0; attempt < MAX_CANCEL_ATTEMPTS; attempt += 1) {
+      const run = await requireRun(req, owner);
+      if (!CANCELLABLE_AGENT_RUN_STATES.includes(run.state)) {
+        throw new RouteError(409, `Agent run is ${run.state} and can no longer be cancelled`, 'AGENT_RUN_NOT_CANCELLABLE');
+      }
+      const cancelled = await transitionAgentRun(run.id, [run.state], 'cancelled', {}, storeDeps);
+      if (cancelled) return { run, cancelled };
+    }
+    throw new RouteError(409, 'Agent run changed state before it could be cancelled', 'AGENT_RUN_NOT_CANCELLABLE');
+  }
+
   const cancelRun = handler('Failed to cancel agent run', async (req, res) => {
     const owner = requireOwner(req);
-    const run = await requireRun(req, owner);
-    if (!CANCELLABLE_AGENT_RUN_STATES.includes(run.state)) {
-      throw new RouteError(409, `Agent run is ${run.state} and can no longer be cancelled`, 'AGENT_RUN_NOT_CANCELLABLE');
-    }
-    // Cancel first so a late worker write cannot resurrect the run, then stop its task.
-    const cancelled = await transitionAgentRun(run.id, CANCELLABLE_AGENT_RUN_STATES, 'cancelled', {}, storeDeps);
-    if (!cancelled) throw new RouteError(409, 'Agent run changed state before it could be cancelled', 'AGENT_RUN_NOT_CANCELLABLE');
+    const { run, cancelled } = await cancelCurrentState(req, owner);
 
-    const taskId = run.state === 'running' ? run.reportTaskId : run.state === 'acting' ? run.actionTaskId : null;
+    // Task ids come from the row the cancel produced, for the state it actually cancelled.
+    const taskId = run.state === 'running' ? cancelled.reportTaskId : run.state === 'acting' ? cancelled.actionTaskId : null;
     if (taskId) {
       try {
         if (!services.stopTask && !deps.redisClient) throw new Error('No Redis client is configured to stop the task');
