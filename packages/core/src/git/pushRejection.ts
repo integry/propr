@@ -26,7 +26,12 @@ const RULESET_OR_BRANCH_PROTECTION = /GH013|GH006|Repository rule violations|Pro
 const NON_FAST_FORWARD = /\(non-fast-forward\)|\(fetch first\)|non-fast-forward|tip of your current branch is behind|remote contains work that you do not|\(stale info\)/i;
 const AUTH = /Authentication failed|Invalid username or (?:password|token)|could not read (?:Username|Password)|returned error: 40[13]\b|HTTP 40[13]\b|\b40[13] (?:Unauthorized|Forbidden)\b|Bad credentials|HTTP Basic: Access denied|Permission to \S+ denied to|write access to repository not granted|Resource not accessible by integration|token (?:has )?expired|refusing to allow .* to create or update workflow/i;
 const NETWORK = /network error|timed out|Connection reset|Connection refused|Connection timed out|Operation timed out|Could not resolve host|Failed to connect to|unable to access .*: (?:Recv|Send) failure|RPC failed|unexpected disconnect|early EOF|remote end hung up unexpectedly|gnutls_handshake|SSL_ERROR|TLS connection|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|returned error: 50[0234]\b|HTTP 50[0234]\b/i;
-const UNBLOCK_URL = /https?:\/\/[^\s'"<>)]+\/secret-scanning\/unblock-secret\/[^\s'"<>)]+/gi;
+// URLs are found per token rather than with one unanchored pattern over the whole
+// output, which backtracks polynomially on long runs of 'http://' (CodeQL js/polynomial-redos).
+const URL_DELIMITERS = /[\s'"<>)]+/;
+const URL_SCHEME = /https?:\/\//i;
+const UNBLOCK_PATH = '/secret-scanning/unblock-secret/';
+const TRAILING_PUNCTUATION = '.,;:';
 
 const SUMMARIES: Record<PushRejectionClass, string> = {
     push_protection: 'GitHub secret scanning push protection blocked the push because the commits contain a detected secret. Remove the secret from the commits, or allow it through the unblock URL, then push again.',
@@ -60,8 +65,19 @@ export function classifyPushRejectionText(output: string): PushRejectionClass {
 }
 
 export function extractUnblockUrls(output: string): string[] {
-    const urls = output.match(UNBLOCK_URL) ?? [];
-    return [...new Set(urls.map(url => url.replace(/[.,;:]+$/, '')))];
+    const urls: string[] = [];
+    for (const token of output.split(URL_DELIMITERS)) {
+        const start = token.search(URL_SCHEME);
+        if (start === -1) continue;
+        const candidate = token.slice(start);
+        const schemeLength = candidate.indexOf('//') + 2;
+        const pathIndex = candidate.toLowerCase().indexOf(UNBLOCK_PATH, schemeLength + 1);
+        if (pathIndex === -1 || pathIndex + UNBLOCK_PATH.length >= candidate.length) continue;
+        let end = candidate.length;
+        while (end > 0 && TRAILING_PUNCTUATION.includes(candidate[end - 1])) end--;
+        urls.push(candidate.slice(0, end));
+    }
+    return [...new Set(urls)];
 }
 
 /** Parses git's push error output. Accepts an Error, simple-git error or raw text. */

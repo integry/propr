@@ -12,7 +12,13 @@ const DEFAULT_RESCUE_RETENTION_DAYS = 14;
 
 /** Task ids become one ref path component and one file name. */
 export function sanitizeRescueId(taskId: string): string {
-    const cleaned = taskId.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/\.{2,}/g, '.').replace(/^[.-]+|[.-]+$/g, '').replace(/\.lock$/i, '-lock');
+    const collapsed = taskId.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/\.{2,}/g, '.');
+    // Trim leading/trailing '.' and '-' without a backtracking `[.-]+$` pattern.
+    let start = 0;
+    let end = collapsed.length;
+    while (start < end && (collapsed[start] === '.' || collapsed[start] === '-')) start++;
+    while (end > start && (collapsed[end - 1] === '.' || collapsed[end - 1] === '-')) end--;
+    const cleaned = collapsed.slice(start, end).replace(/\.lock$/i, '-lock');
     return cleaned.slice(0, 200) || 'task';
 }
 

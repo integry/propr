@@ -10,6 +10,7 @@ import {
     salvageFailedPush, createWorktreePushSalvageOperations, PushFailedError, getPushFailure, writeSalvageRetentionMarker,
     formatPushFailureMarkdown, type PushSalvageEvent, type PushSalvageOperations,
 } from '../packages/core/src/git/pushSalvage.js';
+import { extractUnblockUrls } from '../packages/core/src/git/pushRejection.js';
 import { cleanupWorktree } from '../packages/core/src/git/worktreeOperations.js';
 import { pushBranch } from '../packages/core/src/git/repoBranching.js';
 
@@ -89,8 +90,8 @@ test('rung 2: the rescue ref is recorded with its recovery instruction', async (
     assert.deepEqual(ladder.calls, ['retry', 'rescue:refs/propr/rescue/task-1']);
     assert.equal(events.at(-1)?.rung, 'rescue_ref');
     // The failure summary and the GitHub comment carry the unblock URL verbatim.
-    assert.ok(error.message.includes(`Unblock URL: ${UNBLOCK_URL}`));
-    assert.ok(formatPushFailureMarkdown(failure).includes(UNBLOCK_URL));
+    assert.ok(error.message.split('\n').some(line => line.trim() === `Unblock URL: ${UNBLOCK_URL}`));
+    assert.deepEqual(extractUnblockUrls(formatPushFailureMarkdown(failure)), [UNBLOCK_URL]);
 });
 
 test('rung 3: the bundle path is recorded when the rescue ref is refused', async () => {
@@ -226,7 +227,7 @@ test('a bundle written by the real git operations restores the branch', async ()
         assert.equal(failure.rung, 'bundle');
         const restored = path.join(tempDir, 'restored');
         await git(tempDir, ['init', restored]);
-        await git(restored, ['fetch', failure.bundlePath!, 'HEAD']);
+        await git(restored, ['fetch', '--', failure.bundlePath!, 'HEAD']);
         assert.equal(await git(restored, ['rev-parse', 'FETCH_HEAD']), head);
     } finally {
         await rm(tempDir, { recursive: true, force: true });

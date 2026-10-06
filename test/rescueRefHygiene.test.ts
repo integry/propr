@@ -93,3 +93,8 @@ test('expired rescue bundles are deleted and empty directories removed', async (
         await rm(directory, { recursive: true, force: true });
     }
 });
+
+test('rescue ids trim long runs of separators', () => {
+    assert.equal(sanitizeRescueId(`${'-'.repeat(50_000)}a${'.-'.repeat(50_000)}`), 'a');
+    assert.equal(sanitizeRescueId('-.-'), 'task');
+});

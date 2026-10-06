@@ -128,3 +128,9 @@ test('simple-git stderr is considered when the message omits it', () => {
 test('unblock URLs are deduplicated and lose trailing punctuation', () => {
     assert.deepEqual(extractUnblockUrls(`${UNBLOCK_URL}.\n${UNBLOCK_URL}`), [UNBLOCK_URL]);
 });
+
+test('unblock URL extraction stays linear on adversarial input', () => {
+    const started = Date.now();
+    assert.deepEqual(extractUnblockUrls(`${'http://'.repeat(50_000)}x ${','.repeat(50_000)}x`), []);
+    assert.ok(Date.now() - started < 1000);
+});
