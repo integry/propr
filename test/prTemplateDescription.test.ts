@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, mock, test } from 'node:test';
 import { defaultPrBody, parsePrTemplate } from '@propr/shared';
 import { closeConnection, formatSubscriptionUsage, generateCompletionComment, generateCompletionCommentParts, getDetailedUsageStats, redactSecrets, sanitizeAgentReport } from '@propr/core';
-import { generatePRBody, generatePRDescription, type ClaudeResult } from '../src/github/prFormatters.js';
+import { describeIssuePullRequestForRepository, generatePRBody, generatePRDescription, type ClaudeResult } from '../src/github/prFormatters.js';
 import { buildIssuePullRequestBodyPieces, buildIssueReference } from '../src/jobs/issueJobHelpers.js';
 import { createGitHubPrTemplateSource, describeContinuationPullRequest, loadPullRequestTemplate } from '../src/jobs/pullRequestTemplate.js';
 import { buildSlashCommandsBlock } from '../src/shared/slashCommandsBlock.js';
@@ -161,4 +161,17 @@ test('continuation PRs keep their marker and default text unless a template shap
     assert.equal(await describe({ '.propr/pr-template.md': '## trailer\n- [ ] QA\n' }), `${fallback}\n\n- [ ] QA`);
     assert.equal(await describe({ '.propr/pr-template.md': '## trailer\n- [ ] QA\n' }, fallback.length), fallback);
     assert.equal(await describe({ '.propr/pr-template.md': '## summary\n{{broken}}\n' }), fallback);
+});
+
+test('describeIssuePullRequestForRepository applies the base-branch template to title and body', async () => {
+    const issue = { owner: 'acme', repoName: 'app', baseBranch: 'develop', branch: '7-fix', issueNumber: 7, issueTitle: 'Fix login', commitMessage: 'fix: login', claudeResult: results[2], modelName: 'claude-opus-4-5-20251101' };
+    const octokit = contentsOctokit({ '.propr/pr-template.md': '## title\nfix: {{issue_title}} (#{{issue_number}})\n## summary\nCloses #{{issue_number}} in {{repository}}\n' }, {});
+    const templated = await describeIssuePullRequestForRepository({ octokit, ...issue });
+    assert.equal(templated.title, 'fix: Fix login (#7)');
+    assert.match(templated.body, /^Closes #7 in acme\/app\n\n### 📋 Execution Summary/);
+    assert.deepEqual(octokit.calls.map(call => call.options.ref), ['develop', 'base-sha']);
+
+    const plain = await describeIssuePullRequestForRepository({ octokit: contentsOctokit({}, {}), ...issue, baseBranch: 'main' });
+    assert.match(plain.title, /^\[7 by .+\] Fix login$/);
+    assert.match(plain.body, /^## 🤖 AI-Generated Solution/);
 });

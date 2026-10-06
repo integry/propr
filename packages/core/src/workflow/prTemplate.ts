@@ -1,5 +1,5 @@
 import {
-    PR_TEMPLATE_MAX_BYTES, PR_TEMPLATE_PATH, PrTemplateError,
+    PR_BODY_MAX_LENGTH, PR_TEMPLATE_MAX_BYTES, PR_TEMPLATE_PATH, PrTemplateError,
     composePrBody, composePrTitle, composeWithRepositoryTemplate, defaultPrBody, parsePrTemplate,
     type ParsedPrTemplate, type PrBodyPiece, type PrTemplateValues,
 } from '@propr/shared';
@@ -149,12 +149,20 @@ export async function describePullRequest(options: {
     defaultTitle: string;
     values: PrTemplateValues;
     loadTemplate?: () => Promise<ResolvedPrTemplate | undefined>;
+    /** Longest description the caller can publish; GitHub's limit by default. */
+    maxBodyLength?: number;
     onError?: (message: string) => Promise<void> | void;
     context?: Record<string, unknown>;
 }): Promise<PullRequestDescription> {
     const { pieces, defaultTitle, values } = options;
     try {
-        return applyPrTemplate(await options.loadTemplate?.(), pieces, defaultTitle, values);
+        const description = applyPrTemplate(await options.loadTemplate?.(), pieces, defaultTitle, values);
+        // Placeholders can expand a small template past what GitHub accepts.
+        const maxBodyLength = options.maxBodyLength ?? PR_BODY_MAX_LENGTH;
+        if (description.template && description.body.length > maxBodyLength) {
+            throw new PrTemplateError(`The description rendered from ${description.template.path} is ${description.body.length} characters, over the ${maxBodyLength}-character limit`);
+        }
+        return description;
     } catch (error) {
         const message = (error as Error)?.message || String(error);
         logger.warn({ ...options.context, error: message }, 'Pull request template could not be applied; using the default description');

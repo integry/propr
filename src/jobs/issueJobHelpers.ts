@@ -27,7 +27,7 @@ export {
     type GenericErrorOptions
 } from './errorHandlers.js';
 import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult, CompletionCommentParts } from '@propr/core';
-import type { PrBodyPiece } from '@propr/shared';
+import { PR_BODY_MAX_LENGTH, type PrBodyPiece } from '@propr/shared';
 import { loadPullRequestTemplate, recordPullRequestTemplateError } from './pullRequestTemplate.js';
 import {
     isVisualPreviewUploadAuthenticationError,
@@ -210,6 +210,11 @@ export function buildIssuePullRequestBodyPieces(options: {
     ];
 }
 
+/** Longest templated description that still fits GitHub's limit once the visual preview section is appended. */
+function templateBodyLengthBudget(visualPreviewSection: string): number {
+    return PR_BODY_MAX_LENGTH - (visualPreviewSection ? visualPreviewSection.length + '\n\n---\n\n'.length : 0);
+}
+
 export async function createPullRequest(
     octokit: Octokit,
     issueRef: IssueJobData,
@@ -223,6 +228,12 @@ export async function createPullRequest(
     const baseBranch = issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main';
 
     const completion = await generateCompletionCommentParts(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
+    const visualPreviewSection = visualPreview && commitResult
+        ? renderVisualPreviewSection({
+            assets: [],
+            toolSuggestions: visualPreview.evidence.toolSuggestions
+        }, {})
+        : '';
     const { title: prTitle, body: basePrBody } = await describePullRequest({
         pieces: buildIssuePullRequestBodyPieces({ issueRef, worktreeInfo, commitResult, claudeResult, completion }),
         defaultTitle: '[' + issueRef.number + ' by ' + modelShortName + '] ' + issueTitle,
@@ -235,15 +246,10 @@ export async function createPullRequest(
             filesChanged: commitResult?.filesChanged ?? claudeResult?.modifiedFiles,
         }),
         loadTemplate: () => loadPullRequestTemplate({ octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, baseBranch, correlationId: issueRef.correlationId }),
+        maxBodyLength: templateBodyLengthBudget(visualPreviewSection),
         onError: message => recordPullRequestTemplateError({ stateManager: options.stateManager, taskId: options.taskId, message, correlatedLogger }),
         context: { jobId, issueNumber: issueRef.number },
     });
-    const visualPreviewSection = visualPreview && commitResult
-        ? renderVisualPreviewSection({
-            assets: [],
-            toolSuggestions: visualPreview.evidence.toolSuggestions
-        }, {})
-        : '';
     const prBody = appendVisualPreviewSection(basePrBody, visualPreviewSection);
 
     try {

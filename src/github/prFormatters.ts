@@ -1,7 +1,10 @@
-import { redactSecrets, getDetailedUsageStats, getModelPricing, getOpenRouterId, calculateCostWithCachePricing, formatSubscriptionUsage, sanitizeAgentReport, buildPrTemplateValues, describePullRequest } from '@propr/core';
+import { redactSecrets, getDetailedUsageStats, getModelPricing, getOpenRouterId, calculateCostWithCachePricing, formatSubscriptionUsage, sanitizeAgentReport, buildPrTemplateValues, describePullRequest, getModelShortName } from '@propr/core';
 import type { DetailedUsageStats, SubscriptionUsageMetrics, ResolvedPrTemplate } from '@propr/core';
 import type { PrBodyPiece } from '@propr/shared';
 import { buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
+import { loadPullRequestTemplate } from '../jobs/pullRequestTemplate.js';
+
+type PullRequestTemplateOctokit = Parameters<typeof loadPullRequestTemplate>[0]['octokit'];
 
 const MAX_COMMENT_LENGTH = 65000;
 
@@ -76,6 +79,10 @@ export interface GeneratePRDescriptionOptions {
     claudeResult: ClaudeResult | null;
     /** Repository template to apply; ProPR's default description when absent. */
     template?: ResolvedPrTemplate;
+    /** Loads the repository template instead of `template`. */
+    loadTemplate?: () => Promise<ResolvedPrTemplate | undefined>;
+    /** Title used when no template sets one. */
+    defaultTitle?: string;
     branch?: string;
     repository?: string;
 }
@@ -139,8 +146,8 @@ async function buildPRBodyPieces(issueNumber: number, issueTitle: string, commit
     return { pieces, stats: { cost, totalTokens, executionTime } };
 }
 
-/** ProPR's description for an issue PR; byte-identical to the historical output unless a template is given. */
-export async function generatePRDescription(options: GeneratePRDescriptionOptions): Promise<string> {
+/** ProPR's title and description for an issue PR; byte-identical to the historical output unless a template applies. */
+export async function describeIssuePullRequest(options: GeneratePRDescriptionOptions): Promise<{ title: string; body: string }> {
     const { issueNumber, issueTitle, commitMessage, claudeResult } = options;
     const { pieces, stats } = await buildPRBodyPieces(issueNumber, issueTitle, commitMessage, claudeResult);
     const values = buildPrTemplateValues({
@@ -149,12 +156,40 @@ export async function generatePRDescription(options: GeneratePRDescriptionOption
         branch: options.branch, repository: options.repository, filesChanged: claudeResult?.modifiedFiles,
         commits: commitMessage ? [{ message: commitMessage }] : [],
     });
-    const { body } = await describePullRequest({
-        pieces, defaultTitle: '', values,
-        loadTemplate: async () => options.template,
-        context: { issueNumber },
+    const { title, body } = await describePullRequest({
+        pieces, defaultTitle: options.defaultTitle ?? '', values,
+        loadTemplate: options.loadTemplate ?? (async () => options.template),
+        context: { issueNumber, repository: options.repository },
     });
-    return redactSecrets(body);
+    return { title, body: redactSecrets(body) };
+}
+
+/** ProPR's description for an issue PR; byte-identical to the historical output unless a template is given. */
+export async function generatePRDescription(options: GeneratePRDescriptionOptions): Promise<string> {
+    return (await describeIssuePullRequest(options)).body;
+}
+
+/**
+ * Title and description for an issue PR, shaped by the pull request template
+ * on the head of `baseBranch`. A template that cannot be read or applied keeps
+ * ProPR's default title and description.
+ */
+export async function describeIssuePullRequestForRepository(options: Omit<GeneratePRDescriptionOptions, 'template' | 'loadTemplate' | 'defaultTitle' | 'repository'> & {
+    octokit: PullRequestTemplateOctokit;
+    owner: string;
+    repoName: string;
+    baseBranch: string;
+    modelName?: string;
+    correlationId?: string;
+}): Promise<{ title: string; body: string }> {
+    const { octokit, owner, repoName, baseBranch, correlationId } = options;
+    return describeIssuePullRequest({
+        ...options,
+        // Format: [412 by Claude Opus] Title
+        defaultTitle: `[${options.issueNumber} by ${getModelShortName(options.modelName)}] ${options.issueTitle}`,
+        repository: `${owner}/${repoName}`,
+        loadTemplate: () => loadPullRequestTemplate({ octokit, repoOwner: owner, repoName, baseBranch, correlationId }),
+    });
 }
 
 export async function generatePRBody(issueNumber: number, issueTitle: string, commitMessage: string, claudeResult: ClaudeResult | null): Promise<string> {

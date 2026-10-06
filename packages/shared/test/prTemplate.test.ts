@@ -59,6 +59,21 @@ test('parsePrTemplate ignores headings in fenced code and HTML comments', () => 
   assert.equal(sections.summary, '```md\n## not a section\n```');
 });
 
+test('parsePrTemplate closes a fence only with a matching fence at least as long', () => {
+  const example = '````md\n```sh\nnpm test\n```\n## checklist\n- [ ] done\n````';
+  const { sections, problems } = parsePrTemplate(`## summary\n${example}\n## trailer\nbye\n`);
+  assert.deepEqual(problems, []);
+  assert.equal(sections.summary, example);
+  assert.equal(sections.trailer, 'bye');
+  // A longer closing fence closes; a closing fence with trailing text does not.
+  assert.equal(parsePrTemplate('## summary\n```\n## run\n`````\n## run\nx').sections.run, 'x');
+  assert.equal(parsePrTemplate('## summary\n~~~\n~~~ x\n## run\n~~~\n').sections.summary, '~~~\n~~~ x\n## run\n~~~');
+});
+
+test('neutralizeHtml keeps nested fenced examples verbatim', () => {
+  assert.equal(neutralizeHtml('````\n```\n<div>\n```\n<div>\n````\n<div>'), '````\n```\n<div>\n```\n<div>\n````\n&lt;div>');
+});
+
 test('the scaffold is entirely commented out and therefore changes nothing', () => {
   assert.deepEqual(parsePrTemplate(PR_TEMPLATE_SCAFFOLD), { sections: {}, problems: [] });
 });

@@ -14,6 +14,8 @@ export const PR_TEMPLATE_PATH = '.propr/pr-template.md';
 export const PR_TEMPLATE_MAX_BYTES = 64 * 1024;
 /** GitHub rejects pull request titles above this many characters. */
 export const PR_TITLE_MAX_LENGTH = 256;
+/** GitHub rejects pull request bodies above this many characters. */
+export const PR_BODY_MAX_LENGTH = 65536;
 
 /** Section names in the order they appear in a rendered pull request description. */
 export const PR_TEMPLATE_SECTIONS = [
@@ -72,7 +74,23 @@ export class PrTemplateError extends Error {
 // group backtracks polynomially on long runs of whitespace.
 const PLACEHOLDER_PATTERN = /\{\{([^{}]*)\}\}/g;
 const HEADING_PATTERN = /^ {0,3}##(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
-const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
+const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
+interface Fence { char: string; length: number }
+
+/**
+ * The fenced code block open after `line`, following CommonMark: a fence closes
+ * only on a line of the same character, at least as long, with nothing after it.
+ */
+function advanceFence(open: Fence | undefined, line: string): Fence | undefined {
+  const match = FENCE_PATTERN.exec(line);
+  if (!match) return open;
+  const [, marker, rest] = match;
+  if (open) return marker[0] === open.char && marker.length >= open.length && !rest.trim() ? undefined : open;
+  // A backtick fence's info string cannot contain backticks; such a line is inline code.
+  if (marker[0] === '`' && rest.includes('`')) return undefined;
+  return { char: marker[0], length: marker.length };
+}
 
 function isKnownPlaceholder(name: string): name is PrTemplatePlaceholder {
   return Object.prototype.hasOwnProperty.call(PR_TEMPLATE_PLACEHOLDERS, name);
@@ -118,7 +136,7 @@ export function parsePrTemplate(source: string): ParsedPrTemplate {
   }
   const lines = stripComments(source.replace(/\r\n?/g, '\n')).split('\n');
   let current: { name: string; known: boolean; line: number; body: string[] } | undefined;
-  let fence: string | undefined;
+  let fence: Fence | undefined;
   const finish = () => {
     if (!current?.known) return;
     const body = current.body.join('\n');
@@ -126,12 +144,9 @@ export function parsePrTemplate(source: string): ParsedPrTemplate {
     sections[current.name as PrTemplateSection] = body.trim() ? body.replace(/^(?:[ \t]*\n)+/, '').trimEnd() : '';
   };
   lines.forEach((line, index) => {
-    const fenceMatch = FENCE_PATTERN.exec(line);
-    if (fenceMatch) {
-      if (!fence) fence = fenceMatch[1][0];
-      else if (fenceMatch[1][0] === fence) fence = undefined;
-    }
-    const heading = fence || fenceMatch ? null : HEADING_PATTERN.exec(line);
+    const wasInFence = fence !== undefined;
+    fence = advanceFence(fence, line);
+    const heading = wasInFence || fence ? null : HEADING_PATTERN.exec(line);
     if (!heading) {
       current?.body.push(line);
       return;
@@ -152,13 +167,11 @@ export function parsePrTemplate(source: string): ParsedPrTemplate {
 
 /** Escape tag-like `<` outside code so untrusted text cannot inject raw HTML. */
 export function neutralizeHtml(text: string): string {
-  let inFence = false;
+  let fence: Fence | undefined;
   return text.split('\n').map(line => {
-    if (FENCE_PATTERN.test(line)) {
-      inFence = !inFence;
-      return line;
-    }
-    if (inFence) return line;
+    const wasInFence = fence !== undefined;
+    fence = advanceFence(fence, line);
+    if (wasInFence || fence) return line;
     return line.split(/(`+[^`]*`+)/).map((part, index) => index % 2 === 1 ? part : part.replace(/<(?=[A-Za-z!/?])/g, '&lt;')).join('');
   }).join('\n');
 }

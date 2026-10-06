@@ -28,7 +28,7 @@ When the file has no sections, or does not exist, ProPR writes its usual descrip
 - A section that is **present but empty or whitespace-only** removes that section from the output.
 - An **absent** section keeps ProPR's default content.
 
-Sections are written in the order of the table, separated by blank lines, whatever their order in the file. Visual previews are still appended at the end. Text before the first heading and HTML comments (`<!-- ... -->`) are ignored, so you can use comments for notes. Level-2 headings inside fenced code blocks do not start a section. Inside a section, use `###` or deeper headings: every `##` heading starts a new section. A heading with an unknown name (for example `## checklist`) is reported by validation, and its content is ignored. If a section appears twice, the last one is used. The file must be UTF-8 and at most 64 KiB.
+Sections are written in the order of the table, separated by blank lines, whatever their order in the file. Visual previews are still appended at the end. Text before the first heading and HTML comments (`<!-- ... -->`) are ignored, so you can use comments for notes. Level-2 headings inside fenced code blocks do not start a section. As in CommonMark, a fence closes only on a fence of the same character that is at least as long, so a four-backtick fence can contain three-backtick examples. Inside a section, use `###` or deeper headings: every `##` heading starts a new section. A heading with an unknown name (for example `## checklist`) is reported by validation, and its content is ignored. If a section appears twice, the last one is used. The file must be UTF-8 and at most 64 KiB.
 
 ## Placeholders
 
@@ -131,7 +131,7 @@ The fallback is a per-repository option and is enabled by default. Turn it off w
 
 It also lists the sections the file customizes and the ones it removes. It exits with status 1 when it finds a problem, so you can run it in CI. Use `--json` for machine-readable output.
 
-A template can never fail a run. When ProPR cannot read or render the template (for example because of an unknown placeholder, a file that is too large, or a GitHub API error), it logs the error, adds a **Pull request template could not be applied** entry to the task timeline, and uses its default title and description. Unknown sections are ignored, and the rest of the template still applies.
+A template can never fail a run. When ProPR cannot read or render the template (for example because of an unknown placeholder, a file that is too large, a rendered description longer than GitHub's 65,536-character limit, or a GitHub API error), it logs the error, adds a **Pull request template could not be applied** entry to the task timeline, and uses its default title and description. Unknown sections are ignored, and the rest of the template still applies.
 
 ## Where templates apply
 

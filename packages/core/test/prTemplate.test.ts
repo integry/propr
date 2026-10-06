@@ -133,6 +133,24 @@ test('describePullRequest falls back to the default description and reports temp
     assert.equal(description.body, defaultPrBody(pieces));
 });
 
+test('describePullRequest falls back when a rendered template exceeds the body limit', async () => {
+    const reported: string[] = [];
+    const long = { ...values, summary: 'x'.repeat(34_000) };
+    for (const template of [
+        { kind: 'propr' as const, path: '.propr/pr-template.md', template: { sections: { summary: '## summary\n{{summary}}\n{{summary}}' }, problems: [] } },
+        { kind: 'github' as const, path: '.github/pull_request_template.md', content: 'y'.repeat(70_000) },
+    ]) {
+        const description = await describePullRequest({ pieces, defaultTitle: 'default', values: long, loadTemplate: async () => template, onError: message => { reported.push(message); } });
+        assert.deepEqual(description.body, defaultPrBody(pieces));
+        assert.match(description.error ?? '', /over the 65536-character limit/);
+    }
+    assert.equal(reported.length, 2);
+    // Callers that append to the description can lower the limit.
+    const ok = { kind: 'propr' as const, path: '.propr/pr-template.md', template: { sections: { summary: 'z'.repeat(100) }, problems: [] } };
+    assert.ok((await describePullRequest({ pieces, defaultTitle: 'default', values, loadTemplate: async () => ok })).template);
+    assert.ok((await describePullRequest({ pieces, defaultTitle: 'default', values, loadTemplate: async () => ok, maxBodyLength: 50 })).error);
+});
+
 test('describePullRequest without a template is the default description', async () => {
     assert.deepEqual(await describePullRequest({ pieces, defaultTitle: 'default', values, loadTemplate: async () => undefined }), { title: 'default', body: defaultPrBody(pieces) });
 });
