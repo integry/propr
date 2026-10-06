@@ -5,7 +5,19 @@ import { InboxClearAllButton } from '../components/Inbox/InboxClearAllButton';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { InboxBanners, InboxList, InboxState, InboxSystemSection } from './InboxPageComponents';
 import { isSystemNotification } from './inboxUtils';
-import { useInboxNotifications } from './useInboxNotifications';
+import { useInboxNotifications, type InboxNotificationsState } from './useInboxNotifications';
+
+/** The whole-page state that replaces the list, or null to show the list. */
+function inboxState(inbox: InboxNotificationsState): 'loading' | 'empty' | 'error' | 'offline' | null {
+  if (inbox.notifications.length > 0) return null;
+  // Reads are skipped while offline, so a first page that has not settled
+  // (never started, or still pending when the connection dropped) is offline,
+  // not loading; reconnecting loads it.
+  if (!inbox.isOnline && (inbox.initialLoading || inbox.error)) return 'offline';
+  if (inbox.initialLoading) return 'loading';
+  if (inbox.error) return 'error';
+  return inbox.hasMore ? null : 'empty';
+}
 
 const InboxPage: React.FC = () => {
   useDocumentTitle('Inbox');
@@ -38,13 +50,7 @@ const InboxPage: React.FC = () => {
     mutationsEnabled: inbox.mutationsEnabled && !inbox.clearing,
   };
 
-  const showState = inbox.initialLoading && inbox.notifications.length === 0
-    ? 'loading'
-    : inbox.notifications.length === 0 && inbox.error
-      ? (inbox.isOnline ? 'error' : 'offline')
-      : inbox.notifications.length === 0 && !inbox.hasMore
-        ? 'empty'
-        : null;
+  const showState = inboxState(inbox);
 
   const canClearAll = inbox.notifications.length > 0 && inbox.mutationsEnabled;
 

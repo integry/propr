@@ -1,7 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert';
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { access, chmod, lchown, lstat, mkdtemp, mkdir, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { constants, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -38,8 +38,41 @@ async function git(cwd: string, args: string[]): Promise<string> {
     return stdout.trim();
 }
 
+/**
+ * The canonical path of `dir` when every directory from it up to `/` lets
+ * other users traverse it. Callers must use the returned path: access through
+ * the original spelling may cross a private directory that was never checked.
+ */
+async function traversableByOthers(dir: string): Promise<string | undefined> {
+    try {
+        const resolved = await realpath(dir);
+        for (let current = resolved; ; current = path.dirname(current)) {
+            if (!((await stat(current)).mode & 0o001)) return undefined;
+            if (current === path.dirname(current)) return resolved;
+        }
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Where the fixture root is created, as a canonical path so permission grants
+ * cover the same path Git uses. Root runs hand part of the fixture to an
+ * unprivileged account, which needs to traverse the base's ancestors; when the
+ * configured TMPDIR sits under a private directory a fresh fixture is created
+ * in a public temp location instead of relaxing that directory.
+ */
+async function fixtureBase(): Promise<string> {
+    if (process.getuid?.() !== 0) return realpath(os.tmpdir());
+    for (const candidate of new Set([os.tmpdir(), '/tmp', '/var/tmp', '/dev/shm'])) {
+        const base = await traversableByOthers(candidate);
+        if (base) return base;
+    }
+    assert.fail(`no temp directory traversable by UID ${UNPRIVILEGED_ID} for the root permission fixtures (TMPDIR=${os.tmpdir()})`);
+}
+
 before(async () => {
-    rootDir = await mkdtemp(path.join(os.tmpdir(), 'propr-shared-repo-prep-'));
+    rootDir = await mkdtemp(path.join(await fixtureBase(), 'propr-shared-repo-prep-'));
     clonesDir = path.join(rootDir, 'clones');
     remotePath = path.join(rootDir, 'remote.git');
     const home = path.join(rootDir, 'home');
@@ -202,41 +235,109 @@ test('a held config lock ("File exists") is retried as contention', async () => 
     assert.strictEqual(calls, 3);
 });
 
-/**
- * Make the clone's Git directory unwritable so Git cannot create `config.lock`.
- * Returns null when permission bits are not enforced (root, or rootless CI
- * containers with CAP_DAC_OVERRIDE), where the directory stays writable.
- */
-async function denyGitDirWrites(clonePath: string): Promise<(() => Promise<void>) | null> {
-    const gitDir = path.join(clonePath, '.git');
-    await chmod(gitDir, 0o555);
-    const restore = () => chmod(gitDir, 0o755);
-    const probe = path.join(gitDir, 'write-probe');
-    try {
-        await writeFile(probe, '');
-    } catch {
-        return restore;
-    }
-    await rm(probe, { force: true });
-    await restore();
-    return null;
+// Root bypasses directory permission bits, so under root the owned fixture is
+// handed to this unprivileged account and real Git runs as it instead.
+const UNPRIVILEGED_ID = 65534;
+let unprivilegedGitDir: string | undefined;
+
+function shellQuote(value: string): string {
+    return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-const PERMISSIONS_NOT_ENFORCED = 'permission bits are not enforced for this user (running as root?)';
-
-test('an unwritable shared config fails immediately with the original error, not as lock contention', async (t) => {
-    const clonePath = await createSharedClone('denied', LEGACY_URL);
-    const restore = await denyGitDirWrites(clonePath);
-    if (!restore) {
-        t.skip(PERMISSIONS_NOT_ENFORCED);
-        return;
+/** A `git` on PATH that runs the real Git binary as UNPRIVILEGED_ID. */
+async function createUnprivilegedGit(): Promise<string> {
+    if (unprivilegedGitDir) return unprivilegedGitDir;
+    let realGit: string | undefined;
+    for (const dir of (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
+        const candidate = path.join(dir, 'git');
+        if (await access(candidate, constants.X_OK).then(() => true, () => false)) { realGit = candidate; break; }
     }
+    assert.ok(realGit, 'git must be on PATH');
+    const dir = path.join(rootDir, 'unprivileged-git');
+    await mkdir(dir, { recursive: true });
+    const runner = path.join(dir, 'run.mjs');
+    await writeFile(runner, [
+        "import { spawnSync } from 'node:child_process';",
+        `const result = spawnSync(${JSON.stringify(realGit)}, process.argv.slice(2), { stdio: 'inherit', uid: ${UNPRIVILEGED_ID}, gid: ${UNPRIVILEGED_ID} });`,
+        'if (result.error) { console.error(result.error.message); process.exit(127); }',
+        'process.exit(result.status ?? 1);',
+        '',
+    ].join('\n'));
+    await writeFile(path.join(dir, 'git'), `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(runner)} "$@"\n`, { mode: 0o755 });
+    unprivilegedGitDir = dir;
+    return dir;
+}
+
+async function chownTree(target: string, id: number): Promise<void> {
+    await lchown(target, id, id);
+    for (const entry of await readdir(target, { recursive: true })) await lchown(path.join(target, entry), id, id);
+}
+
+/**
+ * Make the clone's Git directory unwritable so Git cannot create `config.lock`.
+ * Under root, the clone is chowned to an unprivileged account and Git runs as
+ * that account, so the real permission error is produced on every Linux runner.
+ */
+async function denyGitDirWrites(clonePath: string): Promise<() => Promise<void>> {
+    const gitDir = path.join(clonePath, '.git');
+    if (process.getuid?.() !== 0) {
+        await chmod(gitDir, 0o555);
+        return () => chmod(gitDir, 0o755);
+    }
+    const gitBin = await createUnprivilegedGit();
+    await chownTree(clonePath, UNPRIVILEGED_ID);
+    // Under a restrictive umask every fixture directory is private, so let the
+    // unprivileged Git traverse (only) this fixture's path to the clone and
+    // read the isolated global config. Original modes are restored afterwards.
+    const home = process.env.HOME as string;
+    const grants: Array<[string, number]> = [[rootDir, 0o001], [home, 0o001], [path.join(home, '.gitconfig'), 0o004]];
+    for (let dir = path.dirname(clonePath); dir !== rootDir; dir = path.dirname(dir)) grants.push([dir, 0o001]);
+    const originalModes: Array<[string, number]> = [];
+    for (const [target, bits] of grants) {
+        const mode = (await lstat(target)).mode & 0o7777;
+        originalModes.push([target, mode]);
+        await chmod(target, mode | bits);
+    }
+    await chmod(gitDir, 0o555);
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${gitBin}${path.delimiter}${previousPath ?? ''}`;
+    return async () => {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        await chmod(gitDir, 0o755);
+        for (const [target, mode] of originalModes.reverse()) await chmod(target, mode);
+        await chownTree(clonePath, 0);
+    };
+}
+
+test('the permission fixture base is the validated canonical path, not a symlinked spelling', async () => {
+    const privateDir = await mkdtemp(path.join(rootDir, 'private-base-'));
+    try {
+        await chmod(privateDir, 0o700);
+        const link = path.join(privateDir, 'public-tmp');
+        await symlink('/', link);
+        // A traversable target reached through a private directory must be
+        // returned as the target itself, never as the inaccessible link path.
+        assert.strictEqual(await traversableByOthers(link), await traversableByOthers('/'));
+        assert.strictEqual(await traversableByOthers(link), '/');
+    } finally {
+        await rm(privateDir, { recursive: true, force: true });
+    }
+    assert.strictEqual(rootDir, await realpath(rootDir), 'fixture paths must not keep an unvalidated prefix');
+});
+
+test('an unwritable shared config fails immediately with the original error, not as lock contention', async () => {
+    const clonePath = await createSharedClone('denied', LEGACY_URL);
+    const configBefore = await readLocalConfig(clonePath);
+    const restore = await denyGitDirWrites(clonePath);
+    const started = Date.now();
     try {
         await assert.rejects(
             repoBranching.setupAuthenticatedRemote(hooklessGit.createHooklessGit(clonePath), REPO_URL, TOKEN, { attempts: 3, initialDelayMs: 5000, maxDelayMs: 5000 }),
             (error: Error) => {
                 assert.notStrictEqual(error.name, 'GitLockContentionError');
-                assert.match(error.message, /could not lock config file [^\n]*: Permission denied/);
+                assert.match(error.message, /could not lock config file [^\n]*config: Permission denied/);
+                assert.doesNotMatch(error.message, /failed to stat|unable to access/);
                 assert.doesNotMatch(error.message, /another Git process/i);
                 assert.ok(!error.message.includes(TOKEN));
                 return true;
@@ -245,20 +346,20 @@ test('an unwritable shared config fails immediately with the original error, not
     } finally {
         await restore();
     }
+    assert.ok(Date.now() - started < 5000, 'a permanent failure must not wait for a contention retry');
     assert.ok(!existsSync(path.join(clonePath, '.git', 'config.lock')));
+    assert.strictEqual(await readLocalConfig(clonePath), configBefore, 'existing config must be preserved');
 });
 
-test('preparation of an unwritable shared clone is not reported as lock contention', async (t) => {
+test('preparation of an unwritable shared clone is not reported as lock contention', async () => {
     const owner = `${OWNER}-readonly`;
     const clonePath = await createSharedClone('readonly', LEGACY_URL);
     const worktreePath = path.join(rootDir, 'readonly-worktree');
     await git(clonePath, ['worktree', 'add', '--no-track', '-b', 'task-ro', worktreePath, 'origin/main']);
     await writeFile(path.join(worktreePath, 'in-progress.txt'), 'uncommitted agent work\n');
+    const configBefore = await readLocalConfig(clonePath);
     const restore = await denyGitDirWrites(clonePath);
-    if (!restore) {
-        t.skip(PERMISSIONS_NOT_ENFORCED);
-        return;
-    }
+    const started = Date.now();
     try {
         await assert.rejects(
             repoManager.ensureRepoCloned({
@@ -267,7 +368,9 @@ test('preparation of an unwritable shared clone is not reported as lock contenti
             }),
             (error: Error) => {
                 assert.doesNotMatch(error.message, /stayed locked by another Git process/);
-                assert.match(error.message, /Permission denied/);
+                // The real config write must be what failed, not an earlier lookup.
+                assert.match(error.message, /could not lock config file [^\n]*config: Permission denied/);
+                assert.doesNotMatch(error.message, /failed to stat|unable to access/);
                 assert.ok(!error.message.includes(TOKEN));
                 return true;
             },
@@ -275,7 +378,10 @@ test('preparation of an unwritable shared clone is not reported as lock contenti
     } finally {
         await restore();
     }
+    assert.ok(Date.now() - started < 5000, 'a permanent failure must not wait for a contention retry');
     assert.strictEqual(await readFile(path.join(worktreePath, 'in-progress.txt'), 'utf8'), 'uncommitted agent work\n');
+    assert.strictEqual(await readLocalConfig(clonePath), configBefore, 'existing config must be preserved');
+    assert.ok(existsSync(path.join(clonePath, '.git', 'HEAD')), 'shared clone must not be removed');
 });
 
 test('parallel preparation of a shared clone with active worktrees survives transient config lock contention', async () => {
