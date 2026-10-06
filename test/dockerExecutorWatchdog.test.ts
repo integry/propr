@@ -137,6 +137,18 @@ test('consecutive whitespace-only deltas stop the run as degenerate output', asy
     assert.equal(trips.length, 1);
 });
 
+test('whitespace-only assistant messages appended to a transcript snapshot stop the run as degenerate output', async () => {
+    // Each 2s snapshot changes, so only the degenerate rule can stop this run.
+    const settings = { stallTimeoutMs: 2_500, toolStallTimeoutMs: 20_000, degenerateOutputLimit: 3 };
+    let transcript = `${JSON.stringify({ role: 'assistant', content: 'Reading the repository' })}\n`;
+    const append = setInterval(() => { transcript += `${JSON.stringify({ role: 'assistant', content: ' ' })}\n`; }, 100);
+    const { execution } = runAgent('', { watchdog: settings, streamExtraOutput: () => transcript });
+    const result = await execution;
+    clearInterval(append);
+    assert.equal(result.watchdogTrip?.rule, 'degenerate_output');
+    assert.equal(result.watchdogTrip?.degenerateDeltas, 3);
+});
+
 test('a disabled watchdog never stops a run', async () => {
     const { execution, trips } = runAgent('setTimeout(() => process.exit(0), 700)', {
         watchdog: { stallTimeoutMs: 0, toolStallTimeoutMs: 0, degenerateOutputLimit: 0 },

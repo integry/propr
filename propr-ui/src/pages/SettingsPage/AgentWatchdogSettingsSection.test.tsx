@@ -30,6 +30,25 @@ it('commits minutes as milliseconds, an empty field as the default, and ignores 
   expect(onCommit).toHaveBeenCalledTimes(3);
 });
 
+it('focusing and leaving a timeout field without editing keeps a value that does not round to minutes', () => {
+  const onCommit = vi.fn();
+  render(<AgentWatchdogSettingsSection
+    values={{ agent_stall_timeout_ms: 100, agent_tool_stall_timeout_ms: 1_234, agent_degenerate_output_limit: 7 }}
+    defaults={DEFAULTS} onCommit={onCommit} />);
+  const stall = screen.getByLabelText('Stall timeout (minutes)');
+  const toolStall = screen.getByLabelText('Tool stall timeout (minutes)');
+  expect(stall).not.toHaveValue(0);
+  expect(toolStall).not.toHaveValue(0);
+  for (const field of [stall, toolStall, screen.getByLabelText('Whitespace-only output limit')]) {
+    fireEvent.focus(field); fireEvent.blur(field);
+  }
+  expect(onCommit).not.toHaveBeenCalled();
+  // The displayed minutes convert back to the exact stored milliseconds.
+  fireEvent.change(stall, { target: { value: (stall as HTMLInputElement).value } }); fireEvent.blur(stall);
+  fireEvent.change(toolStall, { target: { value: (toolStall as HTMLInputElement).value } }); fireEvent.blur(toolStall);
+  expect(onCommit).not.toHaveBeenCalled();
+});
+
 it('loads stored overrides and treats missing ones as the environment default', () => {
   const load = (settings: object) => parseLoadedData([settings, {}, {}, {}, {}, {}, {}, {}]).settings;
   expect(load({})).toMatchObject({ agent_stall_timeout_ms: null, agent_tool_stall_timeout_ms: null, agent_degenerate_output_limit: null });

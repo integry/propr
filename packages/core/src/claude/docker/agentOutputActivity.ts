@@ -83,15 +83,17 @@ function classifyMessage(event: JsonRecord, type: string): AgentOutputActivity[]
     return classifyContentBlocks(event.message.content, fromUser);
 }
 
-/** OpenAI-style chat messages (Vibe session transcripts): assistant tool calls and tool results. */
+/** OpenAI-style chat messages (Vibe session transcripts): assistant text, tool calls and tool results. */
 function classifyChatMessage(event: JsonRecord): AgentOutputActivity[] | null {
     // These records have no `type`; typed events with a role belong to the other protocols.
     if (event.type !== undefined) return null;
     const role = lower(event.role);
     if (role === 'tool') return [toolEnd(event)];
-    if (role !== 'assistant' || !Array.isArray(event.tool_calls)) return null;
+    if (role !== 'assistant') return null;
+    // Each assistant message is one text delta, with or without tool calls, so whitespace-only replies count.
     const activities: AgentOutputActivity[] = typeof event.content === 'string' && event.content ? [{ kind: 'text', text: event.content }] : [];
-    for (const call of event.tool_calls) {
+    const calls = Array.isArray(event.tool_calls) ? event.tool_calls : [];
+    for (const call of calls) {
         if (isRecord(call)) activities.push(toolStart(call));
     }
     return activities.length > 0 ? activities : [ACTIVITY];

@@ -87,6 +87,20 @@ test('streamed whitespace deltas from a provider trip the degenerate rule', () =
     assert.equal(trips[0]?.rule, 'degenerate_output');
 });
 
+test('whitespace-only Vibe assistant messages trip the degenerate rule, meaningful text resets the count', () => {
+    const { watchdog, trips } = harness();
+    const message = (content: string) => JSON.stringify({ role: 'assistant', content });
+    watchdog.observeLine(message(' '));
+    watchdog.observeLine(message('\n'));
+    watchdog.observeLine(message('Looking at the failing test'));
+    watchdog.observeLine(message(' '));
+    watchdog.observeLine(message('\t'));
+    assert.equal(trips.length, 0, 'meaningful text reset the count');
+    watchdog.observeLine(message('  '));
+    assert.equal(trips[0]?.rule, 'degenerate_output');
+    assert.equal(trips[0]?.degenerateDeltas, 3);
+});
+
 test('disabled rules (0) never trip', () => {
     const { watchdog, trips, advance } = harness({ stallTimeoutMs: 0, toolStallTimeoutMs: 0, degenerateOutputLimit: 0 });
     assert.equal(watchdog.enabled, false);
@@ -132,7 +146,12 @@ test('every tool call in one record is classified, with its call id', () => {
     const vibe = { role: 'assistant', content: '', tool_calls: [{ id: 'c1', function: { name: 'bash' } }, { id: 'c2', function: { name: 'grep' } }] };
     assert.deepEqual(classifyAgentOutputLine(JSON.stringify(vibe)), [{ kind: 'tool_start', id: 'c1' }, { kind: 'tool_start', id: 'c2' }]);
     assert.deepEqual(classifyAgentOutputLine(JSON.stringify({ role: 'tool', tool_call_id: 'c1', content: 'ok' })), [{ kind: 'tool_end', id: 'c1' }]);
-    assert.deepEqual(classifyAgentOutputLine(JSON.stringify({ role: 'assistant', content: 'plain reply' })), [{ kind: 'activity' }]);
+    assert.deepEqual(classifyAgentOutputLine(JSON.stringify({ role: 'assistant', content: 'plain reply' })), [{ kind: 'text', text: 'plain reply' }]);
+    assert.deepEqual(classifyAgentOutputLine(JSON.stringify({ role: 'assistant', content: ' ', tool_calls: [{ id: 'c3' }] })), [
+        { kind: 'text', text: ' ' }, { kind: 'tool_start', id: 'c3' },
+    ]);
+    assert.deepEqual(classifyAgentOutputLine(JSON.stringify({ role: 'assistant', content: '' })), [{ kind: 'activity' }]);
+    assert.deepEqual(classifyAgentOutputLine(JSON.stringify({ role: 'user', content: '  ' })), [{ kind: 'activity' }]);
     assert.deepEqual(classifyAgentOutputLine(JSON.stringify({ type: 'item.started', item: { id: 'item_1', type: 'command_execution' } })), [{ kind: 'tool_start', id: 'item_1' }]);
 });
 

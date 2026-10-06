@@ -34,9 +34,16 @@ const FIELDS: FieldSpec[] = [
   },
 ];
 
+/** Minutes with the fewest decimals that still convert back to the exact stored milliseconds. */
 function toDisplay(value: number | null, unit: FieldSpec['unit']): string {
   if (value === null) return '';
-  return unit === 'minutes' ? String(Math.round((value / MS_PER_MINUTE) * 100) / 100) : String(value);
+  if (unit === 'count') return String(value);
+  const minutes = value / MS_PER_MINUTE;
+  for (let digits = 2; digits <= 12; digits += 1) {
+    const rounded = Number(minutes.toFixed(digits));
+    if (Math.round(rounded * MS_PER_MINUTE) === value) return String(rounded);
+  }
+  return String(minutes);
 }
 
 /** '' clears the override; anything else must be a non-negative number. */
@@ -61,13 +68,18 @@ interface AgentWatchdogSettingsSectionProps {
  */
 export function AgentWatchdogSettingsSection({ values, defaults, onCommit }: AgentWatchdogSettingsSectionProps) {
   const [drafts, setDrafts] = useState<Record<AgentWatchdogSettingName, string>>(() => draftsFor(values));
+  // Only fields the user typed in are committed, so focusing a field never rewrites its saved value.
+  const [edited, setEdited] = useState<Partial<Record<AgentWatchdogSettingName, boolean>>>({});
   const { agent_stall_timeout_ms: stall, agent_tool_stall_timeout_ms: toolStall, agent_degenerate_output_limit: limit } = values;
   // Resync only when a saved value changes, never while the user is typing.
   useEffect(() => {
     setDrafts(draftsFor({ agent_stall_timeout_ms: stall, agent_tool_stall_timeout_ms: toolStall, agent_degenerate_output_limit: limit }));
+    setEdited({});
   }, [stall, toolStall, limit]);
 
   const commit = (field: FieldSpec) => {
+    if (!edited[field.name]) return;
+    setEdited(previous => ({ ...previous, [field.name]: false }));
     const parsed = fromDisplay(drafts[field.name], field.unit);
     if (parsed === undefined) {
       setDrafts(previous => ({ ...previous, [field.name]: toDisplay(values[field.name], field.unit) }));
@@ -93,7 +105,10 @@ export function AgentWatchdogSettingsSection({ values, defaults, onCommit }: Age
               step={field.unit === 'minutes' ? 'any' : 1}
               value={drafts[field.name]}
               placeholder={fallback === undefined ? 'Default' : `Default: ${toDisplay(fallback, field.unit)}`}
-              onChange={(event: React.ChangeEvent<HTMLInputElement>) => setDrafts(previous => ({ ...previous, [field.name]: event.target.value }))}
+              onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                setDrafts(previous => ({ ...previous, [field.name]: event.target.value }));
+                setEdited(previous => ({ ...previous, [field.name]: true }));
+              }}
               onBlur={() => commit(field)}
               className={SETTINGS_CONTROL}
             />
