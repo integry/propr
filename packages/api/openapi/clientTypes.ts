@@ -74,30 +74,34 @@ function renderDeclaration(name: string, schema: JsonSchema): string {
     : `${doc}export type ${name} = ${type};\n`;
 }
 
-function pascal(value: string): string {
-  return value[0].toUpperCase() + value.slice(1);
-}
-
-/** Query parameter objects of documented operations, for example `ListTasksQuery`. */
+/**
+ * Query parameter objects of documented operations, for example `ListTasksQuery`.
+ * Named by `x-propr-query-type`, the id of the zod parameter set, so routes that
+ * share a set (such as an alias path) share one type.
+ */
 function queryDeclarations(document: OpenApiDocument): string[] {
-  const declarations: string[] = [];
+  const sets = new Map<string, { operationIds: string[]; parameters: JsonSchema[] }>();
   for (const operations of Object.values(document.paths)) {
     for (const operation of Object.values(operations)) {
-      if (operation['x-undocumented']) continue;
-      const query = ((operation.parameters ?? []) as JsonSchema[]).filter(parameter => parameter.in === 'query');
-      if (!query.length) continue;
-      const schema: JsonSchema = {
-        type: 'object',
-        description: `Query parameters of \`${operation.operationId as string}\`.`,
-        properties: Object.fromEntries(query.map(parameter => [
-          parameter.name, { ...(parameter.schema as JsonSchema), description: parameter.description },
-        ])),
-        required: query.filter(parameter => parameter.required).map(parameter => parameter.name),
-      };
-      declarations.push(renderDeclaration(`${pascal(operation.operationId as string)}Query`, schema));
+      const name = operation['x-propr-query-type'] as string | undefined;
+      if (operation['x-undocumented'] || !name) continue;
+      const parameters = ((operation.parameters ?? []) as JsonSchema[]).filter(parameter => parameter.in === 'query');
+      const existing = sets.get(name);
+      if (existing && JSON.stringify(existing.parameters) !== JSON.stringify(parameters)) {
+        throw new Error(`Operations using query type ${name} have different query parameters`);
+      }
+      if (existing) existing.operationIds.push(operation.operationId as string);
+      else sets.set(name, { operationIds: [operation.operationId as string], parameters });
     }
   }
-  return declarations.sort();
+  return [...sets].map(([name, { operationIds, parameters }]) => renderDeclaration(name, {
+    type: 'object',
+    description: `Query parameters of ${operationIds.sort().map(id => `\`${id}\``).join(', ')}.`,
+    properties: Object.fromEntries(parameters.map(parameter => [
+      parameter.name, { ...(parameter.schema as JsonSchema), description: parameter.description },
+    ])),
+    required: parameters.filter(parameter => parameter.required).map(parameter => parameter.name),
+  })).sort();
 }
 
 export function renderClientTypes(document: OpenApiDocument): string {

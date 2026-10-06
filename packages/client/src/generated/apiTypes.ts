@@ -57,6 +57,93 @@ export interface DesktopDiscovery {
   [key: string]: unknown;
 }
 
+/** The instance token is active. */
+export interface DesktopPairingActivationReceipt {
+  status: "active";
+  receipt: string;
+  activatedAt: string;
+  /** When the instance token expires; `null` when it does not. */
+  expiresAt: string | null;
+}
+
+/** The provisional instance token was revoked. */
+export interface DesktopPairingCancellation {
+  status: "cancelled";
+  cancelledAt: string;
+}
+
+/** The pairing is not approved yet (HTTP 202). */
+export interface DesktopPairingPending {
+  status: "pending";
+  /** Seconds to wait before the next poll. */
+  interval: number;
+}
+
+/** State of a pairing, by `status`. */
+export type DesktopPairingPoll = DesktopPairingPending | DesktopPairingProvisional;
+
+export interface DesktopPairingPollRequest {
+  deviceSecret: string;
+}
+
+/** The pairing was approved and a provisional instance token was issued (HTTP 200). */
+export interface DesktopPairingProvisional {
+  status: "provisional";
+  /** Instance token. It works only after the pairing is activated. */
+  token: string;
+  tokenType: "Bearer";
+  activationTicket: string;
+  /** Activate or cancel before this time. */
+  activationExpiresAt: string;
+  /** `publicInstanceIdentity.instanceId` from discovery. */
+  instanceId: string;
+  /** Canonical API origin the client discovered, for example `https://propr.example.com`. */
+  origin: string;
+  scope: "desktop-instance";
+  /** Client-chosen generation that identifies this credential. */
+  credentialGeneration: string;
+}
+
+/** A started pairing. */
+export interface DesktopPairingStart {
+  pairingId: string;
+  /** Secret the client presents on every later pairing request. Never shown to the browser. */
+  deviceSecret: string;
+  /** Same-origin URL the user opens to approve the pairing. */
+  approvalUrl: string;
+  /** The pairing expires at this time, at most 30 minutes after it started. */
+  expiresAt: string;
+  /** Seconds to wait between polls. */
+  interval: number;
+}
+
+/** Starts a pairing for the instance named by the binding fields. */
+export interface DesktopPairingStartRequest {
+  /** Shown on the approval page; 1 to 80 printable characters. */
+  clientName: string;
+  /** `publicInstanceIdentity.instanceId` from discovery. */
+  instanceId: string;
+  /** Canonical API origin the client discovered, for example `https://propr.example.com`. */
+  origin: string;
+  scope: "desktop-instance";
+  /** Client-chosen generation that identifies this credential. */
+  credentialGeneration: string;
+}
+
+/** Proof of a provisional pairing, used to activate or cancel it. */
+export interface DesktopPairingTicket {
+  deviceSecret: string;
+  /** `activationTicket` from the provisional poll response. */
+  activationTicket: string;
+  /** `publicInstanceIdentity.instanceId` from discovery. */
+  instanceId: string;
+  /** Canonical API origin the client discovered, for example `https://propr.example.com`. */
+  origin: string;
+  scope: "desktop-instance";
+  /** Client-chosen generation that identifies this credential. */
+  credentialGeneration: string;
+}
+
 /** The common error envelope. New routes return it for every 4xx and 5xx response. */
 export interface ErrorEnvelope {
   /** Stable, machine-readable error code, for example `TASK_NOT_FOUND`. */
@@ -166,7 +253,7 @@ export interface TaskSubmission {
 export interface TaskSubmissionRequest {
   /** `owner/name` of an enabled repository you can push to. */
   repository: string;
-  /** What the agent should do; becomes the GitHub issue body. */
+  /** What the agent should do; becomes the GitHub issue body. Must not be only whitespace. */
   instruction: string;
   /** Agent to route to. Omit to use the instance default. */
   agentAlias?: string;
@@ -217,13 +304,7 @@ export interface TaskSummary {
   [key: string]: unknown;
 }
 
-/** Query parameters of `deleteTaskLegacyPath`. */
-export interface DeleteTaskLegacyPathQuery {
-  /** Delete even when the task is still active. */
-  force?: "true" | "false";
-}
-
-/** Query parameters of `deleteTask`. */
+/** Query parameters of `deleteTask`, `deleteTaskLegacyPath`. */
 export interface DeleteTaskQuery {
   /** Delete even when the task is still active. */
   force?: "true" | "false";

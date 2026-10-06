@@ -27,11 +27,10 @@ import {
   parseDesktopDiscovery,
   parseDesktopPairingStart,
   parseDesktopPairingActivationReceipt,
+  pairingTicket,
   type ProprDesktopDiscovery,
   type ProprDesktopPairingComplete,
-  type ProprDesktopPairingActivationReceipt,
   type ProprDesktopPairingOptions,
-  type ProprDesktopPairingStart,
 } from './desktopPairing.js';
 import {
   requestPairingProtocol,
@@ -491,13 +490,14 @@ export class ProprClient {
   async startDesktopPairing(
     clientName: string,
     options: Pick<ProprDesktopPairingOptions, 'signal' | 'now' | 'binding'>,
-  ): Promise<ProprDesktopPairingStart> {
+  ): Promise<ProprApi.DesktopPairingStart> {
     const path = operationPath('startDesktopPairing');
     const expectedOrigin = this.resolveRequestOrigin(this.url(path));
+    const body: ProprApi.DesktopPairingStartRequest = { clientName, ...options.binding };
     return parseDesktopPairingStart(await this.requestDesktopPairing(path, {
       method: operationMethod('startDesktopPairing'),
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientName, ...options.binding }),
+      body: JSON.stringify(body),
       redirect: 'manual',
       signal: options.signal,
     }), expectedOrigin, options.now);
@@ -514,20 +514,14 @@ export class ProprClient {
   async activateDesktopPairing(
     pairing: ProprDesktopPairingComplete,
     signal?: AbortSignal,
-  ): Promise<ProprDesktopPairingActivationReceipt> {
+  ): Promise<ProprApi.DesktopPairingActivationReceipt> {
+    const body: ProprApi.DesktopPairingTicket = pairingTicket(pairing);
     return parseDesktopPairingActivationReceipt(await this.requestDesktopPairing(
       operationPath('activateDesktopPairing', { pairingId: pairing.pairingId }),
       {
         method: operationMethod('activateDesktopPairing'),
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceSecret: pairing.deviceSecret,
-          activationTicket: pairing.activationTicket,
-          instanceId: pairing.instanceId,
-          origin: pairing.origin,
-          scope: pairing.scope,
-          credentialGeneration: pairing.credentialGeneration,
-        }),
+        body: JSON.stringify(body),
         redirect: 'manual',
         signal,
       },
@@ -537,20 +531,14 @@ export class ProprClient {
   async cancelDesktopPairing(
     pairing: ProprDesktopPairingComplete,
     signal?: AbortSignal,
-  ): Promise<{ status: 'cancelled'; cancelledAt: string }> {
+  ): Promise<ProprApi.DesktopPairingCancellation> {
+    const body: ProprApi.DesktopPairingTicket = pairingTicket(pairing);
     const value = await this.requestDesktopPairing(
       operationPath('cancelDesktopPairing', { pairingId: pairing.pairingId }),
       {
         method: operationMethod('cancelDesktopPairing'),
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceSecret: pairing.deviceSecret,
-          activationTicket: pairing.activationTicket,
-          instanceId: pairing.instanceId,
-          origin: pairing.origin,
-          scope: pairing.scope,
-          credentialGeneration: pairing.credentialGeneration,
-        }),
+        body: JSON.stringify(body),
         redirect: 'manual',
         signal,
       },

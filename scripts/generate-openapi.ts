@@ -80,7 +80,8 @@ async function main(): Promise<number> {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().then(
-    // Route modules open lazy database handles on import; exit explicitly.
+    // The import graph stays free of @propr/core (see permissionCheck.ts and
+    // summaryPathUtils.ts); the explicit exit only guards against a stray handle.
     code => process.exit(code),
     error => { console.error(error); process.exit(1); },
   );

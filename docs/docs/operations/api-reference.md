@@ -10,7 +10,7 @@ The web UI, the desktop app and the CLI all talk to one HTTP API, served by the 
 - [Open the interactive reference](pathname:///openapi/index.html) (full screen)
 - [Download the OpenAPI 3.1 spec](pathname:///openapi/propr-api.yaml) (`propr-api.yaml`), for code generators, Postman or Insomnia
 
-The spec is generated from the API route registry, so it lists every route the server registers. The [`@propr/client`](#typescript-client) types come from the same schemas.
+The spec is generated from the API route registry, so it lists every route the server registers. The interactive reference ships with the docs, so it also works in the offline copy `propr docs` serves. The [`@propr/client`](#typescript-client) types come from the same schemas.
 
 <iframe
   src="/openapi/index.html"
@@ -34,7 +34,7 @@ Unless an operation says otherwise, send one of these:
 
 The GitHub account behind the credential must be allowed on the instance (see [GitHub authentication](./github-auth.md)). Operations marked `x-propr-permission` also need that instance permission, for example `instance.manage_settings`. Admins hold every permission. A demo instance rejects every request that changes data.
 
-Unauthenticated routes are listed with an empty `security` requirement. They cover health, compatibility, desktop discovery, the pairing bootstrap and the login redirects.
+Unauthenticated routes are listed with an empty `security` requirement. They cover health, compatibility, desktop discovery, the pairing bootstrap, the login redirects and the MCP OAuth endpoints (`/authorize`, `/token`, `/register`, `/revoke`).
 
 ## Errors
 

@@ -3,7 +3,8 @@ import { PROPR_API_COMPATIBILITY } from '@propr/shared';
 import { MCP_SCOPES } from '../mcp/config.js';
 import { listRegisteredRoutes, routeKey } from './registeredRoutes.js';
 import { ROUTE_DOCS } from './routeDocs.js';
-import { apiSchemas, ErrorEnvelope, LegacyError } from './schemas.js';
+import { GOAL_TASK_GUARD_MOUNTS } from './directRoutes.js';
+import { apiQuerySets, apiSchemas, ErrorEnvelope, LegacyError } from './schemas.js';
 import type { RegisteredRoute, RouteAuth, RouteDoc } from './types.js';
 
 type JsonSchema = Record<string, unknown>;
@@ -37,7 +38,7 @@ const TAGS: { name: string; description: string; prefixes: string[] }[] = [
   { name: 'Configuration', description: 'Instance settings. Most routes require a management permission.', prefixes: ['/api/config', '/api/catalog', '/api/instance'] },
   { name: 'Agents', description: 'Agent login, images, runtime packages and health.', prefixes: ['/api/agents', '/api/agent-runtime'] },
   { name: 'Administration', description: 'Instance members and MCP administration.', prefixes: ['/api/admin'] },
-  { name: 'MCP', description: 'The Model Context Protocol endpoint and its browser pages.', prefixes: ['/api/mcp', '/mcp', '/.well-known'] },
+  { name: 'MCP', description: 'The Model Context Protocol endpoint, its OAuth 2.1 authorization server and its browser pages.', prefixes: ['/api/mcp', '/mcp', '/.well-known', '/authorize', '/token', '/register', '/revoke'] },
   { name: 'Webhooks', description: 'GitHub webhook intake.', prefixes: ['/webhook'] },
 ];
 
@@ -115,6 +116,13 @@ function errorContent(doc: RouteDoc | undefined): Record<string, unknown> {
   return { 'application/json': { schema: schemaRef(schema, 'error schema') } };
 }
 
+function queryTypeName(doc: RouteDoc, key: string): string | undefined {
+  if (!doc.query) return undefined;
+  const id = apiQuerySets.get(doc.query)?.id;
+  if (!id) throw new Error(`${key} query: register the parameter set in openapi/schemas.ts with querySet()`);
+  return id;
+}
+
 function queryParameters(doc: RouteDoc): unknown[] {
   if (!doc.query) return [];
   const schema = z.toJSONSchema(doc.query, { io: 'input' }) as { properties?: Record<string, JsonSchema>; required?: string[] };
@@ -182,14 +190,40 @@ function responses(route: RegisteredRoute, doc: RouteDoc | undefined, key: strin
     result['401'] = { $ref: `${RESPONSE_PREFIX}${prefix}Unauthorized` };
   }
   if (route.permission && !result['403']) result['403'] = { $ref: `${RESPONSE_PREFIX}${prefix}Forbidden` };
+  if (goalTaskGuarded(route)) {
+    // The guard answers in the legacy shape, whatever the route itself uses.
+    const legacy = { 'application/json': { schema: schemaRef(LegacyError, 'error schema') } };
+    result['404'] ??= { description: 'Not found, or the task belongs to another user\'s goal.', content: legacy };
+    if (route.method !== 'get') result['409'] ??= { description: 'The task belongs to a goal; use the goal controls.', content: legacy };
+  }
   result.default = { $ref: `${RESPONSE_PREFIX}${prefix}UnexpectedError` };
   return result;
+}
+
+const GOAL_TASK_GUARD_NOTE = 'When the task, session or correlation id belongs to a goal, only the goal owner can use this route (others get `404`), and only for reads: other methods answer `409` and the goal controls must be used instead.';
+
+function segments(path: string): string[] {
+  return path.split('/').filter(Boolean);
+}
+
+/** Whether `requireGoalTaskOwnership`, mounted with `app.use`, can act on the route. */
+export function goalTaskGuarded(route: Pick<RegisteredRoute, 'path'>): boolean {
+  const routeSegments = segments(route.path);
+  return GOAL_TASK_GUARD_MOUNTS.some(mount => {
+    // An `app.use` mount matches its path and everything beneath it.
+    const mountSegments = segments(mount).filter(segment => !segment.startsWith('*'));
+    // The guard only looks a goal up when the id segment holds an id, so a
+    // literal route segment such as `/api/tasks/stats` is not affected by it.
+    return mountSegments.length <= routeSegments.length && mountSegments.every((segment, index) =>
+      segment.startsWith(':') ? routeSegments[index].startsWith(':') : segment === routeSegments[index]);
+  });
 }
 
 /** Identity and prose of an operation; undocumented routes get generated values. */
 function describeOperation(route: RegisteredRoute, doc: RouteDoc | undefined): Operation {
   const permissionNote = route.permission ? `Requires the \`${route.permission}\` instance permission.` : undefined;
-  const description = [doc ? doc.description : 'This route is registered but not documented yet.', permissionNote]
+  const guardNote = goalTaskGuarded(route) ? GOAL_TASK_GUARD_NOTE : undefined;
+  const description = [doc ? doc.description : 'This route is registered but not documented yet.', permissionNote, guardNote]
     .filter(Boolean).join('\n\n');
   return {
     operationId: doc?.operationId ?? autoOperationId(route.method, route.path),
@@ -205,12 +239,14 @@ function buildOperation(route: RegisteredRoute): Operation {
   const doc = ROUTE_DOCS[key];
   const params = parameters(route, doc);
   const body = doc ? requestBody(doc, key) : undefined;
+  const queryType = doc ? queryTypeName(doc, key) : undefined;
   return {
     ...describeOperation(route, doc),
     security: SECURITY[route.auth],
     ...(params.length ? { parameters: params } : {}),
     ...(body ? { requestBody: body } : {}),
     responses: responses(route, doc, key),
+    ...(queryType ? { 'x-propr-query-type': queryType } : {}),
     'x-propr-auth': route.auth,
     ...(route.permission ? { 'x-propr-permission': route.permission } : {}),
     ...(doc ? {} : { 'x-undocumented': true }),
@@ -291,7 +327,7 @@ export function buildOpenApiDocument(routes: RegisteredRoute[] = listRegisteredR
           type: 'apiKey',
           in: 'cookie',
           name: 'connect.sid',
-          description: 'Browser session created by the GitHub OAuth login.',
+          description: 'Browser session created by the GitHub OAuth login (express-session\'s default cookie name, which auth.ts keeps).',
         },
         bearerAuth: {
           type: 'http',
@@ -300,7 +336,7 @@ export function buildOpenApiDocument(routes: RegisteredRoute[] = listRegisteredR
         },
         mcpOAuth: {
           type: 'oauth2',
-          description: 'OAuth 2.1 access token issued to MCP clients. Every token carries `read`; tools require further scopes.',
+          description: 'OAuth 2.1 access token issued to MCP clients by `/authorize` and `/token` (PKCE, public clients). Every token carries `read`, which is all `/api/mcp` itself requires; each MCP tool then checks its own scope, as listed in the MCP guide (docs/features/mcp).',
           flows: {
             authorizationCode: {
               authorizationUrl: '/authorize',

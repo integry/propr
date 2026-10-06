@@ -8,8 +8,22 @@ import type { RedisClientType } from 'redis';
 import { z } from 'zod';
 import { closeConnection, runCostCapKey } from '@propr/core';
 import { configureDemoMode } from '../demoMode.js';
-import { TaskHistory, TaskPage, TaskSubmission } from '../openapi/schemas.js';
+import { DesktopAuthService } from '../desktopAuthService.js';
+import {
+  DesktopPairingActivationReceipt,
+  DesktopPairingCancellation,
+  DesktopPairingPoll,
+  DesktopPairingPollRequest,
+  DesktopPairingStart,
+  DesktopPairingStartRequest,
+  DesktopPairingTicket,
+  TaskHistory,
+  TaskPage,
+  TaskSubmission,
+  TaskSubmissionRequest,
+} from '../openapi/schemas.js';
 import type { FlatRequest } from '../requestTypes.js';
+import { createDesktopAuthRoutes } from '../routes/desktopAuthRoutes.js';
 import { createTaskHistoryRoutes } from '../routes/taskHistoryRoutes.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
 import { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
@@ -18,7 +32,8 @@ import { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
  * The handlers and the schemas in openapi/schemas.ts are maintained
  * separately. These tests run the handlers of the operations `@propr/client`
  * types against a migrated database and check what they send against the
- * schemas the published spec and the client types are generated from.
+ * schemas the published spec and the client types are generated from, and
+ * that the request schemas accept exactly what the handlers accept.
  */
 
 const migrations = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../core/src/db/migrations');
@@ -230,5 +245,121 @@ describe('Handler responses match the published schemas', () => {
     assert.equal(retried.sent.status, 200, JSON.stringify(retried.sent.body));
     assertConforms(TaskSubmission, retried.sent.body, 'POST /api/task-submissions/{key}/retry');
     assert.equal((retried.sent.body as { state: string }).state, 'queued');
+  });
+
+  it('desktop pairing routes return the pairing schemas for the bodies they accept', async () => {
+    const db = await migratedDatabase();
+    const service = new DesktopAuthService({
+      database: db,
+      now: () => new Date('2026-10-06T10:00:00.000Z'),
+      approvalBaseUrl: 'https://propr.example.test/',
+    });
+    const routes = createDesktopAuthRoutes({ service });
+    const call = async (handler: (req: Request, res: Response) => Promise<void>, body: unknown, pairingId?: string) => {
+      const { response, sent } = recorder();
+      await handler({ body, params: { pairingId } } as unknown as Request, response);
+      return sent;
+    };
+    const binding = {
+      instanceId: 'profile-a',
+      origin: 'https://propr.example.test',
+      scope: 'desktop-instance',
+      credentialGeneration: 'G'.repeat(22),
+    };
+
+    const startBody = { clientName: 'Work laptop', ...binding };
+    assertConforms(DesktopPairingStartRequest, startBody, 'POST /api/desktop/pairings request');
+    const started = await call(routes.startPairing, startBody);
+    assert.equal(started.status, 201, JSON.stringify(started.body));
+    assertConforms(DesktopPairingStart, started.body, 'POST /api/desktop/pairings');
+    const { pairingId, deviceSecret } = started.body as { pairingId: string; deviceSecret: string };
+
+    const pollBody = { deviceSecret };
+    assertConforms(DesktopPairingPollRequest, pollBody, 'poll request');
+    const pending = await call(routes.pollPairing, pollBody, pairingId);
+    assert.equal(pending.status, 202);
+    assertConforms(DesktopPairingPoll, pending.body, 'poll while pending');
+
+    await service.approvePairing(pairingId, {
+      id: '101', login: 'owner', username: 'owner', displayName: null, email: null, avatarUrl: null,
+    } as never);
+    const provisional = await call(routes.pollPairing, pollBody, pairingId);
+    assert.equal(provisional.status, 200, JSON.stringify(provisional.body));
+    assertConforms(DesktopPairingPoll, provisional.body, 'poll once approved');
+    const { activationTicket } = provisional.body as { activationTicket: string };
+
+    const ticket = { deviceSecret, activationTicket, ...binding };
+    assertConforms(DesktopPairingTicket, ticket, 'activation request');
+    const activated = await call(routes.activatePairing, ticket, pairingId);
+    assert.equal(activated.status, 200, JSON.stringify(activated.body));
+    assertConforms(DesktopPairingActivationReceipt, activated.body, 'POST /api/desktop/pairings/{pairingId}/activate');
+
+    // A second pairing, cancelled instead of activated.
+    const second = (await call(routes.startPairing, startBody)).body as { pairingId: string; deviceSecret: string };
+    await service.approvePairing(second.pairingId, { id: '101', login: 'owner', username: 'owner' } as never);
+    const secondProvisional = (await call(routes.pollPairing, { deviceSecret: second.deviceSecret }, second.pairingId))
+      .body as { activationTicket: string };
+    const cancelled = await call(routes.cancelPairing,
+      { deviceSecret: second.deviceSecret, activationTicket: secondProvisional.activationTicket, ...binding }, second.pairingId);
+    assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
+    assertConforms(DesktopPairingCancellation, cancelled.body, 'POST /api/desktop/pairings/{pairingId}/cancel');
+
+    // Start bodies the handler rejects are outside the request schema too.
+    for (const [label, body] of [
+      ['blank client name', { ...startBody, clientName: '' }],
+      ['an 81-character client name', { ...startBody, clientName: 'x'.repeat(81) }],
+      ['another scope', { ...startBody, scope: 'cli' }],
+      ['a short credential generation', { ...startBody, credentialGeneration: 'G' }],
+    ] as const) {
+      const rejected = await call(routes.startPairing, body);
+      assert.equal(rejected.status, 400, `${label}: ${JSON.stringify(rejected.body)}`);
+      assert.equal(DesktopPairingStartRequest.safeParse(body).success, false, `the schema accepts ${label}`);
+    }
+  });
+
+  it('TaskSubmissionRequest accepts exactly the bodies POST /api/task-submissions accepts', async () => {
+    configureDemoMode(false);
+    const db = await migratedDatabase();
+    let issueNumber = 0;
+    const routes = createTaskSubmissionRoutes({ db, services: {
+      authorize: async () => ({ id: 'repo', name: 'acme/app', enabled: true, baseBranch: 'main' }),
+      routing: async () => ({ agentAlias: 'claude', model: 'opus', routingLabel: 'llm-claude-opus' }),
+      getOctokit: async () => ({ request: async (route: string) => {
+        if (route.endsWith('/issues')) {
+          issueNumber += 1;
+          return { data: { number: issueNumber, html_url: `https://github.com/acme/app/issues/${issueNumber}` } };
+        }
+        return { data: route.endsWith('/timeline') ? [] : {} };
+      } }) as never,
+      processingLabels: async () => ['AI'],
+      enqueue: async () => undefined,
+    } });
+    const base = { repository: 'acme/app', instruction: 'Fix login' };
+    const cases: [string, Record<string, unknown>][] = [
+      ['the minimal body', base],
+      ['every option', { ...base, agentAlias: 'claude', model: 'opus', todoIds: ['t-1'], autoMerge: true, runUltrafix: true, ultrafixGoal: 8, ultrafixMaxCycles: 5, maxCostUsd: 5 }],
+      ['runUltrafix without bounds', { ...base, runUltrafix: true }],
+      ['a whitespace-only instruction', { ...base, instruction: ' \n\t ' }],
+      ['an empty instruction', { ...base, instruction: '' }],
+      ['an instruction over 50,000 characters', { ...base, instruction: 'x'.repeat(50_001) }],
+      ['a malformed repository', { ...base, repository: 'acme' }],
+      ['ultrafixGoal without runUltrafix', { ...base, ultrafixGoal: 8 }],
+      ['ultrafixMaxCycles with runUltrafix false', { ...base, runUltrafix: false, ultrafixMaxCycles: 3 }],
+      ['ultrafixGoal out of range', { ...base, runUltrafix: true, ultrafixGoal: 11 }],
+      ['a fractional ultrafixMaxCycles', { ...base, runUltrafix: true, ultrafixMaxCycles: 2.5 }],
+      ['a negative maxCostUsd', { ...base, maxCostUsd: -1 }],
+      ['a non-boolean autoMerge', { ...base, autoMerge: 'yes' }],
+      ['a non-string todo id', { ...base, todoIds: [1] }],
+    ];
+    for (const [index, [label, body]] of cases.entries()) {
+      const { response, sent } = recorder();
+      await routes.submit({
+        body, user: { id: 'alice', username: 'alice' }, files: [], get: () => `conformance-${index}`,
+      } as unknown as Request, response);
+      const handlerAccepts = sent.status !== 400;
+      if (handlerAccepts) assert.ok([200, 202].includes(sent.status), `${label}: ${sent.status} ${JSON.stringify(sent.body)}`);
+      assert.equal(TaskSubmissionRequest.safeParse(body).success, handlerAccepts,
+        `${label}: the handler ${handlerAccepts ? 'accepts' : 'rejects'} it, the schema does not agree`);
+    }
   });
 });

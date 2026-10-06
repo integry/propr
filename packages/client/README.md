@@ -17,6 +17,7 @@ The package is not on the npm registry yet. Build it, together with its `@propr/
 git clone https://github.com/integry/propr.git && cd propr
 npm ci
 npm run build -w @propr/shared && npm run build -w @propr/client
+mkdir -p /tmp/propr-client
 npm pack -w @propr/shared -w @propr/client --pack-destination /tmp/propr-client
 
 cd /path/to/your-project

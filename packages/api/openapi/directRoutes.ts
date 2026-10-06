@@ -6,6 +6,11 @@ import type { RegisteredRoute } from './types.js';
  * the `/api/agents` router. `openapiRouteCoverage.test.ts` scans the files below
  * for `app.<method>(` and `router.<method>(` calls, so a new direct route fails
  * the test until it is listed here.
+ *
+ * Handlers mounted with `app.use` are listed too when they answer requests
+ * themselves: the MCP OAuth endpoints come from the SDK's `mcpAuthRouter`
+ * (`MCP_AUTH_PATHS` in `mcp/server.ts`). The test fails when an `app.use` path
+ * or an `MCP_AUTH_PATHS` entry is not covered by a listed or registry route.
  */
 export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   { method: 'get', path: '/health', auth: 'public', source: 'server.ts' },
@@ -31,6 +36,13 @@ export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   { method: 'delete', path: '/api/desktop/tokens/:tokenId', auth: 'member', source: 'server.ts' },
 
   { method: 'get', path: '/.well-known/oauth-authorization-server', auth: 'public', source: 'mcp/server.ts' },
+  // `mcpAuthRouter` (MCP SDK), mounted at the application root by mcp/server.ts.
+  { method: 'get', path: '/.well-known/oauth-protected-resource/api/mcp', auth: 'public', source: 'mcp/server.ts' },
+  { method: 'get', path: '/authorize', auth: 'public', source: 'mcp/server.ts' },
+  { method: 'post', path: '/authorize', auth: 'public', source: 'mcp/server.ts' },
+  { method: 'post', path: '/token', auth: 'public', source: 'mcp/server.ts' },
+  { method: 'post', path: '/register', auth: 'public', source: 'mcp/server.ts' },
+  { method: 'post', path: '/revoke', auth: 'public', source: 'mcp/server.ts' },
   // `app.all('/api/mcp')`: Streamable HTTP uses POST for requests, GET for the
   // server stream and DELETE to end a session.
   { method: 'post', path: '/api/mcp', auth: 'mcp', source: 'mcp/server.ts' },
@@ -45,4 +57,19 @@ export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   { method: 'post', path: '/api/agents/:agentId/health', auth: 'member', permission: 'instance.manage_agents', source: 'routes/agentRoutes.ts' },
   { method: 'get', path: '/api/agents/opencode/models', auth: 'member', permission: 'instance.manage_agents', source: 'routes/agentRoutes.ts' },
   { method: 'post', path: '/api/agents/chat', auth: 'member', source: 'routes/agentRoutes.ts' },
+];
+
+/**
+ * Paths `server.ts` mounts `goalRoutes.requireGoalTaskOwnership` on with
+ * `app.use`. The guard adds no route; the generator notes it, and its `404` and
+ * `409` answers, on every route it can act on. `openapiRouteCoverage.test.ts`
+ * keeps this list equal to the mount in `server.ts`.
+ */
+export const GOAL_TASK_GUARD_MOUNTS: readonly string[] = [
+  '/api/task/:taskId',
+  '/api/task/:taskId/*path',
+  '/api/tasks/:taskId',
+  '/api/execution/:sessionId',
+  '/api/execution/:sessionId/*path',
+  '/api/llm-metrics/:correlationId',
 ];

@@ -6,7 +6,9 @@
  *   docs/static/openapi/propr-api.yaml with the same method and path, and the
  *   generated types it names must be the ones the spec uses.
  * - The `ProprClient` method of each typed operation must exist and accept and
- *   return exactly those generated types.
+ *   return exactly those generated types. A method may instead build the body
+ *   in a local declared with the generated type, and take a path parameter as a
+ *   field of an argument.
  * - No client source outside the operations table may spell an `/api/` path or
  *   an HTTP method, so every request is sent with the method checked above.
  *   packages/client/test/apiOperations.test.ts checks that each operation's
@@ -45,10 +47,6 @@ function specOperations(spec: Json): Map<string, SpecOperation> {
   return operations;
 }
 
-function pascal(value: string): string {
-  return value[0].toUpperCase() + value.slice(1);
-}
-
 function checkAgainstSpec(id: string, entry: ProprApiOperation, found: SpecOperation | undefined, typeNames: Set<string>): string[] {
   if (!found) return [`${id}: no operation with this operationId in ${SPEC}`];
   const errors: string[] = [];
@@ -58,7 +56,7 @@ function checkAgainstSpec(id: string, entry: ProprApiOperation, found: SpecOpera
   }
   if (operation['x-undocumented']) errors.push(`${id}: the client depends on an x-undocumented operation; document it in packages/api/openapi`);
   const query = ((operation.parameters ?? []) as Json[]).filter(parameter => parameter.in === 'query');
-  const expectedQuery = query.length ? `${pascal(id)}Query` : undefined;
+  const expectedQuery = query.length ? operation['x-propr-query-type'] as string | undefined : undefined;
   if (entry.query !== expectedQuery) errors.push(`${id}: query type is ${entry.query ?? 'none'}, spec implies ${expectedQuery ?? 'none'}`);
   const jsonBody = ((operation.requestBody as Json | undefined)?.content as Json | undefined)?.['application/json'] as Json | undefined;
   const body = refName(jsonBody?.schema);
@@ -97,12 +95,21 @@ function checkSignature(id: string, entry: ProprApiOperation, method: ts.MethodD
   const parameterTypes = method.parameters.map(parameter => text(parameter.type));
   const expectedReturn = `Promise<${TYPES_NAMESPACE}.${entry.response}>`;
   if (text(method.type) !== expectedReturn) errors.push(`${id}: ${entry.clientMethod}() must return ${expectedReturn}, found ${text(method.type) || 'no annotation'}`);
-  for (const name of [entry.query, entry.requestBody]) {
-    if (name && !parameterTypes.includes(`${TYPES_NAMESPACE}.${name}`)) errors.push(`${id}: ${entry.clientMethod}() must accept ${TYPES_NAMESPACE}.${name}`);
+  if (entry.query && !parameterTypes.includes(`${TYPES_NAMESPACE}.${entry.query}`)) {
+    errors.push(`${id}: ${entry.clientMethod}() must accept ${TYPES_NAMESPACE}.${entry.query}`);
+  }
+  // A method may also assemble the body from its arguments into a typed local.
+  const bodyType = `${TYPES_NAMESPACE}.${entry.requestBody}`;
+  if (entry.requestBody && !parameterTypes.includes(bodyType) && !text(method.body).includes(`:${bodyType}=`)) {
+    errors.push(`${id}: ${entry.clientMethod}() must accept ${bodyType}, or build the body in a local declared as ${bodyType}`);
   }
   const parameterNames = method.parameters.map(parameter => text(parameter.name));
   for (const [, name] of entry.path.matchAll(/\{([^}]+)\}/g)) {
-    if (!parameterNames.includes(name)) errors.push(`${id}: ${entry.clientMethod}() must take the ${name} path parameter`);
+    // Either its own argument, or a field of one (`pairing.pairingId`).
+    const fromArgument = parameterNames.some(parameter => text(method.body).includes(`{${name}:${parameter}.${name}}`));
+    if (!parameterNames.includes(name) && !fromArgument) {
+      errors.push(`${id}: ${entry.clientMethod}() must take the ${name} path parameter, or a value carrying it`);
+    }
   }
   return errors;
 }

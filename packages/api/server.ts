@@ -3,6 +3,7 @@ import { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
 import { dashboardNarrativeModel } from './routes/dashboardNarrativeModel.js';
 import { getConfig } from '@propr/core';
 import { createTaskSubmissionRoutes, taskSubmissionUpload } from './routes/taskSubmissionRoutes.js';
+import { GOAL_TASK_GUARD_MOUNTS } from './openapi/directRoutes.js';
 import { createRepositoryMediaRoutes } from './routes/repositoryMediaRoutes.js';
 import { createPreviewMediaRoutes } from './routes/previewMediaRoutes.js';
 import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
@@ -390,7 +391,7 @@ function setupRoutes(): void {
   const taskSubmissionRoutes = createTaskSubmissionRoutes({ db });
   const goalRoutes = createGoalRoutes({ db, taskQueue, redisClient });
 
-  app.use(['/api/task/:taskId', '/api/task/:taskId/*path', '/api/tasks/:taskId', '/api/execution/:sessionId', '/api/execution/:sessionId/*path', '/api/llm-metrics/:correlationId'], goalRoutes.requireGoalTaskOwnership);
+  app.use([...GOAL_TASK_GUARD_MOUNTS], goalRoutes.requireGoalTaskOwnership);
 
   const operationalRoutes = createOperationalRouteEntries({
     activeWorkRoutes,

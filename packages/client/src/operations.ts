@@ -23,20 +23,33 @@ export interface ProprApiOperation {
 export const PROPR_API_OPERATIONS = {
   getCompatibility: { method: 'GET', path: '/api/compatibility', clientMethod: 'negotiateCompatibility' },
   getDesktopDiscovery: { method: 'GET', path: '/api/desktop/discovery', clientMethod: 'discoverDesktop' },
-  // Pairing bodies and receipts are validated by desktopPairing.ts, not typed here.
-  startDesktopPairing: { method: 'POST', path: '/api/desktop/pairings', clientMethod: 'startDesktopPairing', requestBody: 'JsonObject' },
-  pollDesktopPairing: { method: 'POST', path: '/api/desktop/pairings/{pairingId}/poll', requestBody: 'JsonObject' },
+  // desktopPairing.ts also checks the values (formats, deadlines, the binding) at runtime.
+  startDesktopPairing: {
+    method: 'POST',
+    path: '/api/desktop/pairings',
+    clientMethod: 'startDesktopPairing',
+    requestBody: 'DesktopPairingStartRequest',
+    response: 'DesktopPairingStart',
+  },
+  pollDesktopPairing: {
+    method: 'POST',
+    path: '/api/desktop/pairings/{pairingId}/poll',
+    requestBody: 'DesktopPairingPollRequest',
+    response: 'DesktopPairingPoll',
+  },
   activateDesktopPairing: {
     method: 'POST',
     path: '/api/desktop/pairings/{pairingId}/activate',
     clientMethod: 'activateDesktopPairing',
-    requestBody: 'JsonObject',
+    requestBody: 'DesktopPairingTicket',
+    response: 'DesktopPairingActivationReceipt',
   },
   cancelDesktopPairing: {
     method: 'POST',
     path: '/api/desktop/pairings/{pairingId}/cancel',
     clientMethod: 'cancelDesktopPairing',
-    requestBody: 'JsonObject',
+    requestBody: 'DesktopPairingTicket',
+    response: 'DesktopPairingCancellation',
   },
   listTasks: { method: 'GET', path: '/api/tasks', clientMethod: 'listTasks', query: 'ListTasksQuery', response: 'TaskPage' },
   getTaskHistory: { method: 'GET', path: '/api/task/{taskId}/history', clientMethod: 'getTaskHistory', response: 'TaskHistory' },
