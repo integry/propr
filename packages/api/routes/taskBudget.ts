@@ -15,7 +15,7 @@ export interface TaskBudget {
   exceeded: boolean;
 }
 
-interface StoredCap { capUsd?: unknown; source?: unknown; budgetTaskIds?: unknown }
+interface StoredCap { capUsd?: unknown; source?: unknown; budgetTaskIds?: unknown; spentUsd?: unknown }
 
 function readStoredCap(raw: string | null): StoredCap | null {
   if (!raw) return null;
@@ -37,6 +37,10 @@ function taskIdList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string' && id.length > 0) : [];
 }
 
+function observedSpend(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 const CAP_SOURCES: readonly RunCostCapSource[] = ['override', 'workflow', 'instance_default'];
 
 export async function loadTaskBudget(
@@ -55,7 +59,9 @@ export async function loadTaskBudget(
     // The timeline event keeps the earlier attempts once the Redis record expires.
     const budgetTaskIds = [...new Set([taskId, ...taskIdList(stored?.budgetTaskIds), ...taskIdList(exceededEvent?.budgetTaskIds)])];
     const row = await db('llm_executions').whereIn('task_id', budgetTaskIds).sum({ total: 'cost_usd' }).first() as { total?: number | string | null } | undefined;
-    const spentUsd = Number(row?.total ?? 0) || 0;
+    // The guard stopped the run on spend it observed, including executions
+    // whose rows were never written; the recorded total may only exceed it.
+    const spentUsd = Math.max(Number(row?.total ?? 0) || 0, observedSpend(exceededEvent?.spentUsd));
     if (capUsd === null && spentUsd <= 0) return null;
     return {
       spentUsd: Number(spentUsd.toFixed(4)),

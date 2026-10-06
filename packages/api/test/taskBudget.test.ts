@@ -15,7 +15,7 @@ async function executionsDatabase(rows: Array<{ task_id: string; cost_usd: numbe
     table.text('task_id');
     table.float('cost_usd');
   });
-  await database('llm_executions').insert(rows);
+  if (rows.length) await database('llm_executions').insert(rows);
   return database;
 }
 
@@ -39,5 +39,35 @@ test('the Redis cap record and the timeline event are combined without counting 
   const budget = await loadTaskBudget(db, redis, 'retry-1', history);
   assert.equal(budget?.spentUsd, 5.2);
   assert.equal(budget?.percent, 104);
+  await db.destroy();
+});
+
+test('a run stopped at its cap keeps the spend the guard observed when its executions were never recorded', async () => {
+  const db = await executionsDatabase([]);
+  const history = exceededHistory({ capUsd: 5, spentUsd: 5.2, percent: 104, source: 'override' });
+  const budget = await loadTaskBudget(db, { get: async () => null }, 'task-1', history);
+  assert.deepEqual(budget, { spentUsd: 5.2, capUsd: 5, percent: 104, source: 'override', exceeded: true });
+  await db.destroy();
+});
+
+test('observed and recorded spend are reconciled, not added together', async () => {
+  const db = await executionsDatabase([{ task_id: 'task-1', cost_usd: 2 }]);
+  const partlyRecorded = await loadTaskBudget(db, { get: async () => null }, 'task-1', exceededHistory({ capUsd: 5, spentUsd: 5.2, source: 'override' }));
+  assert.equal(partlyRecorded?.spentUsd, 5.2);
+  assert.equal(partlyRecorded?.percent, 104);
+  await db('llm_executions').insert({ task_id: 'task-1', cost_usd: 3.5 });
+  const recordedLater = await loadTaskBudget(db, { get: async () => null }, 'task-1', exceededHistory({ capUsd: 5, spentUsd: 5.2, source: 'override' }));
+  assert.equal(recordedLater?.spentUsd, 5.5);
+  assert.equal(recordedLater?.percent, 110);
+  await db.destroy();
+});
+
+test('an invalid observed spend in the exceeded event is ignored', async () => {
+  const db = await executionsDatabase([{ task_id: 'task-1', cost_usd: 1 }]);
+  for (const spentUsd of ['9', -3, Number.NaN, null]) {
+    const budget = await loadTaskBudget(db, { get: async () => null }, 'task-1', exceededHistory({ capUsd: 5, spentUsd, source: 'override' }));
+    assert.equal(budget?.spentUsd, 1);
+    assert.equal(budget?.percent, 20);
+  }
   await db.destroy();
 });
