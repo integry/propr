@@ -3,7 +3,7 @@ import { after, mock, test } from 'node:test';
 import { defaultPrBody, parsePrTemplate, PR_TEMPLATE_SCAFFOLD } from '@propr/shared';
 import { closeConnection, formatSubscriptionUsage, generateCompletionComment, generateCompletionCommentParts, getDetailedUsageStats, redactSecrets, sanitizeAgentReport } from '@propr/core';
 import { describeIssuePullRequestForRepository, generatePRBody, generatePRDescription, type ClaudeResult } from '../src/github/prFormatters.js';
-import { buildIssuePullRequestBodyPieces, buildIssueReference } from '../src/jobs/issueJobHelpers.js';
+import { buildIssuePullRequestBodyPieces, buildIssueReference, createPullRequest } from '../src/jobs/issueJobHelpers.js';
 import { createGitHubPrTemplateSource, describeContinuationPullRequest, loadPullRequestTemplate } from '../src/jobs/pullRequestTemplate.js';
 import { buildSlashCommandsBlock } from '../src/shared/slashCommandsBlock.js';
 
@@ -201,4 +201,39 @@ test('describeIssuePullRequestForRepository applies the base-branch template to 
     const plain = await describeIssuePullRequestForRepository({ octokit: contentsOctokit({}, {}), ...issue, baseBranch: 'main' });
     assert.match(plain.title, /^\[7 by .+\] Fix login$/);
     assert.match(plain.body, /^## 🤖 AI-Generated Solution/);
+});
+
+const SECRET_BRANCH = 'fix/ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+const SECRET_TITLE_TEMPLATE = { '.propr/pr-template.md': '## title\n{{branch}}: {{issue_title}} {{session_id}}\n' };
+
+test('describeIssuePullRequestForRepository never publishes a secret from a title placeholder', async () => {
+    const described = await describeIssuePullRequestForRepository({
+        octokit: contentsOctokit(SECRET_TITLE_TEMPLATE, {}), owner: 'acme', repoName: 'app', baseBranch: 'main', branch: SECRET_BRANCH,
+        issueNumber: 7, issueTitle: 'Fix login', commitMessage: 'fix: login', claudeResult: { ...results[2], sessionId: 'sk-ant-abcdefghijklmnopqrstuvwxyz0123456789' },
+        modelName: 'claude-opus-4-5-20251101',
+    });
+    assert.equal(described.title, 'fix/[REDACTED_GITHUB_TOKEN]: Fix login [REDACTED_ANTHROPIC_KEY]');
+});
+
+test('createPullRequest never publishes a secret from a title placeholder', async () => {
+    const octokit = contentsOctokit(SECRET_TITLE_TEMPLATE, {});
+    const request = octokit.request.bind(octokit);
+    const published: Array<Record<string, unknown>> = [];
+    const mockOctokit = {
+        async request<T>(endpoint: string, options: Record<string, unknown>): Promise<T> {
+            if (endpoint === 'POST /repos/{owner}/{repo}/pulls') {
+                published.push(options);
+                return { data: { number: 9, html_url: 'https://github.com/acme/app/pull/9', title: options.title } } as T;
+            }
+            if (endpoint.startsWith('POST /repos/{owner}/{repo}/issues/')) return { data: [] } as T;
+            return request<T>(endpoint, options);
+        },
+    };
+    const logger = { info() {}, warn() {}, error() {}, debug() {} };
+    await createPullRequest(mockOctokit as never, { repoOwner: 'acme', repoName: 'app', number: 7, baseBranch: 'main' } as never, { branchName: SECRET_BRANCH } as never, {
+        commitResult: null, claudeResult: null, modelName: 'claude-opus-4-5-20251101', repoValidation: {} as never, PR_LABEL: 'propr',
+        correlatedLogger: logger as never, issueTitle: 'Fix login',
+    });
+    assert.equal(published.length, 1);
+    assert.equal(published[0].title, 'fix/[REDACTED_GITHUB_TOKEN]: Fix login');
 });

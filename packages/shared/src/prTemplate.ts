@@ -385,11 +385,15 @@ export function composeWithRepositoryTemplate(pieces: readonly PrBodyPiece[], re
   ].filter(Boolean).join('\n\n');
 }
 
-/** Render the title section; an empty result keeps the default title. */
-export function composePrTitle(defaultTitle: string, template: ParsedPrTemplate | undefined, values: PrTemplateValues): string {
+/**
+ * Render the title section; an empty result keeps the default title. `redact`
+ * runs on the whole rendered title before truncation, so a secret split by the
+ * length limit is still recognized.
+ */
+export function composePrTitle(defaultTitle: string, template: ParsedPrTemplate | undefined, values: PrTemplateValues, redact: (text: string) => string = text => text): string {
   const pattern = template?.sections.title;
   if (!pattern?.trim()) return defaultTitle;
-  const title = renderPrTemplateSection(pattern, values, 'title').replace(/\s+/g, ' ').trim();
+  const title = redact(renderPrTemplateSection(pattern, values, 'title')).replace(/\s+/g, ' ').trim();
   if (!title) return defaultTitle;
   return title.length > PR_TITLE_MAX_LENGTH ? title.slice(0, PR_TITLE_MAX_LENGTH - 1).trimEnd() + '…' : title;
 }

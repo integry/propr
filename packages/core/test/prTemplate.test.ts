@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { defaultPrBody, parsePrTemplate, PR_TEMPLATE_SCAFFOLD, type PrBodyPiece } from '@propr/shared';
+import { defaultPrBody, parsePrTemplate, PR_TEMPLATE_PATH, PR_TEMPLATE_SCAFFOLD, type PrBodyPiece } from '@propr/shared';
 import {
     applyPrTemplate, buildPrTemplateValues, describePullRequest, findGitHubPullRequestTemplate, loadPrTemplate,
     type PrTemplateSource, type PrTemplateSourceEntry,
@@ -103,6 +103,26 @@ test('buildPrTemplateValues sanitizes untrusted text and formats run data', () =
     assert.equal(built.commits, '- `0123456` Fix leak');
     assert.equal(built.files_changed, '- `a.ts`\n- `we\\`ird.ts`');
     assert.equal(built.session_id, 's-1');
+});
+
+test('buildPrTemplateValues redacts secrets in every placeholder value', () => {
+    const secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+    const built = buildPrTemplateValues({
+        issueTitle: secret, summary: secret, sessionId: secret, executionTime: secret, branch: `fix/${secret}`, repository: secret,
+        commits: [{ message: secret }], filesChanged: [`src/${secret}.ts`], model: secret,
+    });
+    for (const [name, value] of Object.entries(built)) assert.doesNotMatch(value, /ghp_/, name);
+});
+
+test('applyPrTemplate redacts the whole rendered title before truncating it', () => {
+    const secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+    const template = { kind: 'propr' as const, path: PR_TEMPLATE_PATH, template: parsePrTemplate('## title\n{{branch}}: {{issue_title}}\n') };
+    assert.equal(applyPrTemplate(template, pieces, 'title', buildPrTemplateValues({ issueTitle: 'Fix', branch: `fix/${secret}` })).title,
+        'fix/[REDACTED_GITHUB_TOKEN]: Fix');
+    // A secret assembled from separate values, then cut by the length limit, is still recognized.
+    const split = applyPrTemplate({ ...template, template: parsePrTemplate('## title\n{{issue_title}}ghp_{{branch}}\n') }, pieces, 'title',
+        { ...values, issue_title: 'x'.repeat(240), branch: 'abcdefghijklmnopqrstuvwxyz0123456789' }).title;
+    assert.doesNotMatch(split, /ghp_|abcdefghijklmn/);
 });
 
 test('buildPrTemplateValues bounds the changed-file list', () => {

@@ -89,18 +89,19 @@ function codeSpan(text: string): string {
 
 /**
  * Placeholder values. Untrusted text takes the same path as ProPR's default
- * description: agent output through sanitizeAgentReport, everything through
- * secret redaction. The renderer additionally neutralizes HTML in both.
+ * description: agent output through sanitizeAgentReport, every value through
+ * secret redaction (titles do not pass through the body's redaction). The
+ * renderer additionally neutralizes HTML in the body.
  */
 export function buildPrTemplateValues(input: PrTemplateValueInput): PrTemplateValues {
     const files = [...new Set((input.filesChanged ?? []).map(file => file.trim()).filter(Boolean))];
     const listedFiles = files.slice(0, MAX_FILES_CHANGED).map(file => `- ${codeSpan(file)}`);
     if (files.length > listedFiles.length) listedFiles.push(`- …and ${files.length - listedFiles.length} more`);
     const commits = (input.commits ?? []).slice(0, MAX_LISTED_COMMITS)
-        .map(commit => `- ${commit.sha ? `${codeSpan(commit.sha.slice(0, 7))} ` : ''}${redactSecrets(commit.message.split('\n')[0].trim())}`);
-    return {
+        .map(commit => `- ${commit.sha ? `${codeSpan(commit.sha.slice(0, 7))} ` : ''}${commit.message.split('\n')[0].trim()}`);
+    const values: PrTemplateValues = {
         issue_number: input.issueNumber === undefined ? '' : String(input.issueNumber),
-        issue_title: redactSecrets((input.issueTitle ?? '').replace(/\s+/g, ' ').trim()),
+        issue_title: (input.issueTitle ?? '').replace(/\s+/g, ' ').trim(),
         model: getModelShortName(input.model ?? undefined),
         agent: input.model ? getAgentTypeFromModel(input.model) : '',
         cost: `$${(input.cost ?? 0).toFixed(2)}`,
@@ -109,10 +110,11 @@ export function buildPrTemplateValues(input: PrTemplateValueInput): PrTemplateVa
         branch: input.branch ?? '',
         commits: commits.join('\n'),
         files_changed: listedFiles.join('\n'),
-        summary: redactSecrets(sanitizeAgentReport(input.summary)),
+        summary: sanitizeAgentReport(input.summary),
         session_id: input.sessionId ?? '',
         repository: input.repository ?? '',
     };
+    return Object.fromEntries(Object.entries(values).map(([name, value]) => [name, redactSecrets(value)])) as PrTemplateValues;
 }
 
 export interface PullRequestDescription {
@@ -138,7 +140,7 @@ export function applyPrTemplate(template: ResolvedPrTemplate | undefined, pieces
     const overridesBody = PR_TEMPLATE_BODY_SECTIONS.some(section => sections[section] !== undefined);
     if (!overridesBody && sections.title === undefined) return { title: defaultTitle, body: defaultPrBody(pieces) };
     return {
-        title: composePrTitle(defaultTitle, template.template, values),
+        title: composePrTitle(defaultTitle, template.template, values, redactSecrets),
         body: overridesBody ? redactSecrets(composePrBody(pieces, template.template, values)) : defaultPrBody(pieces),
         template: { kind: template.kind, path: template.path },
     };

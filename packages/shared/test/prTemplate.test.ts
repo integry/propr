@@ -182,6 +182,14 @@ test('composePrTitle renders plain text and keeps the default when absent or emp
   assert.equal(composePrTitle('default', parsePrTemplate('## title\n{{issue_title}}'), { ...values, issue_title: 'x'.repeat(300) }).length, 256);
 });
 
+test('composePrTitle redacts the rendered title before truncating it', () => {
+  const template = parsePrTemplate('## title\n{{issue_title}} {{branch}}');
+  const redact = (text: string) => text.replace(/secret-\w+/g, '[REDACTED]');
+  assert.equal(composePrTitle('default', template, { ...values, issue_title: 'Fix', branch: 'secret-abc' }, redact), 'Fix [REDACTED]');
+  const long = composePrTitle('default', template, { ...values, issue_title: 'x'.repeat(250), branch: 'secret-abcdefghij' }, redact);
+  assert.equal(long, `${'x'.repeat(250)} [RED…`);
+});
+
 test('placeholder matching stays linear on unterminated braces followed by whitespace', () => {
   const hostile = `{{{{${'\t'.repeat(50_000)}`;
   const started = Date.now();
