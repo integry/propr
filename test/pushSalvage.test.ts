@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, mkdir, symlink, lstat, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -288,6 +288,74 @@ test('a bundle written by the real git operations restores the branch', async ()
         await git(tempDir, ['init', restored]);
         await git(restored, ['fetch', '--', failure.bundlePath!, 'HEAD']);
         assert.equal(await git(restored, ['rev-parse', 'FETCH_HEAD']), head);
+    } finally {
+        await rm(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('a bundle is self-contained when remote-tracking commits are missing from a fresh checkout', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-bundle-prereq-'));
+    try {
+        const remote = path.join(tempDir, 'remote.git');
+        const worker = path.join(tempDir, 'worker');
+        await git(tempDir, ['init', '--bare', remote]);
+        await git(tempDir, ['clone', remote, worker]);
+        await git(worker, ['config', 'user.email', 'test@example.com']);
+        await git(worker, ['config', 'user.name', 'Test']);
+        await writeFile(path.join(worker, 'README.md'), 'branch start\n');
+        await git(worker, ['add', '.']);
+        await git(worker, ['commit', '-m', 'branch start']);
+        await git(worker, ['branch', '-M', 'feature']);
+        await git(worker, ['push', 'origin', 'feature']);
+        await writeFile(path.join(worker, 'agent.txt'), 'agent work\n');
+        await git(worker, ['add', '.']);
+        await git(worker, ['commit', '-m', 'agent work']);
+        const head = await git(worker, ['rev-parse', 'HEAD']);
+        // The remote was rewritten and is now unreachable; only the stale tracking ref knows the start commit.
+        await rm(remote, { recursive: true, force: true });
+
+        const salvage = await salvageFailedPush({
+            taskId: 'task-5', repoOwner: 'integry', repoName: 'propr', branchName: 'feature', worktreePath: worker,
+            error: NON_FAST_FORWARD_ERROR,
+            bundleDirectory: path.join(tempDir, 'bundles'),
+            operations: createWorktreePushSalvageOperations({
+                worktreePath: worker, taskId: 'task-5', branchName: 'feature', repoUrl: remote,
+                refreshToken: async () => 'token',
+                retryPush: async () => { throw NON_FAST_FORWARD_ERROR; },
+            }),
+        }).catch((e: unknown) => e);
+
+        const failure = getPushFailure(salvage)!;
+        assert.equal(failure.rung, 'bundle');
+        // A fresh repository of unrelated history has none of the worker's objects.
+        const fresh = path.join(tempDir, 'fresh');
+        await git(tempDir, ['init', fresh]);
+        await git(fresh, ['config', 'user.email', 'test@example.com']);
+        await git(fresh, ['config', 'user.name', 'Test']);
+        await git(fresh, ['commit', '--allow-empty', '-m', 'rewritten history']);
+        await git(fresh, ['fetch', '--', failure.bundlePath!, 'HEAD']);
+        assert.equal(await git(fresh, ['rev-parse', 'FETCH_HEAD']), head);
+    } finally {
+        await rm(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('the salvage retention marker replaces a repository symlink instead of writing through it', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-symlink-'));
+    try {
+        const worktreePath = path.join(tempDir, 'worktree');
+        await mkdir(worktreePath);
+        const hostFile = path.join(tempDir, 'app.sqlite');
+        await writeFile(hostFile, 'application state');
+        await symlink(hostFile, path.join(worktreePath, '.retention-info.json'));
+
+        await writeSalvageRetentionMarker(worktreePath, { taskId: 'task/1', branchName: '2736/salvage' });
+
+        assert.equal(await readFile(hostFile, 'utf8'), 'application state');
+        const marker = path.join(worktreePath, '.retention-info.json');
+        assert.ok((await lstat(marker)).isFile());
+        assert.equal(JSON.parse(await readFile(marker, 'utf8')).reason, 'push_salvage');
+        assert.deepEqual(await readdir(worktreePath), ['.retention-info.json']);
     } finally {
         await rm(tempDir, { recursive: true, force: true });
     }

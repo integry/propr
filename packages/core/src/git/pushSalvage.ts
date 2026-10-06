@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+import os from 'os';
 import path from 'path';
 import fs from 'fs-extra';
 import logger from '../utils/logger.js';
@@ -300,7 +302,18 @@ export async function writeSalvageRetentionMarker(worktreePath: string, details:
         taskId: details.taskId,
         branchName: details.branchName,
     };
-    await fs.writeJson(path.join(worktreePath, '.retention-info.json'), info);
+    // The worktree is repository-controlled: `.retention-info.json` may be a symlink to a
+    // host file. Write a freshly created temp file (O_EXCL never follows a symlink) and
+    // rename it over the directory entry, which replaces a symlink rather than its target.
+    const markerPath = path.join(worktreePath, '.retention-info.json');
+    const tempPath = path.join(worktreePath, `.retention-info.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+    try {
+        await fs.writeFile(tempPath, JSON.stringify(info), { flag: 'wx', mode: 0o644 });
+        await fs.rename(tempPath, markerPath);
+    } catch (error) {
+        await fs.remove(tempPath).catch(() => undefined);
+        throw error;
+    }
 }
 
 /** True while a salvage marker protects its worktree: indefinitely without a deadline,
@@ -332,6 +345,21 @@ export interface WorktreePushSalvageOptions<T> {
     retryPush: (token: string) => Promise<T>;
 }
 
+/** Runs the advertised recovery (`git fetch <bundle> HEAD`) in an empty repository, so
+ * success cannot depend on objects that only the worker's repository holds. */
+async function verifyBundleRestoresHead(bundlePath: string, head: string): Promise<void> {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-bundle-verify-'));
+    try {
+        const git = createHooklessGit(directory);
+        await git.raw(['init', '--bare', '-q']);
+        await git.raw(['fetch', '-q', '--', bundlePath, 'HEAD']);
+        const fetched = (await git.revparse(['FETCH_HEAD'])).trim();
+        if (fetched !== head) throw new Error(`Bundle ${bundlePath} restores ${fetched}, expected ${head}`);
+    } finally {
+        await fs.remove(directory).catch(() => undefined);
+    }
+}
+
 /** Real git implementation of the ladder for a worktree whose HEAD holds the work. */
 export function createWorktreePushSalvageOperations<T>(options: WorktreePushSalvageOptions<T>): PushSalvageOperations<T> {
     const git = createHooklessGit(options.worktreePath);
@@ -356,14 +384,16 @@ export function createWorktreePushSalvageOperations<T>(options: WorktreePushSalv
             }
         },
         async createBundle(bundlePath) {
-            // Prefer only the commits the remote lacks; fall back to the full history when
-            // the remote-tracking refs give no usable boundary.
+            // Bundle the full history of HEAD. Excluding remote-tracking commits would make
+            // them prerequisites, and a rewritten remote may no longer have them.
+            const head = (await git.revparse(['HEAD'])).trim();
             try {
-                await git.raw(['bundle', 'create', bundlePath, 'HEAD', '--not', '--remotes']);
-            } catch {
                 await git.raw(['bundle', 'create', bundlePath, 'HEAD']);
+                await verifyBundleRestoresHead(bundlePath, head);
+            } catch (error) {
+                await fs.remove(bundlePath).catch(() => undefined);
+                throw error;
             }
-            await git.raw(['bundle', 'verify', bundlePath]);
         },
         async retainWorktree() {
             await writeSalvageRetentionMarker(options.worktreePath, { taskId: options.taskId, branchName: options.branchName });
