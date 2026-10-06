@@ -16,7 +16,7 @@ import { createHooklessGit } from '../git/hooklessGit.js';
 import { resolveRepositoryClonePath } from '../git/repositoryPaths.js';
 import { findRelevantFiles, type RelevantFile } from './relevanceService.js';
 import logger from '../utils/logger.js';
-import { cloneOrRefresh, fetchRequestedRef } from './repositoryManagedClone.js';
+import { cloneOrRefresh, fetchRequestedRef, resolveCloneToken } from './repositoryManagedClone.js';
 import {
   RepositoryRetrievalError,
   type ReadRepositoryFileOptions,
@@ -89,6 +89,24 @@ async function resolveCommit(repoPath: string, ref: string): Promise<string | nu
 }
 
 /**
+ * Resolves `ref` in a managed clone. A short name may be a tag or a branch and
+ * git prefers the tag, but a managed clone only holds the refs earlier
+ * requests fetched; when the name resolved without its tag being present
+ * locally (e.g. through a cached branch), fetch the tag first so the answer
+ * does not depend on which refs were cached. Unresolved refs are left to the
+ * caller's tag-first fetch.
+ */
+async function resolveManagedCommit(repoPath: string, ref: string, getAuthToken: () => Promise<string>): Promise<string | null> {
+  const commit = await resolveCommit(repoPath, ref);
+  const mappings = remoteRefMappings(ref);
+  if (!commit || mappings.length < 2) return commit;
+  const tag = mappings[0].local;
+  if (await revParseCommit(repoPath, tag)) return commit;
+  await fetchRequestedRef(repoPath, tag, await getAuthToken());
+  return resolveCommit(repoPath, ref);
+}
+
+/**
  * Finds a local clone (cloning or fetching when needed) and resolves the
  * requested ref to an exact commit.
  */
@@ -104,7 +122,7 @@ async function resolveTarget(options: RepositoryTargetOptions): Promise<Resolved
 
   const localPath = resolveRepositoryClonePath(CLONES_BASE_PATH, owner, repoName);
   if (await fs.pathExists(path.join(localPath, '.git'))) {
-    const commit = await resolveCommit(localPath, ref);
+    const commit = await resolveManagedCommit(localPath, ref, () => resolveCloneToken(options.authToken));
     if (commit) return { repoPath: localPath, ref, commit };
   }
 
@@ -112,7 +130,7 @@ async function resolveTarget(options: RepositoryTargetOptions): Promise<Resolved
   // covers the clone's configured refspec (a single branch for shallow
   // clones), so fetch the requested ref explicitly before giving up.
   const { repoPath, authToken } = await cloneOrRefresh(owner, repoName, options);
-  let commit = await resolveCommit(repoPath, ref);
+  let commit = await resolveManagedCommit(repoPath, ref, async () => authToken);
   if (!commit) {
     await fetchRequestedRef(repoPath, ref, authToken);
     commit = await resolveCommit(repoPath, ref);

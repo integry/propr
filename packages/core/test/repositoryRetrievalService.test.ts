@@ -658,3 +658,69 @@ test('clones without the index branch when an explicit ref is given and no manag
     ensureRepoCloned.mock.resetCalls();
   }
 });
+
+test('resolves a short name to its tag even when only the same-named branch was cached first', async () => {
+  // Branch `release` and tag `release` point at different commits.
+  git('branch', 'release', 'feature');
+  git('tag', 'release', firstCommit);
+  const managedPath = path.join(clonesBasePath, 'owner', 'managed-branch-first');
+  execFileSync('git', ['clone', '-q', '--depth=1', '--single-branch', '--branch', 'main', `file://${repoPath}`, managedPath]);
+  const managedGit = (...args: string[]) => execFileSync('git', args, { cwd: managedPath, encoding: 'utf8' }).trim();
+  ensureRepoCloned.mock.mockImplementation(async () => {
+    managedGit('fetch', '-q', 'origin', '--prune');
+    return managedPath;
+  });
+  const managed = { repository: 'owner/managed-branch-first', path: 'src/util.ts' };
+  try {
+    const branched = await readRepositoryFileContent({ ...managed, ref: 'refs/heads/release' });
+    assert.equal(branched.commit, featureCommit);
+    assert.equal(managedGit('rev-parse', 'refs/remotes/origin/release'), featureCommit);
+    assert.throws(() => managedGit('rev-parse', '--verify', '--quiet', 'refs/tags/release'));
+
+    // The cached branch must not shadow the tag git would pick.
+    const short = await readRepositoryFileContent({ ...managed, ref: 'release' });
+    assert.equal(short.commit, firstCommit);
+    const searched = await searchRepositoryFiles({ ...managed, query: 'featureOnlyNeedle', mode: 'literal', ref: 'release' });
+    assert.equal(searched.commit, firstCommit);
+  } finally {
+    ensureRepoCloned.mock.restore();
+    ensureRepoCloned.mock.resetCalls();
+    git('tag', '-d', 'release');
+    git('branch', '-D', 'release');
+  }
+});
+
+test('reports a nonexistent branch as a 404 when no managed clone exists yet', async () => {
+  const managedPath = path.join(clonesBasePath, 'owner', 'managed-cold-branch');
+  // Mirrors cloneNewRepo: --branch is passed when a base branch is given and fails for a missing branch.
+  ensureRepoCloned.mock.mockImplementation(async (opts: { baseBranch?: string }) => {
+    if (!fs.existsSync(managedPath)) {
+      const branchArgs = opts.baseBranch && opts.baseBranch !== 'HEAD' ? [`--branch=${opts.baseBranch}`] : [];
+      execFileSync('git', ['clone', '-q', '--depth=1', ...branchArgs, `file://${repoPath}`, managedPath], { stdio: 'pipe' });
+    }
+    return managedPath;
+  });
+  const managed = { repository: 'owner/managed-cold-branch' };
+  try {
+    await expectRetrievalError(
+      readRepositoryFileContent({ ...managed, path: 'src/util.ts', branch: 'no-such-branch' }),
+      404,
+      /not found/,
+    );
+    fs.rmSync(managedPath, { recursive: true, force: true });
+    await expectRetrievalError(
+      searchRepositoryFiles({ ...managed, query: 'featureOnlyNeedle', mode: 'literal', branch: 'no-such-branch' }),
+      404,
+      /not found/,
+    );
+    for (const call of ensureRepoCloned.mock.calls) assert.equal(call.arguments[0].baseBranch, undefined);
+
+    // An existing non-default branch is still fetched and resolved on a cold clone.
+    fs.rmSync(managedPath, { recursive: true, force: true });
+    const read = await readRepositoryFileContent({ ...managed, path: 'src/feature.ts', branch: 'feature' });
+    assert.equal(read.commit, featureCommit);
+  } finally {
+    ensureRepoCloned.mock.restore();
+    ensureRepoCloned.mock.resetCalls();
+  }
+});

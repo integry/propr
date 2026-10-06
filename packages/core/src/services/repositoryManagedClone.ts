@@ -20,7 +20,7 @@ import { isFullCommitSha, remoteRefMappings } from './repositoryRetrievalValidat
 
 const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
 
-async function resolveCloneToken(authToken?: string): Promise<string> {
+export async function resolveCloneToken(authToken?: string): Promise<string> {
   try {
     return await getGitHubInstallationToken();
   } catch (error) {
@@ -30,10 +30,10 @@ async function resolveCloneToken(authToken?: string): Promise<string> {
 }
 
 /**
- * Clones the repository or refreshes the existing shared clone. When `ref` is
- * given it takes precedence over `branch`, which then only names the semantic
- * index; the clone uses the default branch so that a missing `branch` cannot
- * fail cloning, and the caller fetches `ref` explicitly if it is still absent.
+ * Clones the repository or refreshes the existing shared clone. The clone is
+ * always prepared on the default branch, independently of the requested
+ * `ref`/`branch`, so that a nonexistent branch cannot fail cloning; the caller
+ * fetches the requested ref explicitly and reports it as not found if absent.
  */
 export async function cloneOrRefresh(owner: string, repoName: string, options: RepositoryTargetOptions): Promise<{ repoPath: string; authToken: string }> {
   const authToken = await resolveCloneToken(options.authToken);
@@ -42,7 +42,6 @@ export async function cloneOrRefresh(owner: string, repoName: string, options: R
     owner,
     repoName,
     authToken,
-    baseBranch: options.ref?.trim() ? undefined : options.branch,
   });
   return { repoPath, authToken };
 }
