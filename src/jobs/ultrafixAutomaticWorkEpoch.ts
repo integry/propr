@@ -55,6 +55,32 @@ redis.call('DEL', KEYS[2])
 return 1
 `;
 
+const REPLACE_STATE_IF_UNCHANGED_SCRIPT = `
+local current_epoch = redis.call('GET', KEYS[1]) or '0'
+if current_epoch ~= ARGV[1] then
+    return 0
+end
+local current_state = redis.call('GET', KEYS[2])
+if current_state ~= ARGV[2] then
+    return 0
+end
+redis.call('SET', KEYS[2], ARGV[3])
+return 1
+`;
+
+const CLEAR_STATE_IF_UNCHANGED_SCRIPT = `
+local current_epoch = redis.call('GET', KEYS[1]) or '0'
+if current_epoch ~= ARGV[1] then
+    return 0
+end
+local current_state = redis.call('GET', KEYS[2])
+if current_state ~= ARGV[2] then
+    return 0
+end
+redis.call('DEL', KEYS[2])
+return 1
+`;
+
 const INVALIDATE_AUTOMATIC_WORK_SCRIPT = `
 local epoch = redis.call('INCR', KEYS[1])
 redis.call('DEL', KEYS[2])
@@ -252,6 +278,46 @@ export async function clearUltrafixStateIfCurrent(
         getUltrafixAutomaticWorkEpochKey(identity.owner, identity.repo, identity.pr),
         `${ULTRAFIX_STATE_KEY_PREFIX}:${identity.owner}:${identity.repo}:${identity.pr}`,
         String(workEpoch),
+    );
+    return Number(cleared) === 1;
+}
+
+/**
+ * Replace the loop state only while `expected.workEpoch` is current and the
+ * stored state is still exactly `expected.rawState`, so a decision made from an older
+ * snapshot can never overwrite a newer or concurrently updated loop.
+ */
+export async function replaceUltrafixStateIfUnchanged(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    expected: { workEpoch: number; rawState: string },
+    serializedState: string,
+): Promise<boolean> {
+    const saved = await redis.eval(
+        REPLACE_STATE_IF_UNCHANGED_SCRIPT,
+        2,
+        getUltrafixAutomaticWorkEpochKey(identity.owner, identity.repo, identity.pr),
+        `${ULTRAFIX_STATE_KEY_PREFIX}:${identity.owner}:${identity.repo}:${identity.pr}`,
+        String(expected.workEpoch),
+        expected.rawState,
+        serializedState,
+    );
+    return Number(saved) === 1;
+}
+
+/** Clear the loop state only while `expected.workEpoch` is current and the state is still `expected.rawState`. */
+export async function clearUltrafixStateIfUnchanged(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    expected: { workEpoch: number; rawState: string },
+): Promise<boolean> {
+    const cleared = await redis.eval(
+        CLEAR_STATE_IF_UNCHANGED_SCRIPT,
+        2,
+        getUltrafixAutomaticWorkEpochKey(identity.owner, identity.repo, identity.pr),
+        `${ULTRAFIX_STATE_KEY_PREFIX}:${identity.owner}:${identity.repo}:${identity.pr}`,
+        String(expected.workEpoch),
+        expected.rawState,
     );
     return Number(cleared) === 1;
 }

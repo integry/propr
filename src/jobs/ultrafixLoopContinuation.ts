@@ -37,6 +37,8 @@ import {
     hasUltrafixLabel,
 } from './ultrafixLoopContinuationHelpers.js';
 import { applyUltrafixCiDeferral } from './ultrafixCiWait.js';
+import { rearmStrandedUltrafixLoop } from './ultrafixStrandedLoopRearm.js';
+import { getNextStepNumber, RESUME_CLAIM_LOST_REASON, withResumeClaim, type ResumeClaim } from './ultrafixResumeClaim.js';
 
 export interface UltrafixContinuationParams {
     owner: string;
@@ -74,6 +76,16 @@ export function setCheckRunDeps(deps: {
     _areAllChecksPassing = deps.areAllChecksPassing;
     _getCurrentPRHead = deps.getCurrentPRHead;
     _getCheckRunsStatus = deps.getCheckRunsStatus ?? null;
+}
+
+export type CheckRunDeps = Parameters<typeof evaluateReadiness>[2];
+
+function getCheckRunDeps(): CheckRunDeps {
+    return {
+        areAllChecksPassing: _areAllChecksPassing,
+        getCurrentPRHead: _getCurrentPRHead,
+        getCheckRunsStatus: _getCheckRunsStatus,
+    };
 }
 
 export interface ContinuationResult {
@@ -131,11 +143,10 @@ async function enqueueCurrentNextAction(
         nextAction: UltrafixAction;
         decisionReason: string;
         latestScore: number | null;
-        cycleCount: number;
-        pauseSeconds: number;
+        state: UltrafixLoopState;
     },
 ): Promise<ContinuationResult> {
-    const { params, nextAction, decisionReason, latestScore, cycleCount, pauseSeconds } = input;
+    const { params, nextAction, decisionReason, latestScore, state, state: { cycleCount, pauseSeconds } } = input;
     const { owner, repo, pullRequestNumber, redisClient } = params;
     const cleared = await clearDeferredContinuationIfCurrent(
         redisClient,
@@ -143,7 +154,7 @@ async function enqueueCurrentNextAction(
         params.ultrafixMeta?.workEpoch ?? 0,
     );
     if (!cleared) return { continued: false, reason: 'ultrafix_superseded' };
-    await enqueueNextStep(params, nextAction, (pauseSeconds || 60) * 1000);
+    await enqueueNextStep(params, nextAction, (pauseSeconds || 60) * 1000, getNextStepNumber(state, nextAction));
     return {
         continued: true, reason: decisionReason,
         nextAction, score: latestScore, cycleCount,
@@ -335,11 +346,7 @@ export async function continueUltrafixLoop(
     }
 
     // 7. Readiness gating — verify all conditions before enqueueing
-    const readiness = await evaluateReadiness(params, decision.action, {
-        areAllChecksPassing: _areAllChecksPassing,
-        getCurrentPRHead: _getCurrentPRHead,
-        getCheckRunsStatus: _getCheckRunsStatus,
-    });
+    const readiness = await evaluateReadiness(params, decision.action, getCheckRunDeps());
     correlatedLogger.info(
         { pullRequestNumber, ready: readiness.ready, reasons: readiness.reasons },
         'Ultrafix loop: readiness check',
@@ -357,8 +364,7 @@ export async function continueUltrafixLoop(
         nextAction: decision.action,
         decisionReason: decision.reason,
         latestScore,
-        cycleCount: updatedState.cycleCount,
-        pauseSeconds: updatedState.pauseSeconds,
+        state: updatedState,
     });
 }
 
@@ -368,27 +374,38 @@ export async function continueUltrafixLoop(
  *
  * Re-evaluates readiness. If ready, enqueues the next step and clears the
  * deferred record. If still not ready, leaves the deferred record in place.
+ *
+ * When the deferred record is gone or belongs to a superseded epoch (e.g. a
+ * CI-failure follow-up or manual command fenced it) an active loop would
+ * otherwise be stranded, so the loop is re-armed with a fresh review.
  */
 export async function resumeDeferredContinuation(
     prId: { owner: string; repo: string; pr: number },
     redisClient: Redis,
     correlatedLogger: Logger,
 ): Promise<ContinuationResult> {
+    // Both branches decide and enqueue under one per-PR claim, so a trigger
+    // resuming the deferred step and one re-arming the loop cannot interleave.
+    return withResumeClaim(prId, redisClient, correlatedLogger, claim => resumeClaimedContinuation(prId, redisClient, correlatedLogger, claim));
+}
+
+async function resumeClaimedContinuation(
+    prId: { owner: string; repo: string; pr: number },
+    redisClient: Redis,
+    correlatedLogger: Logger,
+    claim: ResumeClaim,
+): Promise<ContinuationResult> {
     const { owner, repo, pr } = prId;
     // Atomically claim the deferred record so concurrent check_run events
     // for the same PR cannot double-enqueue the next step.
     const deferred = await claimDeferredContinuation(redisClient, owner, repo, pr);
     if (!deferred) {
-        return { continued: false, reason: 'no_deferred_continuation' };
+        return rearmStrandedUltrafixLoop(prId, { redisClient, correlatedLogger, checkRunDeps: getCheckRunDeps(), claim });
     }
 
     const workEpoch = deferred.workEpoch ?? deferred.ultrafixMeta?.workEpoch;
-    if (!await isUltrafixAutomaticWorkCurrent(
-        redisClient,
-        { owner, repo, pr },
-        workEpoch,
-    )) {
-        return { continued: false, reason: 'deferred_cancelled' };
+    if (!await isUltrafixAutomaticWorkCurrent(redisClient, { owner, repo, pr }, workEpoch)) {
+        return rearmStrandedUltrafixLoop(prId, { redisClient, correlatedLogger, checkRunDeps: getCheckRunDeps(), claim });
     }
 
     const state = await loadState(redisClient, owner, repo, pr);
@@ -420,11 +437,7 @@ export async function resumeDeferredContinuation(
         correlationId,
     };
 
-    const readiness = await evaluateReadiness(params, deferred.nextAction, {
-        areAllChecksPassing: _areAllChecksPassing,
-        getCurrentPRHead: _getCurrentPRHead,
-        getCheckRunsStatus: _getCheckRunsStatus,
-    });
+    const readiness = await evaluateReadiness(params, deferred.nextAction, getCheckRunDeps());
     correlatedLogger.info(
         { pr, ready: readiness.ready, reasons: readiness.reasons },
         'Ultrafix deferred resume: readiness re-check',
@@ -432,11 +445,10 @@ export async function resumeDeferredContinuation(
 
     if (!readiness.ready) {
         // Not ready yet — re-save so a future check_run can try again
-        const saved = await saveDeferredContinuation(redisClient, {
-            ...deferred,
-            workEpoch,
-        });
+        if (!await claim.confirm()) return { continued: false, reason: RESUME_CLAIM_LOST_REASON };
+        const saved = await saveDeferredContinuation(redisClient, { ...deferred, workEpoch });
         if (!saved) return { continued: false, reason: 'deferred_cancelled' };
+        if (!await claim.confirm()) return { continued: false, reason: RESUME_CLAIM_LOST_REASON };
         const ci = await applyUltrafixCiDeferral(params, readiness, state);
         return ci.terminal ?? {
             continued: false,
@@ -445,16 +457,13 @@ export async function resumeDeferredContinuation(
         };
     }
 
-    if (!await isUltrafixAutomaticWorkCurrent(
-        redisClient,
-        { owner, repo, pr },
-        workEpoch,
-    )) {
+    if (!await isUltrafixAutomaticWorkCurrent(redisClient, { owner, repo, pr }, workEpoch)) {
         return { continued: false, reason: 'deferred_cancelled' };
     }
+    if (!await claim.confirm()) return { continued: false, reason: RESUME_CLAIM_LOST_REASON };
 
     const delayMs = (state.pauseSeconds || 60) * 1000;
-    await enqueueNextStep(params, deferred.nextAction, delayMs);
+    await enqueueNextStep(params, deferred.nextAction, delayMs, getNextStepNumber(state, deferred.nextAction));
 
     correlatedLogger.info(
         { pr, nextAction: deferred.nextAction },

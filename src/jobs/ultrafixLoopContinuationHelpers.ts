@@ -216,47 +216,103 @@ export async function finishUltrafixLoop(input: {
     };
 }
 
+/**
+ * Deterministic queue identity for one Ultrafix step. The epoch scopes it to the
+ * owning automatic work and the step number separates later cycles in that epoch,
+ * so concurrent resume triggers for the same step collapse into one job.
+ */
+export function getUltrafixStepJobId(
+    owner: string,
+    repo: string,
+    pullRequestNumber: number,
+    step: { action: UltrafixAction; workEpoch: number; stepNumber: number },
+): string {
+    return `pr-comments-batch-${owner}-${repo}-${pullRequestNumber}-ultrafix-${step.action}-${step.workEpoch}-${step.stepNumber}`;
+}
+
+function isDuplicateJobError(err: unknown): boolean {
+    const error = err as { name?: string; message?: string } | null;
+    return error?.name === 'JobAlreadyExistsError' || /already exists/i.test(error?.message ?? '');
+}
+
+/**
+ * Enqueue the next Ultrafix step. `stepNumber` is the ordinal of the step
+ * being enqueued for its action (completed count + 1).
+ *
+ * Returns false when the same step is already queued or running.
+ */
 export async function enqueueNextStep(
     params: UltrafixContinuationParams,
     nextAction: UltrafixAction,
     delayMs: number,
-): Promise<void> {
+    stepNumber: number,
+): Promise<boolean> {
     const { owner, repo, pullRequestNumber, ultrafixMeta, correlatedLogger } = params;
     const nextCorrelationId = generateCorrelationId();
-    const jobId = `pr-comments-batch-${owner}-${repo}-${pullRequestNumber}-ultrafix-${Date.now()}`;
+    const jobId = getUltrafixStepJobId(owner, repo, pullRequestNumber, {
+        action: nextAction,
+        workEpoch: ultrafixMeta?.workEpoch ?? 0,
+        stepNumber,
+    });
     const commandMode = nextAction === 'review' ? 'review' as const : 'fix' as const;
     const requestedModels = nextAction === 'review' && ultrafixMeta?.reviewModel
         ? [ultrafixMeta.reviewModel]
         : undefined;
 
     const issueQueue = await getIssueQueue();
-    await issueQueue.add('processPullRequestComment', {
-        ...(params.userId ? { userId: params.userId } : {}),
-        pullRequestNumber,
-        repoOwner: owner,
-        repoName: repo,
-        correlationId: nextCorrelationId,
-        commandMode,
-        commandInstructions: ultrafixMeta?.instructions || '',
-        ultrafixMeta,
-        comments: [{
-            id: 0,
-            body: `/${nextAction}\nTriggered automatically by the ultrafix loop.`,
-            author: 'propr-ultrafix',
-            type: 'issue' as const,
+    // BullMQ silently ignores an add whose ID is retained in any state. A
+    // finished attempt of this step never recorded its action, so it must not
+    // block the retry; a pending one is the duplicate we want to skip.
+    const existing = await issueQueue.getJob(jobId);
+    if (existing) {
+        const existingState = await existing.getState();
+        if (existingState !== 'completed' && existingState !== 'failed') {
+            correlatedLogger.info(
+                { pullRequestNumber, nextAction, jobId, existingState },
+                'Ultrafix loop: next step already queued, skipping duplicate',
+            );
+            return false;
+        }
+        await existing.remove();
+    }
+
+    try {
+        await issueQueue.add('processPullRequestComment', {
+            ...(params.userId ? { userId: params.userId } : {}),
+            pullRequestNumber,
+            repoOwner: owner,
+            repoName: repo,
+            correlationId: nextCorrelationId,
             commandMode,
+            commandInstructions: ultrafixMeta?.instructions || '',
             ultrafixMeta,
-        }],
-        ...(requestedModels && { requestedModels }),
-    }, {
-        jobId,
-        delay: delayMs,
-    });
+            comments: [{
+                id: 0,
+                body: `/${nextAction}\nTriggered automatically by the ultrafix loop.`,
+                author: 'propr-ultrafix',
+                type: 'issue' as const,
+                commandMode,
+                ultrafixMeta,
+            }],
+            ...(requestedModels && { requestedModels }),
+        }, {
+            jobId,
+            delay: delayMs,
+        });
+    } catch (err) {
+        if (!isDuplicateJobError(err)) throw err;
+        correlatedLogger.info(
+            { pullRequestNumber, nextAction, jobId },
+            'Ultrafix loop: next step already queued, skipping duplicate',
+        );
+        return false;
+    }
 
     correlatedLogger.info(
         { pullRequestNumber, nextAction, jobId, delayMs, nextCorrelationId },
         `Ultrafix loop: enqueued next ${nextAction} step`,
     );
+    return true;
 }
 
 export interface UltrafixCIEvaluation {
@@ -310,6 +366,36 @@ export async function evaluateCIChecksPassing(
     deps: Parameters<typeof evaluateCIChecks>[1],
 ): Promise<boolean> {
     return (await evaluateCIChecks(params, deps)).passing;
+}
+
+/**
+ * Ultrafix work for the PR that is still queued, running, or batched. Unlike
+ * readiness this fails closed: when the queue or pending comments cannot be
+ * read, the work is reported as unknown so no terminal decision is made blind.
+ */
+export async function findOutstandingUltrafixWork(
+    owner: string,
+    repo: string,
+    pullRequestNumber: number,
+    redisClient: UltrafixContinuationParams['redisClient'],
+): Promise<string[]> {
+    const outstanding: string[] = [];
+    try {
+        const issueQueue = await getIssueQueue();
+        const followUpJobsExist = await hasFollowUpJobsForPR(owner, repo, pullRequestNumber, async () =>
+            await issueQueue.getJobs(['waiting', 'active', 'delayed']) as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>);
+        if (followUpJobsExist) outstanding.push('follow_up_jobs_active');
+    } catch {
+        outstanding.push('follow_up_jobs_unknown');
+    }
+    try {
+        if (await hasPendingBatchedComments(redisClient, getPendingPrCommentsKey(owner, repo, pullRequestNumber))) {
+            outstanding.push('pending_comments_exist');
+        }
+    } catch {
+        outstanding.push('pending_comments_unknown');
+    }
+    return outstanding;
 }
 
 export async function evaluateReadiness(

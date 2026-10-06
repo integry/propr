@@ -173,7 +173,7 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
     };
 }
 
-function getActionCounts(state: UltrafixLoopState): { reviewCount: number; fixCount: number } {
+export function getActionCounts(state: UltrafixLoopState): { reviewCount: number; fixCount: number } {
     if (typeof state.reviewCount === 'number' && typeof state.fixCount === 'number') {
         return { reviewCount: state.reviewCount, fixCount: state.fixCount };
     }
