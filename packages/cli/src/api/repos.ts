@@ -179,6 +179,12 @@ export interface MonitoredRepo {
   notificationsEnabled?: boolean;
 
   /**
+   * Repository-wide override of the instance merge-conflict auto-resolve
+   * default. Omitted or null means the repository inherits the instance value.
+   */
+  autoResolveMergeConflicts?: boolean | null;
+
+  /**
    * Whether the repository's GitHub pull request template is appended to PR
    * descriptions when it has no .propr/pr-template.md. Omission reads as enabled.
    */
@@ -248,6 +254,12 @@ export interface AddRepoOptions {
    */
   notificationsEnabled?: boolean;
 
+  /**
+   * Merge-conflict auto-resolve override. When omitted or null, the repository
+   * inherits the instance default.
+   */
+  autoResolveMergeConflicts?: boolean | null;
+
   /** Visual preview policy. Defaults to disabled with image capture selected. */
   visualPreview?: VisualPreviewSettings;
 }
@@ -278,6 +290,9 @@ export interface UpdateRepoOptions {
 
   /** Optional repository-wide notification state. */
   notificationsEnabled?: boolean;
+
+  /** Optional repository-wide merge-conflict auto-resolve override; null inherits the instance default. */
+  autoResolveMergeConflicts?: boolean | null;
 
   /** Optional repository-wide GitHub pull request template fallback state. */
   githubPrTemplateFallback?: boolean;
@@ -370,6 +385,8 @@ export async function addRepo(
     autoFollowupOnFailedCi: options.autoFollowupOnFailedCi ?? false,
     // Omitted so the server inherits the repository-wide value (enabled for new repositories).
     ...(options.notificationsEnabled !== undefined && { notificationsEnabled: options.notificationsEnabled }),
+    // Omitted so the repository inherits the instance merge-conflict default.
+    ...(typeof options.autoResolveMergeConflicts === 'boolean' && { autoResolveMergeConflicts: options.autoResolveMergeConflicts }),
     visualPreview: options.visualPreview ?? { enabled: false, types: ['image'] },
     alias: options.alias?.trim() || undefined,
     baseBranch: options.baseBranch?.trim() || undefined,
@@ -434,6 +451,8 @@ export async function updateRepo(
     ...(updates.enabled !== undefined && { enabled: updates.enabled }),
     ...(updates.autoFollowupOnFailedCi !== undefined && { autoFollowupOnFailedCi: updates.autoFollowupOnFailedCi }),
     ...(updates.notificationsEnabled !== undefined && { notificationsEnabled: updates.notificationsEnabled }),
+    // The server applies the change to every branch entry of the repository; null clears it.
+    ...(updates.autoResolveMergeConflicts !== undefined && { autoResolveMergeConflicts: updates.autoResolveMergeConflicts }),
     ...(updates.visualPreview !== undefined && {
       visualPreview: {
         ...((updates.visualPreview.githubAttachmentPlan ?? existingRepo.visualPreview?.githubAttachmentPlan) !== undefined

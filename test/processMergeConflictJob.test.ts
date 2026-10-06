@@ -186,6 +186,45 @@ const mockRegistry = {
     getAllAgents: mock.fn(() => [mockAgent, mockConfiguredAgent]),
 };
 
+// Mirrors packages/core/src/git/conflictResolution.ts on top of the git mocks above;
+// the real contract is covered against real repositories in
+// packages/core/test/conflictResolution.test.ts.
+async function fakePerformConflictResolution(options: {
+    worktreePath: string;
+    baseBranch: string;
+    branchName: string;
+    merge?: Record<string, unknown>;
+    onMerged?: (context: Record<string, unknown>) => Promise<void>;
+    resolveConflicts: (context: Record<string, unknown>) => Promise<unknown>;
+    commitMessage: string | ((context: Record<string, unknown>) => string);
+    author?: unknown;
+    push: (context: Record<string, unknown>) => Promise<{ commitHash?: string } | void>;
+}) {
+    const merge = await mockMergeBaseIntoBranch(options.worktreePath, options.baseBranch, options.merge ?? {}) as typeof mockMergeResult;
+    if (merge.outcome === 'failed') throw new Error(`Merge failed: ${merge.error}`);
+    if (!merge.baseCommit) throw new Error(`Merge did not identify the fetched base commit for ${options.baseBranch}`);
+    const conflictedFiles = merge.conflictedFiles ?? [];
+    const context = { worktreePath: options.worktreePath, conflictedFiles, baseCommit: merge.baseCommit, previousHeadSha: 'head-sha-123' };
+    await options.onMerged?.(context);
+    const resolverResult = await options.resolveConflicts(context);
+    await mockStageChanges('.');
+    const message = typeof options.commitMessage === 'function'
+        ? options.commitMessage({ conflictedFiles, wasCleanMerge: conflictedFiles.length === 0, resolverResult })
+        : options.commitMessage;
+    const commit = await mockCommitChanges(options.worktreePath, message, options.author) as { commitHash?: string } | null;
+    await mockAssertCommitIsAncestor(options.worktreePath, merge.baseCommit);
+    const headSha = commit?.commitHash ?? 'head-sha-123';
+    const pushed = await options.push({ worktreePath: options.worktreePath, branchName: options.branchName, headSha });
+    return {
+        status: conflictedFiles.length > 0 ? 'resolved' : 'clean',
+        previousHeadSha: 'head-sha-123',
+        headSha: (pushed && pushed.commitHash) || headSha,
+        baseCommit: merge.baseCommit,
+        conflictedFiles,
+        resolverResult,
+    };
+}
+
 // Mock @propr/core
 await mock.module('@propr/core', {
     namedExports: {
@@ -210,6 +249,7 @@ await mock.module('@propr/core', {
         pushBranch: mockPushBranch,
         assertCommitIsAncestor: mockAssertCommitIsAncestor,
         mergeBaseIntoBranch: mockMergeBaseIntoBranch,
+        performConflictResolution: fakePerformConflictResolution,
         ensureGitRepository: mockEnsureGitRepository,
         createLogFiles: mock.fn(async () => {}),
         UsageLimitError: class UsageLimitError extends Error { name = 'UsageLimitError'; },

@@ -25,7 +25,7 @@ await mock.module('ioredis', {
 });
 
 // Mock bullmq
-const mockQueueAdd = mock.fn(async () => {});
+const mockQueueAdd = mock.fn(async (..._args: unknown[]) => {});
 await mock.module('bullmq', {
     namedExports: {
         Queue: function Queue() {
@@ -78,28 +78,38 @@ await mock.module('../packages/core/src/utils/logger.js', {
     }
 });
 
-// Mock configManager
-const VALID_TRIGGER_LABELS = ['AI', 'propr'];
-const mockLoadAutoResolve = mock.fn(async () => false);
-const mockLoadPrimaryProcessingLabels = mock.fn(async () => ['AI']);
-const mockLoadPrLabel = mock.fn(async () => 'propr');
-const mockLoadAiPrimaryTag = mock.fn(async () => 'AI');
-const mockLoadValidTriggerLabels = mock.fn(async () => VALID_TRIGGER_LABELS);
-const mockHasValidTriggerLabel = mock.fn(async (labels: Array<{ name: string } | string> | null | undefined) => {
-    if (!Array.isArray(labels)) return false;
-    return labels.some(label => VALID_TRIGGER_LABELS.includes(typeof label === 'string' ? label : label.name));
-});
-await mock.module('../packages/core/src/config/configManager.js', {
+// Stored configuration: the instance default row and the monitored repositories.
+const storedConfig = new Map<string, unknown>();
+await mock.module('../packages/core/src/config/configStore.js', {
     namedExports: {
-        loadAutoResolveMergeConflicts: mockLoadAutoResolve,
-        loadPrimaryProcessingLabels: mockLoadPrimaryProcessingLabels,
-        loadPrLabel: mockLoadPrLabel,
-        loadAiPrimaryTag: mockLoadAiPrimaryTag,
-        loadValidTriggerLabels: mockLoadValidTriggerLabels,
-        hasValidTriggerLabel: mockHasValidTriggerLabel,
-        getConfig: mock.fn(async () => false),
+        getConfig: mock.fn(async (key: string, fallback: unknown) => (storedConfig.has(key) ? storedConfig.get(key) : fallback)),
+        getConfigStrict: mock.fn(async (key: string, fallback: unknown) => (storedConfig.has(key) ? storedConfig.get(key) : fallback)),
+        getConfigWithClient: mock.fn(async (_key: string, fallback: unknown) => fallback),
         saveConfig: mock.fn(async () => true),
     }
+});
+
+// Trigger labels: processing label `AI`, PR label `propr`.
+await mock.module('../packages/core/src/config/configManager.js', {
+    namedExports: {
+        loadValidTriggerLabels: mock.fn(async () => ['AI', 'propr']),
+    }
+});
+
+// ProPR task rows (repository + pr_number)
+const taskRows: Array<{ repository: string; pr_number: number }> = [];
+function createTaskQuery() {
+    let repository = '';
+    let prNumber = -1;
+    const query = {
+        whereRaw: (_sql: string, bindings: string[]) => { repository = bindings[0]; return query; },
+        andWhere: (where: { pr_number: number }) => { prNumber = where.pr_number; return query; },
+        first: async () => taskRows.find(row => row.repository.toLowerCase() === repository && row.pr_number === prNumber),
+    };
+    return query;
+}
+await mock.module('../packages/core/src/db/connection.js', {
+    namedExports: { db: mock.fn(() => createTaskQuery()) }
 });
 
 // Mock taskQueue
@@ -112,82 +122,53 @@ await mock.module('../packages/core/src/queue/taskQueue.js', {
 
 // Import the module under test
 const { handlePullRequestConflictDetection, handlePushConflictDetection, handleMergeCommand } = await import('../packages/core/src/webhook/mergeConflictDetector.js');
+const { sweepConflictedPullRequests, getMergeConflictSweepIntervalMs, classifyMergeability } = await import('../packages/core/src/webhook/mergeConflictAutoResolve.js');
 
-// Mock Redis client factory
+const sleeps: number[] = [];
+const deps = { sleep: async (ms: number) => { sleeps.push(ms); } };
+
+// Mock Redis client factory supporting SET NX EX, INCR/DECR and EXPIRE
 function createMockRedis() {
     const store = new Map<string, string>();
+    const ttls = new Map<string, number>();
     return {
         get: mock.fn(async (key: string) => store.get(key) ?? null),
-        setex: mock.fn(async (key: string, _ttl: number, value: string) => { store.set(key, value); }),
-        set: mock.fn(async (key: string, value: string) => { store.set(key, value); }),
+        set: mock.fn(async (key: string, value: string, _ex: 'EX', seconds: number, nx: 'NX') => {
+            if (nx === 'NX' && store.has(key)) return null;
+            store.set(key, value);
+            ttls.set(key, seconds);
+            return 'OK';
+        }),
         del: mock.fn(async (key: string) => { store.delete(key); }),
+        incr: mock.fn(async (key: string) => { const next = Number(store.get(key) ?? 0) + 1; store.set(key, String(next)); return next; }),
+        decr: mock.fn(async (key: string) => { const next = Number(store.get(key) ?? 0) - 1; store.set(key, String(next)); return next; }),
+        expire: mock.fn(async (key: string, seconds: number) => { ttls.set(key, seconds); }),
         _store: store,
+        _ttls: ttls,
     };
 }
 
-// Helper to create a mock PullRequestEvent
-function createMockPREvent(options: {
-    action?: string;
-    prNumber?: number;
-    repoFullName?: string;
-    labels?: Array<{ name: string }>;
-}): PullRequestEvent {
-    const {
-        action = 'synchronize',
-        prNumber = 42,
-        repoFullName = 'test-owner/test-repo',
-        labels = [{ name: 'AI' }],
-    } = options;
-
+function createMockPREvent(options: { action?: string; prNumber?: number; repoFullName?: string } = {}): PullRequestEvent {
+    const { action = 'synchronize', prNumber = 42, repoFullName = 'test-owner/test-repo' } = options;
     return {
         action,
-        pull_request: {
-            number: prNumber,
-            state: 'open',
-            draft: false,
-            head: { ref: 'feature-branch', sha: 'head-sha-123' },
-            base: { ref: 'main', sha: 'base-sha-456' },
-            labels,
-            merged: false,
-        },
-        repository: {
-            id: 1,
-            node_id: 'R_1',
-            name: repoFullName.split('/')[1],
-            full_name: repoFullName,
-            private: false,
-            owner: { login: repoFullName.split('/')[0] },
-        },
+        pull_request: { number: prNumber, state: 'open', draft: false, labels: [] },
+        repository: { full_name: repoFullName, name: repoFullName.split('/')[1], owner: { login: repoFullName.split('/')[0] } },
     } as unknown as PullRequestEvent;
 }
 
-// Helper to create a mock PushEvent
-function createMockPushEvent(options: {
-    ref?: string;
-    repoFullName?: string;
-}): PushEvent {
-    const {
-        ref = 'refs/heads/main',
-        repoFullName = 'test-owner/test-repo',
-    } = options;
-
+function createMockPushEvent(options: { ref?: string; repoFullName?: string; deleted?: boolean } = {}): PushEvent {
+    const { ref = 'refs/heads/main', repoFullName = 'test-owner/test-repo', deleted = false } = options;
     return {
         ref,
+        deleted,
         commits: [{ id: 'commit-sha-1', message: 'test commit' }],
-        repository: {
-            id: 1,
-            node_id: 'R_1',
-            name: repoFullName.split('/')[1],
-            full_name: repoFullName,
-            private: false,
-            owner: { login: repoFullName.split('/')[0] },
-        },
+        repository: { full_name: repoFullName, name: repoFullName.split('/')[1], owner: { login: repoFullName.split('/')[0] } },
     } as unknown as PushEvent;
 }
 
-// Helper to set up Octokit mock PR responses
-function mockPRResponse(options: {
-    prNumber?: number;
+interface PullRequestState {
+    number?: number;
     state?: string;
     mergeable?: boolean | null;
     mergeableState?: string;
@@ -195,436 +176,303 @@ function mockPRResponse(options: {
     headSha?: string;
     baseSha?: string;
     labels?: Array<{ name: string }>;
-}) {
-    const {
-        prNumber = 42,
-        state = 'open',
-        mergeable = false,
-        mergeableState = 'dirty',
-        draft = false,
-        headSha = 'head-sha-123',
-        baseSha = 'base-sha-456',
-        labels = [{ name: 'AI' }],
-    } = options;
+    headRepo?: { full_name: string } | null;
+}
 
+function pullRequest(options: PullRequestState = {}) {
     return {
-        data: {
-            number: prNumber,
-            state,
-            mergeable,
-            mergeable_state: mergeableState,
-            draft,
-            head: { ref: 'feature-branch', sha: headSha },
-            base: { ref: 'main', sha: baseSha },
-            labels,
-        }
+        number: options.number ?? 42,
+        state: options.state ?? 'open',
+        mergeable: options.mergeable === undefined ? false : options.mergeable,
+        mergeable_state: options.mergeableState ?? (options.mergeable === null ? 'unknown' : 'dirty'),
+        draft: options.draft ?? false,
+        head: { ref: 'feature-branch', sha: options.headSha ?? 'head-sha-123', repo: options.headRepo === undefined ? { full_name: 'test-owner/test-repo' } : options.headRepo },
+        base: { ref: 'main', sha: options.baseSha ?? 'base-sha-456' },
+        labels: options.labels ?? [{ name: 'AI' }],
     };
 }
 
-// Labelled PR summary as returned by the pull list endpoint
-function mockPRSummary(prNumber: number, labels: Array<{ name: string }> = [{ name: 'AI' }]) {
-    return { number: prNumber, state: 'open', labels };
+/**
+ * Routes Octokit requests: `GET /pulls` returns the list; `GET /pulls/{n}` returns
+ * successive reads for that PR (the last one repeats).
+ */
+function routeGitHub(reads: Record<number, PullRequestState[]>, list: number[] = Object.keys(reads).map(Number)) {
+    const counters = new Map<number, number>();
+    mockOctokit.request.mock.mockImplementation(async (route: string, params: { pull_number?: number }) => {
+        if (route === 'GET /repos/{owner}/{repo}/pulls') {
+            return { data: list.map(number => ({ number })) };
+        }
+        if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+            const number = params.pull_number as number;
+            const sequence = reads[number] ?? [{ state: 'closed' }];
+            const index = counters.get(number) ?? 0;
+            counters.set(number, index + 1);
+            return { data: pullRequest({ number, ...sequence[Math.min(index, sequence.length - 1)] }) };
+        }
+        throw new Error(`Unexpected route ${route}`);
+    });
+}
+
+function skipReasons(level: 'info' | 'warn' = 'info'): string[] {
+    return mockLoggerInstance[level].mock.calls
+        .map(call => (call.arguments[0] as { reason?: string }).reason)
+        .filter((reason): reason is string => typeof reason === 'string');
+}
+
+function enableInstance(enabled: boolean) {
+    storedConfig.set('auto_resolve_merge_conflicts', enabled);
 }
 
 function resetMocks() {
     mockOctokit.request.mock.resetCalls();
+    mockOctokit.request.mock.mockImplementation(async () => { throw new Error('unexpected GitHub call'); });
     mockQueueAdd.mock.resetCalls();
-    mockLoadAutoResolve.mock.resetCalls();
-    mockLoggerInstance.info.mock.resetCalls();
-    mockLoggerInstance.debug.mock.resetCalls();
-    mockHasValidTriggerLabel.mock.resetCalls();
+    mockQueueAdd.mock.mockImplementation(async () => {});
+    for (const fn of Object.values(mockLoggerInstance)) fn.mock.resetCalls();
+    storedConfig.clear();
+    taskRows.length = 0;
+    sleeps.length = 0;
+    enableInstance(true);
 }
 
-// --- Pull Request Triggered Tests ---
+describe('mergeConflictDetector - classification', () => {
+    test('mergeable false or a dirty state is conflicted; null is unknown', () => {
+        assert.equal(classifyMergeability({ mergeable: false, mergeable_state: 'dirty' }), 'conflicted');
+        assert.equal(classifyMergeability({ mergeable: null, mergeable_state: 'dirty' }), 'conflicted');
+        assert.equal(classifyMergeability({ mergeable: true, mergeable_state: 'clean' }), 'clean');
+        assert.equal(classifyMergeability({ mergeable: null, mergeable_state: 'unknown' }), 'unknown');
+    });
+});
 
 describe('mergeConflictDetector - pull_request events', () => {
-    beforeEach(() => resetMocks());
+    beforeEach(resetMocks);
 
-    test('no job queued when feature flag is disabled', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => false);
-        const redis = createMockRedis();
-        const payload = createMockPREvent({ action: 'synchronize' });
+    test('disabled setting skips with auto_resolve_disabled before any GitHub call', async () => {
+        enableInstance(false);
+        const result = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
+        assert.deepEqual({ outcome: result?.outcome, reason: result?.reason }, { outcome: 'skipped', reason: 'auto_resolve_disabled' });
+        assert.equal(mockOctokit.request.mock.callCount(), 0);
+        assert.deepEqual(skipReasons(), ['auto_resolve_disabled']);
+    });
 
-        const result = await handlePullRequestConflictDetection(payload, redis as never, 'corr-1');
+    test('a repository override enables the feature when the instance default is off', async () => {
+        enableInstance(false);
+        storedConfig.set('repos_to_monitor', [{ id: '1', name: 'Test-Owner/Test-Repo', enabled: true, autoResolveMergeConflicts: true }]);
+        routeGitHub({ 42: [{}] });
+        const result = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
+        assert.equal(result?.outcome, 'queued');
+    });
 
-        assert.ok(result);
-        assert.strictEqual(result.outcome, 'skipped_disabled');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    test('a repository override disables the feature when the instance default is on', async () => {
+        storedConfig.set('repos_to_monitor', [{ id: '1', name: 'test-owner/test-repo', enabled: true, autoResolveMergeConflicts: false }]);
+        const result = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
+        assert.equal(result?.reason, 'auto_resolve_disabled');
+        assert.equal(mockOctokit.request.mock.callCount(), 0);
     });
 
     test('irrelevant actions are ignored', async () => {
-        const redis = createMockRedis();
-        const payload = createMockPREvent({ action: 'closed' });
-
-        const result = await handlePullRequestConflictDetection(payload, redis as never, 'corr-2');
-        assert.strictEqual(result, null);
+        const result = await handlePullRequestConflictDetection(createMockPREvent({ action: 'labeled' }), createMockRedis(), 'cid', deps);
+        assert.equal(result, null);
     });
 
-    test('no job queued for draft PRs', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPREvent({ action: 'opened' });
-
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ draft: true, mergeable: false, mergeableState: 'dirty' }));
-
-        const result = await handlePullRequestConflictDetection(payload, redis as never, 'corr-3');
-
-        assert.ok(result);
-        assert.strictEqual(result.outcome, 'skipped_draft');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    test('closed and draft PRs are skipped with a reason', async () => {
+        routeGitHub({ 42: [{ state: 'closed' }], 43: [{ draft: true }] });
+        const closed = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
+        const draft = await handlePullRequestConflictDetection(createMockPREvent({ prNumber: 43 }), createMockRedis(), 'cid', deps);
+        assert.equal(closed?.reason, 'pull_request_closed');
+        assert.equal(draft?.reason, 'draft_pull_request');
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
     });
 
-    test('no job queued for clean PRs', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPREvent({ action: 'synchronize' });
-
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ mergeable: true, mergeableState: 'clean' }));
-
-        const result = await handlePullRequestConflictDetection(payload, redis as never, 'corr-4');
-
-        assert.ok(result);
-        assert.strictEqual(result.outcome, 'skipped_not_conflicted');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    test('a clean PR is skipped with not_conflicted', async () => {
+        routeGitHub({ 42: [{ mergeable: true, mergeableState: 'clean' }] });
+        const result = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
+        assert.equal(result?.reason, 'not_conflicted');
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
     });
 
-    test('conflicted PR is queued once per unique conflict state', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPREvent({ action: 'synchronize' });
-
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ mergeable: false, mergeableState: 'dirty' }));
-
-        // First call: should queue
-        const result1 = await handlePullRequestConflictDetection(payload, redis as never, 'corr-5');
-        assert.ok(result1);
-        assert.strictEqual(result1.outcome, 'queued');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-
-        // Verify job payload
-        const addCall = mockQueueAdd.mock.calls[0];
-        assert.strictEqual(addCall.arguments[0], 'processMergeConflict');
-        const jobData = addCall.arguments[1];
-        assert.strictEqual(jobData.pullRequestNumber, 42);
-        assert.strictEqual(jobData.triggerSource, 'pull_request');
-        assert.strictEqual(jobData.systemGenerated, true);
-        assert.strictEqual(jobData.headBranch, 'feature-branch');
-        assert.strictEqual(jobData.baseBranch, 'main');
-
-        // Second call with same SHAs: should be duplicate
-        const result2 = await handlePullRequestConflictDetection(payload, redis as never, 'corr-6');
-        assert.ok(result2);
-        assert.strictEqual(result2.outcome, 'skipped_duplicate');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1); // Still 1
+    test('mergeable: null is re-read on the 2s/5s/10s/20s schedule until GitHub reports the conflict', async () => {
+        routeGitHub({ 42: [{ mergeable: null }, { mergeable: null }, { mergeable: false }] });
+        const result = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
+        assert.equal(result?.outcome, 'queued');
+        assert.deepEqual(sleeps, [2000, 5000]);
     });
 
-    test('new job queued when conflict state changes (different base SHA)', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPREvent({ action: 'synchronize' });
-
-        // First: conflict with base-sha-456
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ mergeable: false, mergeableState: 'dirty', headSha: 'head-sha-123', baseSha: 'base-sha-456' }));
-        const result1 = await handlePullRequestConflictDetection(payload, redis as never, 'corr-7');
-        assert.strictEqual(result1?.outcome, 'queued');
-
-        // Second: conflict with new base-sha-789 (base branch updated)
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ mergeable: false, mergeableState: 'dirty', headSha: 'head-sha-123', baseSha: 'base-sha-789' }));
-        const result2 = await handlePullRequestConflictDetection(payload, redis as never, 'corr-8');
-        assert.strictEqual(result2?.outcome, 'queued');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
+    test('mergeability that never resolves is skipped with a warning (mergeability_unknown)', async () => {
+        routeGitHub({ 42: [{ mergeable: null }] });
+        const result = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
+        assert.equal(result?.reason, 'mergeability_unknown');
+        assert.deepEqual(sleeps, [2000, 5000, 10000, 20000]);
+        assert.deepEqual(skipReasons('warn'), ['mergeability_unknown']);
     });
 
-    test('unlabelled PR is skipped with skipped_no_trigger_label before any API request', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPREvent({ action: 'synchronize', labels: [] });
-
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ mergeable: false, mergeableState: 'dirty', labels: [] }));
-
-        const result = await handlePullRequestConflictDetection(payload, redis as never, 'corr-9');
-
-        assert.ok(result);
-        assert.strictEqual(result.outcome, 'skipped_no_trigger_label');
-        assert.strictEqual(result.prNumber, 42);
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
-        assert.strictEqual(mockOctokit.request.mock.callCount(), 0, 'should not fetch PR details for unlabelled PRs');
-
-        const skipLog = mockLoggerInstance.info.mock.calls.find((c: { arguments: [Record<string, unknown>, string] }) =>
-            (c.arguments[0] as Record<string, unknown>).outcome === 'skipped_no_trigger_label'
-        );
-        assert.ok(skipLog, 'Expected a log entry with outcome skipped_no_trigger_label');
+    test('a PR identified only by the pr_label, an llm-* label or a tasks row is eligible', async () => {
+        taskRows.push({ repository: 'test-owner/test-repo', pr_number: 44 });
+        routeGitHub({ 42: [{ labels: [{ name: 'propr' }] }], 43: [{ labels: [{ name: 'llm-claude-opus55' }] }], 44: [{ labels: [] }] });
+        for (const prNumber of [42, 43, 44]) {
+            const result = await handlePullRequestConflictDetection(createMockPREvent({ prNumber }), createMockRedis(), 'cid', deps);
+            assert.equal(result?.outcome, 'queued', `PR #${prNumber} should be queued`);
+        }
     });
 
-    test('PR with unrelated labels only is skipped with skipped_no_trigger_label', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPREvent({ action: 'opened', labels: [{ name: 'bug' }, { name: 'help wanted' }] });
-
-        const result = await handlePullRequestConflictDetection(payload, redis as never, 'corr-10');
-
-        assert.strictEqual(result?.outcome, 'skipped_no_trigger_label');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    test('a human PR without ProPR signals is skipped with not_propr_pull_request', async () => {
+        routeGitHub({ 42: [{ labels: [{ name: 'bug' }] }] });
+        const result = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
+        assert.equal(result?.reason, 'not_propr_pull_request');
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+        assert.deepEqual(skipReasons(), ['not_propr_pull_request']);
     });
 
-    test('conflicted PR with the configured PR label (propr) is queued', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPREvent({ action: 'synchronize', labels: [{ name: 'propr' }] });
-
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ mergeable: false, mergeableState: 'dirty', labels: [{ name: 'propr' }] }));
-
-        const result = await handlePullRequestConflictDetection(payload, redis as never, 'corr-11');
-
-        assert.strictEqual(result?.outcome, 'queued');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+    test('a PR whose head repository was deleted is skipped with fork_pull_request', async () => {
+        routeGitHub({ 42: [{ headRepo: null }] });
+        const result = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
+        assert.equal(result?.reason, 'fork_pull_request');
     });
 
-    test('logs clearly distinguish outcomes', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => false);
+    test('the same head+base pair is queued once with a 30-minute dedup key', async () => {
+        routeGitHub({ 42: [{}] });
         const redis = createMockRedis();
-        const payload = createMockPREvent({ action: 'synchronize' });
+        const first = await handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps);
+        const second = await handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps);
+        assert.equal(first?.outcome, 'queued');
+        assert.equal(second?.reason, 'already_queued');
+        assert.equal(mockQueueAdd.mock.callCount(), 1);
+        const dedupKey = 'merge-conflict-queued:test-owner/test-repo#42:head-sha-123:base-sha-456';
+        assert.equal(redis._ttls.get(dedupKey), 1800);
 
-        await handlePullRequestConflictDetection(payload, redis as never, 'corr-log');
+        const [name, data] = mockQueueAdd.mock.calls[0].arguments as [string, Record<string, unknown>];
+        assert.equal(name, 'processMergeConflict');
+        assert.equal(data.triggerSource, 'pull_request');
+        assert.equal(data.headSha, 'head-sha-123');
+        assert.equal(data.baseSha, 'base-sha-456');
+    });
 
-        // Should have logged with skipped_disabled outcome
-        const infoCalls = mockLoggerInstance.info.mock.calls;
-        const disabledLog = infoCalls.find((c: { arguments: [Record<string, unknown>, string] }) =>
-            (c.arguments[0] as Record<string, unknown>).outcome === 'skipped_disabled'
-        );
-        assert.ok(disabledLog, 'Expected a log entry with outcome skipped_disabled');
+    test('a new head SHA after an earlier attempt is queued again', async () => {
+        const redis = createMockRedis();
+        routeGitHub({ 42: [{ headSha: 'head-1' }] });
+        await handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps);
+        routeGitHub({ 42: [{ headSha: 'head-2' }] });
+        const result = await handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps);
+        assert.equal(result?.outcome, 'queued');
+        assert.equal(mockQueueAdd.mock.callCount(), 2);
+    });
+
+    test('an enqueue failure releases the dedup key so the next event can retry', async () => {
+        routeGitHub({ 42: [{}] });
+        const redis = createMockRedis();
+        mockQueueAdd.mock.mockImplementationOnce(async () => { throw new Error('redis down'); });
+        await assert.rejects(handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps), /redis down/);
+        assert.equal(redis._store.has('merge-conflict-queued:test-owner/test-repo#42:head-sha-123:base-sha-456'), false);
+        const retry = await handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps);
+        assert.equal(retry?.outcome, 'queued');
+    });
+
+    test('more than 3 attempts within 24h are refused with attempt_limit', async () => {
+        const redis = createMockRedis();
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            routeGitHub({ 42: [{ baseSha: `base-${attempt}` }] });
+            const result = await handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps);
+            assert.equal(result?.outcome, 'queued');
+        }
+        assert.equal(redis._ttls.get('merge-conflict-attempts:test-owner/test-repo#42'), 24 * 3600);
+        routeGitHub({ 42: [{ baseSha: 'base-4' }] });
+        const limited = await handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps);
+        assert.equal(limited?.reason, 'attempt_limit');
+        assert.equal(mockQueueAdd.mock.callCount(), 3);
+        assert.deepEqual(skipReasons('warn'), ['attempt_limit']);
     });
 });
-
-// --- Push-Triggered Tests ---
 
 describe('mergeConflictDetector - push events', () => {
-    beforeEach(() => resetMocks());
+    beforeEach(resetMocks);
 
-    test('no jobs queued when feature flag is disabled', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => false);
-        const redis = createMockRedis();
-        const payload = createMockPushEvent({ ref: 'refs/heads/main' });
-
-        const results = await handlePushConflictDetection(payload, redis as never, 'corr-20');
-
-        assert.strictEqual(results.length, 0);
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    test('disabled setting costs no GitHub calls', async () => {
+        enableInstance(false);
+        const results = await handlePushConflictDetection(createMockPushEvent(), createMockRedis(), 'cid', deps);
+        assert.deepEqual(results, []);
+        assert.equal(mockOctokit.request.mock.callCount(), 0);
+        assert.deepEqual(skipReasons(), ['auto_resolve_disabled']);
     });
 
-    test('skips non-branch refs (tags)', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPushEvent({ ref: 'refs/tags/v1.0' });
-
-        const results = await handlePushConflictDetection(payload, redis as never, 'corr-21');
-
-        assert.strictEqual(results.length, 0);
+    test('tags, deleted branches and push salvage rescue refs are ignored', async () => {
+        assert.deepEqual(await handlePushConflictDetection(createMockPushEvent({ ref: 'refs/tags/v1.0' }), createMockRedis(), 'cid', deps), []);
+        assert.deepEqual(await handlePushConflictDetection(createMockPushEvent({ deleted: true }), createMockRedis(), 'cid', deps), []);
+        assert.deepEqual(await handlePushConflictDetection(createMockPushEvent({ ref: 'refs/heads/propr/rescue/task-1' }), createMockRedis(), 'cid', deps), []);
+        assert.equal(mockOctokit.request.mock.callCount(), 0);
     });
 
-    test('ignores push salvage rescue refs as branch discovery input', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        mockOctokit.request.mock.mockImplementation(async () => {
-            throw new Error('rescue refs must not be looked up as branches');
-        });
+    test('a base advance queues a resolution even though GitHub first reports mergeable: null', async () => {
+        routeGitHub({ 42: [{ mergeable: null }, { mergeable: null }, { mergeable: false }] });
+        const results = await handlePushConflictDetection(createMockPushEvent(), createMockRedis(), 'cid', deps);
+        assert.deepEqual(results.map(result => result.outcome), ['queued']);
+        const [, data] = mockQueueAdd.mock.calls[0].arguments as [string, Record<string, unknown>];
+        assert.equal(data.triggerSource, 'push');
 
-        for (const ref of ['refs/propr/rescue/task-1', 'refs/heads/propr/rescue/task-1']) {
-            const results = await handlePushConflictDetection(createMockPushEvent({ ref }), redis as never, 'corr-rescue');
-            assert.strictEqual(results.length, 0);
-        }
-        assert.strictEqual(mockOctokit.request.mock.callCount(), 0);
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        const listCall = mockOctokit.request.mock.calls.find(call => call.arguments[0] === 'GET /repos/{owner}/{repo}/pulls');
+        assert.deepEqual(
+            { base: (listCall?.arguments[1] as Record<string, unknown>).base, per_page: (listCall?.arguments[1] as Record<string, unknown>).per_page },
+            { base: 'main', per_page: 30 }
+        );
     });
 
-    test('skips when no open PRs target the pushed branch', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPushEvent({ ref: 'refs/heads/main' });
-
-        mockOctokit.request.mock.mockImplementation(async () => ({ data: [] }));
-
-        const results = await handlePushConflictDetection(payload, redis as never, 'corr-22');
-
-        assert.strictEqual(results.length, 0);
-    });
-
-    test('checks open PRs and queues only conflicted ones', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPushEvent({ ref: 'refs/heads/main' });
-
-        let callCount = 0;
-        mockOctokit.request.mock.mockImplementation(async (url: string) => {
-            if (url === 'GET /repos/{owner}/{repo}/pulls') {
-                return {
-                    data: [
-                        mockPRSummary(10),
-                        mockPRSummary(20),
-                    ]
-                };
-            }
-            // Individual PR details
-            callCount++;
-            if (callCount <= 1) {
-                return mockPRResponse({ prNumber: 10, mergeable: false, mergeableState: 'dirty', headSha: 'pr10-head', baseSha: 'pr10-base' });
-            } else {
-                return mockPRResponse({ prNumber: 20, mergeable: true, mergeableState: 'clean', headSha: 'pr20-head', baseSha: 'pr20-base' });
-            }
-        });
-
-        const results = await handlePushConflictDetection(payload, redis as never, 'corr-23');
-
-        assert.strictEqual(results.length, 2);
-        const queued = results.filter(r => r.outcome === 'queued');
-        const clean = results.filter(r => r.outcome === 'skipped_not_conflicted');
-        assert.strictEqual(queued.length, 1);
-        assert.strictEqual(queued[0].prNumber, 10);
-        assert.strictEqual(clean.length, 1);
-        assert.strictEqual(clean[0].prNumber, 20);
-    });
-
-    test('push-triggered job has correct triggerSource', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPushEvent({ ref: 'refs/heads/main' });
-
-        mockOctokit.request.mock.mockImplementation(async (url: string) => {
-            if (url === 'GET /repos/{owner}/{repo}/pulls') {
-                return { data: [mockPRSummary(10)] };
-            }
-            return mockPRResponse({ prNumber: 10, mergeable: false, mergeableState: 'dirty', headSha: 'pr10-head', baseSha: 'pr10-base' });
-        });
-
-        await handlePushConflictDetection(payload, redis as never, 'corr-24');
-
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1];
-        assert.strictEqual(jobData.triggerSource, 'push');
-        assert.strictEqual(jobData.systemGenerated, true);
-    });
-
-    test('unlabelled open PRs are skipped and never fetched or queued', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPushEvent({ ref: 'refs/heads/main' });
-
-        const detailRequests: number[] = [];
-        mockOctokit.request.mock.mockImplementation(async (url: string, params: { pull_number?: number }) => {
-            if (url === 'GET /repos/{owner}/{repo}/pulls') {
-                return {
-                    data: [
-                        mockPRSummary(10, [{ name: 'AI' }]),
-                        mockPRSummary(20, []),
-                        mockPRSummary(30, [{ name: 'enhancement' }]),
-                    ]
-                };
-            }
-            detailRequests.push(params.pull_number as number);
-            return mockPRResponse({ prNumber: params.pull_number, mergeable: false, mergeableState: 'dirty', headSha: `pr${params.pull_number}-head`, baseSha: `pr${params.pull_number}-base` });
-        });
-
-        const results = await handlePushConflictDetection(payload, redis as never, 'corr-25');
-
-        assert.strictEqual(results.length, 3);
-        const queued = results.filter(r => r.outcome === 'queued');
-        const skipped = results.filter(r => r.outcome === 'skipped_no_trigger_label');
-        assert.strictEqual(queued.length, 1);
-        assert.strictEqual(queued[0].prNumber, 10);
-        assert.deepStrictEqual(skipped.map(r => r.prNumber).sort(), [20, 30]);
-        assert.deepStrictEqual(detailRequests, [10], 'only the labelled PR should be fetched');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        assert.strictEqual(mockQueueAdd.mock.calls[0].arguments[1].pullRequestNumber, 10);
-    });
-
-    test('no jobs queued when none of the open PRs carry a trigger label', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => true);
-        const redis = createMockRedis();
-        const payload = createMockPushEvent({ ref: 'refs/heads/main' });
-
-        mockOctokit.request.mock.mockImplementation(async (url: string) => {
-            if (url === 'GET /repos/{owner}/{repo}/pulls') {
-                return { data: [mockPRSummary(10, []), mockPRSummary(20, [])] };
-            }
-            throw new Error('PR details should not be fetched for unlabelled PRs');
-        });
-
-        const results = await handlePushConflictDetection(payload, redis as never, 'corr-26');
-
-        assert.strictEqual(results.length, 2);
-        assert.ok(results.every(r => r.outcome === 'skipped_no_trigger_label'));
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    test('every open PR is primed before any is polled, then each is evaluated', async () => {
+        routeGitHub({ 1: [{ mergeable: null }, { mergeable: false }], 2: [{ mergeable: true, mergeableState: 'clean' }], 3: [{ labels: [] }] });
+        const results = await handlePushConflictDetection(createMockPushEvent(), createMockRedis(), 'cid', deps);
+        assert.deepEqual(results.map(result => result.reason ?? result.outcome), ['queued', 'not_conflicted', 'not_propr_pull_request']);
+        const reads = mockOctokit.request.mock.calls
+            .filter(call => call.arguments[0] === 'GET /repos/{owner}/{repo}/pulls/{pull_number}')
+            .map(call => (call.arguments[1] as { pull_number: number }).pull_number);
+        assert.deepEqual(reads.slice(0, 3), [1, 2, 3], 'all PRs are read once before polling starts');
     });
 });
 
-// --- /merge Command Tests ---
+describe('mergeConflictDetector - sweep', () => {
+    beforeEach(resetMocks);
+
+    test('evaluates open PRs only for repositories whose effective setting is on', async () => {
+        enableInstance(false);
+        storedConfig.set('repos_to_monitor', [
+            { id: '1', name: 'test-owner/on', enabled: true, autoResolveMergeConflicts: true },
+            { id: '2', name: 'test-owner/off', enabled: true },
+        ]);
+        routeGitHub({ 42: [{}] });
+        const results = await sweepConflictedPullRequests({ repositories: ['test-owner/on', 'test-owner/off'], redisClient: createMockRedis(), deps });
+        assert.deepEqual(results.map(result => [result.repository, result.outcome]), [['test-owner/on', 'queued']]);
+        const [, data] = mockQueueAdd.mock.calls[0].arguments as [string, Record<string, unknown>];
+        assert.equal(data.triggerSource, 'sweep');
+        assert.ok(mockOctokit.request.mock.calls.every(call => (call.arguments[1] as { repo: string }).repo === 'on'));
+    });
+
+    test('runs every 5 minutes in polling mode and every 15 minutes otherwise', () => {
+        assert.equal(getMergeConflictSweepIntervalMs('polling', {}), 5 * 60 * 1000);
+        assert.equal(getMergeConflictSweepIntervalMs('routing_websocket', {}), 15 * 60 * 1000);
+        assert.equal(getMergeConflictSweepIntervalMs('direct_webhook', { MERGE_CONFLICT_SWEEP_INTERVAL_MS: '60000' }), 60000);
+    });
+});
 
 describe('mergeConflictDetector - handleMergeCommand', () => {
-    beforeEach(() => resetMocks());
+    beforeEach(resetMocks);
 
-    const baseOptions = { owner: 'test-owner', repoName: 'test-repo', prNumber: 42, correlationId: 'corr-merge' };
-
-    test('labelled PR is queued regardless of the auto-resolve flag', async () => {
-        mockLoadAutoResolve.mock.mockImplementation(async () => false);
-        const redis = createMockRedis();
-
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ mergeable: true, mergeableState: 'clean', labels: [{ name: 'AI' }] }));
-
-        const result = await handleMergeCommand({ ...baseOptions, userId: '7', redisClient: redis as never });
-
-        assert.strictEqual(result?.outcome, 'queued');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1];
-        assert.strictEqual(jobData.triggerSource, 'comment');
-        assert.strictEqual(jobData.userId, '7');
-        assert.strictEqual(jobData.pullRequestNumber, 42);
+    test('queues a ProPR PR regardless of the auto-resolve setting', async () => {
+        enableInstance(false);
+        routeGitHub({ 42: [{ mergeable: true, mergeableState: 'clean' }] });
+        const result = await handleMergeCommand({ owner: 'test-owner', repoName: 'test-repo', prNumber: 42, redisClient: createMockRedis(), correlationId: 'cid', userId: '7' });
+        assert.equal(result?.outcome, 'queued');
+        const [, data] = mockQueueAdd.mock.calls[0].arguments as [string, Record<string, unknown>];
+        assert.equal(data.triggerSource, 'comment');
+        assert.equal(data.userId, '7');
     });
 
-    test('PR labelled with the configured PR label (propr) is queued', async () => {
-        const redis = createMockRedis();
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ labels: [{ name: 'propr' }] }));
-
-        const result = await handleMergeCommand({ ...baseOptions, redisClient: redis as never });
-
-        assert.strictEqual(result?.outcome, 'queued');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+    test('a human PR is refused with not_propr_pull_request', async () => {
+        routeGitHub({ 42: [{ labels: [{ name: 'bug' }] }] });
+        const result = await handleMergeCommand({ owner: 'test-owner', repoName: 'test-repo', prNumber: 42, redisClient: createMockRedis(), correlationId: 'cid' });
+        assert.deepEqual({ outcome: result?.outcome, reason: result?.reason }, { outcome: 'skipped', reason: 'not_propr_pull_request' });
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
     });
 
-    test('unlabelled PR returns skipped_no_trigger_label and nothing is queued', async () => {
-        const redis = createMockRedis();
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ labels: [] }));
-
-        const result = await handleMergeCommand({ ...baseOptions, redisClient: redis as never });
-
-        assert.ok(result);
-        assert.strictEqual(result.outcome, 'skipped_no_trigger_label');
-        assert.strictEqual(result.prNumber, 42);
-        assert.strictEqual(result.repository, 'test-owner/test-repo');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
-
-        const skipLog = mockLoggerInstance.info.mock.calls.find((c: { arguments: [Record<string, unknown>, string] }) =>
-            (c.arguments[0] as Record<string, unknown>).outcome === 'skipped_no_trigger_label'
-        );
-        assert.ok(skipLog, 'Expected a log entry with outcome skipped_no_trigger_label');
-    });
-
-    test('PR with only non-trigger labels returns skipped_no_trigger_label', async () => {
-        const redis = createMockRedis();
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ labels: [{ name: 'bug' }, { name: 'llm-claude' }] }));
-
-        const result = await handleMergeCommand({ ...baseOptions, redisClient: redis as never });
-
-        assert.strictEqual(result?.outcome, 'skipped_no_trigger_label');
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
-    });
-
-    test('closed PR returns null without checking labels', async () => {
-        const redis = createMockRedis();
-        mockOctokit.request.mock.mockImplementation(async () => mockPRResponse({ state: 'closed', labels: [] }));
-
-        const result = await handleMergeCommand({ ...baseOptions, redisClient: redis as never });
-
-        assert.strictEqual(result, null);
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    test('a closed PR returns null', async () => {
+        routeGitHub({ 42: [{ state: 'closed' }] });
+        const result = await handleMergeCommand({ owner: 'test-owner', repoName: 'test-repo', prNumber: 42, redisClient: createMockRedis(), correlationId: 'cid' });
+        assert.equal(result, null);
     });
 });

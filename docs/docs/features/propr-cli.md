@@ -406,6 +406,7 @@ propr repo toggle owner/repo --no-auto-ci-followup  # Disable failed-CI follow-u
 propr repo toggle owner/repo --visual-previews --preview-types image,video
 propr repo toggle owner/repo --no-visual-previews
 propr repo toggle owner/repo --no-github-pr-template  # Don't append the GitHub PR template
+propr repo toggle owner/repo --auto-resolve-conflicts on       # Always auto-resolve merge conflicts (off, inherit)
 propr repo index owner/repo                  # Full reindex
 propr repo index owner/repo --incremental    # Incremental reindex
 propr repo status                            # Indexing status for all repos
