@@ -191,6 +191,20 @@ test('the last outstanding result restores the ordinary stall threshold', () => 
     assert.equal(advance(1_000)?.rule, 'inactivity');
 });
 
+test('a completion without an id closes the oldest identified call', () => {
+    const { watchdog, advance } = harness({ ...SETTINGS, toolStallTimeoutMs: 0 });
+    watchdog.observeLine(JSON.stringify({ type: 'tool_use', id: 't1' }));
+    watchdog.observeLine(JSON.stringify({ type: 'tool_use', id: 't2' }));
+    watchdog.observeLine(JSON.stringify({ type: 'tool_result' }));
+    assert.equal(watchdog.openTools, 1);
+    // The closed call stays finished: its own late result does not close the other one.
+    watchdog.observeLine(JSON.stringify({ type: 'tool_result', id: 't1' }));
+    assert.equal(watchdog.openTools, 1);
+    watchdog.observeLine(JSON.stringify({ type: 'tool_result' }));
+    assert.equal(watchdog.openTools, 0);
+    assert.equal(advance(1_000)?.rule, 'inactivity', 'a disabled tool threshold no longer applies once every call ended');
+});
+
 test('text after a tool call in its declaring message does not end the call', () => {
     const { watchdog, advance } = harness();
     watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1' }, { type: 'text', text: 'Running the tests' }] } }));

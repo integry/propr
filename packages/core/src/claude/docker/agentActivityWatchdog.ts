@@ -114,7 +114,7 @@ export class AgentActivityWatchdog {
         if (this.anonymousTools.length > 0) { this.anonymousTools.shift(); return; }
         // An end without an id closes the oldest identified call.
         if (id === undefined) {
-            const oldest = this.openToolIds.values().next();
+            const oldest = this.openToolIds.keys().next();
             if (!oldest.done) this.recordToolEnd(oldest.value);
         }
     }
