@@ -75,7 +75,7 @@ const README = `# ProPR Repository Setup
 
 This directory configures repository-local setup for ProPR agent executions.
 
-Edit \`.propr/workflow.yml\` to version lifecycle hooks, instructions, validation, previews and task limits.
+Edit \`.propr/workflow.yml\` to version lifecycle hooks, instructions, validation, previews, task limits and the auto-merge policy.
 
 Edit \`.propr/pr-template.md\` to shape the pull request titles and descriptions ProPR writes.
 Check it with \`propr repo validate\`.
@@ -112,6 +112,11 @@ hooks:
 # limits:
 #   max_parallel_tasks: 3
 #   max_cost_usd: 5.00
+# auto_merge:
+#   enabled: true
+#   method: squash
+#   protected_paths:
+#     - ".github/workflows/**"
 `;
 
 const SCAFFOLD_FILES: ScaffoldFile[] = [
