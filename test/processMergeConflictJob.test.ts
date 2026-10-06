@@ -194,6 +194,7 @@ await mock.module('@propr/core', {
         claimTaskSteers: async () => [], createTaskSteeringSource: () => undefined,
         formatReplacementRunSteers: () => '', recordTaskSteerTimeline: async () => undefined,
         formatTaskSteersForComment: () => '', listTaskSteers: async () => [],
+        releaseTaskSteers: async () => undefined,
         logger: {
             info: mock.fn(),
             warn: mock.fn(),

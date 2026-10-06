@@ -24,6 +24,23 @@ async function elapsedMs(operation: () => Promise<unknown>): Promise<number> {
     return Date.now() - started;
 }
 
+/**
+ * Waits for the client to start reconnecting. The publisher unrefs an idle
+ * socket, so once the peer is gone nothing else keeps the event loop alive
+ * until ioredis schedules its reconnect; on a loaded runner the test runner
+ * would see an empty loop first and cancel the suite.
+ */
+async function reconnectingOf(client: Redis, dropConnection: () => unknown): Promise<void> {
+    const reconnecting = once(client, 'reconnecting');
+    const keepAlive = setInterval(() => {}, 1_000);
+    try {
+        await dropConnection();
+        await reconnecting;
+    } finally {
+        clearInterval(keepAlive);
+    }
+}
+
 async function publishNotification(): Promise<void> {
     await getEventPublisher().publishNotificationUpdate({
         change: 'dismissed',
@@ -198,9 +215,7 @@ describe('existing event stream delivery', { concurrency: false, timeout: 10_000
         });
         const publisher = getEventPublisher();
         assert.equal(await publisher.publishTaskUpdate({ taskId: 'task-1', state: 'processing' }), true);
-        const reconnecting = once(client, 'reconnecting');
-        for (const socket of peer.sockets) socket.destroy();
-        await reconnecting;
+        await reconnectingOf(client, () => { for (const socket of peer.sockets) socket.destroy(); });
         const results = await Promise.all(lifecyclePublishes.map(([, send]) => send(publisher)));
         assert.equal(results[0], true, 'the terminal task publish is acknowledged after reconnect');
         assert.equal(results[1], true, 'the draft publish is acknowledged after reconnect');
@@ -225,9 +240,7 @@ describe('existing event stream delivery', { concurrency: false, timeout: 10_000
         });
         const publisher = getEventPublisher();
         assert.equal(await publisher.publishTaskUpdate({ taskId: 'task-1', state: 'processing' }), true);
-        const reconnecting = once(client, 'reconnecting');
-        await peer.goAway();
-        await reconnecting;
+        await reconnectingOf(client, peer.goAway);
         const pending = publisher.publishTaskUpdate({ taskId: 'task-1', state: 'completed' });
         // Let the publish reach the client's offline queue before shutting down.
         await delay(20);
