@@ -124,6 +124,44 @@ Common reasons a task was **not** replaced: it was cancelled by a user or withdr
 
 To turn replacement off, set `INFRA_LOST_REPLACEMENT=false` (lost runs) and `MAX_PROVIDER_REPLACEMENTS=0` (provider errors; the **Settings → Automation → General configuration → Provider failure replacements** setting, `propr setting update max_provider_replacements 0`, or MCP `update_execution_settings` overrides the environment). Restart the worker after changing environment variables.
 
+## A Push Was Rejected
+
+**Symptom:** a task failed with `Push of branch … was rejected (<class>)`, and its timeline, `propr task get <task-id>` and the GitHub failure comment show a **Push rejected** section.
+
+ProPR classifies the rejection from git's output and keeps the agent's commits through the [salvage ladder](./maintenance.md#rejected-pushes-and-the-salvage-ladder). Act on the class:
+
+| Class | Meaning | What to do |
+|---|---|---|
+| `push_protection` | GitHub secret scanning push protection found a secret in the commits. | Open the **unblock URL** shown verbatim in the comment to allow the secret if it is a false positive, or remove it from the commits. Then push the recovered commits. |
+| `ruleset_or_branch_protection` | A repository ruleset or branch protection rule (GH013/GH006) refused the update. | Review the rule violations in the remote output; adjust the rule or push the work to another branch and open a PR from it. |
+| `non_fast_forward` | Someone pushed to the branch while the task ran. | Recover the commits, merge or rebase onto the new branch head, and push. Or post a follow-up comment so ProPR redoes the change on the current head. |
+| `auth` | 401/403, an expired installation token, or the GitHub App lacks permission (for example `workflows`) for this ref. | Check the App installation's repository access and permissions, then recover and push. |
+| `network` | Connection reset, DNS or TLS failure before GitHub accepted the push. | Usually transient — recover and push again. |
+| `unknown` | ProPR could not classify the output. | Read the remote output in the comment's details block or the worker logs. |
+
+Recover the commits from the location the failure names:
+
+- **Rescue ref** (`refs/propr/rescue/<taskId>--<timestamp>` on the same repository):
+
+  ```bash
+  git fetch origin refs/propr/rescue/<taskId>--<timestamp>
+  git checkout -B <branch> FETCH_HEAD
+  git push origin <branch>
+  git push origin --delete refs/propr/rescue/<taskId>--<timestamp>   # once recovered
+  ```
+
+- **Bundle** (on the ProPR host, `PUSH_RESCUE_BUNDLE_DIR`, by default `data/rescue/<owner>/<repo>/<taskId>.bundle`). Copy it to a checkout of the repository, then:
+
+  ```bash
+  git fetch /path/to/<taskId>.bundle HEAD
+  git checkout -B <branch> FETCH_HEAD
+  git push origin <branch>
+  ```
+
+- **Retained worktree** (under `GIT_WORKTREES_BASE_PATH`, marked with `.retention-info.json`): push its detached HEAD from the host, for example `git -C <worktree> push origin HEAD:refs/heads/<branch>`, or create a bundle from it (`git -C <worktree> bundle create /tmp/rescue.bundle HEAD`) before its retention ends.
+
+If the failure says the commits could not be preserved, every rung failed (for example the data directory was read-only); the worker logs list each attempt.
+
 ## Jobs Stuck In The Queue
 
 **Symptom:** jobs sit in `processing` or `failed` and queue counts stop moving.

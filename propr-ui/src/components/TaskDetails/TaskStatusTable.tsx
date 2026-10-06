@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { formatTaskTerminalReason } from '@propr/shared';
 import { HistoryItem } from './types';
+import PushFailureDetails from './PushFailureDetails';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
 import { RUN_DURATION_COLUMN, RUN_LEAD_INSET, RUN_TAG_COLUMN } from './runTimelineColumns';
 import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban } from 'lucide-react';
@@ -198,6 +199,7 @@ const TimelineContent: React.FC<{
               {formatTaskTerminalReason(item.metadata.terminalReason)}
             </div>
           )}
+          <PushFailureDetails metadata={item.metadata} />
           {routing && (
             <div className="mt-0.5 break-words text-[10px] text-slate-500">
               Virtual {routing.virtualAgentAlias} · {routing.virtualModel}
@@ -335,6 +337,7 @@ const BranchSteps: React.FC<{
                 {formatTaskTerminalReason(item.metadata.terminalReason)}
               </span>
             )}
+            <PushFailureDetails metadata={item.metadata} />
           </span>
           <span className={`${RUN_DURATION_COLUMN} flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${isRunning ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
             {isRunning ? 'Running…' : item.duration !== null ? formatRelativeTime(item.duration) : ''}

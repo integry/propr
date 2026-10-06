@@ -14,6 +14,14 @@ export interface TaskSearchResult {
   repository?: string;
   status: string;
   createdAt: string;
+  // Preview-pane details; the task list API supplies them, older payloads may not.
+  subtitle?: string | null;
+  prNumber?: number | null;
+  issueNumber?: number | null;
+  model?: string | null;
+  modelName?: string | null;
+  score?: number | null;
+  failedReason?: string | null;
 }
 
 export interface GlobalSearchResults {

@@ -44,6 +44,7 @@ export async function savePrReviewModel(model: string): Promise<boolean> {
 const DEFAULT_ULTRAFIX_RATING_GOAL = 7;
 const DEFAULT_ULTRAFIX_MAX_CYCLES = 5;
 const DEFAULT_ULTRAFIX_PAUSE_SECONDS = 60;
+export const DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 export async function loadUltrafixRatingGoal(): Promise<number> {
     const goal = await getConfig<number>('ultrafix_rating_goal', DEFAULT_ULTRAFIX_RATING_GOAL);
@@ -99,6 +100,35 @@ export async function saveUltrafixPauseSeconds(seconds: number): Promise<boolean
     }
     await saveConfig('ultrafix_pause_seconds', seconds);
     logger.info({ ultrafix_pause_seconds: seconds }, 'Successfully saved ultrafix pause seconds');
+    return true;
+}
+
+/**
+ * How long an Ultrafix review may stay deferred waiting for CI before the loop
+ * stops with "CI did not settle". The ULTRAFIX_CI_WAIT_TIMEOUT_MS environment
+ * variable overrides the stored instance setting.
+ */
+export async function loadUltrafixCiWaitTimeoutMs(): Promise<number> {
+    const fromEnv = process.env.ULTRAFIX_CI_WAIT_TIMEOUT_MS;
+    if (fromEnv !== undefined && fromEnv.trim() !== '') {
+        const parsed = Number(fromEnv);
+        if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+        logger.warn({ ULTRAFIX_CI_WAIT_TIMEOUT_MS: fromEnv }, 'Invalid ULTRAFIX_CI_WAIT_TIMEOUT_MS, ignoring');
+    }
+    const timeout = await getConfig<number>('ultrafix_ci_wait_timeout_ms', DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS);
+    if (typeof timeout !== 'number' || !Number.isSafeInteger(timeout) || timeout < 1) {
+        logger.warn({ stored_value: timeout }, 'Invalid ultrafix_ci_wait_timeout_ms in DB, using default');
+        return DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS;
+    }
+    return timeout;
+}
+
+export async function saveUltrafixCiWaitTimeoutMs(timeoutMs: number): Promise<boolean> {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+        throw new Error('ultrafix_ci_wait_timeout_ms must be a positive safe integer');
+    }
+    await saveConfig('ultrafix_ci_wait_timeout_ms', timeoutMs);
+    logger.info({ ultrafix_ci_wait_timeout_ms: timeoutMs }, 'Successfully saved ultrafix CI wait timeout');
     return true;
 }
 

@@ -107,6 +107,25 @@ export interface TokenUsage {
 /**
  * Metadata for a history entry.
  */
+/**
+ * Why the task's final push was rejected and where ProPR preserved the commits.
+ */
+export interface TaskPushFailure {
+  diagnosis: {
+    classification: "push_protection" | "ruleset_or_branch_protection" | "non_fast_forward" | "auth" | "network" | "unknown";
+    summary: string;
+    unblockUrls: string[];
+    excerpt?: string;
+  };
+  rung: "rescue_ref" | "bundle" | "worktree" | "none";
+  branchName: string;
+  repository: string;
+  rescueRef?: string;
+  bundlePath?: string;
+  worktreePath?: string;
+  recoveryInstruction: string;
+}
+
 export interface TaskHistoryMetadata {
   sessionId?: string;
   conversationId?: string;
@@ -120,6 +139,7 @@ export interface TaskHistoryMetadata {
     number: number;
     url: string;
   };
+  pushFailure?: TaskPushFailure;
   [key: string]: unknown;
 }
 
@@ -304,6 +324,11 @@ export interface TaskStatus {
   failureReason?: string;
 
   /**
+   * Push rejection diagnosis and salvage location, when the final push failed.
+   */
+  pushFailure?: TaskPushFailure;
+
+  /**
    * Full history of state transitions.
    */
   history: TaskHistoryEntry[];
@@ -479,8 +504,10 @@ function parseTaskStatus(response: TaskStatusResponse): TaskStatus {
 
   // Extract failure reason
   let failureReason: string | undefined;
+  let pushFailure: TaskPushFailure | undefined;
   if (isFailed) {
     failureReason = latestEntry?.reason || latestEntry?.message || latestEntry?.metadata?.error as string | undefined;
+    pushFailure = latestEntry?.metadata?.pushFailure;
   }
 
   // Extract PR information from history
@@ -502,6 +529,7 @@ function parseTaskStatus(response: TaskStatusResponse): TaskStatus {
     isCompleted,
     isFailed,
     failureReason,
+    pushFailure,
     history,
     taskInfo,
     prNumber,

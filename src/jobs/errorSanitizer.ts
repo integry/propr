@@ -23,7 +23,7 @@ function parseGitHubHtmlError(html: string): string {
     return 'GitHub API returned an HTML error page instead of JSON';
 }
 
-export function sanitizeErrorMessage(message: string | undefined): string {
+export function sanitizeErrorMessage(message: string | undefined, maxLength = 500): string {
     if (!message) return 'Unknown error';
     const sanitized = message
         .replace(/https:\/\/x-access-token:[^@\s'"]+@github\.com\//g, 'https://x-access-token:[REDACTED]@github.com/')
@@ -32,8 +32,8 @@ export function sanitizeErrorMessage(message: string | undefined): string {
     if (message.includes('<!DOCTYPE html>') || message.includes('<html>')) {
         return parseGitHubHtmlError(sanitized);
     }
-    if (sanitized.length > 500) {
-        return sanitized.slice(0, 500) + '... [truncated]';
+    if (sanitized.length > maxLength) {
+        return sanitized.slice(0, maxLength) + '... [truncated]';
     }
     return sanitized;
 }

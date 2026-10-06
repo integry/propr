@@ -72,6 +72,7 @@ function getSettingDescription(key: SettingKey): string {
     ultrafix_rating_goal: "Target quality rating for ultrafix cycles",
     ultrafix_max_cycles: "Maximum number of ultrafix cycles",
     ultrafix_pause_seconds: "Pause duration between ultrafix cycles",
+    ultrafix_ci_wait_timeout_ms: "Milliseconds an Ultrafix review waits for blocking CI before stopping (default 7200000)",
   };
   return descriptions[key];
 }
