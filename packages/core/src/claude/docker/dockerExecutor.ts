@@ -1,4 +1,5 @@
 import { captureWorkflowMarkers, withWorkflowExecutionDeadline } from '../../workflow/workflowExecution.js';
+import { spawn, SpawnOptions, ChildProcess } from 'child_process';
 import { StringDecoder } from 'node:string_decoder';
 import fs from 'fs';
 import logger from '../../utils/logger.js';
@@ -21,16 +22,12 @@ import type { AgentWatchdogTrip } from './agentActivityWatchdog.js';
 import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
 import { settleTimeoutStop, settleWatchdogStop } from './dockerExecutionSettlement.js';
 import { openLiveInput, type LiveInputOptions, type LiveInputSession } from './dockerLiveInput.js';
-import { spawnCommandProcess } from './dockerCommandProcess.js';
 import { trackPromptHandoff, type PromptHandoff } from './dockerPromptHandoff.js';
+import { resolveDockerPath } from './dockerExecutablePath.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
-export {
-    addTaskAttemptLabelsToDockerArgs,
-    ExecutionAbortedError,
-    runWithExecutionAbortSignal,
-} from './dockerExecutionOwnership.js';
+export { addTaskAttemptLabelsToDockerArgs, ExecutionAbortedError, runWithExecutionAbortSignal } from './dockerExecutionOwnership.js';
 export {
     buildPlannerAbortSignalKey,
     checkAbortSignal,
@@ -88,16 +85,6 @@ export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'wa
     liveInput?: LiveInputOptions | LiveInputSession;
     /** Delivery bookkeeping for a prompt carrying operator input: made durable before the process starts, settled by the agent's output. */
     promptHandoff?: PromptHandoff;
-}
-
-function resolveDockerPath(command: string): string {
-    if (command !== 'docker') return command;
-    const paths = ['/usr/bin/docker', '/usr/local/bin/docker', '/bin/docker'];
-    for (const p of paths) {
-        try { if (fs.existsSync(p)) { fs.accessSync(p, fs.constants.X_OK); logger.debug({ dockerPath: p }, 'Found docker executable'); return p; } } catch { /* continue */ }
-    }
-    logger.debug('Using docker from PATH');
-    return 'docker';
 }
 
 /**
@@ -210,6 +197,28 @@ export async function inspectLegacyDockerContainerLivenessForTask(taskId: string
         logger.warn({ taskId, error: (error as Error).message }, 'Failed to inspect legacy Docker container liveness for task');
         return 'unavailable';
     }
+}
+
+/**
+ * Spawns an execution's process without a shell: callers pass a fixed
+ * executable, and task-derived values only ever reach it as argv entries.
+ * `stdinData` is written and stdin closed, unless `liveInput` keeps stdin
+ * open for a live input channel to write.
+ */
+function spawnCommandProcess(options: { executablePath: string; args: string[]; cwd: string | undefined; stdinData: string | undefined; liveInput: boolean }): ChildProcess {
+    const { executablePath, args, cwd, stdinData, liveInput } = options;
+    const spawnOptions: SpawnOptions = { stdio: [stdinData || liveInput ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env, shell: false };
+    if (cwd && fs.existsSync(cwd)) spawnOptions.cwd = cwd;
+    else if (cwd) logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
+
+    const child = spawn(executablePath, args, spawnOptions);
+    if (stdinData && child.stdin && !liveInput) {
+        child.stdin.on('error', (err) => { logger.warn({ error: err.message, code: (err as NodeJS.ErrnoException).code }, 'Stdin write error'); });
+        child.stdin.write(stdinData);
+        child.stdin.end();
+        logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');
+    }
+    return child;
 }
 
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
