@@ -71,6 +71,7 @@ function getSettingDescription(key: SettingKey): string {
     ultrafix_rating_goal: "Target quality rating for ultrafix cycles",
     ultrafix_max_cycles: "Maximum number of ultrafix cycles",
     ultrafix_pause_seconds: "Pause duration between ultrafix cycles",
+    default_max_cost_usd: "Default per-run spend cap in USD (0 = no cap; task override and workflow.yml take precedence)",
   };
   return descriptions[key];
 }

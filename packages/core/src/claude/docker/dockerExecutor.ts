@@ -17,6 +17,8 @@ import { BoundedDiagnosticTail, BoundedProviderRecordBuffer, boundedProviderOutp
 import { LiveOutputLog } from '../../agents/impl/utils/liveOutputLog.js';
 import { buildLiveOutputSnapshot } from './dockerLiveOutputSnapshot.js';
 import { inspectSessionMessageLine, SessionLineInspectionContext } from './dockerSessionOutput.js';
+import { getActiveRunCostCap } from '../../budget/runCostGuardContext.js';
+import { RunCostCapExceededError } from '../../budget/runCostCap.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
@@ -44,6 +46,8 @@ export interface ExecutionResult {
     /** Set when ProPR stopped the process after its configured execution deadline. */
     timedOut?: boolean;
     timeoutMs?: number;
+    /** Set when ProPR stopped the process because its run reached its spend cap. */
+    costCapExceeded?: boolean;
 }
 export interface RunningTaskContainer { id: string; name: string; }
 export type TaskContainerLiveness = 'running' | 'stopped' | 'not_found' | 'unavailable';
@@ -55,7 +59,7 @@ export type LegacyTaskContainerLiveness = 'running' | 'not_found' | 'unavailable
 
 export interface DockerCommandOptions {
     timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
-    /** Resolve with buffered output on timeout so implementation jobs can publish partial work. */
+    /** Resolve with buffered output on timeout or a spend-cap stop so implementation jobs can publish partial work. */
     preserveOutputOnTimeout?: boolean;
     onSessionId?: (sessionId: string, conversationId?: string) => void | Promise<void>; onContainerId?: (containerId: string, containerName: string) => void | Promise<void>;
     extraMounts?: string[]; extraEnvVars?: Record<string, string>; streamExtraOutput?: () => string;
@@ -236,6 +240,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         let hasOwnershipFailure = false;
         let processError: Error | undefined;
         let timeoutInitiatedAbort = false;
+        let costCapStopMessage: string | null = null;
         const pendingCallbacks = new Set<Promise<void>>();
         let containerDetectionTimer: ReturnType<typeof setTimeout> | null = null;
         const messageTimestamps = new Map<string, string>();
@@ -292,8 +297,19 @@ export function executeDockerCommand(command: string, args: string[], options: D
             if (flush && remainder) lines.push(remainder);
             for (const line of lines) {
                 inspectSessionMessageLine(line, timestamp, sessionInspectionContext);
+                costExecution?.observeLine(line);
             }
         };
+        // Agent containers count toward their run's spend cap; reaching it stops
+        // them like a timeout, so their partial work can still be published.
+        const costExecution = command === 'docker' && args[0] === 'run'
+            ? getActiveRunCostCap()?.beginExecution(message => {
+                if (state.aborted.value) return;
+                costCapStopMessage = message;
+                abortExecution(true);
+            }) ?? null
+            : null;
+        const finishCostExecution = (): void => costExecution?.finish();
         executionSignal?.addEventListener('abort', abortForExecutionSignal, { once: true });
         const timeoutHandle = setTimeout(() => {
             state.timedOut = true;
@@ -337,6 +353,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
 
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
+            finishCostExecution();
             const finalStdout = stdoutDecoder.end();
             if (finalStdout) stdoutBuffer.append(finalStdout);
             const finalStderr = stderrDecoder.end();
@@ -360,6 +377,10 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 return;
             }
             if (processError) { reject(processError); return; }
+            if (costCapStopMessage) {
+                settleCostCapStop(costCapStopMessage, { exitCode, stdout: readStdout(), stderr, messageTimestamps }, { preserveOutput: preserveOutputOnTimeout, resolve, reject });
+                return;
+            }
             if (state.aborted.value && !timeoutInitiatedAbort) {
                 reject(new ExecutionAbortedError());
                 return;
@@ -380,6 +401,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             // close may run during cleanup; capture the process result before awaiting.
             processError = error;
             clearTimeout(timeoutHandle);
+            finishCostExecution();
             inspectSessionLines('', new Date().toISOString(), true);
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
             executionSignal?.removeEventListener('abort', abortForExecutionSignal);
@@ -390,6 +412,21 @@ export function executeDockerCommand(command: string, args: string[], options: D
             reject(hasOwnershipFailure ? ownershipFailure : error);
         });
     });
+}
+
+/** A run stopped at its spend cap ends like a timeout: partial output when the caller can publish it. */
+function settleCostCapStop(
+    message: string,
+    result: ExecutionResult,
+    settle: { preserveOutput: boolean; resolve: (result: ExecutionResult) => void; reject: (error: Error) => void },
+): void {
+    const { preserveOutput, resolve, reject } = settle;
+    if (!preserveOutput) {
+        reject(new RunCostCapExceededError(message));
+        return;
+    }
+    const stderr = result.stderr.trim() ? `${result.stderr.trimEnd()}\n${message}` : message;
+    resolve({ ...result, stderr, costCapExceeded: true });
 }
 
 interface LiveOutputStreaming { stdout(chunk: string): void; stderr(chunk: string): void; close(): Promise<void> }

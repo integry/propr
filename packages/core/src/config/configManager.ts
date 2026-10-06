@@ -360,7 +360,9 @@ export {
     loadUltrafixMaxCycles,
     saveUltrafixMaxCycles,
     loadUltrafixPauseSeconds,
-    saveUltrafixPauseSeconds
+    saveUltrafixPauseSeconds,
+    loadDefaultMaxCostUsd,
+    saveDefaultMaxCostUsd
 } from './configManagerUltrafix.js';
 
 export {

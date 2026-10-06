@@ -235,6 +235,7 @@ propr issue implement <draft-id>/<issue-number>            # Start implementatio
 propr issue implement <draft-id>/1 --wait                  # Wait for completion
 propr issue implement <draft-id>/1 -a claude -m <model>    # Pick agent and model
 propr issue implement <draft-id>/1 --epic --auto-merge     # Epic PR + auto-merge on green CI
+propr issue implement <draft-id>/1 --max-cost 5            # Stop the run once it has spent ~$5
 ```
 
 The issue ID format is `<draft-id>/<issue-number>` (or `<draft-id>:<issue-number>`).
@@ -246,6 +247,7 @@ The issue ID format is `<draft-id>/<issue-number>` (or `<draft-id>:<issue-number
 | `-w, --wait` | Block until the task completes |
 | `--epic` | Create an Epic PR that collects the related PRs |
 | `--auto-merge` | Enable auto-merge once CI checks pass |
+| `--max-cost <usd>` | Per-run [spend cap](./execution-safety.md#spend-caps); overrides `.propr/workflow.yml` and the instance default |
 
 ## Goals
 
@@ -491,6 +493,7 @@ Settings keys:
 | `ultrafix_rating_goal` | Target quality rating for ultrafix cycles |
 | `ultrafix_max_cycles` | Maximum number of ultrafix cycles |
 | `ultrafix_pause_seconds` | Pause duration between ultrafix cycles |
+| `default_max_cost_usd` | Default per-run [spend cap](./execution-safety.md#spend-caps) in USD (0 = no cap) |
 
 `propr setting update` also accepts `pr-label`, `ai-primary-tag`, `primary-processing-labels`, and `followup-keywords` (comma-separated for the list keys).
 

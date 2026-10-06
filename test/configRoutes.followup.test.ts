@@ -1118,6 +1118,7 @@ describe('config route follow-up helpers', () => {
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadDefaultMaxCostUsd: async () => 0,
                 loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
@@ -1159,6 +1160,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            default_max_cost_usd: 0,
             ultrafix_escalation_enabled: false,
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
@@ -1204,6 +1206,7 @@ describe('config route follow-up helpers', () => {
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadDefaultMaxCostUsd: async () => 0,
                 loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
@@ -1245,6 +1248,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            default_max_cost_usd: 0,
             ultrafix_escalation_enabled: false,
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
@@ -1279,6 +1283,7 @@ describe('config route follow-up helpers', () => {
                 loadUltrafixRatingGoal: ultrafixGoalMock,
                 loadUltrafixMaxCycles: ultrafixCyclesMock,
                 loadUltrafixPauseSeconds: ultrafixPauseMock,
+                loadDefaultMaxCostUsd: async () => 0,
                 loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
             },
         });
@@ -1323,6 +1328,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_rating_goal: 8,
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
+            default_max_cost_usd: 0,
             ultrafix_escalation_enabled: false,
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
@@ -2990,6 +2996,7 @@ describe('config route follow-up helpers', () => {
                     loadUltrafixRatingGoal: loadUltrafixRatingGoalMock,
                     loadUltrafixMaxCycles: loadUltrafixMaxCyclesMock,
                     loadUltrafixPauseSeconds: loadUltrafixPauseSecondsMock,
+                    loadDefaultMaxCostUsd: async () => 0,
                     loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
                 },
             });
@@ -3031,6 +3038,7 @@ describe('config route follow-up helpers', () => {
                 ultrafix_rating_goal: 7,
                 ultrafix_max_cycles: 5,
                 ultrafix_pause_seconds: 60,
+                default_max_cost_usd: 0,
                 ultrafix_escalation_enabled: false,
                 ultrafix_escalation_models: [],
                 ultrafix_escalation_patience: 3,

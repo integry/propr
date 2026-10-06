@@ -95,7 +95,7 @@ export class OpenCodeAgent implements Agent {
             const executionTime = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
             const modelUsed = parsedOutput.modelUsed || effectiveModel || 'unknown';
-            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
+            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, error: parsedOutput.error || result.stderr });
             const success = result.exitCode === 0 && !parsedOutput.error && !terminationReason;
             const errorText = success ? undefined : (parsedOutput.error || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
             const response: AgentExecutionResult = {

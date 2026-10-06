@@ -22,6 +22,7 @@ import {
 } from './prCommentJobUtils.js';
 import { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext, restorePendingComments } from './prPendingComments.js';
 import { executeReviewProcessing, type PRJobContext } from './prCommentReviewJob.js';
+import { applyWorkflowCostCap, pullRequestRunCostCapTarget, withRunCostCap } from './runCostCap.js';
 import { resolveUltrafixFixExecution } from './ultrafixEscalation.js';
 import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
@@ -216,7 +217,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         workflow: state.repositoryWorkflow = policy.workflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger, job,
     }, async (): Promise<JobResult> => {
         // Admission ends the wait and runs the current base policy, whose cap must admit it too, or it defers with that policy.
-        const repositoryWorkflow = job.data.repositoryWorkflowDeferrals ? await reconcileRepositoryWorkflowAdmission(state.repositoryWorkflow = await policy.admitted(job)) : policy.workflow;
+        // The run's spend cap includes the admitted policy's limits.max_cost_usd.
+        const repositoryWorkflow = await applyWorkflowCostCap(job.data.repositoryWorkflowDeferrals ? await reconcileRepositoryWorkflowAdmission(state.repositoryWorkflow = await policy.admitted(job)) : policy.workflow);
         const publication = state.publication ??= new PullRequestPublication(octokit, context, prData!.data);
         const { combinedCommentBody, combinedBodyHtml, commentAuthors } = buildCombinedComment(state.unprocessedComments);
         state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
@@ -338,9 +340,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
 }
 
-export function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
-    return deferRepositoryWorkflowJob(job, () => processAdmittedPRCommentJob(job));
-}
+// Follow-ups, /fix, ultrafix cycles and reviews run, and record how they end, under their spend cap.
+export const processPullRequestCommentJob = (job: Job<CommentJobData>): Promise<JobResult> =>
+    deferRepositoryWorkflowJob(job, () => withRunCostCap(pullRequestRunCostCapTarget(job), () => processAdmittedPRCommentJob(job)));
 
 async function acquireCurrentPRLock(
     { lockKey, lockToken, correlatedLogger }: LockParams,

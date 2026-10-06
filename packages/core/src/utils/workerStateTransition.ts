@@ -10,6 +10,7 @@ import type {
 import { db } from '../db/connection.js';
 import { getEventPublisher } from './eventPublisher.js';
 import logger from './logger.js';
+import { runCostCapTerminalReason } from '../budget/runCostGuardContext.js';
 
 const COMPARE_AND_SET_TASK_STATE_SCRIPT = `
 if redis.call('get', KEYS[1]) ~= ARGV[1] then
@@ -59,14 +60,16 @@ export function buildTaskStateMutation(
     return state;
 }
 
-function resolveTerminalReason(newState: TaskState, metadata: UpdateMetadata): TaskTerminalReason | undefined {
+function resolveTerminalReason(taskId: string, newState: TaskState, metadata: UpdateMetadata): TaskTerminalReason | undefined {
     // Jobs queued before the rename still report the legacy `user_cancelled`.
     const rawReason = metadata.historyMetadata?.cancellationReason;
     const cancellationReason = rawReason === 'user_cancelled' ? 'cancelled_by_user' : rawReason;
-    const knownReasons = ['timed_out', 'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged'];
+    const knownReasons = ['timed_out', 'cost_cap_exceeded', 'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged'];
     return metadata.terminalReason
         ?? (typeof cancellationReason === 'string' && knownReasons.includes(cancellationReason) ? cancellationReason as TaskTerminalReason : undefined)
-        ?? (newState === 'cancelled' && /cancelled by user|user request/i.test(metadata.reason ?? '') ? 'cancelled_by_user' : undefined);
+        ?? (newState === 'cancelled' && /cancelled by user|user request/i.test(metadata.reason ?? '') ? 'cancelled_by_user' : undefined)
+        // A run stopped at its spend cap ends that way whichever job path records the outcome.
+        ?? runCostCapTerminalReason(taskId, newState);
 }
 
 export function buildTaskStateTransition(
@@ -78,7 +81,7 @@ export function buildTaskStateTransition(
     const reason = metadata.reason ?? `State changed from ${previousState}`;
     const state = buildTaskStateMutation(current, (next, timestamp) => {
         next.state = newState;
-        next.terminalReason = resolveTerminalReason(newState, metadata);
+        next.terminalReason = resolveTerminalReason(current.taskId, newState, metadata);
         next.attempts = metadata.isRetry ? next.attempts + 1 : next.attempts;
 
         if (metadata.error) {

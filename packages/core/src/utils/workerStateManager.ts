@@ -449,7 +449,7 @@ export class WorkerStateManager {
     async markTaskCompleted(taskId: string, result: TaskResult = {}): Promise<TaskStateData> {
         const metadata: UpdateMetadata = {
             prResult: result, reason: 'Task completed successfully',
-            ...(result.terminalReason === 'timed_out' ? { terminalReason: 'timed_out' } : {}),
+            ...(result.terminalReason === 'timed_out' || result.terminalReason === 'cost_cap_exceeded' ? { terminalReason: result.terminalReason } : {}),
             historyMetadata: {
                 pr: (result.prUrl && result.prNumber) ? { number: result.prNumber, url: result.prUrl } : null,
                 commitResult: result.commitResult ?? null

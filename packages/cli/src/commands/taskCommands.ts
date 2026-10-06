@@ -340,6 +340,16 @@ function displayTaskInspectionTable(tasks: InspectedTaskSummary[]): void {
 /**
  * Displays detailed task information from TaskStatus.
  */
+const BUDGET_SOURCE_LABELS = { override: "task override", workflow: ".propr/workflow.yml", instance_default: "instance default" } as const;
+
+/** Spend beside the run's cap, e.g. "$1.20 of $5.00 cap (24%, .propr/workflow.yml)". */
+export function formatTaskBudget(budget: NonNullable<TaskStatus["budget"]>): string {
+  const spent = `$${budget.spentUsd.toFixed(2)}`;
+  if (budget.capUsd === null) return `${spent} (no spend cap)`;
+  const details = [`${budget.percent ?? 0}%`, ...(budget.source ? [BUDGET_SOURCE_LABELS[budget.source]] : [])].join(", ");
+  return `${spent} of $${budget.capUsd.toFixed(2)} cap (${details})${budget.exceeded ? " - stopped at cap" : ""}`;
+}
+
 function displayTaskDetails(status: TaskStatus, showInspectionTiming = false): void {
   console.log("");
   console.log("=".repeat(60));
@@ -374,6 +384,10 @@ function displayTaskDetails(status: TaskStatus, showInspectionTiming = false): v
     if (info.issueNumber && info.issueNumber !== info.number) {
       console.log(`Linked Issue: #${info.issueNumber}`);
     }
+  }
+
+  if (status.budget) {
+    console.log(`Spend:        ${formatTaskBudget(status.budget)}`);
   }
 
   if (status.prNumber) {

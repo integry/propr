@@ -8,9 +8,10 @@ import { Job } from 'bullmq';
 import { postCancellationNotice } from './errorHandlers.js';
 import {
   isBookkeepingCancellation, taskIntentIssueRef, isIssueClosureProtected, withdrawnIntentReason, updateWithdrawnIssueLabels, excludeWithdrawnIssue, retainClosureCleanup, releaseWithdrawalCleanup, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
-  UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
+  UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId, readIssueCostCapOverride
 } from '@propr/core';
-import type { TaskStateData, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult } from '@propr/core';
+import type { TaskStateData, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult, SubmissionPayload } from '@propr/core';
+import { withRunCostCap, type CommentOctokit, type RunCostCapTarget } from './runCostCap.js';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
@@ -243,7 +244,7 @@ async function processIssueWithAdmission(
   return withRepositoryWorkflowAdmission({
     workflow: context.repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
     redisClient, taskId, stateManager, correlatedLogger, job,
-  }, async (): Promise<JobResult> => {
+  }, async (): Promise<JobResult> => withRunCostCap(await issueRunCostCapTarget(job, context, octokit), async (costGuard): Promise<JobResult> => {
     // Successful admission ends this capacity wait; subsequent execution failures
     // retain the existing ordinary retry behavior and reload the base policy.
     const refreshWorkflow = !!job.data.repositoryWorkflowDeferred && reusedWorkflowSnapshot;
@@ -281,6 +282,7 @@ async function processIssueWithAdmission(
         context.repositoryWorkflow = await prepareIssueRepositoryWorkflow(octokit, issueRef);
         // A refusal here defers with the refreshed policy saved in context.repositoryWorkflow.
         await reconcileRepositoryWorkflowAdmission(context.repositoryWorkflow);
+        await costGuard.setWorkflowCap(context.repositoryWorkflow?.config.limits?.max_cost_usd);
       }
       await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
         reason: 'Starting issue processing', historyMetadata: repositoryWorkflowHistoryMetadata(context.repositoryWorkflow),
@@ -330,7 +332,29 @@ async function processIssueWithAdmission(
       if (error instanceof RepositoryWorkflowCapacityError) throw error;
       return handleIssueProcessingError(error, { job, context, octokit, claudeResult, worktreeInfo });
     }
-  });
+  }));
+}
+
+/** The issue run's spend cap inputs: the task override (job, submission or `propr issue implement --max-cost`) and the workflow file. */
+async function issueRunCostCapTarget(
+  job: Job<IssueJobData>, context: JobContext, octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>,
+): Promise<RunCostCapTarget> {
+  const { issueRef, taskId, modelName, correlatedLogger } = context;
+  let override: unknown = job.data.maxCostUsd;
+  try {
+    if (override === undefined) {
+      const submission = await findIssueSubmission(issueRef);
+      override = submission ? (JSON.parse(submission.payload) as SubmissionPayload).maxCostUsd : undefined;
+    }
+    override ??= await readIssueCostCapOverride(`${issueRef.repoOwner}/${issueRef.repoName}`, issueRef.number);
+  } catch (error) {
+    correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Could not read the task spend cap override');
+  }
+  return {
+    taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number, kind: 'issue',
+    modelName, override, workflowCap: context.repositoryWorkflow?.config.limits?.max_cost_usd,
+    getOctokit: () => octokit as unknown as CommentOctokit, logger: correlatedLogger,
+  };
 }
 
 export { processGitHubIssueJob as default };

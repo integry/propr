@@ -26,6 +26,7 @@ export function formatTaskTerminalReason(reason: string): string {
     // `user_cancelled` is the legacy job-result code for the same stop.
     case 'cancelled_by_user': case 'user_cancelled': return 'Cancelled by a user.';
     case 'timed_out': return 'The task exceeded its time limit.';
+    case 'cost_cap_exceeded': return 'The run was stopped because it reached its spend cap.';
     case 'pr_merged': return 'The pull request was merged.';
     default: return 'The task ended.';
   }

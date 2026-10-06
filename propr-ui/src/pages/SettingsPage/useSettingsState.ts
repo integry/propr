@@ -26,6 +26,14 @@ const PROMPT_DEBOUNCE_DELAY = 800;
 // Timeout for waiting on in-flight save operations (in milliseconds)
 const SAVE_WAIT_TIMEOUT = 5000;
 
+/** Sends the typed spend cap as a USD amount (empty = 0, no cap); a value that is not one is left unsaved. */
+export function costCapToSave(value: string): { default_max_cost_usd?: number } {
+  const trimmed = value.trim();
+  if (!trimmed) return { default_max_cost_usd: 0 };
+  const amount = Number(trimmed);
+  return Number.isFinite(amount) && amount >= 0 ? { default_max_cost_usd: amount } : {};
+}
+
 function buildReindexAllSkipMessage(result: TriggerReindexAllResponse): string {
   const skippedCooldown = result.repositoriesSkippedCooldown ?? 0;
   const skippedAlreadyQueued = result.repositoriesSkippedAlreadyQueued ?? 0;
@@ -76,7 +84,8 @@ export function useSettingsState() {
     ultrafix_escalation_max_reasoning_levels: 2,
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
-    ultrafix_pause_seconds: 60
+    ultrafix_pause_seconds: 60,
+    default_max_cost_usd: ''
   });
   const [prLabel, setPrLabel] = useState('');
   const [agents, setAgents] = useState<AgentConfig[]>([]);
@@ -174,7 +183,8 @@ export function useSettingsState() {
         ultrafix_escalation_max_reasoning_levels: settingsToSave.ultrafix_escalation_max_reasoning_levels,
         ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
-        ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds
+        ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds,
+        ...costCapToSave(settingsToSave.default_max_cost_usd)
       });
       completeSave(result.warnings);
     } catch (err) {

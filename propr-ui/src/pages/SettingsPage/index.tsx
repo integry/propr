@@ -164,7 +164,7 @@ const AdminSettingsPage: React.FC = () => {
     {
       id: 'general-configuration',
       category: 'automation',
-      searchText: 'general configuration processing worker concurrency resolve merge conflicts ultrafix escalation patience reasoning levels models rating goal maximum cycles pause seconds',
+      searchText: 'general configuration processing worker concurrency resolve merge conflicts spend cap cost budget max cost usd ultrafix escalation patience reasoning levels models rating goal maximum cycles pause seconds',
       content: (
         <GeneralSettingsSection
           modelAgents={catalogAgents?.length ? catalogAgents : agents}
@@ -178,7 +178,8 @@ const AdminSettingsPage: React.FC = () => {
             ultrafix_escalation_max_reasoning_levels: settings.ultrafix_escalation_max_reasoning_levels,
             ultrafix_rating_goal: settings.ultrafix_rating_goal,
             ultrafix_max_cycles: settings.ultrafix_max_cycles,
-            ultrafix_pause_seconds: settings.ultrafix_pause_seconds
+            ultrafix_pause_seconds: settings.ultrafix_pause_seconds,
+            default_max_cost_usd: settings.default_max_cost_usd
           }}
           onSettingChange={handleGeneralSettingChange}
           onBlur={triggerSettingsSave}

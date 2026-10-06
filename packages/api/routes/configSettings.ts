@@ -1,4 +1,4 @@
-import { isUsageTipsCooldownDays } from '@propr/shared';
+import { isUsageTipsCooldownDays, MAX_RUN_COST_CAP_USD } from '@propr/shared';
 import { validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
 interface SettingFields {
@@ -16,6 +16,7 @@ interface SettingFields {
   ultrafix_rating_goal?: unknown;
   ultrafix_max_cycles?: unknown;
   ultrafix_pause_seconds?: unknown;
+  default_max_cost_usd?: unknown;
 }
 
 export type SettingSaveName =
@@ -32,7 +33,8 @@ export type SettingSaveName =
   | 'ultrafix_escalation_max_reasoning_levels'
   | 'ultrafix_rating_goal'
   | 'ultrafix_max_cycles'
-  | 'ultrafix_pause_seconds';
+  | 'ultrafix_pause_seconds'
+  | 'default_max_cost_usd';
 
 export interface LabeledSaveDescriptor {
   name: SettingSaveName;
@@ -44,6 +46,13 @@ function validateStrictInt(raw: unknown, min: number, max: number): number | nul
   const value = Number(str);
   if (!Number.isSafeInteger(value)) return null;
   return value < min || value > max ? null : value;
+}
+
+/** A USD amount from 0 (no cap) up to the cap ceiling; an empty value or null clears the cap. */
+export function validateCostCapUsd(raw: unknown): number | null {
+  if (raw === null || raw === '') return 0;
+  const value = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\s*\d+(?:\.\d+)?\s*$/.test(raw) ? Number(raw) : Number.NaN;
+  return Number.isFinite(value) && value >= 0 && value <= MAX_RUN_COST_CAP_USD ? value : null;
 }
 
 async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; value?: string }> {
@@ -138,6 +147,13 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
     if (v === null) return { error: 'ultrafix_pause_seconds must be a non-negative integer', saves: [], normalized };
     normalized.ultrafix_pause_seconds = v;
     saves.push({ name: 'ultrafix_pause_seconds' });
+  }
+
+  if (fields.default_max_cost_usd !== undefined) {
+    const v = validateCostCapUsd(fields.default_max_cost_usd);
+    if (v === null) return { error: `default_max_cost_usd must be a number from 0 (no cap) to ${MAX_RUN_COST_CAP_USD}`, saves: [], normalized };
+    normalized.default_max_cost_usd = v;
+    saves.push({ name: 'default_max_cost_usd' });
   }
 
   return extractEscalationSettingSaves(fields, result);

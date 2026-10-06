@@ -216,7 +216,8 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
     taskInfo: taskData.taskInfo,
     usageMetricRecords: taskData.usageMetricRecords,
     tokenUsage,
-  }), [taskData.history, taskData.taskInfo, taskData.usageMetricRecords, tokenUsage]);
+    budget: taskData.budget,
+  }), [taskData.history, taskData.taskInfo, taskData.usageMetricRecords, tokenUsage, taskData.budget]);
   const { headerProps, contextStripProps, runStripProps, runState, inspection, headerRun } = useTaskHeaderView(taskId, runs, ownSummary);
   const liveRun = useLiveRunStop(inspection?.head, Boolean(inspection?.headActive));
 

@@ -38,6 +38,12 @@ interface SettingsApiData {
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
+  default_max_cost_usd?: number;
+}
+
+/** The spend cap as typed in Settings: empty for no cap (0 or unset). */
+function costCapInput(amount: number | undefined): string {
+  return amount ? String(amount) : '';
 }
 
 function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig[]): Settings {
@@ -66,6 +72,7 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     ultrafix_rating_goal: settingsData.ultrafix_rating_goal ?? 7,
     ultrafix_max_cycles: settingsData.ultrafix_max_cycles ?? 5,
     ultrafix_pause_seconds: settingsData.ultrafix_pause_seconds ?? 60,
+    default_max_cost_usd: costCapInput(settingsData.default_max_cost_usd),
   };
 }
 

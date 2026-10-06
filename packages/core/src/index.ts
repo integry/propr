@@ -353,7 +353,21 @@ export {
 export type { AgentImageBuildDiskSpace } from './agents/agentImageBuildCapacity.js';
 export * from './goalExports.js';
 export * from './agents/syntheticRouting.js';
-export { describeAgentTermination, isIncompleteAgentExecution, resolveAgentTerminationReason } from './agents/termination.js';
+export { describeAgentTermination, isIncompleteAgentExecution, resolveAgentTerminationReason, taskTerminalReasonForAgentTermination } from './agents/termination.js';
+export {
+    parseCostCapUsd, resolveRunCostCap, remainingRunBudget, formatUsd, runCostCapStopMessage,
+    RUN_COST_CAP_SOURCE_LABELS, MAX_RUN_COST_CAP_USD, RUN_COST_CAP_STOP_PATTERN,
+    type RunCostCap, type RunCostCapInputs, type RunCostCapSource,
+} from './budget/runCostCap.js';
+export {
+    RunCostGuard, runWithRunCostGuard, getActiveRunCostGuard, runCostCapTerminalReason, RunCostCapExceededError,
+    type RunCostGuardOptions, type RunCostSnapshot, type RunCostExecution, type RunUsagePricer,
+} from './budget/runCostGuard.js';
+export { RunUsageTally, type RunTokenTotals } from './budget/runUsageTally.js';
+export {
+    storeIssueCostCapOverride, readIssueCostCapOverride, storeResolvedRunCostCap, readRecordedTaskSpend,
+    issueCostCapOverrideKey, runCostCapKey, type StoredRunCostCap, type CostCapRedisClient,
+} from './budget/runCostCapStore.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';
 export { AntigravityAgent } from './agents/impl/AntigravityAgent.js';

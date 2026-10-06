@@ -292,7 +292,7 @@ export interface AgentExecutionResult {
     conversationLog?: any[];
 }
 
-export type AgentTerminationReason = 'timeout' | 'max_turns';
+export type AgentTerminationReason = 'timeout' | 'max_turns' | 'cost_cap';
 
 export interface Agent {
     readonly config: AgentConfig;

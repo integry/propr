@@ -112,6 +112,7 @@ export function processDockerResult(
     const executionError = extractExecutionError(claudeOutput, result.stderr || '');
     const terminationReason = resolveAgentTerminationReason({
         timedOut: result.timedOut,
+        costCapExceeded: result.costCapExceeded,
         subtype: claudeOutput.finalResult?.subtype,
         error: executionError
     });

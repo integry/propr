@@ -11,6 +11,7 @@ import {
   resolveAgentTerminationReason,
   ErrorCategories
 } from '@propr/core';
+import { taskTerminalReasonForAgentTermination } from '@propr/shared';
 import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
 import type { TaskCompletionParams } from './types.js';
@@ -50,9 +51,10 @@ export async function markTaskTerminalState(params: TerminalStateParams): Promis
   const commitResultData = commitResult
     ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage }
     : null;
+  const terminalReason = claudeResult ? taskTerminalReasonForAgentTermination(resolveAgentTerminationReason(claudeResult)) : undefined;
   const taskResult = {
     status,
-    ...(claudeResult && resolveAgentTerminationReason(claudeResult) === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
+    ...(terminalReason ? { terminalReason } : {}),
     claudeSuccess: claudeResult?.success || false,
     prCreated: !!postProcessingResult?.pr,
     prNumber: postProcessingResult?.pr?.number ?? undefined,
@@ -67,7 +69,7 @@ export async function markTaskTerminalState(params: TerminalStateParams): Promis
       new Error(claudeResult?.error || 'Agent processing failed'),
       {
         errorCategory: ErrorCategories.CLAUDE_EXECUTION,
-        ...(claudeResult && resolveAgentTerminationReason(claudeResult) === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
+        ...(terminalReason ? { terminalReason } : {}),
         prResult: taskResult,
         historyMetadata: {
           pr: (taskResult.prUrl && taskResult.prNumber)

@@ -171,7 +171,7 @@ export class AntigravityAgent implements Agent {
     }
 
     private async processExecutionResult(opts: {
-        result: { stdout: string; stderr: string; exitCode: number | null; timedOut?: boolean }; executionTime: number;
+        result: { stdout: string; stderr: string; exitCode: number | null; timedOut?: boolean; costCapExceeded?: boolean }; executionTime: number;
         issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string | undefined; requestedCliModel?: string;
         prompt: string; worktreePath: string; worktreeGitContent: string | null;
         taskId?: string; prNumber?: number; isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null;
@@ -184,7 +184,7 @@ export class AntigravityAgent implements Agent {
 
         const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
         const modelIdentity = resolveAntigravityModelIdentity(response.reportedModel ?? response.modelUsed, effectiveModel, response.hasStreamEnvelopes, opts.requestedCliModel); const resolvedModel = modelIdentity.modelUsed;
-        const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: result.stderr });
+        const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, error: result.stderr });
         const executionError = resolveAntigravityExecutionError(response.terminalStatus, response.protocolError, response.hasStreamEnvelopes, modelIdentity.error);
         const success = result.exitCode === 0 && !terminationReason && !executionError;
         const agentResult: AgentExecutionResult = {

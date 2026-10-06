@@ -223,6 +223,8 @@ export interface SystemSettings {
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
+  /** Instance default per-run spend cap in USD; 0 = no cap. */
+  default_max_cost_usd?: number;
   invalid_settings?: Record<string, unknown>;
 }
 

@@ -82,6 +82,11 @@ const stateManager = {
 };
 await database.schema.createTable('tasks', table => { table.string('task_id'); table.string('commit_hash'); });
 await mock.module('ioredis', { namedExports: { Redis: class {} } });
+// The spend cap is covered by its own suites; this one keeps the run uncapped.
+await mock.module('../src/jobs/runCostCap.js', { namedExports: {
+    withRunCostCap: async (_target: unknown, operation: (guard: unknown) => Promise<unknown>) => operation({ setWorkflowCap: async () => undefined }),
+    applyWorkflowCostCap: async () => undefined,
+} });
 await mock.module('@propr/core', { namedExports: {
     preventWithdrawnJob: async () => null,
     db: database, AI_COMMIT_AUTHOR: { name: 'Test Worker', email: 'worker@example.test' },
