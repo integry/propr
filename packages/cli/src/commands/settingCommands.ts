@@ -71,6 +71,9 @@ function getSettingDescription(key: SettingKey): string {
     ultrafix_rating_goal: "Target quality rating for ultrafix cycles",
     ultrafix_max_cycles: "Maximum number of ultrafix cycles",
     ultrafix_pause_seconds: "Pause duration between ultrafix cycles",
+    agent_stall_timeout_ms: "Stop an agent run silent this long, in ms (0 disables; \"default\" = env AGENT_STALL_TIMEOUT_MS)",
+    agent_tool_stall_timeout_ms: "Silence allowed while a tool call runs, in ms (0 disables; \"default\" = env AGENT_TOOL_STALL_TIMEOUT_MS)",
+    agent_degenerate_output_limit: "Consecutive whitespace-only deltas that stop a run (0 disables; \"default\" = env AGENT_DEGENERATE_OUTPUT_LIMIT)",
   };
   return descriptions[key];
 }
@@ -355,7 +358,7 @@ Examples:
           process.exit(1);
         }
 
-        let parsedValue: number | string | string[] | boolean;
+        let parsedValue: number | string | string[] | boolean | null;
         try {
           parsedValue = isExtraConfigKey(key) ? parseExtraConfigValue(key, value) : parseSettingValue(key, value);
         } catch (parseError) {

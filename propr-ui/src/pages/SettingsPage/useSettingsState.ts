@@ -14,7 +14,7 @@ import {
 } from '../../api/proprApi';
 import { DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
 import { getAgentTankSettings } from '../../api/revertApi';
-import { Settings } from './types';
+import { Settings, type AgentWatchdogSettingName } from './types';
 import { parseLoadedData } from './parseLoadedData';
 import { useAgentTankSettings } from './useAgentTankSettings';
 import { useListManagement } from './useListManagement';
@@ -76,7 +76,10 @@ export function useSettingsState() {
     ultrafix_escalation_max_reasoning_levels: 2,
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
-    ultrafix_pause_seconds: 60
+    ultrafix_pause_seconds: 60,
+    agent_stall_timeout_ms: null,
+    agent_tool_stall_timeout_ms: null,
+    agent_degenerate_output_limit: null
   });
   const [prLabel, setPrLabel] = useState('');
   const [agents, setAgents] = useState<AgentConfig[]>([]);
@@ -174,7 +177,10 @@ export function useSettingsState() {
         ultrafix_escalation_max_reasoning_levels: settingsToSave.ultrafix_escalation_max_reasoning_levels,
         ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
-        ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds
+        ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds,
+        agent_stall_timeout_ms: settingsToSave.agent_stall_timeout_ms,
+        agent_tool_stall_timeout_ms: settingsToSave.agent_tool_stall_timeout_ms,
+        agent_degenerate_output_limit: settingsToSave.agent_degenerate_output_limit
       });
       completeSave(result.warnings);
     } catch (err) {
@@ -312,6 +318,12 @@ export function useSettingsState() {
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
 
+  const handleAgentWatchdogChange = useCallback((name: AgentWatchdogSettingName, value: number | null) => {
+    const newSettings = { ...settings, [name]: value };
+    setSettings(newSettings);
+    saveSettingsOnly(newSettings);
+  }, [settings, saveSettingsOnly]);
+
   const handleReviewContextEnabledChange = useCallback((enabled: boolean) => {
     const newSettings = { ...settings, pr_review_context_enabled: enabled };
     setSettings(newSettings);
@@ -420,7 +432,7 @@ export function useSettingsState() {
     summarizationSettings, isReindexing, agentTankSettings,
     agentTankAvailable, agentTankCheckingStatus,
     setSettings, setPrLabel,
-    triggerSettingsSave, handleModelSelectionChange, handleEscalationModelsChange, handleReviewContextEnabledChange,
+    triggerSettingsSave, handleModelSelectionChange, handleEscalationModelsChange, handleAgentWatchdogChange, handleReviewContextEnabledChange,
     handleReviewContextBudgetPercentCommit, handleRemoveLegacyReviewCap,
     handleSummarizationChange, handleSummarizationModelChange,
     handleSummarizationFallbackModelChange,

@@ -1,4 +1,4 @@
-import { getIntegerSettingOrDefault } from './configSettings.js';
+import { getIntegerSettingOrDefault, AGENT_WATCHDOG_SETTING_NAMES } from './configSettings.js';
 import { parseUsageTipsSettings } from '@propr/shared';
 import { assertConfigRevision, effectiveGithubUserWhitelist } from './configRevision.js';
 import { Request, Response } from 'express';
@@ -50,6 +50,25 @@ function normalizeStringEntries(values: string[]): string[] {
     normalized.push(trimmed);
   }
   return normalized;
+}
+
+/**
+ * Watchdog thresholds: the stored override (null when the environment default
+ * applies), the environment default and the value in force for the next run.
+ */
+async function agentWatchdogSettingsResponse(configStore: typeof configManager): Promise<Record<string, unknown>> {
+  const stored = Object.fromEntries(await Promise.all(AGENT_WATCHDOG_SETTING_NAMES.map(async name => [name, await configStore.getConfig<unknown>(name, null)] as const)));
+  const effective = configManager.resolveAgentWatchdogSettings(stored);
+  const defaults = Object.fromEntries(configManager.AGENT_WATCHDOG_SETTING_DEFINITIONS.map(definition => [definition.key, configManager.resolveAgentWatchdogEnvDefault(definition)]));
+  return {
+    ...Object.fromEntries(AGENT_WATCHDOG_SETTING_NAMES.map(name => [name, stored[name] ?? null])),
+    agent_watchdog_defaults: defaults,
+    agent_watchdog_effective: {
+      agent_stall_timeout_ms: effective.stallTimeoutMs,
+      agent_tool_stall_timeout_ms: effective.toolStallTimeoutMs,
+      agent_degenerate_output_limit: effective.degenerateOutputLimit,
+    },
+  };
 }
 
 function success<T>(value: T): ValidationResult<T> {
@@ -271,6 +290,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         ultrafix_rating_goal: ultrafixGoal.value,
         ultrafix_max_cycles: ultrafixCycles.value,
         ultrafix_pause_seconds: ultrafixPause.value,
+        ...await agentWatchdogSettingsResponse(configStore),
         ...(Object.keys(invalidIntegerSettings).length > 0 ? { invalid_settings: invalidIntegerSettings } : {})
       });
     } catch (error) {

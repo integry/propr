@@ -2,6 +2,7 @@ import { UsageTipsSettingsSection } from './UsageTipsSettingsSection';
 import React from 'react';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import GeneralSettingsSection from './GeneralSettingsSection';
+import AgentWatchdogSettingsSection from './AgentWatchdogSettingsSection';
 import AIModelSelectionSection from './AIModelSelectionSection';
 import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
@@ -58,6 +59,7 @@ const AdminSettingsPage: React.FC = () => {
     handleModelSelectionChange,
     handleEscalationModelsChange,
     handleReviewContextEnabledChange,
+    handleAgentWatchdogChange,
     handleReviewContextBudgetPercentCommit,
     handleRemoveLegacyReviewCap,
     addWhitelistItem,
@@ -182,6 +184,22 @@ const AdminSettingsPage: React.FC = () => {
           }}
           onSettingChange={handleGeneralSettingChange}
           onBlur={triggerSettingsSave}
+        />
+      )
+    },
+    {
+      id: 'agent-watchdog',
+      category: 'automation',
+      searchText: 'agent watchdog stall timeout inactivity silent hung tool stall degenerate whitespace output limit',
+      content: (
+        <AgentWatchdogSettingsSection
+          values={{
+            agent_stall_timeout_ms: settings.agent_stall_timeout_ms,
+            agent_tool_stall_timeout_ms: settings.agent_tool_stall_timeout_ms,
+            agent_degenerate_output_limit: settings.agent_degenerate_output_limit
+          }}
+          defaults={settings.agent_watchdog_defaults}
+          onCommit={handleAgentWatchdogChange}
         />
       )
     },

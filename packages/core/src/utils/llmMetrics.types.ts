@@ -201,6 +201,8 @@ export interface LLMMetricsSummaryResult {
     modelBreakdown: Record<string, ModelMetrics>;
     dailyMetrics: DailyMetric[];
     recentHighCostAlerts: HighCostAlert[];
+    /** Agent runs stopped by the stall/degenerate-output watchdog, per rule. */
+    watchdogTrips: Record<string, number>;
     lastUpdated: string;
 }
 

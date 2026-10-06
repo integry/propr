@@ -223,6 +223,12 @@ export interface SystemSettings {
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
+  /** Agent watchdog overrides; null uses the environment default. */
+  agent_stall_timeout_ms?: number | null;
+  agent_tool_stall_timeout_ms?: number | null;
+  agent_degenerate_output_limit?: number | null;
+  agent_watchdog_defaults?: Record<string, number>;
+  agent_watchdog_effective?: Record<string, number>;
   invalid_settings?: Record<string, unknown>;
 }
 

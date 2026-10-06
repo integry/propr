@@ -16,6 +16,9 @@ interface SettingFields {
   ultrafix_rating_goal?: unknown;
   ultrafix_max_cycles?: unknown;
   ultrafix_pause_seconds?: unknown;
+  agent_stall_timeout_ms?: unknown;
+  agent_tool_stall_timeout_ms?: unknown;
+  agent_degenerate_output_limit?: unknown;
 }
 
 export type SettingSaveName =
@@ -32,7 +35,11 @@ export type SettingSaveName =
   | 'ultrafix_escalation_max_reasoning_levels'
   | 'ultrafix_rating_goal'
   | 'ultrafix_max_cycles'
-  | 'ultrafix_pause_seconds';
+  | 'ultrafix_pause_seconds'
+  | AgentWatchdogSettingName;
+
+export const AGENT_WATCHDOG_SETTING_NAMES = ['agent_stall_timeout_ms', 'agent_tool_stall_timeout_ms', 'agent_degenerate_output_limit'] as const;
+export type AgentWatchdogSettingName = typeof AGENT_WATCHDOG_SETTING_NAMES[number];
 
 export interface LabeledSaveDescriptor {
   name: SettingSaveName;
@@ -140,7 +147,23 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
     saves.push({ name: 'ultrafix_pause_seconds' });
   }
 
+  const watchdog = extractAgentWatchdogSettingSaves(fields, result);
+  if (watchdog.error) return watchdog;
   return extractEscalationSettingSaves(fields, result);
+}
+
+/** Watchdog overrides: a non-negative integer (0 disables the rule) or null to use the environment default. */
+function extractAgentWatchdogSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
+  const { saves, normalized } = result;
+  for (const name of AGENT_WATCHDOG_SETTING_NAMES) {
+    const raw = fields[name];
+    if (raw === undefined) continue;
+    const value = raw === null ? null : validateStrictInt(raw, 0, Infinity);
+    if (value === null && raw !== null) return { error: `${name} must be a non-negative integer, or null to use the environment default`, saves: [], normalized };
+    normalized[name] = value;
+    saves.push({ name });
+  }
+  return result;
 }
 
 async function extractEscalationSettingSaves(fields: SettingFields, result: SettingSavesResult): Promise<SettingSavesResult> {

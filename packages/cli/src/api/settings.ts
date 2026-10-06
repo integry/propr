@@ -128,6 +128,18 @@ export interface SystemSettings {
    * Pause duration in seconds between ultrafix cycles.
    */
   ultrafix_pause_seconds: number;
+
+  /**
+   * Agent watchdog overrides (null = the environment default applies; 0 disables the rule).
+   * Absent when the server predates the watchdog.
+   */
+  agent_stall_timeout_ms?: number | null;
+  agent_tool_stall_timeout_ms?: number | null;
+  agent_degenerate_output_limit?: number | null;
+  /** Environment defaults used when an override is null. */
+  agent_watchdog_defaults?: Record<string, number>;
+  /** Thresholds in force for the next agent run. */
+  agent_watchdog_effective?: Record<string, number>;
 }
 
 export const NAMED_CONFIG_ENDPOINTS = {
@@ -259,6 +271,11 @@ export interface UpdateSettingsOptions {
    * Pause duration in seconds between ultrafix cycles.
    */
   ultrafix_pause_seconds?: number;
+
+  /** Agent watchdog overrides; null restores the environment default. */
+  agent_stall_timeout_ms?: number | null;
+  agent_tool_stall_timeout_ms?: number | null;
+  agent_degenerate_output_limit?: number | null;
 }
 
 /**
@@ -284,7 +301,7 @@ export interface UpdateSettingsResponse {
 /**
  * Valid setting keys that can be updated.
  */
-export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings'>;
+export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings' | 'agent_watchdog_defaults' | 'agent_watchdog_effective'>;
 
 /**
  * List of valid setting keys for validation.
@@ -314,6 +331,9 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "ultrafix_rating_goal",
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
+  "agent_stall_timeout_ms",
+  "agent_tool_stall_timeout_ms",
+  "agent_degenerate_output_limit",
 ];
 
 /**
@@ -334,8 +354,22 @@ export function isValidSettingKey(key: string): key is SettingKey {
  * @returns The parsed value.
  * @throws Error if the value cannot be parsed for the given key.
  */
-export function parseSettingValue(key: SettingKey, value: string): number | string | string[] | boolean {
+export function parseSettingValue(key: SettingKey, value: string): number | string | string[] | boolean | null {
   switch (key) {
+    case "agent_stall_timeout_ms":
+    case "agent_tool_stall_timeout_ms":
+    case "agent_degenerate_output_limit": {
+      // "default" (or "null") clears the override so the environment default applies.
+      if (/^(default|null)$/i.test(value.trim())) return null;
+      if (!/^\d+$/.test(value)) {
+        throw new Error(`Invalid value for ${key}: must be a non-negative integer (0 disables), or "default"`);
+      }
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed)) {
+        throw new Error(`Invalid value for ${key}: must be a non-negative integer up to ${Number.MAX_SAFE_INTEGER}`);
+      }
+      return parsed;
+    }
     case "usage_tips_dismissal_cooldown_days": {
       const parsed = /^\d+$/.test(value) ? Number(value) : NaN;
       if (!isUsageTipsCooldownDays(parsed)) throw new Error('Cooldown must be an integer from 1 to 365');
@@ -526,7 +560,7 @@ export async function updateSettings(
  */
 export async function updateSetting(
   key: SettingKey,
-  value: number | string | string[] | boolean,
+  value: number | string | string[] | boolean | null,
   client?: ApiClient
 ): Promise<UpdateSettingsResponse> {
   const settings: UpdateSettingsOptions = { [key]: value };
