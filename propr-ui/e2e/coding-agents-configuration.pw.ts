@@ -31,10 +31,10 @@ async function expectHeaderRails(configuration: Locator) {
 }
 
 /**
- * Reads the native clipboard back with a real paste into a temporary field outside the app. WebKit
- * rejects navigator.clipboard.readText() from automation, but a keyboard paste works in every engine.
+ * Adds a temporary, visually hidden textarea outside the app, runs `action` against it and always removes it,
+ * even when an assertion inside `action` fails.
  */
-async function readClipboard(page: Page) {
+async function withClipboardProbe<T>(page: Page, action: (probe: Locator) => Promise<T>) {
   await page.evaluate(() => {
     const probe = document.createElement('textarea');
     probe.id = 'clipboard-probe';
@@ -43,11 +43,38 @@ async function readClipboard(page: Page) {
     document.body.append(probe);
   });
   const probe = page.locator('#clipboard-probe');
-  await probe.focus();
-  await page.keyboard.press('ControlOrMeta+V');
-  const text = await probe.inputValue();
-  await probe.evaluate(element => element.remove());
-  return text;
+  try {
+    return await action(probe);
+  } finally {
+    await page.evaluate(() => document.getElementById('clipboard-probe')?.remove());
+  }
+}
+
+/**
+ * Reads the native clipboard back with a real paste into a temporary field outside the app. WebKit
+ * rejects navigator.clipboard.readText() from automation, but a keyboard paste works in every engine.
+ */
+async function readClipboard(page: Page) {
+  return withClipboardProbe(page, async probe => {
+    await probe.focus();
+    await page.keyboard.press('ControlOrMeta+V');
+    return probe.inputValue();
+  });
+}
+
+/**
+ * Overwrites the native clipboard with `sentinel` through a real keyboard select-all and copy in a temporary
+ * field outside the app. A fresh browser context does not clear the OS clipboard, so this guarantees a stale
+ * value from an earlier test cannot satisfy the next copy assertion.
+ */
+async function seedClipboard(page: Page, sentinel: string) {
+  await withClipboardProbe(page, async probe => {
+    await probe.fill(sentinel);
+    await probe.focus();
+    await page.keyboard.press('ControlOrMeta+A');
+    await page.keyboard.press('ControlOrMeta+C');
+  });
+  expect(await readClipboard(page)).toBe(sentinel);
 }
 
 for (const viewport of [
@@ -102,6 +129,9 @@ for (const viewport of [
     await expect(opusAlias).toHaveCSS('background-color', 'rgb(241, 245, 249)');
     await expect(configuration.getByText('ID / Alias', { exact: true })).toHaveCount(0);
     await expect(configuration.getByText('claude', { exact: true })).toHaveCount(1);
+    const sentinel = `clipboard-sentinel-${browserName}-${viewport.name}-${Date.now()}`;
+    expect(sentinel).not.toBe('opus55');
+    await seedClipboard(page, sentinel);
     await opusAlias.click();
     await expect(opusAlias).toHaveText('Copied');
     expect(await readClipboard(page)).toBe('opus55');
