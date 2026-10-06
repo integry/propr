@@ -7,7 +7,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import {
-    createGitRescueRefPruneDependencies, isRescueRef, pruneRescueBundles, pruneRescueRefs, rescueRefName, sanitizeRescueId,
+    createGitRescueRefPruneDependencies, isRescueRef, pruneRescueBundles, pruneRescueRefs, rescueRefCreatedAt, rescueRefName, sanitizeRescueId,
 } from '../packages/core/src/git/rescueRefs.js';
 
 const execGit = promisify(execFile);
@@ -19,7 +19,8 @@ async function git(cwd: string, args: string[]): Promise<string> {
 }
 
 test('rescue ref names are valid single path components and recognised everywhere', () => {
-    assert.equal(rescueRefName('pr-comment:integry/propr#12'), 'refs/propr/rescue/pr-comment-integry-propr-12');
+    const createdAt = new Date('2026-10-06T12:34:56.789Z');
+    assert.equal(rescueRefName('pr-comment:integry/propr#12', createdAt), 'refs/propr/rescue/pr-comment-integry-propr-12--20261006T123456Z');
     assert.equal(sanitizeRescueId('..hidden.lock'), 'hidden-lock');
     assert.ok(isRescueRef('refs/propr/rescue/task-1'));
     assert.ok(isRescueRef('refs/heads/propr/rescue/task-1'));
@@ -27,21 +28,57 @@ test('rescue ref names are valid single path components and recognised everywher
     assert.ok(!isRescueRef('main'));
 });
 
-test('only rescue refs older than the retention period are deleted', async () => {
+test('the rescue creation time is read back from the ref name', () => {
+    const createdAt = new Date('2026-10-06T12:34:56Z');
+    assert.deepEqual(rescueRefCreatedAt(rescueRefName('task--1', createdAt)), createdAt);
+    assert.equal(rescueRefCreatedAt('refs/propr/rescue/task-1'), undefined);
+    assert.equal(rescueRefCreatedAt('refs/propr/rescue/task-1--20261306T000000Z'), undefined);
+    assert.equal(rescueRefCreatedAt('refs/propr/rescue/task-1--20261006T120000Z-extra'), undefined);
+});
+
+test('only rescue refs created longer ago than the retention period are deleted', async () => {
     const now = new Date('2026-10-20T00:00:00Z');
+    const oldRef = rescueRefName('old', new Date(now.getTime() - 15 * DAY));
+    const newRef = rescueRefName('new', new Date(now.getTime() - 2 * DAY));
     const deleted: string[] = [];
     const result = await pruneRescueRefs({
         listRefs: async () => [
-            { ref: 'refs/propr/rescue/old', sha: 'a' },
-            { ref: 'refs/propr/rescue/new', sha: 'b' },
+            { ref: oldRef, sha: 'a' },
+            { ref: newRef, sha: 'b' },
+            // No creation time in the name: the ref's age cannot be established.
             { ref: 'refs/propr/rescue/unknown', sha: 'c' },
             { ref: 'refs/heads/main', sha: 'd' },
         ],
-        commitDate: async sha => ({ a: new Date(now.getTime() - 15 * DAY), b: new Date(now.getTime() - 2 * DAY) } as Record<string, Date>)[sha],
         deleteRef: async ref => { deleted.push(ref); },
     }, { olderThanDays: 14, now });
-    assert.deepEqual(deleted, ['refs/propr/rescue/old']);
-    assert.deepEqual(result, { deleted: ['refs/propr/rescue/old'], retained: 2, failed: 0 });
+    assert.deepEqual(deleted, [oldRef]);
+    assert.deepEqual(result, { deleted: [oldRef], retained: 2, failed: 0 });
+});
+
+test('a fresh rescue of a commit with an old committer date is retained', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-old-commit-'));
+    try {
+        const remote = path.join(tempDir, 'remote.git');
+        const clone = path.join(tempDir, 'clone');
+        await git(tempDir, ['init', '--bare', remote]);
+        await git(tempDir, ['clone', remote, clone]);
+        await git(clone, ['config', 'user.email', 'test@example.com']);
+        await git(clone, ['config', 'user.name', 'Test']);
+        await writeFile(path.join(clone, 'file.txt'), 'imported work\n');
+        await git(clone, ['add', '.']);
+        const historical = '2001-01-01T00:00:00Z';
+        await execGit('git', ['commit', '-m', 'imported'], {
+            cwd: clone, env: { ...process.env, GIT_AUTHOR_DATE: historical, GIT_COMMITTER_DATE: historical },
+        });
+        const ref = rescueRefName('task-1');
+        await git(clone, ['push', 'origin', `HEAD:${ref}`]);
+
+        const result = await pruneRescueRefs(createGitRescueRefPruneDependencies({ repoUrl: remote, token: 'token' }), { olderThanDays: 14 });
+        assert.deepEqual(result, { deleted: [], retained: 1, failed: 0 });
+        assert.notEqual(await git(remote, ['rev-parse', ref]), '');
+    } finally {
+        await rm(tempDir, { recursive: true, force: true });
+    }
 });
 
 test('git prune dependencies list and delete rescue refs on the remote only', async () => {
@@ -56,14 +93,15 @@ test('git prune dependencies list and delete rescue refs on the remote only', as
         await writeFile(path.join(clone, 'file.txt'), 'work\n');
         await git(clone, ['add', '.']);
         await git(clone, ['commit', '-m', 'work']);
-        await git(clone, ['push', 'origin', 'HEAD:refs/heads/main', 'HEAD:refs/propr/rescue/task-1']);
+        const ref = rescueRefName('task-1', new Date(Date.now() - 30 * DAY));
+        await git(clone, ['push', 'origin', 'HEAD:refs/heads/main', `HEAD:${ref}`]);
 
-        const deps = createGitRescueRefPruneDependencies({ repoUrl: remote, token: 'token', commitDate: async () => new Date(0) });
+        const deps = createGitRescueRefPruneDependencies({ repoUrl: remote, token: 'token' });
         const listed = await deps.listRefs();
-        assert.deepEqual(listed.map(entry => entry.ref), ['refs/propr/rescue/task-1']);
+        assert.deepEqual(listed.map(entry => entry.ref), [ref]);
 
         const result = await pruneRescueRefs(deps, { olderThanDays: 14 });
-        assert.deepEqual(result.deleted, ['refs/propr/rescue/task-1']);
+        assert.deepEqual(result.deleted, [ref]);
         assert.equal(await git(remote, ['for-each-ref', 'refs/propr']), '');
         assert.notEqual(await git(remote, ['rev-parse', 'refs/heads/main']), '');
     } finally {

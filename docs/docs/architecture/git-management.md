@@ -86,7 +86,7 @@ Reverting a ProPR-created PR runs as a signed system task rather than a direct g
 Every job that pushes from a worktree (implementation, PR follow-up, `/fix`, ultrafix cycles, merge-conflict resolution) treats the final push as the last chance to keep the agent's commits: after the job the worktree is removed. If the push fails, the worker runs a salvage ladder before cleanup, inside the same job, so the PR worktree lock is still held while it runs and the success path is untouched:
 
 1. Retry the push once with a refreshed installation token.
-2. Push the same `HEAD` to `refs/propr/rescue/<taskId>` on the same remote.
+2. Push the same `HEAD` to `refs/propr/rescue/<taskId>--<timestamp>` on the same remote; the UTC creation time in the name is what retention is measured from.
 3. Write a `git bundle` of `HEAD` (only commits the remote-tracking refs lack, or the full history when there is no usable boundary) to `<DATA_DIR>/rescue/<owner>/<repo>/<taskId>.bundle`.
 4. Keep the worktree: write `.retention-info.json` with `"reason": "push_salvage"` (which `cleanupWorktree` honours regardless of `WORKTREE_RETENTION_STRATEGY`) and detach its `HEAD` so the branch can be checked out by the next job.
 

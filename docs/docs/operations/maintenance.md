@@ -125,16 +125,16 @@ Worktrees are removed automatically after each task finishes (controlled by `WOR
 When the final push from a worktree fails — implementation runs, PR follow-ups, `/fix`, ultrafix cycles and merge-conflict jobs — ProPR does not discard the agent's commits with the worktree. It tries, in order:
 
 1. **Retry** the push once with a freshly refreshed installation token (tokens are short-lived and can expire during long runs).
-2. **Rescue ref:** push the same commits to `refs/propr/rescue/<taskId>` on the same remote. This works for non-fast-forward rejections and transient branch-level failures because the ref is new; it does not help when push protection rejects the commits themselves.
+2. **Rescue ref:** push the same commits to `refs/propr/rescue/<taskId>--<timestamp>` on the same remote (the UTC creation time, for example `20261006T120000Z`, is part of the name). This works for non-fast-forward rejections and transient branch-level failures because the ref is new; it does not help when push protection rejects the commits themselves.
 3. **Bundle:** write a git bundle to `PUSH_RESCUE_BUNDLE_DIR` (default `<DATA_DIR>/rescue/<owner>/<repo>/<taskId>.bundle`).
 4. **Keep the worktree:** override `WORKTREE_RETENTION_STRATEGY` for that task, detach its HEAD (so the branch is free for the next job) and write `.retention-info.json` with `"reason": "push_salvage"`.
 
 The rung that succeeded is recorded on the task timeline, and the task fails with the push diagnosis — the rejection class, GitHub's unblock URL for push protection, and the exact recovery command — in the task detail view, `propr task get <task-id>` (`pushFailure` in `--json`) and the GitHub failure comment. See [Troubleshooting → A Push Was Rejected](./troubleshooting.md#a-push-was-rejected) for recovering each kind.
 
-**Retention.** The daemon deletes rescue refs whose commit is older than `PUSH_RESCUE_RETENTION_DAYS` (default 14) from every monitored repository, together with bundles of the same age, every `PUSH_RESCUE_SWEEP_INTERVAL_MS` (default 6 hours) and once at startup. Set the retention to `0` to keep them until you delete them yourself. A retained worktree is scheduled for cleanup after the same number of days through its `.retention-info.json`. To delete one rescue ref by hand:
+**Retention.** The daemon deletes rescue refs created more than `PUSH_RESCUE_RETENTION_DAYS` (default 14) days ago — measured from the timestamp in the ref name, not from the commit dates — from every monitored repository, together with bundles of the same age, every `PUSH_RESCUE_SWEEP_INTERVAL_MS` (default 6 hours) and once at startup. Set the retention to `0` to keep them until you delete them yourself. A retained worktree is scheduled for cleanup after the same number of days through its `.retention-info.json`. To delete one rescue ref by hand:
 
 ```bash
-git push origin --delete refs/propr/rescue/<taskId>
+git push origin --delete refs/propr/rescue/<taskId>--<timestamp>
 ```
 
 Rescue refs live outside `refs/heads`, so GitHub never lists them as branches, normal clones do not fetch them, and ProPR ignores pushes to them for branch discovery and merge-conflict detection.

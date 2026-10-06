@@ -22,8 +22,29 @@ export function sanitizeRescueId(taskId: string): string {
     return cleaned.slice(0, 200) || 'task';
 }
 
-export function rescueRefName(taskId: string): string {
-    return `${RESCUE_REF_PREFIX}${sanitizeRescueId(taskId)}`;
+/** The rescue creation time is part of the ref name, so retention is measured from the
+ * salvage itself rather than from the salvaged commit's (agent-controlled) dates. */
+const RESCUE_TIMESTAMP_SEPARATOR = '--';
+
+function formatRescueTimestamp(date: Date): string {
+    return date.toISOString().replace(/\.\d{3}Z$/, 'Z').replace(/[-:]/g, '');
+}
+
+export function rescueRefName(taskId: string, createdAt: Date = new Date()): string {
+    return `${RESCUE_REF_PREFIX}${sanitizeRescueId(taskId)}${RESCUE_TIMESTAMP_SEPARATOR}${formatRescueTimestamp(createdAt)}`;
+}
+
+/** When the rescue ref was created, read from its name; undefined when the name carries no
+ * valid timestamp, so the ref's age cannot be established. */
+export function rescueRefCreatedAt(ref: string): Date | undefined {
+    const separator = ref.lastIndexOf(RESCUE_TIMESTAMP_SEPARATOR);
+    if (separator < 0) return undefined;
+    const stamp = ref.slice(separator + RESCUE_TIMESTAMP_SEPARATOR.length);
+    const match = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(stamp);
+    if (!match) return undefined;
+    const date = new Date(Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +match[6]));
+    // Reject out-of-range fields (month 13, hour 25) that Date.UTC would silently roll over.
+    return formatRescueTimestamp(date) === stamp ? date : undefined;
 }
 
 /** True for a rescue ref in any spelling a webhook or branch listing can produce. */
@@ -58,8 +79,6 @@ export interface RemoteRescueRef {
 export interface RescueRefPruneDependencies {
     /** Lists `refs/propr/rescue/*` on the remote. */
     listRefs(): Promise<RemoteRescueRef[]>;
-    /** When the salvaged commit was created; undefined when it cannot be determined. */
-    commitDate(sha: string): Promise<Date | undefined>;
     deleteRef(ref: string): Promise<void>;
 }
 
@@ -69,7 +88,8 @@ export interface RescueRefPruneResult {
     failed: number;
 }
 
-/** Deletes rescue refs whose salvaged commit is older than the retention period. */
+/** Deletes rescue refs created longer ago than the retention period. Refs whose creation
+ * time cannot be read from their name are retained. */
 export async function pruneRescueRefs(
     deps: RescueRefPruneDependencies,
     options: { olderThanDays?: number; now?: Date; repository?: string } = {},
@@ -77,10 +97,10 @@ export async function pruneRescueRefs(
     const olderThanDays = options.olderThanDays ?? getRescueRetentionDays();
     const cutoff = (options.now ?? new Date()).getTime() - olderThanDays * 24 * 60 * 60 * 1000;
     const result: RescueRefPruneResult = { deleted: [], retained: 0, failed: 0 };
-    for (const { ref, sha } of await deps.listRefs()) {
+    for (const { ref } of await deps.listRefs()) {
         if (!isRescueRef(ref)) continue;
         try {
-            const date = await deps.commitDate(sha);
+            const date = rescueRefCreatedAt(ref);
             if (!date || date.getTime() > cutoff) { result.retained++; continue; }
             await deps.deleteRef(ref);
             result.deleted.push(ref);
@@ -101,7 +121,6 @@ function authenticatedUrl(repoUrl: string, token: string): string {
 export function createGitRescueRefPruneDependencies(options: {
     repoUrl: string;
     token: string;
-    commitDate: (sha: string) => Promise<Date | undefined>;
 }): RescueRefPruneDependencies {
     const git = createHooklessGit();
     const url = authenticatedUrl(options.repoUrl, options.token);
@@ -118,7 +137,6 @@ export function createGitRescueRefPruneDependencies(options: {
             return output.split('\n').map(line => line.trim().split(/\s+/)).filter(parts => parts.length === 2)
                 .map(([sha, ref]) => ({ sha, ref }));
         },
-        commitDate: options.commitDate,
         async deleteRef(ref) {
             await run(['push', url, `:${ref}`]);
         },

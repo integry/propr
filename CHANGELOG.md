@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   implementation run, PR follow-up, `/fix`, ultrafix cycle or merge-conflict
   job fails, ProPR no longer loses the agent's commits with the worktree. It
   retries once with a refreshed installation token, then pushes the commits to
-  `refs/propr/rescue/<taskId>` on the same remote, then writes a git bundle to
+  `refs/propr/rescue/<taskId>--<timestamp>` on the same remote, then writes a git bundle to
   `<DATA_DIR>/rescue/` (`PUSH_RESCUE_BUNDLE_DIR`), and finally keeps the
   worktree with a `.retention-info.json` marker. The rejection is classified as
   `push_protection` (with GitHub's unblock URL verbatim),
@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unknown`, and the class, the salvage rung and the exact recovery command are
   shown on the task timeline, in `propr task get` (`pushFailure` in `--json`)
   and in the GitHub failure comment. The daemon deletes rescue refs and bundles
-  older than `PUSH_RESCUE_RETENTION_DAYS` (default 14); rescue refs are never
+  older than `PUSH_RESCUE_RETENTION_DAYS` (default 14), aging rescue refs from
+  the creation time in their name; rescue refs are never
   treated as task branches.
 - **Bounded goal waits**: MCP `wait_goal` and `propr goal wait <id>` wait, with
   a finite deadline, for a confirmed goal state (`completed`, `failed`,

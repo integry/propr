@@ -36,9 +36,9 @@ const history = {
   ],
 };
 
-async function runGet(args: string[]): Promise<string> {
+async function runGet(args: string[], body: unknown = history): Promise<string> {
   const stdout: string[] = [];
-  globalThis.fetch = (async () => new Response(JSON.stringify(history), {
+  globalThis.fetch = (async () => new Response(JSON.stringify(body), {
     status: 200, headers: { "content-type": "application/json" },
   })) as typeof fetch;
   console.log = (...values: unknown[]) => { stdout.push(values.map(String).join(" ")); };
@@ -58,4 +58,16 @@ test("task get --json includes the push failure", async () => {
   const output = JSON.parse(await runGet(["--json"]));
   assert.equal(output.pushFailure.diagnosis.classification, "push_protection");
   assert.deepEqual(output.pushFailure.diagnosis.unblockUrls, [unblockUrl]);
+});
+
+test("task get prints the recovery command verbatim, keeping literal backticks in the branch", async () => {
+  const command = "git fetch origin refs/propr/rescue/task-1 && git checkout -B 'fix`id' FETCH_HEAD";
+  const recoveryInstruction = `The commits were pushed to \`refs/propr/rescue/task-1\` on integry/propr. Recover them with: \`\`${command}\`\`, then push the branch.`;
+  const failed = history.history[1];
+  const output = await runGet([], {
+    ...history,
+    history: [history.history[0], { ...failed, metadata: { pushFailure: { ...failed.metadata!.pushFailure, branchName: "fix`id", recoveryInstruction } } }],
+  });
+  assert.ok(output.includes(`Recovery:     ${recoveryInstruction}`));
+  assert.ok(output.includes(command));
 });

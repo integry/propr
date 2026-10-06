@@ -103,16 +103,27 @@ export function quoteShellArgument(value: string): string {
     return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/** CommonMark code span that keeps backticks inside `text` literal: the fence is one
+ * backtick longer than the longest run inside, padded with a space when the text touches it. */
+export function markdownCodeSpan(text: string): string {
+    let longest = 0;
+    for (const run of text.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+    const fence = '`'.repeat(longest + 1);
+    const pad = text.startsWith('`') || text.endsWith('`') || (text.startsWith(' ') && text.endsWith(' ') && text.trim() !== '') ? ' ' : '';
+    return `${fence}${pad}${text}${pad}${fence}`;
+}
+
 export function buildRecoveryInstruction(record: Pick<PushFailureRecord, 'rung' | 'rescueRef' | 'bundlePath' | 'worktreePath' | 'branchName' | 'repository'>): string {
     const q = quoteShellArgument;
+    const code = markdownCodeSpan;
     const branch = q(record.branchName);
     switch (record.rung) {
         case 'rescue_ref':
-            return `The commits were pushed to \`${record.rescueRef}\` on ${record.repository}. Recover them with: \`git fetch origin ${q(record.rescueRef ?? '')} && git checkout -B ${branch} FETCH_HEAD\`, then push the branch.`;
+            return `The commits were pushed to ${code(record.rescueRef ?? '')} on ${record.repository}. Recover them with: ${code(`git fetch origin ${q(record.rescueRef ?? '')} && git checkout -B ${branch} FETCH_HEAD`)}, then push the branch.`;
         case 'bundle':
-            return `The commits were saved to the git bundle \`${record.bundlePath}\` on the ProPR host. Recover them with: \`git fetch ${q(record.bundlePath ?? '')} HEAD && git checkout -B ${branch} FETCH_HEAD\`, then push the branch.`;
+            return `The commits were saved to the git bundle ${code(record.bundlePath ?? '')} on the ProPR host. Recover them with: ${code(`git fetch ${q(record.bundlePath ?? '')} HEAD && git checkout -B ${branch} FETCH_HEAD`)}, then push the branch.`;
         case 'worktree':
-            return `The worktree was kept at \`${record.worktreePath}\` on the ProPR host (marked with .retention-info.json). Recover the commits with: \`git -C ${q(record.worktreePath ?? '')} push origin ${q(`HEAD:refs/heads/${record.branchName}`)}\`, or copy them out before the retention period ends.`;
+            return `The worktree was kept at ${code(record.worktreePath ?? '')} on the ProPR host (marked with .retention-info.json). Recover the commits with: ${code(`git -C ${q(record.worktreePath ?? '')} push origin ${q(`HEAD:refs/heads/${record.branchName}`)}`)}, or copy them out before the retention period ends.`;
         default:
             return 'ProPR could not preserve the commits: the rescue ref push, bundle and worktree retention all failed. See the worker logs.';
     }

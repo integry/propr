@@ -122,13 +122,13 @@ ProPR classifies the rejection from git's output and keeps the agent's commits t
 
 Recover the commits from the location the failure names:
 
-- **Rescue ref** (`refs/propr/rescue/<taskId>` on the same repository):
+- **Rescue ref** (`refs/propr/rescue/<taskId>--<timestamp>` on the same repository):
 
   ```bash
-  git fetch origin refs/propr/rescue/<taskId>
+  git fetch origin refs/propr/rescue/<taskId>--<timestamp>
   git checkout -B <branch> FETCH_HEAD
   git push origin <branch>
-  git push origin --delete refs/propr/rescue/<taskId>   # once recovered
+  git push origin --delete refs/propr/rescue/<taskId>--<timestamp>   # once recovered
   ```
 
 - **Bundle** (on the ProPR host, `PUSH_RESCUE_BUNDLE_DIR`, by default `data/rescue/<owner>/<repo>/<taskId>.bundle`). Copy it to a checkout of the repository, then:

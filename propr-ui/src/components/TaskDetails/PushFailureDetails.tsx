@@ -13,12 +13,42 @@ const CLASSIFICATION_LABELS: Record<PushRejectionClass, string> = {
 const formatPushRejectionClass = (classification: string): string =>
   CLASSIFICATION_LABELS[classification as PushRejectionClass] ?? classification;
 
+/** Splits CommonMark code spans: a backtick run opens a span closed by the next run of
+ * the same length, so backticks inside a longer fence stay literal. */
+const splitCodeSpans = (text: string): Array<{ code: boolean; text: string }> => {
+  const parts: Array<{ code: boolean; text: string }> = [];
+  const runLength = (from: number) => {
+    let end = from;
+    while (text[end] === '`') end++;
+    return end - from;
+  };
+  let plainStart = 0;
+  let index = 0;
+  while (index < text.length) {
+    if (text[index] !== '`') { index++; continue; }
+    const fence = runLength(index);
+    let close = index + fence;
+    while (close < text.length && !(text[close] === '`' && runLength(close) === fence)) {
+      close += text[close] === '`' ? runLength(close) : 1;
+    }
+    if (close >= text.length) { index += fence; continue; }
+    let content = text.slice(index + fence, close);
+    if (content.length > 1 && content.startsWith(' ') && content.endsWith(' ') && content.trim() !== '') content = content.slice(1, -1);
+    if (index > plainStart) parts.push({ code: false, text: text.slice(plainStart, index) });
+    parts.push({ code: true, text: content });
+    index = close + fence;
+    plainStart = index;
+  }
+  if (plainStart < text.length) parts.push({ code: false, text: text.slice(plainStart) });
+  return parts;
+};
+
 /** Renders `code` spans from the backtick-quoted recovery instruction. */
 const InlineCode: React.FC<{ text: string }> = ({ text }) => (
   <>
-    {text.split('`').map((part, index) => index % 2 === 1
-      ? <code key={index} className="break-all rounded bg-slate-100 px-1 font-mono text-[11px] text-slate-800">{part}</code>
-      : <React.Fragment key={index}>{part}</React.Fragment>)}
+    {splitCodeSpans(text).map((part, index) => part.code
+      ? <code key={index} className="break-all rounded bg-slate-100 px-1 font-mono text-[11px] text-slate-800">{part.text}</code>
+      : <React.Fragment key={index}>{part.text}</React.Fragment>)}
   </>
 );
 

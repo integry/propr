@@ -8,9 +8,10 @@ import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import {
     salvageFailedPush, createWorktreePushSalvageOperations, PushFailedError, getPushFailure, writeSalvageRetentionMarker,
-    formatPushFailureMarkdown, isSalvageRetainedWorktree, buildRecoveryInstruction, quoteShellArgument, type PushSalvageEvent, type PushSalvageOperations,
+    formatPushFailureMarkdown, isSalvageRetainedWorktree, buildRecoveryInstruction, markdownCodeSpan, quoteShellArgument, type PushSalvageEvent, type PushSalvageOperations,
 } from '../packages/core/src/git/pushSalvage.js';
 import { extractUnblockUrls } from '../packages/core/src/git/pushRejection.js';
+import { rescueRefCreatedAt } from '../packages/core/src/git/rescueRefs.js';
 import { cleanupExpiredWorktrees, cleanupWorktree } from '../packages/core/src/git/worktreeOperations.js';
 import { pushBranch } from '../packages/core/src/git/repoBranching.js';
 
@@ -37,10 +38,19 @@ test('recovery commands quote branch names with shell metacharacters and paths w
     );
 });
 
+test('recovery commands keep literal backticks of branch names inside their code spans', () => {
+    const branchName = 'fix`id';
+    const instruction = buildRecoveryInstruction({ rung: 'rescue_ref', rescueRef: 'refs/propr/rescue/task-1', branchName, repository: 'integry/propr' });
+    assert.ok(instruction.includes("Recover them with: ``git fetch origin refs/propr/rescue/task-1 && git checkout -B 'fix`id' FETCH_HEAD``, then"));
+    assert.equal(markdownCodeSpan('a``b'), '```a``b```');
+    assert.equal(markdownCodeSpan('`edge'), '`` `edge ``');
+    assert.equal(markdownCodeSpan('plain'), '`plain`');
+});
+
 test('generated bundle and worktree recovery commands run literally in a POSIX shell', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr rescue quoting-'));
-    const branchName = 'fix;id>pwned;#';
-    const command = (instruction: string) => instruction.match(/with: `([^`]+)`/)![1];
+    const branchName = 'fix;id`>pwned`;#';
+    const command = (instruction: string) => instruction.match(/with: (`+)(.+?)\1(?!`)/)![2];
     try {
         const worktreePath = path.join(tempDir, "work tree;it's");
         await mkdir(worktreePath);
@@ -137,16 +147,20 @@ test('rung 1: a push that succeeds after the credential refresh needs no rescue'
 
 test('rung 2: the rescue ref is recorded with its recovery instruction', async () => {
     const ladder = fakeLadder({ rescue: true, retryError: PROTECTION_ERROR });
+    const before = Date.now();
     const { run, events } = await runLadder(ladder);
     const error = await run.then(() => assert.fail('expected a push failure'), (e: unknown) => e);
     assert.ok(error instanceof PushFailedError);
     const failure = getPushFailure(error)!;
     assert.equal(failure.rung, 'rescue_ref');
-    assert.equal(failure.rescueRef, 'refs/propr/rescue/task-1');
+    assert.match(failure.rescueRef!, /^refs\/propr\/rescue\/task-1--\d{8}T\d{6}Z$/);
+    // The ref name records when the rescue was created, independently of the commit dates.
+    const createdAt = rescueRefCreatedAt(failure.rescueRef!)!.getTime();
+    assert.ok(createdAt >= Math.floor(before / 1000) * 1000 && createdAt <= Date.now());
     assert.equal(failure.diagnosis.classification, 'push_protection');
     assert.deepEqual(failure.diagnosis.unblockUrls, [UNBLOCK_URL]);
-    assert.match(failure.recoveryInstruction, /git fetch origin refs\/propr\/rescue\/task-1/);
-    assert.deepEqual(ladder.calls, ['retry', 'rescue:refs/propr/rescue/task-1']);
+    assert.ok(failure.recoveryInstruction.includes(`git fetch origin ${failure.rescueRef} `));
+    assert.deepEqual(ladder.calls, ['retry', `rescue:${failure.rescueRef}`]);
     assert.equal(events.at(-1)?.rung, 'rescue_ref');
     // The failure summary and the GitHub comment carry the unblock URL verbatim.
     assert.ok(error.message.split('\n').some(line => line.trim() === `Unblock URL: ${UNBLOCK_URL}`));
@@ -251,7 +265,8 @@ test('a rejected non-fast-forward push is saved to the rescue ref on the same re
         const failure = getPushFailure(salvage)!;
         assert.equal(failure.diagnosis.classification, 'non_fast_forward');
         assert.equal(failure.rung, 'rescue_ref');
-        assert.equal(await git(remote, ['rev-parse', 'refs/propr/rescue/task-2']), agentHead);
+        assert.match(failure.rescueRef!, /^refs\/propr\/rescue\/task-2--\d{8}T\d{6}Z$/);
+        assert.equal(await git(remote, ['rev-parse', failure.rescueRef!]), agentHead);
         // The rescue ref is not a branch.
         assert.ok(!(await git(remote, ['branch', '--list'])).includes('rescue'));
     } finally {

@@ -3,7 +3,7 @@ import {
     handleError, logger, pruneRescueBundles, pruneRescueRefs,
 } from '@propr/core';
 
-type SweepOctokit = Pick<Awaited<ReturnType<typeof getAuthenticatedOctokit>>, 'auth' | 'request'>;
+type SweepOctokit = Pick<Awaited<ReturnType<typeof getAuthenticatedOctokit>>, 'auth'>;
 
 export interface RescueSweepResult {
     refsDeleted: number;
@@ -11,7 +11,8 @@ export interface RescueSweepResult {
 }
 
 /**
- * Deletes push-salvage rescue refs (`refs/propr/rescue/*`) and rescue bundles older than
+ * Deletes push-salvage rescue refs (`refs/propr/rescue/*`, aged by the creation time in
+ * their name) and rescue bundles older than
  * PUSH_RESCUE_RETENTION_DAYS (default 14). A retention of 0 disables the sweep.
  */
 export async function sweepPushRescues(options: {
@@ -41,11 +42,6 @@ export async function sweepPushRescues(options: {
                 const deps = createGitRescueRefPruneDependencies({
                     repoUrl: getRepoUrl({ repoOwner: owner, repoName: repo }),
                     token,
-                    commitDate: async sha => {
-                        const { data } = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}', { owner, repo, ref: sha });
-                        const date = (data as { commit?: { committer?: { date?: string } } }).commit?.committer?.date;
-                        return date ? new Date(date) : undefined;
-                    },
                 });
                 const pruned = await pruneRescueRefs(deps, { olderThanDays, repository });
                 result.refsDeleted += pruned.deleted.length;

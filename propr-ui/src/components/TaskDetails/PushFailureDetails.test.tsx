@@ -32,6 +32,13 @@ describe('Push failure diagnosis on the task timeline', () => {
     });
   }
 
+  it('keeps literal backticks of a branch name inside the recovery command', () => {
+    const recoveryInstruction = "The commits were pushed to `refs/propr/rescue/task-1` on integry/propr. Recover them with: ``git fetch origin refs/propr/rescue/task-1 && git checkout -B 'fix`id' FETCH_HEAD``, then push the branch.";
+    render(<TaskStatusTable history={[{ ...failedPush, metadata: { pushFailure: { ...failedPush.metadata!.pushFailure!, branchName: 'fix`id', recoveryInstruction } } }]} />);
+    const codes = Array.from(screen.getByTestId('push-failure-recovery').querySelectorAll('code')).map(code => code.textContent);
+    expect(codes).toEqual(['refs/propr/rescue/task-1', "git fetch origin refs/propr/rescue/task-1 && git checkout -B 'fix`id' FETCH_HEAD"]);
+  });
+
   it('labels a recovered push with its salvage summary once', () => {
     const summary = 'Push succeeded after refreshing the git credential';
     render(<TaskStatusTable history={[

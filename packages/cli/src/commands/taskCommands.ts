@@ -178,7 +178,9 @@ function printPushFailure(pushFailure: TaskPushFailure): void {
   if (pushFailure.rescueRef) console.log(`Rescue ref:   ${pushFailure.rescueRef}`);
   if (pushFailure.bundlePath) console.log(`Bundle:       ${pushFailure.bundlePath}`);
   if (pushFailure.worktreePath) console.log(`Worktree:     ${pushFailure.worktreePath}`);
-  console.log(`Recovery:     ${pushFailure.recoveryInstruction.replaceAll("`", "")}`);
+  // Printed verbatim: stripping the Markdown backticks would also strip literal backticks
+  // inside a quoted branch name or path and change the command.
+  console.log(`Recovery:     ${pushFailure.recoveryInstruction}`);
 }
 
 function taskInspectionJson(status: TaskStatus, now = Date.now()): Record<string, unknown> {
