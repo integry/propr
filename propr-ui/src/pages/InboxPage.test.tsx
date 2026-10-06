@@ -1,7 +1,7 @@
 /* eslint-disable max-lines */
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { notificationSchema, type Notification, type NotificationUpdatePayload } from '@propr/shared';
 import { ToastProvider } from '../components/ui/Toast';
 import InboxPage from './InboxPage';
@@ -1005,5 +1005,113 @@ describe('Inbox page', () => {
     expect(await screen.findByText('Task details')).toBeInTheDocument();
     expect(markNotificationRead).not.toHaveBeenCalled();
     expect(dismissNotification).not.toHaveBeenCalled();
+  });
+
+  describe('offline', () => {
+    let online = true;
+    beforeEach(() => {
+      online = true;
+      vi.spyOn(window.navigator, 'onLine', 'get').mockImplementation(() => online);
+    });
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    const goOffline = () => act(() => { online = false; window.dispatchEvent(new Event('offline')); });
+    const goOnline = () => act(() => { online = true; window.dispatchEvent(new Event('online')); });
+
+    test('a first visit while offline shows the offline state, then loads once on reconnect', async () => {
+      online = false;
+      vi.mocked(listNotifications).mockResolvedValue({
+        notifications: [item('event-a', 'Loaded after reconnect')], unreadCount: 1, nextCursor: null,
+      });
+      renderInbox();
+
+      expect(await screen.findByRole('heading', { name: 'Inbox unavailable offline' })).toBeInTheDocument();
+      expect(screen.getByText('Reconnect to see your latest notifications.')).toBeInTheDocument();
+      expect(screen.queryByTestId('inbox-skeleton')).not.toBeInTheDocument();
+      expect(screen.queryByText('You’re all caught up')).not.toBeInTheDocument();
+      // The fallback poll and focus stay quiet while offline.
+      fireEvent.focus(window);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(listNotifications).not.toHaveBeenCalled();
+
+      await goOnline();
+      expect(await screen.findByRole('article', { name: 'Loaded after reconnect' })).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Inbox unavailable offline' })).not.toBeInTheDocument();
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(listNotifications).toHaveBeenCalledTimes(1);
+      expect(commitUnreadCount).toHaveBeenLastCalledWith(1);
+    });
+
+    test('dropping offline while the first read is pending shows offline until a page settles', async () => {
+      const first = deferred<Awaited<ReturnType<typeof listNotifications>>>();
+      vi.mocked(listNotifications).mockReturnValueOnce(first.promise);
+      renderInbox();
+
+      await waitFor(() => expect(listNotifications).toHaveBeenCalledTimes(1));
+      expect(screen.getByTestId('inbox-skeleton')).toBeInTheDocument();
+      await goOffline();
+      expect(screen.getByRole('heading', { name: 'Inbox unavailable offline' })).toBeInTheDocument();
+
+      await act(async () => first.reject(new Error('Failed to fetch')));
+      expect(screen.getByRole('heading', { name: 'Inbox unavailable offline' })).toBeInTheDocument();
+
+      vi.mocked(listNotifications).mockResolvedValue({
+        notifications: [item('event-b', 'Recovered notification')], unreadCount: 1, nextCursor: null,
+      });
+      await goOnline();
+      expect(await screen.findByRole('article', { name: 'Recovered notification' })).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(listNotifications).toHaveBeenCalledTimes(2);
+    });
+
+    test('a pending first read that lands after going offline still shows its notifications', async () => {
+      const first = deferred<Awaited<ReturnType<typeof listNotifications>>>();
+      vi.mocked(listNotifications).mockReturnValueOnce(first.promise);
+      renderInbox();
+
+      await waitFor(() => expect(listNotifications).toHaveBeenCalledTimes(1));
+      await goOffline();
+      await act(async () => first.resolve({
+        notifications: [item('event-c', 'Arrived late')], unreadCount: 1, nextCursor: null,
+      }));
+
+      expect(screen.getByRole('article', { name: 'Arrived late' })).toBeInTheDocument();
+      expect(screen.getByText('You’re offline. Showing the notifications already loaded.')).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Inbox unavailable offline' })).not.toBeInTheDocument();
+    });
+
+    test('an empty Inbox read before going offline stays caught up rather than unavailable', async () => {
+      vi.mocked(listNotifications).mockResolvedValue({ notifications: [], unreadCount: 0, nextCursor: null });
+      renderInbox();
+
+      expect(await screen.findByText('You’re all caught up')).toBeInTheDocument();
+      await goOffline();
+      expect(screen.getByText('You’re all caught up')).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Inbox unavailable offline' })).not.toBeInTheDocument();
+    });
+
+    test('keeps loaded notifications while offline and reconciles them once on reconnect', async () => {
+      vi.mocked(listNotifications).mockResolvedValueOnce({
+        notifications: [item('event-d', 'Already loaded')], unreadCount: 1, nextCursor: null,
+      });
+      renderInbox();
+
+      expect(await screen.findByRole('article', { name: 'Already loaded' })).toBeInTheDocument();
+      await goOffline();
+      expect(screen.getByRole('article', { name: 'Already loaded' })).toBeInTheDocument();
+      expect(screen.getByText('You’re offline. Showing the notifications already loaded.')).toBeInTheDocument();
+
+      vi.mocked(listNotifications).mockResolvedValue({
+        notifications: [item('event-e', 'Arrived while offline'), item('event-d', 'Already loaded')],
+        unreadCount: 2,
+        nextCursor: null,
+      });
+      await goOnline();
+      expect(await screen.findByRole('article', { name: 'Arrived while offline' })).toBeInTheDocument();
+      expect(screen.getByRole('article', { name: 'Already loaded' })).toBeInTheDocument();
+      expect(screen.queryByText(/You’re offline/)).not.toBeInTheDocument();
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(listNotifications).toHaveBeenCalledTimes(2);
+    });
   });
 });
