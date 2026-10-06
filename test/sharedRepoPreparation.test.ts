@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert';
-import { access, chmod, lchown, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, lchown, lstat, mkdtemp, mkdir, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { constants, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,8 +38,34 @@ async function git(cwd: string, args: string[]): Promise<string> {
     return stdout.trim();
 }
 
+/** True when every directory from `dir` up to `/` lets other users traverse it. */
+async function traversableByOthers(dir: string): Promise<boolean> {
+    try {
+        for (let current = await realpath(dir); ; current = path.dirname(current)) {
+            if (!((await stat(current)).mode & 0o001)) return false;
+            if (current === path.dirname(current)) return true;
+        }
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Where the fixture root is created. Root runs hand part of the fixture to an
+ * unprivileged account, which needs to traverse the base's ancestors; when the
+ * configured TMPDIR sits under a private directory a fresh fixture is created
+ * in a public temp location instead of relaxing that directory.
+ */
+async function fixtureBase(): Promise<string> {
+    if (process.getuid?.() !== 0) return os.tmpdir();
+    for (const candidate of new Set([os.tmpdir(), '/tmp', '/var/tmp', '/dev/shm'])) {
+        if (await traversableByOthers(candidate)) return candidate;
+    }
+    assert.fail(`no temp directory traversable by UID ${UNPRIVILEGED_ID} for the root permission fixtures (TMPDIR=${os.tmpdir()})`);
+}
+
 before(async () => {
-    rootDir = await mkdtemp(path.join(os.tmpdir(), 'propr-shared-repo-prep-'));
+    rootDir = await mkdtemp(path.join(await fixtureBase(), 'propr-shared-repo-prep-'));
     clonesDir = path.join(rootDir, 'clones');
     remotePath = path.join(rootDir, 'remote.git');
     const home = path.join(rootDir, 'home');
@@ -253,8 +279,18 @@ async function denyGitDirWrites(clonePath: string): Promise<() => Promise<void>>
     }
     const gitBin = await createUnprivilegedGit();
     await chownTree(clonePath, UNPRIVILEGED_ID);
-    // Let the unprivileged Git traverse the private fixture root to the clone.
-    await chmod(rootDir, 0o711);
+    // Under a restrictive umask every fixture directory is private, so let the
+    // unprivileged Git traverse (only) this fixture's path to the clone and
+    // read the isolated global config. Original modes are restored afterwards.
+    const home = process.env.HOME as string;
+    const grants: Array<[string, number]> = [[rootDir, 0o001], [home, 0o001], [path.join(home, '.gitconfig'), 0o004]];
+    for (let dir = path.dirname(clonePath); dir !== rootDir; dir = path.dirname(dir)) grants.push([dir, 0o001]);
+    const originalModes: Array<[string, number]> = [];
+    for (const [target, bits] of grants) {
+        const mode = (await lstat(target)).mode & 0o7777;
+        originalModes.push([target, mode]);
+        await chmod(target, mode | bits);
+    }
     await chmod(gitDir, 0o555);
     const previousPath = process.env.PATH;
     process.env.PATH = `${gitBin}${path.delimiter}${previousPath ?? ''}`;
@@ -262,7 +298,7 @@ async function denyGitDirWrites(clonePath: string): Promise<() => Promise<void>>
         if (previousPath === undefined) delete process.env.PATH;
         else process.env.PATH = previousPath;
         await chmod(gitDir, 0o755);
-        await chmod(rootDir, 0o700);
+        for (const [target, mode] of originalModes.reverse()) await chmod(target, mode);
         await chownTree(clonePath, 0);
     };
 }
@@ -277,7 +313,8 @@ test('an unwritable shared config fails immediately with the original error, not
             repoBranching.setupAuthenticatedRemote(hooklessGit.createHooklessGit(clonePath), REPO_URL, TOKEN, { attempts: 3, initialDelayMs: 5000, maxDelayMs: 5000 }),
             (error: Error) => {
                 assert.notStrictEqual(error.name, 'GitLockContentionError');
-                assert.match(error.message, /could not lock config file [^\n]*: Permission denied/);
+                assert.match(error.message, /could not lock config file [^\n]*config: Permission denied/);
+                assert.doesNotMatch(error.message, /failed to stat|unable to access/);
                 assert.doesNotMatch(error.message, /another Git process/i);
                 assert.ok(!error.message.includes(TOKEN));
                 return true;
@@ -308,7 +345,9 @@ test('preparation of an unwritable shared clone is not reported as lock contenti
             }),
             (error: Error) => {
                 assert.doesNotMatch(error.message, /stayed locked by another Git process/);
-                assert.match(error.message, /Permission denied/);
+                // The real config write must be what failed, not an earlier lookup.
+                assert.match(error.message, /could not lock config file [^\n]*config: Permission denied/);
+                assert.doesNotMatch(error.message, /failed to stat|unable to access/);
                 assert.ok(!error.message.includes(TOKEN));
                 return true;
             },
