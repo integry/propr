@@ -369,9 +369,22 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
   },
 ];
 
+// Configured agent images may be digest-pinned (`propr/agent:<sha>@sha256:…`).
+// `docker images -q <ref>` only filters by repository/tag and never matches that
+// combined reference, so presence is decided by `docker image inspect`, which
+// resolves the exact configured reference, and its exit status.
+function imageInspectArgs(image: string): string[] {
+  return ["image", "inspect", "--format", "{{.Id}}", image];
+}
+
+/** Whether the exact configured agent image reference is present locally. */
+export function agentImagePresent(orch: Pick<OrchestratorModule, "docker">, image: string): boolean {
+  return orch.docker(imageInspectArgs(image), { capture: true }).status === 0;
+}
+
 async function imagePresent(orch: OrchestratorModule, tag: string, signal?: AbortSignal): Promise<boolean> {
-  const result = await orch.dockerAsync(["images", "-q", tag], { timeout: VERSION_TIMEOUT_MS, signal });
-  return result.status === 0 && result.stdout.trim().length > 0;
+  const result = await orch.dockerAsync(imageInspectArgs(tag), { timeout: VERSION_TIMEOUT_MS, signal });
+  return result.status === 0;
 }
 
 function commandExists(bin: string): boolean {

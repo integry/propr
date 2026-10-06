@@ -6,14 +6,22 @@ import type { AgentSetupActions } from "@propr/local-setup";
 import type { ConfigManager } from "../../config/index.js";
 import type { AuthenticationCommandHandoff } from "../../auth/githubLogin.js";
 import { localhostServiceUrl } from "../../utils/dockerPort.js";
+import type { OrchestratorConfig, OrchestratorModule } from "../../orchestrator/index.js";
+
+type HostConfig = { orch: OrchestratorModule; cfg: OrchestratorConfig };
 
 /** Bind the portable agent setup engine to the CLI API and Docker launcher. */
 export function createDefaultAgentSetupActions(configManager?: ConfigManager, options: {
   authenticationHandoff?: AuthenticationCommandHandoff;
+  /** Test seam for the resolved host orchestrator and configuration. */
+  loadHostConfig?: (rootDir: string) => Promise<HostConfig>;
 } = {}): AgentSetupActions {
-  const localApiClient = async (rootDir: string): Promise<import("../../api/client.js").ApiClient> => {
+  const loadHostConfig = options.loadHostConfig ?? (async (rootDir: string): Promise<HostConfig> => {
     const { getHostConfig } = await import("../../orchestrator/index.js");
-    const { cfg } = await getHostConfig({ configManager, root: rootDir });
+    return getHostConfig({ configManager, root: rootDir });
+  });
+  const localApiClient = async (rootDir: string): Promise<import("../../api/client.js").ApiClient> => {
+    const { cfg } = await loadHostConfig(rootDir);
     const { createApiClient } = await import("../../api/client.js");
     return createApiClient({ baseUrl: localhostServiceUrl(cfg.apiPort) });
   };
@@ -32,16 +40,15 @@ export function createDefaultAgentSetupActions(configManager?: ConfigManager, op
       return loginableAgents();
     },
     async loginAgent(rootDir, type, loginOptions = {}) {
-      const { getHostConfig } = await import("../../orchestrator/index.js");
-      const { planAgentLogin } = await import("../agentValidation.js");
-      const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
+      const { agentImagePresent, planAgentLogin } = await import("../agentValidation.js");
+      const { orch, cfg } = await loadHostConfig(rootDir);
       const temporaryRoot = mkdtempSync(join(tmpdir(), "propr-setup-login-"));
       const workspaceDir = join(temporaryRoot, "workspace");
       mkdirSync(workspaceDir, { recursive: true, mode: 0o700 });
       try {
         const { plan, error } = planAgentLogin(type, cfg, workspaceDir, orch.validateDockerBindPath);
         if (error || !plan) return { available: false, success: false, detail: error };
-        if (!orch.docker(["images", "-q", plan.image], { capture: true }).stdout.trim()) {
+        if (!agentImagePresent(orch, plan.image)) {
           return { available: true, success: false, detail: `image ${plan.image} not present locally — run \`propr images pull\`` };
         }
         mkdirSync(plan.hostDir, { recursive: true, mode: 0o700 });
@@ -60,9 +67,8 @@ export function createDefaultAgentSetupActions(configManager?: ConfigManager, op
       }
     },
     async validateAgents(rootDir, types, validationOptions = {}) {
-      const { getHostConfig } = await import("../../orchestrator/index.js");
       const { validateAgents } = await import("../agentValidation.js");
-      const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
+      const { orch, cfg } = await loadHostConfig(rootDir);
       const rows = await validateAgents(orch, cfg, {
         agents: types,
         skipHost: true,
