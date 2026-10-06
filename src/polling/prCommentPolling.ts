@@ -7,6 +7,7 @@ import { extractLlmFromLabels, resolveModelAlias } from '@propr/core';
 import { hasValidTriggerLabel } from '@propr/core';
 import { areAllChecksPassing, getCurrentPRHead, triggerUltrafixCheckRunHook } from '@propr/core';
 import type { Redis } from 'ioredis';
+import { hasUltrafixResumeCandidate } from '../jobs/ultrafixResumeClaim.js';
 
 type Octokit = {
     paginate: <T>(endpoint: string, options: Record<string, unknown>) => Promise<T[]>;
@@ -20,7 +21,7 @@ interface PullRequest {
     number: number;
     title: string;
     labels: PRLabel[];
-    head: { ref: string };
+    head: { ref: string; sha?: string };
 }
 
 interface PRComment {
@@ -112,7 +113,7 @@ export async function pollForPullRequestComments(
         for (const pr of prs) {
             const repoContext = { owner, repo, repoFullName, correlationId };
             await processPullRequestComments(octokit, pr, repoContext, config);
-            await reconcileUltrafixForPR(pr, repoContext);
+            await reconcileUltrafixForPR(pr, repoContext, config.redisClient);
         }
     } catch (error) {
         handleError(error, `Error polling PR comments for repository ${repoFullName}`, { correlationId });
@@ -124,14 +125,20 @@ export async function pollForPullRequestComments(
  * PR's head is green, fire the Ultrafix hook so a deferred loop resumes (or a
  * stranded one is re-armed) even if no webhook delivery ever arrives.
  */
-export async function reconcileUltrafixForPR(pr: PullRequest, repoContext: RepoContext): Promise<void> {
+export async function reconcileUltrafixForPR(pr: PullRequest, repoContext: RepoContext, redisClient: Redis): Promise<void> {
     if (!pr.labels?.some(label => label.name === 'ultrafix')) return;
 
     const { owner, repo, repoFullName, correlationId } = repoContext;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     try {
-        const headSha = await getCurrentPRHead(owner, repo, pr.number);
+        // Redis first: a labelled PR with no deferred record or active loop needs no GitHub calls.
+        if (!await hasUltrafixResumeCandidate(redisClient, { owner, repo, pr: pr.number })) {
+            correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number }, 'Ultrafix reconcile skipped: no loop waiting');
+            return;
+        }
+        // The listed PR already carries its head; only fall back to a lookup when it does not.
+        const headSha = pr.head.sha || await getCurrentPRHead(owner, repo, pr.number);
         if (!headSha) {
             correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number }, 'Ultrafix reconcile skipped: PR head SHA unavailable');
             return;

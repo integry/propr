@@ -10,13 +10,14 @@ import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import { replaceUltrafixStateIfUnchanged } from './ultrafixAutomaticWorkEpoch.js';
-import { getActionCounts, getUltrafixStateKey, loadDeferredContinuation, loadState } from './ultrafixOrchestrationService.js';
+import { clearRearmRetry, getActionCounts, getUltrafixStateKey, loadDeferredContinuation, loadState } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction, UltrafixLoopState } from './ultrafixOrchestrationService.js';
 import type { ContinuationResult } from './ultrafixLoopContinuation.js';
 
 export type UltrafixPrId = { owner: string; repo: string; pr: number };
 
 const RESUME_CLAIM_KEY_PREFIX = 'ultrafix:resume-claim';
+const RESUME_RECHECK_KEY_PREFIX = 'ultrafix:resume-recheck';
 const RELEASE_RESUME_CLAIM_SCRIPT = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
 const RENEW_RESUME_CLAIM_SCRIPT = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) else return 0 end";
 
@@ -24,6 +25,10 @@ const RENEW_RESUME_CLAIM_SCRIPT = "if redis.call('GET', KEYS[1]) == ARGV[1] then
 const RESUME_CLAIM_TTL_MS = 60_000;
 /** Background renewal cadence; several renewals fit in one TTL. */
 const RESUME_CLAIM_RENEW_INTERVAL_MS = RESUME_CLAIM_TTL_MS / 3;
+/** A re-check request outlives any holder that could still honour it. */
+const RESUME_RECHECK_TTL_MS = RESUME_CLAIM_TTL_MS * 2;
+/** Bound on back-to-back passes one trigger runs for re-check requests. */
+const MAX_RESUME_PASSES = 3;
 
 /** Ordinal of the next step for `action` (completed steps of that action + 1). */
 export function getNextStepNumber(state: UltrafixLoopState, action: UltrafixAction): number {
@@ -161,29 +166,45 @@ export async function syncStateWorkEpoch(
 }
 
 /**
- * Run `operation` while holding the per-PR resume claim. Every resume trigger
- * (deferred record or stranded-loop fallback) evaluates readiness and enqueues
- * under this one claim, so concurrent triggers cannot schedule conflicting steps.
- * The claim is renewed while the operation runs; the operation must call
- * `claim.confirm()` before each mutation and stop when it returns false.
+ * Cheap Redis gate shared by every resume trigger: is there a deferred record
+ * or an active loop for this PR? Most CI events are for PRs with neither.
  */
-export async function withResumeClaim(
+export async function hasUltrafixResumeCandidate(redis: Redis, prId: UltrafixPrId): Promise<boolean> {
+    const { owner, repo, pr } = prId;
+    if (await loadDeferredContinuation(redis, owner, repo, pr)) return true;
+    return evaluateStrandedLoopRearm(await loadState(redis, owner, repo, pr)).action !== 'skip';
+}
+
+export function getUltrafixResumeRecheckKey(owner: string, repo: string, pr: number): string {
+    return `${RESUME_RECHECK_KEY_PREFIX}:${owner}:${repo}:${pr}`;
+}
+
+/**
+ * Take the resume claim, or leave a re-check request for its holder. The
+ * holder consumes the request after releasing the claim, so a trigger that
+ * arrives while another is mid-evaluation (and may have read CI before it
+ * turned green) is re-run instead of dropped. Re-trying the claim after
+ * recording the request closes the gap where the holder released in between.
+ */
+async function acquireOrRequestRecheck(redis: Redis, prId: UltrafixPrId): Promise<string | null> {
+    const recheckKey = getUltrafixResumeRecheckKey(prId.owner, prId.repo, prId.pr);
+    const token = randomUUID();
+    if (!await acquireResumeClaim(redis, prId, token, RESUME_CLAIM_TTL_MS)) {
+        await redis.set(recheckKey, '1', 'PX', RESUME_RECHECK_TTL_MS);
+        if (!await acquireResumeClaim(redis, prId, token, RESUME_CLAIM_TTL_MS)) return null;
+    }
+    // This pass starts after every request recorded so far, so it answers them.
+    await redis.del(recheckKey);
+    return token;
+}
+
+async function runWithHeldClaim(
     prId: UltrafixPrId,
-    redisClient: Redis,
-    correlatedLogger: Logger,
+    token: string,
+    ctx: { redisClient: Redis; correlatedLogger: Logger },
     operation: (claim: ResumeClaim) => Promise<ContinuationResult>,
 ): Promise<ContinuationResult> {
-    const { owner, repo, pr } = prId;
-    // Cheap Redis gate first: most check_run events are for PRs without a loop.
-    if (!await loadDeferredContinuation(redisClient, owner, repo, pr)
-        && evaluateStrandedLoopRearm(await loadState(redisClient, owner, repo, pr)).action === 'skip') {
-        return { continued: false, reason: 'no_deferred_continuation' };
-    }
-
-    const token = randomUUID();
-    if (!await acquireResumeClaim(redisClient, prId, token, RESUME_CLAIM_TTL_MS)) {
-        return { continued: false, reason: 'resume_in_progress' };
-    }
+    const { redisClient, correlatedLogger } = ctx;
     let lost = false;
     const claim: ResumeClaim = {
         async confirm() {
@@ -210,4 +231,42 @@ export async function withResumeClaim(
             correlatedLogger.warn({ pr: prId.pr, error: err.message }, 'Ultrafix resume: failed to release resume claim');
         });
     }
+}
+
+/**
+ * Run `operation` while holding the per-PR resume claim. Every resume trigger
+ * (deferred record or stranded-loop fallback) evaluates readiness and enqueues
+ * under this one claim, so concurrent triggers cannot schedule conflicting steps.
+ * The claim is renewed while the operation runs; the operation must call
+ * `claim.confirm()` before each mutation and stop when it returns false.
+ *
+ * A trigger that finds the claim held is not dropped: it records a re-check
+ * request, and the holder runs `operation` again (bounded) once it releases.
+ */
+export async function withResumeClaim(
+    prId: UltrafixPrId,
+    redisClient: Redis,
+    correlatedLogger: Logger,
+    operation: (claim: ResumeClaim) => Promise<ContinuationResult>,
+): Promise<ContinuationResult> {
+    const { owner, repo, pr } = prId;
+    let result: ContinuationResult | null = null;
+    for (let pass = 1; pass <= MAX_RESUME_PASSES; pass++) {
+        if (!await hasUltrafixResumeCandidate(redisClient, prId)) {
+            // Nothing left to resume: a retry obligation for this PR is moot.
+            await clearRearmRetry(redisClient, owner, repo, pr);
+            return result ?? { continued: false, reason: 'no_deferred_continuation' };
+        }
+        const token = await acquireOrRequestRecheck(redisClient, prId);
+        // The current holder will honour the recorded re-check request.
+        if (!token) return result ?? { continued: false, reason: 'resume_in_progress' };
+        const passResult = await runWithHeldClaim(prId, token, { redisClient, correlatedLogger }, operation);
+        // A pass that scheduled the next step is what this trigger achieved.
+        if (!result?.continued) result = passResult;
+        if (!await redisClient.getdel(getUltrafixResumeRecheckKey(owner, repo, pr))) return result;
+        correlatedLogger.info({ pr, pass, reason: passResult.reason }, 'Ultrafix resume: trigger arrived meanwhile, re-evaluating');
+    }
+    // Still contended after the bounded passes: leave the request for the next holder.
+    await redisClient.set(getUltrafixResumeRecheckKey(owner, repo, pr), '1', 'PX', RESUME_RECHECK_TTL_MS);
+    return result!;
 }

@@ -13,6 +13,8 @@ import {
     clearUltrafixStateIfUnchanged,
     getUltrafixAutomaticWorkEpoch,
 } from './ultrafixAutomaticWorkEpoch.js';
+import { saveDeferredContinuation, type UltrafixReadinessResult } from './ultrafixOrchestrationService.js';
+import { applyUltrafixCiDeferral } from './ultrafixCiWait.js';
 import {
     enqueueNextStep,
     evaluateReadiness,
@@ -127,13 +129,15 @@ function buildRearmParams({ prId, ctx, snapshot, currentEpoch }: RearmAttempt): 
         repo: prId.repo,
         pullRequestNumber: prId.pr,
         completedAction: state.lastAction ?? 'review',
+        ...(state.userId ? { userId: state.userId } : {}),
         ultrafixMeta: {
             mode: 'ultrafix',
             goal: state.goal,
             maxCycles: state.maxCycles,
             pauseSeconds: state.pauseSeconds,
             reviewModel: state.reviewModel || undefined,
-            instructions: '',
+            // The deferred record that carried them is gone; the loop state keeps them.
+            instructions: state.instructions ?? '',
             workEpoch: currentEpoch,
         },
         redisClient: ctx.redisClient,
@@ -196,6 +200,9 @@ async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptRe
         'Ultrafix re-arm: readiness check for stranded loop',
     );
     if (!readiness.ready) {
+        if (readiness.reasons.every(reason => reason === 'checks_not_passing')) {
+            return deferRearmedReview(attempt, params, readiness);
+        }
         return { continued: false, reason: `rearm_not_ready: ${readiness.reasons.join(', ')}` };
     }
 
@@ -221,5 +228,50 @@ async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptRe
         reason: 'stranded_loop_rearmed',
         nextAction: 'review',
         cycleCount: owned.cycleCount,
+    };
+}
+
+/**
+ * The loop is idle and only CI holds the review back: take ownership and turn
+ * it back into an ordinary deferred review under the current epoch. The CI
+ * wait then applies exactly as for any deferral — one notice per head, and
+ * the loop stops with "CI did not settle" once `ultrafix_ci_wait_timeout_ms`
+ * elapses — and the deferred record keeps the review durable for the sweep.
+ */
+async function deferRearmedReview(
+    attempt: RearmAttempt,
+    params: UltrafixContinuationParams,
+    readiness: UltrafixReadinessResult,
+): Promise<RearmAttemptResult> {
+    const { prId, ctx, currentEpoch } = attempt;
+    const owned = await takeOwnership(attempt);
+    if (owned === CLAIM_LOST) return claimLost();
+    if (!owned) return STATE_CHANGED;
+    if (!await ctx.claim.confirm()) return claimLost();
+
+    const reasons = readiness.reasons.join(', ');
+    const saved = await saveDeferredContinuation(ctx.redisClient, {
+        owner: prId.owner,
+        repo: prId.repo,
+        pr: prId.pr,
+        nextAction: 'review',
+        savedAt: new Date().toISOString(),
+        reason: reasons,
+        ...(params.userId ? { userId: params.userId } : {}),
+        ultrafixMeta: params.ultrafixMeta,
+        workEpoch: currentEpoch,
+    });
+    if (!saved) return { continued: false, reason: 'ultrafix_superseded' };
+    ctx.correlatedLogger.info({ pr: prId.pr, workEpoch: currentEpoch, reasons }, 'Ultrafix re-arm: CI not green, review deferred under the current epoch');
+
+    if (!await ctx.claim.confirm()) return claimLost();
+    const ci = await applyUltrafixCiDeferral(params, readiness, owned);
+    return ci.terminal ?? {
+        continued: false,
+        deferred: true,
+        reason: `rearm_deferred: ${reasons}`,
+        nextAction: 'review',
+        cycleCount: owned.cycleCount,
+        ...ci.extra,
     };
 }

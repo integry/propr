@@ -286,10 +286,12 @@ export async function handleCheckRunEvent(
 
     // Check runs dispatched on branch pushes often arrive with an empty
     // pull_requests array even though the branch backs an open PR.
-    const pullRequests = payload.check_run.pull_requests;
-    const targetPRs = (pullRequests && pullRequests.length > 0)
-        ? pullRequests.map(pr => ({ number: pr.number }))
-        : await findPRsForCommit(owner, repoName, payload.check_run.head_sha);
+    const targetPRs = await resolveTargetPRs(owner, repoName, {
+        pullRequests: payload.check_run.pull_requests,
+        headSha: payload.check_run.head_sha,
+        headBranch: payload.check_run.check_suite?.head_branch,
+        defaultBranch: payload.repository.default_branch,
+    });
     if (targetPRs.length === 0) {
         log.debug({ owner, repoName, sha: payload.check_run.head_sha }, 'check_run skipped: no associated PRs');
         return;
@@ -341,6 +343,23 @@ export async function handleCheckRunEvent(
 }
 
 /**
+ * PRs a check run/suite applies to. When the payload lists none, open PRs are
+ * looked up by commit — except for runs on the default branch, which are the
+ * bulk of check traffic and do not back a PR head in practice.
+ */
+async function resolveTargetPRs(
+    owner: string,
+    repoName: string,
+    source: { pullRequests?: Array<{ number: number }> | null; headSha: string; headBranch?: string | null; defaultBranch?: string },
+): Promise<Array<{ number: number }>> {
+    if (source.pullRequests && source.pullRequests.length > 0) {
+        return source.pullRequests.map(pr => ({ number: pr.number }));
+    }
+    if (source.headBranch && source.headBranch === source.defaultBranch) return [];
+    return findPRsForCommit(owner, repoName, source.headSha);
+}
+
+/**
  * Runs auto-merge evaluation, then wakes any deferred Ultrafix continuation.
  * Idempotency is handled by the Redis GETDEL claim in claimDeferredContinuation.
  */
@@ -376,15 +395,20 @@ export async function handleCheckSuiteEvent(
 
     if (payload.action !== 'completed') return;
 
-    if (suite.conclusion !== 'success' && suite.conclusion !== 'neutral') {
-        log.debug({ owner, repoName, conclusion: suite.conclusion }, 'check_suite skipped: not success/neutral');
+    // Skipped counts as passing, as it does for individual check runs
+    // (GitHub sends it even though the payload types omit it).
+    const conclusion: string | null = suite.conclusion;
+    if (conclusion !== 'success' && conclusion !== 'neutral' && conclusion !== 'skipped') {
+        log.debug({ owner, repoName, conclusion: suite.conclusion }, 'check_suite skipped: not success/neutral/skipped');
         return;
     }
 
-    const pullRequests = suite.pull_requests;
-    const targetPRs = (pullRequests && pullRequests.length > 0)
-        ? pullRequests.map(pr => ({ number: pr.number }))
-        : await findPRsForCommit(owner, repoName, suite.head_sha);
+    const targetPRs = await resolveTargetPRs(owner, repoName, {
+        pullRequests: suite.pull_requests,
+        headSha: suite.head_sha,
+        headBranch: suite.head_branch,
+        defaultBranch: payload.repository.default_branch,
+    });
     if (targetPRs.length === 0) {
         log.debug({ owner, repoName, sha: suite.head_sha }, 'check_suite skipped: no associated PRs');
         return;

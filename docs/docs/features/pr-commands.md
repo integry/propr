@@ -379,7 +379,11 @@ A loop paused on red CI does not need to be restarted by hand once CI is fixed:
 1. **Pause.** An automatic fix lands, CI on its commit fails, and the next review is deferred, as described in [Waiting Rules](#waiting-rules). The loop stays active and keeps its `ultrafix` label.
 2. **Follow-up fix.** A [CI-failure follow-up](./pr-followup.md#automatic-follow-up-for-failed-ci), a `/fix`, or a developer push fixes the build. Each new piece of automatic work starts a new work epoch, which retires the old deferred step so a stale continuation cannot run against the new commit. The loop itself stays active and is not lost.
 3. **Green checks wake the loop.** When the checks on the current PR head pass, ProPR re-evaluates the loop. Three triggers can do this: `check_run` events (including runs GitHub delivers without a PR number, which are matched to open PRs by commit), successful `check_suite` events, and the polling cycle's reconciliation for PRs labelled `ultrafix`, which covers missed webhooks.
-4. **Resume.** If the loop is still active and the PR is idle, ProPR moves the loop to the current epoch and schedules the next review after the configured `pause`. From there the loop continues as normal.
+4. **Resume.** If the loop is still active and the PR is idle, ProPR moves the loop to the current epoch and schedules the next review after the configured `pause`. From there the loop continues as normal. The resumed review and later fixes keep the instructions you wrote beneath `/ultrafix`.
+
+If a wake-up finds the PR idle but the checks on the new head still red or running, the loop moves to the current epoch and its review is deferred again. The usual [CI wait](#waiting-rules) applies: one notice per head, and the loop stops with "CI did not settle" once the CI wait timeout passes.
+
+If a wake-up cannot settle the loop, ProPR records a retry for the PR. This happens when Ultrafix work is still in flight, when the queue cannot be read, or when scheduling the review fails. A periodic sweep in the API server, run every minute, retries it without waiting for another webhook. The same sweep also re-checks deferred reviews.
 
 The usual protections still apply when the loop is woken:
 
@@ -388,7 +392,7 @@ The usual protections still apply when the loop is woken:
 - **Label removed.** If the `ultrafix` label was removed while the loop waited for CI, its state is cleared and nothing is scheduled.
 - **Work in flight.** Nothing is decided while an Ultrafix job is queued, running, or delayed, or while batched comments are pending. That work's own continuation owns the loop.
 
-Several triggers often fire for the same green commit at once: check runs, the check suite, and polling. Only one review is ever scheduled. Each wake-up first takes a short per-PR resume lock, so concurrent triggers back off instead of deciding twice. The review job is also enqueued under a deterministic BullMQ job ID derived from the PR, the work epoch, and the step number, so a step that is already pending is never inserted a second time.
+Several triggers often fire for the same green commit at once: check runs, the check suite, and polling. Only one review is ever scheduled. Each wake-up first takes a short per-PR resume lock, so concurrent triggers back off instead of deciding twice. A trigger that backs off leaves a re-check request. The wake-up holding the lock runs once more after it finishes, so a check that turned green while it was still reading CI is not missed. The review job is also enqueued under a deterministic BullMQ job ID derived from the PR, the work epoch, and the step number, so a step that is already pending is never inserted a second time.
 
 #### Stopping The Loop
 

@@ -30,7 +30,7 @@ export interface UltrafixDeps {
     loadUltrafixMaxCycles: () => Promise<number>;
     loadUltrafixPauseSeconds: () => Promise<number>;
     loadPrReviewModel: () => Promise<string>;
-    startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; workEpoch?: number; sourceCommentId?: number }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
+    startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; workEpoch?: number; sourceCommentId?: number; instructions?: string; userId?: string }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
     clearStateIfCurrent: (redis: Redis, identity: { owner: string; repo: string; pr: number }, workEpoch: number) => Promise<boolean>;
     hasAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<boolean>;
     reserveAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
@@ -521,6 +521,8 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
                 reviewModel: effectiveReviewModel,
                 workEpoch,
                 sourceCommentId: comment.id,
+                instructions: commandMeta.instructions,
+                ...(payload.sender?.id === undefined ? {} : { userId: String(payload.sender.id) }),
             }, startWithPendingReview);
         });
 

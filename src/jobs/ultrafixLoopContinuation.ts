@@ -24,7 +24,14 @@ import {
     recordReviewFindings,
     saveDeferredContinuation,
     clearDeferredContinuationIfCurrent,
+    clearRearmRetry,
+    getUltrafixAutomaticWorkEpoch,
     isUltrafixAutomaticWorkCurrent,
+    listDeferredContinuationKeys,
+    listRearmRetryKeys,
+    parseDeferredKey,
+    parseRearmRetryKey,
+    saveRearmRetry,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction, UltrafixCheckStatus, UltrafixLoopState, UltrafixReadinessResult } from './ultrafixOrchestrationService.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
@@ -79,6 +86,9 @@ export function setCheckRunDeps(deps: {
 }
 
 export type CheckRunDeps = Parameters<typeof evaluateReadiness>[2];
+
+/** The step this continuation would enqueue is already queued or running; that job owns the loop. */
+export const NEXT_STEP_ALREADY_QUEUED_REASON = 'next_step_already_queued';
 
 function getCheckRunDeps(): CheckRunDeps {
     return {
@@ -154,7 +164,10 @@ async function enqueueCurrentNextAction(
         params.ultrafixMeta?.workEpoch ?? 0,
     );
     if (!cleared) return { continued: false, reason: 'ultrafix_superseded' };
-    await enqueueNextStep(params, nextAction, (pauseSeconds || 60) * 1000, getNextStepNumber(state, nextAction));
+    const enqueued = await enqueueNextStep(params, nextAction, (pauseSeconds || 60) * 1000, getNextStepNumber(state, nextAction));
+    if (!enqueued) {
+        return { continued: false, reason: NEXT_STEP_ALREADY_QUEUED_REASON, nextAction, score: latestScore, cycleCount };
+    }
     return {
         continued: true, reason: decisionReason,
         nextAction, score: latestScore, cycleCount,
@@ -386,7 +399,98 @@ export async function resumeDeferredContinuation(
 ): Promise<ContinuationResult> {
     // Both branches decide and enqueue under one per-PR claim, so a trigger
     // resuming the deferred step and one re-arming the loop cannot interleave.
-    return withResumeClaim(prId, redisClient, correlatedLogger, claim => resumeClaimedContinuation(prId, redisClient, correlatedLogger, claim));
+    // Set once a pass schedules the next step: that step owns the loop, so a
+    // later re-check pass that finds it outstanding must not record a retry.
+    let scheduled = false;
+    return withResumeClaim(prId, redisClient, correlatedLogger, async claim => {
+        let result: ContinuationResult;
+        try {
+            result = await resumeClaimedContinuation(prId, redisClient, correlatedLogger, claim);
+        } catch (err) {
+            // e.g. the queue failed after the deferred record was claimed: keep a retry.
+            await settleRearmRetry(prId, { continued: false, reason: `resume_failed: ${(err as Error).message}` }, { redisClient, correlatedLogger, claim });
+            throw err;
+        }
+        scheduled ||= result.continued;
+        if (!scheduled || !leavesLoopWaiting(result.reason)) {
+            await settleRearmRetry(prId, result, { redisClient, correlatedLogger, claim });
+        }
+        return result;
+    });
+}
+
+/**
+ * Outcomes after which an active loop may be left with no deferred record, no
+ * queued step and no further CI event to wake it.
+ */
+function leavesLoopWaiting(reason: string): boolean {
+    return reason.startsWith('rearm_not_ready')
+        || reason.startsWith('resume_failed')
+        || reason === 'deferred_cancelled'
+        || reason === 'ultrafix_superseded';
+}
+
+/**
+ * Record or release the durable retry obligation for this PR. A resume that
+ * could not settle the loop (outstanding or unreadable work, a superseded
+ * record, a failed enqueue) leaves one so the periodic sweep re-runs it
+ * without waiting for another webhook; any settled outcome releases it.
+ */
+async function settleRearmRetry(
+    prId: { owner: string; repo: string; pr: number },
+    result: ContinuationResult,
+    ctx: { redisClient: Redis; correlatedLogger: Logger; claim: ResumeClaim },
+): Promise<void> {
+    const { owner, repo, pr } = prId;
+    const { redisClient, correlatedLogger, claim } = ctx;
+    // The trigger that took the claim over owns the obligation now.
+    if (result.reason === RESUME_CLAIM_LOST_REASON) return;
+    try {
+        if (!leavesLoopWaiting(result.reason)) {
+            await clearRearmRetry(redisClient, owner, repo, pr);
+            return;
+        }
+        if (!await claim.confirm()) return;
+        await saveRearmRetry(redisClient, {
+            owner, repo, pr,
+            workEpoch: await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr),
+            reason: result.reason,
+            savedAt: new Date().toISOString(),
+        });
+        correlatedLogger.info({ pr, reason: result.reason }, 'Ultrafix resume: recorded retry for unsettled loop');
+    } catch (err) {
+        correlatedLogger.warn({ pr, error: (err as Error).message }, 'Ultrafix resume: failed to update retry obligation');
+    }
+}
+
+/**
+ * Periodic reconciliation: re-run every deferred continuation and every
+ * recorded retry obligation, so a loop whose last trigger could not settle it
+ * is retried without another webhook.
+ */
+export async function sweepUltrafixResumeCandidates(
+    redisClient: Redis,
+    createLogger: () => Logger,
+): Promise<Array<{ prId: { owner: string; repo: string; pr: number }; result: ContinuationResult }>> {
+    const candidates = new Map<string, { owner: string; repo: string; pr: number }>();
+    for (const key of await listDeferredContinuationKeys(redisClient)) {
+        const parsed = parseDeferredKey(key);
+        if (parsed) candidates.set(`${parsed.owner}/${parsed.repo}#${parsed.pr}`, parsed);
+    }
+    for (const key of await listRearmRetryKeys(redisClient)) {
+        const parsed = parseRearmRetryKey(key);
+        if (parsed) candidates.set(`${parsed.owner}/${parsed.repo}#${parsed.pr}`, parsed);
+    }
+    const outcomes: Array<{ prId: { owner: string; repo: string; pr: number }; result: ContinuationResult }> = [];
+    for (const prId of candidates.values()) {
+        const log = createLogger();
+        try {
+            outcomes.push({ prId, result: await resumeDeferredContinuation(prId, redisClient, log) });
+        } catch (err) {
+            log.warn({ ...prId, error: (err as Error).message }, '[ultrafix] resume sweep failed for PR');
+        }
+    }
+    return outcomes;
 }
 
 async function resumeClaimedContinuation(
@@ -421,7 +525,7 @@ async function resumeClaimedContinuation(
         maxCycles: state.maxCycles,
         pauseSeconds: state.pauseSeconds,
         reviewModel: state.reviewModel || undefined,
-        instructions: '',
+        instructions: state.instructions ?? '',
         }),
         workEpoch,
     };
@@ -430,7 +534,7 @@ async function resumeClaimedContinuation(
         repo,
         pullRequestNumber: pr,
         completedAction: state.lastAction ?? 'review',
-        userId: deferred.userId,
+        userId: deferred.userId ?? state.userId,
         ultrafixMeta,
         redisClient,
         correlatedLogger,
@@ -463,7 +567,10 @@ async function resumeClaimedContinuation(
     if (!await claim.confirm()) return { continued: false, reason: RESUME_CLAIM_LOST_REASON };
 
     const delayMs = (state.pauseSeconds || 60) * 1000;
-    await enqueueNextStep(params, deferred.nextAction, delayMs, getNextStepNumber(state, deferred.nextAction));
+    const enqueued = await enqueueNextStep(params, deferred.nextAction, delayMs, getNextStepNumber(state, deferred.nextAction));
+    if (!enqueued) {
+        return { continued: false, reason: NEXT_STEP_ALREADY_QUEUED_REASON, nextAction: deferred.nextAction, cycleCount: state.cycleCount };
+    }
 
     correlatedLogger.info(
         { pr, nextAction: deferred.nextAction },

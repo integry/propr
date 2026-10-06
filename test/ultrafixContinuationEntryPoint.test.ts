@@ -534,7 +534,8 @@ describe('stranded Ultrafix loop re-arming', () => {
         mockGetCheckRunsStatus.mock.mockImplementation(greenChecks);
         const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 65 }, redis as never, logger as never);
 
-        assert.equal(result.reason, 'stranded_loop_rearmed');
+        // The red pass turned the loop into a deferral under the current epoch.
+        assert.equal(result.reason, 'deferred_resumed');
         assert.equal(mockQueueAdd.mock.callCount(), 1);
     });
 
@@ -635,6 +636,11 @@ describe('stranded Ultrafix loop re-arming', () => {
         let signalReading!: () => void;
         const reading = new Promise<void>(resolve => { signalReading = resolve; });
         redis.llen = async (_key: string) => { signalReading(); await pendingRead; return 0; };
+
+        // The queue reflects enqueued steps, as BullMQ does.
+        const queued: unknown[] = [];
+        mockQueueAdd.mock.mockImplementation(async (_name: string, data: Record<string, unknown>) => { queued.push({ id: 'queued', data }); return {}; });
+        mockQueueGetJobs.mock.mockImplementation(async () => queued);
 
         const first = resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 73 }, redis as never, logger as never);
         await reading;

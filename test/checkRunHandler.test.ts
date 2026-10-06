@@ -2259,6 +2259,69 @@ describe('check intake fallbacks and Ultrafix hook', () => {
         assert.deepStrictEqual(hookCalls, []);
     });
 
+    test('handleCheckRunEvent skips the commit lookup for runs on the default branch', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('main-sha');
+        const hookCalls = installHookRecorder();
+        const payload = createMockCheckRunPayload({ pullRequests: [], headSha: 'main-sha' });
+        (payload.check_run as unknown as { check_suite: Record<string, unknown> }).check_suite = { id: 1, head_branch: 'main' };
+        (payload.repository as unknown as Record<string, unknown>).default_branch = 'main';
+        try {
+            await handleCheckRunEvent(payload, 'cid');
+        } finally {
+            clearHook();
+        }
+
+        assert.strictEqual(mockOctokit.request.mock.calls.length, 0, 'no GitHub calls for default-branch runs');
+        assert.deepStrictEqual(hookCalls, []);
+    });
+
+    test('handleCheckRunEvent still looks up PRs for runs on other branches', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('push-sha');
+        const hookCalls = installHookRecorder();
+        const payload = createMockCheckRunPayload({ pullRequests: [], headSha: 'push-sha' });
+        (payload.check_run as unknown as { check_suite: Record<string, unknown> }).check_suite = { id: 1, head_branch: 'feature' };
+        (payload.repository as unknown as Record<string, unknown>).default_branch = 'main';
+        try {
+            await handleCheckRunEvent(payload, 'cid');
+        } finally {
+            clearHook();
+        }
+
+        assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 77, 'push-sha']]);
+    });
+
+    test('handleCheckSuiteEvent with skipped wakes the Ultrafix hook like a passing suite', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('suite-sha');
+        const hookCalls = installHookRecorder();
+        try {
+            await handleCheckSuiteEvent(createMockCheckSuitePayload({ conclusion: 'skipped' }), 'cid');
+        } finally {
+            clearHook();
+        }
+
+        assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 77, 'suite-sha']]);
+    });
+
+    test('handleCheckSuiteEvent skips the commit lookup for suites on the default branch', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('suite-sha');
+        const hookCalls = installHookRecorder();
+        const payload = createMockCheckSuitePayload({});
+        (payload.check_suite as unknown as Record<string, unknown>).head_branch = 'main';
+        (payload.repository as unknown as Record<string, unknown>).default_branch = 'main';
+        try {
+            await handleCheckSuiteEvent(payload, 'cid');
+        } finally {
+            clearHook();
+        }
+
+        assert.strictEqual(mockOctokit.request.mock.calls.length, 0);
+        assert.deepStrictEqual(hookCalls, []);
+    });
+
     test('triggerUltrafixCheckRunHook dispatches to the registered hook', async () => {
         const hookCalls = installHookRecorder();
         try {

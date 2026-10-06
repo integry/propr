@@ -25,12 +25,18 @@ export {
 export {
     claimDeferredContinuation,
     clearDeferredContinuation,
+    clearRearmRetry,
+    getUltrafixRearmRetryKey,
     listDeferredContinuationKeys,
+    listRearmRetryKeys,
     loadDeferredContinuation,
+    loadRearmRetry,
     parseDeferredKey,
+    parseRearmRetryKey,
     saveDeferredContinuation,
+    saveRearmRetry,
 } from './ultrafixDeferredContinuationStore.js';
-export type { UltrafixDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
+export type { UltrafixDeferredContinuation, UltrafixRearmRetry } from './ultrafixDeferredContinuationStore.js';
 
 // --- Interfaces ---
 
@@ -67,6 +73,10 @@ export interface UltrafixLoopState {
     workEpoch: number;
     /** GitHub comment ID of the `/ultrafix` command that started this loop. */
     sourceCommentId?: number;
+    /** Lines written beneath `/ultrafix`; applied to every review and fix cycle. */
+    instructions?: string;
+    /** GitHub user who started the loop, for attribution of its later steps. */
+    userId?: string;
     /** Terminal result once the loop has stopped. */
     completionStatus: 'succeeded' | 'failed' | null;
     /** Why the loop stopped. */
@@ -112,6 +122,10 @@ export interface StartLoopOptions {
     workEpoch?: number;
     /** GitHub comment ID of the `/ultrafix` command starting this loop. */
     sourceCommentId?: number;
+    /** Lines written beneath `/ultrafix`, kept so a recovered loop still applies them. */
+    instructions?: string;
+    /** GitHub user who started the loop. */
+    userId?: string;
 }
 
 export interface UltrafixReadinessResult {
@@ -164,6 +178,8 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         lastActionTimestamp: null,
         active: true,
         workEpoch: options.workEpoch ?? 0, ...(options.sourceCommentId !== undefined ? { sourceCommentId: options.sourceCommentId } : {}),
+        ...(options.instructions ? { instructions: options.instructions } : {}),
+        ...(options.userId ? { userId: options.userId } : {}),
         completionStatus: null,
         completionReason: null,
         finalScore: null,
