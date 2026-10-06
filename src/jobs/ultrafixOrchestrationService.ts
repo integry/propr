@@ -113,6 +113,8 @@ export interface StartLoopOptions {
 export interface UltrafixReadinessResult {
     ready: boolean;
     reasons: string[];
+    /** Exact-head CI observation when blocking checks held the next step back. */
+    ci?: UltrafixCiObservation;
 }
 
 export interface UltrafixCheckStatus {
@@ -120,7 +122,12 @@ export interface UltrafixCheckStatus {
     allPassing: boolean;
     anyPending: boolean;
     anyFailed: boolean;
+    /** Blocking checks that failed / are still queued or running; nonBlockingChecks are never listed. */
+    blockingFailed?: string[];
+    blockingPending?: string[];
 }
+
+export type UltrafixCiObservation = { headSha: string; status: UltrafixCheckStatus };
 
 // --- Constants ---
 
@@ -546,6 +553,8 @@ export function checkReadiness(opts: {
  * Interpret GitHub check/status state for ultrafix progression.
  * A commit with zero check runs/status contexts is considered ready: there is
  * no future webhook to wait for, so deferring would deadlock the loop.
+ * The status must come from a repository-aware source (getCheckRunsStatusForRepo)
+ * so checks matching nonBlockingChecks never gate the loop.
  */
 export function areChecksReadyForUltrafix(status: UltrafixCheckStatus): boolean {
     return status.allPassing;

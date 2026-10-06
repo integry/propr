@@ -787,3 +787,57 @@ test('a stale pickup timeout adopts a concurrently running task and cannot overw
   assert.equal(afterStaleLifecycle.lifecycle, 'running');
   assert.equal(afterStaleLifecycle.failure, null);
 });
+
+test('an ultrafix command deferred for CI reports the blocking checks instead of COMMAND_NOT_PICKED_UP', async t => {
+  const db = await fixture(t);
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' },
+    github: { request: async () => ({ data: { head: { sha: 'a'.repeat(40) } } }) },
+  } as unknown as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'start_ultrafix', repository: 'acme/repo', args: { idempotencyKey: 'ultrafix-ci-deferred' },
+  }, async () => ({ status: 202, data: { state: 'posted', repository: 'acme/repo', pullRequest: 42, commentId: 601, goal: 8, maxCycles: 3 } }));
+  const createdAt = Date.now() - PICKUP_DEADLINE_MS - 1;
+  await db('mcp_operations').where({ id: receipt.operationId }).update({ created_at: createdAt });
+  const store = new Map<string, string>([
+    ['ultrafix:state:acme:repo:42', JSON.stringify({ active: true, workEpoch: 5, goal: 8, maxCycles: 3, cycleCount: 0 })],
+    ['ultrafix:deferred:acme:repo:42', JSON.stringify({
+      owner: 'acme', repo: 'repo', pr: 42, nextAction: 'review', workEpoch: 5,
+      savedAt: new Date(createdAt + 1000).toISOString(), reason: 'pre_execution_checks_not_passing',
+    })],
+    ['ultrafix:ci-wait:acme:repo:42', JSON.stringify({
+      workEpoch: 5, headSha: 'a'.repeat(40), since: new Date(createdAt + 1000).toISOString(),
+      blockingFailed: ['Run Full Test Suite'], blockingPending: [],
+    })],
+  ]);
+  const deps = { db, redisClient: { get: async (key: string) => store.get(key) ?? null } as never,
+    taskQueue: {} as never, runtimeBuildQueue: {} as never, policy: {} as never } as ToolDeps;
+  const row = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const projected = operations.project(row);
+  await trackExecution(deps, row, principal, projected);
+  await syncLifecycle(operations, row, projected);
+  const final = operations.project(await operations.get(principal, String(receipt.operationId)));
+  const lifecycle = final.lifecycle as { state: string; failure?: unknown; progress?: Record<string, unknown> };
+  assert.notEqual(lifecycle.state, 'unknown');
+  assert.ok(!lifecycle.failure);
+  assert.equal(lifecycle.progress?.phase, 'waiting_for_ci');
+  assert.deepEqual(lifecycle.progress?.deferral, {
+    reason: 'pre_execution_checks_not_passing', blockingChecks: ['Run Full Test Suite'],
+  });
+  assert.match(summarizeLifecycle('start_ultrafix', lifecycle as Record<string, unknown>),
+    /waiting for CI; no review score yet\. Blocking checks: Run Full Test Suite\./);
+
+  // Once the CI wait times out, the loop's terminal state is reported as failed.
+  store.set('ultrafix:state:acme:repo:42', JSON.stringify({
+    active: false, workEpoch: 5, goal: 8, maxCycles: 3, cycleCount: 0,
+    completionStatus: 'failed', completionReason: 'CI did not settle', completedAt: new Date().toISOString(),
+  }));
+  store.delete('ultrafix:deferred:acme:repo:42');
+  const nextRow = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+  const nextReceipt = operations.project(nextRow);
+  await trackExecution(deps, nextRow, principal, nextReceipt);
+  await syncLifecycle(operations, nextRow, nextReceipt);
+  const stopped = operations.project(await operations.get(principal, String(receipt.operationId)));
+  assert.equal((stopped.lifecycle as { state: string }).state, 'failed');
+});

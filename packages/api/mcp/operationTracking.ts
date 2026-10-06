@@ -9,6 +9,7 @@ import {
   PICKUP_DEADLINE_MS,
   detectPickup,
   ultrafixProgress,
+  type UltrafixProgress,
 } from './commandProgress.js';
 import { reconcileTerminalSubmissionProgress, type SubmissionProgress } from './submissionProgress.js';
 import { isUltrafixCommandTool } from './ultrafix.js';
@@ -130,6 +131,7 @@ export async function trackExecution(deps: ToolDeps, row: Operation, principal: 
   if (fanOut) pickupTimedOut = await trackReviewFanOut(deps, row, result, receipt);
   else if (task) await trackTask(deps, row, { task, result, receipt });
   else if (result.jobId) await trackQueuedJob(row, result.jobId, receipt);
+  else if (isUltrafixCommandTool(row.tool) && await trackUnpickedUltrafix(deps, row, result, receipt)) { /* deferral or stop reported from loop state */ }
   else if (commentTools.includes(row.tool) && Date.now() - Number(row.created_at) > PICKUP_DEADLINE_MS) {
     pickupTimedOut = true;
     receipt.state = 'unknown';
@@ -368,4 +370,76 @@ async function trackUltrafix(deps: ToolDeps, row: Operation, context: TrackingCo
   receipt.lifecycleProgress = progress;
   receipt.state = legacyState ?? (progress.outcome === 'goal_reached' || progress.outcome === 'cycles_exhausted' ? 'completed'
     : progress.outcome === 'stopped' ? 'cancelled' : progress.outcome === 'failed' ? 'failed' : 'running');
+}
+
+function parseJson(raw: unknown): Record<string, unknown> | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch { return null; }
+}
+
+/**
+ * An ultrafix command whose first review was deferred for CI before any task
+ * picked it up (or whose loop stopped waiting) is not a pickup failure: report
+ * the deferral reason and blocking checks from the loop's Redis state instead
+ * of COMMAND_NOT_PICKED_UP.
+ */
+// eslint-disable-next-line complexity -- each Redis record is optional and independently validated
+async function trackUnpickedUltrafix(deps: ToolDeps, row: Operation, result: ExecutionResult, receipt: Record<string, unknown>): Promise<boolean> {
+  if (!result.pullRequest || !row.repository) return false;
+  const [owner, repo] = row.repository.split('/');
+  const suffix = `${owner}:${repo}:${result.pullRequest}`;
+  try {
+    const [deferredRaw, loopRaw, ciRaw] = await Promise.all([
+      deps.redisClient.get(`ultrafix:deferred:${suffix}`),
+      deps.redisClient.get(`ultrafix:state:${suffix}`),
+      deps.redisClient.get(`ultrafix:ci-wait:${suffix}`),
+    ]);
+    const loop = parseJson(loopRaw);
+    if (!loop || typeof loop.workEpoch !== 'number') return false;
+    const createdAt = Number(row.created_at);
+    const base: UltrafixProgress = {
+      kind: 'ultrafix', goal: Number(result.goal ?? loop.goal ?? 9), maxCycles: Number(result.maxCycles ?? loop.maxCycles ?? 3),
+      cycle: Number(loop.cycleCount ?? 0), lastScore: typeof loop.finalScore === 'number' ? loop.finalScore : null,
+      phase: 'waiting_for_ci', outcome: null, cycles: [],
+    };
+    if (!loop.active) {
+      const completedAt = typeof loop.completedAt === 'string' ? Date.parse(loop.completedAt) : NaN;
+      if (loop.completionStatus !== 'failed' || !(completedAt >= createdAt)) return false;
+      const progress: UltrafixProgress = { ...base, phase: 'done', outcome: 'failed' };
+      result.ultrafixProgress = progress;
+      result.loop = { workEpoch: loop.workEpoch, active: false, completionStatus: 'failed', completionReason: loop.completionReason };
+      receipt.lifecycleProgress = progress;
+      receipt.state = 'failed';
+      receipt.targetState = { state: 'failed', reason: loop.completionReason, workEpoch: loop.workEpoch };
+      return true;
+    }
+    const deferred = parseJson(deferredRaw);
+    if (!deferred) return false;
+    const deferredEpoch = deferred.workEpoch ?? jsonField(deferred.ultrafixMeta, 'workEpoch');
+    const savedAt = typeof deferred.savedAt === 'string' ? Date.parse(deferred.savedAt) : NaN;
+    if (deferredEpoch !== loop.workEpoch || !(savedAt >= createdAt)) return false;
+    const ci = parseJson(ciRaw);
+    const blockingChecks = ci && ci.workEpoch === loop.workEpoch
+      ? [...new Set([...stringList(ci.blockingFailed), ...stringList(ci.blockingPending)])] : [];
+    const progress: UltrafixProgress = {
+      ...base,
+      deferral: { reason: String(deferred.reason ?? 'waiting for readiness'), ...(blockingChecks.length ? { blockingChecks } : {}) },
+    };
+    result.ultrafixProgress = progress;
+    receipt.lifecycleProgress = progress;
+    receipt.state = 'running';
+    receipt.targetState = { state: 'waiting_for_ci', workEpoch: loop.workEpoch, deferral: progress.deferral };
+    return true;
+  } catch { return false; }
+}
+
+function jsonField(value: unknown, key: string): unknown {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').slice(0, 20) : [];
 }
