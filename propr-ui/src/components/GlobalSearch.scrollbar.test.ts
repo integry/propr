@@ -5,8 +5,10 @@ import { describe, expect, it } from 'vitest';
 const read = (path: string): string => readFileSync(resolve(process.cwd(), path), 'utf8');
 const indexStyles = read('src/index.css');
 
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+
 const ruleFor = (selector: string): string => {
-  const start = indexStyles.search(new RegExp(`\\n\\s*${selector.replace(/[.:()-]/g, '\\$&')} \\{`));
+  const start = indexStyles.search(new RegExp(`\\n\\s*${escapeRegExp(selector)} \\{`));
   if (start < 0) return '';
   const bodyStart = indexStyles.indexOf('{', start) + 1;
   const end = indexStyles.indexOf('}', bodyStart);
