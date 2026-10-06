@@ -9,6 +9,7 @@ import {
   changeAgentDefinitionAttachments,
   createAgentDefinition,
   deleteAgentDefinitionUnlessRunInStates,
+  enqueueAgentRunActionOrFail,
   getAgentDefinition,
   getAgentRun,
   listAgentDefinitions,
@@ -28,6 +29,7 @@ import {
   type TriggerAgentRunResult,
 } from '@propr/core';
 import {
+  AGENT_ACTION_OPERATOR_NOTE_MAX_CHARS,
   AGENT_DEFINITION_CONTRACT,
   DEFAULT_AGENT_PREVIOUS_REPORTS,
   MAX_AGENT_ATTACHMENTS,
@@ -80,6 +82,8 @@ export interface AgentDefinitionRouteServices {
   processUpload?: (file: MulterFile, definitionId: string) => Promise<Attachment>;
   removeTemporaryUploads?: (files: readonly MulterFile[]) => Promise<void>;
   removeAttachmentFiles?: (definitionId: string, attachments: readonly Attachment[] | 'all') => Promise<void>;
+  /** Enqueues the acting step of an approved run, failing the run when that is impossible. */
+  startActing?: (run: StoredAgentRun, operatorNote: string | null) => Promise<StoredAgentRun>;
   now?: () => number;
 }
 
@@ -234,6 +238,14 @@ function requestIdempotencyKey(req: Request): string | null {
   return key;
 }
 
+function operatorNote(body: Record<string, unknown>): string | null {
+  if (body.note === undefined || body.note === null) return null;
+  if (typeof body.note !== 'string' || body.note.length > AGENT_ACTION_OPERATOR_NOTE_MAX_CHARS) {
+    throw new RouteError(400, `note must be a string of at most ${AGENT_ACTION_OPERATOR_NOTE_MAX_CHARS} characters`);
+  }
+  return body.note.trim() || null;
+}
+
 function requestBody(req: Request): Record<string, unknown> {
   const body: unknown = req.body ?? {};
   if (typeof body !== 'object' || Array.isArray(body)) throw new RouteError(400, 'Request body must be a JSON object');
@@ -253,6 +265,8 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
   const processUpload = services.processUpload ?? defaultProcessUpload;
   const removeTemporaryUploads = services.removeTemporaryUploads ?? removeTemporaryGoalUploads;
   const removeAttachmentFiles = services.removeAttachmentFiles ?? defaultRemoveAttachmentFiles;
+  const startActing = services.startActing
+    ?? ((run: StoredAgentRun, note: string | null) => enqueueAgentRunActionOrFail(run, { ...storeDeps, operatorNote: note }));
 
   /**
    * The user's GitHub grant must be able to read every repository, exactly
@@ -520,9 +534,54 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
     res.json({ run: publicAgentRun(cancelled, { includeReport: true }) });
   });
 
+  /**
+   * An approved run whose acting step has not been claimed yet. The approval
+   * committed, but the request that made it may have stopped before the
+   * acting step was enqueued, so approving again re-dispatches it.
+   */
+  function isUnclaimedApproval(run: StoredAgentRun): boolean {
+    return run.state === 'acting' && run.approvedBy !== null && run.actionTaskId === null;
+  }
+
+  /**
+   * Decides a preview run with a compare-and-set from `awaiting_approval`, so
+   * a double-clicked Approve moves the run once. The operator note is stored
+   * with the approval, so a re-dispatch keeps the approver's guidance.
+   */
+  async function decideRun(req: Request, owner: string, to: 'acting' | 'rejected', note: string | null = null): Promise<StoredAgentRun> {
+    const run = await requireRun(req, owner);
+    const notAwaiting = (state: AgentRunState) => new RouteError(409, `Agent run is ${state} and is not awaiting approval`, 'AGENT_RUN_NOT_AWAITING_APPROVAL');
+    if (to === 'acting' && isUnclaimedApproval(run)) return run;
+    if (run.state !== 'awaiting_approval') throw notAwaiting(run.state);
+    const patch = to === 'acting' ? { approvedBy: owner, operatorNote: note } : {};
+    const decided = await transitionAgentRun(run.id, ['awaiting_approval'], to, patch, storeDeps);
+    if (decided) return decided;
+    const current = await requireRun(req, owner);
+    if (to === 'acting' && isUnclaimedApproval(current)) return current;
+    throw notAwaiting(current.state);
+  }
+
+  /**
+   * Approving again repeats the handoff of an approval whose acting step was
+   * not claimed yet; the acting job id is deterministic, so this never runs
+   * the step twice. The note stored with the first approval is the one used.
+   */
+  const approveRun = handler('Failed to approve agent run', async (req, res) => {
+    const owner = requireOwner(req);
+    const note = operatorNote(requestBody(req));
+    const acting = await decideRun(req, owner, 'acting', note);
+    const run = await startActing(acting, acting.operatorNote);
+    res.json({ run: publicAgentRun(run, { includeReport: true }) });
+  });
+
+  const rejectRun = handler('Failed to reject agent run', async (req, res) => {
+    const rejected = await decideRun(req, requireOwner(req), 'rejected');
+    res.json({ run: publicAgentRun(rejected, { includeReport: true }) });
+  });
+
   return {
     list, contract, create, get, update, remove,
     uploadAttachments, deleteAttachment,
-    triggerRun, listRuns, getRun, cancelRun,
+    triggerRun, listRuns, getRun, cancelRun, approveRun, rejectRun,
   };
 }

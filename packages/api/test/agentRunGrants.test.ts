@@ -37,7 +37,7 @@ function run(overrides: Partial<StoredAgentRun> = {}): StoredAgentRun {
     state: 'running', autonomyMode: 'dry_run',
     definitionSnapshot: { id: 'def-1', ownerId: OWNER, name: 'Nightly triage', repositories: ['acme/repo', 'acme/docs'] } as StoredAgentRun['definitionSnapshot'],
     reportTaskId: null, actionTaskId: null, report: null, reportTruncated: false, actionSummary: null, skipReason: null,
-    failureReason: null, approvedBy: null, deferredUntil: null, deferrals: 0, createdAt: 1, startedAt: 1, reportedAt: null,
+    failureReason: null, approvedBy: null, operatorNote: null, deferredUntil: null, deferrals: 0, createdAt: 1, startedAt: 1, reportedAt: null,
     finishedAt: null, updatedAt: 1,
     ...overrides,
   };

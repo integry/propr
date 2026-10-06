@@ -82,6 +82,8 @@ export interface StoredAgentRun {
   skipReason: string | null;
   failureReason: string | null;
   approvedBy: string | null;
+  /** The approver's guidance for the acting step, stored with the approval so a re-dispatch keeps it. */
+  operatorNote: string | null;
   deferredUntil: number | null;
   deferrals: number;
   createdAt: number;
@@ -96,7 +98,7 @@ export interface AgentRunRow {
   idempotency_key: string | null; state: string; autonomy_mode: string; definition_snapshot: string;
   report_task_id: string | null; action_task_id: string | null; report: string | null;
   report_truncated: boolean | number; action_summary: string | null; skip_reason: string | null;
-  failure_reason: string | null; approved_by: string | null; deferred_until: number | null; deferrals: number;
+  failure_reason: string | null; approved_by: string | null; operator_note: string | null; deferred_until: number | null; deferrals: number;
   created_at: number; started_at: number | null; reported_at: number | null; finished_at: number | null;
   updated_at: number;
 }
@@ -141,6 +143,7 @@ export function rowToAgentRun(row: AgentRunRow): StoredAgentRun {
     skipReason: row.skip_reason ?? null,
     failureReason: row.failure_reason ?? null,
     approvedBy: row.approved_by ?? null,
+    operatorNote: row.operator_note ?? null,
     deferredUntil: toNumberOrNull(row.deferred_until),
     deferrals: Number(row.deferrals ?? 0),
     createdAt: Number(row.created_at),
@@ -209,6 +212,7 @@ export async function createAgentRun(
     skip_reason: state === 'skipped' ? input.skipReason ?? null : null,
     failure_reason: null,
     approved_by: null,
+    operator_note: null,
     deferred_until: state === 'deferred' ? input.deferredUntil ?? null : null,
     deferrals: state === 'deferred' ? 1 : 0,
     created_at: timestamp,
@@ -240,6 +244,7 @@ export interface AgentRunTransitionPatch {
   skipReason?: string | null;
   failureReason?: string | null;
   approvedBy?: string | null;
+  operatorNote?: string | null;
   /** Required when moving to `deferred`. */
   deferredUntil?: number | null;
 }
@@ -257,6 +262,7 @@ function patchToRowChanges(patch: AgentRunTransitionPatch): Record<string, unkno
   if (patch.skipReason !== undefined) changes.skip_reason = patch.skipReason;
   if (patch.failureReason !== undefined) changes.failure_reason = patch.failureReason;
   if (patch.approvedBy !== undefined) changes.approved_by = patch.approvedBy;
+  if (patch.operatorNote !== undefined) changes.operator_note = patch.operatorNote;
   if (patch.deferredUntil !== undefined) changes.deferred_until = patch.deferredUntil;
   return changes;
 }
@@ -297,6 +303,41 @@ export async function transitionAgentRun(
   // RETURNING yields the row this update produced; a separate read could see a
   // competing transition that landed after it.
   const [updated] = await database(TABLE).where({ id }).whereIn('state', [...from]).update(changes)
+    .returning('*') as AgentRunRow[];
+  return updated ? rowToAgentRun(updated) : null;
+}
+
+/**
+ * Claims an `acting` run for one action-phase execution by recording its task.
+ * The acting state has no separate "started" state, so `action_task_id` is
+ * the claim: only the first delivery for a run gets the row back, a later one
+ * gets null.
+ */
+export async function claimAgentRunAction(
+  id: string,
+  actionTaskId: string,
+  { database = db, now = Date.now }: AgentRunStoreDependencies = {},
+): Promise<StoredAgentRun | null> {
+  const [updated] = await database(TABLE).where({ id, state: 'acting' }).whereNull('action_task_id')
+    .update({ action_task_id: actionTaskId, updated_at: now() })
+    .returning('*') as AgentRunRow[];
+  return updated ? rowToAgentRun(updated) : null;
+}
+
+/**
+ * Fails an `acting` run whose acting step could not be dispatched, but only
+ * while no action job has claimed it. A claimed run is executing (or already
+ * finished), so a redundant dispatch error must not overwrite it. Returns the
+ * failed run, or null when the run was claimed or left `acting` first.
+ */
+export async function failUnclaimedAgentRunAction(
+  id: string,
+  failureReason: string,
+  { database = db, now = Date.now }: AgentRunStoreDependencies = {},
+): Promise<StoredAgentRun | null> {
+  const timestamp = now();
+  const [updated] = await database(TABLE).where({ id, state: 'acting' }).whereNull('action_task_id')
+    .update({ state: 'failed', failure_reason: failureReason, updated_at: timestamp, finished_at: timestamp })
     .returning('*') as AgentRunRow[];
   return updated ? rowToAgentRun(updated) : null;
 }

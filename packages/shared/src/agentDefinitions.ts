@@ -68,6 +68,10 @@ export const AGENT_PREVIOUS_REPORT_MAX_CHARS = AGENT_PREVIOUS_REPORTS_MAX_CHARAC
 export const AGENT_REPORT_PROMPT_MAX_CHARS = 200_000;
 /** Stored report size; longer output is truncated and stays available in the task logs. */
 export const AGENT_REPORT_MAX_CHARS = 100_000;
+/** Optional guidance an approver may add to the acting step of a preview run. */
+export const AGENT_ACTION_OPERATOR_NOTE_MAX_CHARS = 2_000;
+/** Stored acting-step summary size; the full output stays available in the task logs. */
+export const AGENT_ACTION_SUMMARY_MAX_CHARS = 20_000;
 
 export interface AgentDefinitionInput {
   name: string;

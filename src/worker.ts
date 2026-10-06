@@ -7,8 +7,7 @@ import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManag
 import { logger, reconcileEpicExecutionQueues } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatusForRepo } from '@propr/core';
-import { loadAiPrimaryTag, loadSettings } from '@propr/core';
-import { loadSettingsFromConfig } from '@propr/core';
+import { loadAiPrimaryTag, loadSettings, loadSettingsFromConfig } from '@propr/core';
 import { setUltrafixDeps } from '@propr/core';
 import { validateAttachmentBaseUrlConfig } from '@propr/core';
 import {
@@ -30,7 +29,8 @@ import { processTaskImportJob } from './jobs/processTaskImportJob.js';
 import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
 import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
 import { processGoalJob } from './jobs/processGoalJob.js';
-import { processAgentActionJob, processAgentRunJob } from './jobs/processAgentRunJob.js';
+import { processAgentRunJob } from './jobs/processAgentRunJob.js';
+import { processAgentActionJob } from './jobs/processAgentActionJob.js';
 import { createConfiguredMainWorker } from './workerFactory.js';
 import type { MainWorker } from './workerFactory.js';
 import {

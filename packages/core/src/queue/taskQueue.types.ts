@@ -206,6 +206,8 @@ export interface AgentRunJobData {
     ownerId: string;
     phase: AgentRunPhase;
     correlationId: string;
+    /** Action phase only: guidance the approver added, appended to the acting prompt. */
+    operatorNote?: string;
 }
 
 export type JobData = IssueJobData | CommentJobData | TaskImportJobData | GoalJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData | AgentRunJobData;

@@ -1,8 +1,8 @@
 import type { AgentTaskOptions, IssueRef, StoredAgentDefinition } from '@propr/core';
 import { definitionReadsRepositories, type AgentRunWorkspace } from './workspace.js';
-import { agentRunToolPolicy, type AgentRunMcpGrant } from './toolPolicy.js';
+import { agentRunToolPolicy, type AgentRunMcpGrant, type AgentRunPhase } from './toolPolicy.js';
 
-/** Launch options for the report run's agent. */
+/** Launch options for the agent of one run phase. */
 export function agentTaskOptions(input: {
     runId: string;
     taskId: string;
@@ -14,11 +14,13 @@ export function agentTaskOptions(input: {
     workspace: AgentRunWorkspace;
     /** Run-scoped ProPR MCP credential, when one was issued. */
     mcpGrant?: AgentRunMcpGrant | null;
+    /** Defaults to the report phase. */
+    phase?: AgentRunPhase;
 }): AgentTaskOptions {
-    const { runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant } = input;
+    const { runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant, phase = 'report' } = input;
     const repositoryReadable = definitionReadsRepositories(definition) && workspace.promptWorkspace.repositoriesReadable;
     // Web and MCP are enforced by the runtime; repository access through `repositoryAccess`.
-    const toolPolicy = agentRunToolPolicy({ phase: 'report', capabilities: definition.capabilities, mcpGrant });
+    const toolPolicy = agentRunToolPolicy({ phase, capabilities: definition.capabilities, mcpGrant });
     return {
         worktreePath: workspace.worktreePath,
         issueRef,
