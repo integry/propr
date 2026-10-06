@@ -8,7 +8,11 @@
 // creates one only when absent. FAKE_DOCKER_NETWORK_RACE=1 lets a foreign
 // creator take the stack network name just before `network create`;
 // FAKE_DOCKER_REPLACE_NETWORK=1 swaps in a same-named foreign network (copying
-// its labels) after the launcher starts. The cleanup container emulates root's
+// its labels) after the launcher starts. FAKE_DOCKER_LATE_SIBLING=<service>
+// emulates sequential startup still in progress: that sibling is created only
+// once its name was inspected while missing and the next container is then
+// inspected, provided the launcher is still running. FAKE_DOCKER_LAUNCHER_RM=fail
+// makes removing the launcher fail. The cleanup container emulates root's
 // DAC override within its single bind mount. Every invocation is appended to
 // FAKE_DOCKER_STATE/calls.jsonl and the private-root modes seen at launch are
 // recorded in FAKE_DOCKER_STATE/observed.json. Only synthetic data is handled.
@@ -102,9 +106,12 @@ function startLauncher() {
     { Type: 'bind', Source: env.PROPR_DATA_DIR, Destination: '/usr/src/app/data' },
   ];
   for (const service of ['api', 'daemon', 'worker', 'indexing-worker']) {
-    addContainer(`${stack}-${service}`, {
-      Config: { Labels: { 'propr.stack': stack, 'propr.service': service } }, Mounts: appMounts, network,
-    });
+    const sibling = { Config: { Labels: { 'propr.stack': stack, 'propr.service': service } }, Mounts: appMounts, network };
+    if (process.env.FAKE_DOCKER_LATE_SIBLING === service) {
+      state.lateSibling = { launcher: name, name: `${stack}-${service}`, container: sibling, armed: false };
+    } else {
+      addContainer(`${stack}-${service}`, sibling);
+    }
   }
   addContainer(`${stack}-redis`, {
     Config: { Labels: { 'propr.stack': stack, 'propr.service': 'redis' } },
@@ -137,6 +144,14 @@ function stopLauncher(name, container) {
 const [command, subcommand] = args;
 if (command === 'image' && subcommand === 'inspect') process.exit(0);
 if (command === 'container' && subcommand === 'inspect') {
+  const late = state.lateSibling;
+  if (late && !state.containers[late.launcher]) delete state.lateSibling;
+  else if (late && args.at(-1) === late.name) late.armed = true;
+  else if (late?.armed) {
+    addContainer(late.name, late.container);
+    delete state.lateSibling;
+  }
+  save();
   const found = findContainer(args.at(-1));
   if (!found) fail(`Error: No such container: ${args.at(-1)}`);
   const [, container] = found;
@@ -173,6 +188,7 @@ if (command === 'container' && subcommand === 'inspect') {
 } else if (command === 'rm') {
   const found = findContainer(args.at(-1));
   if (!found) fail('Error: No such container');
+  if (process.env.FAKE_DOCKER_LAUNCHER_RM === 'fail' && found[1].Config.Labels['com.propr.itest.stack']) fail('cannot kill launcher');
   delete state.containers[found[0]];
   save();
 } else if (command === 'logs') {

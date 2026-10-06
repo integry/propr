@@ -32,7 +32,9 @@
 # foreign owners and wrong modes are refused, not repaired. Legacy /tmp/$STACK
 # data from older versions is no longer used or removed. Cleanup removes only
 # the validated root and containers proven to belong to it, by ID; the launcher
-# is killed, not stopped, so its own label-wide teardown never runs. When the
+# is killed, not stopped, so its own label-wide teardown never runs, and its
+# siblings are inspected again once it is gone. The root is kept whenever a
+# container that may use it could remain. When the
 # stack network is absent the harness creates it itself, labelled with this
 # root's token, and records the exact ID Docker returned. Only that network is
 # removed, by ID, and only while the stack name still resolves to it; a
@@ -220,15 +222,18 @@ remove_owned_network() {
   return 0
 }
 
-# Removes the launcher and its siblings only after every present target was
-# proven to belong to this root. Refuses (removing nothing) otherwise. The
-# launcher is killed rather than stopped: its own shutdown removes every
-# propr.stack-labelled container and the stack network, which this harness has
-# not verified. The network is removed only by remove_owned_network.
-remove_stack_resources() {
-  local name verdict proven=0 failed=0 i
-  local -a ids=() names=()
-  for name in "$LAUNCHER_NAME" "${SIBLING_SERVICES[@]/#/$STACK-}"; do
+# Inspects every present stack container and records the IDs of those proven
+# to belong to this root in STACK_IDS/STACK_NAMES (launcher first, if present).
+# Refuses, recording nothing, when any present target is not this root's or
+# when no container proves ownership of the root (unless PROOF is already 1).
+STACK_IDS=()
+STACK_NAMES=()
+collect_stack_containers() {
+  local proven="$1" name verdict
+  shift
+  STACK_IDS=()
+  STACK_NAMES=()
+  for name in "$@"; do
     docker container inspect "$name" >/dev/null 2>&1 || continue
     verdict="$(container_ownership "$name")"
     case "$verdict" in
@@ -236,26 +241,67 @@ remove_stack_resources() {
       "owned "*) ;;
       *)
         echo "✗ refusing to remove container $name: it does not belong to stack root $ROOT" >&2
+        STACK_IDS=()
+        STACK_NAMES=()
         return 1
         ;;
     esac
-    names+=("$name")
-    ids+=("${verdict#* }")
+    STACK_NAMES+=("$name")
+    STACK_IDS+=("${verdict#* }")
   done
-  if [ "${#ids[@]}" -gt 0 ] && [ "$proven" != 1 ]; then
-    echo "✗ refusing to remove ${names[*]}: no container proves ownership of $ROOT" >&2
+  if [ "${#STACK_IDS[@]}" -gt 0 ] && [ "$proven" != 1 ]; then
+    echo "✗ refusing to remove ${STACK_NAMES[*]}: no container proves ownership of $ROOT" >&2
+    STACK_IDS=()
+    STACK_NAMES=()
+    return 1
+  fi
+  return 0
+}
+
+# Removes the launcher and its siblings only after every present target was
+# proven to belong to this root, and fails (so the root is kept) whenever a
+# container that may use the root could remain. The launcher can still be
+# creating siblings while they are first inspected, so it is killed and
+# confirmed gone before the siblings are inspected and validated again; only
+# that second snapshot is removed. The launcher is killed rather than stopped:
+# its own shutdown removes every propr.stack-labelled container and the stack
+# network, which this harness has not verified.
+remove_stack_containers() {
+  local proven=0 launcher_id="" name i failed=0
+  local -a siblings=("${SIBLING_SERVICES[@]/#/$STACK-}")
+  collect_stack_containers 0 "$LAUNCHER_NAME" "${siblings[@]}" || return 1
+  if [ "${#STACK_IDS[@]}" -gt 0 ]; then
+    proven=1
+    [ "${STACK_NAMES[0]}" != "$LAUNCHER_NAME" ] || launcher_id="${STACK_IDS[0]}"
+  fi
+
+  if [ -n "$launcher_id" ]; then
+    if ! docker rm -f "$launcher_id" >/dev/null || docker container inspect "$launcher_id" >/dev/null 2>&1; then
+      echo "✗ could not terminate launcher $LAUNCHER_NAME; leaving its siblings and data in place" >&2
+      return 1
+    fi
+  fi
+  if docker container inspect "$LAUNCHER_NAME" >/dev/null 2>&1; then
+    echo "✗ a launcher named $LAUNCHER_NAME appeared during cleanup; leaving its siblings and data in place" >&2
     return 1
   fi
 
-  # The launcher is first in ids, so it is gone before any sibling is removed
-  # and cannot recreate them.
-  for i in "${!ids[@]}"; do
-    if docker container inspect "${ids[$i]}" >/dev/null 2>&1; then
-      docker rm -f "${ids[$i]}" >/dev/null || { echo "✗ could not remove container ${names[$i]}" >&2; failed=1; }
+  collect_stack_containers "$proven" "${siblings[@]}" || return 1
+  for i in "${!STACK_IDS[@]}"; do
+    if docker container inspect "${STACK_IDS[$i]}" >/dev/null 2>&1; then
+      docker rm -f "${STACK_IDS[$i]}" >/dev/null || { echo "✗ could not remove container ${STACK_NAMES[$i]}" >&2; failed=1; }
     fi
   done
-  remove_owned_network || failed=1
-  return "$failed"
+  [ "$failed" = 0 ] || return 1
+
+  # Evidence for releasing the root: no stack container name is still present.
+  for name in "$LAUNCHER_NAME" "${siblings[@]}"; do
+    if docker container inspect "$name" >/dev/null 2>&1; then
+      echo "✗ container $name is still present after cleanup; leaving its data in place" >&2
+      return 1
+    fi
+  done
+  return 0
 }
 
 cleanup() {
@@ -273,13 +319,15 @@ cleanup() {
   fi
   echo ""
   echo "▸ cleaning up"
-  if [ "$STACK_STARTED" = 1 ]; then
-    remove_stack_resources || failed=1
-  elif [ -n "$NETWORK_OWNED_ID" ]; then
-    remove_owned_network || failed=1
-  fi
-  if [ -n "$ROOT_IDENTITY" ]; then
-    itest_remove_root "$ROOT" "$USER_BASE" "$STACK" "$ROOT_IDENTITY" "$ROOT_TOKEN" "$LAUNCHER_TAG" || failed=1
+  if [ "$STACK_STARTED" = 1 ] && ! remove_stack_containers; then
+    # A container that may still use the root keeps the root and the network.
+    failed=1
+    [ -z "$ROOT_IDENTITY" ] || echo "  keeping stack root $ROOT: its containers were not all removed" >&2
+  else
+    if [ "$STACK_STARTED" = 1 ] || [ -n "$NETWORK_OWNED_ID" ]; then
+      remove_owned_network || failed=1
+    fi
+    [ -z "$ROOT_IDENTITY" ] || itest_remove_root "$ROOT" "$USER_BASE" "$STACK" "$ROOT_IDENTITY" "$ROOT_TOKEN" "$LAUNCHER_TAG" || failed=1
   fi
   if [ "$failed" = 1 ]; then
     echo "✗ integration cleanup did not remove every owned resource" >&2
@@ -305,7 +353,8 @@ if [ -e "$ROOT" ] || [ -L "$ROOT" ]; then
   # Containers kept by an earlier run of this exact root are reconciled; any
   # other same-named container is refused below.
   load_network_record
-  remove_stack_resources || exit 1
+  remove_stack_containers || exit 1
+  remove_owned_network || exit 1
   if [ "${PROPR_E2E_REUSE_DATA:-}" = "1" ]; then
     ROOT_IDENTITY="$ITEST_ROOT_IDENTITY"
     echo "▸ reusing stack root $ROOT"

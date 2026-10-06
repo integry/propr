@@ -210,6 +210,39 @@ describe('image integration harness private temporary authority', { skip: unsupp
     assertNoStackContainers(workspace);
   });
 
+  test('a sibling the launcher creates during the first cleanup inspection is removed before the root', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    const result = await runHarness(workspace, { FAKE_DOCKER_LATE_SIBLING: 'worker' });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(readState(workspace).lateSibling, undefined, 'the worker appeared while cleanup was inspecting');
+    const calls = dockerCalls(workspace);
+    const launcherKill = calls.findIndex((call) => call[0] === 'rm');
+    const lastWorkerInspect = calls.findLastIndex((call) => call[0] === 'container' && call.at(-1) === 'propr-itest-worker');
+    assert.ok(launcherKill >= 0 && lastWorkerInspect > launcherKill, 'siblings are inspected again after the launcher is gone');
+    assertNoStackContainers(workspace);
+    assert.ok(!existsSync(stackRoot(workspace)));
+  });
+
+  test('a launcher that cannot be terminated keeps its siblings, network and root, and fails', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    const result = await runHarness(workspace, { FAKE_DOCKER_LAUNCHER_RM: 'fail' });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /could not terminate launcher propr-itest-launcher/);
+    assert.match(result.stderr, /did not remove every owned resource/);
+    const state = readState(workspace);
+    assert.ok(state.containers['propr-itest-launcher'] && state.containers['propr-itest-worker']);
+    assert.ok(state.networks['propr-itest-net']);
+    assert.deepEqual(networkRemovals(workspace), []);
+    assert.ok(!dockerCalls(workspace).some((call) => call[0] === 'run' && call.includes('find')), 'no data deletion is attempted');
+    assert.ok(existsSync(join(stackRoot(workspace), '.env')), 'the stack root is kept');
+
+    const failed = await runHarness(workspace, { FAKE_DOCKER_LAUNCHER_RM: 'fail', FAKE_E2E_EXIT: '5' });
+    assert.equal(failed.code, 1, 'a later run refuses to reuse or remove the root while the launcher survives');
+    assert.ok(existsSync(join(stackRoot(workspace), '.env')));
+  });
+
   test('reports a cleanup failure instead of succeeding when generated data remains', { skip: !hostCannotRemovePrivateSubtree }, async (t) => {
     const workspace = makeWorkspace();
     t.after(() => forceRemove(workspace.root));
