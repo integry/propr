@@ -23,6 +23,10 @@ export function configureGitAuthentication(git: SimpleGit, authToken: string): v
     delete environment.EDITOR;
     delete environment.GIT_EDITOR;
     delete environment.GIT_SEQUENCE_EDITOR;
+    // Authentication comes only from the injected header. A host-exported askpass
+    // program would never be needed, and simple-git refuses to run with one.
+    delete environment.GIT_ASKPASS;
+    delete environment.SSH_ASKPASS;
 
     git.env({
         ...environment,

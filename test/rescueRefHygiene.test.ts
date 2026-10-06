@@ -111,6 +111,24 @@ test('git prune dependencies list and delete rescue refs on the remote only', as
     }
 });
 
+test('git prune dependencies work on a host that exports askpass programs', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-askpass-'));
+    const saved = { GIT_ASKPASS: process.env.GIT_ASKPASS, SSH_ASKPASS: process.env.SSH_ASKPASS };
+    process.env.GIT_ASKPASS = '/usr/bin/false';
+    process.env.SSH_ASKPASS = '/usr/bin/false';
+    try {
+        const { remote, ref } = await createRemoteWithExpiredRescue(tempDir);
+        const result = await pruneRescueRefs(createGitRescueRefPruneDependencies({ repoUrl: remote, token: 'token' }), { olderThanDays: 14 });
+        assert.deepEqual(result.deleted, [ref]);
+    } finally {
+        for (const [key, value] of Object.entries(saved)) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
+        await rm(tempDir, { recursive: true, force: true });
+    }
+});
+
 async function createRemoteWithExpiredRescue(tempDir: string): Promise<{ remote: string; ref: string }> {
     const remote = path.join(tempDir, 'remote.git');
     const clone = path.join(tempDir, 'clone');
