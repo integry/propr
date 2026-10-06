@@ -43,8 +43,10 @@ test('repository search and read tools authorize, validate and map retrieval fai
     const { McpPolicy } = await import('../mcp/policy.js');
     const { createToolCatalog, executeTool } = await import('../mcp/tools.js');
     const { McpError } = await import('../mcp/config.js');
-    const policy = { repository: (principal: McpPrincipal, repo: string) => McpPolicy.prototype.repository.call(null, principal, repo) };
-    const deps = { db: {} as never, policy: policy as never, taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never };
+    const { classifyError, toToolErrorResult } = await import('../mcp/errorEnvelope.js');
+    // The real policy methods, without constructing OAuth/JWKS state they never touch.
+    const policy = Object.create(McpPolicy.prototype) as InstanceType<typeof McpPolicy>;
+    const deps = { db: {} as never, policy, taskQueue: {} as never, redisClient: {} as never, runtimeBuildQueue: {} as never };
     const catalog = createToolCatalog(deps);
     const search = catalog.find(tool => tool.name === 'search_repository_files')!;
     const read = catalog.find(tool => tool.name === 'read_repository_file')!;
@@ -87,10 +89,16 @@ test('repository search and read tools authorize, validate and map retrieval fai
     await rejects(run(read, { repository, path: 'a.ts' }, actor([repository], false)), 'REPOSITORY_FORBIDDEN', 403);
     assert.equal(searches.length + reads.length, calls);
 
-    // The executor wraps failures into the standard error envelope.
-    const envelope = await executeTool(read, { repository, path: '../x' }, actor(), deps);
-    assert.equal(envelope.isError, true);
-    assert.match(JSON.stringify(envelope), /INVALID_PATH/);
+    // Through the real executor (scope and repository policy included), failures
+    // surface as the standard error envelope the MCP server returns.
+    const envelope = (args: Record<string, unknown>, principal = actor()) => executeTool(read, args, principal, deps)
+      .then(() => assert.fail('expected the executor to reject'), (error: unknown) => toToolErrorResult(classifyError(error, { sideEffectsPossible: false })));
+    const traversal = await envelope({ repository, path: '../x' });
+    assert.equal(traversal.isError, true);
+    assert.deepEqual({ code: traversal.structuredContent.error.code, status: traversal.structuredContent.error.status }, { code: 'INVALID_PATH', status: 400 });
+    const unscoped = await envelope({ repository, path: 'a.ts' }, { ...actor(), scopes: [] } as McpPrincipal);
+    assert.equal(unscoped.structuredContent.error.code, 'INSUFFICIENT_SCOPE');
+    assert.equal(reads.length, before + 4, 'executor rejections never reach git');
   } finally {
     moduleMock.restore();
   }
