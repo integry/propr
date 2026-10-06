@@ -10,6 +10,8 @@ export interface RelevantFile {
   path: string;
   reason: 'git-history' | 'path-match' | 'combined' | 'llm-semantic' | 'semantic';
   score: number;
+  /** Individual signals that contributed to the score (expands `combined`). */
+  signals?: Array<Exclude<RelevantFile['reason'], 'combined'>>;
 }
 
 export interface RelevanceResult {
@@ -161,7 +163,7 @@ function buildSortedFiles(
       } else {
         reason = reasons[0] as RelevantFile['reason'];
       }
-      return { path, reason, score: data.normalizedScore };
+      return { path, reason, score: data.normalizedScore, signals: reasons as NonNullable<RelevantFile['signals']> };
     });
 }
 
