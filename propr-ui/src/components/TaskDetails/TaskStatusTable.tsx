@@ -38,10 +38,8 @@ const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[
   const isReview = commandMode === 'review';
   const isFix = commandMode === 'fix';
 
-  const replacementLabel = getReplacementEventLabel(item);
-  if (replacementLabel) return replacementLabel;
-  if (item.metadata?.repositoryWorkflowDeferrals) return 'Waiting for Repository Capacity';
-  if (isBudgetExceeded(item)) return 'Spend Cap Reached';
+  const eventLabel = getEventLabel(item);
+  if (eventLabel) return eventLabel;
   if (stateUpper === 'PENDING') return 'Task Queued';
   if (stateUpper === 'PROCESSING') return isReview ? 'Preparing Review' : 'Analyzing Request';
   if (stateUpper === 'CLAUDE_EXECUTION' || stateUpper === 'CLAUDE_EXECUTION_STARTED') {
@@ -54,6 +52,14 @@ const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[
   if (stateUpper === 'CANCELLED') return 'Task Cancelled';
 
   return item.state?.replace(/_/g, ' ').toLowerCase() || '';
+};
+
+/** Events whose label comes from metadata rather than the task state they repeat. */
+const getEventLabel = (item: HistoryItem): string | null => {
+  const replacementLabel = getReplacementEventLabel(item);
+  if (replacementLabel) return replacementLabel;
+  if (item.metadata?.repositoryWorkflowDeferrals) return 'Waiting for Repository Capacity';
+  return isBudgetExceeded(item) ? 'Spend Cap Reached' : null;
 };
 
 /** Automatic-replacement timeline events repeat the task's state; label them by event. */

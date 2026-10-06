@@ -21,10 +21,7 @@ interface JobReturnValue {
         sessionId: string; conversationId?: string; executionTime?: number;
         success?: boolean; conversationLog?: unknown[]; model?: string;
     };
-    postProcessing?: {
-        success?: boolean;
-        pr?: { number: number; url: string };
-    };
+    postProcessing?: { success?: boolean; pr?: { number: number; url: string } };
 }
 
 interface TaskHistoryRoutesDeps { redisClient: RedisClientType; taskQueue: Queue; db: Knex; previewReader?: typeof previewMediaReader }
@@ -122,14 +119,14 @@ async function getHistoryFromDb(db: Knex, taskId: string, previewReader: typeof 
     if (!task || historyRecords.length === 0) return null;
 
     const taskInfo = buildTaskInfoFromDb(taskId, task, parseJobData(task.initial_job_data));
-    const attemptLineage = await loadAttemptLineage(db, taskId, task);
-    if (attemptLineage) taskInfo.attemptLineage = attemptLineage;
 
-    const [llmExecutions, usage, previewMedia] = await Promise.all([
+    const [llmExecutions, usage, previewMedia, attemptLineage] = await Promise.all([
       db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc'),
       fetchUsageMetrics(db, taskId),
       projectTaskPreviewMedia(task, historyRecords, previewReader),
+      loadAttemptLineage(db, taskId, task),
     ]);
+    if (attemptLineage) taskInfo.attemptLineage = attemptLineage;
 
     const executionsByHistoryId = new Map<number, Record<string, unknown>>();
     const executionsBySessionId = new Map<string, Record<string, unknown>>();
