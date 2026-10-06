@@ -134,6 +134,8 @@ test('renderPrTemplateSection escapes values that template HTML turns into raw H
   assert.equal(renderPrTemplateSection('<div>\n{{summary}}', hostile), '<div>\n`&lt;details>`');
   const fenced = { ...values, summary: '```\n<details>\n```' };
   assert.equal(renderPrTemplateSection('<pre>\n\n{{summary}}', fenced), '<pre>\n\n```\n&lt;details>\n```');
+  // Browsers close a comment at `--!>`, but GitHub's comment block runs on to `-->`, so the value is raw HTML.
+  assert.equal(renderPrTemplateSection('<!-- note --!>\n\n{{summary}}\n-->', hostile), '<!-- note --!>\n\n`&lt;details>`\n-->');
 });
 
 test('composePrBody decides code boundaries in the composed description', () => {

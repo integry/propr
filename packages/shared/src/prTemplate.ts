@@ -185,12 +185,20 @@ function trimMarked({ text, untrusted }: MarkedText): MarkedText {
 }
 
 const ASCII_PUNCTUATION = /[!-/:-@[-`{-~]/;
-const HTML_BLOCK_STARTS: ReadonlyArray<[RegExp, RegExp]> = [
-  [/^ {0,3}<(?:script|pre|style|textarea)(?:[ \t>]|$)/i, /<\/(?:script|pre|style|textarea)>/i],
-  [/^ {0,3}<!--/, /-->/],
-  [/^ {0,3}<\?/, /\?>/],
-  [/^ {0,3}<![A-Za-z]/, />/],
-  [/^ {0,3}<!\[CDATA\[/, /\]\]>/],
+type HtmlBlockEnd = (text: string) => boolean;
+/**
+ * CommonMark HTML blocks that may span blank lines, with the test for the line
+ * that ends each. These mirror GitHub's Markdown parser, not a browser: a
+ * comment block ends only at `-->`, even though browsers also close a comment
+ * at `--!>`. Lines inside a block are never treated as code, so a block that
+ * stays open longer than the browser's comment only escapes more.
+ */
+const HTML_BLOCK_STARTS: ReadonlyArray<[RegExp, HtmlBlockEnd]> = [
+  [/^ {0,3}<(?:script|pre|style|textarea)(?:[ \t>]|$)/i, text => /<\/(?:script|pre|style|textarea)>/i.test(text)],
+  [/^ {0,3}<!--/, text => text.includes('-->')],
+  [/^ {0,3}<\?/, text => text.includes('?>')],
+  [/^ {0,3}<![A-Za-z]/, text => text.includes('>')],
+  [/^ {0,3}<!\[CDATA\[/, text => text.includes(']]>')],
 ];
 
 /**
@@ -246,7 +254,7 @@ function lineCodeSpans(line: string): { spans: Array<[number, number]>; balanced
 function certainCode({ text, untrusted }: MarkedText): boolean[] {
   const code = new Array<boolean>(text.length).fill(false);
   let fence: Fence | undefined;
-  let htmlEnd: RegExp | undefined;
+  let htmlEnd: HtmlBlockEnd | undefined;
   let blockStart = true;
   let blockHasHtml = false;
   let blockUnbalanced = false;
@@ -262,7 +270,7 @@ function certainCode({ text, untrusted }: MarkedText): boolean[] {
       continue;
     }
     if (htmlEnd) {
-      if (htmlEnd.test(line)) htmlEnd = undefined;
+      if (htmlEnd(line)) htmlEnd = undefined;
       continue;
     }
     if (/^[ \t]*$/.test(line)) {
@@ -280,10 +288,10 @@ function certainCode({ text, untrusted }: MarkedText): boolean[] {
     const trustedTag = [...line.matchAll(/</g)].some(match => !untrusted[lineOffset + match.index]);
     if (trustedTag) {
       blockHasHtml = true;
-      for (const [startPattern, endPattern] of HTML_BLOCK_STARTS) {
+      for (const [startPattern, isEnd] of HTML_BLOCK_STARTS) {
         const start = startPattern.exec(line);
         if (!start) continue;
-        if (!endPattern.test(line.slice(start[0].length))) htmlEnd = endPattern;
+        if (!isEnd(line.slice(start[0].length))) htmlEnd = isEnd;
         break;
       }
       continue;
