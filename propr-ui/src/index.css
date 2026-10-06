@@ -103,6 +103,45 @@ body {
   background: #9ca3af;
 }
 
+/* Subtle scrollbar - stealth thumb revealed on hover, no track and no stepper buttons.
+   Chromium ignores the ::-webkit-scrollbar rules (and draws stepper arrows) once the
+   standard properties are set, so those only apply where WebKit styling is unsupported. */
+@supports not selector(::-webkit-scrollbar) {
+  .scrollbar-subtle {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  .scrollbar-subtle:hover {
+    scrollbar-color: #cbd5e1 transparent;
+  }
+}
+
+.scrollbar-subtle::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-track,
+.scrollbar-subtle::-webkit-scrollbar-button {
+  display: none;
+  background: transparent;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+
+.scrollbar-subtle:hover::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
 /* Stealth scrollbar - invisible until hovered */
 .scrollbar-stealth {
   scrollbar-width: thin;
