@@ -465,3 +465,21 @@ self-hosted labels. Scheduled/manual runs across refs share
 one pending run. This does not serialize other workflows; nightly retains the
 legacy pool while PR checks select only the rootless label. Nightly also
 receives the Redis ownership fix. This follow-up does not activate or change nightly runner access.
+
+### Nightly test health issue
+
+The final `nightly-health` job (`scripts/nightly-health-issue.mjs`) runs after
+every other nightly job unless the run was cancelled, and only for the default
+branch. If any job failed, it finds the open issue titled `Nightly test health`
+with the `nightly-health` label (creating the label if missing) and comments on
+it, or opens it when none is open. The report holds the run link, the commit SHA,
+the failing jobs and steps, and an excerpt of up to 60 lines per job: the test
+runner's failure summary from the sanitized suite artifact, or the failing step
+of the job log. When every job succeeds, it comments `Green on <sha> — <run link>`
+and closes the issue. Skipped jobs without a failure leave the issue unchanged.
+It uses `GITHUB_TOKEN` with `issues: write` and `actions: read`; no other secrets.
+
+ProPR admits issues only by its configured trigger labels (`AI` by default)
+and ignores comments on issues that are not pull requests. The script refuses
+to apply `AI` or `llm-*` labels, so the health issue never enters ProPR's queue.
+Adding a trigger label by hand would still start an agent task.
