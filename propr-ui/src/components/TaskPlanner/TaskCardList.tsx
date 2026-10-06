@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import TaskCard from './TaskCard';
 import TaskTimeline from './TaskTimeline';
+import { CollapsedOutlineRail, OUTLINE_RAIL_MIN_TASKS, TaskTabBar } from './TaskTabBar';
 import { PlanTask } from '../../api/proprApi';
 import { useIsMobile } from '../../hooks/useIsMobile';
 
@@ -26,6 +27,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
 }) => {
   const isMobile = useIsMobile();
   const [activeTaskIndex, setActiveTaskIndex] = useState<number>(0);
+  const [isOutlineCollapsed, setIsOutlineCollapsed] = useState(false);
 
   // Handle scroll-based timeline highlighting
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
@@ -77,100 +79,123 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
     );
   }
 
-  // Only show timeline when there are multiple tasks and not on mobile
-  const showTimeline = tasks.length > 1 && !isMobile;
+  // Multi-step plans get navigation on desktop: a tab bar for short plans,
+  // a collapsible outline rail once the plan is long enough to need one.
+  const showNavigation = tasks.length > 1 && !isMobile;
+  const showOutlineRail = showNavigation && tasks.length >= OUTLINE_RAIL_MIN_TASKS;
+  const showTabBar = showNavigation && !showOutlineRail;
+  const taskTitles = tasks.map(t => t.title);
+  const taskIds = tasks.map(t => t.id);
 
   return (
     <div className="flex h-full min-h-full">
-      {/* Sticky Timeline Sidebar with Drag & Drop - only show when multiple tasks */}
-      {showTimeline && (
+      {showOutlineRail && !isOutlineCollapsed && (
         <TaskTimeline
           taskCount={tasks.length}
           activeIndex={activeTaskIndex}
           onStepClick={handleTimelineClick}
-          taskTitles={tasks.map(t => t.title)}
-          taskIds={tasks.map(t => t.id)}
+          taskTitles={taskTitles}
+          taskIds={taskIds}
           onReorderTasks={onReorderTasks}
           onScrollToTask={handleScrollToTask}
+          onCollapse={() => setIsOutlineCollapsed(true)}
+        />
+      )}
+      {showOutlineRail && isOutlineCollapsed && (
+        <CollapsedOutlineRail
+          activeIndex={activeTaskIndex}
+          taskCount={tasks.length}
+          onExpand={() => setIsOutlineCollapsed(false)}
         />
       )}
 
-      {/* Main Task List */}
-      <div
-        className={`task-list-scroll flex-1 overflow-y-auto [scrollbar-gutter:stable] ${isMobile ? 'p-3' : 'p-4'} ${!showTimeline && !isMobile ? 'px-6' : ''}`}
-        data-task-list
-        onScroll={handleScroll}
-        style={{
-          scrollbarWidth: 'thin',
-          scrollbarColor: '#d1d5db transparent'
-        }}
-      >
-        <style>{`
-          .task-list-scroll::-webkit-scrollbar {
-            width: 6px;
-          }
-          .task-list-scroll::-webkit-scrollbar-track {
-            background: transparent;
-          }
-          .task-list-scroll::-webkit-scrollbar-thumb {
-            background-color: #d1d5db;
-            border-radius: 3px;
-          }
-        `}</style>
-        <div className="pb-4">
-          <AnimatePresence mode="popLayout">
-            {tasks.map((task, index) => {
-              const isHighlighted = highlightedIds.includes(task.id);
-              const isLastTask = index === tasks.length - 1;
-              return (
-                <motion.div
-                  key={task.id}
-                  data-task-index={index}
-                  layout
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{
-                    opacity: 1,
-                    y: 0,
-                  }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{
-                    layout: { duration: 0.3 },
-                    opacity: { duration: 0.2 },
-                  }}
-                  className="relative"
-                >
-                  {/* Highlight pulse effect */}
-                  {isHighlighted && (
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: [0.3, 0.1, 0.3] }}
-                      transition={{ duration: 1.5, repeat: Infinity }}
-                      className="absolute inset-0 bg-indigo-50 rounded-lg -z-10"
-                    />
-                  )}
-                  <TaskCard
-                    task={task}
-                    isHighlighted={isHighlighted}
-                    stepNumber={index + 1}
-                    draftId={draftId}
-                    hideNotes={hideNotes}
-                    onChange={(updatedTask) => onTaskChange(task.id, updatedTask)}
-                    onDelete={() => {
-                      // Explicitly capture and log the task.id for debugging
-                      const taskIdToDelete = task.id;
-                      console.log(`[TaskCardList] Deleting task: id="${taskIdToDelete}", title="${task.title}"`);
-                      onDeleteTask(taskIdToDelete);
+      <div className="flex min-w-0 flex-1 flex-col">
+        {showTabBar && (
+          <TaskTabBar
+            taskTitles={taskTitles}
+            taskIds={taskIds}
+            activeIndex={activeTaskIndex}
+            onSelect={handleScrollToTask}
+          />
+        )}
+
+        {/* Main Task List */}
+        <div
+          className={`task-list-scroll flex-1 overflow-y-auto [scrollbar-gutter:stable] ${isMobile ? 'p-3' : 'p-4'} ${!showOutlineRail && !isMobile ? 'px-6' : ''}`}
+          data-task-list
+          onScroll={handleScroll}
+          style={{
+            scrollbarWidth: 'thin',
+            scrollbarColor: '#d1d5db transparent'
+          }}
+        >
+          <style>{`
+            .task-list-scroll::-webkit-scrollbar {
+              width: 6px;
+            }
+            .task-list-scroll::-webkit-scrollbar-track {
+              background: transparent;
+            }
+            .task-list-scroll::-webkit-scrollbar-thumb {
+              background-color: #d1d5db;
+              border-radius: 3px;
+            }
+          `}</style>
+          <div className="pb-4">
+            <AnimatePresence mode="popLayout">
+              {tasks.map((task, index) => {
+                const isHighlighted = highlightedIds.includes(task.id);
+                const isLastTask = index === tasks.length - 1;
+                return (
+                  <motion.div
+                    key={task.id}
+                    data-task-index={index}
+                    layout
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{
+                      opacity: 1,
+                      y: 0,
                     }}
-                    id={`task-card-${task.id}`}
-                  />
-                  {/* Horizontal divider between tasks */}
-                  {!isLastTask && (
-                    <div className="my-8 border-b border-gray-200" />
-                  )}
-                </motion.div>
-              );
-            })}
-          </AnimatePresence>
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{
+                      layout: { duration: 0.3 },
+                      opacity: { duration: 0.2 },
+                    }}
+                    className="relative"
+                  >
+                    {/* Highlight pulse effect */}
+                    {isHighlighted && (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: [0.3, 0.1, 0.3] }}
+                        transition={{ duration: 1.5, repeat: Infinity }}
+                        className="absolute inset-0 bg-indigo-50 rounded-lg -z-10"
+                      />
+                    )}
+                    <TaskCard
+                      task={task}
+                      isHighlighted={isHighlighted}
+                      stepNumber={index + 1}
+                      draftId={draftId}
+                      hideNotes={hideNotes}
+                      onChange={(updatedTask) => onTaskChange(task.id, updatedTask)}
+                      onDelete={() => {
+                        // Explicitly capture and log the task.id for debugging
+                        const taskIdToDelete = task.id;
+                        console.log(`[TaskCardList] Deleting task: id="${taskIdToDelete}", title="${task.title}"`);
+                        onDeleteTask(taskIdToDelete);
+                      }}
+                      id={`task-card-${task.id}`}
+                    />
+                    {/* Horizontal divider between tasks */}
+                    {!isLastTask && (
+                      <div className="my-8 border-b border-gray-200" />
+                    )}
+                  </motion.div>
+                );
+              })}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
     </div>

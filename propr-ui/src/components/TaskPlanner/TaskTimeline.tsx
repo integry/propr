@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef } from 'react';
-import { CheckCircle2, GripVertical } from 'lucide-react';
+import { CheckCircle2, GripVertical, PanelLeftClose } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -16,6 +16,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { getOutlineTitle } from './planDisplayName';
 
 interface TaskTimelineProps {
   taskCount: number;
@@ -26,17 +27,8 @@ interface TaskTimelineProps {
   completedIndices?: number[];
   onReorderTasks?: (activeId: string, overId: string) => void;
   onScrollToTask?: (taskId: string, index: number) => void;
+  onCollapse?: () => void;
 }
-
-/**
- * Generated step titles often repeat the plan name with a counter
- * ("Agents v1 (3/17): Agent run store"). The outline already shows the
- * step number, so only the distinguishing part of the title is kept.
- */
-const getOutlineTitle = (title: string): string => {
-  const stripped = title.replace(/^.*?\(\s*\d+\s*\/\s*\d+\s*\)\s*[:\-–—]\s*/, '').trim();
-  return stripped || title.trim();
-};
 
 interface OutlineItemProps {
   id: string;
@@ -127,6 +119,7 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   completedIndices = [],
   onReorderTasks,
   onScrollToTask,
+  onCollapse,
 }) => {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -165,10 +158,23 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
       aria-label="Plan outline"
       className="sticky top-0 flex h-full w-72 min-h-0 flex-shrink-0 flex-col border-r border-slate-200 bg-slate-50"
     >
-      <div className="flex items-baseline justify-between px-4 pt-4 pb-2">
+      <div className="flex items-center justify-between gap-2 px-4 pt-4 pb-2">
         <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Plan Outline</span>
-        <span className="text-xs tabular-nums text-slate-400">
-          <span className="font-medium text-slate-600">{activeIndex + 1}</span> / {taskCount}
+        <span className="flex items-center gap-2">
+          <span className="text-xs tabular-nums text-slate-400">
+            <span className="font-medium text-slate-600">{activeIndex + 1}</span> / {taskCount}
+          </span>
+          {onCollapse && (
+            <button
+              type="button"
+              onClick={onCollapse}
+              aria-label="Collapse outline"
+              title="Collapse outline"
+              className="rounded p-0.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700 transition-colors"
+            >
+              <PanelLeftClose size={14} />
+            </button>
+          )}
         </span>
       </div>
 

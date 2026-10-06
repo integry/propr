@@ -67,6 +67,10 @@ const studioDrafts: Record<string, Record<string, unknown>> = {
     draft_id: 'plan-agents', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
     status: 'review', plan_json: agentPlan, chat_history: [], context_config: { baseBranch: 'main' }, created_at: ago(5), updated_at: ago(1),
   },
+  'plan-short': {
+    draft_id: 'plan-short', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
+    status: 'review', plan_json: agentPlan.slice(0, 3), chat_history: [], context_config: { baseBranch: 'main' }, created_at: ago(5), updated_at: ago(1),
+  },
   'plan-mcp-exec': {
     draft_id: 'plan-mcp-exec', repository, name: 'Repository Search and Read MCP Tools Implementation', initial_prompt: longPrompt,
     status: 'executed', plan_json: executionPlan, context_config: { baseBranch: 'main', useEpic: false, autoMerge: true, runUltrafix: true, ultrafixGoal: 8, ultrafixMaxCycles: 5 },
@@ -142,17 +146,49 @@ test('review step lists the plan outline with titles instead of a blind numbered
   const longStep = outline.getByRole('button', { name: /Shared contracts for agent definitions/ }).locator('span').last();
   expect(await longStep.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   await expect(page.getByTitle('Undo').locator('..')).toHaveClass(/border-slate-200/);
+  await expect(page.getByTitle('Delete Plan')).toHaveCount(0);
   await capture(page, 'review-plan-outline');
   await expect(outline.getByRole('listitem')).toHaveCount(17);
   await outline.getByRole('button', { name: /Database migration and definition store/ }).click();
   await expect(outline.getByRole('button', { name: /Database migration and definition store/ })).toHaveAttribute('aria-current', 'step');
 
+  const specBefore = (await page.locator('[data-task-list]').boundingBox())!.width;
+  await page.getByRole('button', { name: 'Collapse outline' }).click();
+  await page.getByRole('button', { name: 'Assistant' }).click();
+  await expect(outline).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Assistant' })).toHaveAttribute('aria-pressed', 'false');
+  expect((await page.locator('[data-task-list]').boundingBox())!.width).toBeGreaterThan(specBefore + 600);
+  await capture(page, 'review-plan-full-width');
+  await page.getByRole('button', { name: 'Show outline' }).click();
+  await expect(outline).toBeVisible();
+});
+
+test('review step uses a tab bar instead of the outline rail for short plans', async ({ page }) => {
+  await page.goto('/studio/plan-short');
+  const tabs = page.getByRole('navigation', { name: 'Plan steps' });
+  await expect(tabs).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Plan outline' })).toHaveCount(0);
+  await expect(tabs.getByRole('button')).toHaveCount(3);
+  await expect(tabs.getByRole('button', { name: /Shared contracts for agent definitions/ })).toHaveAttribute('aria-current', 'step');
+  expect((await page.locator('[data-task-list]').boundingBox())!.width).toBeGreaterThan(700);
+  await page.getByRole('button', { name: 'More plan actions' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Delete plan' })).toBeVisible();
+  await page.mouse.click(5, 5);
+  await capture(page, 'review-plan-tabs');
 });
 
 test('execution step renders one matrix with batch controls and labelled ultrafix inputs', async ({ page }) => {
   await page.goto('/studio/plan-mcp-exec');
   await expect(page.getByRole('radio', { name: 'Execute as Individual Tasks' })).toHaveAttribute('aria-checked', 'true');
   await expect(page.getByTestId('plan-execution-matrix').getByTestId('plan-execution-row')).toHaveCount(3);
+  const configButton = page.getByTestId('execution-config-button');
+  await expect(configButton).toContainText('Opus 5.5 · Ultrafix (8/10) · Auto-merge');
+  await expect(page.getByText('PR Options')).toHaveCount(0);
+  expect((await page.getByTestId('execution-options-bar').boundingBox())!.height).toBeLessThanOrEqual(56);
+  await page.waitForTimeout(500);
+  await capture(page, 'execution-matrix');
+  await configButton.click();
+  await expect(page.getByRole('dialog', { name: 'Execution config' })).toBeVisible();
   await expect(page.getByLabel('Max Loops')).toHaveValue('5');
   await expect(page.getByLabel('Min Review Score').locator('option:checked')).toHaveText('◆ 8/10 (Standard)');
   await expect(page.getByTestId('ultrafix-nested-settings')).toBeVisible();
@@ -160,8 +196,8 @@ test('execution step renders one matrix with batch controls and labelled ultrafi
   await expect(matrix.getByRole('combobox')).toHaveCount(0);
   await expect(matrix.getByTestId('agent-override-chip').first()).toHaveText('Opus 5.5');
   await expect(page.getByRole('button', { name: 'Execute All Remaining (2 tasks)' })).toBeVisible();
-  await page.waitForTimeout(500);
-  await capture(page, 'execution-matrix');
+  await capture(page, 'execution-config-popover');
+  await page.keyboard.press('Escape');
   await matrix.getByTestId('agent-override-chip').first().click();
   await expect(page.getByRole('dialog', { name: /Agent override for #2799/ })).toBeVisible();
   await capture(page, 'execution-agent-override');

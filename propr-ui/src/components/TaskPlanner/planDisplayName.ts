@@ -33,3 +33,13 @@ export function getDraftDisplayName(draft: DraftDisplayNameSource | null | undef
   if (isStalePromptDerivedName(name, prompt)) return promptTitle || name;
   return name;
 }
+
+/**
+ * Generated step titles often repeat the plan name with a counter
+ * ("Agents v1 (3/17): Agent run store"). The outline already shows the
+ * step number, so only the distinguishing part of the title is kept.
+ */
+export const getOutlineTitle = (title: string): string => {
+  const stripped = title.replace(/^.*?\(\s*\d+\s*\/\s*\d+\s*\)\s*[:\-–—]\s*/, '').trim();
+  return stripped || title.trim();
+};

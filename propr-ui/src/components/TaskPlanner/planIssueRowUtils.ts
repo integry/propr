@@ -1,4 +1,5 @@
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
+import type { AgentModelPair } from '../../api/planIssuesApi';
 
 export const getModelName = (modelId: string | null): string => {
   if (!modelId) return '';
@@ -30,4 +31,29 @@ export const getImplementButtonTitle = (hasAgent: boolean, isFirstPending: boole
   if (!hasAgent) return 'Select an agent first';
   if (!isFirstPending) return 'Previous tasks not yet merged - click to implement anyway';
   return 'Start AI implementation';
+};
+
+export interface ExecutionConfigSummaryInput {
+  showAgent: boolean;
+  globalAgent: string | null;
+  globalModel: string | null;
+  globalIsMulti: boolean;
+  globalSelectedModels: AgentModelPair[];
+  autoMerge?: boolean;
+  runUltrafix?: boolean;
+  ultrafixGoal?: number | null;
+}
+
+/** One-line digest of the active execution settings, e.g. "Opus 5.5 · Ultrafix (8/10) · Auto-merge". */
+export const getExecutionConfigSummary = ({
+  showAgent, globalAgent, globalModel, globalIsMulti, globalSelectedModels, autoMerge, runUltrafix, ultrafixGoal,
+}: ExecutionConfigSummaryInput): string => {
+  const parts: string[] = [];
+  if (showAgent) {
+    if (globalIsMulti) parts.push(globalSelectedModels.length > 0 ? `${globalSelectedModels.length} models` : 'Choose models');
+    else parts.push(getShortModelName(globalModel) || globalAgent || 'Default agent');
+  }
+  if (runUltrafix) parts.push(ultrafixGoal ? `Ultrafix (${ultrafixGoal}/10)` : 'Ultrafix');
+  if (autoMerge) parts.push('Auto-merge');
+  return parts.length > 0 ? parts.join(' · ') : 'Defaults';
 };

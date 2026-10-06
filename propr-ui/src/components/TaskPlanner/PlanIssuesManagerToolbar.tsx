@@ -5,6 +5,8 @@ import { PlanTask } from '../../api/plannerApi';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import AgentModelSelector from './AgentModelSelector';
 import { UltrafixSettingsControls } from './PlanIssueRowComponents';
+import { ExecutionConfigPopover } from './ExecutionConfigPopover';
+import { getExecutionConfigSummary } from './planIssueRowUtils';
 
 /** Issue creation renders inside the same execution matrix the created issues will occupy. */
 export const TasksBeingCreated: React.FC<{
@@ -90,7 +92,7 @@ const GlobalAgentControls: React.FC<Pick<ExecutionOptionsToolbarProps,
   handleGlobalMultiToggle, handleGlobalMultiModelChange, handleApplyToAll,
   disableImplementation = false,
 }) => (
-  <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+  <div className="flex flex-col gap-2">
     <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">Default Agent</span>
     <div className="flex flex-wrap items-center gap-2">
       <AgentModelSelector
@@ -165,67 +167,71 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
 }) => {
   const ultrafixEnabled = runUltrafix || false;
   const isBatchPlan = tasks.length >= 2;
+  const summary = getExecutionConfigSummary({
+    showAgent: isBatchPlan, globalAgent, globalModel, globalIsMulti, globalSelectedModels, autoMerge, runUltrafix, ultrafixGoal,
+  });
 
+  // One bar: the execution mode on the left, every other setting behind the config summary on the right
   return (
-    <div className="flex flex-col gap-2.5 sm:gap-3 py-3 border-b border-slate-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-3">
-      <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between lg:gap-6">
-        {isBatchPlan && (
-          <ExecutionModeToggle useEpic={useEpic || false} disabled={disableImplementation} onChange={onUseEpicChange} />
-        )}
-        {isBatchPlan && (
-          <GlobalAgentControls
-            agents={agents}
-            globalAgent={globalAgent}
-            globalModel={globalModel}
-            globalIsMulti={globalIsMulti}
-            globalSelectedModels={globalSelectedModels}
-            applyingGlobal={applyingGlobal}
-            handleGlobalAgentChange={handleGlobalAgentChange}
-            handleGlobalModelChange={handleGlobalModelChange}
-            handleGlobalMultiToggle={handleGlobalMultiToggle}
-            handleGlobalMultiModelChange={handleGlobalMultiModelChange}
-            handleApplyToAll={handleApplyToAll}
-            disableImplementation={disableImplementation}
-          />
-        )}
-      </div>
-      <div className="flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-6">
-        <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0 sm:pt-0.5">PR Options</span>
-        {/* One option per line; ultrafix parameters nest under the checkbox they depend on */}
-        <div className="flex flex-col gap-2">
-          <label className="flex items-center gap-2 text-xs sm:text-sm text-slate-700 cursor-pointer select-none" title="Automatically merges the PR when all CI checks pass">
-            <input type="checkbox" checked={autoMerge || false} onChange={(e) => onAutoMergeChange?.(e.target.checked)} disabled={disableImplementation} className="w-4 h-4 text-primary-600 border-slate-300 rounded focus:ring-primary-500 cursor-pointer disabled:cursor-not-allowed" />
-            <ArrowDownToLine size={14} className="text-slate-500 hidden sm:block" />
-            <span>Auto-merge <span className="hidden sm:inline">if checks pass</span></span>
-            <Info size={14} className="text-slate-400 hover:text-slate-600 transition-colors" />
-          </label>
-          <div className="flex flex-col gap-1.5">
-            <label className="flex items-center gap-2 text-xs sm:text-sm text-slate-700 cursor-pointer select-none" title="Automatically run ultrafix after the PR is opened">
-              <input type="checkbox" checked={runUltrafix || false} onChange={(e) => onRunUltrafixChange?.(e.target.checked)} disabled={disableImplementation} className="w-4 h-4 text-primary-600 border-slate-300 rounded focus:ring-primary-500 cursor-pointer disabled:cursor-not-allowed" />
-              <span>Run ultrafix after PR</span>
+    <div className="flex flex-wrap items-center justify-between gap-2 py-2 border-b border-slate-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-3" data-testid="execution-options-bar">
+      {isBatchPlan ? (
+        <ExecutionModeToggle useEpic={useEpic || false} disabled={disableImplementation} onChange={onUseEpicChange} />
+      ) : <span />}
+      <ExecutionConfigPopover summary={summary}>
+        <div className="flex flex-col gap-4">
+          {isBatchPlan && (
+            <GlobalAgentControls
+              agents={agents}
+              globalAgent={globalAgent}
+              globalModel={globalModel}
+              globalIsMulti={globalIsMulti}
+              globalSelectedModels={globalSelectedModels}
+              applyingGlobal={applyingGlobal}
+              handleGlobalAgentChange={handleGlobalAgentChange}
+              handleGlobalModelChange={handleGlobalModelChange}
+              handleGlobalMultiToggle={handleGlobalMultiToggle}
+              handleGlobalMultiModelChange={handleGlobalMultiModelChange}
+              handleApplyToAll={handleApplyToAll}
+              disableImplementation={disableImplementation}
+            />
+          )}
+          <div className="flex flex-col gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500">PR Options</span>
+            {/* One option per line; ultrafix parameters nest under the checkbox they depend on */}
+            <label className="flex items-center gap-2 text-xs sm:text-sm text-slate-700 cursor-pointer select-none" title="Automatically merges the PR when all CI checks pass">
+              <input type="checkbox" checked={autoMerge || false} onChange={(e) => onAutoMergeChange?.(e.target.checked)} disabled={disableImplementation} className="w-4 h-4 text-primary-600 border-slate-300 rounded focus:ring-primary-500 cursor-pointer disabled:cursor-not-allowed" />
+              <ArrowDownToLine size={14} className="text-slate-500 hidden sm:block" />
+              <span>Auto-merge if checks pass</span>
+              <Info size={14} className="text-slate-400 hover:text-slate-600 transition-colors" />
             </label>
-            {ultrafixEnabled && (
-              <div className="flex items-start gap-1.5 pl-6" data-testid="ultrafix-nested-settings">
-                <span aria-hidden="true" className="pt-1 text-xs text-slate-400">↳</span>
-                <UltrafixSettingsControls
-                  enabled={!disableImplementation}
-                  goal={ultrafixGoal}
-                  maxCycles={ultrafixMaxCycles}
-                  onGoalChange={(value) => onUltrafixGoalChange?.(value)}
-                  onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange?.(value)}
-                  goalPlaceholder="Instance default"
-                  maxPlaceholder="Default"
-                  inputClassName="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-mono disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-                  goalInputWidthClassName="w-44"
-                  maxInputWidthClassName="w-16"
-                  containerClassName="flex flex-col gap-1"
-                  errorClassName="text-[11px] text-amber-700"
-                />
-              </div>
-            )}
+            <div className="flex flex-col gap-1.5">
+              <label className="flex items-center gap-2 text-xs sm:text-sm text-slate-700 cursor-pointer select-none" title="Automatically run ultrafix after the PR is opened">
+                <input type="checkbox" checked={runUltrafix || false} onChange={(e) => onRunUltrafixChange?.(e.target.checked)} disabled={disableImplementation} className="w-4 h-4 text-primary-600 border-slate-300 rounded focus:ring-primary-500 cursor-pointer disabled:cursor-not-allowed" />
+                <span>Run ultrafix after PR</span>
+              </label>
+              {ultrafixEnabled && (
+                <div className="flex items-start gap-1.5 pl-6" data-testid="ultrafix-nested-settings">
+                  <span aria-hidden="true" className="pt-1 text-xs text-slate-400">↳</span>
+                  <UltrafixSettingsControls
+                    enabled={!disableImplementation}
+                    goal={ultrafixGoal}
+                    maxCycles={ultrafixMaxCycles}
+                    onGoalChange={(value) => onUltrafixGoalChange?.(value)}
+                    onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange?.(value)}
+                    goalPlaceholder="Instance default"
+                    maxPlaceholder="Default"
+                    inputClassName="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-mono disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                    goalInputWidthClassName="w-44"
+                    maxInputWidthClassName="w-16"
+                    containerClassName="flex flex-col gap-1"
+                    errorClassName="text-[11px] text-amber-700"
+                  />
+                </div>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      </ExecutionConfigPopover>
     </div>
   );
 };

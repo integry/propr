@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FileQuestion, Info, X, Undo2, Redo2, Loader2, ArrowLeft, Github, GitBranch, Trash2, AlertCircle, History } from 'lucide-react';
+import { FileQuestion, Info, X, Undo2, Redo2, Loader2, ArrowLeft, Github, GitBranch, Trash2, AlertCircle, History, MessageSquare, MoreHorizontal } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GranularityEnforcementMetadata } from '../../api/proprApi';
 
@@ -103,6 +103,9 @@ export interface PlanEditorHeaderProps {
   onShowHistory?: () => void;
   isMobile?: boolean;
   isReadOnly?: boolean;
+  /** Desktop only: whether the Assistant pane is shown, and the toggle for it. */
+  isAssistantOpen?: boolean;
+  onToggleAssistant?: () => void;
 }
 
 const isPlanActionDisabled = (
@@ -202,7 +205,53 @@ const PlanEditorMobileHeader: React.FC<PlanEditorHeaderProps> = ({
 };
 
 const SECONDARY_GROUP_BUTTON_CLASS = 'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed first:rounded-l-md last:rounded-r-md';
-const ICON_GROUP_BUTTON_CLASS = 'p-1 rounded text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors';
+const ICON_GROUP_BUTTON_CLASS = 'px-2 py-1.5 text-slate-600 hover:bg-slate-50 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors first:rounded-l-md last:rounded-r-md';
+
+interface PlanOverflowMenuProps {
+  isDeleting: boolean;
+  deleteDisabled: boolean;
+  deleteTitle: string;
+  onDelete: () => void;
+}
+
+/** Destructive plan actions live behind "…" so they are never one stray click away. */
+const PlanOverflowMenu: React.FC<PlanOverflowMenuProps> = ({ isDeleting, deleteDisabled, deleteTitle, onDelete }) => {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        aria-label="More plan actions"
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
+        title="More plan actions"
+        className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-200 rounded-md transition-colors"
+      >
+        {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <MoreHorizontal size={16} />}
+      </button>
+      {isOpen && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+          <div role="menu" className="absolute right-0 top-full mt-1 z-50 w-44 rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => { setIsOpen(false); onDelete(); }}
+              disabled={deleteDisabled}
+              title={deleteTitle}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Trash2 size={14} />
+              Delete plan
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
 
 const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
   planName,
@@ -219,7 +268,9 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
   onUndo,
   onRedo,
   onShowHistory,
-  isReadOnly = false
+  isReadOnly = false,
+  isAssistantOpen,
+  onToggleAssistant
 }) => {
   const actionDisabled = isPlanActionDisabled(isFinalizing, isResettingToSetup, isDeleting, isReadOnly);
 
@@ -258,15 +309,15 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
             Back to Setup
           </button>
         </div>
-        {/* Undo / Redo / History as one compact icon group */}
-        <div className="flex items-center gap-0.5 rounded-md border border-slate-200 bg-white p-1">
+        {/* Undo / Redo / History as one segmented icon pill */}
+        <div className="flex items-center rounded-md border border-slate-200 bg-white divide-x divide-slate-200">
           <button
             onClick={onUndo}
             disabled={!canUndo || isReadOnly}
             className={ICON_GROUP_BUTTON_CLASS}
             title="Undo"
           >
-            <Undo2 size={16} />
+            <Undo2 size={15} />
           </button>
           <button
             onClick={onRedo}
@@ -274,7 +325,7 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
             className={ICON_GROUP_BUTTON_CLASS}
             title="Redo"
           >
-            <Redo2 size={16} />
+            <Redo2 size={15} />
           </button>
           {onShowHistory && (
             <button
@@ -282,23 +333,32 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
               className={ICON_GROUP_BUTTON_CLASS}
               title="Plan history"
             >
-              <History size={16} />
+              <History size={15} />
             </button>
           )}
         </div>
-        {/* Delete Plan */}
-        <button
-          onClick={onDelete}
-          disabled={actionDisabled}
-          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          title={getReadOnlyTitle(isReadOnly, 'Delete Plan')}
-        >
-          {isDeleting ? (
-            <Loader2 size={16} className="animate-spin" />
-          ) : (
-            <Trash2 size={16} />
-          )}
-        </button>
+        {onToggleAssistant && (
+          <button
+            type="button"
+            onClick={onToggleAssistant}
+            aria-pressed={isAssistantOpen}
+            title={isAssistantOpen ? 'Hide the Assistant to read the plan at full width' : 'Show the Assistant'}
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              isAssistantOpen
+                ? 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100'
+                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            <MessageSquare size={14} />
+            Assistant
+          </button>
+        )}
+        <PlanOverflowMenu
+          isDeleting={isDeleting}
+          deleteDisabled={actionDisabled}
+          deleteTitle={getReadOnlyTitle(isReadOnly, 'Delete Plan')}
+          onDelete={onDelete}
+        />
       </div>
     </div>
   );
