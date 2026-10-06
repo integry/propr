@@ -14,6 +14,8 @@ export type {
     SystemTaskJobData,
     IndexingJobData,
     MergeConflictJobData,
+    AgentRunJobData,
+    AgentRunPhase,
     SystemAction,
     AutoResolveContext,
     JobData,

@@ -320,6 +320,17 @@ export async function getAgentRunById(
   return row ? rowToAgentRun(row) : undefined;
 }
 
+/** The run a definition already recorded for an idempotency key, if any. */
+export async function getAgentRunByIdempotencyKey(
+  definitionId: string,
+  idempotencyKey: string,
+  { database = db }: AgentRunStoreDependencies = {},
+): Promise<StoredAgentRun | undefined> {
+  const row = await database(TABLE).where({ definition_id: definitionId, idempotency_key: idempotencyKey })
+    .first<AgentRunRow | undefined>();
+  return row ? rowToAgentRun(row) : undefined;
+}
+
 export interface AgentRunPage {
   limit?: number;
   offset?: number;
