@@ -1,4 +1,4 @@
-import { CheckCircle, Clock, Loader2, XCircle, AlertCircle, Play, Settings2, GitMerge, GitPullRequestArrow } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { IssueSummary } from '../api/proprApi';
 
 /**
@@ -31,67 +31,82 @@ export const formatRelativeTime = (dateString: string): string => {
   return date.toLocaleDateString();
 };
 
-// "Success is Quiet": standard progression states share one neutral slate treatment.
-// Color is reserved for active work (teal) and states needing attention (amber).
-export const getStatusBadge = (status: string): string => {
+// "Success is Quiet": the same pill architecture as the Task list. Review-stage
+// states share one neutral slate pill; color marks active work, merges and failures.
+type PlanStatusTone = 'draft' | 'active' | 'review' | 'merged' | 'failed';
+
+const getStatusTone = (status: string): PlanStatusTone => {
   switch (status) {
-    case 'merged':
-      return 'text-slate-500';
+    case 'draft':
+      return 'draft';
     case 'executing':
     case 'generating':
     case 'refining':
-      return 'bg-teal-50 text-teal-700';
-    case 'draft':
-      return 'bg-transparent border border-amber-400 text-amber-600';
+      return 'active';
+    case 'merged':
+      return 'merged';
+    case 'failed':
+      return 'failed';
     default:
-      return 'bg-slate-100 text-slate-600';
+      return 'review';
   }
 };
+
+const STATUS_PILL_CLASSES: Record<PlanStatusTone, string> = {
+  draft: 'bg-slate-100 text-slate-600 border border-slate-200',
+  active: 'bg-teal-50 text-teal-700 border border-teal-200',
+  review: 'bg-slate-100 text-slate-700 border border-slate-200',
+  merged: 'bg-purple-50 text-purple-700 border border-purple-200',
+  failed: 'bg-red-50 text-red-700 border border-red-200',
+};
+
+export const getStatusBadge = (status: string): string => STATUS_PILL_CLASSES[getStatusTone(status)];
 
 export const getStatusLabel = (status: string): string => {
   switch (status) {
     case 'merged':
-      return '✓ Merged';
+      return 'Merged';
     case 'executed':
-      return 'Issues created';
+      return 'Issues Created';
     case 'executing':
-      return 'Creating issues';
+      return 'Creating Issues';
     case 'pr_created':
       return 'PR Created';
     case 'review':
-      return 'Ready for Review';
+      return 'In Review';
+    case 'approved':
+      return 'Approved';
     case 'generating':
       return 'Generating';
     case 'refining':
       return 'Refining';
     case 'draft':
       return 'Draft';
+    case 'failed':
+      return 'Failed';
     default:
       return status.charAt(0).toUpperCase() + status.slice(1);
   }
 };
 
+// Pill marker: hollow dot for drafts, spinner for active work, filled dot otherwise.
 export const getStatusIcon = (status: string): React.ReactNode => {
-  switch (status) {
-    case 'merged':
-      // Quiet Success: no icon, checkmark is in the label
-      return null;
-    case 'executed':
-      return <CheckCircle size={12} className="text-slate-500" />;
-    case 'pr_created':
-      return <GitPullRequestArrow size={12} className="text-slate-500" />;
-    case 'review':
-      return <Settings2 size={12} className="text-slate-500" />;
-    case 'executing':
-    case 'generating':
-    case 'refining':
-      return <Loader2 size={12} className="text-teal-600 animate-spin" />;
+  switch (getStatusTone(status)) {
     case 'draft':
-      return <Clock size={12} className="text-amber-500" />;
+      return <span className="w-1.5 h-1.5 rounded-full border border-slate-400" aria-hidden="true" />;
+    case 'active':
+      return <Loader2 size={11} className="text-teal-600 animate-spin" aria-hidden="true" />;
+    case 'merged':
+      return <span className="w-1.5 h-1.5 rounded-full bg-purple-500" aria-hidden="true" />;
+    case 'failed':
+      return <span className="w-1.5 h-1.5 rounded-full bg-red-500" aria-hidden="true" />;
     default:
-      return <Clock size={12} className="text-slate-500" />;
+      return <span className="w-1.5 h-1.5 rounded-full bg-slate-400" aria-hidden="true" />;
   }
 };
+
+/** "integry/propr" reads as "propr": the organization is the same on every row. */
+export const getRepositoryShortName = (repository: string): string => repository.split('/').pop() || repository;
 
 /**
  * Collapses a plan title (which may fall back to a raw markdown prompt) into a
@@ -107,43 +122,29 @@ export const toSingleLinePlainText = (value: string): string => value
   .replace(/\s+/g, ' ')
   .trim();
 
+const pluralize = (count: number, singular: string, plural = `${singular}s`) => `${count} ${count === 1 ? singular : plural}`;
+
+/** Issue counts as plain labelled tokens: "3 issues · 1 running · 2 pending". */
+export const getIssueSummaryTokens = (summary: IssueSummary | null | undefined): string[] => {
+  if (!summary || summary.total === 0) return [];
+  const tokens = [pluralize(summary.total, 'issue')];
+  if (summary.processing > 0) tokens.push(`${summary.processing} running`);
+  if (summary.pending > 0) tokens.push(`${summary.pending} pending`);
+  if (summary.merged > 0) tokens.push(`${summary.merged} merged`);
+  if (summary.closed > 0) tokens.push(`${summary.closed} closed`);
+  return tokens;
+};
+
 export const renderIssueSummary = (summary: IssueSummary | null | undefined): React.ReactNode => {
-  if (!summary || summary.total === 0) {
-    return <span className="text-gray-400 text-xs">No issues</span>;
+  const tokens = getIssueSummaryTokens(summary);
+  if (tokens.length === 0) {
+    return <span className="font-mono text-xs text-slate-400">No issues</span>;
   }
 
   return (
-    <div className="flex items-center gap-1.5 text-xs">
-      {/* Total issues - grouped tightly */}
-      <span className="flex items-center gap-0.5 text-gray-500">
-        <AlertCircle size={11} />
-        {summary.total}
-      </span>
-      {summary.processing > 0 && (
-        <span className="flex items-center gap-0.5 text-blue-600" title="Processing">
-          <Play size={11} />
-          {summary.processing}
-        </span>
-      )}
-      {summary.pending > 0 && (
-        <span className="flex items-center gap-0.5 text-yellow-600" title="Pending">
-          <Clock size={11} />
-          {summary.pending}
-        </span>
-      )}
-      {summary.merged > 0 && (
-        <span className="flex items-center gap-0.5 text-slate-500" title="Merged">
-          <GitMerge size={11} />
-          {summary.merged}
-        </span>
-      )}
-      {summary.closed > 0 && (
-        <span className="flex items-center gap-0.5 text-red-600" title="Closed">
-          <XCircle size={11} />
-          {summary.closed}
-        </span>
-      )}
-    </div>
+    <span className="font-mono text-xs text-slate-500 whitespace-nowrap">
+      {tokens.join(' • ')}
+    </span>
   );
 };
 
@@ -159,9 +160,9 @@ export const renderStatusStrip = (
       {/* Issue summary - grouped tightly */}
       {renderIssueSummary(summary)}
       {/* Separator dot */}
-      <span className="text-slate-300">·</span>
+      <span className="text-slate-300">•</span>
       {/* Status badge */}
-      <span className={`px-2 py-0.5 inline-flex items-center gap-1 text-xs leading-5 font-medium rounded-full ${getStatusBadge(effectiveStatus)}`}>
+      <span className={`px-2 py-0.5 inline-flex items-center gap-1.5 text-xs font-medium rounded-full ${getStatusBadge(effectiveStatus)}`}>
         {getStatusIcon(effectiveStatus)}
         {getStatusLabel(effectiveStatus)}
       </span>

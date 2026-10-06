@@ -97,6 +97,23 @@ describe('SetupWizardHeaders', () => {
     );
 
     expect(screen.getByText('GitHub unavailable')).toBeInTheDocument();
-    expect(screen.getByText('Unavailable')).toBeInTheDocument();
+    expect(screen.getByText('branch (unverified)')).toBeInTheDocument();
+  });
+
+  it('keeps the configured branch name visible with a warning when its status is unavailable', () => {
+    render(
+      <NewModeHeader
+        reposLoading={false}
+        selectedRepo="integry/propr"
+        selectedBaseBranch="main"
+        repos={duplicateRepos}
+        onRepoChange={vi.fn()}
+        baseBranch=""
+        isLoadingBranches={false}
+      />
+    );
+
+    expect(screen.getByTestId('branch-chip')).toHaveTextContent('main (unverified)');
+    expect(screen.getByLabelText('Branch status unavailable')).toBeInTheDocument();
   });
 });

@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { GitBranch } from 'lucide-react';
+import { AlertTriangle, GitBranch } from 'lucide-react';
 import { RepositorySelector, RepoOption, RepoSelection } from '../RepositorySelector';
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
@@ -19,15 +19,32 @@ export const FormatRepoName: React.FC<{ repository: string }> = ({ repository })
   return <span className="text-gray-700">{repository}</span>;
 };
 
-const BranchBadge: React.FC<{ baseBranch: string }> = ({ baseBranch }) => (
-  <span
-    className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-700 max-w-full"
-    title={baseBranch ? `${baseBranch}\n\n${BRANCH_TOOLTIP}` : `Branch unavailable\n\n${BRANCH_TOOLTIP}`}
-  >
-    <GitBranch className="h-3 w-3 flex-shrink-0" />
-    <span className="truncate font-mono">{baseBranch || 'Unavailable'}</span>
-  </span>
-);
+// The branch a repository entry is configured for, when only one entry matches.
+const soleConfiguredBranch = (repos: Repo[], repository: string): string | undefined => {
+  const matches = repos.filter(r => r.name === repository);
+  return matches.length === 1 ? matches[0].baseBranch : undefined;
+};
+
+// Target branch as a code chip. When the branch could not be confirmed, the
+// configured name stays visible with a warning instead of a bare "Unavailable".
+export const BranchBadge: React.FC<{ baseBranch: string; fallbackBranch?: string }> = ({ baseBranch, fallbackBranch }) => {
+  const branchName = baseBranch || fallbackBranch || '';
+  const isUnverified = !baseBranch;
+  const label = isUnverified ? `${branchName || 'branch'} (unverified)` : branchName;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-mono max-w-full ${
+        isUnverified ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-slate-200 bg-slate-50 text-slate-700'
+      }`}
+      title={isUnverified ? `Branch status unavailable\n\n${BRANCH_TOOLTIP}` : `${baseBranch}\n\n${BRANCH_TOOLTIP}`}
+      data-testid="branch-chip"
+    >
+      <GitBranch className="h-3 w-3 flex-shrink-0" />
+      <span className="truncate">{label}</span>
+      {isUnverified && <AlertTriangle className="h-3 w-3 flex-shrink-0 text-amber-500" aria-label="Branch status unavailable" />}
+    </span>
+  );
+};
 
 // Header for new mode (repository selector) - IDE-style breadcrumb layout
 export const NewModeHeader: React.FC<{
@@ -59,12 +76,11 @@ export const NewModeHeader: React.FC<{
       </div>
       {selectedRepo && (
         <>
-          <span className="text-gray-400 flex-shrink-0">/</span>
           <div className="inline-flex items-center max-w-[40%] sm:max-w-[50%]">
             {isLoadingBranches ? (
               <span className="text-gray-400 text-sm">Loading...</span>
             ) : (
-              <BranchBadge baseBranch={baseBranch} />
+              <BranchBadge baseBranch={baseBranch} fallbackBranch={selectedBaseBranch || soleConfiguredBranch(repos, selectedRepo)} />
             )}
           </div>
         </>
@@ -121,12 +137,11 @@ export const EditModeHeader: React.FC<{
           placeholder="Select repository"
         />
       </div>
-      <span className="text-gray-400 flex-shrink-0">/</span>
       <div className="inline-flex items-center max-w-[40%] sm:max-w-[50%]">
         {isRepoLoading ? (
           <span className="text-gray-400 text-sm">Loading...</span>
         ) : (
-          <BranchBadge baseBranch={baseBranch} />
+          <BranchBadge baseBranch={baseBranch} fallbackBranch={selectorBaseBranch || soleConfiguredBranch(finalRepoOptions, repository)} />
         )}
       </div>
       {(branchError || repoError) && (

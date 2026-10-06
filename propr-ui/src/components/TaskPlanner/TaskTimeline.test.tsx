@@ -20,7 +20,7 @@ describe('TaskTimeline plan outline', () => {
       />
     );
 
-    expect(screen.getByRole('navigation', { name: 'Plan outline' })).toHaveClass('w-64');
+    expect(screen.getByRole('navigation', { name: 'Plan outline' })).toHaveClass('w-72');
     const active = screen.getByRole('button', { name: /Shared contracts & capabilities/ });
     expect(active).toHaveAttribute('aria-current', 'step');
     expect(screen.getByText('Database migration & store')).toBeInTheDocument();

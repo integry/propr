@@ -7,6 +7,7 @@ import {
   getEffectiveStatus,
   renderStatusStrip,
   formatRelativeTime,
+  getRepositoryShortName,
   toSingleLinePlainText
 } from './PlansPageUtils';
 
@@ -95,6 +96,7 @@ export const PlansListItem: React.FC<PlansListItemProps> = ({
   onAbort
 }) => {
   const effectiveStatus = getEffectiveStatus(draft.status, draft.issue_summary);
+  const repoName = getRepositoryShortName(draft.repository);
   const title = toSingleLinePlainText(getDraftDisplayName(draft, draft.initial_prompt)) || 'Untitled Plan';
 
   return (
@@ -102,7 +104,7 @@ export const PlansListItem: React.FC<PlansListItemProps> = ({
       {/* Repository column - hidden on mobile, fixed width on desktop */}
       <div className="hidden sm:block flex-shrink-0 w-[140px]">
         <Link to={`/studio/${draft.draft_id}`} className="block truncate text-xs font-mono text-slate-600" title={draft.repository}>
-          {draft.repository}
+          {repoName}
         </Link>
       </div>
       {/* Plan title and status - takes all remaining space */}
@@ -110,7 +112,7 @@ export const PlansListItem: React.FC<PlansListItemProps> = ({
         <Link to={`/studio/${draft.draft_id}`} className="block">
           {/* Repository - shown inline on mobile only */}
           <div className="sm:hidden mb-1 truncate text-xs font-mono text-slate-600">
-            {draft.repository}
+            {repoName}
           </div>
           {/* Plan Title - always a single plain-text line */}
           <div className="mb-1 truncate max-w-2xl text-sm font-medium text-gray-900" title={title}>

@@ -3,18 +3,27 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ExternalLink, GitPullRequest, MessageSquare, Play, Loader2, Eye, ChevronDown, StickyNote } from 'lucide-react';
 import { PlanIssue, PlanIssueStatus, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
+import { AgentOverrideChip } from './AgentOverrideChip';
 import { getAttachmentUrl } from '../../api/proprApi';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import { PlanTask } from '../../api/plannerApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
-import AgentModelSelector from './AgentModelSelector';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 import { getModelName, getImplementButtonClassName, getImplementButtonTitle } from './planIssueRowUtils';
 import { AuthenticatedAttachmentImage } from './AuthenticatedAttachmentImage';
 
 interface UltrafixSettingsControlsProps { enabled: boolean; goal: number | null | undefined; maxCycles: number | null | undefined; onGoalChange: (value: number | null) => void; onMaxCyclesChange: (value: number | null) => void; goalPlaceholder: string; maxPlaceholder: string; inputClassName: string; goalInputWidthClassName: string; maxInputWidthClassName: string; containerClassName?: string; errorClassName?: string; goalLabel?: string; maxLabel?: string; }
 
-const ULTRAFIX_GOAL_OPTIONS = [5, 6, 7, 8, 9, 10];
+// Each goal reads as the score pill it targets: same shape tiers as ScoreBadge, out of 10.
+const ULTRAFIX_GOAL_OPTIONS: { value: number; label: string }[] = [
+  { value: 10, label: '● 10/10 (Perfect)' },
+  { value: 9, label: '● 9/10 (Strict)' },
+  { value: 8, label: '◆ 8/10 (Standard)' },
+  { value: 7, label: '◆ 7/10 (Lenient)' },
+  { value: 6, label: '■ 6/10 (Needs review)' },
+  { value: 5, label: '■ 5/10 (Needs review)' },
+];
+const isUltrafixGoalOption = (goal: number | null | undefined) => ULTRAFIX_GOAL_OPTIONS.some((option) => option.value === goal);
 
 function parseUltrafixIntegerInput(
   rawValue: string,
@@ -44,8 +53,8 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
   maxInputWidthClassName,
   containerClassName = 'flex flex-col gap-1',
   errorClassName = 'text-[11px] text-amber-700',
-  goalLabel = 'Target Rating',
-  maxLabel = 'Max Iterations',
+  goalLabel = 'Min Review Score',
+  maxLabel = 'Max Loops',
 }) => {
   const [maxCyclesInput, setMaxCyclesInput] = useState(maxCycles?.toString() ?? '');
   const [maxCyclesError, setMaxCyclesError] = useState<string | null>(null);
@@ -64,7 +73,7 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
         <label className="flex items-center gap-1.5">
           <span className="text-xs text-slate-500 whitespace-nowrap">{goalLabel}</span>
           <select
-            value={ULTRAFIX_GOAL_OPTIONS.includes(goal ?? 0) ? goal?.toString() : ''}
+            value={isUltrafixGoalOption(goal) ? goal?.toString() : ''}
             disabled={!enabled}
             onChange={(e) => {
               const value = Number(e.target.value);
@@ -72,9 +81,9 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
             }}
             className={`${goalInputWidthClassName} ${inputClassName}`}
           >
-            {!ULTRAFIX_GOAL_OPTIONS.includes(goal ?? 0) && <option value="" disabled>{goalPlaceholder}</option>}
+            {!isUltrafixGoalOption(goal) && <option value="" disabled>{goalPlaceholder}</option>}
             {ULTRAFIX_GOAL_OPTIONS.map((option) => (
-              <option key={option} value={option}>{option}</option>
+              <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
         </label>
@@ -216,24 +225,20 @@ export const RowActions: React.FC<RowActionsProps> = ({
   handleImplementClick,
   handleToggleExpand
 }) => {
-  const issueNumber = issue.issue_number;
-
   return (
-    <div className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:w-auto lg:flex-1 lg:justify-end lg:gap-3">
+    <div className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:w-auto lg:flex-none lg:flex-nowrap lg:justify-end lg:gap-3">
       {isPending && (
-        <AgentModelSelector
+        <AgentOverrideChip
           agents={agents}
-          selectedAgent={issue.agent_alias}
-          selectedModel={issue.model_name}
-          onAgentChange={(agent) => onAgentChange(issueNumber, agent)}
-          onModelChange={(model) => onModelChange(issueNumber, model)}
+          issue={issue}
           disabled={implementing}
-          compact
-          isMulti={isMultiMode}
-          onMultiToggle={handleMultiToggle}
+          isMultiMode={isMultiMode}
           selectedModels={selectedModels}
-          onMultiModelChange={handleMultiModelChange}
-          onMultiConfirm={handleImplementClick}
+          onAgentChange={onAgentChange}
+          onModelChange={onModelChange}
+          handleMultiToggle={handleMultiToggle}
+          handleMultiModelChange={handleMultiModelChange}
+          handleImplementClick={handleImplementClick}
         />
       )}
       {isPending && showImplementButton && (

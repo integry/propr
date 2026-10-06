@@ -14,6 +14,7 @@ const drafts = [
   { draft_id: 'plan-triage', name: 'Master-Detail Tasks Triage Console with Inline Details', status: 'executed', updated_at: ago(21), issue_summary: { total: 1, pending: 0, processing: 0, merged: 1, closed: 0 } },
   { draft_id: 'plan-timeframe', name: 'Synchronized Timeframe Selector for Analytics Page', repository: 'integry/digvin', status: 'draft', updated_at: ago(96), issue_summary: null },
   { draft_id: 'plan-mcp', name: 'Repository Search and Read MCP Tools Implementation', status: 'generating', updated_at: ago(0.2), issue_summary: null },
+  { draft_id: 'plan-failed', name: 'Migrate Webhook Intake to the Durable Queue', status: 'failed', updated_at: ago(30), issue_summary: null },
 ].map(draft => ({ repository, initial_prompt: draft.name ?? '', created_at: ago(200), ...draft }));
 
 const agentTitles = [
@@ -124,8 +125,12 @@ test('plans index keeps every row to one plain-text line with quiet status and u
   await expect(page.getByText(/##/)).toHaveCount(0);
   const lineHeight = await title.evaluate(element => parseFloat(getComputedStyle(element).lineHeight));
   expect((await title.boundingBox())!.height).toBeLessThanOrEqual(lineHeight + 1);
-  await expect(page.locator('span.rounded-full', { hasText: 'Ready for Review' }).first()).toHaveClass(/bg-slate-100/);
-  await expect(page.locator('a.font-mono', { hasText: 'integry/propr' }).first()).not.toHaveClass(/bg-/);
+  await expect(page.locator('span.rounded-full', { hasText: 'In Review' }).first()).toHaveClass(/bg-slate-100/);
+  await expect(page.locator('span.rounded-full', { hasText: 'Merged' }).first()).toHaveClass(/bg-purple-50/);
+  await expect(page.locator('span.rounded-full', { hasText: 'Failed' }).first()).toHaveClass(/bg-red-50/);
+  await expect(page.getByText('3 issues • 1 running • 2 merged')).toBeVisible();
+  await expect(page.locator('a.font-mono', { hasText: /^propr$/ }).first()).not.toHaveClass(/bg-/);
+  await expect(page.locator('a.font-mono', { hasText: 'integry/' })).toHaveCount(0);
   await capture(page, 'plans-index');
 });
 
@@ -134,6 +139,9 @@ test('review step lists the plan outline with titles instead of a blind numbered
   const outline = page.getByRole('navigation', { name: 'Plan outline' });
   await expect(outline).toBeVisible();
   await expect(outline.getByRole('button', { name: /Shared contracts for agent definitions/ })).toHaveAttribute('aria-current', 'step');
+  const longStep = outline.getByRole('button', { name: /Shared contracts for agent definitions/ }).locator('span').last();
+  expect(await longStep.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await expect(page.getByTitle('Undo').locator('..')).toHaveClass(/border-slate-200/);
   await capture(page, 'review-plan-outline');
   await expect(outline.getByRole('listitem')).toHaveCount(17);
   await outline.getByRole('button', { name: /Database migration and definition store/ }).click();
@@ -145,15 +153,27 @@ test('execution step renders one matrix with batch controls and labelled ultrafi
   await page.goto('/studio/plan-mcp-exec');
   await expect(page.getByRole('radio', { name: 'Execute as Individual Tasks' })).toHaveAttribute('aria-checked', 'true');
   await expect(page.getByTestId('plan-execution-matrix').getByTestId('plan-execution-row')).toHaveCount(3);
-  await expect(page.getByLabel('Max Iterations')).toHaveValue('5');
+  await expect(page.getByLabel('Max Loops')).toHaveValue('5');
+  await expect(page.getByLabel('Min Review Score').locator('option:checked')).toHaveText('◆ 8/10 (Standard)');
+  await expect(page.getByTestId('ultrafix-nested-settings')).toBeVisible();
+  const matrix = page.getByTestId('plan-execution-matrix');
+  await expect(matrix.getByRole('combobox')).toHaveCount(0);
+  await expect(matrix.getByTestId('agent-override-chip').first()).toHaveText('Opus 5.5');
   await expect(page.getByRole('button', { name: 'Execute All Remaining (2 tasks)' })).toBeVisible();
   await page.waitForTimeout(500);
   await capture(page, 'execution-matrix');
+  await matrix.getByTestId('agent-override-chip').first().click();
+  await expect(page.getByRole('dialog', { name: /Agent override for #2799/ })).toBeVisible();
+  await capture(page, 'execution-agent-override');
 });
 
 test('define step shows technical scope estimates and consistent token units', async ({ page }) => {
   await page.goto('/studio/plan-setup');
   await expect(page.getByTestId('context-scope-descriptor')).toContainText('Full Repository Scan');
   await expect(page.getByText(/Slower|\$\$\$/)).toHaveCount(0);
+  const generate = page.getByRole('button', { name: /Generate Plan/ });
+  const breakPlan = page.getByText('Break plan:');
+  expect(Math.abs((await generate.boundingBox())!.y + (await generate.boundingBox())!.height / 2 - ((await breakPlan.boundingBox())!.y + (await breakPlan.boundingBox())!.height / 2))).toBeLessThan(8);
+  await expect(page.getByTestId('branch-chip')).toContainText('main');
   await capture(page, 'define-context-scope');
 });

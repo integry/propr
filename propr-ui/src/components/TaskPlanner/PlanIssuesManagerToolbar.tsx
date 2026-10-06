@@ -189,35 +189,41 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
           />
         )}
       </div>
-      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-6">
-        <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">PR Options</span>
-        <div className="flex flex-wrap items-center gap-3 sm:gap-6">
+      <div className="flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-6">
+        <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0 sm:pt-0.5">PR Options</span>
+        {/* One option per line; ultrafix parameters nest under the checkbox they depend on */}
+        <div className="flex flex-col gap-2">
           <label className="flex items-center gap-2 text-xs sm:text-sm text-slate-700 cursor-pointer select-none" title="Automatically merges the PR when all CI checks pass">
             <input type="checkbox" checked={autoMerge || false} onChange={(e) => onAutoMergeChange?.(e.target.checked)} disabled={disableImplementation} className="w-4 h-4 text-primary-600 border-slate-300 rounded focus:ring-primary-500 cursor-pointer disabled:cursor-not-allowed" />
             <ArrowDownToLine size={14} className="text-slate-500 hidden sm:block" />
             <span>Auto-merge <span className="hidden sm:inline">if checks pass</span></span>
             <Info size={14} className="text-slate-400 hover:text-slate-600 transition-colors" />
           </label>
-          <label className="flex items-center gap-2 text-xs sm:text-sm text-slate-700 cursor-pointer select-none" title="Automatically run ultrafix after the PR is opened">
-            <input type="checkbox" checked={runUltrafix || false} onChange={(e) => onRunUltrafixChange?.(e.target.checked)} disabled={disableImplementation} className="w-4 h-4 text-primary-600 border-slate-300 rounded focus:ring-primary-500 cursor-pointer disabled:cursor-not-allowed" />
-            <span>Run ultrafix after PR</span>
-          </label>
-          {ultrafixEnabled && (
-            <UltrafixSettingsControls
-              enabled={!disableImplementation}
-              goal={ultrafixGoal}
-              maxCycles={ultrafixMaxCycles}
-              onGoalChange={(value) => onUltrafixGoalChange?.(value)}
-              onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange?.(value)}
-              goalPlaceholder="Default"
-              maxPlaceholder="Default"
-              inputClassName="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs sm:text-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
-              goalInputWidthClassName="w-20"
-              maxInputWidthClassName="w-16"
-              containerClassName="flex flex-col gap-1"
-              errorClassName="text-[11px] text-amber-700"
-            />
-          )}
+          <div className="flex flex-col gap-1.5">
+            <label className="flex items-center gap-2 text-xs sm:text-sm text-slate-700 cursor-pointer select-none" title="Automatically run ultrafix after the PR is opened">
+              <input type="checkbox" checked={runUltrafix || false} onChange={(e) => onRunUltrafixChange?.(e.target.checked)} disabled={disableImplementation} className="w-4 h-4 text-primary-600 border-slate-300 rounded focus:ring-primary-500 cursor-pointer disabled:cursor-not-allowed" />
+              <span>Run ultrafix after PR</span>
+            </label>
+            {ultrafixEnabled && (
+              <div className="flex items-start gap-1.5 pl-6" data-testid="ultrafix-nested-settings">
+                <span aria-hidden="true" className="pt-1 text-xs text-slate-400">↳</span>
+                <UltrafixSettingsControls
+                  enabled={!disableImplementation}
+                  goal={ultrafixGoal}
+                  maxCycles={ultrafixMaxCycles}
+                  onGoalChange={(value) => onUltrafixGoalChange?.(value)}
+                  onMaxCyclesChange={(value) => onUltrafixMaxCyclesChange?.(value)}
+                  goalPlaceholder="Instance default"
+                  maxPlaceholder="Default"
+                  inputClassName="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-mono disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                  goalInputWidthClassName="w-44"
+                  maxInputWidthClassName="w-16"
+                  containerClassName="flex flex-col gap-1"
+                  errorClassName="text-[11px] text-amber-700"
+                />
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

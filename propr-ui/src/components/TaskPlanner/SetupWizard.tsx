@@ -168,7 +168,8 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
         />
       </div>
       <div className="mobile-safe-action-area sticky bottom-0 z-20 flex-shrink-0 px-3 md:px-6 pt-2 md:py-4 bg-gray-100 border-t border-gray-300">
-        <div className="flex flex-col gap-2 md:gap-4">
+        {/* One docked action bar: plan shape and model on the left, export and generate on the right */}
+        <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3 md:gap-4">
           <div className="flex min-w-0 max-w-full items-center gap-2 overflow-x-auto">
             <span className="text-xs sm:text-sm text-gray-500 whitespace-nowrap">Break plan:</span>
             <GranularityPills
@@ -177,29 +178,18 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
               hideEstimate
             />
           </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3 md:gap-4">
-            <button
-              onClick={isDemoMode ? undefined : handleGenerate}
-              disabled={isGenerateDisabled}
-              title={isDemoMode ? 'Demo mode is read-only' : undefined}
-              className="flex max-w-full items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 md:px-6 py-2 md:py-2.5 text-white text-sm sm:text-base font-medium rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex-shrink-0"
-              style={{ backgroundColor: isGenerateDisabled ? undefined : 'rgb(29, 138, 138)' }}
-              onMouseEnter={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
-              onMouseLeave={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
-            >
-              {isDemoMode ? 'Read-only demo' : <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />}
-            </button>
-            <ModelSelector
-              agents={agents}
-              generationModel={config.generationModel}
-              onModelChange={handleModelChange}
-              modelName={stats?.modelName}
-              disabled={isGenerating}
-            />
+          <ModelSelector
+            agents={agents}
+            generationModel={config.generationModel}
+            onModelChange={handleModelChange}
+            modelName={stats?.modelName}
+            disabled={isGenerating}
+          />
+          <div className="ml-auto flex items-center gap-2 sm:gap-3">
             <button
               onClick={handleExportContext}
               disabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
-              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm ml-auto"
+              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
               title="Export context as XML"
             >
               {contextExport.isExporting ? (
@@ -208,6 +198,17 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
                 <Download className="w-4 h-4" />
               )}
               <span>Export Context</span>
+            </button>
+            <button
+              onClick={isDemoMode ? undefined : handleGenerate}
+              disabled={isGenerateDisabled}
+              title={isDemoMode ? 'Demo mode is read-only' : undefined}
+              className="flex max-w-full items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 md:px-5 py-2 text-white text-sm font-medium rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+              style={{ backgroundColor: isGenerateDisabled ? undefined : 'rgb(29, 138, 138)' }}
+              onMouseEnter={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
+              onMouseLeave={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
+            >
+              {isDemoMode ? 'Read-only demo' : <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />}
             </button>
           </div>
         </div>

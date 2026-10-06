@@ -5,19 +5,19 @@ import { GranularityEnforcementMetadata } from '../../api/proprApi';
 
 interface OriginalPromptPopoverProps {
   prompt: string;
+  buttonClassName?: string;
 }
 
-export const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt }) => {
+const PROMPT_BUTTON_CLASS = 'flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors text-teal-700 hover:bg-teal-50';
+
+export const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt, buttonClassName = PROMPT_BUTTON_CLASS }) => {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
     <div className="relative">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors"
-        style={{ color: 'rgb(29, 138, 138)' }}
-        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(29, 138, 138, 0.1)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+        className={buttonClassName}
         title="View original prompt"
       >
         <FileQuestion size={14} />
@@ -201,6 +201,9 @@ const PlanEditorMobileHeader: React.FC<PlanEditorHeaderProps> = ({
   );
 };
 
+const SECONDARY_GROUP_BUTTON_CLASS = 'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed first:rounded-l-md last:rounded-r-md';
+const ICON_GROUP_BUTTON_CLASS = 'p-1 rounded text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors';
+
 const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
   planName,
   repository,
@@ -220,39 +223,74 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
 }) => {
   const actionDisabled = isPlanActionDisabled(isFinalizing, isResettingToSetup, isDeleting, isReadOnly);
 
+  const repoName = repository.split('/').pop() || repository;
+
   return (
     <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-4">
-      <div className="flex items-center gap-4 min-w-0 flex-1">
-        {/* Plan Name - responsive width based on available space */}
-        <h1 className="text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        {/* Plan Name - takes the space the actions no longer need */}
+        <h1 className="text-lg font-semibold text-gray-900 truncate min-w-0 flex-1" title={planName}>
           {planName}
         </h1>
-        <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
-        {/* Repository and Branch Breadcrumb */}
-        <div className="flex items-center gap-2 text-sm flex-shrink-0">
-          <Github size={16} className="text-gray-500" />
-          <span className="font-medium text-gray-900 truncate max-w-[200px]" title={repository}>{repository}</span>
-          <span className="text-gray-400">/</span>
-          <GitBranch size={14} className="text-gray-500" />
-          <span className="text-gray-600">{baseBranch}</span>
+        {/* Repository and branch as quiet code metadata */}
+        <div className="flex items-center gap-2 text-xs flex-shrink-0">
+          <span className="font-mono text-slate-600 truncate max-w-[160px]" title={repository}>{repoName}</span>
+          <span className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-slate-700">
+            <GitBranch size={12} />
+            {baseBranch}
+          </span>
         </div>
-        {/* Original Prompt - moved to header */}
-        {originalPrompt && (
-          <>
-            <div className="h-4 w-px bg-gray-300 flex-shrink-0 hidden lg:block" />
-            <div className="hidden lg:block">
-              <OriginalPromptPopover prompt={originalPrompt} />
-            </div>
-          </>
-        )}
       </div>
 
       <div className="flex items-center gap-2 flex-shrink-0">
+        {/* Secondary navigation: the source prompt and the way back to setup */}
+        <div className="flex items-center rounded-md border border-slate-200 bg-white divide-x divide-slate-200">
+          {originalPrompt && (
+            <OriginalPromptPopover prompt={originalPrompt} buttonClassName={SECONDARY_GROUP_BUTTON_CLASS} />
+          )}
+          <button
+            onClick={onBackToSetup}
+            disabled={actionDisabled}
+            className={SECONDARY_GROUP_BUTTON_CLASS}
+            title={getReadOnlyTitle(isReadOnly, 'Back to Setup')}
+          >
+            <ArrowLeft size={14} />
+            Back to Setup
+          </button>
+        </div>
+        {/* Undo / Redo / History as one compact icon group */}
+        <div className="flex items-center gap-0.5 rounded-md border border-slate-200 bg-white p-1">
+          <button
+            onClick={onUndo}
+            disabled={!canUndo || isReadOnly}
+            className={ICON_GROUP_BUTTON_CLASS}
+            title="Undo"
+          >
+            <Undo2 size={16} />
+          </button>
+          <button
+            onClick={onRedo}
+            disabled={!canRedo || isReadOnly}
+            className={ICON_GROUP_BUTTON_CLASS}
+            title="Redo"
+          >
+            <Redo2 size={16} />
+          </button>
+          {onShowHistory && (
+            <button
+              onClick={onShowHistory}
+              className={ICON_GROUP_BUTTON_CLASS}
+              title="Plan history"
+            >
+              <History size={16} />
+            </button>
+          )}
+        </div>
         {/* Delete Plan */}
         <button
           onClick={onDelete}
           disabled={actionDisabled}
-          className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           title={getReadOnlyTitle(isReadOnly, 'Delete Plan')}
         >
           {isDeleting ? (
@@ -261,46 +299,6 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
             <Trash2 size={16} />
           )}
         </button>
-        <div className="h-6 w-px bg-gray-300 mx-1" />
-        {/* Back to Setup */}
-        <button
-          onClick={onBackToSetup}
-          disabled={actionDisabled}
-          className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          title={getReadOnlyTitle(isReadOnly, 'Back to Setup')}
-        >
-          <ArrowLeft size={16} />
-          Back to Setup
-        </button>
-        <div className="h-6 w-px bg-gray-300 mx-1" />
-        {/* Undo/Redo */}
-        <div className="flex items-center gap-1">
-          <button
-            onClick={onUndo}
-            disabled={!canUndo || isReadOnly}
-            className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title="Undo"
-          >
-            <Undo2 size={18} className="text-gray-600" />
-          </button>
-          <button
-            onClick={onRedo}
-            disabled={!canRedo || isReadOnly}
-            className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title="Redo"
-          >
-            <Redo2 size={18} className="text-gray-600" />
-          </button>
-          {onShowHistory && (
-            <button
-              onClick={onShowHistory}
-              className="p-2 rounded hover:bg-gray-200 transition-colors"
-              title="Plan history"
-            >
-              <History size={18} className="text-gray-600" />
-            </button>
-          )}
-        </div>
       </div>
     </div>
   );

@@ -108,7 +108,7 @@ const OutlineItem: React.FC<OutlineItemProps> = ({
         <span className={`w-5 flex-shrink-0 text-right font-mono text-xs tabular-nums ${isActive ? 'text-teal-700' : 'text-slate-400'}`}>
           {isCompleted ? <CheckCircle2 size={12} className="inline text-slate-500" /> : `${index + 1}.`}
         </span>
-        <span className="min-w-0 truncate">{title}</span>
+        <span className="min-w-0 line-clamp-2 break-words">{title}</span>
       </button>
     </li>
   );
@@ -163,7 +163,7 @@ export const TaskTimeline: React.FC<TaskTimelineProps> = ({
   return (
     <nav
       aria-label="Plan outline"
-      className="sticky top-0 flex h-full w-64 min-h-0 flex-shrink-0 flex-col border-r border-slate-200 bg-slate-50"
+      className="sticky top-0 flex h-full w-72 min-h-0 flex-shrink-0 flex-col border-r border-slate-200 bg-slate-50"
     >
       <div className="flex items-baseline justify-between px-4 pt-4 pb-2">
         <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Plan Outline</span>

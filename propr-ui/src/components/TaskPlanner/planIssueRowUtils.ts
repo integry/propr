@@ -6,6 +6,9 @@ export const getModelName = (modelId: string | null): string => {
   return modelInfo?.name || modelId;
 };
 
+/** Short model label for the in-row chip: "Claude Opus 5.5" reads as "Opus 5.5". */
+export const getShortModelName = (modelId: string | null): string => getModelName(modelId).replace(/^Claude\s+/, '');
+
 export const getContainerClassName = (isMerged: boolean): string =>
   isMerged ? 'bg-slate-50/60' : 'bg-white hover:bg-slate-50/60 transition-colors';
 
