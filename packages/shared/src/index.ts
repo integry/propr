@@ -548,3 +548,6 @@ export * from './goalWait.js';
 
 // Word-boundary truncation for titles that must fit a fixed length.
 export * from './text.js';
+
+// Repository pull request templates (.propr/pr-template.md), parsed identically by workers and the CLI.
+export * from './prTemplate.js';

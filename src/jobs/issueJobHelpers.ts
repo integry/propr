@@ -1,6 +1,8 @@
 import type { Logger } from 'pino';
 import {
-    generateCompletionComment,
+    generateCompletionCommentParts,
+    buildPrTemplateValues,
+    describePullRequest,
     db,
     getModelShortName,
     withRetry,
@@ -24,7 +26,9 @@ export {
     type UsageLimitError,
     type GenericErrorOptions
 } from './errorHandlers.js';
-import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult } from '@propr/core';
+import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult, CompletionCommentParts } from '@propr/core';
+import type { PrBodyPiece } from '@propr/shared';
+import { loadPullRequestTemplate, recordPullRequestTemplateError } from './pullRequestTemplate.js';
 import {
     isVisualPreviewUploadAuthenticationError,
     publishPullRequestVisualPreviews,
@@ -65,6 +69,9 @@ interface CreatePROptions {
         evidence: VisualPreviewEvidence;
         worktreePath: string;
     };
+    /** Timeline that records a pull request template that could not be applied. */
+    taskId?: string;
+    stateManager?: WorkerStateManager;
 }
 
 export function buildIssueReference(
@@ -177,6 +184,32 @@ export async function ensureEpicBaseBranchExists(
     }
 }
 
+/**
+ * ProPR's default issue pull request description, attributed to template
+ * sections. Joined as-is, the pieces are the description ProPR has always written.
+ */
+export function buildIssuePullRequestBodyPieces(options: {
+    issueRef: Pick<IssueJobData, 'number'>;
+    worktreeInfo: Pick<WorktreeInfo, 'branchName'>;
+    commitResult: CommitResult | null;
+    claudeResult: ClaudeCodeResponse | null;
+    completion: CompletionCommentParts;
+}): PrBodyPiece[] {
+    const { issueRef, worktreeInfo, commitResult, claudeResult, completion } = options;
+    return [
+        { section: 'summary', text: `## AI Implementation Summary\n\n${buildIssueReference(issueRef.number, commitResult !== null, claudeResult)}\n\n**Branch:** \`${worktreeInfo.branchName}\`\n` },
+        { section: 'commits', text: `**Commits:** ${commitResult ? `✅ Changes committed (${commitResult.commitHash.substring(0, 7)})` : '❌ No changes made'}` },
+        { section: null, text: '\n\n---\n\n' },
+        { section: 'run', text: completion.run },
+        { section: 'summary', text: completion.summary },
+        { section: 'run', text: completion.validation + completion.logs },
+        { section: null, text: '---\n' },
+        { section: 'trailer', text: completion.trailer },
+        { section: null, text: '\n\n---\n\n' },
+        { section: 'review_guidelines', text: "### 💡 Need changes?\n\nComment on this PR to request refinements — the AI agent monitors comments and will update the implementation based on your feedback. Keep iterating until you're satisfied!" },
+    ];
+}
+
 export async function createPullRequest(
     octokit: Octokit,
     issueRef: IssueJobData,
@@ -187,25 +220,24 @@ export async function createPullRequest(
     const jobId = `${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}`;
 
     const modelShortName = getModelShortName(modelName);
-    const prTitle = '[' + issueRef.number + ' by ' + modelShortName + '] ' + issueTitle;
+    const baseBranch = issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main';
 
-    const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
-    const basePrBody = `## AI Implementation Summary
-
-${buildIssueReference(issueRef.number, commitResult !== null, claudeResult)}
-
-**Branch:** \`${worktreeInfo.branchName}\`
-**Commits:** ${commitResult ? `✅ Changes committed (${commitResult.commitHash.substring(0, 7)})` : '❌ No changes made'}
-
----
-
-${completionComment}
-
----
-
-### 💡 Need changes?
-
-Comment on this PR to request refinements — the AI agent monitors comments and will update the implementation based on your feedback. Keep iterating until you're satisfied!`;
+    const completion = await generateCompletionCommentParts(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
+    const { title: prTitle, body: basePrBody } = await describePullRequest({
+        pieces: buildIssuePullRequestBodyPieces({ issueRef, worktreeInfo, commitResult, claudeResult, completion }),
+        defaultTitle: '[' + issueRef.number + ' by ' + modelShortName + '] ' + issueTitle,
+        values: buildPrTemplateValues({
+            issueNumber: issueRef.number, issueTitle, model: modelName, summary: claudeResult?.summary,
+            sessionId: claudeResult?.sessionId, cost: completion.stats.cost, totalTokens: completion.stats.totalTokens,
+            executionTime: completion.stats.executionTime, branch: worktreeInfo.branchName,
+            repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
+            commits: commitResult ? [{ sha: commitResult.commitHash, message: commitResult.commitMessage }] : [],
+            filesChanged: commitResult?.filesChanged ?? claudeResult?.modifiedFiles,
+        }),
+        loadTemplate: () => loadPullRequestTemplate({ octokit, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, baseBranch, correlationId: issueRef.correlationId }),
+        onError: message => recordPullRequestTemplateError({ stateManager: options.stateManager, taskId: options.taskId, message, correlatedLogger }),
+        context: { jobId, issueNumber: issueRef.number },
+    });
     const visualPreviewSection = visualPreview && commitResult
         ? renderVisualPreviewSection({
             assets: [],
@@ -220,7 +252,7 @@ Comment on this PR to request refinements — the AI agent monitors comments and
             repo: issueRef.repoName,
             title: prTitle,
             head: worktreeInfo.branchName,
-            base: issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main',
+            base: baseBranch,
             body: prBody,
             draft: false
         });

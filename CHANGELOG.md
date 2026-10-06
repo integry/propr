@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pull request templates**: an optional `.propr/pr-template.md`, read from
+  the base-branch commit like `.propr/workflow.yml`, shapes the title and
+  description of the pull requests ProPR opens. Its sections are `title`,
+  `summary`, `run`, `commits`, `files_changed`, `prompt`,
+  `review_guidelines`, `commands` and `trailer`. A present section replaces
+  ProPR's default content, a whitespace-only section removes it, and an
+  absent section keeps it. Sections use `{{placeholder}}` substitution only.
+  Untrusted values (issue title, agent summary, commit subjects) are sanitized
+  and their HTML is escaped. Without the file, ProPR adds the repository's
+  GitHub pull request template under its summary and run block. This fallback
+  is a per-repository option, enabled by default
+  (`propr repo toggle --no-github-pr-template`, `githubPrTemplateFallback`).
+  Templates also apply to continuation pull requests opened during
+  publication and publication recovery. `propr init` scaffolds a commented
+  example and the new `propr repo validate` reports unknown sections and
+  placeholders. A template that cannot be read or rendered never fails a run:
+  ProPR logs it, records it on the task timeline and uses the default
+  description, which is unchanged when no template exists.
 - **Managed agent in Linux desktop previews**: the Preview Runtime Images
   workflow has separate `prepare-agent` and `publish-agent` operations. They
   build the existing linux/amd64-only managed agent image from the exact `main`

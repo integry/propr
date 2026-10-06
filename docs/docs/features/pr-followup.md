@@ -21,6 +21,8 @@ When ProPR finishes an implementation task, it handles the GitHub plumbing aroun
 
 This keeps the agent focused on code while ProPR handles the repeatable workflow around the code.
 
+The pull request title and description follow ProPR's default layout. To add required sections, ticket references or a checklist, use a [pull request template](./pr-templates.md). When the repository has none, ProPR adds the repository's GitHub pull request template under its summary.
+
 ## Use ProPR On Any Pull Request
 
 You can skip ProPR-driven PR creation entirely and still use its review and fix tools. The pull request is an entry point on its own, so you can apply ProPR to PRs opened by a teammate, another agent, or yourself outside ProPR:

@@ -78,6 +78,7 @@ export function withDefaultRepoOptions(repo: RepoToMonitor): RepoToMonitor {
     cancelCiDuringFollowupWorkflows: normalizeStoredWorkflowSelection(repo.cancelCiDuringFollowupWorkflows),
     nonBlockingChecks: normalizeStoredWorkflowSelection(repo.nonBlockingChecks),
     notificationsEnabled: repo.notificationsEnabled !== false,
+    githubPrTemplateFallback: repo.githubPrTemplateFallback !== false,
     visualPreview: normalizeStoredVisualPreviewSettings(repo.visualPreview)
   };
 }
@@ -360,7 +361,7 @@ function normalizeNonBlockingChecks(value: unknown, repoName: string): Validatio
 }
 
 /** Optional booleans that are rejected when present with a non-boolean value. */
-const OPTIONAL_BOOLEAN_FIELDS = ['autoFollowupOnFailedCi', 'cancelCiDuringFollowup', 'notificationsEnabled'] as const;
+const OPTIONAL_BOOLEAN_FIELDS = ['autoFollowupOnFailedCi', 'cancelCiDuringFollowup', 'notificationsEnabled', 'githubPrTemplateFallback'] as const;
 
 function validateOptionalBooleans(candidate: Partial<RepoToMonitor>, repoName: string): ValidationResult<undefined> {
   for (const field of OPTIONAL_BOOLEAN_FIELDS) {
@@ -427,10 +428,27 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
     cancelCiDuringFollowupWorkflows: cancelCiWorkflows.value,
     nonBlockingChecks: nonBlockingChecks.value,
     notificationsEnabled: candidate.notificationsEnabled !== false,
+    githubPrTemplateFallback: candidate.githubPrTemplateFallback !== false,
     visualPreview: visualPreview.value,
     alias: alias.value,
     baseBranch: baseBranch.value,
     defaultBranch: defaultBranch.value
+  });
+}
+
+/**
+ * Clients that do not know the GitHub pull request template fallback must not
+ * switch it back on: keep the stored repository-wide value (enabled by default).
+ */
+export function preserveRepoGitHubPrTemplateFallback(
+  previousRepos: RepoToMonitor[],
+  normalizedRepos: RepoToMonitor[],
+  incomingRepos: unknown[]
+): RepoToMonitor[] {
+  return normalizedRepos.map((repo, index) => {
+    if ((incomingRepos[index] as Partial<RepoToMonitor>).githubPrTemplateFallback !== undefined) return repo;
+    const disabled = previousRepos.some(candidate => repositoryKeyOf(candidate.name) === repositoryKeyOf(repo.name) && candidate.githubPrTemplateFallback === false);
+    return { ...repo, githubPrTemplateFallback: !disabled };
   });
 }
 
@@ -463,5 +481,6 @@ export function preserveRepoSettings(
   repos = preserveRepoCancelCiWorkflows(previousRepos, repos, incomingRepos);
   repos = preserveRepoNonBlockingChecks(previousRepos, repos, incomingRepos);
   repos = preserveRepoNotifications(previousRepos, repos, incomingRepos);
+  repos = preserveRepoGitHubPrTemplateFallback(previousRepos, repos, incomingRepos);
   return preserveRepoVisualPreview(previousRepos, repos, incomingRepos);
 }

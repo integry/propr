@@ -47,7 +47,7 @@ test('GET repository config returns false for legacy entries with a missing opti
       name: 'integry/propr',
       enabled: true,
       autoFollowupOnFailedCi: false, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [], nonBlockingChecks: [],
-      notificationsEnabled: true,
+      notificationsEnabled: true, githubPrTemplateFallback: true,
       visualPreview: { enabled: false, types: ['image'], githubAttachmentPlan: 'auto', githubAttachmentCapacity: resolveGitHubAttachmentCapacity() }
     }]
   });
@@ -75,7 +75,7 @@ test('POST repository config persists an enabled option without enabling other r
       name: 'integry/propr',
       enabled: true,
       autoFollowupOnFailedCi: true, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [], nonBlockingChecks: [],
-      notificationsEnabled: true,
+      notificationsEnabled: true, githubPrTemplateFallback: true,
       visualPreview: { enabled: false, types: ['image'] },
       alias: undefined,
       baseBranch: undefined,
@@ -87,7 +87,7 @@ test('POST repository config persists an enabled option without enabling other r
       name: 'integry/other',
       enabled: true,
       autoFollowupOnFailedCi: false, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [], nonBlockingChecks: [],
-      notificationsEnabled: true,
+      notificationsEnabled: true, githubPrTemplateFallback: true,
       visualPreview: { enabled: false, types: ['image'] },
       alias: undefined,
       baseBranch: undefined,
@@ -306,6 +306,39 @@ for (const { name, previousRepos, repos, expected } of [
     );
   });
 }
+
+test('POST repository config keeps a disabled GitHub pull request template fallback when clients omit it', async () => {
+  const saveMonitoredRepos = mock.fn<(repos: RepoToMonitor[]) => Promise<boolean>>(async () => true);
+  const routes = createRepoPostRoutes([
+    { id: 'repo-main', name: 'integry/propr', enabled: true, githubPrTemplateFallback: false },
+    { id: 'repo-other', name: 'integry/other', enabled: true }
+  ], saveMonitoredRepos);
+  const response = createResponse();
+
+  await routes.postRepos({ body: { repos_to_monitor: [
+    { id: 'repo-main', name: 'integry/propr', enabled: true },
+    { id: 'repo-branch', name: 'integry/propr', enabled: true, baseBranch: 'next' },
+    { id: 'repo-other', name: 'integry/other', enabled: true, githubPrTemplateFallback: false },
+    { id: 'repo-new', name: 'integry/new', enabled: true }
+  ] } } as never, response as never);
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(
+    saveMonitoredRepos.mock.calls[0]?.arguments[0].map(repo => [repo.id, repo.githubPrTemplateFallback]),
+    [['repo-main', false], ['repo-branch', false], ['repo-other', false], ['repo-new', true]]
+  );
+});
+
+test('POST repository config rejects a non-boolean GitHub pull request template fallback', async () => {
+  const saveMonitoredRepos = mock.fn(async () => true);
+  const routes = createRepoPostRoutes([], saveMonitoredRepos);
+  const response = createResponse();
+
+  await routes.postRepos({ body: { repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, githubPrTemplateFallback: 'no' }] } } as never, response as never);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(saveMonitoredRepos.mock.calls.length, 0);
+});
 
 test('GET settings exposes configured override and effective detection for every repository', async () => {
   for (const detectedPlan of ['unknown', 'free', 'paid'] as const) {

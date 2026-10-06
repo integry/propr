@@ -86,6 +86,10 @@ await mock.module('@propr/core', { namedExports: {
     },
 } });
 
+// Continuation PRs keep their default description here; templates are covered by prTemplateDescription.test.ts.
+await mock.module('../src/jobs/pullRequestTemplate.js', { namedExports: {
+    describeContinuationPullRequest: async ({ fallback }: { fallback: string }) => fallback,
+} });
 const { PullRequestPublication } = await import('../src/jobs/prPublication.js');
 const { ensurePRContinuation, announceContinuation, findPRContinuation, continuationStatus, reserveContinuation, continuationBody, MAX_PULL_REQUEST_BODY_LENGTH } = await import('../src/jobs/prContinuation.js');
 await mock.module('../src/jobs/ultrafixOrchestrationService.js', { namedExports: {
