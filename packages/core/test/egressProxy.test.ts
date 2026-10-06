@@ -86,9 +86,10 @@ test('every agent base list covers GitHub and the package registries', () => {
             assert.ok(hosts.includes(host), `${agent}: ${host}`);
         }
     }
-    assert.ok(baseEgressAllowlist('claude').includes('api.anthropic.com'));
-    assert.ok(baseEgressAllowlist('codex').includes('api.openai.com'));
-    assert.ok(baseEgressAllowlist('vibe').includes('api.mistral.ai'));
+    // Set membership rather than Array#includes, which CodeQL mistakes for URL substring checks.
+    assert.ok(new Set(baseEgressAllowlist('claude')).has('api.anthropic.com'));
+    assert.ok(new Set(baseEgressAllowlist('codex')).has('api.openai.com'));
+    assert.ok(new Set(baseEgressAllowlist('vibe')).has('api.mistral.ai'));
 });
 
 test('CONNECT authorities are parsed with ports and IPv6 brackets', () => {
@@ -136,7 +137,7 @@ test('an allowed host is tunnelled; a denied host gets 403 and is recorded', asy
 });
 
 test('plain HTTP requests in absolute form are forwarded only to allowed hosts', async () => {
-    const server = http.createServer((request, response) => response.end(`hello ${request.url} ${request.headers['proxy-authorization'] ?? 'no-proxy-auth'}`));
+    const server = http.createServer((request, response) => response.writeHead(200, { 'Content-Type': 'text/plain' }).end(`hello ${request.url} ${request.headers['proxy-authorization'] ?? 'no-proxy-auth'}`));
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as net.AddressInfo).port;
     const proxy = await startEgressProxy({
@@ -171,8 +172,8 @@ test('plain HTTP requests carry the target URL authority as Host, whatever Host 
     // Routes by Host like a virtual-hosting upstream: any other site is unknown.
     let expectedHost = '';
     const server = http.createServer((request, response) => {
-        if (request.headers.host !== expectedHost) { response.writeHead(421).end(`unknown site ${request.headers.host}`); return; }
-        response.end(`site ${request.headers.host}${request.url}`);
+        if (request.headers.host !== expectedHost) { response.writeHead(421, { 'Content-Type': 'text/plain' }).end(`unknown site ${request.headers.host}`); return; }
+        response.writeHead(200, { 'Content-Type': 'text/plain' }).end(`site ${request.headers.host}${request.url}`);
     });
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as net.AddressInfo).port;
