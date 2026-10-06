@@ -389,6 +389,40 @@ describe('deferred run retry consumer', () => {
     assert.deepEqual(enqueued, [run.id]);
   });
 
+  test('an older proceed or skip decision does not override a deferral another retry persisted first', async () => {
+    const run = await deferredRun();
+    clock = run.deferredUntil!;
+    // Retry B re-defers the run while retry A is still awaiting its own decision.
+    const redeferFirst = (decision: Awaited<ReturnType<AgentRunGate>>): AgentRunGate => async () => {
+      assert.equal((await retry()).deferred, 1);
+      return decision;
+    };
+    const weeklySkip = { action: 'skip' as const, reason: 'Weekly usage is over the threshold.' };
+    for (const decision of [{ action: 'proceed' as const }, weeklySkip]) {
+      const before = (await getAgentRunById(run.id, { database }))!;
+      clock = before.deferredUntil!;
+      assert.deepEqual(await retry({ gate: redeferFirst(decision) }), { queued: 0, deferred: 0, skipped: 0, failed: 0 });
+      const after = (await getAgentRunById(run.id, { database }))!;
+      assert.equal(after.state, 'deferred');
+      assert.equal(after.deferrals, before.deferrals + 1);
+      assert.ok(after.deferredUntil! > before.deferredUntil!);
+    }
+    assert.deepEqual(enqueued, []);
+  });
+
+  test('an agent disabled during a retry does not skip a run another retry re-deferred first', async () => {
+    const run = await deferredRun();
+    clock = run.deferredUntil!;
+    const loadDefinition = async () => {
+      assert.equal((await retry()).deferred, 1);
+      return undefined;
+    };
+    assert.deepEqual(await retry({ loadDefinition }), { queued: 0, deferred: 0, skipped: 0, failed: 0 });
+    const current = await getAgentRunById(run.id, { database });
+    assert.equal(current?.state, 'deferred');
+    assert.equal(current?.deferrals, 2);
+  });
+
   test('weekly usage reaching the threshold while deferred skips the run', async () => {
     const run = await deferredRun();
     clock = run.deferredUntil!;

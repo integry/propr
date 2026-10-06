@@ -1,7 +1,7 @@
 import logger from '../../utils/logger.js';
 import { getAgentDefinition, type StoredAgentDefinition } from './agentDefinitionStore.js';
 import { createAgentRunCostGate } from './agentRunCostGate.js';
-import { listDueDeferredRuns, redeferAgentRun, transitionAgentRun, type StoredAgentRun } from './agentRunStore.js';
+import { listDueDeferredRuns, redeferAgentRun, transitionAgentRun, transitionDeferredAgentRun, type StoredAgentRun } from './agentRunStore.js';
 import { enqueueAgentRunPhase, type AgentRunGate, type AgentRunTriggerDependencies } from './agentRunTrigger.js';
 
 /**
@@ -14,9 +14,10 @@ import { enqueueAgentRunPhase, type AgentRunGate, type AgentRunTriggerDependenci
  * - defer: the run stays `deferred` with the new retry time and one more deferral;
  * - skip (including the deferral limit): the run is `skipped` with the reason.
  *
- * Every write is a compare-and-set on the deferred run, so a run cancelled
- * while it is evaluated stays cancelled, and overlapping retries never enqueue
- * or count a deferral twice.
+ * Every write is a compare-and-set on the deferred run and the retry time it
+ * was evaluated at, so a run cancelled while it is evaluated stays cancelled,
+ * overlapping retries never enqueue or count a deferral twice, and an older
+ * evaluation never queues or skips a run another retry has re-deferred.
  */
 
 export const DEFAULT_DEFERRED_AGENT_RUN_BATCH_SIZE = 50;
@@ -44,10 +45,13 @@ async function retryDeferredRun(
   deps: DeferredAgentRunRetryDependencies & { loadDefinition: NonNullable<DeferredAgentRunRetryDependencies['loadDefinition']> },
 ): Promise<RetryOutcome> {
   const storeDeps = { database: deps.database, now: deps.now };
+  // Every move out of `deferred` is fenced by the retry time evaluated here, so
+  // an older evaluation never overrides a deferral another retry has persisted.
+  const evaluatedDeferredUntil = run.deferredUntil!;
   const definition = await deps.loadDefinition(run);
   if (!definition?.enabled) {
     const skipReason = 'The agent was disabled or deleted while this run was deferred, so the run was skipped.';
-    return await transitionAgentRun(run.id, ['deferred'], 'skipped', { skipReason }, storeDeps) ? 'skipped' : null;
+    return await transitionDeferredAgentRun(run.id, evaluatedDeferredUntil, 'skipped', { skipReason }, storeDeps) ? 'skipped' : null;
   }
 
   // The worker executes the snapshot taken when the run was accepted, so the
@@ -55,13 +59,13 @@ async function retryDeferredRun(
   const decision = (await gate({ definition: run.definitionSnapshot ?? definition, trigger: run.trigger, triggerSource: run.triggerSource, run }))
     ?? { action: 'proceed' as const };
   if (decision.action === 'skip') {
-    return await transitionAgentRun(run.id, ['deferred'], 'skipped', { skipReason: decision.reason }, storeDeps) ? 'skipped' : null;
+    return await transitionDeferredAgentRun(run.id, evaluatedDeferredUntil, 'skipped', { skipReason: decision.reason }, storeDeps) ? 'skipped' : null;
   }
   if (decision.action === 'defer') {
-    return await redeferAgentRun(run.id, run.deferredUntil!, decision.until, decision.reason, storeDeps) ? 'deferred' : null;
+    return await redeferAgentRun(run.id, evaluatedDeferredUntil, decision.until, decision.reason, storeDeps) ? 'deferred' : null;
   }
 
-  const queued = await transitionAgentRun(run.id, ['deferred'], 'queued', {}, storeDeps);
+  const queued = await transitionDeferredAgentRun(run.id, evaluatedDeferredUntil, 'queued', {}, storeDeps);
   if (!queued) return null;
   try {
     await enqueueAgentRunPhase(queued, 'report', deps);
