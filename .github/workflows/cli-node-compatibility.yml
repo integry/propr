@@ -123,12 +123,17 @@ jobs:
       # A hosted leg once finished `npm ci` output in under two minutes and
       # then never exited, burning the whole job timeout. Bound each attempt
       # and retry only a timed-out one; any other failure exits immediately.
+      # Actions runs this under `bash -e`, so the status is captured inside a
+      # conditional, where errexit cannot end the step before the retry.
       - name: Install dependencies
         run: |
           set -uo pipefail
           for attempt in 1 2; do
-            timeout --kill-after=30s 10m npm ci
-            status=$?
+            if timeout --kill-after=30s 10m npm ci; then
+              status=0
+            else
+              status=$?
+            fi
             if [ "$status" -ne 124 ] && [ "$status" -ne 137 ]; then
               exit "$status"
             fi
