@@ -34,7 +34,8 @@
 # the validated root and containers proven to belong to it, by ID; the launcher
 # is killed, not stopped, so its own label-wide teardown never runs, and its
 # siblings are inspected again once it is gone. The root is kept whenever a
-# container that may use it could remain. When the
+# container that may use it could remain, including when Docker cannot be
+# inspected: only Docker's "No such container" answer proves absence. When the
 # stack network is absent the harness creates it itself, labelled with this
 # root's token, and records the exact ID Docker returned. Only that network is
 # removed, by ID, and only while the stack name still resolves to it; a
@@ -124,6 +125,31 @@ container_ownership() {
     }
     console.log(verdict === "unowned" ? verdict : `${verdict} ${id}`);
   ' "$name" "$STACK" "$ROOT" "$ROOT_TOKEN" "$ITEST_LABEL" "$LAUNCHER_NAME"
+}
+
+# container_presence NAME_OR_ID -> prints "present", "absent" or "unknown".
+# Only Docker's own "No such container" answer proves absence; any other
+# inspection failure (lost socket access, daemon errors) proves nothing.
+container_presence() {
+  local errors
+  if errors="$(docker container inspect "$1" 2>&1 >/dev/null)"; then
+    echo present
+  elif [[ "$errors" == *"No such container"* ]]; then
+    echo absent
+  else
+    echo unknown
+  fi
+}
+
+# require_container_absent NAME_OR_ID LABEL: succeeds only when Docker confirms
+# the container is gone; reports a present or uninspectable one.
+require_container_absent() {
+  case "$(container_presence "$1")" in
+    absent) return 0 ;;
+    present) echo "✗ container $2 is still present; leaving its data in place" >&2 ;;
+    *) echo "✗ could not inspect container $2; leaving its data in place" >&2 ;;
+  esac
+  return 1
 }
 
 network_id() {
@@ -224,8 +250,9 @@ remove_owned_network() {
 
 # Inspects every present stack container and records the IDs of those proven
 # to belong to this root in STACK_IDS/STACK_NAMES (launcher first, if present).
-# Refuses, recording nothing, when any present target is not this root's or
-# when no container proves ownership of the root (unless PROOF is already 1).
+# Refuses, recording nothing, when any present target is not this root's, when
+# any target cannot be inspected, or when no container proves ownership of the
+# root (unless PROOF is already 1).
 STACK_IDS=()
 STACK_NAMES=()
 collect_stack_containers() {
@@ -234,7 +261,16 @@ collect_stack_containers() {
   STACK_IDS=()
   STACK_NAMES=()
   for name in "$@"; do
-    docker container inspect "$name" >/dev/null 2>&1 || continue
+    case "$(container_presence "$name")" in
+      absent) continue ;;
+      present) ;;
+      *)
+        echo "✗ could not inspect container $name; leaving stack root $ROOT in place" >&2
+        STACK_IDS=()
+        STACK_NAMES=()
+        return 1
+        ;;
+    esac
     verdict="$(container_ownership "$name")"
     case "$verdict" in
       "root "*) proven=1 ;;
@@ -276,30 +312,30 @@ remove_stack_containers() {
   fi
 
   if [ -n "$launcher_id" ]; then
-    if ! docker rm -f "$launcher_id" >/dev/null || docker container inspect "$launcher_id" >/dev/null 2>&1; then
+    if ! docker rm -f "$launcher_id" >/dev/null || ! require_container_absent "$launcher_id" "$LAUNCHER_NAME"; then
       echo "✗ could not terminate launcher $LAUNCHER_NAME; leaving its siblings and data in place" >&2
       return 1
     fi
   fi
-  if docker container inspect "$LAUNCHER_NAME" >/dev/null 2>&1; then
-    echo "✗ a launcher named $LAUNCHER_NAME appeared during cleanup; leaving its siblings and data in place" >&2
+  if ! require_container_absent "$LAUNCHER_NAME" "$LAUNCHER_NAME"; then
+    echo "✗ launcher $LAUNCHER_NAME is not confirmed gone; leaving its siblings and data in place" >&2
     return 1
   fi
 
   collect_stack_containers "$proven" "${siblings[@]}" || return 1
   for i in "${!STACK_IDS[@]}"; do
-    if docker container inspect "${STACK_IDS[$i]}" >/dev/null 2>&1; then
-      docker rm -f "${STACK_IDS[$i]}" >/dev/null || { echo "✗ could not remove container ${STACK_NAMES[$i]}" >&2; failed=1; }
-    fi
+    case "$(container_presence "${STACK_IDS[$i]}")" in
+      absent) ;;
+      present) docker rm -f "${STACK_IDS[$i]}" >/dev/null || { echo "✗ could not remove container ${STACK_NAMES[$i]}" >&2; failed=1; } ;;
+      *) echo "✗ could not inspect container ${STACK_NAMES[$i]}" >&2; failed=1 ;;
+    esac
   done
   [ "$failed" = 0 ] || return 1
 
-  # Evidence for releasing the root: no stack container name is still present.
+  # Evidence for releasing the root: Docker confirms every stack container name
+  # is absent. A failed inspection is not evidence of absence.
   for name in "$LAUNCHER_NAME" "${siblings[@]}"; do
-    if docker container inspect "$name" >/dev/null 2>&1; then
-      echo "✗ container $name is still present after cleanup; leaving its data in place" >&2
-      return 1
-    fi
+    require_container_absent "$name" "$name" || return 1
   done
   return 0
 }
@@ -372,10 +408,17 @@ for dir in data logs repos vibe-prompts; do
 done
 
 for name in "$LAUNCHER_NAME" "${SIBLING_SERVICES[@]/#/$STACK-}"; do
-  if docker container inspect "$name" >/dev/null 2>&1; then
-    echo "✗ container $name already exists and does not belong to $ROOT; remove it or choose a different STACK" >&2
-    exit 1
-  fi
+  case "$(container_presence "$name")" in
+    absent) ;;
+    present)
+      echo "✗ container $name already exists and does not belong to $ROOT; remove it or choose a different STACK" >&2
+      exit 1
+      ;;
+    *)
+      echo "✗ could not inspect container $name; refusing to start the stack" >&2
+      exit 1
+      ;;
+  esac
 done
 VIBE_PROMPT_CACHE_DIR="$ROOT/vibe-prompts"
 # Fixed host paths the launcher mounts into app containers.

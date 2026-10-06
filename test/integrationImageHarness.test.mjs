@@ -74,6 +74,7 @@ esac
 `, { mode: 0o755 });
   writeFileSync(join(workspace.bin, 'npm'), `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_STATE/npm-calls"
+if [ "\${FAKE_E2E_DENY_DOCKER:-}" = 1 ]; then : > "$FAKE_DOCKER_STATE/socket-denied"; fi
 exit "\${FAKE_E2E_EXIT:-0}"
 `, { mode: 0o755 });
   return workspace;
@@ -241,6 +242,36 @@ describe('image integration harness private temporary authority', { skip: unsupp
     const failed = await runHarness(workspace, { FAKE_DOCKER_LAUNCHER_RM: 'fail', FAKE_E2E_EXIT: '5' });
     assert.equal(failed.code, 1, 'a later run refuses to reuse or remove the root while the launcher survives');
     assert.ok(existsSync(join(stackRoot(workspace), '.env')));
+  });
+
+  test('losing Docker access after launch keeps the root and running stack, and fails', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    const result = await runHarness(workspace, { FAKE_E2E_DENY_DOCKER: '1' });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /could not inspect container propr-itest-launcher/);
+    assert.match(result.stderr, /did not remove every owned resource/);
+    const state = readState(workspace);
+    assert.ok(state.containers['propr-itest-launcher'] && state.containers['propr-itest-api'], 'the stack keeps running');
+    assert.ok(state.networks['propr-itest-net']);
+    assert.ok(!dockerCalls(workspace).some((call) => call[0] === 'rm' || (call[0] === 'run' && call.includes('find'))), 'nothing is removed');
+    assert.ok(existsSync(join(stackRoot(workspace), '.env')), 'the stack root is kept');
+    assert.ok(existsSync(join(stackRoot(workspace), '.propr-itest-owner')));
+  });
+
+  test('losing Docker access after the launcher is killed keeps the root and siblings, and fails', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    const result = await runHarness(workspace, { FAKE_DOCKER_DENY_AFTER_RM: '1' });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /could not inspect container propr-itest-launcher/);
+    assert.match(result.stderr, /could not terminate launcher propr-itest-launcher/);
+    const state = readState(workspace);
+    assert.ok(!state.containers['propr-itest-launcher']);
+    assert.ok(state.containers['propr-itest-api'] && state.containers['propr-itest-worker'], 'siblings keep running');
+    assert.equal(dockerCalls(workspace).filter((call) => call[0] === 'rm').length, 1, 'only the launcher kill was issued');
+    assert.ok(!dockerCalls(workspace).some((call) => call[0] === 'run' && call.includes('find')), 'no data deletion is attempted');
+    assert.ok(existsSync(join(stackRoot(workspace), '.env')), 'the stack root is kept');
   });
 
   test('reports a cleanup failure instead of succeeding when generated data remains', { skip: !hostCannotRemovePrivateSubtree }, async (t) => {

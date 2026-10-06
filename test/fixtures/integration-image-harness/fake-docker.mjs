@@ -12,7 +12,11 @@
 // emulates sequential startup still in progress: that sibling is created only
 // once its name was inspected while missing and the next container is then
 // inspected, provided the launcher is still running. FAKE_DOCKER_LAUNCHER_RM=fail
-// makes removing the launcher fail. The cleanup container emulates root's
+// makes removing the launcher fail. FAKE_DOCKER_DENY_AFTER_RM=1 revokes socket
+// access once the launcher is killed; the fake npm revokes it during the e2e run
+// when FAKE_E2E_DENY_DOCKER=1. While FAKE_DOCKER_STATE/socket-denied exists,
+// every invocation fails with a permission error and running containers are
+// left untouched. The cleanup container emulates root's
 // DAC override within its single bind mount. Every invocation is appended to
 // FAKE_DOCKER_STATE/calls.jsonl and the private-root modes seen at launch are
 // recorded in FAKE_DOCKER_STATE/observed.json. Only synthetic data is handled.
@@ -24,6 +28,10 @@ const stateDir = process.env.FAKE_DOCKER_STATE;
 const statePath = join(stateDir, 'state.json');
 const args = process.argv.slice(2);
 appendFileSync(join(stateDir, 'calls.jsonl'), `${JSON.stringify(args)}\n`);
+if (existsSync(join(stateDir, 'socket-denied'))) {
+  process.stderr.write('permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock\n');
+  process.exit(1);
+}
 
 const state = existsSync(statePath)
   ? JSON.parse(readFileSync(statePath, 'utf8'))
@@ -191,6 +199,9 @@ if (command === 'container' && subcommand === 'inspect') {
   if (process.env.FAKE_DOCKER_LAUNCHER_RM === 'fail' && found[1].Config.Labels['com.propr.itest.stack']) fail('cannot kill launcher');
   delete state.containers[found[0]];
   save();
+  if (process.env.FAKE_DOCKER_DENY_AFTER_RM === '1' && found[1].Config.Labels['com.propr.itest.stack']) {
+    writeFileSync(join(stateDir, 'socket-denied'), '');
+  }
 } else if (command === 'logs') {
   process.stdout.write('fake logs\n');
 } else if (command === 'run' && option('--entrypoint')[0] === 'find') {
