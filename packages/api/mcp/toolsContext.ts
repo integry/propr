@@ -76,22 +76,28 @@ function maskSearchEnvelope(result: SearchRepositoryFilesResult): SearchReposito
 /**
  * Masks credentials in the returned lines (the executor treats them as opaque
  * text) and the other text fields, and keeps the result inside the response
- * limit. The service already bounded the encoded content, so this only drops
- * trailing lines when masking grew it, keeping endLine, returnedBytes and
- * nextStartLine true to `content`.
+ * limit and the requested `maxBytes`. The service bounded the unmasked
+ * content, so this only drops trailing lines when masking grew it, keeping
+ * endLine, returnedBytes and nextStartLine true to `content`.
  */
-export function fitReadResult(unmasked: ReadRepositoryFileResult): ReadRepositoryFileResult {
+export function fitReadResult(unmasked: ReadRepositoryFileResult, maxBytes: number): ReadRepositoryFileResult {
   const result = maskReadEnvelope(unmasked);
   const lines = result.content === '' ? [] : redactText(result.content).split('\n');
   const budget = MAX_TOOL_RESULT_BYTES - jsonBytes({ ...result, content: '', endLine: Number.MAX_SAFE_INTEGER, returnedBytes: Number.MAX_SAFE_INTEGER, nextStartLine: Number.MAX_SAFE_INTEGER, truncated: false });
-  let used = 0, kept = 0;
+  let used = 0, bytes = 0, kept = 0;
   for (const line of lines) {
     const cost = jsonBytes(line) - 2 + (kept ? 2 : 0);
-    if (used + cost > budget) break;
+    const lineBytes = Buffer.byteLength(line) + (kept ? 1 : 0);
+    if (used + cost > budget || bytes + lineBytes > maxBytes) {
+      if (kept) break;
+      if (cost > budget) throw new McpError('FILE_TOO_LARGE', `Line ${result.startLine} of "${result.path}" does not fit in the ${MAX_TOOL_RESULT_BYTES}-byte response once encoded, so it cannot be read at any maxBytes.`, 413);
+      const hint = lineBytes <= MAX_READ_BYTES ? `; request it with maxBytes of at least ${lineBytes}` : `, which exceeds the ${MAX_READ_BYTES}-byte read limit`;
+      throw new McpError('FILE_TOO_LARGE', `Line ${result.startLine} of "${result.path}" is ${lineBytes} bytes once credentials are masked and does not fit in maxBytes (${maxBytes})${hint}.`, 413);
+    }
     used += cost;
+    bytes += lineBytes;
     kept += 1;
   }
-  if (kept === 0 && lines.length) throw new McpError('FILE_TOO_LARGE', `Line ${result.startLine} of "${result.path}" does not fit in the ${MAX_TOOL_RESULT_BYTES}-byte response once encoded, so it cannot be read at any maxBytes.`, 413);
   const content = lines.slice(0, kept).join('\n');
   if (kept === lines.length) return { ...result, content, returnedBytes: Buffer.byteLength(content) };
   const endLine = result.startLine + kept - 1;
@@ -191,6 +197,6 @@ export function addContextTools(tools: McpTool[], { db, policy }: ToolDeps): voi
       if (args.endLine !== undefined && args.endLine < args.startLine) throw new McpError('INVALID_INPUT', 'endLine must be greater than or equal to startLine.');
       const { repository, branch } = await configuredTarget(args.repository, args.branch);
       return ok(fitReadResult(await retrieval(() => readRepositoryFileContent({ repository, branch, ref: args.ref, path: args.path, startLine: args.startLine, endLine: args.endLine,
-        maxLines: args.maxLines, maxBytes: args.maxBytes, maxBytesLimit: MAX_READ_BYTES, encodedByteLimit: MAX_TOOL_RESULT_BYTES - RESULT_ENVELOPE_RESERVE, authToken: principal.user.accessToken || undefined }))));
+        maxLines: args.maxLines, maxBytes: args.maxBytes, maxBytesLimit: MAX_READ_BYTES, encodedByteLimit: MAX_TOOL_RESULT_BYTES - RESULT_ENVELOPE_RESERVE, authToken: principal.user.accessToken || undefined })), args.maxBytes));
     } });
 }
