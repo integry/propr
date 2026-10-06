@@ -258,20 +258,93 @@ test('the replacement cost cap is the original cap minus what earlier attempts s
     assert.deepEqual(spent.action === 'skipped' && [spent.reason, spent.exhausted], ['budget_exhausted', true]);
 });
 
-test('a replacement that cannot be queued is undone and the held-back failure is published', async () => {
+test('a replacement whose queue delivery is uncertain keeps its claim and is redelivered under the same job ID', async () => {
     const database = await createDatabase();
     await seedTask(database, 'task-1');
-    const { service, published } = harness(database, { enqueue: async () => { throw new Error('Redis unavailable'); } });
+    const accepted: Enqueued[] = [];
+    const claimedAt = new Date('2026-10-06T08:00:00.000Z');
+    const { service, published } = harness(database, {
+        now: claimedAt,
+        // The queue accepts the job, but the response is lost with the connection.
+        enqueue: async entry => { accepted.push(entry); throw new Error('Connection is closed.'); },
+    });
     await service.prepare({ taskId: 'task-1', cause: 'provider_transient' });
     await markState(database, 'task-1', 'failed');
     const outcome = await service.complete({ taskId: 'task-1', cause: 'provider_transient' });
-    assert.equal(outcome.action === 'skipped' && outcome.reason, 'dispatch_failed');
+    assert.equal(outcome.action, 'delivery_pending');
+    const replacementTaskId = outcome.action === 'delivery_pending' ? outcome.replacementTaskId : '';
     const original = await task(database, 'task-1');
-    assert.equal(original.replaced_by_task_id, null);
-    assert.equal(original.replacement_state, 'skipped');
-    assert.equal((await database('tasks').count({ count: '*' }).first())?.count, 1, 'the replacement row is removed');
-    assert.equal(JSON.parse(String(original.replacement_request)).dispatch, undefined, 'the reverted claim leaves nothing to redeliver');
-    assert.deepEqual(published.map(({ taskId, state }) => ({ taskId, state })), [{ taskId: 'task-1', state: 'failed' }]);
+    assert.equal(original.replaced_by_task_id, replacementTaskId, 'the claim is kept');
+    assert.equal(original.replacement_state, 'pending', 'the decision stays recoverable');
+    assert.equal(JSON.parse(String(original.replacement_request)).dispatch.jobId, accepted[0].jobId);
+    assert.equal((await task(database, replacementTaskId)).job_id, accepted[0].jobId, 'the replacement row keeps its job ID');
+    assert.deepEqual(await events(database, 'task-1'), [], 'no skip is recorded for a job the queue may run');
+    assert.deepEqual(published, [], 'the held-back failure is not published as final');
+
+    const later = harness(database, { now: new Date(claimedAt.getTime() + PENDING_REPLACEMENT_RECOVERY_MS + 1) });
+    assert.deepEqual(await later.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.deepEqual(later.enqueued.map(({ jobId, data }) => [jobId, data.correlationId]),
+        [[accepted[0].jobId, accepted[0].data.correlationId]], 'redelivered under the same identity');
+    assert.equal((await task(database, 'task-1')).replacement_state, 'dispatched');
+    assert.equal((await database('tasks').count({ count: '*' }).first())?.count, 2, 'no second replacement is created');
+});
+
+async function markFinalizedBy(database: Knex, taskId: string, finalizedBy: string): Promise<void> {
+    await database('task_history').insert({
+        task_id: taskId, state: 'failed', timestamp: '2026-10-06T08:02:00.000Z', reason: 'Task execution failed',
+        metadata: JSON.stringify({ finalizedBy }),
+    });
+}
+
+test('an orphan decision pre-empted by another writer\'s failure is withdrawn by recovery, not dispatched', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'raced-task');
+    await seedTask(database, 'orphaned-task');
+    const earlier = harness(database, { now: new Date('2026-10-06T08:00:00.000Z') });
+    const orphanRequest = { cause: 'infra_lost' as const, error: 'orphaned', finalizedBy: 'orphan_reconciliation' };
+    assert.equal((await earlier.service.prepare({ taskId: 'raced-task', ...orphanRequest })).eligible, true);
+    assert.equal((await earlier.service.prepare({ taskId: 'orphaned-task', ...orphanRequest })).eligible, true);
+    // Another writer fails the raced task permanently; the reconciler's conditional finalization loses.
+    await markState(database, 'raced-task', 'failed');
+    await markFinalizedBy(database, 'orphaned-task', 'orphan_reconciliation');
+
+    const direct = await earlier.service.complete({ taskId: 'raced-task', ...orphanRequest });
+    assert.equal(direct.action, 'none', 'complete refuses a failure the decision was not made for');
+    assert.equal((await task(database, 'raced-task')).replacement_state, null);
+    assert.deepEqual(earlier.published.map(({ taskId, state }) => ({ taskId, state })), [{ taskId: 'raced-task', state: 'failed' }],
+        'the held-back failure is published');
+
+    // Recovery reaches the same verdict when the reconciler stopped before withdrawing.
+    await database('tasks').where({ task_id: 'raced-task' }).update({
+        replacement_state: 'pending',
+        replacement_request: JSON.stringify({ cause: 'infra_lost', requestedAt: '2026-10-06T08:00:00.000Z', finalizedBy: 'orphan_reconciliation' }),
+    });
+    const later = harness(database, { now: new Date(Date.parse('2026-10-06T08:00:00.000Z') + PENDING_REPLACEMENT_RECOVERY_MS + 1) });
+    assert.deepEqual(await later.service.resumePending(), { resumed: 1, cleared: 1 });
+    assert.deepEqual(later.enqueued.map(({ data }) => data.replacesTaskId), ['orphaned-task'], 'only the confirmed orphan is replaced');
+    assert.equal((await task(database, 'raced-task')).replaced_by_task_id, null);
+    assert.equal((await task(database, 'raced-task')).replacement_state, null);
+    assert.deepEqual(await later.service.resumePending(), { resumed: 0, cleared: 0 });
+});
+
+test('withdrawing an orphan decision never clears a claim or a newer decision', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1');
+    await seedTask(database, 'task-2');
+    const { service } = harness(database);
+    const orphanRequest = { cause: 'infra_lost' as const, finalizedBy: 'orphan_reconciliation' };
+    const claimed = await service.prepare({ taskId: 'task-1', ...orphanRequest });
+    await markFinalizedBy(database, 'task-1', 'orphan_reconciliation');
+    assert.equal((await service.complete({ taskId: 'task-1', ...orphanRequest })).action, 'dispatched');
+    assert.equal(await service.withdraw('task-1', claimed.eligible ? claimed.request! : assert.fail()), false);
+    assert.notEqual((await task(database, 'task-1')).replaced_by_task_id, null);
+
+    const superseded = await service.prepare({ taskId: 'task-2', ...orphanRequest });
+    // A provider failure of the same task records its own decision afterwards.
+    await harness(database, { now: new Date('2026-10-06T09:00:01.000Z') }).service.prepare({ taskId: 'task-2', cause: 'provider_transient' });
+    assert.equal(await service.withdraw('task-2', superseded.eligible ? superseded.request! : assert.fail()), false);
+    assert.equal((await task(database, 'task-2')).replacement_state, 'pending');
+    assert.equal(JSON.parse(String((await task(database, 'task-2')).replacement_request)).cause, 'provider_transient');
 });
 
 test('a decision interrupted by a restart is completed by the recovery sweep', async () => {

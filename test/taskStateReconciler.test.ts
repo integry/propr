@@ -271,9 +271,15 @@ function createReplacement(eligible: boolean) {
     return {
         calls,
         handler: {
-            prepare: mock.fn(async (request: { taskId: string; cause: string }) => {
+            prepare: mock.fn(async (request: { taskId: string; cause: string; finalizedBy?: string }) => {
                 calls.push(`prepare:${request.taskId}:${request.cause}`);
-                return eligible ? { eligible: true } : { eligible: false, reason: 'cap_reached' };
+                return eligible
+                    ? { eligible: true, request: { cause: request.cause, requestedAt: 'prepared', finalizedBy: request.finalizedBy } }
+                    : { eligible: false, reason: 'cap_reached' };
+            }),
+            withdraw: mock.fn(async (taskId: string, request: { finalizedBy?: string }) => {
+                calls.push(`withdraw:${taskId}:${request.finalizedBy}`);
+                return true;
             }),
             complete: mock.fn(async (request: { taskId: string; cause: string }) => {
                 calls.push(`complete:${request.taskId}:${request.cause}`);
@@ -325,7 +331,7 @@ test('a final orphaning is still failed, without a pending replacement marker', 
     assert.deepEqual(replacement.calls, ['prepare:orphan-final:infra_lost', 'complete:orphan-final:infra_lost']);
 });
 
-test('no replacement is dispatched when another writer finalized the orphan first', async () => {
+test('the replacement decision is withdrawn when another writer finalized the orphan first', async () => {
     const { store } = orphanedTwice('orphan-raced');
     (store as { finalizeIfCurrent: unknown }).finalizeIfCurrent = mock.fn(async () => ({ stateChanged: false, eventPublished: false }));
     const replacement = createReplacement(true);
@@ -340,7 +346,9 @@ test('no replacement is dispatched when another writer finalized the orphan firs
     });
 
     assert.equal(result.summary.skipped, 1);
-    assert.deepEqual(replacement.calls, ['prepare:orphan-raced:infra_lost']);
+    assert.deepEqual(replacement.calls, ['prepare:orphan-raced:infra_lost', 'withdraw:orphan-raced:orphan_reconciliation']);
+    assert.equal(replacement.handler.prepare.mock.calls[0].arguments[0].finalizedBy, 'orphan_reconciliation',
+        'the decision is bound to the orphan failure');
 });
 
 test('a failed replacement dispatch is reported without undoing the orphan failure', async () => {

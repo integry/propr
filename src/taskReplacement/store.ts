@@ -8,6 +8,11 @@ export interface ReplacementRequestRecord {
     cause: ReplacementCause;
     terminalReason?: string | null;
     requestedAt: string;
+    /**
+     * `finalizedBy` of the failure this decision was made for. The decision is
+     * completed only after that failure; a failure written by another actor withdraws it.
+     */
+    finalizedBy?: string;
     /** Set with the claim; kept until queue delivery of the replacement is confirmed. */
     dispatch?: ReplacementDispatchRecord;
 }
@@ -41,6 +46,8 @@ export interface ReplaceableTask {
     branchName: string | null;
     latestState: string | null;
     latestTerminalReason: string | null;
+    /** `finalizedBy` of the latest state transition, when a reconciler wrote it. */
+    latestFinalizedBy: string | null;
 }
 
 export interface LineageAttempt {
@@ -80,6 +87,7 @@ export interface PendingReplacementRequest {
     taskId: string;
     request: ReplacementRequestRecord;
     latestState: string | null;
+    latestFinalizedBy: string | null;
     /** The claimed replacement awaiting confirmed queue delivery, if any. */
     replacedByTaskId: string | null;
 }
@@ -94,8 +102,8 @@ export interface TaskReplacementStore {
      * together with its dispatch record; the original stays `pending` until delivery is confirmed.
      */
     createReplacement(input: CreateReplacementInput): Promise<boolean>;
-    /** Undoes `createReplacement` when the replacement could not be queued. */
-    revertReplacement(originalTaskId: string, replacementTaskId: string): Promise<void>;
+    /** Clears a pending decision only while it is still exactly `request` and unclaimed. */
+    withdrawRequest(taskId: string, request: ReplacementRequestRecord): Promise<boolean>;
     appendEvent(entry: TimelineEvent): Promise<void>;
     listPendingRequests(requestedBefore: string, limit: number): Promise<PendingReplacementRequest[]>;
 }
@@ -149,6 +157,11 @@ function latestHistorySubquery(database: Knex, column: 'state' | 'metadata', ali
     ) AS ${alias}`);
 }
 
+function finalizedBy(latestMetadata: unknown): string | null {
+    const value = parseJson<{ finalizedBy?: unknown }>(latestMetadata)?.finalizedBy;
+    return typeof value === 'string' ? value : null;
+}
+
 function taskFromRow(row: Record<string, unknown>): ReplaceableTask {
     const taskId = String(row.task_id);
     const latestMetadata = parseJson<{ terminalReason?: unknown }>(row.latest_metadata);
@@ -169,6 +182,7 @@ function taskFromRow(row: Record<string, unknown>): ReplaceableTask {
         branchName: text(row.branch_name),
         latestState: text(row.latest_state),
         latestTerminalReason: typeof latestMetadata?.terminalReason === 'string' ? latestMetadata.terminalReason : null,
+        latestFinalizedBy: finalizedBy(row.latest_metadata),
     };
 }
 
@@ -289,18 +303,12 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
             });
         },
 
-        async revertReplacement(originalTaskId, replacementTaskId) {
-            await database.transaction(async trx => {
-                await trx('task_history').where({ task_id: replacementTaskId }).delete();
-                await trx('tasks').where({ task_id: replacementTaskId }).delete();
-                const row = await trx('tasks').where({ task_id: originalTaskId, replaced_by_task_id: replacementTaskId })
-                    .first('replacement_request') as { replacement_request?: unknown } | undefined;
-                if (!row) return;
-                const request = parseJson<ReplacementRequestRecord>(row.replacement_request);
-                if (request) delete request.dispatch;
-                await trx('tasks').where({ task_id: originalTaskId, replaced_by_task_id: replacementTaskId })
-                    .update({ replaced_by_task_id: null, replacement_request: request ? JSON.stringify(request) : null });
-            });
+        async withdrawRequest(taskId, request) {
+            const updated = await database('tasks')
+                .where({ task_id: taskId, replacement_state: 'pending', replacement_request: JSON.stringify(request) })
+                .whereNull('replaced_by_task_id')
+                .update({ replacement_state: null, replacement_request: null });
+            return updated > 0;
         },
 
         async appendEvent({ taskId, event, reason, metadata, timestamp }) {
@@ -321,7 +329,11 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
         async listPendingRequests(requestedBefore, limit) {
             const rows = await database('tasks as t')
                 .where('t.replacement_state', 'pending')
-                .select('t.task_id', 't.replaced_by_task_id', 't.replacement_request', latestHistorySubquery(database, 'state', 'latest_state'))
+                .select(
+                    't.task_id', 't.replaced_by_task_id', 't.replacement_request',
+                    latestHistorySubquery(database, 'state', 'latest_state'),
+                    latestHistorySubquery(database, 'metadata', 'latest_metadata'),
+                )
                 .orderBy('t.task_id')
                 .limit(limit) as Array<Record<string, unknown>>;
             return rows.flatMap(row => {
@@ -331,7 +343,10 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
                 // A claim is listed only with the dispatch record that can redeliver it.
                 if (replacedByTaskId && request.dispatch?.replacementTaskId !== replacedByTaskId) return [];
                 if ((replacedByTaskId ? request.dispatch!.claimedAt : request.requestedAt) > requestedBefore) return [];
-                return [{ taskId: String(row.task_id), request, latestState: text(row.latest_state), replacedByTaskId }];
+                return [{
+                    taskId: String(row.task_id), request, latestState: text(row.latest_state),
+                    latestFinalizedBy: finalizedBy(row.latest_metadata), replacedByTaskId,
+                }];
             });
         },
     };

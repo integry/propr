@@ -8,7 +8,13 @@ import {
     type ReplacementCause,
     type ReplacementSkipReason,
 } from './policy.js';
-import type { LineageAttempt, ReplaceableTask, ReplacementDispatchRecord, TaskReplacementStore } from './store.js';
+import type {
+    LineageAttempt,
+    ReplaceableTask,
+    ReplacementDispatchRecord,
+    ReplacementRequestRecord,
+    TaskReplacementStore,
+} from './store.js';
 
 export const REPLACEMENT_JOB_NAME = 'processGitHubIssue';
 /** A pending decision older than this is completed by the reconciler. */
@@ -21,6 +27,11 @@ export interface ReplacementRequest {
     terminalReason?: string | null;
     /** Failure message recorded with the timeline events. */
     error?: string;
+    /**
+     * `finalizedBy` of the failure transition the caller is about to write. The
+     * decision is completed only if the task's latest transition carries it.
+     */
+    finalizedBy?: string;
 }
 
 export type ReplacementEvaluation =
@@ -31,6 +42,8 @@ export type ReplacementEvaluation =
         attemptNumber: number;
         maxReplacements: number;
         remainingBudgetUsd?: number;
+        /** The pending decision `prepare` recorded, for `withdraw`. */
+        request?: ReplacementRequestRecord;
     }
     | {
         eligible: false;
@@ -44,6 +57,8 @@ export type ReplacementEvaluation =
 
 export type ReplacementOutcome =
     | { action: 'dispatched'; replacementTaskId: string; attemptNumber: number; lineage: LineageAttempt[] }
+    /** Claimed, but the queue did not confirm delivery; recovery redelivers the same job ID. */
+    | { action: 'delivery_pending'; replacementTaskId: string; attemptNumber: number }
     | { action: 'skipped'; reason: ReplacementSkipReason; exhausted: boolean; lineage: LineageAttempt[] }
     | { action: 'none' };
 
@@ -82,6 +97,11 @@ export interface TaskReplacementService {
     prepare(request: ReplacementRequest): Promise<ReplacementEvaluation>;
     /** Dispatches the replacement for a failed task, or records why there is none. */
     complete(request: ReplacementRequest): Promise<ReplacementOutcome>;
+    /**
+     * Withdraws a decision `prepare` recorded when its failure was not written,
+     * unless it changed since or a replacement was already claimed for it.
+     */
+    withdraw(taskId: string, request: ReplacementRequestRecord): Promise<boolean>;
     /**
      * Completes decisions a restart interrupted between `prepare` and `complete`, and
      * redelivers replacements claimed before their queue job was confirmed.
@@ -273,9 +293,11 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
         try {
             await deps.enqueue(REPLACEMENT_JOB_NAME, jobData, jobId);
         } catch (error) {
-            deps.logger?.warn({ taskId: task.taskId, replacementTaskId, error: (error as Error).message }, 'Failed to queue replacement attempt');
-            await deps.store.revertReplacement(task.taskId, replacementTaskId);
-            return recordSkip({ ...evaluation, eligible: false, reason: 'dispatch_failed' }, request);
+            // A rejected add does not prove the queue did not accept the job, so the claim
+            // and its dispatch record stay pending; recovery redelivers the same job ID.
+            deps.logger?.warn({ taskId: task.taskId, replacementTaskId, error: (error as Error).message },
+                'Queue delivery of replacement attempt is unconfirmed; recovery will redeliver it');
+            return { action: 'delivery_pending', replacementTaskId, attemptNumber };
         }
         await confirmDispatched(task, request.cause, {
             replacementTaskId, jobId, jobData, attemptNumber, maxReplacements: evaluation.maxReplacements,
@@ -348,7 +370,36 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
         return true;
     }
 
+    async function withdraw(taskId: string, request: ReplacementRequestRecord): Promise<boolean> {
+        if (!await deps.store.withdrawRequest(taskId, request)) return false;
+        deps.logger?.info({ taskId, cause: request.cause, finalizedBy: request.finalizedBy }, 'Withdrew replacement decision');
+        // The failure alert was held back while this decision was pending.
+        const task = await deps.store.loadTask(taskId);
+        if (task?.latestState === 'failed') await deps.publishTaskUpdate?.({
+            taskId,
+            state: 'failed',
+            repository: task.repository,
+            ...(task.issueNumber ? { issueNumber: task.issueNumber } : {}),
+            timestamp: now().toISOString(),
+        });
+        return true;
+    }
+
+    /** Withdraws a decision bound to a failure the task's latest transition was not. */
+    async function withdrawUnbound(task: ReplaceableTask, finalizedBy: string): Promise<boolean> {
+        const request = task.replacementState === 'pending' ? task.replacementRequest : null;
+        if (!request || request.dispatch || request.finalizedBy !== finalizedBy) return false;
+        return withdraw(task.taskId, request);
+    }
+
     async function complete(request: ReplacementRequest): Promise<ReplacementOutcome> {
+        if (request.finalizedBy) {
+            const task = await deps.store.loadTask(request.taskId);
+            if (task && !task.replacedByTaskId && task.latestFinalizedBy !== request.finalizedBy) {
+                await withdrawUnbound(task, request.finalizedBy);
+                return { action: 'none' };
+            }
+        }
         const evaluation = await evaluate(request);
         if (evaluation.eligible) return dispatch(evaluation, request);
         if (evaluation.reason === null) return { action: 'none' };
@@ -359,16 +410,19 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
         async prepare(request) {
             const evaluation = await evaluate(request);
             if (evaluation.eligible) {
-                await deps.store.markRequested(request.taskId, {
+                const record: ReplacementRequestRecord = {
                     cause: request.cause,
                     ...(request.terminalReason ? { terminalReason: request.terminalReason } : {}),
                     requestedAt: now().toISOString(),
-                });
+                    ...(request.finalizedBy ? { finalizedBy: request.finalizedBy } : {}),
+                };
+                if (await deps.store.markRequested(request.taskId, record)) return { ...evaluation, request: record };
             }
             return evaluation;
         },
 
         complete,
+        withdraw,
 
         async resumePending(options = {}) {
             const cutoff = new Date(now().getTime() - PENDING_REPLACEMENT_RECOVERY_MS).toISOString();
@@ -378,8 +432,15 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
             for (const entry of pending) {
                 if (entry.replacedByTaskId && entry.request.dispatch) {
                     if (await resumeClaimed(entry.taskId, entry.request.cause, entry.request.dispatch)) resumed++;
+                } else if (entry.request.finalizedBy && entry.latestState && TERMINAL_STATES.has(entry.latestState)
+                    && entry.latestFinalizedBy !== entry.request.finalizedBy) {
+                    // Another writer ended the task; the failure this decision awaited never happened.
+                    if (await withdraw(entry.taskId, entry.request)) cleared++;
                 } else if (entry.latestState === 'failed') {
-                    await complete({ taskId: entry.taskId, cause: entry.request.cause, terminalReason: entry.request.terminalReason });
+                    await complete({
+                        taskId: entry.taskId, cause: entry.request.cause, terminalReason: entry.request.terminalReason,
+                        ...(entry.request.finalizedBy ? { finalizedBy: entry.request.finalizedBy } : {}),
+                    });
                     resumed++;
                 } else if (entry.latestState && TERMINAL_STATES.has(entry.latestState)) {
                     // Completed or cancelled after all; nothing replaces it.
