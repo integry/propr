@@ -99,6 +99,28 @@ function escapeRegExp(text: string): string {
     return text.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 }
 
+/** A compiled protected-path glob. */
+export interface ProtectedPathMatcher {
+    test(path: string): boolean;
+}
+
+type CharTest = (char: string) => boolean;
+
+interface GlobState {
+    epsilon: number[];
+    edges: Array<{ accepts: CharTest; to: number }>;
+}
+
+const anyChar: CharTest = () => true;
+const notSlash: CharTest = char => char !== '/';
+const isSlash: CharTest = char => char === '/';
+
+/** A one-character test with the case-insensitive, dotAll semantics of the original regex. */
+function singleCharTest(source: string): CharTest {
+    const regex = new RegExp(`^${source}$`, 'is');
+    return char => regex.test(char);
+}
+
 /**
  * Compile a protected-path glob. Patterns are anchored at the repository root:
  * `*` and `?` stay within one path segment, `**` spans any number of segments,
@@ -107,10 +129,28 @@ function escapeRegExp(text: string): string {
  * Matching is case-insensitive so a differently cased path cannot slip through, and
  * wildcards match line terminators, which Git allows in filenames. Throws on a glob
  * that does not compile (such as a reversed `[z-a]` range); validation rejects those.
+ *
+ * The glob becomes a state machine that is simulated over the filename, so matching
+ * takes time proportional to filename length times pattern length. A backtracking
+ * regex would explore exponentially many splits for patterns such as `*a*a*a*b`.
  */
-export function compileProtectedPathGlob(pattern: string): RegExp {
+export function compileProtectedPathGlob(pattern: string): ProtectedPathMatcher {
     const glob = trimTrailingSlashes(normalizePath(pattern));
-    let source = '';
+    const states: GlobState[] = [];
+    const addState = (): number => states.push({ epsilon: [], edges: [] }) - 1;
+    let current = addState();
+    const consume = (accepts: CharTest) => {
+        const next = addState();
+        states[current].edges.push({ accepts, to: next });
+        current = next;
+    };
+    // `[^/]*` or `.*`: a looping state entered without consuming anything.
+    const repeat = (accepts: CharTest) => {
+        const next = addState();
+        states[current].epsilon.push(next);
+        states[next].edges.push({ accepts, to: next });
+        current = next;
+    };
     for (let index = 0; index < glob.length; index++) {
         const char = glob[index];
         if (char === '*') {
@@ -120,24 +160,63 @@ export function compileProtectedPathGlob(pattern: string): RegExp {
             const wholeSegment = doubleStar && atSegmentStart && (followedBySlash || index + 2 === glob.length);
             // `**/` matches zero or more directories; a trailing `**` matches anything;
             // any other `*` (including `**` inside a segment) stays within one segment.
-            source += wholeSegment ? (followedBySlash ? '(?:[^/]*/)*' : '.*') : '[^/]*';
+            if (wholeSegment && followedBySlash) {
+                // Zero directories, or any text ending in `/`.
+                const directories = addState();
+                const next = addState();
+                states[current].epsilon.push(next, directories);
+                states[directories].edges.push({ accepts: anyChar, to: directories }, { accepts: isSlash, to: next });
+                current = next;
+            } else {
+                repeat(wholeSegment ? anyChar : notSlash);
+            }
             index += wholeSegment && followedBySlash ? 2 : doubleStar ? 1 : 0;
         } else if (char === '?') {
-            source += '[^/]';
+            consume(notSlash);
         } else if (char === '[') {
             const close = glob.indexOf(']', index + 2);
-            if (close === -1) { source += '\\['; continue; }
+            if (close === -1) { consume(singleCharTest('\\[')); continue; }
             let body = glob.slice(index + 1, close);
             const negated = body.startsWith('!') || body.startsWith('^');
             if (negated) body = body.slice(1);
-            source += `[${negated ? '^/' : ''}${body.replace(/[\\\]]/g, '\\$&')}]`;
+            consume(singleCharTest(`[${negated ? '^/' : ''}${body.replace(/[\\\]]/g, '\\$&')}]`));
             index = close;
         } else {
-            source += escapeRegExp(char);
+            consume(singleCharTest(escapeRegExp(char)));
         }
     }
-    // Matching a directory protects its descendants.
-    return new RegExp(`^${source}(?:/.*)?$`, 'is');
+    // Matching a directory protects its descendants: accept the pattern itself, or
+    // the pattern followed by `/` and anything.
+    const accepting = new Set([current]);
+    const descendants = addState();
+    states[current].edges.push({ accepts: isSlash, to: descendants });
+    states[descendants].edges.push({ accepts: anyChar, to: descendants });
+    accepting.add(descendants);
+
+    const closure = (active: Set<number>): Set<number> => {
+        const stack = [...active];
+        while (stack.length) {
+            for (const next of states[stack.pop()!].epsilon) {
+                if (!active.has(next)) { active.add(next); stack.push(next); }
+            }
+        }
+        return active;
+    };
+    return {
+        test(path: string): boolean {
+            let active = closure(new Set([0]));
+            for (let index = 0; index < path.length && active.size; index++) {
+                const char = path[index];
+                const next = new Set<number>();
+                for (const state of active) {
+                    for (const edge of states[state].edges) if (edge.accepts(char)) next.add(edge.to);
+                }
+                active = closure(next);
+            }
+            for (const state of active) if (accepting.has(state)) return true;
+            return false;
+        },
+    };
 }
 
 /**

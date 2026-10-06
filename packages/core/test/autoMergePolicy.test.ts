@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-    decideAutoMerge, describeAutoMergeDecision, findProtectedPaths, validateAutoMergeConfig,
+    compileProtectedPathGlob, decideAutoMerge, describeAutoMergeDecision, findProtectedPaths, validateAutoMergeConfig,
     type AutoMergePolicyInput, type AutoMergeReason,
 } from '../src/workflow/autoMergePolicy.js';
 import { parseRepositoryWorkflow, RepositoryWorkflowPolicyError } from '../src/workflow/repositoryWorkflow.js';
@@ -63,6 +63,34 @@ test('decideAutoMerge returns the configured method only when armed', () => {
     assert.equal(decideAutoMerge(valid({ method: 'rebase' }), ['a.ts'], context).method, 'rebase');
     assert.equal(decideAutoMerge(valid(), ['a.ts'], context).method, undefined);
     assert.equal(decideAutoMerge(valid({ method: 'rebase' }), [], context).method, undefined);
+});
+
+test('findProtectedPaths matches ambiguous globs in bounded time', () => {
+    const pattern = '*a*a*a*a*a*a*a*a*a*a*b';
+    const filename = `${'a'.repeat(200)}.txt`;
+    const started = performance.now();
+    assert.deepEqual(findProtectedPaths([filename, `${'a'.repeat(200)}b`], [pattern]), [`${'a'.repeat(200)}b`]);
+    assert.ok(performance.now() - started < 1000, 'matching must not backtrack exponentially');
+    assert.equal(decideAutoMerge(valid({ protected_paths: [pattern] }), [filename], context).reason, 'armed');
+});
+
+test('compiled globs keep segment, directory and character-class semantics', () => {
+    const matches = (pattern: string, path: string) => compileProtectedPathGlob(pattern).test(path);
+    assert.ok(matches('**/x', 'x'));
+    assert.ok(matches('**/x', 'a/b/x/y'));
+    assert.ok(!matches('**/x', 'ax'));
+    assert.ok(matches('a/**/b', 'a/b'));
+    assert.ok(matches('a/**/b', 'a/c/d/b'));
+    assert.ok(!matches('a/**/b', 'a/cb'));
+    assert.ok(matches('a**b', 'axxb'));
+    assert.ok(!matches('a**b', 'ax/xb'));
+    assert.ok(matches('[!a]', 'b'));
+    assert.ok(!matches('[!a]', 'A'));
+    assert.ok(!matches('[!a]x', '/x'));
+    assert.ok(matches('[]x]', ']'));
+    assert.ok(matches('a[', 'A['));
+    assert.ok(!matches('docs', 'doc'));
+    assert.throws(() => compileProtectedPathGlob('[z-a]'));
 });
 
 test('findProtectedPaths deduplicates and sorts matches', () => {

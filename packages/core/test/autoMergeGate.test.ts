@@ -5,9 +5,14 @@ import knex from 'knex';
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
 const log = { info() {}, warn() {}, error() {}, debug() {}, withCorrelation: () => log };
 let planIssue: { draft_id: string; issue_number: number } | null = null;
-await mock.module('../src/db/connection.js', { namedExports: { db: database } });
+await mock.module('../src/db/connection.js', { namedExports: { db: database, closeConnection: async () => {} } });
 await mock.module('../src/utils/logger.js', { defaultExport: log });
-await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => { throw new Error('use the fake client'); } } });
+/** The installation client ProPR's own bot-username detection sees; unset means detection fails. */
+let installationClient: { request(route: string): Promise<{ data: unknown }> } | null = null;
+await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => {
+    if (installationClient) return installationClient;
+    throw new Error('use the fake client');
+} } });
 await mock.module('../src/config/planIssueManager.js', { namedExports: { findPlanIssueByRepoAndPR: async () => planIssue } });
 
 const {
@@ -368,6 +373,34 @@ test('ProPR identity matching ignores login case', async () => {
     const github = fakeGitHub({ workflowByRef: {}, files: [{ filename: '.propr/workflow.yml' }], headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED });
     const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin: async () => 'ProPR-Dev[bot]' });
     assert.equal(result.disarmed, true);
+});
+
+test('a custom App is recognised after bot-username detection fell back to the default', async () => {
+    delete process.env.GITHUB_BOT_USERNAME;
+    const { detectBotUsername } = await import('../src/daemon/configLoader.js');
+    installationClient = null;
+    // A transient failure at startup caches the default login.
+    assert.equal(await detectBotUsername(), 'propr-dev[bot]');
+    const customArmed = { enabled_by: { login: 'custom-app[bot]', type: 'Bot' } };
+    try {
+        // While detection still fails the gate cannot prove ownership, so it leaves the request alone.
+        const unresolved = fakeGitHub({ workflowByRef: {}, files: [{ filename: '.propr/workflow.yml' }], headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: customArmed });
+        assert.equal((await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: unresolved.octokit, database })).disarmed, false);
+        assert.equal(unresolved.graphqlCalls.length, 0);
+
+        // Once GitHub recovers, the gate retries detection instead of trusting the cached default.
+        installationClient = { async request(route) {
+            assert.equal(route, 'GET /installation');
+            return { data: { app_slug: 'custom-app' } };
+        } };
+        const github = fakeGitHub({ workflowByRef: {}, files: [{ filename: '.propr/workflow.yml' }], headSha: 'h3', baseRef: 'main', headRef: 'f', autoMerge: customArmed });
+        const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database });
+        assert.equal(result.disarmed, true);
+        assert.match(github.graphqlCalls[0].query, /disablePullRequestAutoMerge/);
+        assert.equal(await detectBotUsername(), 'custom-app[bot]');
+    } finally {
+        installationClient = null;
+    }
 });
 
 const disarmEvent = {

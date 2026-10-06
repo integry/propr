@@ -28,7 +28,7 @@ export interface AutoMergeGateDependencies {
     octokit?: AutoMergeGateOctokit;
     database?: Knex;
     now?: () => number;
-    /** ProPR's own GitHub login (`<app-slug>[bot]`); defaults to the detected bot username. */
+    /** ProPR's own GitHub login (`<app-slug>[bot]`); defaults to the verified detected bot username. */
     botLogin?: () => Promise<string>;
     /** Epic queue hook; defaults to the real queue. */
     markEpicQueueAwaitingHumanMerge?: (input: { draftId: string; issueNumber: number; prNumber: number; reason: string }) => Promise<boolean>;
@@ -288,8 +288,9 @@ export async function gateAutoMergeArming(input: {
 
 async function resolveBotLogin(deps: AutoMergeGateDependencies): Promise<string> {
     if (deps.botLogin) return deps.botLogin();
-    const { detectBotUsername } = await import('../daemon/configLoader.js');
-    return detectBotUsername();
+    // Ownership needs the real identity: a cached fallback login would hide a custom App's request.
+    const { detectVerifiedBotUsername } = await import('../daemon/configLoader.js');
+    return detectVerifiedBotUsername();
 }
 
 /** True only when ProPR's own identity enabled the PR's auto-merge request. */
