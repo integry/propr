@@ -201,6 +201,8 @@ export type CliVersionType = 'default' | 'tag' | 'specific' | 'custom';
 export interface SystemSettings {
   default_agent_alias?: string;
   worker_concurrency?: string | number;
+  /** Replacement attempts after transient provider failures; 0 disables them. */
+  max_provider_replacements?: number;
   github_user_whitelist?: string[];
   analysis_model_fast?: string;
   planner_context_model?: string;

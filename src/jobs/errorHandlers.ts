@@ -12,6 +12,7 @@ import {
     updateWithdrawnIssueLabels
 } from '@propr/core';
 import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo } from '@propr/core';
+import { completeProviderReplacement, prepareProviderReplacement } from './providerReplacement.js';
 
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -39,6 +40,8 @@ export interface GenericErrorOptions extends UsageLimitErrorOptions {
 
 interface PostErrorCommentOptions {
     octokit: Octokit;
+    /** Retry notice or attempt lineage appended to the failure comment. */
+    replacementSection?: string;
     errorCategory: string;
     claudeResult: ClaudeCodeResponse | null;
     worktreeInfo: WorktreeInfo | undefined;
@@ -324,8 +327,10 @@ export async function handleGenericError(
         }
     }
 
+    // Decided before the failure is reported, so the comment and Inbox reflect a pending replacement.
+    const replacementSection = isUserCancelled ? '' : await prepareProviderReplacement({ taskId, error, correlatedLogger });
     if (octokit && !isUserCancelled) {
-        await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger });
+        await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger, replacementSection });
     } else if (octokit && isUserCancelled) {
         await postCancellationNotice(issueRef, options);
         try {
@@ -351,6 +356,7 @@ export async function handleGenericError(
             correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
         } else {
             await stateManager.markTaskFailed(taskId, error, { errorCategory });
+            await completeProviderReplacement({ taskId, error, correlatedLogger });
         }
     } catch (stateError) {
         correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state');
@@ -358,7 +364,7 @@ export async function handleGenericError(
 }
 
 async function postErrorComment(issueRef: IssueJobData, error: Error, options: PostErrorCommentOptions): Promise<void> {
-    const { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger } = options;
+    const { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger, replacementSection = '' } = options;
     try {
         const categoryHints: Record<string, string> = {
             github_server_error: 'GitHub API returned a server error (5xx). This is a temporary issue on GitHub\'s side. The system will automatically retry.\n\n',
@@ -368,7 +374,7 @@ async function postErrorComment(issueRef: IssueJobData, error: Error, options: P
         };
         const sanitizedMessage = sanitizeErrorMessage(error.message);
         const sanitizedStack = error.stack ? sanitizeErrorMessage(error.stack) : sanitizedMessage;
-        const errorMessage = `❌ **Failed to process this issue**\n\n**Error Category:** ${errorCategory.replace('_', ' ')}\n**Error Message:** ${sanitizedMessage}\n\n${categoryHints[errorCategory] || ''}**Processing Stage:** ${claudeResult ? 'Post-processing (after AI analysis)' : 'Pre-processing (before AI analysis)'}\n${worktreeInfo ? `**Branch:** ${worktreeInfo.branchName}\n` : ''}\n<details><summary>Technical Details</summary>\n\n\`\`\`\n${sanitizedStack}\n\`\`\`\n</details>\n\n---\n*The system will automatically retry this task. If the issue persists, please contact support.*`;
+        const errorMessage = `❌ **Failed to process this issue**\n\n**Error Category:** ${errorCategory.replace('_', ' ')}\n**Error Message:** ${sanitizedMessage}\n\n${categoryHints[errorCategory] || ''}**Processing Stage:** ${claudeResult ? 'Post-processing (after AI analysis)' : 'Pre-processing (before AI analysis)'}\n${worktreeInfo ? `**Branch:** ${worktreeInfo.branchName}\n` : ''}\n<details><summary>Technical Details</summary>\n\n\`\`\`\n${sanitizedStack}\n\`\`\`\n</details>${replacementSection}\n\n---\n*The system will automatically retry this task. If the issue persists, please contact support.*`;
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number, body: errorMessage });
         await safeRemoveLabel({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, AI_PROCESSING_TAG);
     } catch (commentError) {

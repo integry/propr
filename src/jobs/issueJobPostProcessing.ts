@@ -19,6 +19,7 @@ import { createPullRequest, ensureEpicBaseBranchExists, type PostProcessingResul
 import { handleCreatedPlanIssuePR, handleNoCodeChanges } from './issueJobPostProcessingHelpers.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import type { GitHubToken } from './githubTypes.js';
+import { prepareProviderReplacement } from './providerReplacement.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
@@ -52,9 +53,9 @@ async function handleUnpublishableAgentFailure(options: {
     issueRef: IssueJobData;
     claudeResult: ClaudeCodeResponse;
     AI_PROCESSING_TAG: string;
-    correlatedLogger: Logger;
+    correlatedLogger: Logger; taskId?: string;
 }): Promise<PostProcessingResult> {
-    const { octokit, issueRef, claudeResult, AI_PROCESSING_TAG, correlatedLogger } = options;
+    const { octokit, issueRef, claudeResult, AI_PROCESSING_TAG, correlatedLogger, taskId } = options;
     const errorMessage = claudeResult.error?.trim() || 'The coding agent stopped before producing publishable work.';
 
     correlatedLogger.warn({ issueNumber: issueRef.number, error: redactSecrets(errorMessage) }, 'Agent execution failed without publishable work');
@@ -73,11 +74,12 @@ async function handleUnpublishableAgentFailure(options: {
         repoOwner: issueRef.repoOwner,
         repoName: issueRef.repoName,
     }, { publishedAs: 'issue_comment' });
+    const replacementSection = await prepareProviderReplacement({ taskId, error: claudeResult.error ?? errorMessage, terminationReason: resolveAgentTerminationReason(claudeResult) ?? null, correlatedLogger });
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: issueRef.repoOwner,
         repo: issueRef.repoName,
         issue_number: issueRef.number,
-        body: `❌ **AI processing failed before producing publishable work.**\n\n${formatErrorBlock('System Error', errorMessage)}${completionComment}`,
+        body: `❌ **AI processing failed before producing publishable work.**\n\n${formatErrorBlock('System Error', errorMessage)}${completionComment}${replacementSection}`,
     });
 
     return { success: false, pr: null, updatedLabels: [], error: errorMessage };
@@ -174,11 +176,8 @@ async function handleMissingCommit(options: PostProcessOptions): Promise<PostPro
     }
 
     return handleUnpublishableAgentFailure({
-        octokit,
-        issueRef,
-        claudeResult,
-        AI_PROCESSING_TAG,
-        correlatedLogger,
+        octokit, issueRef, claudeResult, AI_PROCESSING_TAG,
+        correlatedLogger, taskId: options.taskId,
     });
 }
 
@@ -195,7 +194,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
                 issueRef,
                 claudeResult,
                 AI_PROCESSING_TAG,
-                correlatedLogger,
+                correlatedLogger, taskId,
             });
             return { commitResult, postProcessingResult };
         }

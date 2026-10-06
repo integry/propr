@@ -42,6 +42,18 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData {
     subtitle?: string;
     issueNumber?: number;
     isRetryFromRateLimit?: boolean;  // Set when job is retried after rate limit
+    /** Task this job replaces after an infrastructure-lost or transient provider failure. */
+    replacesTaskId?: string;
+    /** 1-based attempt number within the replacement lineage. */
+    attemptNumber?: number;
+    /** First task of the replacement lineage. */
+    lineageRootTaskId?: string;
+    /** Why this replacement attempt was dispatched. */
+    replacementCause?: 'infra_lost' | 'provider_transient';
+    /** Pushed work branch of the replaced attempt, continued instead of a fresh worktree. */
+    replacementBranch?: string;
+    /** Per-run cost cap in USD; a replacement receives the cap minus what earlier attempts spent. */
+    costCapUsd?: number;
 }
 
 export type SystemAction = 'auto_resolve_merge_conflicts';

@@ -6,6 +6,7 @@ import { Queue, Job } from 'bullmq';
 import { Knex } from 'knex';
 import { sendSafeJson } from './jsonResponse.js';
 import { previewMediaReader, projectTaskPreviewMedia } from '../services/previewMediaProjection.js';
+import { attemptLineageFields, loadAttemptLineage } from './taskAttemptLineage.js';
 
 interface JobData {
     repoOwner?: string; repoName?: string; number?: number;
@@ -81,7 +82,7 @@ function buildTaskInfoFromDb(
   if (isPr && issueNumber) taskInfo.issueNumber = issueNumber;
   if (commandMode) taskInfo.commandMode = commandMode;
   if (hasUltrafixMeta) taskInfo.ultrafixCycle = true;
-  return taskInfo;
+  return { ...taskInfo, ...attemptLineageFields(task) };
 }
 
 async function fetchUsageMetrics(
@@ -118,6 +119,8 @@ async function getHistoryFromDb(db: Knex, taskId: string, previewReader: typeof 
     if (!task || historyRecords.length === 0) return null;
 
     const taskInfo = buildTaskInfoFromDb(taskId, task, parseJobData(task.initial_job_data));
+    const attemptLineage = await loadAttemptLineage(db, taskId, task);
+    if (attemptLineage) taskInfo.attemptLineage = attemptLineage;
 
     const [llmExecutions, usage, previewMedia] = await Promise.all([
       db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc'),

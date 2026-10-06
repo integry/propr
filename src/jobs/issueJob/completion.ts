@@ -15,6 +15,7 @@ import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
 import type { TaskCompletionParams } from './types.js';
 import { buildWorkNotificationRecap } from '../notificationRecap.js';
+import { completeProviderReplacement } from '../providerReplacement.js';
 
 export function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
   if (postProcessingResult?.pr && claudeResult && resolveAgentTerminationReason(claudeResult)) {
@@ -135,6 +136,13 @@ export async function markTaskComplete(taskCompletionParams: TaskCompletionParam
   const { taskId, postProcessingResult, commitResult, correlatedLogger } = taskCompletionParams;
   try {
     await markTaskTerminalState(taskCompletionParams);
+    const { claudeResult } = taskCompletionParams;
+    if (getTaskCompletionStatus(claudeResult, postProcessingResult) === 'claude_processing_failed') {
+      await completeProviderReplacement({
+        taskId, error: claudeResult?.error ?? '',
+        terminationReason: claudeResult ? resolveAgentTerminationReason(claudeResult) ?? null : null, correlatedLogger,
+      });
+    }
 
     const updateFields = buildTaskUpdateFields(commitResult, postProcessingResult);
     await persistTaskUpdateFields(taskId, updateFields, correlatedLogger);

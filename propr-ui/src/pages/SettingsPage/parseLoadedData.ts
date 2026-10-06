@@ -1,4 +1,4 @@
-import { parseUsageTipsSettings } from '@propr/shared';
+import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, parseUsageTipsSettings } from '@propr/shared';
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
 import { Settings } from './types';
 import { agentTankModeFromLegacyEnabled, isAgentTankMode, normalizeReviewContextBudgetPercent } from '@propr/shared';
@@ -15,6 +15,7 @@ function resolveDefaultAgentAlias(savedAlias: string | undefined, enabledAgents:
 
 interface SettingsApiData {
   worker_concurrency?: string;
+  max_provider_replacements?: number;
   analysis_model_fast?: string;
   planner_context_model?: string;
   planner_generation_model?: string;
@@ -40,9 +41,14 @@ interface SettingsApiData {
   ultrafix_pause_seconds?: number;
 }
 
+function providerReplacements(settingsData: SettingsApiData): number {
+  return settingsData.max_provider_replacements ?? DEFAULT_MAX_PROVIDER_REPLACEMENTS;
+}
+
 function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig[]): Settings {
   return {
     worker_concurrency: settingsData.worker_concurrency || '',
+    max_provider_replacements: providerReplacements(settingsData),
     analysis_model_fast: settingsData.analysis_model_fast || '',
     planner_context_model: settingsData.planner_context_model || '',
     planner_generation_model: settingsData.planner_generation_model || '',

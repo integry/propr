@@ -127,6 +127,14 @@ interface PullRequestTaskEventProjection extends TaskEventProjection {
   prNumber: number;
 }
 
+/** Automatic-replacement lineage stamps of one task (see src/taskReplacement). */
+interface TaskReplacementContext {
+  replacesTaskId?: string;
+  attemptNumber: number;
+  replacementCause?: string;
+  replacementState?: string;
+}
+
 /** One active Inbox receipt a server-side cleanup dismissed. */
 interface DismissedReceipt {
   userId: string;
@@ -658,6 +666,7 @@ export class NotificationProjectionService {
     const pullRequestUrl = context.prNumber === undefined
       ? undefined
       : safeGithubPullRequestUrl(context.repository, context.prNumber);
+    if (await this.projectReplacementLifecycle({ payload, context, occurredAt, recipients, pullRequestUrl })) return;
     if (payload.state === 'failed' || isNotifiableCancellation(payload)) {
       await this.projectFailedTask({
         payload, context, occurredAt, recipients, pullRequestUrl,
@@ -942,6 +951,101 @@ export class NotificationProjectionService {
         input,
         recipients,
       );
+  }
+
+  /**
+   * A replacement attempt supersedes its predecessor's failure: the failure is
+   * held back while a replacement is pending or dispatched, and the queued
+   * replacement's "replacement started" card is the only alert. A skipped
+   * replacement re-publishes the failure, which then projects normally.
+   * Returns whether the update was fully handled here.
+   */
+  private async projectReplacementLifecycle(input: TaskEventProjection): Promise<boolean> {
+    const { state, taskId } = input.payload;
+    if (state !== 'failed' && state !== 'pending') return false;
+    const replacement = await this.loadTaskReplacement(taskId);
+    if (state === 'failed') return replacement?.replacementState === 'pending' || replacement?.replacementState === 'dispatched';
+    if (!replacement?.replacesTaskId) return false;
+    await this.projectReplacementStarted(input, { ...replacement, replacesTaskId: replacement.replacesTaskId });
+    return true;
+  }
+
+  private async loadTaskReplacement(taskId: string): Promise<TaskReplacementContext | undefined> {
+    try {
+      const row = await this.database('tasks')
+        .select('replaces_task_id', 'attempt_number', 'replacement_cause', 'replacement_state')
+        .where({ task_id: taskId })
+        .first() as Record<string, unknown> | undefined;
+      if (!row) return undefined;
+      return {
+        ...(typeof row.replaces_task_id === 'string' ? { replacesTaskId: row.replaces_task_id } : {}),
+        attemptNumber: positiveInteger(row.attempt_number) ?? 1,
+        ...(typeof row.replacement_cause === 'string' ? { replacementCause: row.replacement_cause } : {}),
+        ...(typeof row.replacement_state === 'string' ? { replacementState: row.replacement_state } : {}),
+      };
+    } catch {
+      // Databases that predate replacement lineage behave as before.
+      return undefined;
+    }
+  }
+
+  /** Replaces the replaced attempt's failure card, if one was shown, with a single "replacement started" card. */
+  private async projectReplacementStarted(
+    input: TaskEventProjection,
+    replacement: TaskReplacementContext & { replacesTaskId: string },
+  ): Promise<void> {
+    const { payload, context, occurredAt, recipients, pullRequestUrl } = input;
+    await this.dismissTaskFailureReceipts(replacement.replacesTaskId);
+    const subject = context.prNumber !== undefined
+      ? `PR #${context.prNumber}`
+      : context.issueNumber !== undefined ? `issue #${context.issueNumber}` : context.repository;
+    const lost = replacement.replacementCause === 'infra_lost'
+      ? 'was lost with its worker'
+      : 'ended with a transient provider error';
+    await this.createPullRequestAwareEvent({
+      deduplicationKey: stableKey('task-replacement-started', payload.taskId),
+      kind: 'task',
+      severity: 'info',
+      target: {
+        type: 'task', repository: context.repository, taskId: payload.taskId,
+        ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
+        ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
+      },
+      title: `Replacement started for ${subject}`,
+      body: `Attempt ${replacement.attemptNumber} started automatically because the previous attempt ${lost}.`,
+      actions: taskActions({ active: true, hasPullRequest: pullRequestUrl !== undefined }),
+      ...pullRequestAction(pullRequestUrl),
+      metadata: { replacesTaskId: replacement.replacesTaskId, attemptNumber: replacement.attemptNumber },
+      occurredAt,
+    }, recipients, context.repository, context.prNumber);
+  }
+
+  private async dismissTaskFailureReceipts(taskId: string): Promise<void> {
+    const timestamp = normalizeISO8601Timestamp(this.now());
+    const dismissed = await this.database.transaction(async transaction => {
+      const failureEvents = () => transaction('notification_events')
+        .select('event_id')
+        .where({ kind: 'task', severity: 'error' })
+        .whereRaw("json_extract(target_json, '$.taskId') = ?", [taskId]);
+      const receipts = await transaction('notification_user_states')
+        .where({ inbox_enabled: true })
+        .whereNull('dismissed_at')
+        .whereIn('event_id', failureEvents())
+        .select('user_id', 'event_id') as Array<{ user_id: string; event_id: string }>;
+      if (receipts.length === 0) return [];
+      await transaction('notification_user_states')
+        .where({ inbox_enabled: true })
+        .whereNull('dismissed_at')
+        .whereIn('event_id', failureEvents())
+        .update({
+          dismissed_at: transaction.raw(
+            'CASE WHEN created_at > ? THEN created_at ELSE ? END',
+            [timestamp, timestamp],
+          ),
+        });
+      return receipts.map(receipt => ({ userId: receipt.user_id, eventId: receipt.event_id }));
+    });
+    this.announceDismissed(dismissed);
   }
 
   private projectFailedTask(input: TaskEventProjection): Promise<{ id: string } | null> {

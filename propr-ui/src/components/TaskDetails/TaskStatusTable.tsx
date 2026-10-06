@@ -21,6 +21,8 @@ const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[
   const isReview = commandMode === 'review';
   const isFix = commandMode === 'fix';
 
+  const replacementLabel = getReplacementEventLabel(item);
+  if (replacementLabel) return replacementLabel;
   if (item.metadata?.repositoryWorkflowDeferrals) return 'Waiting for Repository Capacity';
   if (stateUpper === 'PENDING') return 'Task Queued';
   if (stateUpper === 'PROCESSING') return isReview ? 'Preparing Review' : 'Analyzing Request';
@@ -34,6 +36,20 @@ const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[
   if (stateUpper === 'CANCELLED') return 'Task Cancelled';
 
   return item.state?.replace(/_/g, ' ').toLowerCase() || '';
+};
+
+/** Automatic-replacement timeline events repeat the task's state; label them by event. */
+const getReplacementEventLabel = (item: HistoryItem): string | null => {
+  switch (item.metadata?.event) {
+    case 'replacement.dispatched':
+      return `Replacement Attempt ${item.metadata.attemptNumber ?? ''} Started`.replace('  ', ' ');
+    case 'replacement.skipped':
+      return item.reason || 'Replacement Skipped';
+    case 'replacement.exhausted':
+      return item.reason || 'Replacement Attempts Exhausted';
+    default:
+      return null;
+  }
 };
 
 const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: HistoryItem[], commandMode?: string): string => {
@@ -218,7 +234,7 @@ const TaskTimelineItem: React.FC<{
   const stateUpper = item.state?.toUpperCase() || '';
   const isCompletedState = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(stateUpper);
   const isRunning = isLast && !isCompletedState;
-  const isFailure = stateUpper === 'FAILED';
+  const isFailure = stateUpper === 'FAILED' && !item.metadata?.event;
   const isCancelled = stateUpper === 'CANCELLED';
 
   // Check if date changed from previous item
@@ -303,7 +319,7 @@ const BranchSteps: React.FC<{
       const stateUpper = item.state?.toUpperCase() || '';
       const isLast = index === items.length - 1;
       const isRunning = isLast && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(stateUpper);
-      const isFailure = stateUpper === 'FAILED';
+      const isFailure = stateUpper === 'FAILED' && !item.metadata?.event;
       return (
         <li key={`${item.state}-${item.timestamp}-${index}`} className={`relative flex min-w-0 items-start gap-2 py-0.5 ${RUN_LEAD_INSET} pr-1 text-xs leading-5`}>
           <span aria-hidden="true" className="absolute left-[9px] top-[10px] h-px w-6 bg-slate-300" />

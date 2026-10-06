@@ -12,7 +12,7 @@ import {
   AgentConfig,
   SummarizationSettings
 } from '../../api/proprApi';
-import { DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
+import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
 import { getAgentTankSettings } from '../../api/revertApi';
 import { Settings } from './types';
 import { parseLoadedData } from './parseLoadedData';
@@ -55,6 +55,7 @@ export function useSettingsState() {
 
   const [settings, setSettings] = useState<Settings>({
     worker_concurrency: '',
+    max_provider_replacements: DEFAULT_MAX_PROVIDER_REPLACEMENTS,
     analysis_model_fast: '',
     planner_context_model: '',
     planner_generation_model: '',
@@ -153,6 +154,7 @@ export function useSettingsState() {
       }
       const result = await updateSettings({
         worker_concurrency: settingsToSave.worker_concurrency ? concurrency : undefined,
+        max_provider_replacements: settingsToSave.max_provider_replacements,
         analysis_model_fast: settingsToSave.analysis_model_fast,
         planner_context_model: settingsToSave.planner_context_model,
         planner_generation_model: settingsToSave.planner_generation_model,

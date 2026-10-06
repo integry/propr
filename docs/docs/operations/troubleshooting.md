@@ -105,6 +105,25 @@ Recovery runs through the PR conversation:
 - Re-run with a smaller scope — see [Work Splitting](../features/work-splitting.md).
 - Undo a bad commit with `propr task revert owner/repo <pr> <sha> [comment-id]`, which runs a signed system task (authorized via `SYSTEM_TASK_SECRET`) that resets the branch and force-pushes.
 
+## A Task Was Re-Run Automatically, Or Was Not
+
+**Symptom:** a failed task shows "Replacement attempt N started" in its timeline and a new task for the same issue appeared, or a task that was lost with its worker stayed failed.
+
+ProPR replaces an issue task automatically in two cases (see [Reconciliation and automatic replacement runs](../architecture/worker.md#reconciliation-and-automatic-replacement-runs)):
+
+- **The run was lost with its worker** — no queue job and no running task container remained after a worker restart, host reboot or killed container. One replacement is dispatched; a second loss in the same lineage is final.
+- **The run ended with a transient provider error** (5xx, overloaded, connection reset, timeout) — up to `MAX_PROVIDER_REPLACEMENTS` replacements (default 2). Usage limits (429) are not replaced; they re-queue the same task until the limit resets.
+
+Where to look:
+
+- **The task timeline.** `replacement.dispatched`, `replacement.skipped` (with the reason) and `replacement.exhausted` entries explain every decision. The header's attempt chip links each attempt of the lineage.
+- **`propr task get <task-id> --json`** shows `attemptNumber`, `replacesTaskId` and `replacedByTaskId`.
+- **The issue.** The final failure comment lists every attempt with a link to each task.
+
+Common reasons a task was **not** replaced: it was cancelled by a user or withdrawn (`cancelled_*`), stopped by the stall watchdog, run timeout or cost cap, the issue was closed, it is a goal task (goals use their own recovery) or a PR follow-up task, the cap was reached, or earlier attempts used the whole per-run cost cap.
+
+To turn replacement off, set `INFRA_LOST_REPLACEMENT=false` (lost runs) and `MAX_PROVIDER_REPLACEMENTS=0` (provider errors; the **Settings → Automation → General configuration → Provider failure replacements** setting, `propr setting update max_provider_replacements 0`, or MCP `update_execution_settings` overrides the environment). Restart the worker after changing environment variables.
+
 ## Jobs Stuck In The Queue
 
 **Symptom:** jobs sit in `processing` or `failed` and queue counts stop moving.

@@ -533,6 +533,7 @@ export {
 } from './agentTank.js';
 
 export * from './usageTips.js';
+export * from './taskReplacement.js';
 export * from './notificationLinks.js';
 
 export * from './githubAppManifest.js';

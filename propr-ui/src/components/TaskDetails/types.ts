@@ -45,6 +45,10 @@ export interface HistoryItemMetadata {
   ultrafixNextAction?: string;
   ultrafixStopReason?: string;
   ultrafixOutcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
+  /** Timeline event that repeats the current state, e.g. `replacement.dispatched`. */
+  event?: 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted' | string;
+  replacementTaskId?: string;
+  attemptNumber?: number;
   syntheticRouting?: {
     virtualAgentAlias?: string;
     virtualModel?: string;
@@ -82,6 +86,20 @@ export interface TaskInfo {
   /** Normalized by the API: `true` whenever any history entry belongs to an ultrafix cycle. */
   ultrafixCycle?: boolean;
   previewMedia?: PublishedVisualPreview[];
+  /** 1-based attempt number within an automatic-replacement lineage. */
+  attemptNumber?: number;
+  replacesTaskId?: string | null;
+  replacedByTaskId?: string | null;
+  /** Every attempt of the lineage, oldest first; present for replaced and replacement tasks. */
+  attemptLineage?: TaskAttempt[];
+}
+
+export interface TaskAttempt {
+  taskId: string;
+  attemptNumber: number;
+  replacementCause?: 'infra_lost' | 'provider_transient' | null;
+  state?: string | null;
+  createdAt?: string | null;
 }
 
 export interface PromptData {

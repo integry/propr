@@ -4,6 +4,7 @@ import { ExternalLink, GitPullRequest, GitCommit, Layers3 } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { getDisplayTitle } from './taskHeaderText';
 import { ProviderLogo } from '../ui/ProviderLogo';
+import AttemptLineage from './AttemptLineage';
 
 // GitHub icon component
 const GitHubIcon: React.FC<{ size?: number; className?: string }> = ({ size = 14, className = '' }) => (
@@ -385,6 +386,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
           {Boolean(taskInfo?.number) && <IssuePRChip taskInfo={taskInfo!} />}
           {taskInfo?.type === 'pr-comment' && Boolean(taskInfo.issueNumber) && <LinkedIssueChip taskInfo={taskInfo} />}
           {commitInfo?.shortHash && commitInfo.url && <CommitInfoChip commitInfo={commitInfo} />}
+          <AttemptLineage taskInfo={taskInfo} />
         </ContextGroup>
       )}
       {showTelemetry && (

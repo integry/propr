@@ -216,6 +216,37 @@ export interface TaskInfo {
    * Original issue number (for PR tasks).
    */
   issueNumber?: number;
+
+  /**
+   * 1-based attempt number within an automatic-replacement lineage.
+   */
+  attemptNumber?: number;
+
+  /**
+   * Task this attempt replaced after an infrastructure-lost or transient provider failure.
+   */
+  replacesTaskId?: string | null;
+
+  /**
+   * Replacement attempt dispatched for this task.
+   */
+  replacedByTaskId?: string | null;
+
+  /**
+   * Every attempt of the lineage, oldest first (only for replaced or replacement tasks).
+   */
+  attemptLineage?: TaskAttempt[];
+}
+
+/**
+ * One attempt of an automatic-replacement lineage.
+ */
+export interface TaskAttempt {
+  taskId: string;
+  attemptNumber: number;
+  replacementCause: "infra_lost" | "provider_transient" | null;
+  state: string | null;
+  createdAt?: string | null;
 }
 
 /**
@@ -291,6 +322,21 @@ export interface TaskStatus {
    * PR URL if one was created.
    */
   prUrl?: string;
+
+  /**
+   * Task this attempt replaced, if it is an automatic replacement.
+   */
+  replacesTaskId: string | null;
+
+  /**
+   * Replacement attempt dispatched for this task, if any.
+   */
+  replacedByTaskId: string | null;
+
+  /**
+   * 1-based attempt number within the replacement lineage.
+   */
+  attemptNumber: number;
 }
 
 /**
@@ -417,8 +463,10 @@ export async function getTaskStatus(
 function parseTaskStatus(response: TaskStatusResponse): TaskStatus {
   const { taskId, history, taskInfo } = response;
 
-  // Get the latest state from history
-  const latestEntry = history.length > 0 ? history[history.length - 1] : null;
+  // Get the latest state from history. Timeline events (for example replacement
+  // dispatch) repeat the current state, so the reason comes from the last transition.
+  const latestEntry = [...history].reverse().find(entry => !entry.metadata?.event)
+    ?? (history.length > 0 ? history[history.length - 1] : null);
   const currentState = latestEntry?.state?.toLowerCase() || "pending";
 
   // Determine status flags
@@ -458,5 +506,8 @@ function parseTaskStatus(response: TaskStatusResponse): TaskStatus {
     taskInfo,
     prNumber,
     prUrl,
+    replacesTaskId: taskInfo?.replacesTaskId ?? null,
+    replacedByTaskId: taskInfo?.replacedByTaskId ?? null,
+    attemptNumber: taskInfo?.attemptNumber ?? 1,
   };
 }

@@ -222,6 +222,11 @@ interface CreateWorktreeOptions {
      * it, so the run never applies policy from one commit to another commit's code.
      */
     startRevision?: { branch: string; revision: string } | null;
+    /**
+     * Continue this already-pushed work branch (a replacement attempt) instead of
+     * creating a new one. Falls back to a fresh branch when it no longer exists.
+     */
+    reuseBranch?: string | null;
 }
 
 export interface WorktreeResult {
@@ -259,9 +264,27 @@ async function resolveIssueStartPoint(
     return startRevision.revision;
 }
 
+/**
+ * Fetches a previously pushed work branch so a replacement attempt continues it.
+ * Returns its remote-tracking start point, or null when it cannot be used.
+ */
+async function fetchReusableBranch(git: SimpleGit, branch: string): Promise<string | null> {
+    try {
+        await git.raw(['check-ref-format', '--branch', branch]);
+        await configureGitRemoteAuthentication(git);
+        await git.raw(['fetch', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+        await git.revparse([`origin/${branch}^{commit}`]);
+        logger.info({ branch }, 'Continuing the pushed work branch of the replaced attempt');
+        return `origin/${branch}`;
+    } catch (error) {
+        logger.warn({ branch, error: (error as Error).message }, 'Pushed work branch of the replaced attempt is unavailable; starting a fresh branch');
+        return null;
+    }
+}
+
 export async function createWorktreeForIssue(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions = {}): Promise<WorktreeResult> {
     const { issueId, issueTitle, owner, repoName } = issueInfo;
-    const { baseBranch = null, octokit = null, modelName = null, startRevision = null } = options;
+    const { baseBranch = null, octokit = null, modelName = null, startRevision = null, reuseBranch = null } = options;
     assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, owner, repoName);
 
     const sanitizedTitle = issueTitle.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').substring(0, 25);
@@ -271,7 +294,7 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
 
     const safeModelName = modelName ? sanitizeGeneratedNameComponent(modelName, 'model') : null;
     const branchModelPrefix = safeModelName ? `${safeModelName}-` : '';
-    const branchName = `${issueId}/${branchModelPrefix}${sanitizedTitle}-${shortTimestamp}-${randomString}`;
+    let branchName = `${issueId}/${branchModelPrefix}${sanitizedTitle}-${shortTimestamp}-${randomString}`;
     const modelSuffix = safeModelName ? `-${safeModelName}` : '';
     const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelSuffix}-${randomString}`;
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
@@ -307,6 +330,8 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
         // delete worktree metadata for actively running tasks. Prune is still
         // called during cleanup in worktreeOperations.ts after task completion.
 
+        const reusedStartPoint = reuseBranch ? await fetchReusableBranch(git, reuseBranch) : null;
+        if (reusedStartPoint) branchName = reuseBranch!;
         await cleanupExistingBranch(git, branchName);
         // Use explicit refspec to ensure remote tracking ref is updated
         // Simple `git fetch origin <branch>` may only update FETCH_HEAD without
@@ -326,7 +351,7 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
             throw fetchError;
         }
 
-        const startPoint = await resolveIssueStartPoint(git, issueId, resolvedBaseBranch, startRevision);
+        const startPoint = reusedStartPoint ?? await resolveIssueStartPoint(git, issueId, resolvedBaseBranch, startRevision);
 
         await addWorktreeWithoutTracking(
             git,
