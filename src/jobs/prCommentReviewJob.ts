@@ -1,7 +1,9 @@
 import { formatTaskTerminalReason } from '@propr/shared';
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { AgentRegistry, getAuthenticatedOctokit, getModelName, loadPrReviewModel, resolveLlmLabel, retryConfigs, TaskStates, withRetry } from '@propr/core';
+import { AgentRegistry, getActiveRunCostGuard, getAuthenticatedOctokit, getModelName, loadPrReviewModel, RepositoryWorkflowPolicyError, resolveLlmLabel, retryConfigs, TaskStates, withRetry } from '@propr/core';
+import { prepareRepositoryWorkflow } from './repositoryWorkflow.js';
+import { applyWorkflowCostCap } from './runCostCap.js';
 import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { resolvePrReasoningLevelOverride, updateTaskTitleForPR } from './prCommentJobHelpers.js';
@@ -232,6 +234,32 @@ async function handleSkippedPRValidation(
     return { status: 'skipped', reason, pullRequestNumber };
 }
 
+/**
+ * Reviews do not run the repository workflow, but its spend cap still applies.
+ * A missing or invalid workflow leaves the task and instance caps in force; a
+ * workflow that cannot be read fails the review before any agent starts, unless
+ * the task override (which outranks it) already sets the cap.
+ */
+export async function applyReviewWorkflowCostCap(
+    octokit: Parameters<typeof prepareRepositoryWorkflow>[0]['octokit'],
+    prData: { data: object },
+    context: Pick<PRJobContext, 'repoOwner' | 'repoName' | 'correlationId' | 'correlatedLogger'>,
+    loadWorkflow: typeof prepareRepositoryWorkflow = prepareRepositoryWorkflow,
+): Promise<void> {
+    const guard = getActiveRunCostGuard();
+    if (!guard || guard.cap?.source === 'override') return;
+    const baseBranch = (prData.data as { base?: { ref?: string } }).base?.ref ?? null;
+    let workflow: Awaited<ReturnType<typeof prepareRepositoryWorkflow>>;
+    try {
+        workflow = await loadWorkflow({ octokit, repoOwner: context.repoOwner, repoName: context.repoName, baseBranch, correlationId: context.correlationId });
+    } catch (error) {
+        if (!(error instanceof RepositoryWorkflowPolicyError)) throw error;
+        context.correlatedLogger.warn({ error: error.message }, 'Ignoring the invalid repository workflow spend cap for this review');
+        return;
+    }
+    await applyWorkflowCostCap(workflow);
+}
+
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {
     const { job, context, taskId, stateManager, state, redisClient, validatePRAndComments } = params;
     let { llm } = params;
@@ -244,6 +272,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;
     state.unprocessedComments = validUnprocessed!;
     llm = resolvedLlm;
+    await applyReviewWorkflowCostCap(state.octokit, prData!, context);
     const { combinedCommentBody, commentAuthors } = buildCombinedComment(state.unprocessedComments);
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
     const taskUrl = getWebUiTaskUrl(taskId);

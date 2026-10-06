@@ -9,6 +9,7 @@ import {
   loadPrimaryProcessingLabels,
   getAuthenticatedOctokit,
   logger,
+  storeIssueCostCapOverride,
   type PlanIssue
 } from '@propr/core';
 import { PlanIssueStatus } from '@propr/core';
@@ -30,6 +31,7 @@ import {
   ContextConfigParseError,
   parseContextConfig,
   parseImplementationSettingsOverrides,
+  parseImplementationCostCap,
   resolveIssueForResponse,
   resolveImplementationSettings,
   type UpdateIssueRequestBody,
@@ -142,6 +144,8 @@ function sendIssueConfigSyncReconciliationError(res: Response, error: IssueConfi
 type ImplementationModel = { agent_alias: string; model_name: string };
 interface ImplementIssueBody {
   repository?: unknown;
+  /** Per-task spend cap in USD for this implementation; 0 clears an earlier one. */
+  max_cost_usd?: unknown;
   useEpic?: unknown;
   autoMerge?: unknown;
   models?: unknown;
@@ -258,6 +262,7 @@ async function implementLoadedIssue(params: {
   planIssue: PlanIssue;
 }): Promise<unknown> {
   const { draftId, issueNumber, userId, owner, repo, draft, contextConfig, implementationSettings, body, models, planIssue } = params;
+  const maxCostUsd = parseImplementationCostCap(body.max_cost_usd, message => new ImplementationRequestError(400, message));
   const [issueForImplementation] = await persistEffectiveUltrafixSettings({ draftId, issues: [planIssue], contextConfig });
   const processingLabels = await loadPrimaryProcessingLabels();
   const implementLabel = processingLabels[0] || 'AI';
@@ -272,6 +277,8 @@ async function implementLoadedIssue(params: {
     octokit, owner, repo, issueNumber, userId, implementLabel, epicLabelName, autoMerge: autoMerge as boolean, labelLogger
   };
   const effectivePlanIssue = buildEffectivePlanIssue(issueForImplementation, body);
+  // Stored before the trigger label so whichever worker picks the issue up applies it.
+  if (maxCostUsd !== undefined) await storeIssueCostCapOverride(`${owner}/${repo}`, issueNumber, maxCostUsd);
   return runIssueImplementation({ ...context, draftId, planIssue: effectivePlanIssue, models });
 }
 function parseIssueNumberParam(req: FlatRequest, res: Response): number | null {

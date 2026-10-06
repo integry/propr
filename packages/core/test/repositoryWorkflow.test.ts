@@ -100,6 +100,8 @@ test('published editor schema agrees with runtime on supported fields and reject
     for (const candidate of [
         {}, { hooks: { timeout_ms: 4, before_run: 'npm test' } }, { instructions: '.propr/instructions.md' },
         { limits: { max_parallel_tasks: 8 }, previews: { types: [] }, validation: ['echo ok'] },
+        { limits: { max_cost_usd: 5 } }, { limits: { max_cost_usd: 2.5, max_parallel_tasks: 2 } }, { limits: { max_cost_usd: 0 } },
+        { limits: { max_cost: 5 } },
         { network: 'host' }, { hooks: { timeout_ms: -1 } }, { instructions: '../oops' }, { instructions: 'a//b' },
         { validation: [null] }, { limits: { max_parallel_tasks: 1.5 } }, { previews: { types: ['image', 'image'] } },
         // Path checks must cross embedded newlines like the runtime check does.
@@ -110,6 +112,30 @@ test('published editor schema agrees with runtime on supported fields and reject
         try { parseRepositoryWorkflow(JSON.stringify(candidate)); } catch { accepted = false; }
         assert.equal(validate(candidate), accepted, JSON.stringify(candidate));
     }
+});
+
+test('limits.max_cost_usd is read leniently and clamped; a malformed cap means no cap, not a rejected policy', async () => {
+    const load = (yaml: string) => loadRepositoryWorkflow({
+        resolveRevision: async () => 'sha',
+        readFile: async () => ({ sha: 'blob', content: yaml }),
+    }, 'main', { maxParallelTasks: 4 });
+    assert.equal((await load('limits: { max_cost_usd: 5 }'))?.maxCostUsd, 5);
+    assert.equal((await load('limits: { max_cost_usd: 2.5, max_parallel_tasks: 9 }'))?.maxCostUsd, 2.5);
+    assert.equal((await load('limits: { max_cost_usd: 99999999 }'))?.maxCostUsd, 100_000);
+    for (const malformed of ['limits: { max_cost_usd: -1 }', 'limits: { max_cost_usd: five }', 'limits: { max_cost_usd: 0 }', 'limits: { max_cost_usd: [] }']) {
+        const workflow = await load(`${malformed}\nvalidation: [npm test]`);
+        assert.ok(workflow, malformed);
+        assert.equal(workflow.maxCostUsd, undefined, malformed);
+        assert.deepEqual(workflow.config.validation, ['npm test'], 'the rest of the policy still applies');
+    }
+    assert.throws(() => parseRepositoryWorkflow('limits: { max_cost: 5 }'), /unknown field limits.max_cost/);
+
+    // The editor schema flags what the runtime ignores, so a typo is visible before it is committed.
+    const require = createRequire(import.meta.url);
+    const Ajv = require('ajv');
+    const schema = JSON.parse(await readFile(new URL('../../../docs/static/schemas/repository-workflow.schema.json', import.meta.url), 'utf8'));
+    const validate = new Ajv().compile(schema);
+    for (const value of [-1, 'five', 100_001]) assert.equal(validate({ limits: { max_cost_usd: value } }), false, String(value));
 });
 
 async function runWrapper(workflow: ResolvedRepositoryWorkflow, agent = 'echo agent >> "$TRACE"; cat', setup?: string, marker = 'marker', binaries: Record<string, string> = {}, env: string[] = []) {

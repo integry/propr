@@ -46,6 +46,8 @@ export interface SubmissionPayload {
   /** Bounds only travel with an ultrafix opt-in; null keeps the loop's own defaults. */
   ultrafixGoal?: number | null;
   ultrafixMaxCycles?: number | null;
+  /** Per-task spend cap in USD; beats `.propr/workflow.yml` and the instance default. */
+  maxCostUsd?: number;
 }
 export const submissionMarker = (id: string): string => `<!-- propr-task-submission:${id} -->`;
 export const submissionAssetPath = (file: SubmissionAttachment, issue: string | number): string =>

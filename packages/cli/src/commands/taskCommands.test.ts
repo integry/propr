@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resolveFollowupBodyArgument, selectBodySource } from "./taskCommands.js";
+import { formatTaskBudget, resolveFollowupBodyArgument, selectBodySource } from "./taskCommands.js";
 
 test("resolveFollowupBodyArgument preserves multi-word follow-up text", () => {
   assert.equal(
@@ -38,4 +38,16 @@ test("selectBodySource rejects conflicting sources instead of silently dropping 
     () => selectBodySource({ file: "notes.md", stdin: true }),
     /only one of: argument, --file, or --stdin/
   );
+});
+
+test("formatTaskBudget shows the spend beside the run's cap and where it came from", () => {
+  assert.equal(
+    formatTaskBudget({ spentUsd: 1.2, capUsd: 5, percent: 24, source: "workflow", exceeded: false }),
+    "$1.20 of $5.00 cap (24%, .propr/workflow.yml)",
+  );
+  assert.equal(
+    formatTaskBudget({ spentUsd: 5.3, capUsd: 5, percent: 106, source: "override", exceeded: true }),
+    "$5.30 of $5.00 cap (106%, task override) - stopped at cap",
+  );
+  assert.equal(formatTaskBudget({ spentUsd: 0.4, capUsd: null, percent: null, source: null, exceeded: false }), "$0.40 (no spend cap)");
 });

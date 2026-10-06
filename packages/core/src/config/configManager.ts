@@ -382,6 +382,8 @@ export {
     saveUltrafixMaxCycles,
     loadUltrafixPauseSeconds,
     saveUltrafixPauseSeconds,
+    loadDefaultMaxCostUsd,
+    saveDefaultMaxCostUsd,
     loadUltrafixCiWaitTimeoutMs,
     saveUltrafixCiWaitTimeoutMs,
     DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS

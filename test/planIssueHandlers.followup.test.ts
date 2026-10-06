@@ -28,6 +28,7 @@ await mock.module('@propr/core', {
     updatePlanIssue: mockUpdatePlanIssue,
     loadPrimaryProcessingLabels: mockLoadPrimaryProcessingLabels,
     getAuthenticatedOctokit: mockGetAuthenticatedOctokit,
+    storeIssueCostCapOverride: async () => undefined,
     safeUpdateLabels: mockSafeUpdateLabels,
     logger: {
       withCorrelation: mockLoggerWithCorrelation,

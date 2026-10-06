@@ -93,7 +93,9 @@ await mock.module('@propr/core', { namedExports: {
   },
   loadPrimaryProcessingLabels: async () => ['AI', 'build'],
   associateSubmissionTask: async (_database: unknown, _id: string, taskId: string) => { taskLinks.push(taskId); },
-  findIssueSubmission: async () => submitted ? { id: 'submission' } : undefined,
+  findIssueSubmission: async () => submitted ? { id: 'submission', payload: '{}' } : undefined,
+  // No label-started spend cap override; reading it needs Redis.
+  readIssueCostCapOverride: async () => undefined,
   logger: { ...log, withCorrelation: () => log },
   addModelSpecificDelay: async () => undefined,
   updatePlanIssueTaskId: async () => undefined,

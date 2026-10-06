@@ -118,6 +118,29 @@ Skipping firewall setup (would require --privileged Docker flag)
 
 Applying iptables rules inside a container requires elevated container privileges (`--privileged` or equivalent capabilities), which ProPR does not request for agent containers. Treat the firewall script as available hardening you can wire in yourself if your deployment can grant those privileges; it is inactive by default. Without it, agent containers have ordinary outbound network access.
 
+## Spend Caps
+
+A per-run spend cap stops a run whose estimated cost reaches a limit, instead of letting it spend until the execution timeout. The cap applies to issue implementations, PR follow-ups, `/fix`, ultrafix cycles and reviews; goals keep their own controls.
+
+The cap is resolved per run, highest precedence first:
+
+1. A per-task override: `maxCostUsd` on `POST /api/task-submissions` or the MCP `create_task` tool, or `propr issue implement --max-cost <usd>`.
+2. `limits.max_cost_usd` in the repository's [`.propr/workflow.yml`](./repository-workflow.md).
+3. The instance `default_max_cost_usd` setting (Settings → Automation → General configuration, `propr setting update default_max_cost_usd <usd>`, or MCP `update_execution_settings`). Empty or `0` means no cap.
+
+A level that is unset or `0` defers to the next one. A malformed or negative value is logged as a warning and treated as no cap at that level; it never cancels runs at $0.
+
+While the run executes, ProPR adds the recorded cost of the task's LLM calls (`llm_executions`, including summarization and analysis calls attributed to the task) to the usage its live agent containers have streamed so far, and checks the total every few seconds. When it reaches the cap:
+
+- the agent container is stopped through the same container teardown that a user stop uses, but the run is treated like a timeout: its partial changes are committed and published, with a warning that the work may be incomplete. Later steps of the same run that publish that work are not stopped again;
+- the task timeline records a `budget.exceeded` event with the cap, the observed spend and where the cap came from (task override, `.propr/workflow.yml` or instance default);
+- an Inbox notification (task category) and a short comment on the issue or pull request say the run stopped at its cap;
+- the task ends with terminal reason `cost_cap_exceeded`.
+
+Retries share the budget. When ProPR re-queues a task (a provider usage-limit re-queue or a BullMQ retry), the retry may spend only what earlier attempts left. Task details, `propr task get --json` (`budget`) and the task history API show the cap, the spend and the percentage used.
+
+Spend is an estimate from token counts and model pricing (see [Cost Tracking](../operations/metrics.md#cost-tracking)), so a run can overshoot the cap by the usage reported between two checks. `LLM_COST_THRESHOLD_USD` is separate: it only records a high-cost alert and never stops a run.
+
 ## Failure Handling And Recovery
 
 Safe runs are also about what happens when something fails:

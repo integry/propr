@@ -293,10 +293,11 @@ export interface AgentExecutionResult {
 }
 
 /**
- * `stalled` and `degenerate_output` are set when the activity watchdog stopped
- * a live run (no output past its threshold, or a run of whitespace-only deltas).
+ * `cost_cap` is set when the run reached its spend cap. `stalled` and
+ * `degenerate_output` are set when the activity watchdog stopped a live run
+ * (no output past its threshold, or a run of whitespace-only deltas).
  */
-export type AgentTerminationReason = 'timeout' | 'max_turns' | 'stalled' | 'degenerate_output';
+export type AgentTerminationReason = 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output';
 
 export interface Agent {
     readonly config: AgentConfig;

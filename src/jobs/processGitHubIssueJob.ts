@@ -10,7 +10,8 @@ import {
   isBookkeepingCancellation, taskIntentIssueRef, isIssueClosureProtected, withdrawnIntentReason, updateWithdrawnIssueLabels, excludeWithdrawnIssue, retainClosureCleanup, releaseWithdrawalCleanup, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
   UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
-import type { TaskStateData, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult } from '@propr/core';
+import type { TaskStateData, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult, RunCostGuard } from '@propr/core';
+import { issueRunCostCapTarget, withRunCostCap, type CommentOctokit } from './runCostCap.js';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
@@ -243,7 +244,7 @@ async function processIssueWithAdmission(
   return withRepositoryWorkflowAdmission({
     workflow: context.repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
     redisClient, taskId, stateManager, correlatedLogger, job,
-  }, async (): Promise<JobResult> => {
+  }, async (): Promise<JobResult> => withIssueRunCostCap(job, context, octokit, async (costGuard): Promise<JobResult> => {
     // Successful admission ends this capacity wait; subsequent execution failures
     // retain the existing ordinary retry behavior and reload the base policy.
     const refreshWorkflow = !!job.data.repositoryWorkflowDeferred && reusedWorkflowSnapshot;
@@ -281,6 +282,7 @@ async function processIssueWithAdmission(
         context.repositoryWorkflow = await prepareIssueRepositoryWorkflow(octokit, issueRef);
         // A refusal here defers with the refreshed policy saved in context.repositoryWorkflow.
         await reconcileRepositoryWorkflowAdmission(context.repositoryWorkflow);
+        await costGuard.setWorkflowCap(context.repositoryWorkflow?.config.limits?.max_cost_usd);
       }
       await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
         reason: 'Starting issue processing', historyMetadata: repositoryWorkflowHistoryMetadata(context.repositoryWorkflow),
@@ -330,7 +332,28 @@ async function processIssueWithAdmission(
       if (error instanceof RepositoryWorkflowCapacityError) throw error;
       return handleIssueProcessingError(error, { job, context, octokit, claudeResult, worktreeInfo });
     }
-  });
+  }));
+}
+
+/**
+ * Runs the issue under its spend cap. A cap that cannot be resolved fails the
+ * attempt through the issue's error handling before any agent starts.
+ */
+async function withIssueRunCostCap(
+  job: Job<IssueJobData>, context: JobContext, octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>,
+  operation: (guard: RunCostGuard) => Promise<JobResult>,
+): Promise<JobResult> {
+  let started = false;
+  try {
+    return await withRunCostCap(await issueRunCostCapTarget(job.data, context, () => octokit as unknown as CommentOctokit), guard => {
+      started = true;
+      return operation(guard);
+    });
+  } catch (error) {
+    // The run's own failures are already handled inside it.
+    if (started) throw error;
+    return handleIssueProcessingError(error, { job, context, octokit, claudeResult: null });
+  }
 }
 
 export { processGitHubIssueJob as default };

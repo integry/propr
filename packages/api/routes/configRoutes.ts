@@ -220,7 +220,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
 
   async function getSettings(_req: Request, res: Response): Promise<void> {
     try {
-      const [loadedSettings, autoFollowupThreshold, autoResolveMergeConflicts, modelReasoningLevel, prReviewModel, ultrafixRatingGoal, ultrafixMaxCycles, ultrafixPauseSeconds] = await Promise.all([
+      const [loadedSettings, autoFollowupThreshold, autoResolveMergeConflicts, modelReasoningLevel, prReviewModel, ultrafixRatingGoal, ultrafixMaxCycles, ultrafixPauseSeconds, defaultMaxCostUsd] = await Promise.all([
         configStore.loadSettings(),
         configStore.loadAutoFollowupScoreThreshold(),
         configStore.loadAutoResolveMergeConflicts(),
@@ -228,7 +228,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         configStore.loadPrReviewModel(),
         configStore.loadUltrafixRatingGoal(),
         configStore.loadUltrafixMaxCycles(),
-        configStore.loadUltrafixPauseSeconds()
+        configStore.loadUltrafixPauseSeconds(),
+        configStore.loadDefaultMaxCostUsd()
       ]);
       const settings = loadedSettings as Record<string, unknown>;
       const envDefaults = { worker_concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10), github_user_whitelist: (process.env.GITHUB_USER_WHITELIST || '').split(',').filter(u => u.trim()), analysis_model_fast: process.env.ANALYSIS_MODEL_FAST || '', planner_context_model: process.env.PLANNER_CONTEXT_MODEL || '', planner_generation_model: process.env.PLANNER_GENERATION_MODEL || '' };
@@ -273,6 +274,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         ultrafix_rating_goal: ultrafixGoal.value,
         ultrafix_max_cycles: ultrafixCycles.value,
         ultrafix_pause_seconds: ultrafixPause.value,
+        default_max_cost_usd: defaultMaxCostUsd,
         ultrafix_ci_wait_timeout_ms: ultrafixCiWait.value,
         ...await agentWatchdogSettingsResponse(configStore),
         ...(Object.keys(invalidIntegerSettings).length > 0 ? { invalid_settings: invalidIntegerSettings } : {})

@@ -396,7 +396,9 @@ async function runBundledAgentTank(): Promise<BundledRunResult | undefined> {
                 // argument rather than interpolated, so the script itself stays a
                 // fixed string.
                 'sh', '-c', CONFIG_BOOTSTRAP, 'propr-agent-tank', CONTAINER_CONFIG_FILE,
-            ], { timeout: timeoutMs() });
+                // A usage probe runs around agent calls, possibly inside a capped
+                // run, but spends nothing: a run stopped at its cap still reads usage.
+            ], { timeout: timeoutMs(), costCapExempt: true });
 
             if (result.exitCode === 0) {
                 return { agents: parseBundledAgentTankOutput(result.stdout || ''), aliases };

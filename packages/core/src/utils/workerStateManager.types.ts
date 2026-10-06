@@ -1,5 +1,5 @@
 /** `stalled` / `degenerate_output`: the agent activity watchdog stopped the run. */
-export type TaskTerminalReason = 'timed_out' | 'stalled' | 'degenerate_output' | 'cancelled_issue_closed' | 'cancelled_label_removed' | 'cancelled_pr_closed' | 'cancelled_by_user' | 'pr_merged';
+export type TaskTerminalReason = 'timed_out' | 'cost_cap_exceeded' | 'stalled' | 'degenerate_output' | 'cancelled_issue_closed' | 'cancelled_label_removed' | 'cancelled_pr_closed' | 'cancelled_by_user' | 'pr_merged';
 
 export const TaskStates = {
     PENDING: 'pending',
