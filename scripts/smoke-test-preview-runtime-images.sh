@@ -66,6 +66,10 @@ cleanup() {
 trap cleanup EXIT
 
 docker image inspect "$APP_IMAGE" "$UI_IMAGE" >/dev/null
+# The exact app image must resolve and run sharp (libvips, real PNG
+# create/resize/pixels) from every shipped importer on this native platform
+# before any service starts, so a missing nested tree never reaches packaging.
+"$REPO_ROOT/scripts/smoke-check-app-sharp.sh" "$APP_IMAGE"
 mkdir -p "$SMOKE_ROOT/data" "$SMOKE_ROOT/logs"
 chmod 700 "$SMOKE_ROOT/data" "$SMOKE_ROOT/logs"
 openssl genrsa -out "$SMOKE_ROOT/data/gh-app.pem" 2048 2>/dev/null

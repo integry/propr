@@ -81,6 +81,12 @@ if (command === 'network' && subcommand === 'create') {
   const source = /^type=bind,source=(.+),target=\/smoke-root$/.exec(mounts[0])?.[1];
   if (!source || !existsSync(source)) fail(`invalid cleanup mount ${mounts[0]}`);
   privilegedEmpty(source);
+} else if (command === 'run' && args.includes('--entrypoint') && args[args.indexOf('--entrypoint') + 1] === 'node'
+  && args.some((arg) => arg.startsWith('EXPECTED_SHARP_VERSION='))) {
+  // The shared sharp check: FAKE_DOCKER_SHARP=fail emulates a missing or
+  // unloadable nested sharp tree in the app image.
+  if (process.env.FAKE_DOCKER_SHARP === 'fail') fail("Error: Cannot find module 'sharp'");
+  process.stdout.write('fake sharp check passed\n');
 } else if (command === 'run') {
   // One-shot `--rm` runs (preview migrations) leave no container behind.
   const name = option('--name')[0];
