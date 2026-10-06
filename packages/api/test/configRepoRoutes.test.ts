@@ -309,10 +309,8 @@ for (const { name, previousRepos, repos, expected } of [
 
 test('POST repository config keeps a disabled GitHub pull request template fallback when clients omit it', async () => {
   const saveMonitoredRepos = mock.fn<(repos: RepoToMonitor[]) => Promise<boolean>>(async () => true);
-  const routes = createRepoPostRoutes([
-    { id: 'repo-main', name: 'integry/propr', enabled: true, githubPrTemplateFallback: false },
-    { id: 'repo-other', name: 'integry/other', enabled: true }
-  ], saveMonitoredRepos);
+  const previousRepos = [{ id: 'repo-main', name: 'integry/propr', enabled: true, githubPrTemplateFallback: false }, { id: 'repo-other', name: 'integry/other', enabled: true }];
+  const routes = createRepoPostRoutes(previousRepos, saveMonitoredRepos);
   const response = createResponse();
 
   await routes.postRepos({ body: { repos_to_monitor: [
@@ -331,10 +329,9 @@ test('POST repository config keeps a disabled GitHub pull request template fallb
 
 test('POST repository config rejects a non-boolean GitHub pull request template fallback', async () => {
   const saveMonitoredRepos = mock.fn(async () => true);
-  const routes = createRepoPostRoutes([], saveMonitoredRepos);
   const response = createResponse();
 
-  await routes.postRepos({ body: { repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, githubPrTemplateFallback: 'no' }] } } as never, response as never);
+  await createRepoPostRoutes([], saveMonitoredRepos).postRepos({ body: { repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, githubPrTemplateFallback: 'no' }] } } as never, response as never);
 
   assert.equal(response.statusCode, 400);
   assert.equal(saveMonitoredRepos.mock.calls.length, 0);
