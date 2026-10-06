@@ -53,6 +53,27 @@ describe('ReviewScoreHistory', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it('never shows a previous PR\'s history under a new PR, while loading or after a failed read', async () => {
+    vi.mocked(getPullRequestScores).mockResolvedValueOnce({
+      repository: 'acme/repo', pr_number: 42, outcome: 'merged', merged_at: '2026-10-06T12:00:00.000Z', closed_at: null,
+      scores: [score({ score: 9 })],
+    } as Awaited<ReturnType<typeof getPullRequestScores>>);
+    const { container, rerender } = render(<ReviewScoreHistory repository="acme/repo" prNumber={42} />);
+    expect(await screen.findByTestId('review-score-history')).toHaveTextContent('PR #42');
+
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let rejectRead: (error: Error) => void = () => {};
+    vi.mocked(getPullRequestScores).mockReturnValueOnce(new Promise((_, reject) => { rejectRead = reject; }));
+    rerender(<ReviewScoreHistory repository="acme/repo" prNumber={43} />);
+    expect(getPullRequestScores).toHaveBeenLastCalledWith('acme/repo', 43);
+    // While PR 43 loads, PR 42's scores are not shown under its heading.
+    expect(container).toBeEmptyDOMElement();
+
+    rejectRead(new Error('offline'));
+    await vi.waitFor(() => expect(console.warn).toHaveBeenCalled());
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('plots scores on a fixed 1–10 axis', () => {
     expect(sparklinePoints([1, 10])).toBe('0.0,28.0 120.0,0.0');
     expect(sparklinePoints([10])).toBe('60.0,0.0');

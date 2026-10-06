@@ -431,7 +431,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
 
     const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, redisClient, { repoOwner, repoName, pullRequestNumber });
     await persistReviewScores(reviewResults, { repository: `${repoOwner}/${repoName}`, pullRequestNumber, taskId,
-        headSha: prData!.data.head.sha, ultrafix: ultrafixHistoryMeta }, correlatedLogger);
+        headSha: prData!.data.head.sha, hasCurrentCheckFailure, changedFilePaths, ultrafix: ultrafixHistoryMeta }, correlatedLogger);
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Review processing completed successfully',

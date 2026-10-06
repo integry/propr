@@ -1,7 +1,7 @@
 import type { Logger } from 'pino';
 import type { Knex } from 'knex';
 import { db, recordReviewScores, type ReviewScoreInput } from '@propr/core';
-import { parseStructuredReview } from './reviewOutputParser.js';
+import { effectiveReviewScore } from './reviewCommentFormatter.js';
 
 interface ScoredReviewResult {
     assignment: { agentAlias: string; model: string; physicalAgentAlias?: string; physicalModel?: string };
@@ -13,6 +13,9 @@ export interface ReviewScoreContext {
     pullRequestNumber: number;
     taskId: string;
     headSha?: string | null;
+    /** The same publication inputs the review comment used, so the stored score matches the published one. */
+    hasCurrentCheckFailure?: boolean;
+    changedFilePaths?: readonly string[];
     /** The Ultrafix history metadata of the cycle; absent for a plain `/review`. */
     ultrafix?: { ultrafixCycle?: unknown; ultrafixGoal?: unknown };
 }
@@ -24,17 +27,20 @@ const positiveInteger = (value: unknown): number | null => {
 
 /**
  * One row per reviewer whose response parsed into a valid scored review.
- * Failed or unparseable reviews have no score, so they write nothing. The
- * score is the parser's, which caps a review that still lists blockers at 6,
- * the same score the published comment and the Ultrafix goal check use.
+ * Failed or unpublishable reviews have no score, so they write nothing. The
+ * score is the effective one the review comment publishes, including the
+ * blocker cap and the current-head check cap.
  */
 export function buildReviewScoreInputs(
     results: readonly ScoredReviewResult[], context: ReviewScoreContext, createdAt = new Date(),
 ): ReviewScoreInput[] {
     return results.flatMap(result => {
         if (!result.analysisResult.success) return [];
-        const review = parseStructuredReview(result.analysisResult.response);
-        if (review.status === 'invalid' || review.score === null) return [];
+        const review = effectiveReviewScore(result.analysisResult.response, {
+            hasCurrentCheckFailure: context.hasCurrentCheckFailure,
+            changedFilePaths: context.changedFilePaths,
+        });
+        if (!review) return [];
         return [{
             repository: context.repository,
             prNumber: context.pullRequestNumber,
@@ -42,8 +48,8 @@ export function buildReviewScoreInputs(
             reviewerAgent: result.assignment.physicalAgentAlias || result.assignment.agentAlias || null,
             reviewerModel: result.analysisResult.modelUsed || result.assignment.physicalModel || result.assignment.model || null,
             score: review.score,
-            blockerCount: review.actionableFindings.length,
-            suggestionCount: review.suggestions.length,
+            blockerCount: review.blockerCount,
+            suggestionCount: review.suggestionCount,
             source: context.ultrafix ? 'ultrafix' as const : 'review' as const,
             cycleNumber: context.ultrafix ? positiveInteger(context.ultrafix.ultrafixCycle) : null,
             goal: context.ultrafix ? positiveInteger(context.ultrafix.ultrafixGoal) : null,

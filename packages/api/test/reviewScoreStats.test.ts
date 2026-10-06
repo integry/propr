@@ -6,6 +6,7 @@ import { up as createPullRequestState } from '../../core/src/db/migrations/20260
 import { up as createReviewScores } from '../../core/src/db/migrations/20261006000000_create_review_scores.js';
 import { createReviewScoreRoutes, loadReviewScoreSummary, median, reviewScoreSummaryCsv } from '../routes/reviewScoreStats.js';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
+import type { AnalyticsWindow } from '../routes/analyticsWindow.js';
 
 const NOW = new Date('2026-10-06T12:00:00.000Z');
 const daysAgo = (days: number): string => new Date(NOW.getTime() - days * 24 * 60 * 60_000).toISOString();
@@ -261,4 +262,31 @@ test('the overview\'s model usage carries the mean final score and scored-PR cou
   // Across all repositories in the period: PR 10 (8), PR 11 (9), acme/other PR 5 (10).
   assert.equal(byModel[GPT].mean_final_score, 9);
   assert.equal(byModel[GPT].n_scored, 3);
+});
+
+test('a merged PR\'s final score comes from its pre-merge history even when the period starts after the merge', async () => {
+  // Only PR 1's post-merge review (2 days ago) falls inside a window starting 2.5 days ago.
+  const window: AnalyticsWindow = { timeframe: '7d', from: new Date(NOW.getTime() - 2.5 * 24 * 60 * 60_000), to: NOW };
+  const summary = await loadReviewScoreSummary(database, window, 'acme/repo');
+  const opus = summary.models.find(model => model.implementer_model === OPUS)!;
+  assert.equal(opus.prs_scored, 1);
+  assert.deepEqual(opus.first_score, { mean: 9, median: 9, n: 1 });
+  // The last score at or before the merge (8), never the post-merge 9.
+  assert.deepEqual(opus.final_score, { mean: 8, n: 1 });
+});
+
+test('a merged PR with no score at or before its merge has an unknown final score', async () => {
+  await seedScore({ pr: 40, score: 9, at: daysAgo(1), model: 'post-merge-only', repository: 'acme/late' });
+  await database('notification_pull_request_state').insert(
+    { repository: 'acme/late', pr_number: 40, merged_at: daysAgo(2), outcome: 'merged', closed_at: daysAgo(2) });
+  try {
+    const summary = await loadReviewScoreSummary(database, null, 'acme/late');
+    const [model] = summary.models;
+    assert.equal(model.prs_scored, 1);
+    assert.deepEqual(model.final_score, { mean: null, n: 0 });
+    assert.equal(reviewScoreSummaryCsv(summary).split('\r\n')[1].split(',').slice(6, 8).join(','), ',0');
+  } finally {
+    await database('review_scores').where({ repository_id: 'acme/late' }).delete();
+    await database('notification_pull_request_state').where({ repository: 'acme/late' }).delete();
+  }
 });

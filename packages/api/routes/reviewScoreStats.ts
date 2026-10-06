@@ -49,7 +49,11 @@ export interface ReviewScoreModelSummary {
   /** Pull requests with at least one score in the period. */
   prs_scored: number;
   first_score: MeanFigure & { median: number | null };
-  /** Last score before merge; the latest score for a PR that was not merged. */
+  /**
+   * Last score at or before merge, from the PR's whole history; the latest
+   * score for a PR that was not merged. A merged PR with no score at or before
+   * its recorded merge time has no final score and is left out of n.
+   */
   final_score: MeanFigure;
   /** Ultrafix cycles until a clean review met the goal; n counts PRs that reached it. */
   cycles_to_goal: MeanFigure & { attempted: number };
@@ -71,7 +75,7 @@ interface PullRequestFacts {
   model: string | null;
   agent: string | null;
   first: number;
-  final: number;
+  final: number | null;
   cyclesToGoal: number | null;
   hadGoal: boolean;
   outcome: 'merged' | 'closed' | null;
@@ -129,18 +133,50 @@ async function loadOutcomes(db: Knex, repositories: string[]): Promise<Map<strin
   return new Map(rows.map(row => [prKey(row.repository, row.pr_number), row]));
 }
 
-function pullRequestFacts(rows: ScoreRow[], outcome: OutcomeRow | undefined, cost: number | null): PullRequestFacts {
-  const mergedAt = outcome?.merged_at ?? null;
-  const state = outcome?.outcome === 'merged' || mergedAt ? 'merged' : outcome?.outcome === 'closed' ? 'closed' : null;
-  const beforeMerge = state === 'merged' && mergedAt ? rows.filter(row => row.created_at <= mergedAt) : [];
-  const final = (beforeMerge.length ? beforeMerge : rows).at(-1)!;
+const outcomeState = (outcome: OutcomeRow | undefined): PullRequestFacts['outcome'] =>
+  outcome?.outcome === 'merged' || outcome?.merged_at ? 'merged' : outcome?.outcome === 'closed' ? 'closed' : null;
+
+/**
+ * Each merged PR's last score at or before its merge, read from its whole
+ * history rather than the selected window, which can start after the merge.
+ */
+async function loadPreMergeFinalScores(
+  db: Knex, byPullRequest: Map<string, ScoreRow[]>, outcomes: Map<string, OutcomeRow>,
+): Promise<Map<string, number>> {
+  const mergedAt = new Map<string, string>();
+  for (const key of byPullRequest.keys()) {
+    const outcome = outcomes.get(key);
+    if (outcomeState(outcome) === 'merged' && outcome?.merged_at) mergedAt.set(key, outcome.merged_at);
+  }
+  if (!mergedAt.size) return new Map();
+  const merged = [...mergedAt.keys()].map(key => byPullRequest.get(key)![0]);
+  const rows = await db('review_scores')
+    .whereIn('repository_id', [...new Set(merged.map(row => row.repository_id))])
+    .whereIn('pr_number', [...new Set(merged.map(row => row.pr_number))])
+    .orderBy([{ column: 'created_at', order: 'asc' }, { column: 'id', order: 'asc' }])
+    .select('repository_id', 'pr_number', 'score', 'created_at') as Array<Pick<ScoreRow, 'repository_id' | 'pr_number' | 'score' | 'created_at'>>;
+  const finals = new Map<string, number>();
+  for (const row of rows) {
+    const key = prKey(row.repository_id, row.pr_number);
+    const cutoff = mergedAt.get(key);
+    if (cutoff !== undefined && row.created_at <= cutoff) finals.set(key, row.score);
+  }
+  return finals;
+}
+
+function pullRequestFacts(
+  rows: ScoreRow[], outcome: OutcomeRow | undefined, cost: number | null, preMergeFinal: number | null,
+): PullRequestFacts {
+  const state = outcomeState(outcome);
+  // A merged PR's final score is only ever a pre-merge score; without one it is unknown.
+  const final = state === 'merged' ? preMergeFinal : rows.at(-1)!.score;
   const attributed = [...rows].reverse().find(row => row.implementer_model);
   const goal = cyclesToGoal(rows);
   return {
     model: attributed?.implementer_model ?? null,
     agent: attributed?.implementer_agent ?? null,
     first: rows[0].score,
-    final: final.score,
+    final,
     cyclesToGoal: goal.cycles,
     hadGoal: goal.hadGoal,
     outcome: state,
@@ -150,6 +186,7 @@ function pullRequestFacts(rows: ScoreRow[], outcome: OutcomeRow | undefined, cos
 
 function summarizeModel(model: string | null, prs: PullRequestFacts[]): ReviewScoreModelSummary {
   const firsts = prs.map(pr => pr.first);
+  const finals = prs.flatMap(pr => pr.final === null ? [] : [pr.final]);
   const cycles = prs.flatMap(pr => pr.cyclesToGoal === null ? [] : [pr.cyclesToGoal]);
   const resolved = prs.filter(pr => pr.outcome !== null);
   const merged = resolved.filter(pr => pr.outcome === 'merged');
@@ -160,7 +197,7 @@ function summarizeModel(model: string | null, prs: PullRequestFacts[]): ReviewSc
     implementer_agent: agents.length === 1 ? agents[0] : null,
     prs_scored: prs.length,
     first_score: { mean: mean(firsts), median: median(firsts), n: firsts.length },
-    final_score: { mean: mean(prs.map(pr => pr.final)), n: prs.length },
+    final_score: { mean: mean(finals), n: finals.length },
     cycles_to_goal: { mean: mean(cycles), n: cycles.length, attempted: prs.filter(pr => pr.hadGoal).length },
     merge_rate: { value: resolved.length ? round(merged.length / resolved.length, 4) : null, merged: merged.length, n: resolved.length },
     cost_per_merged_pr: {
@@ -189,10 +226,11 @@ export async function loadReviewScoreSummary(
   }
   const repositories = [...new Set(rows.map(row => row.repository_id))];
   const [outcomes, costs] = await Promise.all([loadOutcomes(db, repositories), loadPullRequestCosts(db, repositories)]);
+  const preMergeFinals = await loadPreMergeFinalScores(db, byPullRequest, outcomes);
 
   const byModel = new Map<string | null, PullRequestFacts[]>();
   for (const [key, prRows] of byPullRequest) {
-    const facts = pullRequestFacts(prRows, outcomes.get(key), costs.get(key) ?? null);
+    const facts = pullRequestFacts(prRows, outcomes.get(key), costs.get(key) ?? null, preMergeFinals.get(key) ?? null);
     byModel.set(facts.model, [...(byModel.get(facts.model) ?? []), facts]);
   }
   const models = [...byModel].map(([model, prs]) => summarizeModel(model, prs))
@@ -209,7 +247,7 @@ export async function loadReviewScoreSummary(
 
 /**
  * The overview's model rows, each with the mean final review score and the
- * number of scored PRs it implemented. Review scores join by implementer
+ * number of scored PRs behind that mean. Review scores join by implementer
  * model; a model with no scored PR has no mean. Unchanged when the instance
  * has no score table.
  */

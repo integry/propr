@@ -21,17 +21,21 @@ interface ReviewScoreHistoryProps {
 const outcomeLabel: Record<'merged' | 'closed', string> = { merged: 'Merged', closed: 'Closed unmerged' };
 
 const ReviewScoreHistory: React.FC<ReviewScoreHistoryProps> = ({ repository, prNumber }) => {
-  const [history, setHistory] = useState<PullRequestScoresResponse | null>(null);
+  const identity = `${repository}#${prNumber}`;
+  // Loaded history is keyed by the PR it belongs to, so another PR's scores are never shown under this PR.
+  const [loaded, setLoaded] = useState<{ identity: string; history: PullRequestScoresResponse } | null>(null);
 
   useEffect(() => {
     let active = true;
+    setLoaded(null);
     getPullRequestScores(repository, prNumber)
-      .then(data => { if (active) setHistory(data); })
+      .then(data => { if (active) setLoaded({ identity, history: data }); })
       // Score history is supplementary; a failed read leaves the run notes as they were.
       .catch(error => { console.warn('Failed to load review score history:', error); });
     return () => { active = false; };
-  }, [repository, prNumber]);
+  }, [repository, prNumber, identity]);
 
+  const history = loaded?.identity === identity ? loaded.history : null;
   if (!history || history.scores.length === 0) return null;
   const scores = history.scores.map(entry => entry.score);
   const points = sparklinePoints(scores);

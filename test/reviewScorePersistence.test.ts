@@ -6,6 +6,7 @@ import { up as createPullRequestState } from '../packages/core/src/db/migrations
 import { up as createReviewScores } from '../packages/core/src/db/migrations/20261006000000_create_review_scores.js';
 
 const { buildReviewScoreInputs, persistReviewScores } = await import('../src/jobs/reviewScorePersistence.js');
+const { buildReviewComment } = await import('../src/jobs/reviewCommentFormatter.js');
 const { closeConnection, recordPullRequestOutcome, loadPullRequestScoreHistory } = await import('@propr/core');
 
 const logger = pino({ level: 'silent' });
@@ -99,7 +100,7 @@ describe('review score persistence', () => {
             implementer_model: 'claude-opus-5-5',
             reviewer_agent: 'codex-pool-1',
             reviewer_model: 'gpt-5.6-2026',
-            // The parser caps a review that still lists blockers at 6, as the
+            // A review that still lists blockers is capped at 6, as the
             // published comment and the Ultrafix goal check do.
             score: 6,
             blocker_count: 2,
@@ -118,6 +119,29 @@ describe('review score persistence', () => {
         assert.equal(input.score, 7);
         assert.equal(input.blockerCount, 0);
         assert.equal(input.suggestionCount, 3);
+    });
+
+    test('a failing current-head check stores the capped score the comment publishes', async () => {
+        const response = reviewBody(9, 0, 0);
+        const context = { repository: 'acme/repo', pullRequestNumber: 40, taskId: 'review-task', headSha: 'abc123' };
+        const comment = buildReviewComment(
+            { label: 'GPT', model: 'gpt-5.6' } as never,
+            { success: true, response, executionTimeMs: 0 } as never,
+            undefined, { hasCurrentCheckFailure: true },
+        );
+        assert.match(comment, /^Score: 7\/10$/m);
+        const [input] = buildReviewScoreInputs([result(response)], { ...context, hasCurrentCheckFailure: true }, CREATED_AT);
+        assert.equal(input.score, 7);
+        assert.equal(buildReviewScoreInputs([result(response)], context, CREATED_AT)[0].score, 9);
+        assert.equal(await persistReviewScores([result(response)], { ...context, hasCurrentCheckFailure: true }, logger, database), 1);
+        assert.equal((await loadPullRequestScoreHistory(database, 'acme/repo', 40))[0].score, 7);
+    });
+
+    test('a review the comment rejects for out-of-diff blocker evidence stores no score', () => {
+        const response = reviewBody(5, 1, 0);
+        const context = { repository: 'acme/repo', pullRequestNumber: 40, taskId: 'review-task', headSha: null };
+        assert.equal(buildReviewScoreInputs([result(response)], { ...context, changedFilePaths: ['src/file.ts'] }, CREATED_AT).length, 1);
+        assert.deepEqual(buildReviewScoreInputs([result(response)], { ...context, changedFilePaths: ['src/other.ts'] }, CREATED_AT), []);
     });
 
     test('an Ultrafix cycle records its cycle number, goal and source', async () => {
