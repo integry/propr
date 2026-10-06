@@ -8,6 +8,7 @@ import { up as createReviewScores } from '../packages/core/src/db/migrations/202
 const { buildReviewScoreInputs, persistReviewScores } = await import('../src/jobs/reviewScorePersistence.js');
 const { buildReviewComment } = await import('../src/jobs/reviewCommentFormatter.js');
 const { closeConnection, recordPullRequestOutcome, loadPullRequestScoreHistory } = await import('@propr/core');
+const { loadReviewScoreSummary } = await import('../packages/api/routes/reviewScoreStats.js');
 
 const logger = pino({ level: 'silent' });
 
@@ -193,6 +194,29 @@ describe('review score persistence', () => {
         assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 12, isPartial: true })]), [false]);
         // A plain review has no goal verdict.
         assert.equal(buildReviewScoreInputs([result(reviewBody(9, 0, 0))], { ...context, ultrafix: undefined }, CREATED_AT)[0].goalReached, null);
+    });
+
+    test('a job\'s scores are stored in publication order, so the newest posted review is the final score', async () => {
+        const context = { repository: 'acme/repo', pullRequestNumber: 40, taskId: 'ultrafix-review', headSha: null,
+            ultrafix: { ultrafixCycle: 2, ultrafixGoal: 8 } };
+        // The newest review (comment 13) scored 9 but arrives first in the results.
+        const results = [result(reviewBody(9, 0, 0), true, { commentId: 13 }), result(reviewBody(7, 0, 0), true, { commentId: 12 })];
+        assert.deepEqual(buildReviewScoreInputs(results, context, CREATED_AT).map(input => [input.score, input.goalReached]),
+            [[7, true], [9, true]]);
+        // An unposted review never outranks a posted one.
+        assert.deepEqual(buildReviewScoreInputs([
+            result(reviewBody(5, 0, 0), true, { commentId: 20 }), result(reviewBody(6, 0, 0), true, {}),
+        ], { ...context, ultrafix: undefined }, CREATED_AT).map(input => input.score), [6, 5]);
+
+        await persistReviewScores(results, context, logger, database);
+        assert.deepEqual((await loadPullRequestScoreHistory(database, 'acme/repo', 40)).map(row => row.score), [7, 9]);
+        const finalScore = async () => (await loadReviewScoreSummary(database, null)).models[0].final_score.mean;
+        // Open, then merged after both reviews.
+        assert.equal(await finalScore(), 9);
+        const [{ created_at: reviewedAt }] = await database('review_scores').select('created_at').limit(1);
+        await recordPullRequestOutcome(database, { repository: 'acme/repo', prNumber: 40, action: 'closed', merged: true,
+            mergedAt: new Date(Date.parse(reviewedAt) + 60_000).toISOString(), closedAt: new Date(Date.parse(reviewedAt) + 60_000).toISOString() });
+        assert.equal(await finalScore(), 9);
     });
 
     test('failed and unparseable reviews write nothing', async () => {

@@ -66,7 +66,14 @@ export function buildReviewScoreInputs(
         : null);
     const goal = context.ultrafix ? positiveInteger(context.ultrafix.ultrafixGoal) : null;
     const goalReached = goal === null ? null : jobReachedGoal(results, reviews, goal);
-    return results.flatMap((result, index) => {
+    // The rows share one timestamp and history orders ties by insertion, so
+    // insert in publication order: the newest posted review (the one whose
+    // score is authoritative) must also be the latest stored score. Reviews
+    // that were never posted come first, in their original order.
+    const publicationOrder = results.map((_, index) => index).sort((left, right) =>
+        (results[left].commentId ?? -Infinity) - (results[right].commentId ?? -Infinity) || left - right);
+    return publicationOrder.flatMap(index => {
+        const result = results[index];
         const review = reviews[index];
         if (!review) return [];
         return [{
