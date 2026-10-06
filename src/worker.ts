@@ -4,7 +4,7 @@ import 'dotenv/config';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager, runMigrations } from '@propr/core';
-import { logger, reconcileEpicExecutionQueues } from '@propr/core';
+import { logger, reconcileEpicExecutionQueues, startEgressProxySweeper } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatusForRepo } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
@@ -408,12 +408,14 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
 
     const usageTipsRunner = await startUsageTipsSelectionRunner();
+    const egressProxySweeper = startEgressProxySweeper();
 
     const close = async (): Promise<void> => {
         clearInterval(heartbeatInterval);
         await usageTipsRunner.close();
         await taskStateRecovery.close();
-        await worker.close();
+        // Proxies close only after running jobs (and their containers) have drained.
+        await worker.close().finally(() => egressProxySweeper.close());
         await attachedTaskStateFinalizers.close();
         await closeStateManager();
         await runtimeBuildWorker.close();

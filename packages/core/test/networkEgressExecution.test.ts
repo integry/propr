@@ -1,0 +1,148 @@
+import assert from 'node:assert/strict';
+import { after, before, test } from 'node:test';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { hostname, tmpdir } from 'node:os';
+import path from 'node:path';
+import { resolveInstanceNetworkPolicy, resolveNetworkPolicy, validateAgentNetworkSetting, type ResolvedNetworkPolicy } from '../src/network/networkPolicy.js';
+import {
+    EGRESS_BRIDGE_PRELUDE, EGRESS_ORPHAN_MAX_AGE_MS, NetworkPolicyError, executeWithNetworkPolicy, networkEgressReportFromError,
+    prepareDockerRunNetwork, sweepOrphanedEgressProxies,
+} from '../src/network/egressExecution.js';
+import { wrapDockerRunArgsWithRepoSetup } from '../src/claude/docker/repoSetupWrapper.js';
+import { buildAgentGitCredentialArgs } from '../src/agents/agentGitAccess.js';
+import type { AgentType } from '../src/agents/types.js';
+import { closeConnection } from '../src/db/connection.js';
+
+let root: string;
+const previousEnv = { local: process.env.PROPR_EGRESS_SOCKET_DIR, host: process.env.HOST_PROPR_EGRESS_SOCKET_DIR };
+before(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'egress-root-'));
+    process.env.PROPR_EGRESS_SOCKET_DIR = root;
+    process.env.HOST_PROPR_EGRESS_SOCKET_DIR = '/srv/host/propr-egress';
+});
+after(closeConnection);
+after(async () => {
+    for (const [key, value] of [['PROPR_EGRESS_SOCKET_DIR', previousEnv.local], ['HOST_PROPR_EGRESS_SOCKET_DIR', previousEnv.host]] as const) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+});
+
+const restricted = (overrides: Partial<ResolvedNetworkPolicy> = {}): ResolvedNetworkPolicy => ({ mode: 'restricted', source: 'workflow', allow: ['registry.example.com'], ...overrides });
+
+function agentRunArgs(agentType: AgentType = 'claude'): string[] {
+    return wrapDockerRunArgsWithRepoSetup([
+        'run', '--rm', '-i', '--name', 'claude-issue-1-abc', '--security-opt', 'no-new-privileges', '--network', 'bridge', '--user', '0:0',
+        '-e', 'HTTPS_PROXY=http://corporate:8080', '-e', 'no_proxy=internal',
+        ...buildAgentGitCredentialArgs(),
+        '-w', '/home/node/workspace', 'propr/agent:test', 'claude', '-p', '-',
+    ], 'propr/agent:test', agentType);
+}
+
+const envOf = (args: string[], key: string): string[] => args.flatMap((arg, index) => args[index - 1] === '-e' && arg.startsWith(`${key}=`) ? [arg.slice(key.length + 1)] : []);
+
+test('the repository may tighten or relax a non-enforced instance mode but cannot open an enforced one', () => {
+    const open = { mode: 'open' as const, enforced: false, allow: ['mirror.example.com'] };
+    assert.deepEqual(resolveNetworkPolicy(open), { mode: 'open', source: 'instance', allow: ['mirror.example.com'] });
+    assert.deepEqual(resolveNetworkPolicy(open, { mode: 'restricted', allow: ['Registry.NPMJS.org'] }),
+        { mode: 'restricted', source: 'workflow', allow: ['mirror.example.com', 'registry.npmjs.org'] });
+    const restrictedDefault = { mode: 'restricted' as const, enforced: false, allow: [] };
+    assert.equal(resolveNetworkPolicy(restrictedDefault, { mode: 'open' }).mode, 'open');
+    assert.equal(resolveNetworkPolicy(restrictedDefault).source, 'instance');
+    const enforced = resolveNetworkPolicy({ mode: 'restricted', enforced: true, allow: [] }, { mode: 'open', allow: ['cache.example.com'] });
+    assert.equal(enforced.mode, 'restricted');
+    assert.equal(enforced.source, 'instance_enforced');
+    assert.deepEqual(enforced.allow, ['cache.example.com'], 'repository hosts still apply under an enforced policy');
+    assert.match(enforced.note!, /requested network\.mode: open/);
+    // Enforcement only means something with restricted mode.
+    assert.equal(resolveNetworkPolicy({ mode: 'open', enforced: true, allow: [] }, { mode: 'open' }).mode, 'open');
+});
+
+test('instance settings override environment defaults; invalid values fall back', () => {
+    const env = { AGENT_NETWORK_MODE: 'restricted', AGENT_NETWORK_MODE_ENFORCED: 'true', AGENT_NETWORK_ALLOW: 'a.example.com, *.b.example.com' };
+    assert.deepEqual(resolveInstanceNetworkPolicy({}, env), { mode: 'restricted', enforced: true, allow: ['a.example.com', '*.b.example.com'] });
+    assert.deepEqual(resolveInstanceNetworkPolicy({ agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [] }, env), { mode: 'open', enforced: false, allow: [] });
+    assert.deepEqual(resolveInstanceNetworkPolicy({ agent_network_mode: 'sideways', agent_network_allow: ['*'] }, env).mode, 'restricted');
+    assert.deepEqual(resolveInstanceNetworkPolicy({}, {}), { mode: 'open', enforced: false, allow: [] });
+    assert.equal(validateAgentNetworkSetting('agent_network_mode', 'closed'), 'agent_network_mode must be "open" or "restricted"');
+    assert.equal(validateAgentNetworkSetting('agent_network_mode_enforced', 'yes'), 'agent_network_mode_enforced must be a boolean');
+    assert.equal(validateAgentNetworkSetting('agent_network_allow', null), undefined);
+});
+
+test('a restricted run starts its agent container without a network, behind its own proxy socket', async () => {
+    const args = agentRunArgs();
+    const { result: prepared, report } = await executeWithNetworkPolicy(restricted(), async () => {
+        const run = await prepareDockerRunNetwork('docker', args);
+        assert.ok(run);
+        const directories = (await import('node:fs/promises')).readdir(root);
+        const [id] = await directories;
+        assert.ok(existsSync(path.join(root, id, 'proxy.sock')), 'the proxy listens while the container runs');
+        await run.release();
+        assert.ok(!existsSync(path.join(root, id)), 'the proxy and its directory go with the container');
+        return run;
+    });
+    const rewritten = prepared!.args;
+    assert.deepEqual(rewritten.slice(rewritten.indexOf('--network'), rewritten.indexOf('--network') + 2), ['--network', 'none']);
+    assert.ok(!rewritten.includes('--privileged') && !rewritten.includes('NET_ADMIN'));
+    const mount = rewritten[rewritten.findIndex(arg => arg.endsWith(':/run/propr-egress:ro'))];
+    assert.match(mount, /^\/srv\/host\/propr-egress\/[0-9a-f-]{36}:\/run\/propr-egress:ro$/, 'the Docker host path is mounted read-only');
+    for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) assert.deepEqual(envOf(rewritten, key), ['http://127.0.0.1:3128'], key);
+    assert.deepEqual(envOf(rewritten, 'no_proxy'), ['localhost,127.0.0.1,::1'], 'caller proxy variables are replaced, not duplicated');
+    assert.deepEqual(envOf(rewritten, 'GIT_CONFIG_COUNT'), ['3']);
+    assert.deepEqual(envOf(rewritten, 'GIT_CONFIG_KEY_2'), ['http.proxy']);
+    assert.deepEqual(envOf(rewritten, 'GIT_CONFIG_VALUE_2'), ['http://127.0.0.1:3128']);
+    assert.deepEqual(envOf(rewritten, 'GIT_CONFIG_KEY_1'), ['credential.https://github.com.helper'], 'existing git config entries are kept');
+    const script = rewritten[rewritten.indexOf('-lc') + 1];
+    assert.ok(script.startsWith(EGRESS_BRIDGE_PRELUDE), 'the bridge starts before setup hooks and the agent');
+    assert.ok(rewritten.indexOf('--entrypoint') > rewritten.findIndex(arg => arg.startsWith('HTTPS_PROXY=')), 'container options stay before the image');
+    assert.deepEqual(rewritten.slice(-3), ['claude', '-p', '-'], 'the agent command is unchanged');
+    assert.equal(report.restrictedContainers, 1);
+    assert.deepEqual(report.fallbacks, []);
+});
+
+test('open runs, other commands and containers already without a network are left alone', async () => {
+    assert.equal(await prepareDockerRunNetwork('docker', agentRunArgs()), undefined, 'no policy outside a run');
+    await executeWithNetworkPolicy({ mode: 'open', source: 'instance', allow: [] }, async () => {
+        assert.equal(await prepareDockerRunNetwork('docker', agentRunArgs()), undefined);
+    });
+    await executeWithNetworkPolicy(restricted(), async () => {
+        assert.equal(await prepareDockerRunNetwork('docker', ['images', '-q', 'x']), undefined);
+        assert.equal(await prepareDockerRunNetwork('docker', ['run', '--rm', '--network', 'none', 'img']), undefined);
+    });
+});
+
+test('an agent that cannot use the proxy falls back to open with a recorded warning, or is refused when enforced', async () => {
+    const { report } = await executeWithNetworkPolicy(restricted(), async () => {
+        assert.equal(await prepareDockerRunNetwork('docker', agentRunArgs('antigravity')), undefined);
+    });
+    assert.equal(report.restrictedContainers, 0);
+    assert.equal(report.fallbacks[0].agentType, 'antigravity');
+    assert.match(report.fallbacks[0].reason, /not been verified/);
+
+    const error = await executeWithNetworkPolicy(restricted({ source: 'instance_enforced' }), () => prepareDockerRunNetwork('docker', agentRunArgs('antigravity')))
+        .then(() => assert.fail('expected refusal'), (caught: unknown) => caught);
+    assert.ok(error instanceof NetworkPolicyError);
+    assert.match((error as Error).message, /enforced/);
+    assert.equal(networkEgressReportFromError(error)?.mode, 'restricted', 'a refused run still carries its network report');
+    assert.equal(networkEgressReportFromError(error)?.refusals[0].agentType, 'antigravity');
+});
+
+test('the sweep removes directories left by dead or forgotten owners and keeps live ones', async () => {
+    const make = async (id: string, owner: object | null, ageMs = 0) => {
+        const directory = path.join(root, id);
+        await mkdir(directory, { recursive: true });
+        if (owner) await writeFile(path.join(directory, 'owner.json'), JSON.stringify(owner));
+        if (ageMs) { const when = new Date(Date.now() - ageMs); await utimes(directory, when, when); }
+        return directory;
+    };
+    const dead = await make('dead', { hostname: hostname(), pid: 2 ** 22 + 4321 });
+    const forgotten = await make('forgotten', { hostname: hostname(), pid: process.pid });
+    const live = await make('live', { hostname: hostname(), pid: process.ppid });
+    const otherHost = await make('other-host', { hostname: 'another-worker', pid: 1 });
+    const stale = await make('stale', { hostname: 'another-worker', pid: 1 }, EGRESS_ORPHAN_MAX_AGE_MS + 60_000);
+    const { removed } = await sweepOrphanedEgressProxies({ root });
+    assert.equal(removed, 3);
+    assert.ok(!existsSync(dead) && !existsSync(forgotten) && !existsSync(stale));
+    assert.ok(existsSync(live) && existsSync(otherHost));
+});

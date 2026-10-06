@@ -12,6 +12,8 @@ import { loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH, RepositoryWo
 import { withRetry } from '../packages/core/src/utils/retryHandler.js';
 import { runWithExecutionAbortSignal, ExecutionAbortedError } from '../packages/core/src/claude/docker/dockerExecutionOwnership.js';
 import { executeWithRepositoryWorkflow } from '../packages/core/src/workflow/workflowExecution.js';
+import { executeWithNetworkPolicy, networkEgressReportFromError } from '../packages/core/src/network/egressExecution.js';
+import { resolveNetworkPolicy } from '../packages/core/src/network/networkPolicy.js';
 
 let settings: Record<string, unknown> = {};
 await mock.module('@propr/core', { namedExports: {
@@ -19,6 +21,9 @@ await mock.module('@propr/core', { namedExports: {
     executeWithRepositoryWorkflow, loadSettings: async () => settings, RepositoryWorkflowPolicyError, withRetry,
     retryConfigs: { githubApi: { maxAttempts: 3, baseDelay: 1, maxDelay: 1, exponentialBase: 1, retryableErrors: [] } },
     TaskStates: { CANCELLED: 'cancelled', FAILED: 'failed', COMPLETED: 'completed' },
+    executeWithNetworkPolicy, networkEgressReportFromError, resolveNetworkPolicy,
+    loadInstanceNetworkPolicy: async () => ({ mode: 'open', enforced: false, allow: [] }),
+    db: () => { throw new Error('no database in this test'); }, getStateManager: () => { throw new Error('no state manager in this test'); },
 } });
 const {
     deferRepositoryWorkflowJob, withRepositoryWorkflowAdmission, runRepositoryWorkflow, repositoryWorkflowDeferralDelayMs, resolveRepositoryWorkflow, repositoryWorkflowDeferralData,

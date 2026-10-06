@@ -488,3 +488,8 @@ export async function saveAutoResolveMergeConflicts(enabled: boolean): Promise<b
     logger.info({ auto_resolve_merge_conflicts: enabled }, 'Successfully saved auto-resolve merge conflicts setting');
     return true;
 }
+export {
+    loadAgentNetworkOverrides,
+    loadInstanceNetworkPolicy,
+    saveAgentNetworkSetting,
+} from './configManagerAgentNetwork.js';

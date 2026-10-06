@@ -126,6 +126,31 @@
           }
         }
       }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Agent container network policy. restricted starts agent containers with no network interface; their only route out is a per-run proxy that allows the agent's provider API, GitHub, npm and PyPI plus the hosts listed here. The instance can enforce restricted mode, in which case mode: open is ignored.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "open",
+            "restricted"
+          ],
+          "description": "open (instance default unless configured otherwise) or restricted."
+        },
+        "allow": {
+          "type": "array",
+          "maxItems": 500,
+          "description": "Extra hosts restricted runs may reach: an exact hostname, *.example.com for its subdomains (not the apex), an IP literal, each optionally with :port (otherwise ports 80 and 443).",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(\\*\\.[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+(:[0-9]+)?|[A-Za-z0-9.\\-\\[\\]:]+)$"
+          }
+        }
+      }
     }
   }
 }

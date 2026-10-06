@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Restricted network egress for agent containers**: a new `restricted`
+  network mode starts agent containers with `--network none` and routes their
+  traffic through a per-run allowlist proxy on the worker, reached through a
+  Unix socket mounted into the container. It needs no privileged containers or
+  `NET_ADMIN`. The proxy resolves DNS on the worker and allows the agent's
+  provider API, GitHub, npm and PyPI hosts, plus hosts added by the instance
+  (`agent_network_allow`) and by `.propr/workflow.yml` (`network.allow`, exact
+  hosts, `*.domain` wildcards or `host:port`). The instance sets the default
+  mode (`agent_network_mode`, env `AGENT_NETWORK_MODE`, default `open`) and can
+  enforce restricted mode (`agent_network_mode_enforced`), in which case a
+  repository's `network.mode: open` is ignored. Settings → Automation → Agent
+  network, `propr setting update` and MCP `update_execution_settings` manage the
+  instance policy. Each restricted run ends with one timeline event listing the
+  mode and every denied host with its attempt count; the task detail shows it.
+  Claude Code, Codex, OpenCode and Vibe run behind the proxy. Antigravity is not
+  verified to honour proxy variables, so its containers fall back to open
+  networking with a timeline warning, or are refused when restricted mode is
+  enforced. Proxies close with their container, and the worker removes socket
+  directories left by dead workers. Containerized workers need
+  `PROPR_EGRESS_SOCKET_DIR` (default `/tmp/propr-egress`) shared with the Docker
+  host; the bundled Compose files and launcher mount it.
+
 - **Persisted review scores and per-model review quality**: every `/review`
   and Ultrafix review cycle that produces a parsed `Score: N/10` now writes a
   `review_scores` row with the reviewer and implementer agent and model, blocker
@@ -188,6 +210,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open the LLM log for that model. The toolbar shows the repository scope as a locked
   `All Repos`. `GET /api/stats/overview` adds `model_usage`, a per-model list
   of tasks, tokens and cost, and `usage.input_tokens` / `usage.output_tokens`.
+
+### Removed
+
+- **`scripts/init-firewall.sh`**: the iptables firewall script shipped in the
+  agent image needed privileged containers, so no entrypoint ever ran it. The
+  script and the entrypoints' "Skipping firewall setup" lines are gone;
+  restricted network mode replaces it.
 
 ### Fixed
 

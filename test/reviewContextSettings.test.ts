@@ -1,5 +1,6 @@
 import { describe, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { validateAgentNetworkSetting } from '../packages/core/src/network/networkPolicy.js';
 
 await mock.module('@propr/core', {
     namedExports: {
@@ -8,6 +9,7 @@ await mock.module('@propr/core', {
         toProprOpenCodeModelId: (model: string) => model,
         validateAgentType: () => ({ ok: false, error: 'not used by this test' }),
         validateModelReasoningLevel: () => ({ valid: true, value: '' }),
+        validateAgentNetworkSetting,
         validatePrReviewModelValue: async (model: string) => model.includes(' ')
             ? { valid: false, error: 'pr_review_model contains invalid characters' }
             : { valid: true },

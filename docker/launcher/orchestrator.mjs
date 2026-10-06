@@ -1043,6 +1043,9 @@ export function buildServiceSpec(cfg, service) {
             return appSpec(cfg, ['dist/src/worker.js'], [
                 '-v', `${cfg.hostRepos}:/usr/src/app/repos`,
                 '-v', '/tmp/claude-logs:/tmp/claude-logs',
+                // Restricted agent networking: per-run egress proxy sockets that the
+                // host Docker daemon bind-mounts into agent containers (HOST:HOST).
+                '-v', '/tmp/propr-egress:/tmp/propr-egress',
                 '--ulimit', 'nofile=65536:65536',
                 // The worker validates the attachment base URL at startup
                 // (validateAttachmentBaseUrlConfig); inject the computed value so a

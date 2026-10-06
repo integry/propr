@@ -231,6 +231,12 @@ export interface SystemSettings {
   agent_degenerate_output_limit?: number | null;
   agent_watchdog_defaults?: Record<string, number>;
   agent_watchdog_effective?: Record<string, number>;
+  /** Agent network policy overrides; null uses the environment default. */
+  agent_network_mode?: 'open' | 'restricted' | null;
+  agent_network_mode_enforced?: boolean | null;
+  agent_network_allow?: string[] | null;
+  agent_network_defaults?: { agent_network_mode?: 'open' | 'restricted'; agent_network_mode_enforced?: boolean; agent_network_allow?: string[] };
+  agent_network_effective?: { agent_network_mode?: 'open' | 'restricted'; agent_network_mode_enforced?: boolean; agent_network_allow?: string[] };
   invalid_settings?: Record<string, unknown>;
 }
 

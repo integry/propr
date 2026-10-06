@@ -43,6 +43,10 @@ interface SettingsApiData {
   agent_tool_stall_timeout_ms?: number | null;
   agent_degenerate_output_limit?: number | null;
   agent_watchdog_defaults?: Settings['agent_watchdog_defaults'];
+  agent_network_mode?: unknown;
+  agent_network_mode_enforced?: unknown;
+  agent_network_allow?: unknown;
+  agent_network_defaults?: Settings['agent_network_defaults'];
 }
 
 /** The spend cap as typed in Settings: empty for no cap (0 or unset). */
@@ -54,6 +58,23 @@ function watchdogOverride(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
+/** One host per line (commas also separate); an empty list uses the environment default. */
+export function parseAllowlistDraft(draft: string): string[] | null {
+  const hosts = [...new Set(draft.split(/[\s,]+/).map(host => host.trim().toLowerCase()).filter(Boolean))];
+  return hosts.length ? hosts : null;
+}
+
+/** Stored network overrides; anything unexpected reads as "use the default". */
+export function networkOverrides(data: Pick<SettingsApiData, 'agent_network_mode' | 'agent_network_mode_enforced' | 'agent_network_allow'>): Pick<Settings, 'agent_network_mode' | 'agent_network_mode_enforced' | 'agent_network_allow'> {
+  const mode = data.agent_network_mode;
+  const allow = data.agent_network_allow;
+  return {
+    agent_network_mode: mode === 'open' || mode === 'restricted' ? mode : null,
+    agent_network_mode_enforced: typeof data.agent_network_mode_enforced === 'boolean' ? data.agent_network_mode_enforced : null,
+    agent_network_allow: Array.isArray(allow) && allow.every(host => typeof host === 'string') ? allow as string[] : null,
+  };
+}
+
 /** Sends the typed spend cap as a USD amount (empty = 0, no cap); a value that is not one is left unsaved. */
 export function costCapToSave(value: string): { default_max_cost_usd?: number } {
   const trimmed = value.trim();
@@ -62,13 +83,16 @@ export function costCapToSave(value: string): { default_max_cost_usd?: number } 
   return Number.isFinite(amount) && amount >= 0 ? { default_max_cost_usd: amount } : {};
 }
 
-/** The spend cap and agent watchdog overrides as sent on save. */
+/** The spend cap, agent watchdog and agent network overrides as sent on save. */
 export function runLimitSettingsToSave(settings: Settings) {
   return {
     ...costCapToSave(settings.default_max_cost_usd),
     agent_stall_timeout_ms: settings.agent_stall_timeout_ms,
     agent_tool_stall_timeout_ms: settings.agent_tool_stall_timeout_ms,
-    agent_degenerate_output_limit: settings.agent_degenerate_output_limit
+    agent_degenerate_output_limit: settings.agent_degenerate_output_limit,
+    agent_network_mode: settings.agent_network_mode,
+    agent_network_mode_enforced: settings.agent_network_mode_enforced,
+    agent_network_allow: settings.agent_network_allow
   };
 }
 
@@ -103,6 +127,8 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     agent_tool_stall_timeout_ms: watchdogOverride(settingsData.agent_tool_stall_timeout_ms),
     agent_degenerate_output_limit: watchdogOverride(settingsData.agent_degenerate_output_limit),
     agent_watchdog_defaults: settingsData.agent_watchdog_defaults,
+    ...networkOverrides(settingsData),
+    agent_network_defaults: settingsData.agent_network_defaults,
   };
 }
 

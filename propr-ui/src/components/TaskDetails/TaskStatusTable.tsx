@@ -2,6 +2,8 @@ import React, { useMemo } from 'react';
 import { formatTaskTerminalReason } from '@propr/shared';
 import { HistoryItem } from './types';
 import PushFailureDetails from './PushFailureDetails';
+import { NetworkEgressDetail, NetworkEgressIcon } from './NetworkEgressDetail';
+import { isNetworkEgress, networkEgressLabel, networkEgressNeedsAttention } from './networkEgress';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
 import { RUN_DURATION_COLUMN, RUN_LEAD_INSET, RUN_TAG_COLUMN } from './runTimelineColumns';
 import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban, CircleDollarSign } from 'lucide-react';
@@ -33,13 +35,20 @@ const BudgetExceededDetail: React.FC<{ metadata?: HistoryItem['metadata'] }> = (
   );
 };
 
+/** Rows that record an event during a phase rather than a lifecycle change. */
+const getEventLabel = (item: HistoryItem): string | null => {
+  if (item.metadata?.repositoryWorkflowDeferrals) return 'Waiting for Repository Capacity';
+  if (isBudgetExceeded(item)) return 'Spend Cap Reached';
+  return networkEgressLabel(item);
+};
+
 const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[], commandMode?: string): string => {
   const stateUpper = item.state?.toUpperCase();
   const isReview = commandMode === 'review';
   const isFix = commandMode === 'fix';
 
-  if (item.metadata?.repositoryWorkflowDeferrals) return 'Waiting for Repository Capacity';
-  if (isBudgetExceeded(item)) return 'Spend Cap Reached';
+  const eventLabel = getEventLabel(item);
+  if (eventLabel) return eventLabel;
   if (stateUpper === 'PENDING') return 'Task Queued';
   if (stateUpper === 'PROCESSING') return isReview ? 'Preparing Review' : 'Analyzing Request';
   if (stateUpper === 'CLAUDE_EXECUTION' || stateUpper === 'CLAUDE_EXECUTION_STARTED') {
@@ -66,7 +75,7 @@ const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: Hist
   const isFix = commandMode === 'fix';
   const claudeCount = history.slice(0, index + 1).filter(h => {
     const s = h.state?.toUpperCase();
-    return (s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED') && !isBudgetExceeded(h);
+    return (s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED') && !isBudgetExceeded(h) && !isNetworkEgress(h);
   }).length;
 
   const actionLabel = isReview ? 'Reviewing' : isFix ? 'Applying Fix' : 'Implementing Changes';
@@ -201,6 +210,7 @@ const TimelineContent: React.FC<{
           )}
           <RepositoryWorkflowDeferral metadata={item.metadata} isRunning={isRunning} />
           <BudgetExceededDetail metadata={item.metadata} />
+          <NetworkEgressDetail metadata={item.metadata} />
           {item.metadata?.terminalReason && (
             <div className="mt-1 break-words text-xs text-slate-500" data-testid="task-terminal-reason">
               {formatTaskTerminalReason(item.metadata.terminalReason)}
@@ -269,7 +279,9 @@ const TaskTimelineItem: React.FC<{
 
           {/* Icon/Dot - intersects the rail */}
           <div className="relative z-10 bg-white p-0.5">
-            <TimelineIcon state={stateUpper} isRunning={isRunning && !isBudgetExceeded(item)} isFailure={isFailure} isCancelled={isCancelled} isBudgetStop={isBudgetExceeded(item)} />
+            {isNetworkEgress(item)
+              ? <NetworkEgressIcon attention={networkEgressNeedsAttention(item)} />
+              : <TimelineIcon state={stateUpper} isRunning={isRunning && !isBudgetExceeded(item)} isFailure={isFailure} isCancelled={isCancelled} isBudgetStop={isBudgetExceeded(item)} />}
           </div>
         </div>
 
@@ -344,6 +356,7 @@ const BranchSteps: React.FC<{
                 {formatTaskTerminalReason(item.metadata.terminalReason)}
               </span>
             )}
+            <NetworkEgressDetail metadata={item.metadata} />
             <PushFailureDetails metadata={item.metadata} />
           </span>
           <span className={`${RUN_DURATION_COLUMN} flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${isRunning ? 'font-medium text-teal-700' : 'text-slate-500'}`}>

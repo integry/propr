@@ -142,6 +142,10 @@ services:
       # worker user) — Docker creates missing bind-mount dirs as root.
       VIBE_PROMPT_CACHE_DIR: ${VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
       HOST_VIBE_PROMPT_CACHE_DIR: ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}
+      # Restricted agent networking: the worker creates per-run egress proxy
+      # sockets here; agent containers mount them from the host path.
+      PROPR_EGRESS_SOCKET_DIR: /tmp/propr-egress
+      HOST_PROPR_EGRESS_SOCKET_DIR: ${HOST_PROPR_EGRESS_SOCKET_DIR:-/tmp/propr-egress}
       # --- Vibe agent (config-file auth, alternative to API-key) ---
       VIBE_CONFIG_PATH: ${VIBE_CONFIG_PATH:-/root/.vibe}
       ALLOWED_ORGS: ${ALLOWED_ORGS}
@@ -170,6 +174,7 @@ services:
       # manual edits. PREFLIGHT: create and own the host directory before starting:
       #   mkdir -p "${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}"
       - ${HOST_VIBE_PROMPT_CACHE_DIR:-/tmp/propr-vibe-prompts}:/tmp/propr-vibe-prompts
+      - ${HOST_PROPR_EGRESS_SOCKET_DIR:-/tmp/propr-egress}:/tmp/propr-egress
       # Vibe config-file auth. Mounts host config to the same path the worker
       # passes to sibling agent containers.
       - ${HOST_VIBE_DIR:-/root/.vibe}:${VIBE_CONFIG_PATH:-/root/.vibe}:ro

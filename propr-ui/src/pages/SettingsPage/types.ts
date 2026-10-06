@@ -31,11 +31,28 @@ export interface Settings {
   agent_degenerate_output_limit: number | null;
   /** Environment defaults reported by the server (read-only). */
   agent_watchdog_defaults?: Partial<Record<AgentWatchdogSettingName, number>>;
+  /** Network policy overrides; null uses the environment default. */
+  agent_network_mode: 'open' | 'restricted' | null;
+  agent_network_mode_enforced: boolean | null;
+  agent_network_allow: string[] | null;
+  /** Environment defaults reported by the server (read-only). */
+  agent_network_defaults?: AgentNetworkDefaults;
   // github_user_whitelist is now handled as string[] in main state
 }
 
 export type AgentWatchdogSettingName = 'agent_stall_timeout_ms' | 'agent_tool_stall_timeout_ms' | 'agent_degenerate_output_limit';
 export type AgentWatchdogValues = Record<AgentWatchdogSettingName, number | null>;
+export type AgentNetworkSettingName = 'agent_network_mode' | 'agent_network_mode_enforced' | 'agent_network_allow';
+export interface AgentNetworkValues {
+  agent_network_mode: 'open' | 'restricted' | null;
+  agent_network_mode_enforced: boolean | null;
+  agent_network_allow: string[] | null;
+}
+export interface AgentNetworkDefaults {
+  agent_network_mode?: 'open' | 'restricted';
+  agent_network_mode_enforced?: boolean;
+  agent_network_allow?: string[];
+}
 
 export interface AlertProps {
   message: string;

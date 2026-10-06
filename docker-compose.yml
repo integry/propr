@@ -102,6 +102,9 @@ services:
       # Vibe prompt cache — mounted by default so Vibe works when MISTRAL_API_KEY
       # is set. PREFLIGHT for this compose file: mkdir -p /tmp/propr-vibe-prompts
       - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts
+      # Restricted agent networking: per-run egress proxy sockets, bind-mounted
+      # into agent containers by the host Docker daemon at the same path.
+      - /tmp/propr-egress:/tmp/propr-egress
     env_file:
       - .env
     environment:

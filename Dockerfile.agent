@@ -92,9 +92,8 @@ RUN set -eu; \
 RUN mkdir -p /home/node/workspace \
     && chown -R node:node /home/node
 
-COPY scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
 COPY scripts/gh-wrapper.sh /usr/local/bin/gh-wrapper
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/gh-wrapper
+RUN chmod +x /usr/local/bin/gh-wrapper
 
 COPY NOTICE /usr/share/licenses/propr/NOTICE
 COPY THIRD_PARTY_LICENSES.md /usr/share/licenses/propr/THIRD_PARTY_LICENSES.md

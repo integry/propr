@@ -4,6 +4,8 @@ import { RepositoryWorkflowPolicyError } from './workflowPolicyError.js';
 import type { VisualPreviewSettings, VisualPreviewType } from '../config/configManager.js';
 import { validateAutoMergeConfig, type AutoMergeConfig } from './autoMergePolicy.js';
 import { parseCostCapUsd } from '../budget/runCostCap.js';
+import { validateEgressAllowlist } from '../network/egressAllowlist.js';
+import { AGENT_NETWORK_MODES, type RepositoryNetworkConfig } from '../network/networkPolicy.js';
 
 export { RepositoryWorkflowPolicyError };
 
@@ -19,6 +21,8 @@ export interface RepositoryWorkflow {
     /** `max_cost_usd` is read leniently: a malformed value is logged and means no cap, never a $0 cap. */
     limits?: { max_parallel_tasks?: number; max_cost_usd?: unknown };
     auto_merge?: AutoMergeConfig;
+    /** Agent container network policy; the instance may enforce restricted mode. */
+    network?: RepositoryNetworkConfig;
 }
 export interface ResolvedRepositoryWorkflow {
     revision: string;
@@ -56,6 +60,15 @@ function validatePreviews(value: unknown): void {
     }
 }
 
+function validateNetwork(value: unknown): void {
+    const network = object(value, ['mode', 'allow'], 'network');
+    if (network.mode !== undefined && !(AGENT_NETWORK_MODES as readonly unknown[]).includes(network.mode)) invalid('network.mode must be "open" or "restricted"');
+    if (network.allow !== undefined) {
+        const error = validateEgressAllowlist(network.allow, 'network.allow');
+        if (error) invalid(error);
+    }
+}
+
 function parseWorkflowDocument(source: string): unknown {
     try {
         const document = parseDocument(source, { uniqueKeys: true });
@@ -71,7 +84,7 @@ function parseWorkflowDocument(source: string): unknown {
 export function parseRepositoryWorkflow(source: string): RepositoryWorkflow {
     if (Buffer.byteLength(source) > WORKFLOW_MAX_BYTES) invalid('file exceeds 128 KiB');
     const value = parseWorkflowDocument(source);
-    const config = object(value, ['hooks', 'instructions', 'validation', 'previews', 'limits', 'auto_merge'], 'workflow');
+    const config = object(value, ['hooks', 'instructions', 'validation', 'previews', 'limits', 'auto_merge', 'network'], 'workflow');
     if (config.hooks !== undefined) {
         const hooks = object(config.hooks, ['after_create', 'before_run', 'after_run', 'before_remove', 'timeout_ms'], 'hooks');
         for (const [key, value] of Object.entries(hooks)) {
@@ -95,6 +108,7 @@ export function parseRepositoryWorkflow(source: string): RepositoryWorkflow {
         const limits = object(config.limits, ['max_parallel_tasks', 'max_cost_usd'], 'limits');
         if (limits.max_parallel_tasks !== undefined) positiveInteger(limits.max_parallel_tasks, 'limits.max_parallel_tasks');
     }
+    if (config.network !== undefined) validateNetwork(config.network);
     if (config.auto_merge !== undefined) {
         const error = validateAutoMergeConfig(config.auto_merge);
         if (error) invalid(error);

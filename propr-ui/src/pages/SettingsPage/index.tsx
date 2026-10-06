@@ -3,6 +3,7 @@ import React from 'react';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import GeneralSettingsSection from './GeneralSettingsSection';
 import AgentWatchdogSettingsSection from './AgentWatchdogSettingsSection';
+import AgentNetworkSettingsSection from './AgentNetworkSettingsSection';
 import AIModelSelectionSection from './AIModelSelectionSection';
 import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
@@ -59,7 +60,7 @@ const AdminSettingsPage: React.FC = () => {
     handleModelSelectionChange,
     handleEscalationModelsChange,
     handleReviewContextEnabledChange,
-    handleAgentWatchdogChange,
+    handleAgentRunSettingChange,
     handleReviewContextBudgetPercentCommit,
     handleRemoveLegacyReviewCap,
     addWhitelistItem,
@@ -200,10 +201,12 @@ const AdminSettingsPage: React.FC = () => {
             agent_degenerate_output_limit: settings.agent_degenerate_output_limit
           }}
           defaults={settings.agent_watchdog_defaults}
-          onCommit={handleAgentWatchdogChange}
+          onCommit={handleAgentRunSettingChange}
         />
       )
     },
+    { id: 'agent-network', category: 'automation', searchText: 'agent network restricted open egress proxy allowlist firewall hosts outbound internet enforce',
+      content: <AgentNetworkSettingsSection values={settings} defaults={settings.agent_network_defaults} onCommit={handleAgentRunSettingChange} /> },
     {
       id: 'github-user-whitelist',
       category: 'automation',

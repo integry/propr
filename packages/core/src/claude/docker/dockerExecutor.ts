@@ -21,6 +21,7 @@ import { detectContainerId } from './dockerContainerDetection.js';
 import type { AgentWatchdogTrip } from './agentActivityWatchdog.js';
 import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
 import { settleTimeoutStop, settleWatchdogStop } from './dockerExecutionSettlement.js';
+import { dockerRunNeedsNetworkPolicy, prepareDockerRunNetwork } from '../../network/egressExecution.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
@@ -230,12 +231,35 @@ export function executeDockerCommand(command: string, args: string[], options: D
     // A chargeable container starts only once its run's cap admitted it: a run
     // whose recorded spend already reaches the cap launches nothing.
     const admission = admitCostExecution(command, args, options);
-    if (!admission) return startDockerCommand(command, args, options, { ownershipContext, executionSignal });
+    if (!admission) return startDockerCommandWithNetworkPolicy(command, args, options, { ownershipContext, executionSignal });
     return admission.then(refusal => {
         if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
         const abortError = getExecutionAbortError(executionSignal);
         if (abortError) throw abortError;
-        return startDockerCommand(command, args, options, { ownershipContext, executionSignal });
+        return startDockerCommandWithNetworkPolicy(command, args, options, { ownershipContext, executionSignal });
+    });
+}
+
+/**
+ * A restricted-network run gets its own egress proxy, which lives exactly as
+ * long as this container's `docker run` process.
+ */
+function startDockerCommandWithNetworkPolicy(
+    command: string,
+    args: string[],
+    options: DockerCommandOptions,
+    context: { ownershipContext: ReturnType<typeof getExecutionOwnershipContext>; executionSignal: AbortSignal | undefined },
+): Promise<ExecutionResult> {
+    if (!dockerRunNeedsNetworkPolicy(command, args)) return startDockerCommand(command, args, options, context);
+    return prepareDockerRunNetwork(command, args).then(async network => {
+        if (!network) return startDockerCommand(command, args, options, context);
+        try {
+            const abortError = getExecutionAbortError(context.executionSignal);
+            if (abortError) throw abortError;
+            return await startDockerCommand(command, network.args, options, context);
+        } finally {
+            await network.release();
+        }
     });
 }
 
