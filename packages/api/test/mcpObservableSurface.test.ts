@@ -316,6 +316,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',
+    // Task steering capability reported by steer_task.
+    'live',
   ]);
   const adminToolNames = new Set(catalog
     .filter(tool => principal.scopes.includes(tool.scope)
