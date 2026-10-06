@@ -156,6 +156,10 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
     saves.push({ name: 'ultrafix_ci_wait_timeout_ms' });
   }
 
+  return extractTrailingSettingSaves(fields, result);
+}
+
+async function extractTrailingSettingSaves(fields: SettingFields, result: SettingSavesResult): Promise<SettingSavesResult> {
   const watchdog = extractAgentWatchdogSettingSaves(fields, result);
   if (watchdog.error) return watchdog;
   return extractEscalationSettingSaves(fields, result);
