@@ -369,22 +369,26 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
   },
 ];
 
-// Configured agent images may be digest-pinned (`propr/agent:<sha>@sha256:…`).
+// Configured images may be digest-pinned (`propr/agent:<sha>@sha256:…`).
 // `docker images -q <ref>` only filters by repository/tag and never matches that
 // combined reference, so presence is decided by `docker image inspect`, which
-// resolves the exact configured reference, and its exit status.
+// resolves the exact configured reference. Only a successful inspect that
+// reports an image ID counts; a nonzero exit, spawn error or timeout is absent.
 function imageInspectArgs(image: string): string[] {
   return ["image", "inspect", "--format", "{{.Id}}", image];
 }
 
-/** Whether the exact configured agent image reference is present locally. */
-export function agentImagePresent(orch: Pick<OrchestratorModule, "docker">, image: string): boolean {
-  return orch.docker(imageInspectArgs(image), { capture: true }).status === 0;
+function inspectFoundImage(result: { status: number | null; stdout?: string | null }): boolean {
+  return result.status === 0 && (result.stdout ?? "").trim().length > 0;
+}
+
+/** Whether the exact configured image reference (tagged or digest-pinned) is present locally. */
+export function localImagePresent(orch: Pick<OrchestratorModule, "docker">, image: string): boolean {
+  return inspectFoundImage(orch.docker(imageInspectArgs(image), { capture: true }));
 }
 
 async function imagePresent(orch: OrchestratorModule, tag: string, signal?: AbortSignal): Promise<boolean> {
-  const result = await orch.dockerAsync(imageInspectArgs(tag), { timeout: VERSION_TIMEOUT_MS, signal });
-  return result.status === 0;
+  return inspectFoundImage(await orch.dockerAsync(imageInspectArgs(tag), { timeout: VERSION_TIMEOUT_MS, signal }));
 }
 
 function commandExists(bin: string): boolean {

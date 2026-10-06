@@ -655,14 +655,24 @@ export function ensureNetwork(cfg, onLog) {
     }
 }
 
+// Configured images may be digest-pinned (`repo:tag@sha256:…`). `docker images -q`
+// only filters by repository/tag and never matches that combined reference, so
+// presence is decided by `docker image inspect` on the exact configured
+// reference. Only a successful inspect that reports an image ID counts as present.
+function imageInspectIdArgs(tag) {
+    return ['image', 'inspect', '--format', '{{.Id}}', tag];
+}
+
+function inspectFoundImage(res) {
+    return res.status === 0 && (res.stdout || '').trim().length > 0;
+}
+
 function imagePresentLocally(tag) {
-    const res = docker(['images', '-q', tag], { capture: true });
-    return res.stdout.trim().length > 0;
+    return inspectFoundImage(docker(imageInspectIdArgs(tag), { capture: true }));
 }
 
 async function imagePresentLocallyAsync(tag, signal) {
-    const res = await dockerAsync(['images', '-q', tag], { signal });
-    return res.stdout.trim().length > 0;
+    return inspectFoundImage(await dockerAsync(imageInspectIdArgs(tag), { signal }));
 }
 
 function firstLine(value) {

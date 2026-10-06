@@ -40,7 +40,7 @@ export function createDefaultAgentSetupActions(configManager?: ConfigManager, op
       return loginableAgents();
     },
     async loginAgent(rootDir, type, loginOptions = {}) {
-      const { agentImagePresent, planAgentLogin } = await import("../agentValidation.js");
+      const { localImagePresent, planAgentLogin } = await import("../agentValidation.js");
       const { orch, cfg } = await loadHostConfig(rootDir);
       const temporaryRoot = mkdtempSync(join(tmpdir(), "propr-setup-login-"));
       const workspaceDir = join(temporaryRoot, "workspace");
@@ -48,7 +48,7 @@ export function createDefaultAgentSetupActions(configManager?: ConfigManager, op
       try {
         const { plan, error } = planAgentLogin(type, cfg, workspaceDir, orch.validateDockerBindPath);
         if (error || !plan) return { available: false, success: false, detail: error };
-        if (!agentImagePresent(orch, plan.image)) {
+        if (!localImagePresent(orch, plan.image)) {
           return { available: true, success: false, detail: `image ${plan.image} not present locally — run \`propr images pull\`` };
         }
         mkdirSync(plan.hostDir, { recursive: true, mode: 0o700 });

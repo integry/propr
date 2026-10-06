@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { OrchestratorConfig, OrchestratorModule } from "../../orchestrator/index.js";
 import type { DockerCommandResult } from "../../orchestrator/types.js";
-import { agentImagePresent } from "../agentValidation.js";
+import { localImagePresent } from "../agentValidation.js";
 import { createDefaultAgentSetupActions } from "./agentHostActions.js";
 
 const SHA = "a".repeat(40);
@@ -61,9 +61,9 @@ test("the agent image presence check resolves the exact digest-pinned preview re
   const { orch } = fakeDocker(true);
   // The filter-based listing cannot see the combined tag@digest reference.
   assert.equal(orch.docker(["images", "-q", PINNED], { capture: true }).stdout, "");
-  assert.equal(agentImagePresent(orch, PINNED), true);
-  assert.equal(agentImagePresent(orch, `propr/agent:${SHA}@sha256:${"c".repeat(64)}`), false);
-  assert.equal(agentImagePresent(fakeDocker(false).orch, PINNED), false);
+  assert.equal(localImagePresent(orch, PINNED), true);
+  assert.equal(localImagePresent(orch, `propr/agent:${SHA}@sha256:${"c".repeat(64)}`), false);
+  assert.equal(localImagePresent(fakeDocker(false).orch, PINNED), false);
 });
 
 test("setup login launches authentication for a pulled digest-pinned preview agent image", async (t) => {
