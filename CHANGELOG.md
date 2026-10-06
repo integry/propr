@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ships the unpublished version-tagged agent. A digest-pinned agent now gets its
   local `propr/agent:latest` tag correctly. arm64 packages remain available, but
   the managed agent, and so agent tasks, are amd64 only.
+  Image archive checksums are computed in fixed 8 MiB chunks instead of reading
+  the whole archive into memory, which failed `prepare-agent` on the ~2.4 GB
+  agent `docker save` archive with `File size ... is greater than 2 GiB`.
 - **Complete bundled third-party notices**: `scripts/generate-notices.sh` now
   refuses to run without the root dependency tree installed at the
   `package-lock.json` pins, and refuses to replace `THIRD_PARTY_LICENSES.md`

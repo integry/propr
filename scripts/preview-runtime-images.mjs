@@ -4,10 +4,13 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   appendFileSync,
+  closeSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   rmSync,
   writeFileSync,
@@ -87,7 +90,24 @@ const run = (command, args, options = {}) => execFileSync(command, args, {
 
 const runRegctl = args => run('regctl', args);
 
-const sha256File = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+// Image archives exceed Node's 2 GiB single-buffer read limit (a real agent
+// docker-save archive is ~2.4 GB), so hash them through one reused fixed-size
+// buffer instead of readFileSync. Memory stays bounded by HASH_CHUNK_BYTES.
+const HASH_CHUNK_BYTES = 8 * 1024 * 1024;
+
+export const sha256File = path => {
+  const hash = createHash('sha256');
+  const buffer = Buffer.allocUnsafe(HASH_CHUNK_BYTES);
+  const descriptor = openSync(path, 'r');
+  try {
+    for (let read; (read = readSync(descriptor, buffer, 0, buffer.length, null)) > 0;) {
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  return hash.digest('hex');
+};
 
 const writeJson = (path, value) => {
   mkdirSync(dirname(path), { recursive: true });

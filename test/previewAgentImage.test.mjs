@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync,
+  statSync, writeFileSync, writeSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 import {
   AGENT_SMOKE_CHECKS,
+  sha256File,
   validateAgentRepositoryMetadata,
   validateAgentSmokeEvidence,
   validateIdentity,
@@ -180,6 +185,69 @@ const prepareCandidate = fixture => {
   assert.equal(assembled.status, 0, assembled.stderr);
   return { native, candidate };
 };
+
+describe('preview image archive hashing', () => {
+  // A real linux/amd64 agent docker-save archive is ~2.4 GB, past Node's 2 GiB
+  // single-buffer read limit. A sparse file reproduces that size without
+  // writing gigabytes; markers on both sides of the 2 GiB boundary and at the
+  // tail prove every byte is hashed, not just a prefix.
+  const TWO_GIB = 2 ** 31;
+  const SIZE = TWO_GIB + 1024 * 1024 + 7;
+  const markers = [
+    [0, Buffer.from('docker-save-head')],
+    [TWO_GIB - 4, Buffer.from('boundary')],
+    [SIZE - 4, Buffer.from('tail')],
+  ];
+
+  const sparseArchive = (patch = []) => {
+    const root = mkdtempSync(join(tmpdir(), 'propr-agent-hash-'));
+    fixtures.push(root);
+    const path = join(root, 'agent-linux-amd64.docker.tar');
+    const descriptor = openSync(path, 'w');
+    try {
+      ftruncateSync(descriptor, SIZE);
+      for (const [offset, bytes] of [...markers, ...patch]) writeSync(descriptor, bytes, 0, bytes.length, offset);
+    } finally {
+      closeSync(descriptor);
+    }
+    return path;
+  };
+
+  // Independent oracle: hash the same logical byte sequence from memory
+  // segments, never reading the file.
+  const expectedDigest = () => {
+    const hash = createHash('sha256');
+    const zeros = Buffer.alloc(16 * 1024 * 1024);
+    const hashZeros = length => {
+      for (let gap = length; gap > 0; gap -= zeros.length) hash.update(zeros.subarray(0, Math.min(gap, zeros.length)));
+    };
+    let position = 0;
+    for (const [offset, bytes] of markers) {
+      hashZeros(offset - position);
+      hash.update(bytes);
+      position = offset + bytes.length;
+    }
+    hashZeros(SIZE - position);
+    return hash.digest('hex');
+  };
+
+  test('hashes an archive larger than Node\'s single-buffer limit byte-identically', () => {
+    const archive = sparseArchive();
+    assert.equal(statSync(archive).size, SIZE);
+    // The pre-fix whole-file read fails here exactly as package-agent did.
+    assert.throws(() => readFileSync(archive), { code: 'ERR_FS_FILE_TOO_LARGE' });
+    const actual = sha256File(archive);
+    assert.equal(actual, expectedDigest());
+
+    // A single changed byte past the 2 GiB boundary must change the digest.
+    assert.notEqual(sha256File(sparseArchive([[TWO_GIB + 512, Buffer.from('x')]])), actual);
+  });
+
+  test('uses the bounded hash for every archive digest in packaging, assembly and validation', () => {
+    assert.doesNotMatch(helper, /update\(readFileSync\(/);
+    assert.match(helper, /readSync\(descriptor, buffer/);
+  });
+});
 
 describe('preview managed-agent candidate scope and source binding', () => {
   test('binds agent operations to main ancestry and the linux/amd64-only Dockerfile contract', () => {
