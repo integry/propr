@@ -30,6 +30,7 @@ import {
 import {
     acquireResumeClaim,
     releaseResumeClaim,
+    renewResumeClaim,
     getUltrafixResumeClaimKey,
     evaluateStrandedLoopRearm,
     loadStateSnapshot,
@@ -73,6 +74,14 @@ function createMockRedis() {
         },
         async eval(script: string, _keyCount: number, ...args: string[]) {
             const [epochKey, deferredKey] = args;
+            if (script.includes("redis.call('PEXPIRE'")) {
+                // Token-checked renewal of a claim.
+                const [claimKey, token, ttl] = args;
+                expire(claimKey);
+                if (store.get(claimKey) !== token) return 0;
+                expiresAt.set(claimKey, Date.now() + Number(ttl));
+                return 1;
+            }
             if (script.includes("redis.call('DEL', KEYS[1])")) {
                 // Compare-and-delete release of a token-owned claim.
                 const [claimKey, token] = args;
@@ -690,6 +699,26 @@ describe('resume claim', () => {
         assert.strictEqual(await acquireResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-b', 60_000), true);
         // The crashed holder can no longer release the new owner's claim.
         assert.strictEqual(await releaseResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-a'), false);
+    });
+
+    test('renewal extends only a claim still held by the same token', async () => {
+        const prId = { owner: 'acme', repo: 'web', pr: 42 };
+        const key = getUltrafixResumeClaimKey('acme', 'web', 42);
+        await acquireResumeClaim(redis as any, prId, 'token-a', 1_000);
+
+        assert.strictEqual(await renewResumeClaim(redis as any, prId, 'token-a', 60_000), true);
+        assert.ok(redis.expiresAt.get(key)! > Date.now() + 30_000, 'TTL extended');
+        assert.strictEqual(await renewResumeClaim(redis as any, prId, 'token-b', 60_000), false);
+    });
+
+    test('an expired holder cannot renew a claim another trigger took over', async () => {
+        const prId = { owner: 'acme', repo: 'web', pr: 42 };
+        await acquireResumeClaim(redis as any, prId, 'token-a', 60_000);
+        redis.expiresAt.set(getUltrafixResumeClaimKey('acme', 'web', 42), Date.now() - 1);
+        await acquireResumeClaim(redis as any, prId, 'token-b', 60_000);
+
+        assert.strictEqual(await renewResumeClaim(redis as any, prId, 'token-a', 60_000), false);
+        assert.strictEqual(redis.store.get(getUltrafixResumeClaimKey('acme', 'web', 42)), 'token-b');
     });
 });
 

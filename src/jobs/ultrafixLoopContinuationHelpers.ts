@@ -368,6 +368,36 @@ export async function evaluateCIChecksPassing(
     return (await evaluateCIChecks(params, deps)).passing;
 }
 
+/**
+ * Ultrafix work for the PR that is still queued, running, or batched. Unlike
+ * readiness this fails closed: when the queue or pending comments cannot be
+ * read, the work is reported as unknown so no terminal decision is made blind.
+ */
+export async function findOutstandingUltrafixWork(
+    owner: string,
+    repo: string,
+    pullRequestNumber: number,
+    redisClient: UltrafixContinuationParams['redisClient'],
+): Promise<string[]> {
+    const outstanding: string[] = [];
+    try {
+        const issueQueue = await getIssueQueue();
+        const followUpJobsExist = await hasFollowUpJobsForPR(owner, repo, pullRequestNumber, async () =>
+            await issueQueue.getJobs(['waiting', 'active', 'delayed']) as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>);
+        if (followUpJobsExist) outstanding.push('follow_up_jobs_active');
+    } catch {
+        outstanding.push('follow_up_jobs_unknown');
+    }
+    try {
+        if (await hasPendingBatchedComments(redisClient, getPendingPrCommentsKey(owner, repo, pullRequestNumber))) {
+            outstanding.push('pending_comments_exist');
+        }
+    } catch {
+        outstanding.push('pending_comments_unknown');
+    }
+    return outstanding;
+}
+
 export async function evaluateReadiness(
     params: UltrafixContinuationParams,
     nextAction: UltrafixAction,

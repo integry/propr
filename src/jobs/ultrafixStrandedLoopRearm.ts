@@ -20,6 +20,7 @@ import type { UltrafixAction, UltrafixLoopState } from './ultrafixOrchestrationS
 import {
     enqueueNextStep,
     evaluateReadiness,
+    findOutstandingUltrafixWork,
     finishUltrafixLoop,
     hasUltrafixLabel,
 } from './ultrafixLoopContinuationHelpers.js';
@@ -29,9 +30,12 @@ type UltrafixPrId = { owner: string; repo: string; pr: number };
 
 const RESUME_CLAIM_KEY_PREFIX = 'ultrafix:resume-claim';
 const RELEASE_RESUME_CLAIM_SCRIPT = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
+const RENEW_RESUME_CLAIM_SCRIPT = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) else return 0 end";
 
-/** How long one resume trigger may hold the per-PR resume claim. */
+/** How long one resume trigger may hold the per-PR resume claim without renewing it. */
 const RESUME_CLAIM_TTL_MS = 60_000;
+/** Background renewal cadence; several renewals fit in one TTL. */
+const RESUME_CLAIM_RENEW_INTERVAL_MS = RESUME_CLAIM_TTL_MS / 3;
 
 /** Ordinal of the next step for `action` (completed steps of that action + 1). */
 export function getNextStepNumber(state: UltrafixLoopState, action: UltrafixAction): number {
@@ -67,6 +71,35 @@ export async function releaseResumeClaim(redis: Redis, prId: UltrafixPrId, token
     );
     return Number(released) === 1;
 }
+
+/** Extend the resume claim only when it is still held by `token`. */
+export async function renewResumeClaim(
+    redis: Redis,
+    prId: UltrafixPrId,
+    token: string,
+    ttlMs: number,
+): Promise<boolean> {
+    const renewed = await redis.eval(
+        RENEW_RESUME_CLAIM_SCRIPT,
+        1,
+        getUltrafixResumeClaimKey(prId.owner, prId.repo, prId.pr),
+        token,
+        String(ttlMs),
+    );
+    return Number(renewed) === 1;
+}
+
+/**
+ * Ownership of a held resume claim. `confirm()` renews the claim and reports
+ * whether it is still owned; it must be awaited immediately before every
+ * mutation or enqueue, so a trigger whose claim expired mid-operation (and may
+ * have been taken by another trigger) stops instead of acting on stale state.
+ */
+export interface ResumeClaim {
+    confirm(): Promise<boolean>;
+}
+
+export const RESUME_CLAIM_LOST_REASON = 'resume_claim_lost';
 
 export type StrandedLoopRearmDecision =
     | { action: 'skip'; reason: 'no_active_loop' }
@@ -143,12 +176,14 @@ export async function syncStateWorkEpoch(
  * Run `operation` while holding the per-PR resume claim. Every resume trigger
  * (deferred record or stranded-loop fallback) evaluates readiness and enqueues
  * under this one claim, so concurrent triggers cannot schedule conflicting steps.
+ * The claim is renewed while the operation runs; the operation must call
+ * `claim.confirm()` before each mutation and stop when it returns false.
  */
 export async function withResumeClaim(
     prId: UltrafixPrId,
     redisClient: Redis,
     correlatedLogger: Logger,
-    operation: () => Promise<ContinuationResult>,
+    operation: (claim: ResumeClaim) => Promise<ContinuationResult>,
 ): Promise<ContinuationResult> {
     const { owner, repo, pr } = prId;
     // Cheap Redis gate first: most check_run events are for PRs without a loop.
@@ -161,9 +196,28 @@ export async function withResumeClaim(
     if (!await acquireResumeClaim(redisClient, prId, token, RESUME_CLAIM_TTL_MS)) {
         return { continued: false, reason: 'resume_in_progress' };
     }
+    let lost = false;
+    const claim: ResumeClaim = {
+        async confirm() {
+            if (lost) return false;
+            try {
+                if (!await renewResumeClaim(redisClient, prId, token, RESUME_CLAIM_TTL_MS)) lost = true;
+            } catch (err) {
+                // Fail closed: without a confirmed renewal another trigger may own the loop.
+                lost = true;
+                correlatedLogger.warn({ pr: prId.pr, error: (err as Error).message }, 'Ultrafix resume: failed to renew resume claim');
+            }
+            if (lost) correlatedLogger.warn({ pr: prId.pr }, 'Ultrafix resume: resume claim lost, aborting');
+            return !lost;
+        },
+    };
+    // Keep the claim alive across slow awaits (GitHub, queue scans) between confirmations.
+    const renewal = setInterval(() => { void claim.confirm(); }, RESUME_CLAIM_RENEW_INTERVAL_MS);
+    renewal.unref?.();
     try {
-        return await operation();
+        return await operation(claim);
     } finally {
+        clearInterval(renewal);
         await releaseResumeClaim(redisClient, prId, token).catch((err: Error) => {
             correlatedLogger.warn({ pr: prId.pr, error: err.message }, 'Ultrafix resume: failed to release resume claim');
         });
@@ -174,73 +228,98 @@ export async function withResumeClaim(
 const MAX_REARM_ATTEMPTS = 3;
 
 const STATE_CHANGED = Symbol('state_changed');
+const CLAIM_LOST = Symbol('claim_lost');
+
+function claimLost(): ContinuationResult {
+    return { continued: false, reason: RESUME_CLAIM_LOST_REASON };
+}
+
+/** Dependencies of one re-arm attempt, run under a held resume claim. */
+export interface StrandedLoopRearmContext {
+    redisClient: Redis;
+    correlatedLogger: Logger;
+    checkRunDeps: CheckRunDeps;
+    claim: ResumeClaim;
+}
 
 /**
  * Re-arm an active loop whose deferred continuation was cleared or superseded.
  * The caller must hold the resume claim (see `withResumeClaim`).
  *
- * Every circuit breaker still applies: the loop must be active and labelled,
- * within its cycle budget, and short of its goal. A review is only scheduled
- * when the PR is idle (no Ultrafix job in flight, no pending batched comments)
- * and its head checks are green. If the loop state changes while this is being
- * decided, the decision is discarded and recomputed from the new state.
+ * Nothing is decided while Ultrafix work is still queued, running, or batched:
+ * that work's own continuation owns the loop, including its terminal
+ * bookkeeping. Every circuit breaker still applies: the loop must be active
+ * and labelled, within its cycle budget, and short of its goal. A review is
+ * only scheduled when the PR is idle (no Ultrafix job in flight, no pending
+ * batched comments) and its head checks are green. If the loop state changes
+ * while this is being decided, the decision is discarded and recomputed from
+ * the new state.
  */
 export async function rearmStrandedUltrafixLoop(
     prId: UltrafixPrId,
-    redisClient: Redis,
-    correlatedLogger: Logger,
-    checkRunDeps: CheckRunDeps,
+    ctx: StrandedLoopRearmContext,
 ): Promise<ContinuationResult> {
     for (let attempt = 1; attempt <= MAX_REARM_ATTEMPTS; attempt++) {
-        const result = await rearmFromSnapshot(prId, redisClient, correlatedLogger, checkRunDeps);
+        const result = await rearmFromSnapshot(prId, ctx);
         if (result !== STATE_CHANGED) return result;
-        correlatedLogger.info({ pr: prId.pr, attempt }, 'Ultrafix re-arm: loop state changed, re-evaluating');
+        ctx.correlatedLogger.info({ pr: prId.pr, attempt }, 'Ultrafix re-arm: loop state changed, re-evaluating');
     }
     return { continued: false, reason: 'ultrafix_superseded' };
 }
 
-async function rearmFromSnapshot(
-    prId: UltrafixPrId,
-    redisClient: Redis,
-    correlatedLogger: Logger,
-    checkRunDeps: CheckRunDeps,
-): Promise<ContinuationResult | typeof STATE_CHANGED> {
+type RearmAttemptResult = ContinuationResult | typeof STATE_CHANGED;
+
+/** One snapshot-bound attempt: every write it makes is conditional on `snapshot`. */
+interface RearmAttempt {
+    prId: UltrafixPrId;
+    ctx: StrandedLoopRearmContext;
+    snapshot: UltrafixStateSnapshot;
+    currentEpoch: number;
+}
+
+async function rearmFromSnapshot(prId: UltrafixPrId, ctx: StrandedLoopRearmContext): Promise<RearmAttemptResult> {
     const { owner, repo, pr } = prId;
-    // Every write below is conditional on this exact snapshot.
+    const { redisClient, correlatedLogger } = ctx;
     const snapshot = await loadStateSnapshot(redisClient, owner, repo, pr);
     const decision = evaluateStrandedLoopRearm(snapshot?.state ?? null);
     if (!snapshot || decision.action === 'skip') return { continued: false, reason: 'no_active_loop' };
-    const { state } = snapshot;
 
-    const currentEpoch = await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr);
-    const identity = { owner, repo, pr };
-    // Startup reserves its epoch and commits its state under the label
-    // transition lease, so taking ownership under it never lands in between.
-    const takeOwnership = () => withUltrafixLabelTransition(
-        redisClient,
-        identity,
-        () => syncStateWorkEpoch(redisClient, snapshot, currentEpoch),
-    );
-
-    if (!await hasUltrafixLabel(owner, repo, pr, correlatedLogger)) {
-        correlatedLogger.info({ pr }, 'Ultrafix re-arm: label removed, clearing stranded loop');
-        const cleared = await withUltrafixLabelTransition(
-            redisClient,
-            identity,
-            () => clearUltrafixStateIfUnchanged(redisClient, identity, { workEpoch: currentEpoch, rawState: snapshot.raw }),
-        );
-        if (!cleared) return STATE_CHANGED;
-        await clearDeferredContinuationIfCurrent(redisClient, identity, currentEpoch);
-        return {
-            continued: false, reason: 'label_removed', outcome: 'stopped',
-            cycleCount: state.cycleCount, goal: state.goal, maxCycles: state.maxCycles,
-        };
+    // A queued or running step (e.g. a permitted final fix) is not stranded:
+    // finishing or clearing the loop here would cut that continuation off.
+    const outstanding = await findOutstandingUltrafixWork(owner, repo, pr, redisClient);
+    if (outstanding.length > 0) {
+        correlatedLogger.info({ pr, outstanding }, 'Ultrafix re-arm: Ultrafix work outstanding, leaving loop to it');
+        return { continued: false, reason: `rearm_not_ready: ${outstanding.join(', ')}` };
     }
 
-    const params: UltrafixContinuationParams = {
-        owner,
-        repo,
-        pullRequestNumber: pr,
+    const attempt: RearmAttempt = {
+        prId, ctx, snapshot,
+        currentEpoch: await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr),
+    };
+    if (!await hasUltrafixLabel(owner, repo, pr, correlatedLogger)) return clearUnlabelledLoop(attempt);
+    if (decision.action === 'complete') return completeStrandedLoop(attempt, decision);
+    return enqueueRearmReview(attempt);
+}
+
+/**
+ * Hand the snapshot's loop to the current epoch. Startup reserves its epoch and
+ * commits its state under the label transition lease, so taking ownership
+ * under it never lands in between.
+ */
+function takeOwnership({ prId, ctx, snapshot, currentEpoch }: RearmAttempt) {
+    return withUltrafixLabelTransition(
+        ctx.redisClient,
+        prId,
+        async () => (await ctx.claim.confirm() ? syncStateWorkEpoch(ctx.redisClient, snapshot, currentEpoch) : CLAIM_LOST),
+    );
+}
+
+function buildRearmParams({ prId, ctx, snapshot, currentEpoch }: RearmAttempt): UltrafixContinuationParams {
+    const { state } = snapshot;
+    return {
+        owner: prId.owner,
+        repo: prId.repo,
+        pullRequestNumber: prId.pr,
         completedAction: state.lastAction ?? 'review',
         ultrafixMeta: {
             mode: 'ultrafix',
@@ -251,32 +330,62 @@ async function rearmFromSnapshot(
             instructions: '',
             workEpoch: currentEpoch,
         },
-        redisClient,
-        correlatedLogger,
+        redisClient: ctx.redisClient,
+        correlatedLogger: ctx.correlatedLogger,
         correlationId: generateCorrelationId(),
     };
+}
 
-    if (decision.action === 'complete') {
-        // Take ownership first so terminal bookkeeping passes the epoch fence.
-        const owned = await takeOwnership();
-        if (!owned) return STATE_CHANGED;
-        correlatedLogger.info(
-            { pr, completionStatus: decision.completionStatus, reason: decision.reason },
-            'Ultrafix re-arm: circuit breaker tripped, finishing loop',
-        );
-        const succeeded = decision.completionStatus === 'succeeded';
-        return finishUltrafixLoop({
-            params: { ...params, completedAction: succeeded ? 'review' : params.completedAction },
-            state: owned,
-            latestScore: owned.finalScore,
-            reviewStatus: succeeded ? 'valid_clean' : 'invalid',
-            isPartial: false,
-            decisionReason: decision.reason,
-        });
-    }
+async function clearUnlabelledLoop({ prId, ctx, snapshot, currentEpoch }: RearmAttempt): Promise<RearmAttemptResult> {
+    const { redisClient } = ctx;
+    const { state } = snapshot;
+    ctx.correlatedLogger.info({ pr: prId.pr }, 'Ultrafix re-arm: label removed, clearing stranded loop');
+    const cleared = await withUltrafixLabelTransition(
+        redisClient,
+        prId,
+        async () => (await ctx.claim.confirm()
+            ? clearUltrafixStateIfUnchanged(redisClient, prId, { workEpoch: currentEpoch, rawState: snapshot.raw })
+            : CLAIM_LOST),
+    );
+    if (cleared === CLAIM_LOST) return claimLost();
+    if (!cleared) return STATE_CHANGED;
+    await clearDeferredContinuationIfCurrent(redisClient, prId, currentEpoch);
+    return {
+        continued: false, reason: 'label_removed', outcome: 'stopped',
+        cycleCount: state.cycleCount, goal: state.goal, maxCycles: state.maxCycles,
+    };
+}
 
-    const readiness = await evaluateReadiness(params, 'review', checkRunDeps);
-    correlatedLogger.info(
+async function completeStrandedLoop(
+    attempt: RearmAttempt,
+    decision: Extract<StrandedLoopRearmDecision, { action: 'complete' }>,
+): Promise<RearmAttemptResult> {
+    // Take ownership first so terminal bookkeeping passes the epoch fence.
+    const owned = await takeOwnership(attempt);
+    if (owned === CLAIM_LOST) return claimLost();
+    if (!owned) return STATE_CHANGED;
+    if (!await attempt.ctx.claim.confirm()) return claimLost();
+    attempt.ctx.correlatedLogger.info(
+        { pr: attempt.prId.pr, completionStatus: decision.completionStatus, reason: decision.reason },
+        'Ultrafix re-arm: circuit breaker tripped, finishing loop',
+    );
+    const params = buildRearmParams(attempt);
+    const succeeded = decision.completionStatus === 'succeeded';
+    return finishUltrafixLoop({
+        params: { ...params, completedAction: succeeded ? 'review' : params.completedAction },
+        state: owned,
+        latestScore: owned.finalScore,
+        reviewStatus: succeeded ? 'valid_clean' : 'invalid',
+        isPartial: false,
+        decisionReason: decision.reason,
+    });
+}
+
+async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptResult> {
+    const { prId: { pr }, ctx, snapshot, currentEpoch } = attempt;
+    const params = buildRearmParams(attempt);
+    const readiness = await evaluateReadiness(params, 'review', ctx.checkRunDeps);
+    ctx.correlatedLogger.info(
         { pr, ready: readiness.ready, reasons: readiness.reasons },
         'Ultrafix re-arm: readiness check for stranded loop',
     );
@@ -284,8 +393,10 @@ async function rearmFromSnapshot(
         return { continued: false, reason: `rearm_not_ready: ${readiness.reasons.join(', ')}` };
     }
 
-    const owned = await takeOwnership();
+    const owned = await takeOwnership(attempt);
+    if (owned === CLAIM_LOST) return claimLost();
     if (!owned) return STATE_CHANGED;
+    if (!await ctx.claim.confirm()) return claimLost();
 
     const enqueued = await enqueueNextStep(
         params,
@@ -295,8 +406,8 @@ async function rearmFromSnapshot(
     );
     if (!enqueued) return { continued: false, reason: 'rearm_duplicate' };
 
-    correlatedLogger.info(
-        { pr, workEpoch: currentEpoch, previousWorkEpoch: state.workEpoch },
+    ctx.correlatedLogger.info(
+        { pr, workEpoch: currentEpoch, previousWorkEpoch: snapshot.state.workEpoch },
         'Ultrafix re-arm: enqueued review for stranded loop',
     );
     return {

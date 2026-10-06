@@ -388,6 +388,10 @@ function createRearmRedis() {
             return value;
         },
         async eval(script: string, _keyCount: number, ...args: string[]) {
+            if (script.includes("redis.call('PEXPIRE'")) {
+                const [claimKey, token] = args;
+                return store.get(claimKey) === token ? 1 : 0;
+            }
             if (script.includes("redis.call('DEL', KEYS[1])")) {
                 const [claimKey, token] = args;
                 return store.get(claimKey) === token && store.delete(claimKey) ? 1 : 0;
@@ -704,6 +708,136 @@ describe('stranded Ultrafix loop re-arming', () => {
         assert.equal(mockQueueAdd.mock.callCount(), 0);
         const state = await loadState(redis as never, 'acme', 'web', 75);
         assert.equal(state?.active, false);
+        assert.equal(state?.workEpoch, 0);
+    });
+
+    test('a permitted final fix still queued is not cut off by a cycles-exhausted recovery', async () => {
+        // Fifth review found issues; the normal continuation queued the fifth fix with a delay.
+        const redis = await strandLoop(77, { lastAction: 'review', reviewCount: 5, fixCount: 4, cycleCount: 4 });
+        mockQueueGetJobs.mock.mockImplementation(async () => [{
+            id: 'delayed-final-fix',
+            data: { repoOwner: 'acme', repoName: 'web', pullRequestNumber: 77, ultrafixMeta: { mode: 'ultrafix' } },
+        }]);
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 77 }, redis as never, logger as never);
+
+        assert.equal(result.continued, false);
+        assert.match(result.reason, /rearm_not_ready: .*follow_up_jobs_active/);
+        assert.equal(result.outcome, undefined);
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+        const state = await loadState(redis as never, 'acme', 'web', 77);
+        assert.equal(state?.active, true);
+        assert.equal(state?.completionStatus, null);
+        assert.equal(state?.workEpoch, 0, 'ownership is left with the queued fix');
+        const posts = mockOctokitRequest.mock.calls.filter(call => String(call.arguments[0]).startsWith('POST'));
+        assert.equal(posts.length, 0, 'no cycles-exhausted comment');
+    });
+
+    test('pending batched comments also hold back a terminal recovery', async () => {
+        const redis = await strandLoop(78, { finalScore: 9 });
+        redis.llen = async (_key: string) => 1;
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 78 }, redis as never, logger as never);
+
+        assert.match(result.reason, /rearm_not_ready: .*pending_comments_exist/);
+        assert.equal((await loadState(redis as never, 'acme', 'web', 78))?.active, true);
+    });
+
+    test('an unreadable queue fails closed instead of finishing the loop', async () => {
+        const redis = await strandLoop(79, { reviewCount: 5, fixCount: 5, cycleCount: 5 });
+        mockQueueGetJobs.mock.mockImplementation(async () => { throw new Error('queue unavailable'); });
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 79 }, redis as never, logger as never);
+
+        assert.match(result.reason, /rearm_not_ready: .*follow_up_jobs_unknown/);
+        assert.equal((await loadState(redis as never, 'acme', 'web', 79))?.active, true);
+    });
+
+    test('a removed label does not clear a loop whose step is still queued', async () => {
+        const redis = await strandLoop(80);
+        mockOctokitRequest.mock.mockImplementation(async () => ({ data: { labels: [] } }));
+        mockQueueGetJobs.mock.mockImplementation(async () => [{
+            id: 'running-fix',
+            data: { repoOwner: 'acme', repoName: 'web', pullRequestNumber: 80, ultrafixMeta: { mode: 'ultrafix' } },
+        }]);
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 80 }, redis as never, logger as never);
+
+        assert.match(result.reason, /follow_up_jobs_active/);
+        assert.notEqual(await loadState(redis as never, 'acme', 'web', 80), null);
+    });
+
+    test('a deferred resume whose claim expired mid-readiness does not enqueue', async () => {
+        const redis = createRearmRedis();
+        await saveState(redis as never, {
+            ...createDefaultState({ owner: 'acme', repo: 'web', pr: 81, goal: 8, maxCycles: 5, pauseSeconds: 30 }),
+            lastAction: 'review', reviewCount: 1, fixCount: 0, cycleCount: 0,
+        });
+        await saveDeferredContinuation(redis as never, {
+            owner: 'acme', repo: 'web', pr: 81, nextAction: 'fix',
+            savedAt: new Date().toISOString(), reason: 'pending_comments', workEpoch: 0,
+        });
+        // A stalls in its pending-comments read; its claim expires and trigger B takes it.
+        redis.llen = async (_key: string) => {
+            redis.store.set('ultrafix:resume-claim:acme:web:81', 'trigger-b');
+            return 0;
+        };
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 81 }, redis as never, logger as never);
+
+        assert.equal(result.continued, false);
+        assert.equal(result.reason, 'resume_claim_lost');
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+        assert.equal(redis.store.get('ultrafix:resume-claim:acme:web:81'), 'trigger-b', "B's claim is left intact");
+    });
+
+    test('a deferred resume that lost its claim does not re-save the deferred record', async () => {
+        const redis = createRearmRedis();
+        await saveState(redis as never, {
+            ...createDefaultState({ owner: 'acme', repo: 'web', pr: 82, goal: 8, maxCycles: 5, pauseSeconds: 30 }),
+            lastAction: 'fix', reviewCount: 1, fixCount: 1, cycleCount: 1,
+        });
+        await saveDeferredContinuation(redis as never, {
+            owner: 'acme', repo: 'web', pr: 82, nextAction: 'review',
+            savedAt: new Date().toISOString(), reason: 'checks_not_passing', workEpoch: 0,
+        });
+        mockGetCheckRunsStatus.mock.mockImplementation(async () => {
+            redis.store.set('ultrafix:resume-claim:acme:web:82', 'trigger-b');
+            return { count: 1, allPassing: false, anyPending: true, anyFailed: false };
+        });
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 82 }, redis as never, logger as never);
+
+        assert.equal(result.reason, 'resume_claim_lost');
+        assert.equal(await loadDeferredContinuation(redis as never, 'acme', 'web', 82), null);
+    });
+
+    test('a re-arm whose claim expired mid-readiness neither takes ownership nor enqueues', async () => {
+        const redis = await strandLoop(83);
+        mockGetCheckRunsStatus.mock.mockImplementation(async () => {
+            redis.store.set('ultrafix:resume-claim:acme:web:83', 'trigger-b');
+            return greenChecks();
+        });
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 83 }, redis as never, logger as never);
+
+        assert.equal(result.reason, 'resume_claim_lost');
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+        assert.equal((await loadState(redis as never, 'acme', 'web', 83))?.workEpoch, 0);
+    });
+
+    test('a terminal recovery whose claim expired does not finish the loop', async () => {
+        const redis = await strandLoop(84, { reviewCount: 5, fixCount: 5, cycleCount: 5 });
+        mockOctokitRequest.mock.mockImplementation(async () => {
+            redis.store.set('ultrafix:resume-claim:acme:web:84', 'trigger-b');
+            return { data: { labels: [{ name: 'ultrafix' }] } };
+        });
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 84 }, redis as never, logger as never);
+
+        assert.equal(result.reason, 'resume_claim_lost');
+        const state = await loadState(redis as never, 'acme', 'web', 84);
+        assert.equal(state?.active, true);
         assert.equal(state?.workEpoch, 0);
     });
 
