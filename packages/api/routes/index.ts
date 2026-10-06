@@ -36,3 +36,4 @@ export { createActiveWorkRoutes } from './activeWorkRoutes.js';
 export { createGoalRoutes } from './goalRoutes.js';
 export { createVisualPreviewAuthRoutes } from './visualPreviewAuthRoutes.js';
 export { createVoiceRoutes } from './voiceRoutes.js';
+export { createAgentDefinitionRoutes, agentDefinitionAttachmentUpload } from './agentDefinitionRoutes.js';
