@@ -102,6 +102,27 @@ test('a malformed instance default leaves runs uncapped instead of stopping them
     assert.equal(timeline.length, 0);
 });
 
+test('an uncapped retry clears the cap its earlier attempt stored under the same task ID', async () => {
+    // Stands in for the Redis record task details read the cap from.
+    const records = new Map<string, unknown>();
+    const store = (deps: RunCostCapDeps): RunCostCapDeps => ({
+        ...deps,
+        storeCap: async (taskId, cap) => { if (cap) records.set(taskId, cap); else records.delete(taskId); },
+    });
+    await withRunCostCap({ ...target, workflowCap: 4 }, async guard => {
+        assert.deepEqual(guard.cap, { capUsd: 4, source: 'workflow' });
+    }, store(harness({ instanceDefault: 'none' }).deps));
+    assert.deepEqual(records.get(target.taskId), { capUsd: 4, source: 'workflow' });
+
+    // The retry runs after the configured cap was removed.
+    await withRunCostCap(target, async guard => {
+        assert.equal(guard.cap, null);
+        assert.equal(records.has(target.taskId), false, 'the stale cap is cleared before the retry runs');
+        await guard.setWorkflowCap(undefined);
+    }, store(harness({ instanceDefault: 'none' }).deps));
+    assert.equal(records.has(target.taskId), false);
+});
+
 test('the GitHub notice names the cap, the spend and where the cap came from', async () => {
     const requests: Array<{ endpoint: string; options: Record<string, unknown> }> = [];
     const octokit = { request: async <T>(endpoint: string, options: Record<string, unknown>) => { requests.push({ endpoint, options }); return {} as T; } };

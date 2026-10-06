@@ -118,7 +118,8 @@ export class RunCostGuard implements ActiveRunCostCap {
     /** Reads what earlier attempts spent; the cap for this attempt is what remains. */
     async start(): Promise<{ cap: RunCostCap | null; priorSpentUsd: number; remainingUsd: number | null }> {
         this.priorSpentUsd = (await this.readRecorded(NO_RECORDED_SPEND)).totalUsd;
-        await this.publishCap();
+        // Always reconciled: an earlier attempt of this task may have stored a cap this attempt no longer has.
+        await this.publishCap(true);
         const remainingUsd = this.resolvedCap ? remainingRunBudget(this.resolvedCap.capUsd, this.priorSpentUsd) : null;
         if (this.resolvedCap) {
             logger.info({ taskId: this.taskId, capUsd: this.resolvedCap.capUsd, source: this.resolvedCap.source, priorSpentUsd: this.priorSpentUsd, remainingUsd },
@@ -270,9 +271,9 @@ export class RunCostGuard implements ActiveRunCostCap {
         }
     }
 
-    private async publishCap(): Promise<void> {
-        // An uncapped run that never had a cap has nothing to record or clear.
-        if (!this.resolvedCap && !this.publishedCap) return;
+    private async publishCap(reconcile = false): Promise<void> {
+        // Once reconciled at start, an uncapped run that never had a cap has nothing to record or clear.
+        if (!reconcile && !this.resolvedCap && !this.publishedCap) return;
         this.publishedCap = this.resolvedCap !== null;
         try { await this.options.onCapResolved?.(this.resolvedCap); } catch (error) {
             logger.warn({ taskId: this.taskId, error: (error as Error).message }, 'Could not store the resolved spend cap');
