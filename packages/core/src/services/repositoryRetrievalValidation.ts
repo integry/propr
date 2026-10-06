@@ -29,8 +29,9 @@ export function assertSafeRepositoryPath(value: string, label = 'path'): string 
   if (value.startsWith('/')) {
     throw new RepositoryRetrievalError(`${label} must be relative to the repository root`, 400);
   }
-  if (value.includes('..')) {
-    throw new RepositoryRetrievalError(`${label} must not contain ".."`, 400);
+  // Only a ".." segment can escape the tree; names such as "CHANGELOG..md" are ordinary paths.
+  if (value.split('/').includes('..')) {
+    throw new RepositoryRetrievalError(`${label} must not contain ".." segments`, 400);
   }
   return value;
 }
@@ -44,8 +45,16 @@ export function normalizePathPrefix(prefix: string | undefined): string | null {
   return trimmed;
 }
 
+/**
+ * Rejects option injection, revision syntax and names git itself refuses as
+ * ref names (mirroring `git check-ref-format --allow-onelevel`), so a malformed
+ * name is reported as invalid instead of failing inside `git fetch`.
+ */
+const hasControlCharacter = (value: string) => Array.from(value).some(char => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f);
+
 export function assertSafeRef(ref: string): string {
-  if (!ref || ref.startsWith('-') || /[\s\0\\]|\.\.|[~^:?*[]|@\{/.test(ref)) {
+  if (!ref || ref.startsWith('-') || ref === '@' || hasControlCharacter(ref) || /[\s\\]|\.\.|[~^:?*[]|@\{|\/\/|^\/|\/$|\.$/.test(ref)
+    || ref.split('/').some(component => component.startsWith('.') || component.endsWith('.lock'))) {
     throw new RepositoryRetrievalError(`Invalid ref "${ref}"`, 400);
   }
   return ref;

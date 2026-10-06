@@ -49,6 +49,8 @@ write('notes/long.txt', Array.from({ length: 40 }, (_, index) => `line ${index +
 const configJson = `${JSON.stringify({ name: 'x', password: 'not-a-secret', credentials: { user: 'u' }, list: Array.from({ length: 201 }, (_, index) => index), ci: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' }, null, 2)}\n`;
 write('data/config.json', configJson);
 write('data/matrix.ts', 'export const matrix =\n  [1, 2, 3]\n;\n');
+// A credential-looking word at a line end must not pull the next line into its mask.
+write('data/bearer.txt', 'Bearer\nexample\ntail\nAuthorization: Bearer abc.def-123\n');
 // 3000 lines of 100 bytes: larger than any single page.
 write('data/large.txt', Array.from({ length: 3000 }, (_, index) => `${String(index + 1).padStart(6, '0')} ${'x'.repeat(92)}`).join('\n') + '\n');
 // One line within maxBytes whose JSON encoding (every quote escaped) is larger than a response.
@@ -328,6 +330,24 @@ describe('result fidelity and response bounds', () => {
     assert.equal(result.endLine, result.totalLines);
     assert.equal(result.truncated, false);
     assert.equal(result.returnedBytes, Buffer.byteLength(result.content), 'returnedBytes describes the delivered content');
+  });
+
+  test('credential masking keeps line boundaries, so whole and chunked reads agree', async () => {
+    const whole = await call('read_repository_file', { repository, path: 'data/bearer.txt' });
+    assert.equal(whole.content, 'Bearer\nexample\ntail\nAuthorization: Bearer [redacted]');
+    assert.deepEqual({ endLine: whole.endLine, totalLines: whole.totalLines, truncated: whole.truncated }, { endLine: 4, totalLines: 4, truncated: false });
+    assert.equal(whole.returnedBytes, Buffer.byteLength(whole.content));
+
+    const chunks = [];
+    for (let line = 1; line <= 4; line++) {
+      const chunk = await call('read_repository_file', { repository, path: 'data/bearer.txt', startLine: line, endLine: line });
+      assert.equal(chunk.endLine, line);
+      chunks.push(chunk.content);
+    }
+    assert.equal(chunks.join('\n'), whole.content);
+
+    const search = await call('search_repository_files', { repository, query: 'example', mode: 'literal', path: 'data/' });
+    assert.deepEqual(search.matches.map((match: Data) => [match.path, match.lineMatches]), [['data/bearer.txt', [{ lineNumber: 2, text: 'example' }]]]);
   });
 
   test('literal line previews and reads of JSON-looking lines agree with the repository', async () => {

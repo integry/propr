@@ -265,10 +265,12 @@ interface KeywordScoringParams {
   correlationId?: string;
   timeoutMs?: number;
   commit?: string;
+  /** Listing of `commit`'s tree shared with the commit-tree restriction. */
+  trackedFiles?: Promise<string[]>;
 }
 
 async function performKeywordScoring(params: KeywordScoringParams): Promise<void> {
-  const { repoPath, keywords, finalScores, correlationId, timeoutMs = TIMEOUT_MS, commit } = params;
+  const { repoPath, keywords, finalScores, correlationId, timeoutMs = TIMEOUT_MS, commit, trackedFiles } = params;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   async function withTimeout<T>(name: string, promise: Promise<T>, fallback: T): Promise<T> {
@@ -292,7 +294,7 @@ async function performKeywordScoring(params: KeywordScoringParams): Promise<void
 
   const [gitScores, pathScores] = await Promise.all([
     withTimeout('git-history', mineGitHistory(repoPath, keywords, commit), [] as GitFileScore[]),
-    withTimeout('path-match', scorePaths(repoPath, keywords, commit), [] as PathFileScore[])
+    withTimeout('path-match', scorePaths(repoPath, keywords, commit, trackedFiles), [] as PathFileScore[])
   ]);
 
   addRawScoresToMap(gitScores, finalScores, 'git', 'git-history');
@@ -355,13 +357,12 @@ interface SemanticParticipation {
  * without a commit). Returns which semantic sources still contribute.
  */
 async function restrictToCommitTree(
-  repoPath: string,
-  commit: string | undefined,
+  trackedFiles: Promise<string[]> | undefined,
   finalScores: Record<string, AggregatedFileScore>,
   participation: SemanticParticipation
 ): Promise<SemanticParticipation> {
-  if (!commit) return participation;
-  const treeFiles = new Set(await listTrackedFiles(repoPath, commit));
+  if (!trackedFiles) return participation;
+  const treeFiles = new Set(await trackedFiles);
   for (const filePath of Object.keys(finalScores)) {
     if (!treeFiles.has(filePath)) delete finalScores[filePath];
   }
@@ -370,6 +371,16 @@ async function restrictToCommitTree(
     usedSemanticMining: participation.usedSemanticMining && retained.some(data => data.reasons.has('llm-semantic')),
     usedSummaryScoring: participation.usedSummaryScoring && retained.some(data => data.reasons.has('semantic')),
   };
+}
+
+/** Starts listing `commit`'s tree once for every phase that needs it (none without a commit). */
+function startTreeListing(repoPath: string, commit: string | undefined): Promise<string[]> | undefined {
+  if (!commit) return undefined;
+  const listing = listTrackedFiles(repoPath, commit);
+  // Observed here so a failed listing is not unhandled while other phases run;
+  // restrictToCommitTree still awaits and reports it.
+  listing.catch(() => {});
+  return listing;
 }
 
 export async function findRelevantFiles(
@@ -431,8 +442,11 @@ export async function findRelevantFiles(
     return { files: [], keywordsDetected: [], usedSummaryScoring: false };
   }
 
+  // Path scoring and the commit-tree restriction share one listing of the tree.
+  const trackedFiles = startTreeListing(repoPath, commit);
+
   if (keywords.length > 0) {
-    await performKeywordScoring({ repoPath, keywords, finalScores, correlationId, timeoutMs: keywordTimeoutMs, commit });
+    await performKeywordScoring({ repoPath, keywords, finalScores, correlationId, timeoutMs: keywordTimeoutMs, commit, trackedFiles });
   }
 
   // --- Phase 3: Summary-based Semantic Scoring ---
@@ -444,7 +458,7 @@ export async function findRelevantFiles(
 
   // Summaries and history can name files absent from the requested commit.
   ({ usedSemanticMining, usedSummaryScoring } = await restrictToCommitTree(
-    repoPath, commit, finalScores, { usedSemanticMining, usedSummaryScoring }
+    trackedFiles, finalScores, { usedSemanticMining, usedSummaryScoring }
   ));
 
   // --- Phase 4: Weighted Score Aggregation ---

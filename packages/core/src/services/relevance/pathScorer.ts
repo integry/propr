@@ -45,7 +45,12 @@ export async function listTrackedFiles(repoPath: string, revision?: string): Pro
   return result.split('\0').filter(f => f.length > 0);
 }
 
-export async function scorePaths(repoPath: string, keywords: string[], revision?: string): Promise<FileScore[]> {
+/**
+ * Scores tracked paths against `keywords`. `trackedFiles` may supply an
+ * already started listing of the same revision so callers that also need the
+ * tree list it only once.
+ */
+export async function scorePaths(repoPath: string, keywords: string[], revision?: string, trackedFiles?: Promise<string[]>): Promise<FileScore[]> {
   if (keywords.length === 0) {
     return [];
   }
@@ -53,7 +58,7 @@ export async function scorePaths(repoPath: string, keywords: string[], revision?
   let allFiles: string[];
 
   try {
-    allFiles = await listTrackedFiles(repoPath, revision);
+    allFiles = await (trackedFiles ?? listTrackedFiles(repoPath, revision));
   } catch (error) {
     logger.warn({ repoPath, error: (error as Error).message }, 'Failed to list files from git');
     return [];

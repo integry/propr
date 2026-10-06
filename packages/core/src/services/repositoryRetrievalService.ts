@@ -18,7 +18,9 @@ import { findRelevantFiles, type RelevantFile } from './relevanceService.js';
 import logger from '../utils/logger.js';
 import { selectLines, splitLines } from './repositoryFileLines.js';
 import { GrepAggregator, MAX_GREP_MATCHED_FILES, streamGitGrep } from './repositoryLiteralGrep.js';
-import { cloneManagedRepository, fetchRequestedRef, managedRefMappings, resolveCloneToken } from './repositoryManagedClone.js';
+import { readBlob } from './repositoryBlobReader.js';
+import { cachedRelevance, relevanceCacheKey } from './repositoryRelevanceCache.js';
+import { cloneManagedRepository, fetchRequestedRef, isKnownMissingTag, managedRefMappings, resolveCloneToken } from './repositoryManagedClone.js';
 import {
   RepositoryRetrievalError,
   type ReadRepositoryFileOptions,
@@ -53,12 +55,11 @@ const DEFAULT_MAX_LINES = 800;
 const HARD_MAX_LINES = 5000;
 const DEFAULT_MAX_BYTES = 120_000;
 const HARD_MAX_BYTES = 1_000_000;
-/** Blobs above this size are refused before being loaded into memory. */
-const MAX_BLOB_BYTES = 20 * 1024 * 1024;
 
 export * from './repositoryRetrievalTypes.js';
 export { parseGitGrepOutput } from './repositoryLiteralGrep.js';
 export { assertSafeRepositoryPath } from './repositoryRetrievalValidation.js';
+export { clearRelevanceCache } from './repositoryRelevanceCache.js';
 
 // --- Repository and ref resolution ---
 
@@ -93,13 +94,16 @@ async function resolveCommit(repoPath: string, ref: string): Promise<string | nu
 }
 
 /**
- * Resolves `ref` through the local refs origin's copy is fetched into, most
- * specific first (a tag before a branch, as git resolves a short name), so a
- * stale local branch or the worker's checked-out HEAD never shadows the
- * freshly fetched remote-tracking ref.
+ * Resolves `ref` from the managed clone's cache when origin cannot be reached,
+ * through the local refs origin's copy is fetched into, most specific first
+ * (a tag before a branch, as git resolves a short name), so a stale local
+ * branch or the worker's checked-out HEAD never shadows the remote-tracking
+ * ref. A tag origin recently reported missing is skipped so it cannot shadow
+ * the same-named branch.
  */
-async function resolveFetchedCommit(repoPath: string, ref: string): Promise<string | null> {
-  for (const { local } of managedRefMappings(ref)) {
+async function resolveCachedCommit(repoPath: string, ref: string): Promise<string | null> {
+  for (const { remote, local } of managedRefMappings(ref)) {
+    if (remote.startsWith('refs/tags/') && isKnownMissingTag(repoPath, remote)) continue;
     const commit = await revParseCommit(repoPath, local);
     if (commit) return commit;
   }
@@ -108,6 +112,26 @@ async function resolveFetchedCommit(repoPath: string, ref: string): Promise<stri
 
 /** An abbreviated commit SHA, the one short name origin cannot have as a tag or branch yet git can resolve. */
 const ABBREVIATED_SHA = /^[0-9a-f]{4,39}$/;
+
+/**
+ * Resolves `ref` as an abbreviated object id only. Plain `rev-parse` would
+ * prefer a same-named local ref (a worker branch called `deadbeef`), which
+ * origin does not have and must not answer for.
+ */
+async function resolveAbbreviatedSha(repoPath: string, ref: string): Promise<string | null> {
+  try {
+    const output = await createHooklessGit(repoPath).raw(['rev-parse', `--disambiguate=${ref}`]);
+    const candidates = output.split('\n').map(line => line.trim()).filter(Boolean);
+    const commits: string[] = [];
+    for (const candidate of candidates) {
+      const commit = await revParseCommit(repoPath, candidate);
+      if (commit && !commits.includes(commit)) commits.push(commit);
+    }
+    return commits.length === 1 ? commits[0] : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Resolves `ref` in a managed clone. The clone's local refs are a cache of
@@ -131,13 +155,13 @@ async function resolveManagedCommit(
     return fetched ? { commit: fetched } : null;
   }
 
-  let found: boolean;
+  let fetched: string | null;
   try {
-    found = await fetchRequestedRef(repoPath, ref, await getAuthToken());
+    fetched = await fetchRequestedRef(repoPath, ref, await getAuthToken());
   } catch (error) {
     if (!(error instanceof RepositoryRetrievalError) || (error.status !== 502 && error.status !== 503)) throw error;
-    const cached = await resolveFetchedCommit(repoPath, ref)
-      ?? (ABBREVIATED_SHA.test(ref) ? await revParseCommit(repoPath, ref) : null);
+    const cached = await resolveCachedCommit(repoPath, ref)
+      ?? (ABBREVIATED_SHA.test(ref) ? await resolveAbbreviatedSha(repoPath, ref) : null);
     if (!cached) throw error;
     return {
       commit: cached,
@@ -145,15 +169,18 @@ async function resolveManagedCommit(
     };
   }
 
-  if (found) {
-    const commit = await resolveFetchedCommit(repoPath, ref);
+  // Resolve exactly what was fetched: a cached ref that origin just reported
+  // missing (such as a deleted tag named like a surviving branch) must not
+  // shadow it.
+  if (fetched) {
+    const commit = await revParseCommit(repoPath, fetched);
     if (commit) return { commit };
   }
   // Origin has no tag or branch of this name. A stale remote-tracking or
   // local branch left behind must not answer for it; only an abbreviated
   // commit SHA can still resolve.
   if (!ABBREVIATED_SHA.test(ref)) return null;
-  const commit = await revParseCommit(repoPath, ref);
+  const commit = await resolveAbbreviatedSha(repoPath, ref);
   return commit ? { commit } : null;
 }
 
@@ -277,7 +304,8 @@ async function searchSemantic({ options, query, pathPrefix, offset, limit }: Sea
 
   // Score against the resolved commit (not the checkout) and keep every
   // eligible file so path filtering and pagination see the full result set.
-  const relevance = await scoreRelevance(target.repoPath, query, {
+  const cacheKey = relevanceCacheKey({ repoPath: target.repoPath, repository, commit: target.commit, query, indexBranch, usedIndex, agent, indexRow: row });
+  const relevance = await cachedRelevance(cacheKey, usedIndex, () => scoreRelevance(target.repoPath, query, {
     correlationId: options.correlationId,
     useSummaryScoring: usedIndex,
     agent,
@@ -286,7 +314,7 @@ async function searchSemantic({ options, query, pathPrefix, offset, limit }: Sea
     branch: indexBranch,
     commit: target.commit,
     maxResults: Number.POSITIVE_INFINITY,
-  });
+  }));
 
   if (usedIndex && !relevance.usedSummaryScoring) {
     usedIndex = false;
@@ -409,28 +437,6 @@ export async function searchRepositoryFiles(options: SearchRepositoryFilesOption
 }
 
 // --- File reading ---
-
-async function readBlob(repoPath: string, commit: string, filePath: string, repository: string): Promise<string> {
-  const git = createHooklessGit(repoPath);
-  const object = `${commit}:${filePath}`;
-
-  let type: string;
-  try {
-    type = (await git.raw(['cat-file', '-t', object])).trim();
-  } catch {
-    throw new RepositoryRetrievalError(`File "${filePath}" not found in ${repository} at ${commit.slice(0, 12)}`, 404);
-  }
-  if (type !== 'blob') {
-    throw new RepositoryRetrievalError(`"${filePath}" is a ${type === 'tree' ? 'directory' : type}, not a file`, 400);
-  }
-
-  const size = Number.parseInt((await git.raw(['cat-file', '-s', object])).trim(), 10);
-  if (Number.isFinite(size) && size > MAX_BLOB_BYTES) {
-    throw new RepositoryRetrievalError(`File "${filePath}" is too large to read (${size} bytes)`, 413);
-  }
-
-  return git.show([object]);
-}
 
 /**
  * Reads a bounded line range of a file from the git object database at the

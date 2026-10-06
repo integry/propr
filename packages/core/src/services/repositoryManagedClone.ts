@@ -42,13 +42,21 @@ export async function resolveCloneToken(authToken?: string): Promise<string> {
  */
 export async function cloneManagedRepository(owner: string, repoName: string, options: RepositoryTargetOptions): Promise<{ repoPath: string; authToken: string }> {
   const authToken = await resolveCloneToken(options.authToken);
-  const repoPath = await ensureRepoCloned({
-    repoUrl: `https://github.com/${owner}/${repoName}.git`,
-    owner,
-    repoName,
-    authToken,
-  });
-  return { repoPath, authToken };
+  try {
+    const repoPath = await ensureRepoCloned({
+      repoUrl: `https://github.com/${owner}/${repoName}.git`,
+      owner,
+      repoName,
+      authToken,
+    });
+    return { repoPath, authToken };
+  } catch (error) {
+    // A clone failure is an unreachable or unreadable remote, as for a failed
+    // fetch: retryable, never reported as an internal error.
+    const detail = redactAuthenticatedGitUrl((error as Error)?.message ?? String(error));
+    logger.warn({ repository: `${owner}/${repoName}`, error: detail }, 'Failed to clone repository for retrieval');
+    throw new RepositoryRetrievalError(`Failed to clone repository: ${detail}`, 502);
+  }
 }
 
 /** Git errors meaning the remote simply does not have the requested ref/object. */
@@ -84,21 +92,41 @@ export function managedRefMappings(ref: string): RemoteRefMapping[] {
  * is therefore seen at most this long after it appears.
  */
 const MISSING_TAG_TTL_MS = 60_000;
+/** Most missing tags remembered; requests for many distinct names evict the oldest. */
+const MAX_MISSING_TAGS = 1000;
+/** Entries share one TTL and are re-inserted on update, so insertion order is expiry order. */
 const missingTags = new Map<string, number>();
 /** Concurrent fetches of the same ref into the same clone share one round trip. */
-const inflightFetches = new Map<string, Promise<boolean>>();
+const inflightFetches = new Map<string, Promise<string | null>>();
 
 function missingTagKey(repoPath: string, remote: string): string {
   return `${repoPath}\0${remote}`;
 }
 
-function isKnownMissingTag(repoPath: string, remote: string): boolean {
+/** Whether origin recently reported tag `remote` missing from the clone at `repoPath`. */
+export function isKnownMissingTag(repoPath: string, remote: string): boolean {
   const key = missingTagKey(repoPath, remote);
   const expiresAt = missingTags.get(key);
   if (expiresAt === undefined) return false;
   if (expiresAt > Date.now()) return true;
   missingTags.delete(key);
   return false;
+}
+
+function rememberMissingTag(repoPath: string, remote: string): void {
+  const key = missingTagKey(repoPath, remote);
+  const now = Date.now();
+  missingTags.delete(key);
+  missingTags.set(key, now + MISSING_TAG_TTL_MS);
+  for (const [candidate, expiresAt] of missingTags) {
+    if (expiresAt > now && missingTags.size <= MAX_MISSING_TAGS) break;
+    missingTags.delete(candidate);
+  }
+}
+
+/** Number of remembered missing tags; exposed for tests. */
+export function missingTagCacheSize(): number {
+  return missingTags.size;
 }
 
 async function localRefExists(git: ReturnType<typeof createHooklessGit>, ref: string): Promise<boolean> {
@@ -113,12 +141,15 @@ async function localRefExists(git: ReturnType<typeof createHooklessGit>, ref: st
 /**
  * Explicitly fetches `ref` (branch, tag, HEAD or full commit SHA) from origin
  * into `repoPath`, trying each place it may live most specific first and
- * stopping at the first one origin has. Resolves to whether origin had it. A
- * ref the remote does not have is not an error (the caller reports 404); any
- * other fetch failure is raised as a 502 so an unreachable remote is not
- * reported as a nonexistent ref.
+ * stopping at the first one origin has. Resolves to what to resolve the
+ * fetched commit through (the local ref it was stored under, or the SHA
+ * itself), or null when origin has none of them. Callers resolve exactly that
+ * target: a cached ref origin just reported missing (e.g. a deleted tag
+ * shadowing a same-named branch) must not answer. A ref the remote does not
+ * have is not an error (the caller reports 404); any other fetch failure is
+ * raised as a 502 so an unreachable remote is not reported as a nonexistent ref.
  */
-export function fetchRequestedRef(repoPath: string, ref: string, authToken: string): Promise<boolean> {
+export function fetchRequestedRef(repoPath: string, ref: string, authToken: string): Promise<string | null> {
   const key = `${repoPath}\0${ref}`;
   const pending = inflightFetches.get(key);
   if (pending) return pending;
@@ -127,7 +158,7 @@ export function fetchRequestedRef(repoPath: string, ref: string, authToken: stri
   return fetching;
 }
 
-async function fetchRequestedRefOnce(repoPath: string, ref: string, authToken: string): Promise<boolean> {
+async function fetchRequestedRefOnce(repoPath: string, ref: string, authToken: string): Promise<string | null> {
   const git = createHooklessGit(repoPath);
   configureGitAuthentication(git, authToken);
 
@@ -151,10 +182,12 @@ async function fetchRequestedRefOnce(repoPath: string, ref: string, authToken: s
     try {
       await withGitLockRetry(`fetching ${ref}`, () => git.raw(['fetch', '--no-tags', ...depthArgs, 'origin', refspec]));
       if (isTag) missingTags.delete(missingTagKey(repoPath, remote));
-      return true;
+      return local ?? remote;
     } catch (error) {
-      if (!isMissingRemoteRefError(error)) failure = error;
-      else if (isTag) missingTags.set(missingTagKey(repoPath, remote), Date.now() + MISSING_TAG_TTL_MS);
+      // Any other failure leaves it unknown whether origin has this more
+      // specific ref, so a less specific one must not answer in its place.
+      if (!isMissingRemoteRefError(error)) { failure = error; break; }
+      if (isTag) rememberMissingTag(repoPath, remote);
     }
   }
   if (failure) {
@@ -162,5 +195,5 @@ async function fetchRequestedRefOnce(repoPath: string, ref: string, authToken: s
     logger.warn({ repoPath, ref, error: detail }, 'Failed to fetch requested ref');
     throw new RepositoryRetrievalError(`Failed to fetch ref "${ref}" from origin: ${detail}`, 502);
   }
-  return false;
+  return null;
 }

@@ -344,7 +344,9 @@ before a branch, as git does; that a short name is *not* a tag is remembered
 for a minute, so a tag created on GitHub with the same name as a branch is
 seen up to a minute late. Full commit SHAs already in the clone are answered
 without a fetch. A branch or tag GitHub no longer has is `REF_NOT_FOUND`
-even if the clone still holds an old copy. If GitHub cannot be reached and the
+even if the clone still holds an old copy, and a tag deleted on GitHub never
+shadows a surviving branch of the same name. An abbreviated SHA resolves only
+as a commit id, never through a same-named local branch. If GitHub cannot be reached and the
 ref is cached, the result is answered from the cached commit and carries a
 `refCaveat` saying it may be behind; with nothing cached the call fails with
 `REPOSITORY_RETRIEVAL_FAILED`. Retrieval never checks out or moves branches
@@ -358,7 +360,7 @@ in the shared clone; it only clones a repository that has no clone yet.
 | `query` | 1–1000 characters. |
 | `mode` | `semantic` (default) or `literal`. |
 | `branch`, `ref` | Optional. `ref` may be a branch, tag, `origin/<branch>`, fully qualified ref or commit SHA. `branch` also selects the index used by semantic search. |
-| `path` | Optional repository-relative prefix (`src/` or a partial name such as `src/auth`). Absolute paths, `..` and backslashes are `INVALID_PATH`. |
+| `path` | Optional repository-relative prefix (`src/` or a partial name such as `src/auth`). Absolute paths, `..` segments and backslashes are `INVALID_PATH`; names such as `CHANGELOG..md` are allowed. |
 | `caseSensitive` | Literal mode only; defaults to case-insensitive. |
 | `offset`, `limit` | Pagination; `limit` defaults to 20 and is at most 100. |
 
@@ -387,7 +389,10 @@ nothing, the search still answers from path and history heuristics with
 `usedIndex: false`, `stale: true` and a `caveat`. An index built from an older
 commit keeps `usedIndex: true` but sets `stale: true` and a caveat naming both
 commits, because recently changed files may be ranked from outdated summaries.
-Index the branch with `index_repository` to remove the caveat.
+Index the branch with `index_repository` to remove the caveat. Repeating or
+paging the same semantic query reuses the ranking for up to a minute while the
+resolved commit and index build are unchanged, so walking `nextOffset` does
+not rerun the ranking.
 
 Literal mode is an exact, fixed-string (non-regex) `git grep` of the resolved
 commit. It needs no index and so carries no `freshness`. Each file reports its
@@ -425,11 +430,12 @@ limit stops the read before `endLine` (or the end of the file), `truncated` is
 many quotes, backslashes or control characters can stop before `maxBytes`.
 `content` is the file's text exactly as committed (a `.json` file is not
 reformatted); only credential-shaped strings such as GitHub tokens are masked
-as `[redacted]`, and `returnedBytes` is the UTF-8 size of the `content`
+as `[redacted]` (a mask never spans a line break, so line numbers are unchanged), and `returnedBytes` is the UTF-8 size of the `content`
 actually returned. A `startLine` past the end returns empty content. Failures are `FILE_NOT_FOUND`
 (404) for a path absent at that commit, `REF_NOT_FOUND` (404) for an unknown
 ref, `BINARY_FILE` (400), `INVALID_PATH` (400) for traversal, absolute or
-backslash paths and directories, `INVALID_REF` (400) for a malformed ref,
+backslash paths, directories and symbolic links (the message names the link
+target to read instead), `INVALID_REF` (400) for a malformed ref,
 `FILE_TOO_LARGE` (413) for a blob over 20 MiB, a single line larger than
 `maxBytes` (the message gives the `maxBytes` that would read it, when one
 exists) or a line too large for any response, and
@@ -503,10 +509,10 @@ Stable codes introduced by the observable operator surface are:
 | `PREVIEW_NOT_FOUND`, `PREVIEW_NOT_RENDERABLE`, `PREVIEW_TOO_LARGE` | Preview evidence is absent, is metadata-only/invalid, or cannot fit the MCP response bound. |
 | `SETTING_ENVIRONMENT_MANAGED` | A setting is controlled by deployment environment and is read-only through MCP. |
 | `CONFIRMATION_REQUIRED` | The requested configuration change needs its explicit safety confirmation flag. |
-| `INVALID_PATH` | A repository path is absolute, contains `..` or backslashes, or names a directory where a file is required. |
+| `INVALID_PATH` | A repository path is absolute, contains a `..` segment or backslashes, or names a directory or symbolic link where a file is required. |
 | `FILE_NOT_FOUND`, `REF_NOT_FOUND` | `read_repository_file` found no such file at the resolved commit, or the requested ref does not exist. |
 | `BINARY_FILE`, `FILE_TOO_LARGE` | The file is binary, or is too large (or has a line too long) to return as bounded text. |
-| `INVALID_REF` | A `ref` or `branch` is malformed (for example starts with `-`, or contains whitespace, `..`, `~`, `^`, `:` or `@{`). |
+| `INVALID_REF` | A `ref` or `branch` is malformed: it starts with `-`, contains whitespace, control characters, `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\`, `@{` or `//`, is `@`, starts or ends with `/`, ends with `.`, or has a component starting with `.` or ending with `.lock` (the rules of `git check-ref-format`). |
 | `REPOSITORY_RETRIEVAL_FAILED` | Repository search or read could not complete: 502 and retryable when cloning or fetching from GitHub failed with nothing cached to answer from, 500 for a local git or relevance-engine failure. |
 
 ## Did it actually happen? Following a receipt

@@ -17,11 +17,13 @@ function workflowErrorCode(status: number, data: unknown): string {
 /**
  * Mask credential-shaped substrings in place without otherwise changing the
  * text. Idempotent, so text already masked by a tool can pass through again.
+ * Matches never span a line break, so masking keeps line structure and masks
+ * a line the same whether it is read alone or with its neighbours.
  */
 export function redactText(value: string): string {
   return value
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|propr_mcp_[A-Za-z0-9_-]+)\b/g, '[redacted]')
-    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+/gi, 'Bearer [redacted]');
+    .replace(/Bearer[ \t]+[A-Za-z0-9._~+/-]+/gi, 'Bearer [redacted]');
 }
 
 export function redact(value: unknown, depth = 0): unknown {

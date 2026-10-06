@@ -63,7 +63,9 @@ const {
   readRepositoryFileContent,
   parseGitGrepOutput,
   RepositoryRetrievalError,
+  clearRelevanceCache,
 } = await import('../src/services/repositoryRetrievalService.js');
+const { missingTagCacheSize } = await import('../src/services/repositoryManagedClone.js');
 
 // --- Fixture repository ---
 
@@ -87,6 +89,8 @@ write('nl\nname.txt', 'newlineNeedle\nnewlineNeedle again\n');
 write('name.txt', 'newlineNeedle once\n');
 write('assets/logo.bin', Buffer.from([0x89, 0x50, 0x00, 0x01, 0x02]));
 write('big.txt', Array.from({ length: 1000 }, (_, i) => `line ${i + 1}`).join('\n') + '\n');
+write('CHANGELOG..md', 'dotted name\n');
+fs.symlinkSync('src/util.ts', path.join(repoPath, 'util-link.ts'));
 git('add', '-A');
 git('commit', '-q', '-m', 'initial');
 const firstCommit = git('rev-parse', 'HEAD');
@@ -116,6 +120,7 @@ beforeEach(() => {
   defaultAgent = { config: { alias: 'claude', defaultModel: 'test-model' } };
   dbWhereCalls.length = 0;
   findRelevantFiles.mock.resetCalls();
+  clearRelevanceCache();
 });
 
 const base = { repository: 'owner/repo', repoPath };
@@ -446,6 +451,28 @@ test('rejects traversal and malformed paths', async () => {
   for (const bad of ['../secret', 'src/../../etc/passwd', '/etc/passwd', 'src\\auth\\token.ts', 'src/a\0.ts']) {
     await expectRetrievalError(readRepositoryFileContent({ ...base, path: bad }), 400, /path/);
   }
+});
+
+test('reads paths that contain ".." inside a name rather than as a segment', async () => {
+  const dotted = await readRepositoryFileContent({ ...base, path: 'CHANGELOG..md' });
+  assert.equal(dotted.content, 'dotted name');
+  const search = await searchRepositoryFiles({ ...base, query: 'dotted', mode: 'literal', path: 'CHANGELOG..' });
+  assert.deepEqual(search.matches.map(match => match.path), ['CHANGELOG..md']);
+  for (const bad of ['..', 'a/..', 'a/../b']) {
+    await expectRetrievalError(readRepositoryFileContent({ ...base, path: bad }), 400, /"\.\." segments/);
+  }
+});
+
+test('rejects ref names git refuses as invalid input instead of trying to fetch them', async () => {
+  for (const bad of ['a.lock', 'refs/heads/x.lock', 'foo//bar', '@', '.hidden', 'x/.y', 'trailing.', 'slash/', '/lead', 'tab\tname', 'bell\x07']) {
+    await expectRetrievalError(readRepositoryFileContent({ ...base, path: 'src/util.ts', ref: bad }), 400, /Invalid ref/);
+  }
+  await expectRetrievalError(readRepositoryFileContent({ repository: 'owner/never-cloned', path: 'src/util.ts', ref: 'a.lock' }), 400, /Invalid ref/);
+  assert.equal(ensureRepoCloned.mock.callCount(), 0);
+});
+
+test('reports a symbolic link as a link to its target instead of returning the target path as content', async () => {
+  await expectRetrievalError(readRepositoryFileContent({ ...base, path: 'util-link.ts' }), 400, /^"util-link\.ts" is a symbolic link to "src\/util\.ts", not a file/);
 });
 
 test('rejects binary files, directories, missing files and bad ranges with clear errors', async () => {
@@ -894,4 +921,149 @@ test('an encoded byte limit bounds reads by their JSON size and refuses a line n
 test('semantic search reports relevance engine failures as retrieval errors', async () => {
   findRelevantFiles.mock.mockImplementationOnce(async () => { throw new Error('git ls-tree failed'); });
   await expectRetrievalError(searchRepositoryFiles({ ...base, query: 'auth' }), 500, /Semantic search failed: git ls-tree failed/);
+});
+
+// --- Clone and local git failures ---
+
+test('reports a failed clone as a retryable 502 with the credentials in the remote URL redacted', async () => {
+  const managedPath = path.join(clonesBasePath, 'owner', 'managed-unreachable');
+  assert.equal(fs.existsSync(managedPath), false);
+  ensureRepoCloned.mock.mockImplementation(async () => {
+    throw new Error("fatal: unable to access 'https://x-access-token:secret-token@github.com/owner/managed-unreachable.git/': Could not resolve host: github.com");
+  });
+  try {
+    for (const run of [
+      () => readRepositoryFileContent({ repository: 'owner/managed-unreachable', path: 'src/util.ts' }),
+      () => searchRepositoryFiles({ repository: 'owner/managed-unreachable', query: 'x', mode: 'literal' }),
+      () => searchRepositoryFiles({ repository: 'owner/managed-unreachable', query: 'x' }),
+    ]) {
+      await assert.rejects(run(), (error: unknown) => {
+        assert.ok(error instanceof RepositoryRetrievalError);
+        assert.equal(error.status, 502);
+        assert.match(error.message, /^Failed to clone repository: fatal: unable to access/);
+        assert.doesNotMatch(error.message, /secret-token/);
+        return true;
+      });
+    }
+  } finally {
+    ensureRepoCloned.mock.restore();
+    ensureRepoCloned.mock.resetCalls();
+  }
+});
+
+test('reports a local git failure while reading an existing blob as a 500 retrieval error', async () => {
+  const corruptPath = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-retrieval-corrupt-'));
+  try {
+    const corruptGit = (...args: string[]) => execFileSync('git', args, { cwd: corruptPath, encoding: 'utf8' }).trim();
+    corruptGit('init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(corruptPath, 'f.txt'), 'hello world '.repeat(200));
+    corruptGit('add', '-A');
+    corruptGit('-c', 'user.email=t@example.com', '-c', 'user.name=T', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'x');
+    // Truncate the blob's zlib stream: its type and size still read, its content does not.
+    const sha = corruptGit('rev-parse', 'HEAD:f.txt');
+    const objectPath = path.join(corruptPath, '.git', 'objects', sha.slice(0, 2), sha.slice(2));
+    const compressed = fs.readFileSync(objectPath);
+    fs.chmodSync(objectPath, 0o644);
+    fs.writeFileSync(objectPath, compressed.subarray(0, Math.floor(compressed.length / 3)));
+    assert.equal(corruptGit('cat-file', '-t', 'HEAD:f.txt'), 'blob');
+
+    await expectRetrievalError(readRepositoryFileContent({ repository: 'owner/repo', repoPath: corruptPath, path: 'f.txt' }), 500, /^Failed to read "f\.txt"/);
+  } finally {
+    fs.rmSync(corruptPath, { recursive: true, force: true });
+  }
+});
+
+// --- Fetched-ref resolution ---
+
+test('resolves a short name to the surviving branch once its same-named cached tag is deleted on origin', async () => {
+  const fixture = managedFixture('managed-deleted-tag');
+  try {
+    fixture.workGit('push', '-q', 'origin', `${featureCommit}:refs/heads/release`);
+    fixture.workGit('tag', 'release', firstCommit);
+    fixture.workGit('push', '-q', 'origin', 'refs/tags/release');
+
+    const tagged = await readRepositoryFileContent({ repository: fixture.repository, ref: 'release', path: 'src/util.ts' });
+    assert.equal(tagged.commit, firstCommit);
+    assert.equal(fixture.managedGit('rev-parse', 'refs/tags/release^{commit}'), firstCommit);
+
+    fixture.workGit('push', '-q', 'origin', '--delete', 'refs/tags/release');
+    // The deleted tag is still cached locally and must not shadow the branch.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const read = await readRepositoryFileContent({ repository: fixture.repository, ref: 'release', path: 'src/feature.ts' });
+      assert.equal(read.commit, featureCommit, `read attempt ${attempt}`);
+      assert.equal(read.refCaveat, undefined);
+      const search = await searchRepositoryFiles({ repository: fixture.repository, ref: 'release', query: 'featureOnlyNeedle', mode: 'literal' });
+      assert.equal(search.commit, featureCommit, `search attempt ${attempt}`);
+      assert.deepEqual(search.matches.map(match => match.path), ['src/feature.ts']);
+    }
+    assert.equal(fixture.managedGit('rev-parse', 'refs/tags/release^{commit}'), firstCommit);
+
+    // Offline, the cached fallback also skips the tag origin reported missing.
+    fixture.managedGit('remote', 'set-url', 'origin', 'file:///nonexistent/propr-origin.git');
+    const offline = await readRepositoryFileContent({ repository: fixture.repository, ref: 'release', path: 'src/feature.ts' });
+    assert.equal(offline.commit, featureCommit);
+    assert.match(offline.refCaveat ?? '', /cached copy/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('does not answer a hex-only name origin lacks from a same-named local branch', async () => {
+  const fixture = managedFixture('managed-hex-branch');
+  try {
+    fixture.managedGit('branch', 'deadbeef', headCommit);
+    await expectRetrievalError(readRepositoryFileContent({ repository: fixture.repository, ref: 'deadbeef', path: 'src/util.ts' }), 404, /Ref "deadbeef" not found/);
+    fixture.managedGit('remote', 'set-url', 'origin', 'file:///nonexistent/propr-origin.git');
+    await expectRetrievalError(readRepositoryFileContent({ repository: fixture.repository, ref: 'deadbeef', path: 'src/util.ts' }), 502, /Failed to fetch/);
+    // A genuine abbreviated SHA still resolves, online or from cache.
+    const bySha = await readRepositoryFileContent({ repository: fixture.repository, ref: headCommit.slice(0, 10), path: 'src/util.ts' });
+    assert.equal(bySha.commit, headCommit);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('expired missing-tag entries are swept when new ones are remembered', async (t) => {
+  const fixture = managedFixture('managed-tag-sweep');
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  try {
+    for (const name of ['absent-a', 'absent-b', 'absent-c']) {
+      await expectRetrievalError(readRepositoryFileContent({ repository: fixture.repository, ref: name, path: 'src/util.ts' }), 404, /not found/);
+    }
+    assert.ok(missingTagCacheSize() >= 3);
+    t.mock.timers.tick(61_000);
+    await expectRetrievalError(readRepositoryFileContent({ repository: fixture.repository, ref: 'absent-d', path: 'src/util.ts' }), 404, /not found/);
+    assert.equal(missingTagCacheSize(), 1);
+  } finally {
+    t.mock.timers.reset();
+    fixture.cleanup();
+  }
+});
+
+// --- Semantic search cost ---
+
+test('repeating or paging a semantic search reuses the relevance result for the same commit and index', async () => {
+  relevanceFiles = [
+    { path: 'src/auth/login.ts', score: 90, reason: 'semantic', signals: ['semantic'] },
+    { path: 'src/auth/token.ts', score: 80, reason: 'semantic', signals: ['semantic'] },
+  ];
+  const first = await searchRepositoryFiles({ ...base, query: 'login', limit: 1 });
+  const second = await searchRepositoryFiles({ ...base, query: 'login', limit: 1, offset: 1 });
+  assert.deepEqual([...first.matches, ...second.matches].map(match => match.path), ['src/auth/login.ts', 'src/auth/token.ts']);
+  assert.equal(findRelevantFiles.mock.callCount(), 1);
+
+  // Another commit, query or index build is scored afresh.
+  await searchRepositoryFiles({ ...base, query: 'login', ref: firstCommit });
+  await searchRepositoryFiles({ ...base, query: 'token' });
+  indexRow = { indexing_status: 'completed', last_indexed_at: '2026-10-02T00:00:00.000Z', last_indexed_hash: headCommit };
+  await searchRepositoryFiles({ ...base, query: 'login' });
+  assert.equal(findRelevantFiles.mock.callCount(), 4);
+
+  // Summary scoring that failed to contribute is retried rather than remembered.
+  summaryScoringSucceeds = false;
+  await searchRepositoryFiles({ ...base, query: 'retry me' });
+  summaryScoringSucceeds = true;
+  const retried = await searchRepositoryFiles({ ...base, query: 'retry me' });
+  assert.equal(retried.freshness?.usedIndex, true);
+  assert.equal(findRelevantFiles.mock.callCount(), 6);
 });
