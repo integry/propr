@@ -255,7 +255,13 @@ function buildOptionalDetails(claudeResult: ClaudeResult): string[] {
     return lines;
 }
 
-async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, timestamp: string): Promise<string> {
+export interface CompletionRunStats {
+    executionTime: string;
+    totalTokens: number;
+    cost: number;
+}
+
+async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: IssueRef, timestamp: string): Promise<{ text: string; stats: CompletionRunStats }> {
     const executionTimeStr = formatDuration(claudeResult?.executionTime || 0);
     const detailedStats = getDetailedUsageStats(claudeResult as unknown as TokenCalcClaudeResult);
     const { totalInputWithCache: inputTokens, outputTokens, totalTokens } = detailedStats;
@@ -289,7 +295,7 @@ async function buildExecutionDetails(claudeResult: ClaudeResult, issueRef: Issue
 
     if (subscriptionLine) lines.push(`- Subscription usage: ${subscriptionLine}`);
 
-    return lines.join('\n') + '\n\n';
+    return { text: lines.join('\n') + '\n\n', stats: { executionTime: executionTimeStr, totalTokens, cost } };
 }
 
 function buildSummarySection(claudeResult: ClaudeResult): string {
@@ -357,25 +363,54 @@ function buildLogFilesSection(logFiles: LogFiles, claudeResult: ClaudeResult): s
     return lines.join('\n') + '\n';
 }
 
+export interface CompletionCommentParts {
+    /** Status, repository, time, tokens and cost. */
+    run: string;
+    /** Agent summary, or the incomplete-execution warning. */
+    summary: string;
+    /** Container-observed repository validation report. */
+    validation: string;
+    /** Log file locations and the latest conversation messages. */
+    logs: string;
+    /** Attribution line; generateCompletionComment puts a horizontal rule above it. */
+    trailer: string;
+    stats: CompletionRunStats;
+}
+
+/** The completion report split into its parts; generateCompletionComment joins them in order. */
+export async function generateCompletionCommentParts(
+    claudeResultInput: unknown,
+    issueRef: IssueRef,
+    options: CompletionCommentOptions = {},
+): Promise<CompletionCommentParts> {
+    const timestamp = new Date().toISOString();
+    const result: ClaudeResult = (claudeResultInput as ClaudeResult) || { success: false };
+    const execution = await buildExecutionDetails(result, issueRef, timestamp);
+    let logs = '';
+    try {
+        const logFiles = await createLogFiles(result, issueRef);
+        logs = buildLogFilesSection(logFiles, result);
+    } catch (logError) {
+        const err = logError as Error;
+        logger.warn({ issueNumber: issueRef.number, error: err.message }, 'Failed to create log files');
+    }
+    return {
+        run: execution.text,
+        summary: buildSummarySection(result),
+        validation: result.repositoryValidation ? `${redactSecrets(result.repositoryValidation)}\n\n` : '',
+        logs,
+        trailer: options.publishedAs === 'issue_comment'
+            ? `*This processing report was generated automatically by [ProPR](https://propr.dev) for issue #${issueRef.number}.*`
+            : `*This PR was created automatically by [ProPR](https://propr.dev) after processing issue #${issueRef.number}.*`,
+        stats: execution.stats,
+    };
+}
+
 export async function generateCompletionComment(
     claudeResultInput: unknown,
     issueRef: IssueRef,
     options: CompletionCommentOptions = {},
 ): Promise<string> {
-    const timestamp = new Date().toISOString();
-    const result: ClaudeResult = (claudeResultInput as ClaudeResult) || { success: false };
-    let comment = await buildExecutionDetails(result, issueRef, timestamp);
-    comment += buildSummarySection(result);
-    if (result.repositoryValidation) comment += `${redactSecrets(result.repositoryValidation)}\n\n`;
-    try {
-        const logFiles = await createLogFiles(result, issueRef);
-        comment += buildLogFilesSection(logFiles, result);
-    } catch (logError) {
-        const err = logError as Error;
-        logger.warn({ issueNumber: issueRef.number, error: err.message }, 'Failed to create log files');
-    }
-    comment += options.publishedAs === 'issue_comment'
-        ? `---\n*This processing report was generated automatically by [ProPR](https://propr.dev) for issue #${issueRef.number}.*`
-        : `---\n*This PR was created automatically by [ProPR](https://propr.dev) after processing issue #${issueRef.number}.*`;
-    return comment;
+    const parts = await generateCompletionCommentParts(claudeResultInput, issueRef, options);
+    return `${parts.run}${parts.summary}${parts.validation}${parts.logs}---\n${parts.trailer}`;
 }

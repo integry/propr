@@ -179,6 +179,12 @@ export interface MonitoredRepo {
   notificationsEnabled?: boolean;
 
   /**
+   * Whether the repository's GitHub pull request template is appended to PR
+   * descriptions when it has no .propr/pr-template.md. Omission reads as enabled.
+   */
+  githubPrTemplateFallback?: boolean;
+
+  /**
    * Visual evidence generated for changes with a user-visible result.
    */
   visualPreview?: VisualPreviewSettings;
@@ -272,6 +278,9 @@ export interface UpdateRepoOptions {
 
   /** Optional repository-wide notification state. */
   notificationsEnabled?: boolean;
+
+  /** Optional repository-wide GitHub pull request template fallback state. */
+  githubPrTemplateFallback?: boolean;
 
   /** Optional visual preview policy update. */
   visualPreview?: Omit<Partial<VisualPreviewSettings>, 'instructions'> & { instructions?: string | null };
@@ -438,9 +447,16 @@ export async function updateRepo(
     ...(updates.baseBranch !== undefined && { baseBranch: updates.baseBranch?.trim() || undefined }),
   };
 
-  // Replace in list
-  const updatedRepos = [...currentRepos.repos_to_monitor];
-  updatedRepos[repoIndex] = updatedRepo;
+  // Replace in list. The template fallback is repository-wide, so every branch entry follows it.
+  const updatedRepos = currentRepos.repos_to_monitor.map((repo) =>
+    updates.githubPrTemplateFallback !== undefined && repo.name.toLowerCase() === fullName.toLowerCase()
+      ? { ...repo, githubPrTemplateFallback: updates.githubPrTemplateFallback }
+      : repo
+  );
+  updatedRepos[repoIndex] = {
+    ...updatedRepo,
+    ...(updates.githubPrTemplateFallback !== undefined && { githubPrTemplateFallback: updates.githubPrTemplateFallback }),
+  };
 
   const response = await apiClient.post<RepoConfigResponse>("/api/config/repos", {
     body: { repos_to_monitor: updatedRepos },

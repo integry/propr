@@ -292,6 +292,10 @@ const modules: Record<string, Record<string, unknown>> = {
 for (const [name, namedExports] of Object.entries(modules)) {
     await mock.module(`../src/jobs/${name}.js`, { namedExports });
 }
+// Continuation PRs keep their default description here; templates are covered by prTemplateDescription.test.ts.
+await mock.module('../src/jobs/pullRequestTemplate.js', { namedExports: {
+    describeContinuationPullRequest: async ({ fallback }: { fallback: string }) => fallback,
+} });
 await mock.module('../src/github/visualPreviewAttachments.js', { namedExports: {
     isVisualPreviewUploadAuthenticationError: () => false, publishPullRequestCommentVisualPreviews: noOp,
 } });
