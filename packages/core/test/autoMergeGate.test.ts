@@ -175,13 +175,15 @@ test('a skipped arm for an Epic queue head marks the queue waiting for a human m
     assert.deepEqual(marks, [{ draftId: 'draft', issueNumber: 7, prNumber: 70, reason: 'skipped_protected_path' }]);
 });
 
-test('a new head touching a protected path disarms ProPR-armed auto-merge and comments', async () => {
+test('a new head touching a protected path disarms ProPR-armed auto-merge, comments, and marks the Epic queue', async () => {
     planIssue = { draft_id: 'draft', issue_number: 7 };
+    const marks: unknown[] = [];
     const github = fakeGitHub({
         workflowByRef: { main: PROTECTING_POLICY }, files: [{ filename: 'src/app.ts' }, { filename: 'migrations/002.sql' }],
         headSha: 'abcdef123', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED,
     });
-    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log },
+        { octokit: github.octokit, database, botLogin, markEpicQueueAwaitingHumanMerge: async input => { marks.push(input); return true; } });
     assert.equal(result.disarmed, true);
     assert.equal(github.graphqlCalls.length, 1);
     assert.match(github.graphqlCalls[0].query, /disablePullRequestAutoMerge/);
@@ -192,6 +194,7 @@ test('a new head touching a protected path disarms ProPR-armed auto-merge and co
     assert.equal(events.length, 1);
     assert.equal(events[0].metadata.autoMergeDecision.action, 'disarmed');
     assert.equal(events[0].metadata.autoMergeDecision.opportunity, 'new_head');
+    assert.deepEqual(marks, [{ draftId: 'draft', issueNumber: 7, prNumber: 70, reason: 'skipped_protected_path' }]);
 });
 
 test('a new head that still satisfies the policy keeps auto-merge armed', async () => {

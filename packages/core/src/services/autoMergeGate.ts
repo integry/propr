@@ -317,7 +317,8 @@ async function disablePullRequestAutoMerge(octokit: AutoMergeGateOctokit, pullRe
 
 /**
  * A new head can add protected changes after auto-merge was armed. Re-evaluate
- * the policy and, if it no longer allows auto-merge, disarm it and say why.
+ * the policy and, if it no longer allows auto-merge, disarm it, say why, and
+ * surface "waiting for human merge" on an Epic queue.
  */
 export async function reevaluateArmedAutoMergeOnNewHead(input: {
     owner: string; repo: string; prNumber: number; log?: Log;
@@ -343,6 +344,7 @@ export async function reevaluateArmedAutoMergeOnNewHead(input: {
     }, deps, log);
     await postDecisionComment({ owner, repo, prNumber },
         describeAutoMergeDecision(decision).replace('**Auto-merge not armed**', `**Auto-merge disarmed** after new commits (${pullRequest.headSha.slice(0, 7)})`), octokit, log);
+    await surfaceEpicHumanMerge({ repository: `${owner}/${repo}`, prNumber, reason: decision.reason }, deps, log);
     return { disarmed: true, decision };
 }
 
