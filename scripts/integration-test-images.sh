@@ -31,7 +31,10 @@
 # or removed only when they carry this harness's ownership marker; symlinks,
 # foreign owners and wrong modes are refused, not repaired. Legacy /tmp/$STACK
 # data from older versions is no longer used or removed. Cleanup removes only
-# the validated root and containers proven to belong to it.
+# the validated root and containers proven to belong to it, by ID; the launcher
+# is killed, not stopped, so its own label-wide teardown never runs. The stack
+# network is removed only when this run saw it created, or its ID matches the
+# one recorded in the validated root by the kept run that created it.
 
 set -euo pipefail
 
@@ -80,7 +83,13 @@ ROOT_IDENTITY=""
 ROOT_TOKEN=""
 USER_BASE=""
 STACK_STARTED=0
+# The stack network is removable only when this run saw it absent before the
+# launcher started, or when its current ID equals the ID recorded in the
+# validated root by the run that saw it created. Container ownership alone says
+# nothing about the network.
 NETWORK_REMOVABLE=0
+NETWORK_OWNED_ID=""
+NETWORK_RECORD_NAME=".propr-itest-network"
 
 # container_ownership NAME -> prints "root <id>", "owned <id>" or "unowned"
 container_ownership() {
@@ -114,6 +123,50 @@ container_ownership() {
   ' "$name" "$STACK" "$ROOT" "$ROOT_TOKEN" "$ITEST_LABEL" "$LAUNCHER_NAME"
 }
 
+network_id() {
+  docker network inspect "$NETWORK" 2>/dev/null | node -e '
+    const fs = require("node:fs");
+    let network;
+    try { [network] = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(1); }
+    const id = String(network?.Id ?? "");
+    if (network?.Name !== process.argv[1] || !/^[a-f0-9]{12,64}$/.test(id)) process.exit(1);
+    console.log(id);
+  ' "$NETWORK"
+}
+
+# Loads the network ID recorded in the validated root, if any.
+load_network_record() {
+  local record="$ROOT/$NETWORK_RECORD_NAME" id
+  NETWORK_OWNED_ID=""
+  [[ -f "$record" && ! -L "$record" && -O "$record" ]] || return 0
+  id="$(head -c 128 -- "$record")"
+  [[ "$id" =~ ^[a-f0-9]{12,64}$ ]] && NETWORK_OWNED_ID="$id"
+  return 0
+}
+
+# Records, for a kept stack, the ID of the network this run proved it created;
+# otherwise drops any stale record so a later run never inherits ownership.
+save_network_record() {
+  local id
+  id="$(network_id || true)"
+  if [ -n "$id" ] && { [ "$NETWORK_REMOVABLE" = 1 ] || [ "$id" = "$NETWORK_OWNED_ID" ]; }; then
+    printf '%s' "$id" | itest_write_private_file "$ROOT/$NETWORK_RECORD_NAME"
+  else
+    rm -f -- "$ROOT/$NETWORK_RECORD_NAME"
+  fi
+}
+
+network_is_owned() {
+  local id
+  id="$(network_id || true)"
+  [ -n "$id" ] || return 1
+  if [ -n "$NETWORK_OWNED_ID" ]; then
+    [ "$id" = "$NETWORK_OWNED_ID" ]
+  else
+    [ "$NETWORK_REMOVABLE" = 1 ]
+  fi
+}
+
 network_is_unused() {
   docker network inspect "$NETWORK" 2>/dev/null | node -e '
     const fs = require("node:fs");
@@ -125,10 +178,12 @@ network_is_unused() {
 }
 
 # Removes the launcher and its siblings only after every present target was
-# proven to belong to this root. Refuses (removing nothing) otherwise. With
-# "reconcile", the stack network is removable only when such proof was found.
+# proven to belong to this root. Refuses (removing nothing) otherwise. The
+# launcher is killed rather than stopped: its own shutdown removes every
+# propr.stack-labelled container and the stack network, which this harness has
+# not verified. The network is removed only under network_is_owned.
 remove_stack_resources() {
-  local mode="${1:-}" name verdict proven=0 failed=0 i
+  local name verdict proven=0 failed=0 i
   local -a ids=() names=()
   for name in "$LAUNCHER_NAME" "${SIBLING_SERVICES[@]/#/$STACK-}"; do
     docker container inspect "$name" >/dev/null 2>&1 || continue
@@ -148,26 +203,19 @@ remove_stack_resources() {
     echo "✗ refusing to remove ${names[*]}: no container proves ownership of $ROOT" >&2
     return 1
   fi
-  if [ "$mode" = reconcile ]; then
-    NETWORK_REMOVABLE="$proven"
-  fi
 
-  # Stopping the launcher first lets it tear down its own siblings.
-  for i in "${!ids[@]}"; do
-    if [ "${names[$i]}" = "$LAUNCHER_NAME" ]; then
-      docker stop -t 30 "${ids[$i]}" >/dev/null 2>&1 || true
-    fi
-  done
+  # The launcher is first in ids, so it is gone before any sibling is removed
+  # and cannot recreate them.
   for i in "${!ids[@]}"; do
     if docker container inspect "${ids[$i]}" >/dev/null 2>&1; then
       docker rm -f "${ids[$i]}" >/dev/null || { echo "✗ could not remove container ${names[$i]}" >&2; failed=1; }
     fi
   done
   if docker network inspect "$NETWORK" >/dev/null 2>&1; then
-    if [ "$NETWORK_REMOVABLE" = 1 ] && network_is_unused; then
+    if network_is_owned && network_is_unused; then
       docker network rm "$NETWORK" >/dev/null || { echo "✗ could not remove network $NETWORK" >&2; failed=1; }
     else
-      echo "  leaving network $NETWORK: it predates this run or still has containers attached" >&2
+      echo "  leaving network $NETWORK: this harness did not create it or it still has containers attached" >&2
     fi
   fi
   return "$failed"
@@ -179,6 +227,9 @@ cleanup() {
   if [ "${PROPR_E2E_KEEP_STACK:-}" = "1" ]; then
     echo ""
     echo "▸ keeping stack for inspection (PROPR_E2E_KEEP_STACK=1)"
+    if [ "$STACK_STARTED" = 1 ] && [ -n "$ROOT_IDENTITY" ]; then
+      save_network_record || echo "✗ could not record network ownership; a later run will leave $NETWORK in place" >&2
+    fi
     echo "  launcher: $LAUNCHER_NAME"
     [ -z "$ROOT_IDENTITY" ] || echo "  data dir:  $ROOT"
     exit "$status"
@@ -214,7 +265,8 @@ if [ -e "$ROOT" ] || [ -L "$ROOT" ]; then
   ROOT_TOKEN="$ITEST_ROOT_TOKEN"
   # Containers kept by an earlier run of this exact root are reconciled; any
   # other same-named container is refused below.
-  remove_stack_resources reconcile || exit 1
+  load_network_record
+  remove_stack_resources || exit 1
   if [ "${PROPR_E2E_REUSE_DATA:-}" = "1" ]; then
     ROOT_IDENTITY="$ITEST_ROOT_IDENTITY"
     echo "▸ reusing stack root $ROOT"
@@ -239,8 +291,10 @@ for name in "$LAUNCHER_NAME" "${SIBLING_SERVICES[@]/#/$STACK-}"; do
 done
 if docker network inspect "$NETWORK" >/dev/null 2>&1; then
   NETWORK_REMOVABLE=0
+  [ "$(network_id || true)" = "$NETWORK_OWNED_ID" ] || NETWORK_OWNED_ID=""
 else
   NETWORK_REMOVABLE=1
+  NETWORK_OWNED_ID=""
 fi
 
 VIBE_PROMPT_CACHE_DIR="$ROOT/vibe-prompts"

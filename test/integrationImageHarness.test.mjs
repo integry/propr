@@ -364,14 +364,68 @@ describe('image integration harness refuses unsafe temporary targets', { skip: u
     assert.ok(readState(workspace).networks['propr-itest-net']);
     assert.match(result.stderr, /leaving network propr-itest-net/);
 
+    // The launcher's own teardown (which removes the network) never runs.
+    const forcedRemovals = dockerCalls(workspace).filter((call) => call[0] === 'rm' && call[1] === '-f').map((call) => call.at(-1));
+    assert.ok(forcedRemovals.length > 0);
+    assert.deepEqual(dockerCalls(workspace).filter(([command]) => command === 'stop'), []);
+
     // An existing marked root without kept containers proves nothing about it.
     const kept = makeWorkspace();
     t.after(() => forceRemove(kept.root));
-    assert.equal((await runHarness(kept, { PROPR_E2E_KEEP_STACK: '1', FAKE_LAUNCHER_TEARDOWN: 'skip' })).code, 0);
+    assert.equal((await runHarness(kept, { PROPR_E2E_KEEP_STACK: '1' })).code, 0);
     seedUnrelatedDocker(kept, { networks: { 'propr-itest-net': { Id: 'e'.repeat(64) } } });
     const reused = await runHarness(kept, { PROPR_E2E_REUSE_DATA: '1' });
     assert.equal(reused.code, 0, reused.stderr);
     assert.ok(readState(kept).networks['propr-itest-net']);
+  });
+
+  test('kept containers do not make a pre-existing network removable on a later run', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    const network = { Id: 'e'.repeat(64) };
+    seedUnrelatedDocker(workspace, { networks: { 'propr-itest-net': network } });
+    const kept = await runHarness(workspace, { PROPR_E2E_KEEP_STACK: '1' });
+    assert.equal(kept.code, 0, kept.stderr);
+    assert.ok(!existsSync(join(stackRoot(workspace), '.propr-itest-network')), 'no ownership is recorded for a network this run did not create');
+
+    for (const env of [{ PROPR_E2E_REUSE_DATA: '1', PROPR_E2E_KEEP_STACK: '1' }, {}]) {
+      const result = await runHarness(workspace, env);
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(readState(workspace).networks['propr-itest-net'], network);
+    }
+    assert.ok(!existsSync(stackRoot(workspace)));
+    assert.deepEqual(Object.keys(readState(workspace).containers).filter((name) => name.startsWith('propr-itest-')), []);
+    assert.deepEqual(dockerCalls(workspace).filter(([command]) => command === 'stop'), []);
+  });
+
+  test('a kept run records the network it created and a later run removes only that network', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    assert.equal((await runHarness(workspace, { PROPR_E2E_KEEP_STACK: '1' })).code, 0);
+    const created = readState(workspace).networks['propr-itest-net'];
+    assert.ok(created);
+    const record = join(stackRoot(workspace), '.propr-itest-network');
+    assert.equal(readFileSync(record, 'utf8'), created.Id);
+    assert.equal(modeOf(record), '600');
+
+    const fresh = await runHarness(workspace);
+    assert.equal(fresh.code, 0, fresh.stderr);
+    assertNoStackContainers(workspace);
+  });
+
+  test('extra stack-labelled containers outside the verified set survive cleanup', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    const extra = {
+      Id: '9'.repeat(64), Name: '/propr-itest-extra',
+      Config: { Labels: { 'propr.stack': 'propr-itest', 'propr.service': 'extra' } }, Mounts: [],
+    };
+    seedUnrelatedDocker(workspace, { containers: { 'propr-itest-extra': extra } });
+    const result = await runHarness(workspace);
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(readState(workspace).containers['propr-itest-extra'], extra);
+    assert.deepEqual(Object.keys(readState(workspace).containers).filter((name) => name.startsWith('propr-itest-')), ['propr-itest-extra']);
+    assert.ok(!existsSync(stackRoot(workspace)));
   });
 });
 

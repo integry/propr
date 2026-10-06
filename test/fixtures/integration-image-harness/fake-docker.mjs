@@ -1,7 +1,9 @@
 // Stateful stand-in for a rootful Docker daemon used by the image integration
 // harness regression. Starting the launcher emulates its sibling services and a
 // container-created private subtree the host user cannot remove; stopping it
-// emulates the launcher's own teardown. The cleanup container emulates root's
+// emulates the launcher's SIGTERM teardown (entrypoint.mjs -> stopStack with
+// removeNetwork), which removes every propr.stack-labelled container and the
+// stack network; `rm -f` kills the launcher without that teardown. The cleanup container emulates root's
 // DAC override within its single bind mount. Every invocation is appended to
 // FAKE_DOCKER_STATE/calls.jsonl and the private-root modes seen at launch are
 // recorded in FAKE_DOCKER_STATE/observed.json. Only synthetic data is handled.
@@ -112,12 +114,11 @@ function startLauncher() {
 }
 
 function stopLauncher(name, container) {
-  if (process.env.FAKE_LAUNCHER_TEARDOWN !== 'skip') {
-    const stack = container.Config.Labels['com.propr.itest.stack'];
-    for (const [sibling, candidate] of Object.entries(state.containers)) {
-      if (candidate.Config.Labels['propr.stack'] === stack) delete state.containers[sibling];
-    }
+  const stack = container.Config.Labels['com.propr.itest.stack'];
+  for (const [sibling, candidate] of Object.entries(state.containers)) {
+    if (candidate.Config.Labels['propr.stack'] === stack) delete state.containers[sibling];
   }
+  delete state.networks[`${stack}-net`];
   if (container.autoRemove) delete state.containers[name];
 }
 
