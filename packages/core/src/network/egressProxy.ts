@@ -70,7 +70,7 @@ export interface EgressProxyOptions {
 
 /** Splits `host:port` / `[v6]:port` from a CONNECT authority. */
 export function parseAuthority(authority: string): { host: string; port: number } | null {
-    const match = /^\[([^\]]+)\]:(\d+)$/.exec(authority) ?? /^([^:\[\]]+):(\d+)$/.exec(authority);
+    const match = /^\[([^\]]+)\]:(\d+)$/.exec(authority) ?? /^([^:[\]]+):(\d+)$/.exec(authority);
     if (!match) return null;
     const port = Number(match[2]);
     if (!Number.isSafeInteger(port) || port < 1 || port > 65535) return null;
