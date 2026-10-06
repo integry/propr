@@ -96,6 +96,7 @@ function warnIfAnswerContinued(claudeOutput: ClaudeOutput, analysisText: string,
 export class ClaudeAgent implements Agent {
     readonly config: AgentConfig;
     readonly goalCapable = true;
+    readonly enforcesCostCap = true;
     private readonly maxTurns: number;
     private readonly timeoutMs: number;
 
@@ -111,7 +112,7 @@ export class ClaudeAgent implements Agent {
             worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
             onSessionId, onContainerId, tools, environment, taskId, prNumber, reasoningLevel,
-            executionMode = 'task', metadata
+            executionMode = 'task', metadata, costCapUsd
         } = options;
 
         const startTime = Date.now();
@@ -140,7 +141,8 @@ export class ClaudeAgent implements Agent {
             const dockerArgs = buildDockerArgs(this.config, options.maxTurns ?? this.maxTurns, {
                 worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId,
-                reasoningLevel: effectiveReasoningLevel
+                reasoningLevel: effectiveReasoningLevel,
+                ...(costCapUsd === undefined ? {} : { maxBudgetUsd: costCapUsd }),
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(

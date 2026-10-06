@@ -81,6 +81,8 @@ export interface TimelineEvent {
     reason: string;
     metadata: Record<string, unknown>;
     timestamp: string;
+    /** Record the event only if the task does not have it yet, so recovery can repeat it. */
+    once?: boolean;
 }
 
 export interface PendingReplacementRequest {
@@ -105,6 +107,11 @@ export interface TaskReplacementStore {
     /** Clears a pending decision only while it is still exactly `request` and unclaimed. */
     withdrawRequest(taskId: string, request: ReplacementRequestRecord): Promise<boolean>;
     appendEvent(entry: TimelineEvent): Promise<void>;
+    /**
+     * Whether the task recorded a transition after it was queued that no reconciler
+     * wrote: evidence that a worker (or a user) acted on it, unlike a reconciler's finalization.
+     */
+    hasRunTransition(taskId: string): Promise<boolean>;
     listPendingRequests(requestedBefore: string, limit: number): Promise<PendingReplacementRequest[]>;
 }
 
@@ -311,7 +318,14 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
             return updated > 0;
         },
 
-        async appendEvent({ taskId, event, reason, metadata, timestamp }) {
+        async appendEvent({ taskId, event, reason, metadata, timestamp, once }) {
+            if (once) {
+                const existing = await database('task_history')
+                    .where({ task_id: taskId })
+                    .whereRaw("json_extract(metadata, '$.event') = ?", [event])
+                    .first('history_id');
+                if (existing) return;
+            }
             // Timeline events repeat the task's current state so they never change it.
             const latest = await database('task_history')
                 .where({ task_id: taskId })
@@ -323,6 +337,17 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
                 timestamp,
                 reason,
                 metadata: JSON.stringify({ ...metadata, event }),
+            });
+        },
+
+        async hasRunTransition(taskId) {
+            const rows = await database('task_history')
+                .where({ task_id: taskId })
+                .whereNot({ state: 'pending' })
+                .select('metadata') as Array<{ metadata: unknown }>;
+            return rows.some(row => {
+                const metadata = parseJson<{ event?: unknown; finalizedBy?: unknown }>(row.metadata);
+                return metadata?.event === undefined && typeof metadata?.finalizedBy !== 'string';
             });
         },
 

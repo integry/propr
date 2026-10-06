@@ -27,7 +27,7 @@ import {
     runWithinRemainingBudget,
 } from './taskReconciliationBudget.js';
 import { taskAgeMs } from './taskReconciliationTime.js';
-import type { TaskReplacementService } from './taskReplacement/service.js';
+import { finalizeOrphan, type OrphanReplacementHandler } from './orphanReplacement.js';
 
 export const DEFAULT_RECONCILIATION_STALE_MS = 15 * 60 * 1000;
 export const DEFAULT_RECONCILIATION_ORPHAN_GRACE_MS = 60 * 1000;
@@ -51,11 +51,7 @@ export type ReconciliationStateManager = Pick<
 
 export type TaskContainerLiveness = 'running' | 'not_found' | 'unavailable';
 
-/** Replacement attempts for orphaned tasks (see src/taskReplacement). */
-export type OrphanReplacementHandler = Pick<TaskReplacementService, 'prepare' | 'complete' | 'withdraw'>;
-
-export const ORPHANED_TASK_MESSAGE = 'Task was orphaned after worker restart; no BullMQ job or running task container was found';
-const ORPHAN_FINALIZER = 'orphan_reconciliation';
+export { ORPHANED_TASK_MESSAGE, type OrphanReplacementHandler } from './orphanReplacement.js';
 
 export interface TaskStateReconciliationSummary {
     scanned: number;
@@ -284,50 +280,12 @@ async function reconcileMissingJob(
         return;
     }
 
-    await finalizeOrphanedCandidate(candidate, current, context);
-}
-
-/**
- * Fails an orphaned task and dispatches its single infrastructure-lost
- * replacement. The decision is made (and durably marked pending) before the
- * failure is published, so the Inbox holds back the failure alert; a decision
- * interrupted after the failure is completed by the replacement recovery sweep.
- */
-async function finalizeOrphanedCandidate(
-    candidate: PersistedTaskStateCandidate,
-    current: TaskStateData | null,
-    context: ReconciliationRunContext,
-): Promise<void> {
-    const { options, summary, deadline, signal } = context;
-    const replacement = options.replacement;
-    // Binds the decision to this run's failure: recovery never completes it after another writer's failure.
-    const request = { taskId: candidate.taskId, cause: 'infra_lost' as const, error: ORPHANED_TASK_MESSAGE, finalizedBy: ORPHAN_FINALIZER };
-    let plan: Awaited<ReturnType<OrphanReplacementHandler['prepare']>> | null = null;
-    try {
-        if (replacement) plan = await runWithinRemainingBudget(() => replacement.prepare(request), deadline, signal);
-    } catch (error) {
-        if (deadlineWasExhausted(error, signal) || signal.aborted) throw error;
-        // The orphan is still failed; the replacement is decided again after finalization.
-        logger.warn({ taskId: candidate.taskId, error: (error as Error).message }, 'Failed to prepare replacement for orphaned task');
-    }
-    const transition = failedTaskTransition(ORPHANED_TASK_MESSAGE, ORPHAN_FINALIZER);
-    if (plan?.eligible) transition.metadata.replacement = 'pending';
-    const finalized = await finalizeCandidate(candidate, transition, current, context);
-    // Another writer's failure pre-empted this one: withdraw its decision (recovery does if this fails).
-    const pending = !finalized && plan?.eligible ? plan.request : undefined;
-    if (!replacement || (!finalized && !pending)) return;
-    try {
-        if (pending) {
-            await runWithinRemainingBudget(() => replacement.withdraw(candidate.taskId, pending), deadline, signal);
-            return;
-        }
-        const outcome = await runWithinRemainingBudget(() => replacement.complete(request), deadline, signal);
-        logger.info({ taskId: candidate.taskId, outcome }, 'Handled replacement for orphaned task');
-    } catch (error) {
-        if (signal.aborted && !deadlineWasExhausted(error, signal)) throw abortReason(signal);
-        logger.error({ taskId: candidate.taskId, error: (error as Error).message }, 'Failed to handle orphan replacement; recovery will retry it');
-        summary.errors++;
-    }
+    await finalizeOrphan({
+        taskId: candidate.taskId, replacement: options.replacement, deadline, signal,
+        finalize: transition => finalizeCandidate(candidate, transition, current, context),
+        onDeferred: () => { summary.skipped++; },
+        onReplacementError: () => { summary.errors++; },
+    });
 }
 
 async function reconcileCandidate(

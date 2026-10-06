@@ -73,3 +73,18 @@ test('a skipped replacement publishes the held-back failure normally', async () 
   await update('attempt-1', 'failed');
   assert.deepEqual(await activeTaskCards(), [{ title: 'Task failed for issue #2739', severity: 'error', taskId: 'attempt-1' }]);
 });
+
+test('a replacement announced by recovery after it started running still replaces the held-back failure', async () => {
+  await database('tasks').where({ task_id: 'attempt-1' }).update({ replacement_state: 'pending' });
+  await update('attempt-1', 'failed');
+  clock += 1_000;
+  await update('attempt-2', 'claude_execution');
+  assert.deepEqual(await activeTaskCards(), [], 'an ordinary progress update announces nothing');
+
+  clock += 1_000;
+  await projection.projectTaskUpdate({
+    eventType: TASK_UPDATE, taskId: 'attempt-2', state: 'claude_execution', repository: 'integry/propr', issueNumber: 2739, timestamp: iso(),
+    metadata: { replacesTaskId: 'attempt-1', attemptNumber: 2, replacementCause: 'infra_lost', replacementStarted: true },
+  });
+  assert.deepEqual(await activeTaskCards(), [{ title: 'Replacement started for issue #2739', severity: 'info', taskId: 'attempt-2' }]);
+});

@@ -232,7 +232,7 @@ export interface ClaudeResult {
     };
     rawOutput?: string;
     error?: string;
-    terminationReason?: 'timeout' | 'max_turns' | 'stalled' | 'degenerate_output';
+    terminationReason?: 'timeout' | 'max_turns' | 'stalled' | 'degenerate_output' | 'cost_cap';
     tokenUsage?: TokenUsage;
     usageMetrics?: SubscriptionUsageMetrics | null;
 }

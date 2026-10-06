@@ -91,6 +91,11 @@ export interface AgentTaskOptions {
      * (for example writing a plan task by task). Agents without a turn limit ignore it.
      */
     maxTurns?: number;
+    /**
+     * Spend limit of this run in USD. Only agents with `enforcesCostCap` accept it;
+     * they stop the run once it is reached and report `terminationReason: 'cost_cap'`.
+     */
+    costCapUsd?: number;
     /** Optional per-task reasoning level override. Omitted means use the global setting. */
     reasoningLevel?: ReasoningLevel;
     /** Per-execution environment variables to inject into the agent container. */
@@ -296,13 +301,16 @@ export interface AgentExecutionResult {
  * `stalled` and `degenerate_output` are set when the activity watchdog stopped
  * a live run (no output past its threshold, or a run of whitespace-only deltas).
  */
-export type AgentTerminationReason = 'timeout' | 'max_turns' | 'stalled' | 'degenerate_output';
+export type AgentTerminationReason = 'timeout' | 'max_turns' | 'stalled' | 'degenerate_output' | 'cost_cap';
 
 export interface Agent {
     readonly config: AgentConfig;
 
     /** Whether this provider implements a proven durable goal/session path. */
     readonly goalCapable: boolean;
+
+    /** Whether `executeTask` stops a run at `costCapUsd` while it runs. */
+    readonly enforcesCostCap?: boolean;
 
     /**
      * Executes a complex task modifying files in the worktree.

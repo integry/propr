@@ -11,12 +11,12 @@ import {
 import type {
     LineageAttempt,
     ReplaceableTask,
-    ReplacementDispatchRecord,
     ReplacementRequestRecord,
     TaskReplacementStore,
 } from './store.js';
+import { createReplacementDelivery, REPLACEMENT_JOB_NAME, TERMINAL_STATES } from './delivery.js';
 
-export const REPLACEMENT_JOB_NAME = 'processGitHubIssue';
+export { REPLACEMENT_JOB_NAME } from './delivery.js';
 /** A pending decision older than this is completed by the reconciler. */
 export const PENDING_REPLACEMENT_RECOVERY_MS = 5 * 60 * 1000;
 
@@ -107,13 +107,17 @@ export interface TaskReplacementService {
      * redelivers replacements claimed before their queue job was confirmed.
      */
     resumePending(options?: { limit?: number }): Promise<{ resumed: number; cleared: number }>;
+    /**
+     * Whether the task is a claimed replacement whose queue delivery is not confirmed
+     * yet; reconciliation must leave it to `resumePending` rather than fail it as orphaned.
+     */
+    awaitingDelivery(taskId: string): Promise<boolean>;
     /** Attempts of the task's lineage, oldest first (just the task itself outside a lineage). */
     lineage(taskId: string): Promise<LineageAttempt[]>;
     /** Markdown list of a lineage's attempts with links to each task. */
     formatAttempts(lineage: LineageAttempt[]): string;
 }
 
-const TERMINAL_STATES = new Set(['completed', 'failed', 'cancelled']);
 const EXHAUSTING_REASONS = new Set<ReplacementSkipReason>(['cap_reached', 'budget_exhausted']);
 
 function shortHash(value: string): string {
@@ -211,6 +215,8 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
         });
     }
 
+    const delivery = createReplacementDelivery(deps, { now, publishFailureAgain });
+
     async function postExhaustedComment(task: ReplaceableTask, lineage: LineageAttempt[], request: ReplacementRequest): Promise<void> {
         const repository = splitRepository(task.repository);
         if (!deps.postIssueComment || !repository || !task.issueNumber || request.cause !== 'infra_lost') return;
@@ -299,75 +305,16 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
                 'Queue delivery of replacement attempt is unconfirmed; recovery will redeliver it');
             return { action: 'delivery_pending', replacementTaskId, attemptNumber };
         }
-        await confirmDispatched(task, request.cause, {
+        await delivery.confirmDispatched(task, request.cause, {
             replacementTaskId, jobId, jobData, attemptNumber, maxReplacements: evaluation.maxReplacements,
             ...(remainingBudgetUsd === undefined ? {} : { remainingBudgetUsd }),
             ...(failure ? { failure } : {}),
             claimedAt: timestamp,
-        }, { timestamp });
+        }, { timestamp, announceState: 'pending' });
         const lineage = [...evaluation.lineage, {
             taskId: replacementTaskId, attemptNumber, replacementCause: request.cause, state: 'pending', costUsd: 0,
         }];
         return { action: 'dispatched', replacementTaskId, attemptNumber, lineage };
-    }
-
-    /** Records a replacement whose queue delivery is confirmed; releases the original's pending decision. */
-    async function confirmDispatched(
-        task: ReplaceableTask,
-        cause: ReplacementCause,
-        dispatch: ReplacementDispatchRecord,
-        { timestamp, announce = true }: { timestamp: string; announce?: boolean },
-    ): Promise<void> {
-        const { replacementTaskId, attemptNumber, remainingBudgetUsd, failure } = dispatch;
-        await deps.store.setState(task.taskId, 'dispatched');
-        await deps.store.appendEvent({
-            taskId: task.taskId, event: 'replacement.dispatched', reason: `Replacement attempt ${attemptNumber} dispatched`, timestamp,
-            metadata: {
-                cause,
-                replacementTaskId,
-                attemptNumber,
-                maxReplacements: dispatch.maxReplacements,
-                ...(task.branchName ? { branch: task.branchName } : {}),
-                ...(remainingBudgetUsd === undefined ? {} : { remainingBudgetUsd }),
-                ...(failure ? { failure } : {}),
-            },
-        });
-        if (announce) await deps.publishTaskUpdate?.({
-            taskId: replacementTaskId,
-            state: 'pending',
-            repository: task.repository,
-            ...(task.issueNumber ? { issueNumber: task.issueNumber } : {}),
-            timestamp,
-            metadata: { replacesTaskId: task.taskId, attemptNumber, replacementCause: cause },
-        });
-        deps.logger?.info({ taskId: task.taskId, replacementTaskId, attemptNumber, cause }, 'Dispatched task replacement attempt');
-    }
-
-    /**
-     * Redelivers a replacement claimed by an interrupted dispatch, under its persisted
-     * task and job IDs. Re-adding an existing job ID is a no-op in the queue, so this
-     * is safe when the earlier delivery did reach it.
-     */
-    async function resumeClaimed(originalTaskId: string, cause: ReplacementCause, dispatch: ReplacementDispatchRecord): Promise<boolean> {
-        const [task, replacement] = await Promise.all([
-            deps.store.loadTask(originalTaskId),
-            deps.store.loadTask(dispatch.replacementTaskId),
-        ]);
-        if (!task || task.replacedByTaskId !== dispatch.replacementTaskId || !replacement) return false;
-        // A replacement that progressed past its queued state was delivered.
-        const queued = replacement.latestState === 'pending';
-        if (queued) {
-            try {
-                await deps.enqueue(REPLACEMENT_JOB_NAME, dispatch.jobData, dispatch.jobId);
-            } catch (error) {
-                // Stays pending; the next sweep retries the same identity.
-                deps.logger?.warn({ taskId: task.taskId, replacementTaskId: dispatch.replacementTaskId, error: (error as Error).message },
-                    'Failed to redeliver claimed replacement attempt');
-                return false;
-            }
-        }
-        await confirmDispatched(task, cause, dispatch, { timestamp: now().toISOString(), announce: queued });
-        return true;
     }
 
     async function withdraw(taskId: string, request: ReplacementRequestRecord): Promise<boolean> {
@@ -431,7 +378,7 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
             let cleared = 0;
             for (const entry of pending) {
                 if (entry.replacedByTaskId && entry.request.dispatch) {
-                    if (await resumeClaimed(entry.taskId, entry.request.cause, entry.request.dispatch)) resumed++;
+                    if (await delivery.resumeClaimed(entry.taskId, entry.request.cause, entry.request.dispatch)) resumed++;
                 } else if (entry.request.finalizedBy && entry.latestState && TERMINAL_STATES.has(entry.latestState)
                     && entry.latestFinalizedBy !== entry.request.finalizedBy) {
                     // Another writer ended the task; the failure this decision awaited never happened.
@@ -450,6 +397,8 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
             }
             return { resumed, cleared };
         },
+
+        awaitingDelivery: delivery.awaitingDelivery,
 
         async lineage(taskId) {
             const task = await deps.store.loadTask(taskId);

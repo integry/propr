@@ -16,7 +16,9 @@ export type ReplacementSkipReason =
     | 'watchdog_stop'
     | 'cost_cap_stop'
     | 'goal_task'
-    | 'unsupported_task';
+    | 'unsupported_task'
+    /** The claimed replacement was finalized by reconciliation before any worker ran it. */
+    | 'replacement_not_started';
 
 /** A second orphaning of the same lineage is final. */
 export const MAX_INFRA_LOST_REPLACEMENTS = 1;
@@ -31,6 +33,7 @@ const SKIP_REASON_TEXT: Record<ReplacementSkipReason, string> = {
     cost_cap_stop: 'the task was stopped by its cost cap',
     goal_task: 'goal tasks use goal recovery instead',
     unsupported_task: 'this task type cannot be replaced automatically',
+    replacement_not_started: 'the replacement attempt was ended by reconciliation before it started',
 };
 
 export function describeReplacementSkip(reason: ReplacementSkipReason): string {

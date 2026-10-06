@@ -19,6 +19,7 @@ export function resolveAgentTerminationReason(input: TerminationInput): AgentTer
     if (input.watchdogTrip) return input.watchdogTrip.terminationReason;
     if (input.timedOut) return 'timeout';
     if (input.subtype === 'error_max_turns') return 'max_turns';
+    if (input.subtype === 'error_max_budget_usd') return 'cost_cap';
 
     const error = input.error?.trim();
     if (!error) return undefined;
@@ -37,6 +38,7 @@ export function describeAgentTermination(reason: AgentTerminationReason): string
     switch (reason) {
         case 'timeout': return 'The agent reached the execution time limit before it could confirm that all requested work was complete.';
         case 'stalled': return 'The agent stopped producing output and the stall watchdog ended the run before it could confirm that all requested work was complete.';
+        case 'cost_cap': return 'The agent reached the cost cap of this run before it could confirm that all requested work was complete.';
         case 'degenerate_output': return 'The agent produced only whitespace output and the watchdog ended the run before it could confirm that all requested work was complete.';
         default: return 'The agent reached the maximum turn limit before it could confirm that all requested work was complete.';
     }

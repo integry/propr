@@ -78,6 +78,8 @@ export interface DockerArgsParams {
     resumeSessionId?: string;
     /** Identity to assign a fresh goal session so it is durable before any work starts. */
     sessionId?: string;
+    /** Spend limit of the run in USD; Claude stops the run when it is reached. */
+    maxBudgetUsd?: number;
 }
 
 function repositoryInspectionArgs(enabled: boolean): string[] {
@@ -128,11 +130,12 @@ function buildBaseDockerArgs(options: {
     executionMode: 'task' | 'goal';
     resumeSessionId?: string;
     sessionId?: string;
+    maxBudgetUsd?: number;
 }): string[] {
     const {
         config, maxTurns, worktreePath, workspaceMountTarget, configPath, containerName,
         githubToken, envVars, claudeJsonMount, inspectionArgs, reasoningLevel, readOnlyWorkspace, repositoryInspection,
-        workerOwnedGit, executionMode, resumeSessionId, sessionId,
+        workerOwnedGit, executionMode, resumeSessionId, sessionId, maxBudgetUsd,
     } = options;
     const goal = executionMode === 'goal';
     return [
@@ -160,6 +163,7 @@ function buildBaseDockerArgs(options: {
         ...(goal && resumeSessionId ? ['--resume', resumeSessionId] : []),
         ...(goal && !resumeSessionId && sessionId ? ['--session-id', sessionId] : []),
         ...(goal ? [] : ['--max-turns', maxTurns.toString()]),
+        ...(maxBudgetUsd === undefined ? [] : ['--max-budget-usd', maxBudgetUsd.toString()]),
         '--output-format', 'stream-json',
         '--verbose',
         ...inspectionArgs,
@@ -190,7 +194,7 @@ export function buildDockerArgs(
     const {
         worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment,
         taskId, executionType, reasoningLevel, readOnlyWorkspace = false, repositoryInspection = false,
-        executionMode = 'task', resumeSessionId, sessionId,
+        executionMode = 'task', resumeSessionId, sessionId, maxBudgetUsd,
     } = params;
     const configPath = resolveConfigPath(config.configPath);
     if (repositoryInspection && !readOnlyWorkspace) {
@@ -226,6 +230,7 @@ export function buildDockerArgs(
         executionMode,
         resumeSessionId,
         sessionId,
+        maxBudgetUsd,
     });
 
     // Add model parameter if specified

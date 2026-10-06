@@ -228,7 +228,9 @@ most once, and caps are counted from these stamps, so they survive daemon and
 worker restarts. A replacement goes through the same repository capacity
 admission as any task and never bypasses `limits.max_parallel_tasks`. When a
 per-run cost cap is set on the task (`costCapUsd`), the replacement's cap is
-the original cap minus what earlier attempts spent.
+the original cap minus what earlier attempts spent. The cap is enforced while
+the run executes: Claude agents stop at it (`--max-budget-usd`, terminal reason
+`cost_cap`), and agents that cannot enforce a cap refuse a capped run.
 
 No replacement is dispatched for user or withdrawal cancellations
 (`cancelled_*`), tasks stopped by the stall watchdog, run timeout or cost cap,

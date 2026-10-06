@@ -444,7 +444,87 @@ test('a claimed replacement that already started is confirmed without queueing i
     assert.deepEqual(await later.service.resumePending(), { resumed: 1, cleared: 0 });
     assert.equal(later.enqueued.length, 0);
     assert.equal((await task(database, 'task-1')).replacement_state, 'dispatched');
-    assert.deepEqual(later.published, [], 'a running replacement is not announced as pending again');
+    assert.deepEqual(later.published.map(({ taskId, state, metadata }) => [taskId, state, metadata?.replacementStarted]),
+        [[replacementTaskId, 'claude_execution', true]], 'a running replacement is announced under its current state, not as pending');
+});
+
+async function crashAfterClaim(database: Knex, taskId: string, claimedAt: Date): Promise<string> {
+    const store = createTaskReplacementStore(database);
+    const crashing = createTaskReplacementService({
+        store: { ...store, async createReplacement(input) { await store.createReplacement(input); throw new Error('worker lost after the claim committed'); } },
+        enqueue: async () => { assert.fail('the crashed worker never reaches the queue'); },
+        loadMaxProviderReplacements: async () => 2,
+        infraLostEnabled: () => true,
+        randomId: () => `replacement-correlation-${++ids}`,
+        now: () => claimedAt,
+    });
+    await crashing.prepare({ taskId, cause: 'infra_lost', finalizedBy: 'orphan_reconciliation' });
+    await markFinalizedBy(database, taskId, 'orphan_reconciliation');
+    await assert.rejects(crashing.complete({ taskId, cause: 'infra_lost', finalizedBy: 'orphan_reconciliation' }), /worker lost/);
+    return String((await task(database, taskId)).replaced_by_task_id);
+}
+
+test('a claimed replacement never delivered to the queue is reported as awaiting delivery until recovery delivers it', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1');
+    const claimedAt = new Date('2026-10-06T08:00:00.000Z');
+    const replacementTaskId = await crashAfterClaim(database, 'task-1', claimedAt);
+    const later = harness(database, { now: new Date(claimedAt.getTime() + PENDING_REPLACEMENT_RECOVERY_MS + 1) });
+
+    assert.equal(await later.service.awaitingDelivery(replacementTaskId), true, 'reconciliation must not fail it as orphaned');
+    assert.equal(await later.service.awaitingDelivery('task-1'), false, 'the original itself is an ordinary task');
+    assert.deepEqual(await later.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.equal(later.enqueued.length, 1);
+    assert.equal(await later.service.awaitingDelivery(replacementTaskId), false, 'once delivered it is reconciled normally');
+});
+
+test('a reconciler-written failure of an undelivered replacement is not taken as delivery', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1');
+    const claimedAt = new Date('2026-10-06T08:00:00.000Z');
+    const replacementTaskId = await crashAfterClaim(database, 'task-1', claimedAt);
+    // Written before delivery was confirmed (e.g. by a worker that predates the delivery guard).
+    await markFinalizedBy(database, replacementTaskId, 'orphan_reconciliation');
+
+    const later = harness(database, { now: new Date(claimedAt.getTime() + PENDING_REPLACEMENT_RECOVERY_MS + 1) });
+    assert.deepEqual(await later.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.equal(later.enqueued.length, 0, 'a failed task is not re-queued');
+    const original = await task(database, 'task-1');
+    assert.equal(original.replacement_state, 'skipped', 'the original is not stamped dispatched');
+    assert.deepEqual((await events(database, 'task-1')).map(entry => [entry.event, entry.reason]),
+        [['replacement.skipped', 'replacement_not_started']]);
+    assert.deepEqual(later.published.map(({ taskId, state, metadata }) => [taskId, state, metadata?.replacementSkipped]),
+        [['task-1', 'failed', 'replacement_not_started']], 'the held-back failure is published');
+    assert.deepEqual(await later.service.resumePending(), { resumed: 0, cleared: 0 });
+});
+
+test('a dispatch interrupted before its announcement keeps a recoverable publication obligation', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1', { state: 'failed' });
+    const claimedAt = new Date('2026-10-06T08:00:00.000Z');
+    const enqueued: string[] = [];
+    const interrupted = createTaskReplacementService({
+        store: createTaskReplacementStore(database),
+        enqueue: async (_name, _data, jobId) => { enqueued.push(jobId); },
+        loadMaxProviderReplacements: async () => 2,
+        infraLostEnabled: () => true,
+        randomId: () => `replacement-correlation-${++ids}`,
+        now: () => claimedAt,
+        // The worker stops after queueing the job and recording the timeline event.
+        publishTaskUpdate: async () => { throw new Error('worker lost before the announcement'); },
+    });
+    await assert.rejects(interrupted.complete({ taskId: 'task-1', cause: 'provider_transient' }), /worker lost/);
+    const replacementTaskId = String((await task(database, 'task-1')).replaced_by_task_id);
+    assert.equal((await task(database, 'task-1')).replacement_state, 'pending', 'queue delivery alone does not release the decision');
+
+    const later = harness(database, { now: new Date(claimedAt.getTime() + PENDING_REPLACEMENT_RECOVERY_MS + 1) });
+    assert.deepEqual(await later.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.deepEqual(later.enqueued.map(entry => entry.jobId), enqueued, 're-adding the same job ID is harmless');
+    assert.deepEqual(later.published.map(({ taskId, state, metadata }) => [taskId, state, metadata?.replacesTaskId]),
+        [[replacementTaskId, 'pending', 'task-1']], 'the replacement is announced');
+    assert.equal((await task(database, 'task-1')).replacement_state, 'dispatched');
+    assert.deepEqual((await events(database, 'task-1')).map(entry => entry.event), ['replacement.dispatched'], 'the timeline event is recorded once');
+    assert.deepEqual(await later.service.resumePending(), { resumed: 0, cleared: 0 });
 });
 
 test('provider classification follows withRetry, excluding 429, usage limits, credentials and run timeouts', () => {
@@ -466,4 +546,5 @@ test('replacement configuration resolves the saved setting, then the environment
     assert.equal(infraLostReplacementEnabled({ INFRA_LOST_REPLACEMENT: 'false' }), false);
     assert.equal(stopReasonExclusion('cancelled_issue_closed'), 'user_cancelled');
     assert.equal(stopReasonExclusion('pr_merged'), null);
+    assert.equal(stopReasonExclusion('cost_cap'), 'cost_cap_stop', 'a run stopped at its cost cap is never replaced');
 });

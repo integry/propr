@@ -28,6 +28,7 @@ export function formatTaskTerminalReason(reason: string): string {
     case 'timed_out': return 'The task exceeded its time limit.';
     case 'stalled': return 'The agent stopped producing output; the stall watchdog stopped the run.';
     case 'degenerate_output': return 'The agent produced only whitespace output; the watchdog stopped the run.';
+    case 'cost_cap': return 'The run reached its cost cap.';
     case 'pr_merged': return 'The pull request was merged.';
     default: return 'The task ended.';
   }

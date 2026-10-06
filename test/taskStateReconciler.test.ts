@@ -266,11 +266,15 @@ function orphanedTwice(taskId: string) {
     });
 }
 
-function createReplacement(eligible: boolean) {
+function createReplacement(eligible: boolean, awaitingDelivery = false) {
     const calls: string[] = [];
     return {
         calls,
         handler: {
+            awaitingDelivery: mock.fn(async (taskId: string) => {
+                calls.push(`awaitingDelivery:${taskId}`);
+                return awaitingDelivery;
+            }),
             prepare: mock.fn(async (request: { taskId: string; cause: string; finalizedBy?: string }) => {
                 calls.push(`prepare:${request.taskId}:${request.cause}`);
                 return eligible
@@ -306,6 +310,7 @@ test('an orphaned task is failed and gets exactly one replacement decision', asy
 
     assert.equal(result.summary.recovered, 1);
     assert.deepEqual(replacement.calls, [
+        'awaitingDelivery:orphan-replaced',
         'prepare:orphan-replaced:infra_lost',
         'complete:orphan-replaced:infra_lost',
     ]);
@@ -328,7 +333,7 @@ test('a final orphaning is still failed, without a pending replacement marker', 
 
     assert.equal(transitions[0].transition.state, TaskStates.FAILED);
     assert.equal('replacement' in transitions[0].transition.metadata, false);
-    assert.deepEqual(replacement.calls, ['prepare:orphan-final:infra_lost', 'complete:orphan-final:infra_lost']);
+    assert.deepEqual(replacement.calls, ['awaitingDelivery:orphan-final', 'prepare:orphan-final:infra_lost', 'complete:orphan-final:infra_lost']);
 });
 
 test('the replacement decision is withdrawn when another writer finalized the orphan first', async () => {
@@ -346,7 +351,7 @@ test('the replacement decision is withdrawn when another writer finalized the or
     });
 
     assert.equal(result.summary.skipped, 1);
-    assert.deepEqual(replacement.calls, ['prepare:orphan-raced:infra_lost', 'withdraw:orphan-raced:orphan_reconciliation']);
+    assert.deepEqual(replacement.calls, ['awaitingDelivery:orphan-raced', 'prepare:orphan-raced:infra_lost', 'withdraw:orphan-raced:orphan_reconciliation']);
     assert.equal(replacement.handler.prepare.mock.calls[0].arguments[0].finalizedBy, 'orphan_reconciliation',
         'the decision is bound to the orphan failure');
 });
@@ -369,6 +374,25 @@ test('a failed replacement dispatch is reported without undoing the orphan failu
     assert.equal(result.summary.errors, 1);
     assert.equal(transitions.length, 1);
     assert.deepEqual(result.backlog, []);
+});
+
+test('a replacement whose queue delivery is unconfirmed is left to replacement recovery, not failed as orphaned', async () => {
+    const { store, transitions } = orphanedTwice('replacement-undelivered');
+    const replacement = createReplacement(true, true);
+    const result = await reconcileStaleTaskStates({
+        queue: { getJob: async () => null },
+        stateManager: createStateManager(),
+        store,
+        inspectContainer: async () => 'not_found',
+        now: NOW,
+        orphanGraceMs: 60_000,
+        replacement: replacement.handler as never,
+    });
+
+    assert.equal(result.summary.skipped, 1);
+    assert.equal(result.summary.recovered, 0);
+    assert.deepEqual(transitions, [], 'the never-delivered replacement is not finalized');
+    assert.deepEqual(replacement.calls, ['awaitingDelivery:replacement-undelivered'], 'no replacement decision is made for it');
 });
 
 test('does not count Docker outages as evidence that a task is orphaned', async () => {

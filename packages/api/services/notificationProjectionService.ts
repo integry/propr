@@ -961,8 +961,11 @@ export class NotificationProjectionService {
    * Returns whether the update was fully handled here.
    */
   private async projectReplacementLifecycle(input: TaskEventProjection): Promise<boolean> {
-    const { state, taskId } = input.payload;
-    if (state !== 'failed' && state !== 'pending') return false;
+    const { state, taskId, metadata } = input.payload;
+    // Replacement recovery re-announces an attempt that already left `pending` under its current state.
+    const announcement = state === 'pending'
+      || (metadata?.replacementStarted === true && state !== 'completed' && state !== 'cancelled');
+    if (state !== 'failed' && !announcement) return false;
     const replacement = await this.loadTaskReplacement(taskId);
     if (state === 'failed') return replacement?.replacementState === 'pending' || replacement?.replacementState === 'dispatched';
     if (!replacement?.replacesTaskId) return false;
