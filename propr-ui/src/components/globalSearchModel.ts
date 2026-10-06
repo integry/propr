@@ -85,12 +85,11 @@ export function getScopeAction(category: SearchCategory, query: string): { label
   const term = query.trim();
   const search = `search=${encodeURIComponent(term)}`;
   switch (category) {
-    case 'all':
-      return { label: `View all results for "${term}"`, path: `/tasks?${search}` };
     case 'repositories':
       return { label: 'View all repositories', path: '/repositories' };
     case 'plans':
       return { label: `Search all plans for "${term}"`, path: `/plans?${search}` };
+    case 'all':
     case 'tasks':
       return { label: `Search all tasks for "${term}"`, path: `/tasks?${search}` };
   }

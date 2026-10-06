@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { DraftListItem } from '../api/plannerApi';
 import type { TaskSearchResult } from '../hooks/useGlobalSearch';
-import { getItemDescription, getSearchStatus, splitFailureReason } from './globalSearchModel';
+import { getItemDescription, getPlansAction, getScopeAction, getSearchStatus, splitFailureReason } from './globalSearchModel';
 
 const plan = (name: string, initial_prompt: string) =>
   ({ kind: 'plan' as const, key: 'plan:1', plan: { draft_id: '1', repository: 'a/b', name, initial_prompt } as DraftListItem });
 
 describe('globalSearchModel', () => {
+  it('labels the All scope\'s full search as the task search it opens', () => {
+    expect(getScopeAction('all', ' mcp ')).toEqual({ label: 'Search all tasks for "mcp"', path: '/tasks?search=mcp' });
+    expect(getScopeAction('all', 'mcp')).toEqual(getScopeAction('tasks', 'mcp'));
+    // Plans matched under All stay reachable through their own full search.
+    expect(getPlansAction('all', { all: 2, repositories: 0, plans: 2, tasks: 0 }, 'mcp'))
+      .toEqual({ label: 'Search all plans for "mcp"', path: '/plans?search=mcp' });
+  });
+
   it('drops a description that only restates the title', () => {
     expect(getItemDescription(plan('Expose retrieval over MCP', 'Plan Expose retrieval over MCP'))).toBeNull();
     expect(getItemDescription(plan('Expose retrieval over MCP', 'Expose retrieval over MCP.'))).toBeNull();

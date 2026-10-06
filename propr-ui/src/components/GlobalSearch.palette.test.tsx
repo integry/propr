@@ -162,7 +162,7 @@ describe('GlobalSearch palette', () => {
 
   it('labels the footer link for the active scope', async () => {
     const input = await renderWithResults();
-    expect(screen.getByRole('button', { name: 'View all results for "mcp" →' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Search all tasks for "mcp" →' })).toBeInTheDocument();
     fireEvent.keyDown(input, { key: 'Tab' });
     fireEvent.keyDown(input, { key: 'Tab' });
     expect(screen.getByRole('button', { name: 'Search all plans for "mcp" →' })).toBeInTheDocument();
@@ -179,7 +179,7 @@ describe('GlobalSearch palette', () => {
 
   it('runs the active scope\'s full search with Shift+Enter', async () => {
     const input = await renderWithResults();
-    expect(screen.getByRole('button', { name: 'View all results for "mcp" →' })).toHaveAttribute('aria-keyshortcuts', 'Shift+Enter');
+    expect(screen.getByRole('button', { name: 'Search all tasks for "mcp" →' })).toHaveAttribute('aria-keyshortcuts', 'Shift+Enter');
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
     expect(screen.getByTestId('location')).toHaveTextContent('/tasks?search=mcp');
   });
