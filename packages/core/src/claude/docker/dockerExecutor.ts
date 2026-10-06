@@ -326,7 +326,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
 
         const recordWatchdogActivity = (): void => watchdog.recordActivity();
 
-        const liveOutput = startLiveOutputStreaming({ taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow: warnFromLiveOutput, onActivity: recordWatchdogActivity }, readStdout, () => stderrTail.value);
+        const liveOutput = startLiveOutputStreaming({ taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow: warnFromLiveOutput, onActivity: recordWatchdogActivity, onTranscriptRecord: watchdog.observeLine }, readStdout, () => stderrTail.value);
         if (command === 'docker' && args[0] === 'run' && worktreePath) {
             containerDetectionTimer = detectContainerId(
                 worktreePath,

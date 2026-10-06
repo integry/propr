@@ -11,6 +11,16 @@ class FakeRedis {
     disconnect() {}
 }
 mock.module('ioredis', { namedExports: { Redis: FakeRedis, default: FakeRedis } });
+// Instance settings for runs that do not pass `watchdog`; loading takes `settingsLoadDelayMs`.
+let settingsLoadDelayMs = 0;
+mock.module('../packages/core/src/config/configManagerAgentWatchdog.js', {
+    namedExports: {
+        loadAgentWatchdogSettings: async () => {
+            await new Promise(resolve => setTimeout(resolve, settingsLoadDelayMs));
+            return { stallTimeoutMs: 300, toolStallTimeoutMs: 1_500, degenerateOutputLimit: 5 };
+        },
+    },
+});
 const { executeDockerCommand } = await import('../packages/core/src/claude/docker/dockerExecutor.js');
 const { startExecutionWatchdog } = await import('../packages/core/src/claude/docker/dockerExecutionWatchdog.js');
 const { ACQUIRE_WORKFLOW_SLOT, RELEASE_WORKFLOW_SLOT, releaseRepositoryWorkflowSlot, withRepositoryWorkflowSlot } = await import('../packages/core/src/workflow/workflowConcurrency.js');
@@ -72,6 +82,48 @@ test('a silent tool call gets the longer tool threshold', async () => {
     const result = await execution;
     assert.equal(result.exitCode, 0, '800ms of silence is past the stall threshold but within the tool threshold');
     assert.equal(trips.length, 0);
+});
+
+test('a tool started while the instance settings load still gets the tool threshold', async () => {
+    settingsLoadDelayMs = 400;
+    const tool = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'slow', name: 'Bash', input: {} }] } });
+    const done = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'slow', content: 'ok' }] } });
+    const { execution, trips } = runAgent(`
+        process.stdout.write(process.argv[1]);
+        setTimeout(() => { process.stdout.write(process.argv[2]); process.exit(0); }, 1_000);`, { watchdog: undefined }, [`${tool}\n`, `${done}\n`]);
+    const result = await execution;
+    settingsLoadDelayMs = 0;
+    assert.equal(result.exitCode, 0, 'the tool start arrived before the settings and must not be dropped');
+    assert.equal(trips.length, 0);
+});
+
+test('every tool in a multi-tool message keeps the tool threshold until its own result arrives', async () => {
+    const tools = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a' }, { type: 'tool_use', id: 'b' }] } });
+    const first = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'a', content: 'ok' }] } });
+    const second = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'b', content: 'ok' }] } });
+    const { execution, trips } = runAgent(`
+        process.stdout.write(process.argv[1]);
+        setTimeout(() => process.stdout.write(process.argv[2]), 100);
+        setTimeout(() => { process.stdout.write(process.argv[3]); process.exit(0); }, 1_000);`, {}, [`${tools}\n`, `${first}\n`, `${second}\n`]);
+    const result = await execution;
+    assert.equal(result.exitCode, 0, 'tool b ran silently past the stall threshold but within the tool threshold');
+    assert.equal(trips.length, 0);
+});
+
+test('tool calls seen only in a transcript snapshot get the tool threshold, and their results end it', async () => {
+    // Snapshots are polled every 2s, so the thresholds sit above that interval.
+    const settings = { stallTimeoutMs: 2_500, toolStallTimeoutMs: 20_000, degenerateOutputLimit: 5 };
+    const start = JSON.stringify({ role: 'assistant', content: '', tool_calls: [{ id: 'call_1', function: { name: 'bash', arguments: '{}' } }] });
+    const end = JSON.stringify({ role: 'tool', tool_call_id: 'call_1', content: 'ok' });
+    let transcript = `${start}\n`;
+    const startedAt = Date.now();
+    const finishTool = setTimeout(() => { transcript += `${end}\n`; }, 5_000);
+    const { execution } = runAgent('', { watchdog: settings, streamExtraOutput: () => transcript });
+    const result = await execution;
+    clearTimeout(finishTool);
+    const elapsed = Date.now() - startedAt;
+    assert.equal(result.watchdogTrip?.rule, 'inactivity', 'the run stops on ordinary inactivity once the tool result is in the transcript');
+    assert.ok(elapsed >= 6_000, `the snapshot tool start held off the ordinary threshold (stopped after ${elapsed}ms)`);
 });
 
 test('consecutive whitespace-only deltas stop the run as degenerate output', async () => {

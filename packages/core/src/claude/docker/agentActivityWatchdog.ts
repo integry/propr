@@ -48,11 +48,15 @@ export class AgentActivityWatchdog {
     private readonly now: () => number;
     private readonly onTrip: (trip: AgentWatchdogTrip) => void;
     private lastActivityAt: number;
-    private openTools = 0;
+    /** Running tool calls the provider identified, and those already finished (records may be seen twice). */
+    private readonly openToolIds = new Set<string>();
+    private readonly finishedToolIds = new Set<string>();
+    /** Running tool calls reported without an id. */
+    private anonymousTools = 0;
     private whitespaceDeltas = 0;
     private tripped: AgentWatchdogTrip | null = null;
 
-    constructor(private readonly settings: AgentWatchdogSettings, options: AgentActivityWatchdogOptions) {
+    constructor(private settings: AgentWatchdogSettings, options: AgentActivityWatchdogOptions) {
         this.now = options.now ?? Date.now;
         this.onTrip = options.onTrip;
         this.lastActivityAt = this.now();
@@ -64,21 +68,46 @@ export class AgentActivityWatchdog {
         return this.settings.stallTimeoutMs > 0 || this.settings.degenerateOutputLimit > 0;
     }
 
+    /** Number of tool calls currently running. */
+    get openTools(): number {
+        return this.openToolIds.size + this.anonymousTools;
+    }
+
+    /**
+     * Applies thresholds that became known after output started arriving.
+     * Activity and tool state observed so far are kept, so a run observed under
+     * all-zero placeholder settings is judged exactly as if they applied from the start.
+     */
+    configure(settings: AgentWatchdogSettings): void {
+        this.settings = settings;
+        this.checkDegenerate();
+    }
+
     /** Any output from the container: a record, a partial record, a log line. */
     recordActivity(): void {
         this.lastActivityAt = this.now();
     }
 
-    recordToolStart(): void {
+    recordToolStart(id?: string): void {
         this.recordActivity();
-        this.openTools += 1;
         this.whitespaceDeltas = 0;
+        if (id === undefined) this.anonymousTools += 1;
+        else if (!this.finishedToolIds.has(id)) this.openToolIds.add(id);
     }
 
-    recordToolEnd(): void {
+    recordToolEnd(id?: string): void {
         this.recordActivity();
-        this.openTools = Math.max(0, this.openTools - 1);
         this.whitespaceDeltas = 0;
+        if (id !== undefined && this.openToolIds.delete(id)) { this.finishedToolIds.add(id); return; }
+        // A repeated end of a finished call must not close another one.
+        if (id !== undefined && this.finishedToolIds.has(id)) return;
+        if (id !== undefined) this.finishedToolIds.add(id);
+        if (this.anonymousTools > 0) { this.anonymousTools -= 1; return; }
+        // An end without an id closes the oldest identified call.
+        if (id === undefined) {
+            const oldest = this.openToolIds.values().next();
+            if (!oldest.done) this.recordToolEnd(oldest.value);
+        }
     }
 
     /** Empty deltas are protocol noise and neither count nor reset the degenerate run. */
@@ -86,25 +115,25 @@ export class AgentActivityWatchdog {
         this.recordActivity();
         if (text.length === 0) return;
         // Text from the model means any tool it was waiting on has returned.
-        this.openTools = 0;
+        for (const id of this.openToolIds) this.finishedToolIds.add(id);
+        this.openToolIds.clear();
+        this.anonymousTools = 0;
         if (text.trim().length > 0) {
             this.whitespaceDeltas = 0;
             return;
         }
         this.whitespaceDeltas += 1;
-        const limit = this.settings.degenerateOutputLimit;
-        if (limit > 0 && this.whitespaceDeltas >= limit) {
-            this.fire({ rule: 'degenerate_output', terminationReason: 'degenerate_output', threshold: limit, degenerateDeltas: this.whitespaceDeltas });
-        }
+        this.checkDegenerate();
     }
 
-    /** Classifies one complete output line and records it. */
+    /** Classifies one complete output line and records every transition in it. */
     observeLine(line: string): void {
-        const activity = classifyAgentOutputLine(line);
-        if (activity.kind === 'text') this.recordTextDelta(activity.text);
-        else if (activity.kind === 'tool_start') this.recordToolStart();
-        else if (activity.kind === 'tool_end') this.recordToolEnd();
-        else this.recordActivity();
+        for (const activity of classifyAgentOutputLine(line)) {
+            if (activity.kind === 'text') this.recordTextDelta(activity.text);
+            else if (activity.kind === 'tool_start') this.recordToolStart(activity.id);
+            else if (activity.kind === 'tool_end') this.recordToolEnd(activity.id);
+            else this.recordActivity();
+        }
     }
 
     /** Silence threshold currently in force, or 0 when silence never trips. */
@@ -127,6 +156,13 @@ export class AgentActivityWatchdog {
             threshold,
             silentSeconds: Math.floor(silentMs / 1000),
         });
+    }
+
+    private checkDegenerate(): void {
+        const limit = this.settings.degenerateOutputLimit;
+        if (limit > 0 && this.whitespaceDeltas >= limit) {
+            this.fire({ rule: 'degenerate_output', terminationReason: 'degenerate_output', threshold: limit, degenerateDeltas: this.whitespaceDeltas });
+        }
     }
 
     private fire(trip: Omit<AgentWatchdogTrip, 'message'>): AgentWatchdogTrip {

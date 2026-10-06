@@ -48,7 +48,7 @@ async function report(options: ExecutionWatchdogOptions, trip: AgentWatchdogTrip
 export interface ExecutionWatchdog {
     /** Any output from the process: a chunk on stdout or stderr, a changed transcript snapshot. */
     recordActivity(): void;
-    /** One complete stdout record, classified for text deltas and tool calls. */
+    /** One complete stdout or transcript record, classified for text deltas and tool calls. */
     observeLine(line: string): void;
     /** The trip that stopped this execution, once {@link ExecutionWatchdog.stop} accepted it. */
     readonly trip: AgentWatchdogTrip | null;
@@ -63,8 +63,10 @@ export interface ExecutionWatchdog {
  * already being stopped for another reason, which then keeps its outcome.
  */
 export function startExecutionWatchdog(options: ExecutionWatchdogOptions, stopExecution: () => boolean): ExecutionWatchdog {
-    let watchdog: AgentActivityWatchdog | null = null;
     let timer: ReturnType<typeof setInterval> | null = null;
+    // Observation starts with the execution: output that arrives while the
+    // settings load (a tool start, say) must already count once they apply.
+    let observing = executionWatchdogApplies(options);
     let closed = false;
     let accepted: AgentWatchdogTrip | null = null;
     let reporting: Promise<void> = Promise.resolve();
@@ -80,19 +82,20 @@ export function startExecutionWatchdog(options: ExecutionWatchdogOptions, stopEx
         accepted = trip;
         reporting = report(options, trip);
     };
+    // All-zero thresholds never trip; the loaded settings replace them.
+    const watchdog = new AgentActivityWatchdog({ stallTimeoutMs: 0, toolStallTimeoutMs: 0, degenerateOutputLimit: 0 }, { onTrip });
     void resolveSettings(options).then(settings => {
-        if (!settings || closed) return;
-        const candidate = new AgentActivityWatchdog(settings, { onTrip });
-        if (!candidate.enabled) return;
-        watchdog = candidate;
+        if (!settings || closed) { observing = false; return; }
+        watchdog.configure(settings);
+        if (!watchdog.enabled) { observing = false; return; }
         const interval = watchdogPollIntervalMs(settings);
-        if (interval <= 0) return;
-        timer = setInterval(() => { watchdog?.check(); }, interval);
+        if (interval <= 0 || closed) return;
+        timer = setInterval(() => { watchdog.check(); }, interval);
         timer.unref?.();
     });
     return {
-        recordActivity: () => { if (!closed) watchdog?.recordActivity(); },
-        observeLine: line => { if (!closed) watchdog?.observeLine(line); },
+        recordActivity: () => { if (observing && !closed) watchdog.recordActivity(); },
+        observeLine: line => { if (observing && !closed) watchdog.observeLine(line); },
         get trip() { return accepted; },
         stop,
         settled: () => reporting,

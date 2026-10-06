@@ -119,9 +119,63 @@ test('each supported agent protocol reports text, tool start and tool end', () =
         ['init', { type: 'system', subtype: 'init' }, 'activity'],
     ];
     for (const [label, event, kind] of cases) {
-        assert.equal(classifyAgentOutputLine(JSON.stringify(event)).kind, kind, label);
+        assert.deepEqual(classifyAgentOutputLine(JSON.stringify(event)).map(activity => activity.kind), [kind], label);
     }
-    assert.equal(classifyAgentOutputLine('{"truncated": ').kind, 'activity');
+    assert.deepEqual(classifyAgentOutputLine('{"truncated": '), [{ kind: 'activity' }]);
+});
+
+test('every tool call in one record is classified, with its call id', () => {
+    const claude = { type: 'assistant', message: { content: [{ type: 'text', text: 'Running both' }, { type: 'tool_use', id: 'a' }, { type: 'tool_use', id: 'b' }] } };
+    assert.deepEqual(classifyAgentOutputLine(JSON.stringify(claude)), [
+        { kind: 'text', text: 'Running both' }, { kind: 'tool_start', id: 'a' }, { kind: 'tool_start', id: 'b' },
+    ]);
+    const vibe = { role: 'assistant', content: '', tool_calls: [{ id: 'c1', function: { name: 'bash' } }, { id: 'c2', function: { name: 'grep' } }] };
+    assert.deepEqual(classifyAgentOutputLine(JSON.stringify(vibe)), [{ kind: 'tool_start', id: 'c1' }, { kind: 'tool_start', id: 'c2' }]);
+    assert.deepEqual(classifyAgentOutputLine(JSON.stringify({ role: 'tool', tool_call_id: 'c1', content: 'ok' })), [{ kind: 'tool_end', id: 'c1' }]);
+    assert.deepEqual(classifyAgentOutputLine(JSON.stringify({ role: 'assistant', content: 'plain reply' })), [{ kind: 'activity' }]);
+    assert.deepEqual(classifyAgentOutputLine(JSON.stringify({ type: 'item.started', item: { id: 'item_1', type: 'command_execution' } })), [{ kind: 'tool_start', id: 'item_1' }]);
+});
+
+test('a multi-tool message keeps the tool threshold until every result has arrived', () => {
+    const { watchdog, advance } = harness();
+    watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a' }, { type: 'tool_use', id: 'b' }] } }));
+    advance(2_000);
+    watchdog.observeLine(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'a', content: 'ok' }] } }));
+    // The same result seen twice (stdout and a transcript) must not close the other call.
+    watchdog.observeLine(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'a', content: 'ok' }] } }));
+    assert.equal(watchdog.openTools, 1);
+    assert.equal(advance(4_999), null, 'tool b is still running silently');
+    assert.equal(advance(1)?.rule, 'tool_inactivity');
+});
+
+test('the last outstanding result restores the ordinary stall threshold', () => {
+    const { watchdog, advance } = harness();
+    watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a' }, { type: 'tool_use', id: 'b' }] } }));
+    watchdog.observeLine(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'b' }] } }));
+    watchdog.observeLine(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'a' }] } }));
+    // A replayed start of a finished call does not reopen it.
+    watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a' }] } }));
+    assert.equal(watchdog.openTools, 0);
+    assert.equal(advance(1_000)?.rule, 'inactivity');
+});
+
+test('output observed before the settings are configured keeps its time and tool state', () => {
+    let now = 0;
+    const trips: AgentWatchdogTrip[] = [];
+    const watchdog = new AgentActivityWatchdog({ stallTimeoutMs: 0, toolStallTimeoutMs: 0, degenerateOutputLimit: 0 }, { now: () => now, onTrip: trip => trips.push(trip) });
+    now = 100;
+    watchdog.observeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a' }] } }));
+    for (let index = 0; index < 3; index += 1) watchdog.recordTextDelta(' ');
+    assert.equal(trips.length, 0, 'placeholder settings never trip');
+    watchdog.configure(SETTINGS);
+    assert.equal(trips[0]?.rule, 'degenerate_output', 'deltas counted while loading apply once the limit is known');
+    const loading = new AgentActivityWatchdog({ stallTimeoutMs: 0, toolStallTimeoutMs: 0, degenerateOutputLimit: 0 }, { now: () => now, onTrip: () => undefined });
+    loading.observeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a' }] } }));
+    loading.configure(SETTINGS);
+    now += 4_999;
+    assert.equal(loading.check(), null, 'a tool started while loading keeps the tool threshold');
+    now += 1;
+    assert.equal(loading.check()?.rule, 'tool_inactivity');
 });
 
 test('watchdog stops resolve to their own termination reasons', () => {
