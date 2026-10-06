@@ -37,8 +37,8 @@ import {
     hasUltrafixLabel,
 } from './ultrafixLoopContinuationHelpers.js';
 import { applyUltrafixCiDeferral } from './ultrafixCiWait.js';
-import { getNextStepNumber, rearmStrandedUltrafixLoop, RESUME_CLAIM_LOST_REASON, withResumeClaim } from './ultrafixStrandedLoopRearm.js';
-import type { ResumeClaim } from './ultrafixStrandedLoopRearm.js';
+import { rearmStrandedUltrafixLoop } from './ultrafixStrandedLoopRearm.js';
+import { getNextStepNumber, RESUME_CLAIM_LOST_REASON, withResumeClaim, type ResumeClaim } from './ultrafixResumeClaim.js';
 
 export interface UltrafixContinuationParams {
     owner: string;

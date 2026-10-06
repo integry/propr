@@ -35,7 +35,7 @@ import {
     evaluateStrandedLoopRearm,
     loadStateSnapshot,
     syncStateWorkEpoch,
-} from '../src/jobs/ultrafixStrandedLoopRearm.js';
+} from '../src/jobs/ultrafixResumeClaim.js';
 import { requiresPassingChecks } from '../src/jobs/ultrafixReadinessPolicy.js';
 
 // --- Mock Redis ---

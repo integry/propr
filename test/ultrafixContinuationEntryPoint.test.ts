@@ -86,7 +86,7 @@ const {
     resumeDeferredContinuation,
     setCheckRunDeps,
 } = await import('../src/jobs/ultrafixLoopContinuation.js');
-const { acquireResumeClaim } = await import('../src/jobs/ultrafixStrandedLoopRearm.js');
+const { acquireResumeClaim } = await import('../src/jobs/ultrafixResumeClaim.js');
 const {
     createDefaultState,
     getUltrafixAutomaticWorkEpoch,
