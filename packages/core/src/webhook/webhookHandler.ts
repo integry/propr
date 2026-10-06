@@ -11,6 +11,7 @@ import { clearUltrafixStateForLabelRemoval } from '../utils/ultrafixLabelTransit
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
 import { getClosedPullRequestCiRedis, recordClosedPullRequestForCiCancellation } from './closedPullRequestCi.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
+import { handleAutoMergePolicyPullRequestEvent } from '../services/autoMergeGate.js';
 import type {
     IssuesEvent, IssuesLabeledEvent,
     IssueCommentEvent, IssueCommentCreatedEvent, IssueCommentDeletedEvent, IssueCommentEditedEvent,
@@ -458,6 +459,8 @@ export async function processWebhookEvent(
     if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
         await handleEpicPRCreationOnMerge(payload, correlationId, correlatedLogger);
         await handleEpicPRLabelCleanup(payload, correlationId, correlatedLogger);
+        // A new head (or base) may add protected changes after auto-merge was armed.
+        await handleAutoMergePolicyPullRequestEvent(payload, correlatedLogger);
         // A closed pull request's validation is as obsolete as one a follow-up replaces.
         if (payload.action === 'closed') await recordClosedPullRequestForCiCancellation(payload, getClosedPullRequestCiRedis());
     }

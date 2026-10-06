@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Fail-closed auto-merge policy with protected paths**: `.propr/workflow.yml`
+  accepts an `auto_merge` block (`enabled`, `method`, `protected_paths`), and
+  `.propr/**` is always protected. Before arming GitHub auto-merge (after the PR
+  is created, after Ultrafix reaches its goal, and for Epic queue heads), ProPR
+  reads the policy from the PR's base branch and lists the changed files from a
+  fresh GitHub API fetch. It never uses the head branch or the agent's worktree.
+  An invalid or unreadable policy, an empty diff, an unavailable diff or a
+  protected path means auto-merge is not armed. Each decision writes one task
+  timeline event with a stable reason code (`armed`, `skipped_protected_path`,
+  `skipped_disabled`, `skipped_empty_diff`, `skipped_policy_invalid`,
+  `skipped_diff_unavailable`). A skip posts a one-line PR comment and keeps the
+  `auto-merge` label for a person to act on. The check-based fallback merge
+  applies the same policy. A new head on a PR that ProPR armed is re-evaluated,
+  and auto-merge is disabled with a comment if the head now violates the policy.
+  A skipped Epic queue head shows "Waiting for human merge" and resumes once a
+  person merges the PR.
 - **Per-run spend caps**: a run whose estimated cost reaches its cap is now
   stopped while it executes, and its partial work is published like a
   timed-out run's. The cap comes from a per-task `maxCostUsd` (task
