@@ -129,6 +129,7 @@ Queue and worker behavior; see [Worker Runtime](../architecture/worker-runtime.m
 | `PR_TASK_TITLE_GENERATION_TIMEOUT_MS` | `30000` | Timeout for the lightweight agent call that titles PR comment tasks, including container startup. | Optional tuning. |
 | `SUMMARIZATION_FALLBACK_PROMOTE_THRESHOLD` | `3` | Promotes the summarization fallback to primary after this many primary quota failures for the same agent/model. | Optional. |
 | `SUMMARIZATION_QUOTA_COOLDOWN_MS` | `3600000` (1 hour) | Pauses normal summarization jobs for a repository/branch after both primary and fallback paths fail. | Optional. |
+| `ULTRAFIX_CI_WAIT_TIMEOUT_MS` | Instance setting `ultrafix_ci_wait_timeout_ms`, default `7200000` (2 hours) | How long an Ultrafix review may wait for blocking CI on the PR head before the loop stops with "CI did not settle". Overrides the instance setting when set to a positive integer. See [`/ultrafix`](../features/pr-commands.md#ultrafix). | Optional tuning. |
 | `SYSTEM_TASK_SECRET` | Empty | Signs system task requests (for example revert operations). Generate with `openssl rand -hex 32`. | System tasks (reverts). |
 | `SYSTEM_TASK_TOKEN_MAX_AGE_MS` | `7200000` (2 hours) | Maximum age for signed system task tokens. Increase if jobs expire due to queue backlog or worker downtime. | Optional. |
 | `GIT_CLONES_BASE_PATH` | `/tmp/git-processor/clones` | Where workers keep repository clones. | Optional. |

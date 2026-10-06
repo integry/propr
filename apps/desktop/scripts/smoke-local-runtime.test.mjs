@@ -196,11 +196,13 @@ describe('desktop source runtime smoke root boundary', { skip: unsupported }, ()
   test('removes its own root even when a container-owned subdirectory blocks the host user', async (t) => {
     const workspace = makeWorkspace();
     t.after(() => forceRemove(workspace.root));
-    const root = privateRoot(workspace);
-    const result = await removeRoot(workspace, root, await identityOf(workspace, root));
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(existsSync(root), false);
-    assert.equal(dockerCalls(workspace).length, hostCannotRemovePrivateSubtree ? 1 : 0);
+    for (const name of ['propr-desktop-runtime-smoke.Ab12Cd', 'propr-preview-runtime-smoke.Ab12Cd']) {
+      const root = privateRoot(workspace, name);
+      const result = await removeRoot(workspace, root, await identityOf(workspace, root));
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(existsSync(root), false);
+    }
+    assert.equal(dockerCalls(workspace).length, hostCannotRemovePrivateSubtree ? 2 : 0);
   });
 
   test('refuses a symlink that impersonates the smoke root', async (t) => {
@@ -225,11 +227,15 @@ describe('desktop source runtime smoke root boundary', { skip: unsupported }, ()
       assert.notEqual(result.code, 0, target);
       assert.match(result.stderr, /refusing/);
     }
-    const misnamed = join(workspace.tmp, 'propr-desktop-runtime-smoke.Ab12Cd-personal');
-    mkdirSync(misnamed, { mode: 0o700 });
-    const result = await removeRoot(workspace, misnamed, await identityOf(workspace, misnamed));
-    assert.notEqual(result.code, 0);
-    assert.ok(existsSync(misnamed));
+    for (const name of [
+      'propr-desktop-runtime-smoke.Ab12Cd-personal', 'propr-preview-runtime-smoke.Ab12Cd-personal', 'propr-other-runtime-smoke.Ab12Cd',
+    ]) {
+      const misnamed = join(workspace.tmp, name);
+      mkdirSync(misnamed, { mode: 0o700 });
+      const result = await removeRoot(workspace, misnamed, await identityOf(workspace, misnamed));
+      assert.notEqual(result.code, 0, name);
+      assert.ok(existsSync(misnamed));
+    }
     assert.equal(readFileSync(join(unrelated, 'credentials.json'), 'utf8'), 'secret');
     assert.deepEqual(dockerCalls(workspace), []);
   });

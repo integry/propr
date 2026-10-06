@@ -12,6 +12,7 @@ interface ContinuationMetaInput {
     outcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
     goal?: number;
     maxCycles?: number;
+    blockingChecks?: string[];
 }
 
 export function buildUltrafixHistoryMeta(
@@ -29,7 +30,8 @@ export function buildUltrafixHistoryMeta(
 export function buildContinuationMeta(r: ContinuationMetaInput, ultrafixMeta?: UltrafixCommandMeta): Record<string, unknown> {
     return { ...(r.score != null && { ultrafixScore: r.score }),
         ...(r.cycleCount != null && { ultrafixCycleCount: r.cycleCount }),
-        ...(r.nextAction && { ultrafixNextAction: r.nextAction }), ...(r.deferred && { ultrafixDeferred: true }),
+        ...(r.nextAction && { ultrafixNextAction: r.nextAction }), ...(r.deferred && { ultrafixDeferred: true, ultrafixDeferralReason: r.reason }),
+        ...(r.blockingChecks?.length && { ultrafixBlockingChecks: r.blockingChecks }),
         ...(!r.continued && { ultrafixStopReason: r.reason }), ...(r.outcome && { ultrafixOutcome: r.outcome }),
         ...((r.goal ?? ultrafixMeta?.goal) != null && { ultrafixGoal: r.goal ?? ultrafixMeta?.goal }),
         ...((r.maxCycles ?? ultrafixMeta?.maxCycles) != null && { ultrafixMaxCycles: r.maxCycles ?? ultrafixMeta?.maxCycles }) };

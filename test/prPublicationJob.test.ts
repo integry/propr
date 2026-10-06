@@ -161,7 +161,10 @@ const modules: Record<string, Record<string, unknown>> = {
     },
     ultrafixOrchestrationService: { retainOriginalScope: noOp, stopLoop: async () => { events.push('stop'); } },
     ultrafixJobHelpers: { handleUltrafixContinuation: noOp, markSelectedUltrafixFindings: noOp, restorePendingCommentsIfUltrafixJobSuperseded: async () => false },
-    ultrafixReviewExecutionGate: { shouldDeferUltrafixReview: async () => { events.push('check-gate'); return false; } },
+    ultrafixReviewExecutionGate: {
+        shouldDeferUltrafixReview: async () => { events.push('check-gate'); return null; },
+        ultrafixReviewDeferralUpdate: () => ({ reason: 'deferred', historyMetadata: {} }),
+    },
     prCommentNoAuthorizedFindings: { handleNoAuthorizedFindings: async () => { events.push('no-authorized-findings'); } },
     prCommentPostExecution: { handlePostExecution: async (params: typeof postExecutionParams) => { postExecutionParams = params; throw new Error('post-execution stopped by test'); } },
     prTaskTitleHelpers: Object.fromEntries(['buildDeterministicPrTaskSubtitle', 'buildPrTaskTitle', 'buildPrTaskTitleContext', 'buildPrTaskTitleContextHistoryMetadata', 'getPrTaskWorkflowLabel', 'resolvePrTaskWorkflow'].map(name => [name, noOp])),

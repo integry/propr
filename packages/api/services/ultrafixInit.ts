@@ -126,7 +126,7 @@ export async function initializeUltrafix(ioRedisClient: Redis): Promise<void> {
         contMod.setCheckRunDeps({
             areAllChecksPassing: configManager.areAllChecksPassing,
             getCurrentPRHead: configManager.getCurrentPRHead,
-            getCheckRunsStatus: configManager.getCheckRunsStatus,
+            getCheckRunsStatus: configManager.getCheckRunsStatusForRepo,
         });
 
         setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number, headSha: string) => {

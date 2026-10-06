@@ -305,33 +305,60 @@ exactly these unsigned packages:
 - `ProPR-Desktop-<version>-linux-arm64.deb`
 - `ProPR-Desktop-<version>-linux-arm64.rpm`
 
-The bundle also contains `linux-preview.json`, `INSTALL.md`, and `SHA256SUMS`. The preview manifest records the full
-source commit, desktop package version, architecture and format of every asset, digest-pinned runtime app/UI image
-references, workflow run, `unsigned-preview` trust state, and manual package-manager upgrade policy. The generated
+The bundle also contains `linux-preview.json`, `INSTALL.md`, and `SHA256SUMS`. The preview manifest (schema 2) records
+the full source commit, desktop package version, architecture and format of every asset, digest-pinned runtime app/UI
+and managed-agent image references, the agent's `linux/amd64`-only platform, workflow run, `unsigned-preview` trust state, and manual package-manager upgrade policy. The generated
 preview identity is `desktop-linux-preview-v<version>-<first-12-source-SHA>`; draft creation refuses an existing tag or
 different asset at that identity. Finalization re-inspects both package architectures and accepts no ZIP, macOS,
 Windows, stable update manifest, signature, or extra file.
 
-Before staging, publish the source revision's multi-architecture runtime images for `linux/amd64` and `linux/arm64` and
-obtain their immutable references:
+Before staging, publish the source revision's multi-architecture app/UI runtime images for `linux/amd64` and
+`linux/arm64`, and its managed agent image for `linux/amd64` only, then obtain their immutable references:
 
 ```text
 propr/app:<40-character-source-SHA>@sha256:<64-character-manifest-digest>
 propr/ui:<40-character-source-SHA>@sha256:<64-character-manifest-digest>
+propr/agent:<40-character-source-SHA>@sha256:<64-character-manifest-digest>
 ```
 
-The workflow verifies both registry manifests and embeds an API-compatible runtime manifest bound to the same source
-revision. Missing images, a mutable tag-only reference, a digest mismatch, or a missing architecture is an actionable
-preflight failure; the build never falls back to the checked-in launcher manifest. Stage the private draft with:
+First-user setup pulls the managed agent from the packaged launcher manifest as soon as the user selects any agent,
+and agent sign-in refuses to start without that image. The checked-in launcher manifest names `propr/agent:<version>`,
+which is not necessarily published, so a new preview must bind an agent built from the same source. The **Preview
+Runtime Images** workflow prepares and publishes it separately from app/UI (see `docs/engineering-notes.md`):
 
 ```sh
 SOURCE_SHA=<full-lowercase-commit-on-main>
+# Credential-free validation: native linux/amd64 agent build, offline smoke, immutable candidate evidence.
+gh workflow run preview-runtime-images.yml --ref main -f operation=prepare-agent -f source_revision="$SOURCE_SHA"
+# After reviewing that run: protected publication of only propr/agent:$SOURCE_SHA (environment approval required).
+gh workflow run preview-runtime-images.yml --ref main -f operation=publish-agent -f source_revision="$SOURCE_SHA"
+# The existing app/UI operations are unchanged.
+gh workflow run preview-runtime-images.yml --ref main -f operation=prepare -f source_revision="$SOURCE_SHA"
+gh workflow run preview-runtime-images.yml --ref main -f operation=publish -f source_revision="$SOURCE_SHA"
+```
+
+The managed agent image is `linux/amd64` only because `Dockerfile.agent` pins amd64 Debian packages. The `arm64`
+DEB/RPM packages and app/UI images remain native, but on an `arm64` host the agent pull fails with no matching manifest
+and agent tasks cannot run; no emulated or relabelled agent image is published. `INSTALL.md` states this limit.
+
+The workflow verifies all three registry manifests (app/UI must contain exactly both architectures; the agent must
+resolve to its digest, contain only `linux/amd64`, and carry the source revision and unified-bundle labels), then
+embeds an API-compatible runtime manifest bound to the same source revision with `images.agent` set to the exact agent
+reference. Missing images, a mutable tag-only reference, a digest or source mismatch, or a wrong architecture is an
+actionable preflight failure; the build never falls back to the checked-in launcher manifest or its version-tagged
+agent. Stage the private draft with:
+
+```sh
 gh workflow run desktop-linux-preview.yml --ref main \
   -f operation=stage-draft \
   -f source_revision="$SOURCE_SHA" \
   -f runtime_app_image="propr/app:$SOURCE_SHA@sha256:<app-manifest-digest>" \
-  -f runtime_ui_image="propr/ui:$SOURCE_SHA@sha256:<ui-manifest-digest>"
+  -f runtime_ui_image="propr/ui:$SOURCE_SHA@sha256:<ui-manifest-digest>" \
+  -f runtime_agent_image="propr/agent:$SOURCE_SHA@sha256:<agent-manifest-digest>"
 ```
+
+Drafts or bundles staged before the managed-agent binding (schema 1, app/UI only) are not evidence for this contract.
+`publish-draft` refuses them, and staging never overwrites an existing draft's assets at the same preview identity.
 
 `stage-draft` has repository `contents: write` only in its final draft-staging job. It creates or safely resumes a
 private GitHub draft, uploads the exact checksum allowlist, downloads every uploaded byte to verify it, and never
@@ -353,9 +380,10 @@ gh workflow run desktop-linux-preview.yml --ref main \
 Publication downloads and hashes the draft again, validates its exact four-package matrix and both native
 architectures, checks the source-bound manifest and canonical instructions, then publishes it as a GitHub prerelease
 with `make_latest=false`. It refuses an existing tag rather than moving or reusing one. GitHub Actions must be allowed
-to create releases with the job-scoped `GITHUB_TOKEN`, both native hosted runner labels must be available, and the two
+to create releases with the job-scoped `GITHUB_TOKEN`, both native hosted runner labels must be available, and the three
 published runtime images plus the protected environment/tag ruleset are the complete external setup for this preview
-channel. Apple Developer credentials, notarization, Ed25519 update keys, macOS runners, and Windows runners are not
+channel. First-user provider authentication and a real agent task through an installed preview have not yet been
+performed with a managed-agent-bound draft; treat both as unproven until someone runs them. Apple Developer credentials, notarization, Ed25519 update keys, macOS runners, and Windows runners are not
 requirements.
 
 Preview DEB/RPM assets do not configure an apt or dnf repository and do not enable Linux self-updates. Users manually

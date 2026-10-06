@@ -11,6 +11,10 @@ const SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /@sha256:[0-9a-f]{64}$/;
 const COMPATIBILITY = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/;
 const REQUIRED_RUNTIME_PLATFORMS = ['linux/amd64', 'linux/arm64'];
+// The managed agent image is linux/amd64 only (see Dockerfile.agent). A bound
+// preview agent must declare exactly that platform; it is never widened here.
+export const MANAGED_AGENT_PLATFORMS = Object.freeze(['linux/amd64']);
+const IMAGE_SOURCE = 'https://github.com/integry/propr';
 
 const argumentsOf = (argv) => {
   const result = {};
@@ -45,6 +49,19 @@ export function validateDesktopRuntimeManifest(value, expected = {}) {
     || !exactImage(value.images.ui, 'ui', runtime.sourceRevision, runtime.distribution)) {
     throw new Error('Desktop runtime app and UI images are not bound to the aligned source revision');
   }
+  if (runtime.managedAgent !== undefined) {
+    const agent = runtime.managedAgent;
+    if (runtime.distribution !== 'published' || !agent || typeof agent !== 'object' || Array.isArray(agent)
+      || Object.keys(agent).sort().join(',') !== 'image,platforms'
+      || !exactImage(agent.image, 'agent', runtime.sourceRevision, 'published')
+      || value.images.agent !== agent.image
+      || JSON.stringify(agent.platforms) !== JSON.stringify(MANAGED_AGENT_PLATFORMS)) {
+      throw new Error('Desktop runtime managed agent image is not published, digest-pinned, linux/amd64, and source-aligned');
+    }
+  }
+  if (expected.agentImage !== undefined && runtime.managedAgent?.image !== expected.agentImage) {
+    throw new Error('Desktop runtime manifest does not bind the expected source-aligned managed agent image');
+  }
   if (value.git_sha !== runtime.sourceRevision) throw new Error('Desktop runtime manifest source revisions disagree');
   if (expected.sourceRevision && runtime.sourceRevision !== expected.sourceRevision) {
     throw new Error('Desktop runtime manifest does not match the desktop release revision');
@@ -59,16 +76,21 @@ export function validateDesktopRuntimeManifest(value, expected = {}) {
 }
 
 export function createDesktopRuntimeManifest(base, options) {
+  const bindAgent = options.agentImage !== undefined;
   const manifest = {
     ...base,
     git_sha: options.sourceRevision,
-    images: { ...base.images, app: options.appImage, ui: options.uiImage },
+    images: {
+      ...base.images, app: options.appImage, ui: options.uiImage,
+      ...(bindAgent ? { agent: options.agentImage } : {}),
+    },
     desktopRuntime: {
       schemaVersion: 1,
       distribution: options.distribution,
       sourceRevision: options.sourceRevision,
       apiCompatibility: options.apiCompatibility,
       desktopAuthenticationProtocol: 2,
+      ...(bindAgent ? { managedAgent: { image: options.agentImage, platforms: [...MANAGED_AGENT_PLATFORMS] } } : {}),
     },
   };
   return validateDesktopRuntimeManifest(manifest, options);
@@ -97,6 +119,49 @@ export function validatePublishedDesktopRuntimeImageInspection(image, repository
   const missing = REQUIRED_RUNTIME_PLATFORMS.filter(platform => !platforms.has(platform));
   if (missing.length) {
     throw new Error(`Published desktop runtime tag ${tag} is missing required platforms: ${missing.join(', ')}`);
+  }
+  return inspection;
+}
+
+const configsOf = (image) => {
+  if (!image || typeof image !== 'object' || Array.isArray(image)) return [];
+  // buildx reports a single config for an image manifest, or a platform map for an index.
+  return typeof image.architecture === 'string' ? [['', image]] : Object.entries(image);
+};
+
+export function validatePublishedManagedAgentInspection(image, sourceRevision, inspection, imageConfig) {
+  if (!exactImage(image, 'agent', sourceRevision, 'published')) {
+    throw new Error('Published managed agent image is not a digest-pinned propr/agent reference for the release revision');
+  }
+  const tag = `propr/agent:${sourceRevision}`;
+  if (!inspection || typeof inspection !== 'object' || Array.isArray(inspection)) {
+    throw new Error(`Registry returned invalid manifest metadata for ${tag}`);
+  }
+  const configuredDigest = image.slice(image.lastIndexOf('@') + 1);
+  if (inspection.digest !== configuredDigest) {
+    throw new Error(`Published managed agent tag ${tag} does not resolve to configured digest ${configuredDigest}`);
+  }
+  if (Array.isArray(inspection.manifests)) {
+    const platforms = inspection.manifests
+      .map(manifest => manifest?.platform)
+      .filter(platform => platform && platform.os !== 'unknown')
+      .map(platform => `${platform.os}/${platform.architecture}`);
+    if (JSON.stringify(platforms) !== JSON.stringify(MANAGED_AGENT_PLATFORMS)) {
+      throw new Error(`Published managed agent tag ${tag} must contain exactly ${MANAGED_AGENT_PLATFORMS.join(', ')}; found ${platforms.join(', ') || 'none'}`);
+    }
+  }
+  const configs = configsOf(imageConfig);
+  if (configs.length !== 1) throw new Error(`Published managed agent tag ${tag} must resolve to exactly one image config`);
+  const [platformKey, config] = configs[0];
+  if (`${config?.os}/${config?.architecture}` !== MANAGED_AGENT_PLATFORMS[0]
+    || (platformKey && platformKey !== MANAGED_AGENT_PLATFORMS[0])) {
+    throw new Error(`Published managed agent tag ${tag} is not a ${MANAGED_AGENT_PLATFORMS[0]} image`);
+  }
+  const labels = config?.config?.Labels;
+  if (labels?.['org.opencontainers.image.revision'] !== sourceRevision
+    || labels?.['org.opencontainers.image.source'] !== IMAGE_SOURCE
+    || labels?.['dev.propr.agent-bundle'] !== 'true') {
+    throw new Error(`Published managed agent tag ${tag} is not the unified agent bundle built from the release revision`);
   }
   return inspection;
 }
@@ -144,18 +209,44 @@ const buildLocal = (args) => {
   process.stdout.write(`${output}\n`);
 };
 
+// `--agent-image` is optional so ordinary desktop releases keep their existing
+// app/UI-only contract. When the flag is present, even with an empty value, it
+// must name the exact digest-pinned source-aligned managed agent image.
+const agentImageArgument = (args) => {
+  if (!Object.hasOwn(args, 'agent-image')) return undefined;
+  if (!exactImage(args['agent-image'], 'agent', args['source-revision'], 'published')) {
+    throw new Error('--agent-image must be a published propr/agent:<source SHA>@sha256:<digest> reference');
+  }
+  return args['agent-image'];
+};
+
 const createRelease = (args) => {
   const sourceRevision = args['source-revision'];
   const output = args.output;
   if (!sourceRevision || !output || !args['app-image'] || !args['ui-image']) {
     throw new Error('Release generation requires source-revision, app-image, ui-image, and output');
   }
+  const agentImage = agentImageArgument(args);
   const base = JSON.parse(readFileSync(resolve(args.base ?? resolve(repositoryRoot, 'docker/launcher/manifest.json')), 'utf8'));
   writeDesktopRuntimeManifest(resolve(output), createDesktopRuntimeManifest(base, {
     distribution: 'published', sourceRevision,
     appImage: args['app-image'], uiImage: args['ui-image'],
+    ...(agentImage === undefined ? {} : { agentImage }),
     apiCompatibility: args['api-compatibility'],
   }));
+};
+
+const imagetoolsJson = (tag, format) => {
+  let output;
+  try {
+    output = execFileSync('docker', ['buildx', 'imagetools', 'inspect', tag, '--format', format], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'],
+    });
+  } catch {
+    throw new Error(`Published desktop runtime tag ${tag} is unavailable`);
+  }
+  try { return JSON.parse(output); }
+  catch { throw new Error(`Registry returned invalid manifest metadata for ${tag}`); }
 };
 
 const verifyRelease = (args) => {
@@ -181,6 +272,13 @@ const verifyRelease = (args) => {
     try { inspection = JSON.parse(output); }
     catch { throw new Error(`Registry returned invalid manifest metadata for ${tag}`); }
     validatePublishedDesktopRuntimeImageInspection(image, repository, sourceRevision, inspection);
+  }
+  const agentImage = agentImageArgument(args);
+  if (agentImage !== undefined) {
+    const tag = `propr/agent:${sourceRevision}`;
+    validatePublishedManagedAgentInspection(
+      agentImage, sourceRevision, imagetoolsJson(tag, '{{json .Manifest}}'), imagetoolsJson(tag, '{{json .Image}}'),
+    );
   }
 };
 

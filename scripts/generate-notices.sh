@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Regenerate THIRD_PARTY_LICENSES.md with the full license text for every
 # production dependency. Run before a release so the notice stays current.
+# Requires the pinned root dependency tree (npm ci); a clean checkout fails
+# instead of overwriting the notice with an incomplete one.
 #
 # Usage: scripts/generate-notices.sh
 
@@ -9,10 +11,17 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-OUT="THIRD_PARTY_LICENSES.md"
+FINAL="THIRD_PARTY_LICENSES.md"
 DATE="$(date +%Y-%m-%d)"
 
-echo "Generating $OUT (this takes ~30s) …"
+node scripts/validate-third-party-notices.mjs installed
+
+# Build into a temporary file so a failed run never leaves a partial notice
+# where Docker image builds would copy it.
+OUT="$(mktemp "${TMPDIR:-/tmp}/propr-third-party-licenses.XXXXXX")"
+trap 'rm -f "$OUT"' EXIT
+
+echo "Generating $FINAL (this takes ~30s) …"
 
 # --- Header -----------------------------------------------------------------
 cat > "$OUT" <<EOF
@@ -61,17 +70,19 @@ for entry in \
 ; do
   pkg="${entry%%|*}"
   path="${entry##*|}"
-  if [ -f "$path" ]; then
-    ver=$(node -p "require('./${path%/LICENSE*}/package.json').version" 2>/dev/null || echo 'unknown')
-    {
-      echo "## $pkg@$ver"
-      echo ""
-      echo '```'
-      cat "$path"
-      echo '```'
-      echo ""
-    } >> "$OUT"
+  if [ ! -f "$path" ]; then
+    echo "Missing bundled license text: $path" >&2
+    exit 1
   fi
+  ver=$(node -p "require('./${path%/LICENSE*}/package.json').version")
+  {
+    echo "## $pkg@$ver"
+    echo ""
+    echo '```'
+    cat "$path"
+    echo '```'
+    echo ""
+  } >> "$OUT"
 done
 
 # @openai/codex, Antigravity CLI, opencode-ai, and mistral-vibe are installed
@@ -330,4 +341,8 @@ EOF
   echo '```'
 } >> "$OUT"
 
-wc -l "$OUT" | awk '{print "✓ wrote " $2 " (" $1 " lines)"}'
+node scripts/validate-third-party-notices.mjs file "$OUT"
+chmod 644 "$OUT"
+mv "$OUT" "$FINAL"
+trap - EXIT
+wc -l "$FINAL" | awk '{print "✓ wrote " $2 " (" $1 " lines)"}'

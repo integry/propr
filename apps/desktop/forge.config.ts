@@ -52,6 +52,9 @@ if (configuredRuntimeManifest) {
     ...(process.env.PROPR_DESKTOP_PRODUCTION_RELEASE === '1'
       ? { distribution: 'published' as const }
       : {}),
+    ...(process.env.PROPR_DESKTOP_RUNTIME_AGENT_IMAGE !== undefined
+      ? { agentImage: process.env.PROPR_DESKTOP_RUNTIME_AGENT_IMAGE }
+      : {}),
   });
 }
 const linuxSetupResources = process.platform === 'linux'

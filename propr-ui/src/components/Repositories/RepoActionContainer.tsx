@@ -250,8 +250,10 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
     <div className="h-full min-w-0 flex flex-col bg-[#F8FAFC]">
       {/* Tab Header - flush against top border */}
       <div className="flex shrink-0 items-stretch overflow-x-auto overflow-y-hidden border-b border-slate-200 bg-[#F8FAFC] scrollbar-thin">
-        {/* Compact, content-sized mobile tabs keep every full label visible in one row. */}
-        <div className="flex w-full min-w-0 items-stretch sm:w-auto">
+        {/* Compact, content-sized mobile tabs keep every full label visible in one row.
+            The 1px mobile end inset absorbs WebKit's sub-pixel flex rounding, which
+            otherwise pushes the last tab up to 1/32px past the viewport edge. */}
+        <div className="flex w-full min-w-0 items-stretch pr-px sm:w-auto sm:pr-0">
           <TabButton
             label="Chat"
             icon={<MessageSquareText className="h-3 w-3" />}
