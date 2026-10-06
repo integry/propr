@@ -770,7 +770,8 @@ test('invalid plans and non-partial resume requests fail before claiming or cont
 
 
 for (const resume of [false, true]) {
-  test(`process death during ${resume ? 'resumed' : 'initial'} publication permits marker recovery`, { timeout: 30000 }, async t => {
+  // The owner child cold-compiles the MCP tool graph through tsx: ~8s idle, well over 30s on a loaded CI shard.
+  test(`process death during ${resume ? 'resumed' : 'initial'} publication permits marker recovery`, { timeout: 120_000 }, async t => {
     const root = await mkdtemp(path.join(tmpdir(), 'publication-owner-'));
     t.after(() => rm(root, { recursive: true, force: true }));
     const filename = path.join(root, 'db.sqlite');

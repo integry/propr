@@ -1,6 +1,6 @@
 import { extractKeywords, extractKeywordsWithLLM, mergeKeywords } from './relevance/keywordExtractor.js';
 import { mineGitHistory, mineGitHistoryWithLLM, type FileScore as GitFileScore, type SemanticMiningOptions } from './relevance/gitMiner.js';
-import { scorePaths, FileScore as PathFileScore } from './relevance/pathScorer.js';
+import { listTrackedFiles, scorePaths, FileScore as PathFileScore } from './relevance/pathScorer.js';
 import { scoreSemanticRelevance, type SemanticScoringOptions } from './relevance/semanticScorer.js';
 import { Agent } from '../agents/types.js';
 import logger from '../utils/logger.js';
@@ -10,14 +10,19 @@ export interface RelevantFile {
   path: string;
   reason: 'git-history' | 'path-match' | 'combined' | 'llm-semantic' | 'semantic';
   score: number;
+  /** Individual signals that contributed to the score (expands `combined`). */
+  signals?: Array<Exclude<RelevantFile['reason'], 'combined'>>;
 }
 
 export interface RelevanceResult {
   files: RelevantFile[];
   keywordsDetected: string[];
+  /** Whether summary-based semantic scores actually contributed to ranking. */
+  usedSummaryScoring?: boolean;
 }
 
 export interface RelevanceOptions {
+  /** Maximum files returned; `Infinity` returns every file above `minScore`. */
   maxResults?: number;
   minScore?: number;
   correlationId?: string;
@@ -33,6 +38,12 @@ export interface RelevanceOptions {
   repoName?: string;
   /** Branch to filter summaries (e.g., "HEAD", "main", "dev") */
   branch?: string;
+  /**
+   * Commit to score against. Path and git-history scoring read this commit's
+   * tree and history instead of the checkout, and results are restricted to
+   * files present in its tree.
+   */
+  commit?: string;
   /** Enable LLM-based keyword extraction for better alternatives and spelling variants */
   useLLMKeywords?: boolean;
   /** Timeout for git/path keyword scoring. */
@@ -161,7 +172,7 @@ function buildSortedFiles(
       } else {
         reason = reasons[0] as RelevantFile['reason'];
       }
-      return { path, reason, score: data.normalizedScore };
+      return { path, reason, score: data.normalizedScore, signals: reasons as NonNullable<RelevantFile['signals']> };
     });
 }
 
@@ -206,13 +217,15 @@ interface GitSemanticMiningParams {
   semanticMiningOptions: SemanticMiningOptions;
   finalScores: Record<string, AggregatedFileScore>;
   correlationId?: string;
+  /** Commit whose history is mined; the checkout's HEAD when absent. */
+  commit?: string;
 }
 
 /**
  * Phase 1: Git History Semantic Mining (via commit analysis)
  */
 async function performGitSemanticMining(params: GitSemanticMiningParams): Promise<boolean> {
-  const { repoPath, prompt, semanticMiningOptions, finalScores, correlationId } = params;
+  const { repoPath, prompt, semanticMiningOptions, finalScores, correlationId, commit } = params;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   try {
@@ -223,7 +236,8 @@ async function performGitSemanticMining(params: GitSemanticMiningParams): Promis
     const semanticPromise = mineGitHistoryWithLLM(
       repoPath,
       prompt,
-      { ...semanticMiningOptions, correlationId }
+      { ...semanticMiningOptions, correlationId },
+      commit
     );
 
     const semanticScores = await Promise.race([semanticPromise, semanticTimeoutPromise]);
@@ -250,10 +264,11 @@ interface KeywordScoringParams {
   finalScores: Record<string, AggregatedFileScore>;
   correlationId?: string;
   timeoutMs?: number;
+  commit?: string;
 }
 
 async function performKeywordScoring(params: KeywordScoringParams): Promise<void> {
-  const { repoPath, keywords, finalScores, correlationId, timeoutMs = TIMEOUT_MS } = params;
+  const { repoPath, keywords, finalScores, correlationId, timeoutMs = TIMEOUT_MS, commit } = params;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   async function withTimeout<T>(name: string, promise: Promise<T>, fallback: T): Promise<T> {
@@ -276,8 +291,8 @@ async function performKeywordScoring(params: KeywordScoringParams): Promise<void
   }
 
   const [gitScores, pathScores] = await Promise.all([
-    withTimeout('git-history', mineGitHistory(repoPath, keywords), [] as GitFileScore[]),
-    withTimeout('path-match', scorePaths(repoPath, keywords), [] as PathFileScore[])
+    withTimeout('git-history', mineGitHistory(repoPath, keywords, commit), [] as GitFileScore[]),
+    withTimeout('path-match', scorePaths(repoPath, keywords, commit), [] as PathFileScore[])
   ]);
 
   addRawScoresToMap(gitScores, finalScores, 'git', 'git-history');
@@ -330,6 +345,33 @@ async function performSummaryScoring(
   }
 }
 
+interface SemanticParticipation {
+  usedSemanticMining: boolean;
+  usedSummaryScoring: boolean;
+}
+
+/**
+ * Removes scored paths that do not exist in the given commit's tree (no-op
+ * without a commit). Returns which semantic sources still contribute.
+ */
+async function restrictToCommitTree(
+  repoPath: string,
+  commit: string | undefined,
+  finalScores: Record<string, AggregatedFileScore>,
+  participation: SemanticParticipation
+): Promise<SemanticParticipation> {
+  if (!commit) return participation;
+  const treeFiles = new Set(await listTrackedFiles(repoPath, commit));
+  for (const filePath of Object.keys(finalScores)) {
+    if (!treeFiles.has(filePath)) delete finalScores[filePath];
+  }
+  const retained = Object.values(finalScores);
+  return {
+    usedSemanticMining: participation.usedSemanticMining && retained.some(data => data.reasons.has('llm-semantic')),
+    usedSummaryScoring: participation.usedSummaryScoring && retained.some(data => data.reasons.has('semantic')),
+  };
+}
+
 export async function findRelevantFiles(
   repoPath: string,
   prompt: string,
@@ -349,6 +391,7 @@ export async function findRelevantFiles(
     useLLMKeywords = false,
     keywordTimeoutMs = TIMEOUT_MS,
     routingSession,
+    commit,
   } = options;
 
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
@@ -378,18 +421,18 @@ export async function findRelevantFiles(
   // --- Phase 1: Git History Semantic Mining (via commit analysis) ---
   if (useSemanticMining && semanticMiningOptions) {
     usedSemanticMining = await performGitSemanticMining({
-      repoPath, prompt, semanticMiningOptions, finalScores, correlationId
+      repoPath, prompt, semanticMiningOptions, finalScores, correlationId, commit
     });
   }
 
   // --- Phase 2: Keyword-based scoring (Git history + Path matching) ---
   if (keywords.length === 0 && !usedSemanticMining && !useSummaryScoring) {
     correlatedLogger.info('No keywords extracted and no semantic options enabled');
-    return { files: [], keywordsDetected: [] };
+    return { files: [], keywordsDetected: [], usedSummaryScoring: false };
   }
 
   if (keywords.length > 0) {
-    await performKeywordScoring({ repoPath, keywords, finalScores, correlationId, timeoutMs: keywordTimeoutMs });
+    await performKeywordScoring({ repoPath, keywords, finalScores, correlationId, timeoutMs: keywordTimeoutMs, commit });
   }
 
   // --- Phase 3: Summary-based Semantic Scoring ---
@@ -398,6 +441,11 @@ export async function findRelevantFiles(
       correlationId, modelId, repoName, branch, routingSession
     });
   }
+
+  // Summaries and history can name files absent from the requested commit.
+  ({ usedSemanticMining, usedSummaryScoring } = await restrictToCommitTree(
+    repoPath, commit, finalScores, { usedSemanticMining, usedSummaryScoring }
+  ));
 
   // --- Phase 4: Weighted Score Aggregation ---
   const hasSemanticScores = usedSemanticMining || usedSummaryScoring;
@@ -418,7 +466,8 @@ export async function findRelevantFiles(
 
   return {
     files: sortedFiles,
-    keywordsDetected: keywords
+    keywordsDetected: keywords,
+    usedSummaryScoring
   };
 }
 

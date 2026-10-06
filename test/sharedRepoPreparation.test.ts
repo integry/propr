@@ -202,6 +202,23 @@ test('a held config lock ("File exists") is retried as contention', async () => 
     assert.strictEqual(calls, 3);
 });
 
+/** Root (including root in a rootless container) bypasses mode bits, so a 0o555 directory stays writable. */
+async function directoryModeDeniesWrites(): Promise<boolean> {
+    const probe = await mkdtemp(path.join(os.tmpdir(), 'mode-probe-'));
+    try {
+        await chmod(probe, 0o555);
+        await writeFile(path.join(probe, 'probe'), '');
+        return false;
+    } catch {
+        return true;
+    } finally {
+        await chmod(probe, 0o755);
+        await rm(probe, { recursive: true, force: true });
+    }
+}
+
+const MODE_BYPASS_SKIP = 'directory permissions are not enforced for this user (e.g. root)';
+
 /** Make the clone's Git directory unwritable so Git cannot create `config.lock`. */
 async function denyGitDirWrites(clonePath: string): Promise<() => Promise<void>> {
     const gitDir = path.join(clonePath, '.git');
@@ -209,7 +226,8 @@ async function denyGitDirWrites(clonePath: string): Promise<() => Promise<void>>
     return () => chmod(gitDir, 0o755);
 }
 
-test('an unwritable shared config fails immediately with the original error, not as lock contention', async () => {
+test('an unwritable shared config fails immediately with the original error, not as lock contention', async t => {
+    if (!await directoryModeDeniesWrites()) return t.skip(MODE_BYPASS_SKIP);
     const clonePath = await createSharedClone('denied', LEGACY_URL);
     const restore = await denyGitDirWrites(clonePath);
     try {
@@ -229,7 +247,8 @@ test('an unwritable shared config fails immediately with the original error, not
     assert.ok(!existsSync(path.join(clonePath, '.git', 'config.lock')));
 });
 
-test('preparation of an unwritable shared clone is not reported as lock contention', async () => {
+test('preparation of an unwritable shared clone is not reported as lock contention', async t => {
+    if (!await directoryModeDeniesWrites()) return t.skip(MODE_BYPASS_SKIP);
     const owner = `${OWNER}-readonly`;
     const clonePath = await createSharedClone('readonly', LEGACY_URL);
     const worktreePath = path.join(rootDir, 'readonly-worktree');
