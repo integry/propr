@@ -6,7 +6,7 @@ import { down, up } from '../packages/core/src/db/migrations/20261006000000_crea
 
 const SCORE_COLUMNS = [
     'id', 'repository_id', 'pr_number', 'task_id', 'implementation_task_id', 'implementer_agent', 'implementer_model',
-    'reviewer_agent', 'reviewer_model', 'score', 'blocker_count', 'suggestion_count', 'cycle_number', 'goal', 'source',
+    'reviewer_agent', 'reviewer_model', 'score', 'blocker_count', 'suggestion_count', 'cycle_number', 'goal', 'goal_reached', 'source',
     'head_sha', 'created_at',
 ];
 

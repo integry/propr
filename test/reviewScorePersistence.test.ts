@@ -35,9 +35,10 @@ function reviewBody(score: number, blockers: number, suggestions: number): strin
     ].join('\n');
 }
 
-const result = (response: string, success = true) => ({
+const result = (response: string, success = true, extra: { commentId?: number; isPartial?: boolean } = { commentId: 1 }) => ({
     assignment: { agentAlias: 'codex', model: 'gpt-5.6', label: 'GPT', physicalAgentAlias: 'codex-pool-1', physicalModel: 'gpt-5.6' },
     analysisResult: { success, response, modelUsed: 'gpt-5.6-2026' },
+    ...extra,
 });
 
 const CREATED_AT = new Date('2026-10-06T12:00:00.000Z');
@@ -107,6 +108,7 @@ describe('review score persistence', () => {
             suggestion_count: 3,
             cycle_number: null,
             goal: null,
+            goal_reached: null,
             source: 'review',
             head_sha: 'abc123',
         });
@@ -154,6 +156,43 @@ describe('review score persistence', () => {
         assert.equal(row.cycle_number, 3);
         assert.equal(row.goal, 8);
         assert.equal(row.score, 9);
+        assert.equal(Boolean(row.goal_reached), true);
+    });
+
+    test('a clean high score does not reach the goal while a sibling reviewer in the same cycle blocks', async () => {
+        const ultrafix = { ultrafixCycle: 2, ultrafixGoal: 8 };
+        const context = { repository: 'acme/repo', pullRequestNumber: 40, taskId: 'ultrafix-review', headSha: null, ultrafix };
+        // The clean 9 is even the newest review; the sibling's blocker still takes precedence.
+        const inputs = buildReviewScoreInputs([
+            result(reviewBody(5, 1, 0), true, { commentId: 10 }),
+            result(reviewBody(9, 0, 0), true, { commentId: 11 }),
+        ], context, CREATED_AT);
+        assert.deepEqual(inputs.map(input => [input.score, input.blockerCount, input.goalReached]), [[5, 1, false], [9, 0, false]]);
+        await persistReviewScores([
+            result(reviewBody(5, 1, 0), true, { commentId: 10 }),
+            result(reviewBody(9, 0, 0), true, { commentId: 11 }),
+        ], context, logger, database);
+        assert.deepEqual((await loadPullRequestScoreHistory(database, 'acme/repo', 40)).map(row => Boolean(row.goal_reached)), [false, false]);
+    });
+
+    test('an Ultrafix cycle reaches the goal only by the combined result of its whole review job', () => {
+        const context = { repository: 'acme/repo', pullRequestNumber: 40, taskId: 'ultrafix-review', headSha: null,
+            ultrafix: { ultrafixCycle: 2, ultrafixGoal: 8 } };
+        const verdicts = (results: ReturnType<typeof result>[]) =>
+            [...new Set(buildReviewScoreInputs(results, context, CREATED_AT).map(input => input.goalReached))];
+        // Every reviewer clean, and the newest (highest comment ID) review meets the goal.
+        assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 12 }), result(reviewBody(8, 0, 0), true, { commentId: 13 })]), [true]);
+        // The newest review's score is authoritative, not the best one.
+        assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 13 }), result(reviewBody(7, 0, 0), true, { commentId: 12 })]), [true]);
+        assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 12 }), result(reviewBody(7, 0, 0), true, { commentId: 13 })]), [false]);
+        // A failed or unparseable sibling leaves the result set incomplete.
+        assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 12 }), result('', false, { commentId: 13 })]), [false]);
+        assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 12 }), result('No contract.', true, { commentId: 13 })]), [false]);
+        // A review that was never posted, or covered only part of the diff, cannot pass the cycle.
+        assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, {})]), [false]);
+        assert.deepEqual(verdicts([result(reviewBody(9, 0, 0), true, { commentId: 12, isPartial: true })]), [false]);
+        // A plain review has no goal verdict.
+        assert.equal(buildReviewScoreInputs([result(reviewBody(9, 0, 0))], { ...context, ultrafix: undefined }, CREATED_AT)[0].goalReached, null);
     });
 
     test('failed and unparseable reviews write nothing', async () => {

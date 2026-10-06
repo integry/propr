@@ -99,6 +99,7 @@ Every `/review` and every Ultrafix review cycle ends with a `Score: N/10` line. 
 | `blocker_count`, `suggestion_count` | Number of F# blockers and S# suggestions in the review |
 | `cycle_number` | The Ultrafix review cycle; null for a plain `/review` |
 | `goal` | The Ultrafix goal in effect for that cycle; null for a plain `/review` |
+| `goal_reached` | Whether the cycle's whole review job reached the goal, judged as the Ultrafix loop judges it: every reviewer posted a complete, valid, scored review, none reported a blocker, and the newest review's score met the goal. The same on every row of one cycle; null for a plain `/review` |
 | `source` | `review` or `ultrafix` |
 | `head_sha` | The reviewed head commit |
 | `created_at` | When the score was recorded (ISO 8601, UTC) |
@@ -118,7 +119,7 @@ The pull request is the unit. Each per-model entry reports:
 | `prs_scored` | Pull requests with at least one score in the period | — |
 | `first_score.mean`, `first_score.median` | The earliest score of each PR | PRs scored |
 | `final_score.mean` | The last score recorded at or before the merge, including scores before the period; for a PR that was not merged, its latest score | PRs with a final score (a merged PR with no score at or before its merge is unknown and excluded) |
-| `cycles_to_goal.mean` | The Ultrafix cycle of the first clean review (no blockers) whose score met the goal | PRs that reached the goal; `attempted` counts PRs with an Ultrafix goal |
+| `cycles_to_goal.mean` | The Ultrafix cycle of the first review job that reached the goal (`goal_reached`); a clean reviewer does not pass a cycle another reviewer blocked | PRs that reached the goal; `attempted` counts PRs with an Ultrafix goal |
 | `merge_rate.value` | Merged ÷ (merged + closed). Open PRs have no outcome yet | PRs merged or closed |
 | `cost_per_merged_pr.usd` | Mean recorded cost per merged PR (see below) | Merged PRs with recorded cost |
 

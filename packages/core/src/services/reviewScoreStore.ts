@@ -30,6 +30,11 @@ export interface ReviewScoreInput {
     cycleNumber: number | null;
     /** Ultrafix target score in effect; null for a plain `/review`. */
     goal: number | null;
+    /**
+     * Whether the review job as a whole reached the Ultrafix goal, judged as the
+     * loop judges it; the same for every reviewer of one job, null without a goal.
+     */
+    goalReached?: boolean | null;
     headSha: string | null;
     createdAt?: Date;
 }
@@ -49,6 +54,7 @@ export interface ReviewScoreRow {
     suggestion_count: number;
     cycle_number: number | null;
     goal: number | null;
+    goal_reached: boolean | number | null;
     source: ReviewScoreSource;
     head_sha: string | null;
     created_at: string;
@@ -146,6 +152,7 @@ export async function recordReviewScores(database: Knex, inputs: readonly Review
             suggestion_count: input.suggestionCount,
             cycle_number: input.cycleNumber,
             goal: input.goal,
+            goal_reached: input.goalReached ?? null,
             source: input.source,
             head_sha: input.headSha,
             // ISO text, so period bounds compare exactly as the other stats do.

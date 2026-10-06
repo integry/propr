@@ -19,12 +19,14 @@ interface ScoreRow {
   id: number;
   repository_id: string;
   pr_number: number;
+  task_id: string;
   implementer_model: string | null;
   implementer_agent: string | null;
   score: number;
   blocker_count: number;
   cycle_number: number | null;
   goal: number | null;
+  goal_reached: boolean | number | null;
   created_at: string;
 }
 
@@ -55,7 +57,10 @@ export interface ReviewScoreModelSummary {
    * its recorded merge time has no final score and is left out of n.
    */
   final_score: MeanFigure;
-  /** Ultrafix cycles until a clean review met the goal; n counts PRs that reached it. */
+  /**
+   * Ultrafix cycles until a review cycle met the goal, judged over the cycle's
+   * whole review job as the loop judges it; n counts PRs that reached it.
+   */
   cycles_to_goal: MeanFigure & { attempted: number };
   /** Merged over merged-or-closed; open PRs have no outcome yet. */
   merge_rate: { value: number | null; merged: number; n: number };
@@ -95,12 +100,18 @@ export function median(values: number[]): number | null {
 
 const prKey = (repository: string, prNumber: number | string): string => `${repository}#${Number(prNumber)}`;
 
+/**
+ * A cycle is one review job (`task_id`), and its rows carry the job's combined
+ * goal verdict, so a clean reviewer never passes a cycle a sibling reviewer
+ * blocked or failed.
+ */
 function cyclesToGoal(rows: ScoreRow[]): { hadGoal: boolean; cycles: number | null } {
   const goalRows = rows.filter(row => row.goal !== null && row.goal !== undefined);
   if (!goalRows.length) return { hadGoal: false, cycles: null };
-  const index = goalRows.findIndex(row => row.blocker_count === 0 && row.score >= Number(row.goal));
-  if (index < 0) return { hadGoal: true, cycles: null };
-  return { hadGoal: true, cycles: goalRows[index].cycle_number ?? index + 1 };
+  const jobs = [...new Set(goalRows.map(row => row.task_id))];
+  const reached = goalRows.find(row => Boolean(row.goal_reached));
+  if (!reached) return { hadGoal: true, cycles: null };
+  return { hadGoal: true, cycles: reached.cycle_number ?? jobs.indexOf(reached.task_id) + 1 };
 }
 
 /** Recorded cost per pull request: its implementation task plus every task acting on it. */
@@ -212,8 +223,8 @@ export async function loadReviewScoreSummary(
   db: Knex, analyticsWindow: AnalyticsWindow | null, repository = 'all',
 ): Promise<ReviewScoreSummary> {
   const query = db('review_scores')
-    .select('id', 'repository_id', 'pr_number', 'implementer_model', 'implementer_agent', 'score',
-      'blocker_count', 'cycle_number', 'goal', 'created_at')
+    .select('id', 'repository_id', 'pr_number', 'task_id', 'implementer_model', 'implementer_agent', 'score',
+      'blocker_count', 'cycle_number', 'goal', 'goal_reached', 'created_at')
     .orderBy([{ column: 'created_at', order: 'asc' }, { column: 'id', order: 'asc' }]);
   if (repository !== 'all') query.where('repository_id', repository);
   whereCreatedWithin(query, 'created_at', analyticsWindow);

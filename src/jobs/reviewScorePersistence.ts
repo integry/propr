@@ -1,11 +1,13 @@
 import type { Logger } from 'pino';
 import type { Knex } from 'knex';
 import { db, recordReviewScores, type ReviewScoreInput } from '@propr/core';
-import { effectiveReviewScore } from './reviewCommentFormatter.js';
+import { effectiveReviewScore, type EffectiveReviewScore } from './reviewCommentFormatter.js';
 
 interface ScoredReviewResult {
     assignment: { agentAlias: string; model: string; physicalAgentAlias?: string; physicalModel?: string };
     analysisResult: { success: boolean; response: string; modelUsed?: string };
+    commentId?: number;
+    isPartial?: boolean;
 }
 
 export interface ReviewScoreContext {
@@ -26,20 +28,46 @@ const positiveInteger = (value: unknown): number | null => {
 };
 
 /**
+ * Whether the review job reached the Ultrafix goal, by the rules the loop
+ * applies to the job's combined result (`getPendingReviewState`,
+ * `hasReviewReachedGoal`): every reviewer must post a complete, valid, scored
+ * review, a blocker from any reviewer takes precedence, and the score is the
+ * newest posted review's. One reviewer's clean score cannot pass a cycle
+ * another reviewer blocked.
+ */
+function jobReachedGoal(
+    results: readonly ScoredReviewResult[], reviews: ReadonlyArray<EffectiveReviewScore | null>, goal: number,
+): boolean {
+    if (results.length === 0) return false;
+    const complete = results.every((result, index) =>
+        result.analysisResult.success && result.commentId !== undefined && !result.isPartial && reviews[index] !== null);
+    if (!complete || reviews.some(review => review!.blockerCount > 0)) return false;
+    // GitHub comment IDs increase, so the highest is the newest posted review.
+    const newest = results.reduce((latest, result, index) =>
+        result.commentId! > results[latest].commentId! ? index : latest, 0);
+    return reviews[newest]!.score >= goal;
+}
+
+/**
  * One row per reviewer whose response parsed into a valid scored review.
  * Failed or unpublishable reviews have no score, so they write nothing. The
  * score is the effective one the review comment publishes, including the
- * blocker cap and the current-head check cap.
+ * blocker cap and the current-head check cap. An Ultrafix cycle's rows also
+ * carry the job's combined goal verdict.
  */
 export function buildReviewScoreInputs(
     results: readonly ScoredReviewResult[], context: ReviewScoreContext, createdAt = new Date(),
 ): ReviewScoreInput[] {
-    return results.flatMap(result => {
-        if (!result.analysisResult.success) return [];
-        const review = effectiveReviewScore(result.analysisResult.response, {
+    const reviews = results.map(result => result.analysisResult.success
+        ? effectiveReviewScore(result.analysisResult.response, {
             hasCurrentCheckFailure: context.hasCurrentCheckFailure,
             changedFilePaths: context.changedFilePaths,
-        });
+        })
+        : null);
+    const goal = context.ultrafix ? positiveInteger(context.ultrafix.ultrafixGoal) : null;
+    const goalReached = goal === null ? null : jobReachedGoal(results, reviews, goal);
+    return results.flatMap((result, index) => {
+        const review = reviews[index];
         if (!review) return [];
         return [{
             repository: context.repository,
@@ -52,7 +80,8 @@ export function buildReviewScoreInputs(
             suggestionCount: review.suggestionCount,
             source: context.ultrafix ? 'ultrafix' as const : 'review' as const,
             cycleNumber: context.ultrafix ? positiveInteger(context.ultrafix.ultrafixCycle) : null,
-            goal: context.ultrafix ? positiveInteger(context.ultrafix.ultrafixGoal) : null,
+            goal,
+            goalReached,
             headSha: context.headSha ?? null,
             createdAt,
         }];

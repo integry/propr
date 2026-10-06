@@ -7,7 +7,11 @@
  * The implementer columns are resolved from the task that opened the pull
  * request when the score is written, so a later model relabel cannot rewrite
  * which model the score describes. `goal` is the Ultrafix target in effect for
- * the cycle, and is null for a plain `/review`.
+ * the cycle, and is null for a plain `/review`. `goal_reached` is the cycle's
+ * verdict under the rules the Ultrafix loop applies to the whole review job:
+ * every reviewer produced a complete, valid, scored review, none reported a
+ * blocker, and the authoritative (newest) score met the goal. It is the same on
+ * every row of one job, and null for a plain `/review`.
  *
  * `notification_pull_request_state` already tracks one row per pull request
  * (its merge marker), so the final outcome is recorded there: `outcome` is
@@ -30,6 +34,7 @@ export async function up(knex) {
     table.integer('suggestion_count').notNullable().defaultTo(0);
     table.integer('cycle_number');
     table.integer('goal');
+    table.boolean('goal_reached');
     table.string('source', 20).notNullable();
     table.string('head_sha', 64);
     table.text('created_at').notNullable();

@@ -24,15 +24,20 @@ interface ScoreSeed {
   blockers?: number;
   cycle?: number | null;
   goal?: number | null;
+  /** The cycle's combined verdict; defaults to this row alone being the whole review job. */
+  goalReached?: boolean;
+  task?: string;
+  reviewer?: string;
   repository?: string;
 }
 
 async function seedScore(seed: ScoreSeed): Promise<void> {
   await database('review_scores').insert({
-    repository_id: seed.repository ?? 'acme/repo', pr_number: seed.pr, task_id: `review-${seed.pr}-${seed.at}`,
+    repository_id: seed.repository ?? 'acme/repo', pr_number: seed.pr, task_id: seed.task ?? `review-${seed.pr}-${seed.at}`,
     implementation_task_id: seed.model ? `impl-${seed.pr}` : null, implementer_agent: seed.model ? 'agent' : null,
-    implementer_model: seed.model, reviewer_agent: 'codex', reviewer_model: GPT, score: seed.score,
+    implementer_model: seed.model, reviewer_agent: 'codex', reviewer_model: seed.reviewer ?? GPT, score: seed.score,
     blocker_count: seed.blockers ?? 0, suggestion_count: 0, cycle_number: seed.cycle ?? null, goal: seed.goal ?? null,
+    goal_reached: seed.goal ? seed.goalReached ?? (!seed.blockers && seed.score >= seed.goal) : null,
     source: seed.goal ? 'ultrafix' : 'review', head_sha: `sha-${seed.score}`, created_at: seed.at,
   });
 }
@@ -289,4 +294,20 @@ test('a merged PR with no score at or before its merge has an unknown final scor
     await database('review_scores').where({ repository_id: 'acme/late' }).delete();
     await database('notification_pull_request_state').where({ repository: 'acme/late' }).delete();
   }
+});
+
+test('a clean reviewer does not pass an Ultrafix cycle a sibling reviewer blocked', async () => {
+  const repository = 'acme/cycles';
+  // Cycle 1: GPT blocks at 5 while Opus reviews clean at 9; the job did not reach goal 8.
+  await seedScore({ repository, pr: 50, task: 'ultrafix-50-1', cycle: 1, goal: 8, score: 5, blockers: 1, goalReached: false, reviewer: GPT, at: daysAgo(3), model: OPUS });
+  await seedScore({ repository, pr: 50, task: 'ultrafix-50-1', cycle: 1, goal: 8, score: 9, goalReached: false, reviewer: OPUS, at: daysAgo(3), model: OPUS });
+  // Cycle 2: both reviewers clean; the job reached the goal.
+  await seedScore({ repository, pr: 50, task: 'ultrafix-50-2', cycle: 2, goal: 8, score: 8, goalReached: true, reviewer: GPT, at: daysAgo(2), model: OPUS });
+  await seedScore({ repository, pr: 50, task: 'ultrafix-50-2', cycle: 2, goal: 8, score: 9, goalReached: true, reviewer: OPUS, at: daysAgo(2), model: OPUS });
+  // PR 51 never had a passing cycle, though one reviewer was clean and above goal.
+  await seedScore({ repository, pr: 51, task: 'ultrafix-51-1', cycle: 1, goal: 8, score: 4, blockers: 2, goalReached: false, reviewer: GPT, at: daysAgo(2), model: OPUS });
+  await seedScore({ repository, pr: 51, task: 'ultrafix-51-1', cycle: 1, goal: 8, score: 10, goalReached: false, reviewer: OPUS, at: daysAgo(2), model: OPUS });
+
+  const summary = await loadReviewScoreSummary(database, null, repository);
+  assert.deepEqual(summary.models.map(model => model.cycles_to_goal), [{ mean: 2, n: 1, attempted: 2 }]);
 });
