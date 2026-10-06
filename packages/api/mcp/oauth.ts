@@ -92,14 +92,14 @@ export class McpOAuthProvider implements OAuthServerProvider {
    * access token living as long as the grant is issued: there is no refresh token.
    * Scopes above the instance ceiling are narrowed, as for consent.
    */
-  async issueDelegatedGrant({ credential, clientId, clientName, scopes, repositories, membershipSource, ttlMs }: {
+  async issueDelegatedGrant({ credential, clientId, clientName, scopes, repositories, membershipSource, ttlMs, database = this.store.db }: {
     credential: GitHubUser; clientId: string; clientName: string; scopes: McpScope[]; repositories: string[];
-    membershipSource: string; ttlMs: number;
+    membershipSource: string; ttlMs: number; database?: Knex;
   }): Promise<{ grant: McpGrant; accessToken: string }> {
     if (!credential.accessToken || !/^\d+$/.test(credential.id)) throw new InvalidGrantError('GitHub credential unavailable');
     const allowed = this.allowedScopes();
     const permitted = [...new Set<McpScope>(['read', ...scopes])].filter(scope => allowed.has(scope));
-    return this.store.db.transaction(async tx => {
+    return database.transaction(async tx => {
       const now = Date.now();
       const grant: McpGrant = {
         id: randomUUID(), ownerId: credential.id, clientId, clientName,
@@ -183,8 +183,8 @@ export class McpOAuthProvider implements OAuthServerProvider {
     if (record?.clientId === client.client_id) await this.revokeGrant(record.grantId);
   }
 
-  async revokeGrant(id: string, ownerId?: string): Promise<void> {
-    await this.store.db.transaction(async tx => {
+  async revokeGrant(id: string, ownerId?: string, database: Knex = this.store.db): Promise<void> {
+    await database.transaction(async tx => {
       const grant = await this.store.get<McpGrant>('grant', id, tx);
       if (grant && (!ownerId || grant.ownerId === ownerId)) await this.store.put('grant', id, { ...grant, revoked: true }, { database: tx });
     });

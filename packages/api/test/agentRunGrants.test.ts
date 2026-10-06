@@ -19,6 +19,7 @@ import {
   AGENT_RUN_MCP_CLIENT_ID,
   issueAgentRunGrant,
   revokeAgentRunGrant,
+  revokeAgentRunPhaseGrant,
   type AgentRunGrantDependencies,
 } from '../mcp/agentRunGrants.js';
 import { AGENT_RUN_GRANT_SIGNATURE_WINDOW_MS, createAgentRunInternalRoutes } from '../routes/agentRunInternalRoutes.js';
@@ -142,7 +143,7 @@ test('a report grant is read-only, limited to the run snapshot repositories and 
   assert.deepEqual(principal.grant.repositories, ['acme/repo', 'acme/docs'], 'Repositories come from the snapshot, never the body');
   assert.equal(principal.grant.clientId, AGENT_RUN_MCP_CLIENT_ID);
   assert.equal(principal.grant.clientName, 'ProPR Agent: Nightly triage');
-  assert.equal(principal.grant.membershipSource, 'agent_run');
+  assert.equal(principal.grant.membershipSource, 'local', "The owner's membership source, so membership loss is enforced");
   assert.throws(() => policy.requireScope(principal, 'execute'), /requires execute/);
   await assert.rejects(policy.repository(principal, 'acme/other', true), { code: 'REPOSITORY_FORBIDDEN' });
 
@@ -194,6 +195,43 @@ test('a retried phase replaces its grant and revokes the previous token', async 
   await policy.authenticate(second.accessToken);
   await revokeAgentRunGrant(second.grantId, grantDeps);
   await assert.rejects(policy.authenticate(second.accessToken));
+});
+
+test('removing the owner\'s explicit membership ends the agent grant', async () => {
+  const issued = await issueAgentRunGrant({ ownerId: OWNER, definitionName: 'Nightly triage', runId: 'run-1', phase: 'report', repositories: ['acme/repo'] }, grantDeps);
+  await policy.authenticate(issued.accessToken);
+  // GitHub identity and the whitelist stay valid, so the owner is still implicitly authorized.
+  await db('instance_members').where({ github_user_id: OWNER }).delete();
+  await assert.rejects(policy.authenticate(issued.accessToken), { code: 'ACCESS_REVOKED' });
+});
+
+test('overlapping issuances of one phase leave a single live grant that cleanup revokes', async () => {
+  const input = { ownerId: OWNER, definitionName: 'Nightly triage', runId: 'run-1', phase: 'report' as const, repositories: ['acme/repo'] };
+  const [a, b] = await Promise.all([issueAgentRunGrant(input, grantDeps), issueAgentRunGrant(input, grantDeps)]);
+  const store = new McpStore(db, config.encryptionKey);
+  const live = (await db('mcp_records').where({ kind: 'grant' }).select('value')).map(row => store.unseal<McpGrant>(row.value)).filter(grant => !grant.revoked);
+  assert.equal(live.length, 1, 'The later issuance revoked the earlier one');
+  // Each worker cleans up the grant it was given.
+  await Promise.all([a, b].map(grant => revokeAgentRunPhaseGrant('run-1', 'report', { ...grantDeps, grantId: grant.grantId })));
+  await assert.rejects(policy.authenticate(a.accessToken));
+  await assert.rejects(policy.authenticate(b.accessToken));
+  assert.equal(await store.get(AGENT_RUN_GRANT_RECORD_KIND, 'run-1:report'), undefined);
+});
+
+test('stale cleanup overlapping a replacement never deletes the replacement record', async () => {
+  const input = { ownerId: OWNER, definitionName: 'Nightly triage', runId: 'run-1', phase: 'report' as const, repositories: ['acme/repo'] };
+  const a = await issueAgentRunGrant(input, grantDeps);
+  const [revoked, b] = await Promise.all([
+    revokeAgentRunPhaseGrant('run-1', 'report', { ...grantDeps, grantId: a.grantId }),
+    issueAgentRunGrant(input, grantDeps),
+  ]);
+  assert.ok(revoked === a.grantId || revoked === null);
+  await assert.rejects(policy.authenticate(a.accessToken));
+  await policy.authenticate(b.accessToken);
+  const store = new McpStore(db, config.encryptionKey);
+  assert.equal((await store.get<{ grantId: string }>(AGENT_RUN_GRANT_RECORD_KIND, 'run-1:report'))?.grantId, b.grantId);
+  assert.equal(await revokeAgentRunPhaseGrant('run-1', 'report', { ...grantDeps, grantId: b.grantId }), b.grantId);
+  await assert.rejects(policy.authenticate(b.accessToken));
 });
 
 test('issuance requires MCP and a stored GitHub user grant for the owner', async () => {
