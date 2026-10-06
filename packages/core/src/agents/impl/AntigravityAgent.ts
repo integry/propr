@@ -1,3 +1,4 @@
+import { withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
 import { isManagedAgentConfigPath, type ModelReasoningLevel } from '@propr/shared';
@@ -87,7 +88,9 @@ export class AntigravityAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, environment, taskId, prNumber, metadata } = options;
+        const { worktreePath, issueRef, prompt: rawCustomPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, environment, taskId, prNumber, metadata } = options;
+        // No native web switch: the restriction is best effort through the prompt.
+        const customPrompt = withPromptOnlyToolPolicy(rawCustomPrompt, options.toolPolicy);
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         if (options.executionMode === 'goal') return this.executeNativeGoal(options, effectiveModel);

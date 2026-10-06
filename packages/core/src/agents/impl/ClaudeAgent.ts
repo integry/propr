@@ -37,6 +37,7 @@ import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
+import { claudeToolPolicyArgs } from '../agentToolPolicy.js';
 import {
     claudeSessionTranscriptExists,
     claudeSessionTranscriptPath,
@@ -111,7 +112,7 @@ export class ClaudeAgent implements Agent {
             worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
             onSessionId, onContainerId, tools, environment, taskId, prNumber, reasoningLevel,
-            executionMode = 'task', metadata
+            executionMode = 'task', metadata, toolPolicy
         } = options;
 
         const startTime = Date.now();
@@ -139,7 +140,7 @@ export class ClaudeAgent implements Agent {
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
             const dockerArgs = buildDockerArgs(this.config, options.maxTurns ?? this.maxTurns, {
                 worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number,
-                systemPrompt, tools, environment, taskId,
+                systemPrompt, tools, environment, taskId, toolPolicy,
                 reasoningLevel: effectiveReasoningLevel
             });
 
@@ -148,7 +149,8 @@ export class ClaudeAgent implements Agent {
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId,
                     worktreePath, stdinData: prompt, taskId,
-                    streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel
+                    streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel,
+                    ...(toolPolicy && { extraEnvVars: claudeToolPolicyArgs(toolPolicy).env })
                 }),
                 undefined,
                 this.config.alias

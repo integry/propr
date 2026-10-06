@@ -424,6 +424,8 @@ export type {
     Agent,
     AgentConfig,
     AgentTaskOptions,
+    AgentToolPolicy,
+    AgentToolPolicyMcpServer,
     AgentExecutionResult,
     AgentTerminationReason,
     AgentType,
@@ -432,6 +434,15 @@ export type {
     AnalyzeOptions
 } from './agents/types.js';
 export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
+export {
+    claudeToolPolicyArgs,
+    codexToolPolicyArgs,
+    promptOnlyToolPolicyNotice,
+    withPromptOnlyToolPolicy,
+    PROPR_MCP_SERVER_NAME,
+    PROPR_MCP_BEARER_TOKEN_ENV,
+    type ToolPolicyLaunchArgs
+} from './agents/agentToolPolicy.js';
 export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, loadEffectiveAgentBaseImages, migrateAgentConfigs } from './config/configManager.js';
 
 // Agent version management

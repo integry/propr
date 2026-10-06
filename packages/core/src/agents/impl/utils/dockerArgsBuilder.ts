@@ -10,7 +10,8 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import logger from '../../../utils/logger.js';
-import { AgentConfig } from '../../types.js';
+import type { AgentConfig, AgentToolPolicy } from '../../types.js';
+import { claudeToolPolicyArgs } from '../../agentToolPolicy.js';
 import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
@@ -61,6 +62,8 @@ export interface DockerArgsParams {
     systemPrompt?: string;
     /** Optional tools configuration */
     tools?: string;
+    /** Per-run web/MCP policy; its tokens must reach the docker process through `extraEnvVars`. */
+    toolPolicy?: AgentToolPolicy;
     /** Per-execution environment variables to inject into the agent container. */
     environment?: Record<string, string>;
     /** Optional task ID for container naming */
@@ -190,7 +193,7 @@ export function buildDockerArgs(
     const {
         worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment,
         taskId, executionType, reasoningLevel, readOnlyWorkspace = false, repositoryInspection = false,
-        executionMode = 'task', resumeSessionId, sessionId,
+        executionMode = 'task', resumeSessionId, sessionId, toolPolicy,
     } = params;
     const configPath = resolveConfigPath(config.configPath);
     if (repositoryInspection && !readOnlyWorkspace) {
@@ -203,10 +206,12 @@ export function buildDockerArgs(
         ? REPOSITORY_SCOUT_CONTAINER_ROOT
         : '/home/node/workspace';
     const workerOwnedGit = !agentOwnsGit(params);
-    const envVars = buildEnvironmentVariableArgs(
-        [config.envVars, environment],
-        true,
-    );
+    const policyArgs = toolPolicy ? claudeToolPolicyArgs(toolPolicy) : undefined;
+    const envVars = [
+        ...buildEnvironmentVariableArgs([config.envVars, environment], true),
+        // Name only: docker copies the value from its own environment.
+        ...Object.keys(policyArgs?.env ?? {}).flatMap(name => ['-e', name]),
+    ];
     const dockerArgs = buildBaseDockerArgs({
         config,
         maxTurns,
@@ -265,6 +270,16 @@ export function buildDockerArgs(
             tools: effectiveTools,
             agentAlias: config.alias
         }, 'Using custom tools configuration');
+    }
+
+    if (policyArgs) {
+        dockerArgs.push(...policyArgs.cliArgs);
+        logger.info({
+            issueNumber,
+            allowWeb: toolPolicy?.allowWeb,
+            mcpServers: toolPolicy?.mcpServers?.map(server => server.name) ?? [],
+            agentAlias: config.alias
+        }, 'Applying tool policy to Claude agent');
     }
 
     logger.info({

@@ -40,7 +40,7 @@ import { defaultRunCostCapDeps, withRunCostCap, writeTimelineEvent } from './run
  */
 
 export { AgentRunPersistenceError, AgentRunSettlementError } from './agentRuns/runErrors.js';
-export type { AgentRunToolPolicy } from './agentRuns/agentTaskOptions.js';
+export { agentRunToolPolicy, type AgentRunMcpGrant, type AgentRunPhase } from './agentRuns/toolPolicy.js';
 
 export const AGENT_RUN_USAGE_LIMIT_REASON = 'provider usage limit reached; trigger again later';
 export const AGENT_RUN_ABANDONED_REASON = 'The worker running this report stopped before it finished; trigger the agent again';

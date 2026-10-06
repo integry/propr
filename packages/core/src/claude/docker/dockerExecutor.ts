@@ -207,8 +207,11 @@ function spawnCommandProcess(
     args: string[],
     cwd: string | undefined,
     stdinData: string | undefined,
+    extraEnvVars?: Record<string, string>,
 ): ChildProcess {
-    const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env };
+    // Extra variables reach the container through `-e NAME`, keeping their values out of the argument list.
+    const env = extraEnvVars && Object.keys(extraEnvVars).length > 0 ? { ...process.env, ...extraEnvVars } : process.env;
+    const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env };
     if (cwd && fs.existsSync(cwd)) spawnOptions.cwd = cwd;
     else if (cwd) logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
 
@@ -246,7 +249,7 @@ function startDockerCommand(
     { ownershipContext, executionSignal }: { ownershipContext: ReturnType<typeof getExecutionOwnershipContext>; executionSignal: AbortSignal | undefined },
 ): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, model, costCapExempt } = options;
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, extraEnvVars, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, model, costCapExempt } = options;
         const executionArgs = resolveExecutionArgs(command, withWorkflowExecutionDeadline(command, args, timeout), taskId, ownershipContext?.attemptGeneration);
         const executablePath = resolveDockerPath(command);
         const namedContainer = command === 'docker' ? getDockerRunContainerName(executionArgs) : null;
@@ -262,7 +265,7 @@ function startDockerCommand(
         }
         const costExecution = costCap.execution;
         let child: ReturnType<typeof spawnCommandProcess>;
-        try { child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData); } catch (error) {
+        try { child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData, extraEnvVars); } catch (error) {
             // A container that never started must not stay registered with the guard.
             void costExecution?.finish().catch(() => null);
             throw error;
