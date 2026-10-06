@@ -7,10 +7,13 @@ import { redactAuthenticatedGitUrl } from './redactGitUrl.js';
  * Parallel workers share one clone per repository. Git serializes writes to
  * `.git/config` and refs through `<file>.lock` files and fails immediately
  * (rather than waiting) when another process holds the lock. Those failures
- * are transient contention, not repository corruption.
+ * are transient contention, not repository corruption. Git reports a held
+ * lock as EEXIST ("File exists"); the same prefixes followed by other errors
+ * (e.g. "Permission denied", "Read-only file system") are permanent and must
+ * not be retried or reported as contention.
  */
 const GIT_LOCK_CONTENTION_PATTERNS: RegExp[] = [
-    /could not lock config file/i,
+    /could not lock config file [^\n]*: file exists/i,
     /unable to create '[^']*\.lock': file exists/i,
     /another git process seems to be running/i,
     // A concurrent fetch in the same clone moved the ref first.

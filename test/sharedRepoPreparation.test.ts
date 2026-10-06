@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,9 +27,11 @@ const previousEnv: Record<string, string | undefined> = {};
 type RepoBranching = typeof import('../packages/core/src/git/repoBranching.js');
 type RepoManager = typeof import('../packages/core/src/git/repoManager.js');
 type HooklessGit = typeof import('../packages/core/src/git/hooklessGit.js');
+type ConfigLock = typeof import('../packages/core/src/git/configLock.js');
 let repoBranching: RepoBranching;
 let repoManager: RepoManager;
 let hooklessGit: HooklessGit;
+let configLock: ConfigLock;
 
 async function git(cwd: string, args: string[]): Promise<string> {
     const { stdout } = await execGit('git', args, { cwd });
@@ -71,6 +73,7 @@ before(async () => {
     repoBranching = await import('../packages/core/src/git/repoBranching.js');
     repoManager = await import('../packages/core/src/git/repoManager.js');
     hooklessGit = await import('../packages/core/src/git/hooklessGit.js');
+    configLock = await import('../packages/core/src/git/configLock.js');
 });
 
 after(async () => {
@@ -174,6 +177,82 @@ test('a permanent remote error is reported unchanged and not retried as contenti
         repoBranching.setupAuthenticatedRemote(hooklessGit.createHooklessGit(clonePath), REPO_URL, TOKEN, FAST_RETRY),
         (error: Error) => error.name !== 'GitLockContentionError' && /origin/i.test(error.message),
     );
+});
+
+for (const reason of ['Permission denied', 'Read-only file system']) {
+    test(`a config lock failure caused by "${reason}" is permanent and not retried as contention`, async () => {
+        const original = new Error(`error: could not lock config file .git/config: ${reason}\nfatal: could not set 'remote.origin.url' to '${REPO_URL}'`);
+        let calls = 0;
+        await assert.rejects(
+            configLock.withGitLockRetry('updating remote.origin.url', async () => { calls++; throw original; }, FAST_RETRY),
+            (error: Error) => error === original,
+        );
+        assert.strictEqual(calls, 1);
+        assert.strictEqual(configLock.isGitLockContentionError(original), false);
+    });
+}
+
+test('a held config lock ("File exists") is retried as contention', async () => {
+    let calls = 0;
+    const result = await configLock.withGitLockRetry('updating remote.origin.url', async () => {
+        if (++calls < 3) throw new Error('error: could not lock config file /tmp/a: b/.git/config: File exists');
+        return 'done';
+    }, FAST_RETRY);
+    assert.strictEqual(result, 'done');
+    assert.strictEqual(calls, 3);
+});
+
+/** Make the clone's Git directory unwritable so Git cannot create `config.lock`. */
+async function denyGitDirWrites(clonePath: string): Promise<() => Promise<void>> {
+    const gitDir = path.join(clonePath, '.git');
+    await chmod(gitDir, 0o555);
+    return () => chmod(gitDir, 0o755);
+}
+
+test('an unwritable shared config fails immediately with the original error, not as lock contention', async () => {
+    const clonePath = await createSharedClone('denied', LEGACY_URL);
+    const restore = await denyGitDirWrites(clonePath);
+    try {
+        await assert.rejects(
+            repoBranching.setupAuthenticatedRemote(hooklessGit.createHooklessGit(clonePath), REPO_URL, TOKEN, { attempts: 3, initialDelayMs: 5000, maxDelayMs: 5000 }),
+            (error: Error) => {
+                assert.notStrictEqual(error.name, 'GitLockContentionError');
+                assert.match(error.message, /could not lock config file [^\n]*: Permission denied/);
+                assert.doesNotMatch(error.message, /another Git process/i);
+                assert.ok(!error.message.includes(TOKEN));
+                return true;
+            },
+        );
+    } finally {
+        await restore();
+    }
+    assert.ok(!existsSync(path.join(clonePath, '.git', 'config.lock')));
+});
+
+test('preparation of an unwritable shared clone is not reported as lock contention', async () => {
+    const owner = `${OWNER}-readonly`;
+    const clonePath = await createSharedClone('readonly', LEGACY_URL);
+    const worktreePath = path.join(rootDir, 'readonly-worktree');
+    await git(clonePath, ['worktree', 'add', '--no-track', '-b', 'task-ro', worktreePath, 'origin/main']);
+    await writeFile(path.join(worktreePath, 'in-progress.txt'), 'uncommitted agent work\n');
+    const restore = await denyGitDirWrites(clonePath);
+    try {
+        await assert.rejects(
+            repoManager.ensureRepoCloned({
+                repoUrl: REPO_URL.replace(OWNER, owner), owner, repoName: REPO, authToken: TOKEN, baseBranch: 'main',
+                lockRetry: { attempts: 3, initialDelayMs: 5000, maxDelayMs: 5000 },
+            }),
+            (error: Error) => {
+                assert.doesNotMatch(error.message, /stayed locked by another Git process/);
+                assert.match(error.message, /Permission denied/);
+                assert.ok(!error.message.includes(TOKEN));
+                return true;
+            },
+        );
+    } finally {
+        await restore();
+    }
+    assert.strictEqual(await readFile(path.join(worktreePath, 'in-progress.txt'), 'utf8'), 'uncommitted agent work\n');
 });
 
 test('parallel preparation of a shared clone with active worktrees survives transient config lock contention', async () => {
