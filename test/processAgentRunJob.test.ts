@@ -60,7 +60,7 @@ function storedRun(overrides: Partial<StoredAgentRun> = {}): StoredAgentRun {
     id: 'run-1', definitionId: 'def-1', ownerId: 'user-1', trigger: 'manual', triggerSource: 'user:user-1',
     idempotencyKey: null, state: 'queued', autonomyMode: 'dry_run', definitionSnapshot: definition(),
     reportTaskId: null, actionTaskId: null, report: null, reportTruncated: false, actionSummary: null,
-    skipReason: null, failureReason: null, approvedBy: null, deferredUntil: null, deferrals: 0,
+    skipReason: null, failureReason: null, approvedBy: null, operatorNote: null, deferredUntil: null, deferrals: 0,
     createdAt: NOW, startedAt: null, reportedAt: null, finishedAt: null, updatedAt: NOW,
     ...overrides,
   };

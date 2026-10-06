@@ -58,6 +58,7 @@ export async function up(knex) {
     table.text('skip_reason');
     table.text('failure_reason');
     table.string('approved_by');
+    table.text('operator_note');
     table.bigInteger('deferred_until');
     table.integer('deferrals').notNullable().defaultTo(0);
     table.bigInteger('created_at').notNullable();

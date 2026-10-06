@@ -224,7 +224,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             // 4. Same workspace rules as the report; its own directory, since an
             //    auto run's report workspace may not be cleaned up yet.
             workspace = await deps.prepareWorkspace({ runId: `${runId}-action`, definition, githubToken: token, octokit, logger: log });
-            const prompt = deps.buildPrompt({ definition, run: { id: runId }, report: run.report ?? '', operatorNote: job.data.operatorNote });
+            const prompt = deps.buildPrompt({ definition, run: { id: runId }, report: run.report ?? '', operatorNote: run.operatorNote ?? job.data.operatorNote });
 
             // 5. Execute with the action-phase MCP grant, within the spend cap.
             const { agent, alias, model } = await deps.resolveAgent(definition, log);

@@ -135,7 +135,7 @@ export async function enqueueAgentRunPhase(
 
 export interface EnqueueAgentRunActionDependencies extends Pick<AgentRunTriggerDependencies, 'database' | 'now' | 'enqueue'> {
   transitionRun?: typeof transitionAgentRun;
-  /** Guidance from the approver, passed to the acting prompt. */
+  /** Guidance from the approver, passed to the acting prompt; defaults to the note stored with the approval. */
   operatorNote?: string | null;
 }
 
@@ -143,10 +143,13 @@ export interface EnqueueAgentRunActionDependencies extends Pick<AgentRunTriggerD
  * Enqueues the acting step of a run that just moved to `acting` (auto mode or
  * an approval). When the job cannot be enqueued nothing would ever pick the
  * run up, so it is failed with the reason instead. Returns the run as stored.
+ *
+ * Safe to repeat for an unclaimed `acting` run: the job id is deterministic,
+ * so re-dispatching an interrupted handoff never enqueues a second job.
  */
 export async function enqueueAgentRunActionOrFail(
   run: StoredAgentRun,
-  { database, now, enqueue, transitionRun = transitionAgentRun, operatorNote }: EnqueueAgentRunActionDependencies = {},
+  { database, now, enqueue, transitionRun = transitionAgentRun, operatorNote = run.operatorNote }: EnqueueAgentRunActionDependencies = {},
 ): Promise<StoredAgentRun> {
   try {
     await enqueueAgentRunPhase(run, 'action', { enqueue }, { operatorNote });

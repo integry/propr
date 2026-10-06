@@ -38,7 +38,7 @@ function actingRun(overrides: Partial<StoredAgentRun> = {}): StoredAgentRun {
     id: 'run-1', definitionId: 'def-1', ownerId: 'user-1', trigger: 'schedule', triggerSource: 'schedule',
     idempotencyKey: null, state: 'acting', autonomyMode: 'auto', definitionSnapshot: definition(),
     reportTaskId: 'agent-run-run-1-report', actionTaskId: null, report: '## Summary\nlodash is outdated in acme/web.',
-    reportTruncated: false, actionSummary: null, skipReason: null, failureReason: null, approvedBy: null,
+    reportTruncated: false, actionSummary: null, skipReason: null, failureReason: null, approvedBy: null, operatorNote: null,
     deferredUntil: null, deferrals: 0, createdAt: NOW, startedAt: NOW, reportedAt: NOW, finishedAt: null, updatedAt: NOW,
     ...overrides,
   };
@@ -154,6 +154,13 @@ describe('processAgentActionJob', () => {
     await createAgentActionProcessor(h.deps)(actionJob({ operatorNote: 'Only file TODOs, no tasks.' }));
     const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;
     assert.match(options.prompt, /<operator-note>\nOnly file TODOs, no tasks\.\n<\/operator-note>/);
+  });
+
+  test('a re-dispatched approval without a note in its job still uses the note stored with the approval', async () => {
+    const h = harness({ run: actingRun({ autonomyMode: 'preview', approvedBy: 'user-1', operatorNote: 'Skip acme/api.' }) });
+    await createAgentActionProcessor(h.deps)(actionJob());
+    const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;
+    assert.match(options.prompt, /<operator-note>\nSkip acme\/api\.\n<\/operator-note>/);
   });
 
   test('a failing agent fails the run and its task, and the grant is still revoked', async () => {

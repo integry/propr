@@ -535,23 +535,42 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
   });
 
   /**
-   * Decides a preview run with a compare-and-set from `awaiting_approval`, so
-   * a double-clicked Approve moves the run (and enqueues its acting step) once.
+   * An approved run whose acting step has not been claimed yet. The approval
+   * committed, but the request that made it may have stopped before the
+   * acting step was enqueued, so approving again re-dispatches it.
    */
-  async function decideRun(req: Request, owner: string, to: 'acting' | 'rejected'): Promise<StoredAgentRun> {
-    const run = await requireRun(req, owner);
-    const notAwaiting = (state: AgentRunState) => new RouteError(409, `Agent run is ${state} and is not awaiting approval`, 'AGENT_RUN_NOT_AWAITING_APPROVAL');
-    if (run.state !== 'awaiting_approval') throw notAwaiting(run.state);
-    const decided = await transitionAgentRun(run.id, ['awaiting_approval'], to, to === 'acting' ? { approvedBy: owner } : {}, storeDeps);
-    if (!decided) throw notAwaiting((await requireRun(req, owner)).state);
-    return decided;
+  function isUnclaimedApproval(run: StoredAgentRun): boolean {
+    return run.state === 'acting' && run.approvedBy !== null && run.actionTaskId === null;
   }
 
+  /**
+   * Decides a preview run with a compare-and-set from `awaiting_approval`, so
+   * a double-clicked Approve moves the run once. The operator note is stored
+   * with the approval, so a re-dispatch keeps the approver's guidance.
+   */
+  async function decideRun(req: Request, owner: string, to: 'acting' | 'rejected', note: string | null = null): Promise<StoredAgentRun> {
+    const run = await requireRun(req, owner);
+    const notAwaiting = (state: AgentRunState) => new RouteError(409, `Agent run is ${state} and is not awaiting approval`, 'AGENT_RUN_NOT_AWAITING_APPROVAL');
+    if (to === 'acting' && isUnclaimedApproval(run)) return run;
+    if (run.state !== 'awaiting_approval') throw notAwaiting(run.state);
+    const patch = to === 'acting' ? { approvedBy: owner, operatorNote: note } : {};
+    const decided = await transitionAgentRun(run.id, ['awaiting_approval'], to, patch, storeDeps);
+    if (decided) return decided;
+    const current = await requireRun(req, owner);
+    if (to === 'acting' && isUnclaimedApproval(current)) return current;
+    throw notAwaiting(current.state);
+  }
+
+  /**
+   * Approving again repeats the handoff of an approval whose acting step was
+   * not claimed yet; the acting job id is deterministic, so this never runs
+   * the step twice. The note stored with the first approval is the one used.
+   */
   const approveRun = handler('Failed to approve agent run', async (req, res) => {
     const owner = requireOwner(req);
     const note = operatorNote(requestBody(req));
-    const acting = await decideRun(req, owner, 'acting');
-    const run = await startActing(acting, note);
+    const acting = await decideRun(req, owner, 'acting', note);
+    const run = await startActing(acting, acting.operatorNote);
     res.json({ run: publicAgentRun(run, { includeReport: true }) });
   });
 

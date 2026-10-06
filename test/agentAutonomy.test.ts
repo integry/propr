@@ -43,7 +43,7 @@ function reportedRun(overrides: Partial<StoredAgentRun> = {}): StoredAgentRun {
     id: 'run-1', definitionId: 'def-1', ownerId: 'user-1', trigger: 'schedule', triggerSource: 'schedule',
     idempotencyKey: null, state: 'report_ready', autonomyMode: 'dry_run', definitionSnapshot: definition(),
     reportTaskId: 'agent-run-run-1-report', actionTaskId: null, report: 'Two dependencies are outdated.', reportTruncated: false,
-    actionSummary: null, skipReason: null, failureReason: null, approvedBy: null, deferredUntil: null, deferrals: 0,
+    actionSummary: null, skipReason: null, failureReason: null, approvedBy: null, operatorNote: null, deferredUntil: null, deferrals: 0,
     createdAt: NOW, startedAt: NOW, reportedAt: NOW, finishedAt: null, updatedAt: NOW,
     ...overrides,
   };
@@ -228,17 +228,70 @@ describe('approve and reject routes', () => {
     assert.equal(approved.body.run?.state, 'acting');
     assert.equal(approved.body.run?.approvedBy, 'alice');
     assert.deepEqual(started, [{ runId: run.id, note: 'Only file TODOs.' }]);
+    assert.equal((await getAgentRunById(run.id, { database }))?.operatorNote, 'Only file TODOs.');
   });
 
-  test('a double-clicked approve starts the acting step once', async () => {
+  test('a double-clicked approve moves the run once and both requests dispatch the same acting step', async () => {
     const run = await runIn('awaiting_approval');
+    const enqueued: Array<{ jobId: unknown; data: AgentRunJobData }> = [];
+    routes = createAgentDefinitionRoutes({
+      db: database,
+      services: {
+        now: () => NOW,
+        startActing: (acting, note) => enqueueAgentRunActionOrFail(acting, {
+          database, now: () => NOW, operatorNote: note, enqueue: async (_name, data, options) => { enqueued.push({ jobId: options.jobId, data }); },
+        }),
+      },
+    });
     const [first, second] = await Promise.all([
-      call(routes.approveRun, 'alice', run.id),
-      call(routes.approveRun, 'alice', run.id),
+      call(routes.approveRun, 'alice', run.id, { note: 'First note.' }),
+      call(routes.approveRun, 'alice', run.id, { note: 'Second note.' }),
     ]);
-    assert.deepEqual([first.status, second.status].sort(), [200, 409]);
-    assert.equal(started.length, 1);
-    assert.equal(started[0].note, null);
+    assert.deepEqual([first.status, second.status], [200, 200]);
+    const stored = await getAgentRunById(run.id, { database });
+    assert.equal(stored?.state, 'acting');
+    // Only the approval that moved the run stored its note; the other request re-dispatches with it.
+    assert.ok(['First note.', 'Second note.'].includes(stored?.operatorNote ?? ''));
+    assert.equal(new Set(enqueued.map(entry => entry.jobId)).size, 1);
+    assert.deepEqual(enqueued.map(entry => entry.data.operatorNote), [stored?.operatorNote, stored?.operatorNote]);
+  });
+
+  test('approving again after an interrupted handoff dispatches the acting step with the stored note', async () => {
+    const run = await runIn('awaiting_approval');
+    // The first approval committed, then its process stopped before enqueueing the acting step.
+    await transitionAgentRun(run.id, ['awaiting_approval'], 'acting', { approvedBy: 'alice', operatorNote: 'Only file TODOs.' }, { database, now: () => NOW });
+    const enqueued: AgentRunJobData[] = [];
+    routes = createAgentDefinitionRoutes({
+      db: database,
+      services: {
+        now: () => NOW,
+        startActing: (acting, note) => enqueueAgentRunActionOrFail(acting, {
+          database, now: () => NOW, operatorNote: note, enqueue: async (_name, data) => { enqueued.push(data); },
+        }),
+      },
+    });
+
+    const retried = await call(routes.approveRun, 'alice', run.id);
+    assert.equal(retried.status, 200);
+    assert.equal(retried.body.run?.state, 'acting');
+    assert.equal(retried.body.run?.approvedBy, 'alice');
+    assert.deepEqual(enqueued.map(data => [data.runId, data.phase, data.operatorNote]), [[run.id, 'action', 'Only file TODOs.']]);
+  });
+
+  test('approve answers 409 once the acting step of an approval was claimed', async () => {
+    const run = await runIn('awaiting_approval');
+    await transitionAgentRun(run.id, ['awaiting_approval'], 'acting', { approvedBy: 'alice', actionTaskId: 'action-task-1' }, { database, now: () => NOW });
+    const approved = await call(routes.approveRun, 'alice', run.id);
+    assert.equal(approved.status, 409);
+    assert.equal(approved.body.code, 'AGENT_RUN_NOT_AWAITING_APPROVAL');
+    assert.deepEqual(started, []);
+  });
+
+  test('an auto run that is acting is not dispatched by approve', async () => {
+    const run = await runIn('acting');
+    assert.equal(run.approvedBy, null);
+    assert.equal((await call(routes.approveRun, 'alice', run.id)).status, 409);
+    assert.deepEqual(started, []);
   });
 
   test('reject moves an awaiting run to rejected without starting the acting step', async () => {
