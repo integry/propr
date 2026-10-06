@@ -4,6 +4,7 @@
 
 import type { Knex } from 'knex';
 import { whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
+import { withModelScoreFigures } from './reviewScoreStats.js';
 
 interface ModelUsageRow {
   model_name: string | null;
@@ -17,6 +18,10 @@ export interface ModelUsage {
   tasks: number;
   tokens: number;
   cost_usd: number;
+  /** Mean final review score of the PRs this model implemented; present when review scores are recorded. */
+  mean_final_score?: number | null;
+  /** Scored PRs behind `mean_final_score`. */
+  n_scored?: number;
 }
 
 /**
@@ -25,6 +30,8 @@ export interface ModelUsage {
  * Tasks are distinct tasks with at least one execution on the model, as in
  * the overview's `usage.models`; tokens and cost are summed over those
  * executions. A period bounds all three by when each execution started.
+ * Each row also carries the review quality of the PRs the model implemented
+ * (see `withModelScoreFigures`), bounded by when the scores were recorded.
  */
 export async function loadModelUsage(db: Knex, analyticsWindow: AnalyticsWindow | null): Promise<ModelUsage[]> {
   const runsQuery = db('llm_executions')
@@ -48,7 +55,7 @@ export async function loadModelUsage(db: Knex, analyticsWindow: AnalyticsWindow 
     tokensQuery as unknown as Promise<ModelUsageRow[]>,
   ]);
   const tokensByModel = new Map(tokens.map(row => [row.model_name, Number(row.tokens || 0)]));
-  return runs
+  const usage = runs
     .filter(row => row.model_name)
     .map(row => ({
       model: String(row.model_name),
@@ -57,4 +64,5 @@ export async function loadModelUsage(db: Knex, analyticsWindow: AnalyticsWindow 
       cost_usd: Number(Number(row.cost || 0).toFixed(2)),
     }))
     .sort((left, right) => right.tasks - left.tasks || right.tokens - left.tokens || left.model.localeCompare(right.model));
+  return withModelScoreFigures(db, analyticsWindow, usage);
 }

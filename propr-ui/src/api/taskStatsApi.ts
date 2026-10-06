@@ -96,6 +96,9 @@ export interface StatsOverviewModelUsage {
   tasks: number;
   tokens: number;
   cost_usd: number;
+  /** Mean final review score of PRs this model implemented; absent from servers without review scores. */
+  mean_final_score?: number | null;
+  n_scored?: number;
 }
 
 export interface StatsOverviewResponse {
@@ -112,6 +115,77 @@ export const getStatsOverview = async (period?: AnalyticsTimeframe): Promise<Sta
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include'
   });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+// Review Scores Types and API
+
+/** A mean over `n` pull requests; null when there is nothing to average. */
+export interface ReviewScoreMean {
+  mean: number | null;
+  n: number;
+}
+
+/** Review quality of the pull requests one implementer model produced. */
+export interface ReviewScoreModelSummary {
+  implementer_model: string | null;
+  implementer_agent: string | null;
+  prs_scored: number;
+  first_score: ReviewScoreMean & { median: number | null };
+  final_score: ReviewScoreMean;
+  cycles_to_goal: ReviewScoreMean & { attempted: number };
+  merge_rate: { value: number | null; merged: number; n: number };
+  cost_per_merged_pr: { usd: number | null; n: number };
+}
+
+export interface ReviewScoreSummaryResponse {
+  period: string | null;
+  repository: string;
+  prs_scored: number;
+  scores_recorded: number;
+  models: ReviewScoreModelSummary[];
+}
+
+export const getReviewScoreSummary = async (period?: AnalyticsTimeframe): Promise<ReviewScoreSummaryResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/stats/review-scores${periodQuery(period)}`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include'
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
+export interface PullRequestScore {
+  cycle_number: number | null;
+  source: 'review' | 'ultrafix';
+  score: number;
+  goal: number | null;
+  blocker_count: number;
+  suggestion_count: number;
+  reviewer_agent: string | null;
+  reviewer_model: string | null;
+  implementer_model: string | null;
+  head_sha: string | null;
+  task_id: string;
+  created_at: string;
+}
+
+export interface PullRequestScoresResponse {
+  repository: string;
+  pr_number: number;
+  outcome: 'merged' | 'closed' | null;
+  merged_at: string | null;
+  closed_at: string | null;
+  scores: PullRequestScore[];
+}
+
+export const getPullRequestScores = async (repository: string, prNumber: number): Promise<PullRequestScoresResponse> => {
+  const response = await apiFetch(
+    `${API_BASE_URL}/api/pull-requests/${encodeURIComponent(String(prNumber))}/scores?repository=${encodeURIComponent(repository)}`,
+    { method: 'GET', headers: { 'Content-Type': 'application/json' }, credentials: 'include' },
+  );
   await handleApiResponse(response);
   return response.json();
 };

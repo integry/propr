@@ -30,6 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attempt lineage and `propr task get --json` includes `replacesTaskId`,
   `replacedByTaskId` and `attemptNumber`. `withRetry` now also retries HTTP
   `529` and "overloaded" errors.
+- **Persisted review scores and per-model review quality**: every `/review`
+  and Ultrafix review cycle that produces a parsed `Score: N/10` now writes a
+  `review_scores` row with the reviewer and implementer agent and model, blocker
+  and suggestion counts, the reviewed head and, for Ultrafix, the cycle number
+  and goal. Merged and closed outcomes are recorded on the PR's existing state
+  row. `GET /api/stats/review-scores` (and `.csv`) reports, per implementer
+  model, PRs scored, mean and median first score, mean final score, cycles to
+  goal, merge rate and cost per merged PR, each with its denominator and with
+  unknown values as `null`. `GET /api/pull-requests/:number/scores` returns one
+  PR's score history, and `/api/stats/overview` model rows gain
+  `mean_final_score` and `n_scored`. The Analytics page adds a "Review quality
+  by model" table, task details show a PR's score history, `propr stats
+  review-scores` prints the summary (`--json` supported), and MCP
+  `get_pull_request` includes `scoreHistory`. Earlier scores are not backfilled.
 - **Fail-closed auto-merge policy with protected paths**: `.propr/workflow.yml`
   accepts an `auto_merge` block (`enabled`, `method`, `protected_paths`), and
   `.propr/**` is always protected. Before arming GitHub auto-merge (after the PR
