@@ -1,5 +1,5 @@
 import { captureWorkflowMarkers, withWorkflowExecutionDeadline } from '../../workflow/workflowExecution.js';
-import { spawn, execFileSync, SpawnOptions, ChildProcess } from 'child_process';
+import { spawn, SpawnOptions, ChildProcess } from 'child_process';
 import { StringDecoder } from 'node:string_decoder';
 import fs from 'fs';
 import logger from '../../utils/logger.js';
@@ -14,11 +14,10 @@ import {
 } from './dockerExecutionOwnership.js';
 import { plannerAbortSignalKeyForTask, scheduleForceKill, setupAbortChecker } from './dockerAbortController.js';
 import { BoundedDiagnosticTail, BoundedProviderRecordBuffer, boundedProviderOutput } from '../../agents/impl/utils/boundedProviderOutput.js';
-import { LiveOutputLog } from '../../agents/impl/utils/liveOutputLog.js';
-import { buildLiveOutputSnapshot } from './dockerLiveOutputSnapshot.js';
 import { inspectSessionMessageLine, SessionLineInspectionContext } from './dockerSessionOutput.js';
-import { getActiveRunCostCap, type RunCostExecution } from '../../budget/runCostGuardContext.js';
-import { RunCostCapExceededError } from '../../budget/runCostCap.js';
+import { admitCostExecution, refuseCostExecution, registerCostExecution, settleCostCapStop } from './dockerCostCap.js';
+import { startLiveOutputStreaming } from './dockerLiveOutputStreaming.js';
+import { detectContainerId } from './dockerContainerDetection.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
@@ -69,13 +68,6 @@ export interface DockerCommandOptions {
     model?: string;
     /** A container that runs no agent and spends nothing (e.g. a usage probe): not counted toward, or refused by, the run's spend cap. */
     costCapExempt?: boolean;
-}
-
-// ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
-const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
-
-function stripAnsiCodes(text: string): string {
-    return text.replace(ANSI_REGEX, '');
 }
 
 function resolveDockerPath(command: string): string {
@@ -452,123 +444,6 @@ function startDockerCommand(
             reject(hasOwnershipFailure ? ownershipFailure : error);
         });
     });
-}
-
-/** Agent containers spend toward their run's cap; other commands and exempt containers do not. */
-function isChargeableExecution(command: string, args: string[], options: Pick<DockerCommandOptions, 'costCapExempt'>): boolean {
-    return command === 'docker' && args[0] === 'run' && !options.costCapExempt;
-}
-
-/**
- * Null when no cap applies; otherwise resolves once the run's cap admitted the
- * container, with the refusal message when its budget is already used up.
- */
-function admitCostExecution(command: string, args: string[], options: Pick<DockerCommandOptions, 'costCapExempt'>): Promise<string | null> | null {
-    const costCap = isChargeableExecution(command, args, options) ? getActiveRunCostCap() : undefined;
-    if (!costCap) return null;
-    return costCap.admit().then(() => null, error => {
-        if (error instanceof RunCostCapExceededError) return error.message;
-        throw error;
-    });
-}
-
-/** Registers an agent container with its run's spend cap; refused once the run was stopped at its cap. */
-function registerCostExecution(
-    command: string,
-    args: string[],
-    options: Pick<DockerCommandOptions, 'model' | 'costCapExempt'>,
-    stop: (message: string) => void,
-): { execution: RunCostExecution | null } | { refusal: string } {
-    if (!isChargeableExecution(command, args, options)) return { execution: null };
-    try {
-        return { execution: getActiveRunCostCap()?.beginExecution(stop, options.model) ?? null };
-    } catch (error) {
-        if (error instanceof RunCostCapExceededError) return { refusal: error.message };
-        throw error;
-    }
-}
-
-/** A refused container never started: it ends with the spend-cap outcome and no output. */
-function refuseCostExecution(message: string, preserveOutput: boolean): Promise<ExecutionResult> {
-    return new Promise((resolve, reject) => settleCostCapStop(message, { exitCode: null, stdout: '', stderr: '', messageTimestamps: new Map() },
-        { preserveOutput, resolve, reject }));
-}
-
-/** A run stopped at its spend cap ends like a timeout: partial output when the caller can publish it. */
-function settleCostCapStop(
-    message: string,
-    result: ExecutionResult,
-    settle: { preserveOutput: boolean; resolve: (result: ExecutionResult) => void; reject: (error: Error) => void },
-): void {
-    const { preserveOutput, resolve, reject } = settle;
-    if (!preserveOutput) {
-        reject(new RunCostCapExceededError(message));
-        return;
-    }
-    const stderr = result.stderr.trim() ? `${result.stderr.trimEnd()}\n${message}` : message;
-    resolve({ ...result, stderr, costCapExceeded: true });
-}
-
-interface LiveOutputStreaming { stdout(chunk: string): void; stderr(chunk: string): void; close(): Promise<void> }
-
-/**
- * The task's live log is append-only: each record is sent once, as it arrives,
- * and a new execution replaces what an earlier one left. Providers whose
- * readable transcript only exists as a whole snapshot (Vibe's session
- * messages) publish that snapshot in place of the previous one instead.
- */
-function startLiveOutputStreaming(
-    options: Pick<DockerCommandOptions, 'taskId' | 'streamToRedis' | 'streamStderrToRedis' | 'streamExtraOutput' | 'stripAnsi'> & { onOverflow: (error: Error) => void },
-    readStdout: () => string,
-    readStderr: () => string,
-): LiveOutputStreaming | null {
-    const { taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow } = options;
-    if (!streamToRedis || !taskId) return null;
-    const log = new LiveOutputLog(taskId, { reset: true, onOverflow, ...(stripAnsi ? { transformRecord: stripAnsiCodes } : {}) });
-    if (!streamExtraOutput) {
-        return { stdout: chunk => log.append(chunk, 'stdout'), stderr: chunk => { if (streamStderrToRedis) log.append(chunk, 'stderr'); }, close: () => log.close() };
-    }
-    let previous = '';
-    const publish = () => {
-        let extraOutput = '';
-        try { extraOutput = streamExtraOutput(); }
-        catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to read extra streaming output'); }
-        const snapshot = buildLiveOutputSnapshot(extraOutput, readStdout(), streamStderrToRedis ? readStderr() : '');
-        if (snapshot.text !== previous) log.replace(snapshot.text, { discarded: snapshot.discarded });
-        previous = snapshot.text;
-    };
-    const interval = setInterval(publish, 2000);
-    return {
-        stdout: () => undefined,
-        stderr: () => undefined,
-        close: async () => { clearInterval(interval); publish(); await log.close(); },
-    };
-}
-
-function detectContainerId(
-    worktreePath: string,
-    state: { containerIdDetected: boolean; containerId: { value: string | null } },
-    onContainerId?: (containerId: string, containerName: string) => void | Promise<void>,
-    invokeCallback?: (callback: () => void | Promise<void>) => void,
-): ReturnType<typeof setTimeout> {
-    return setTimeout(() => {
-        if (state.containerIdDetected) return;
-        try {
-            const out = execFileSync('/usr/bin/docker', [
-                'ps',
-                '--filter', `volume=${worktreePath}`,
-                '--format', '{{.ID}}:{{.Names}}',
-                '--latest',
-            ], { encoding: 'utf8', timeout: 5000 }).trim();
-            if (out) {
-                const [id, name] = out.split(':');
-                state.containerIdDetected = true;
-                state.containerId.value = id;
-                if (onContainerId && invokeCallback) invokeCallback(() => onContainerId(id, name));
-                logger.debug({ containerId: id, containerName: name, worktreePath }, 'Detected Docker container ID');
-            }
-        } catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to detect container ID'); }
-    }, 2000);
 }
 
 export { agentDockerImageExists, buildClaudeDockerImage, ensureAgentBundleImage, ensureAgentDockerImage } from './dockerImageBuilder.js';

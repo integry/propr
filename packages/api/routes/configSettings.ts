@@ -151,6 +151,13 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
     saves.push({ name: 'ultrafix_pause_seconds' });
   }
 
+  const limitResult = extractRunLimitSettingSaves(fields, result);
+  if (limitResult.error) return limitResult;
+  return extractEscalationSettingSaves(fields, result);
+}
+
+function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
+  const { saves, normalized } = result;
   if (fields.default_max_cost_usd !== undefined) {
     const v = validateCostCapUsd(fields.default_max_cost_usd);
     if (v === null) return { error: `default_max_cost_usd must be a number from 0 (no cap) to ${MAX_RUN_COST_CAP_USD}`, saves: [], normalized };
@@ -163,8 +170,7 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
     normalized.ultrafix_ci_wait_timeout_ms = v;
     saves.push({ name: 'ultrafix_ci_wait_timeout_ms' });
   }
-
-  return extractEscalationSettingSaves(fields, result);
+  return result;
 }
 
 async function extractEscalationSettingSaves(fields: SettingFields, result: SettingSavesResult): Promise<SettingSavesResult> {
