@@ -150,6 +150,7 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         const claudeOutput = parseStreamJsonOutput(result);
         const terminationReason = resolveAgentTerminationReason({
             timedOut: result.timedOut,
+            watchdogTrip: result.watchdogTrip,
             subtype: claudeOutput.finalResult?.subtype,
             error: result.stderr
         });

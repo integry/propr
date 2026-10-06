@@ -56,6 +56,7 @@ Each agent run starts a dedicated container from the unified `propr/agent` image
 - Implementation, follow-up, review-fix, direct-goal, and repository-associated analysis runs receive a read-only installation token as `GH_TOKEN`. It grants `contents`, `issues`, `pull_requests`, and `metadata` reads, plus `checks`, `actions`, and `statuses` reads when the installation grants those optional permissions. `gh issue view`, `gh pr view`, `gh pr checks` (with the optional CI permissions), and cloning/fetching related repositories work; pushes, merges, issue/PR comments, and label changes are refused by GitHub. Fetch into an agent-created clone; shared clone metadata remains read-only.
 - Memory, CPU, and process limits (defaults `6g`, up to 4 CPUs, and 512 PIDs; override with `AGENT_CONTAINER_MEMORY_LIMIT`, `AGENT_CONTAINER_CPU_LIMIT`, `AGENT_CONTAINER_PIDS_LIMIT`) and the `no-new-privileges` security option
 - A per-agent timeout (`CLAUDE_TIMEOUT_MS`, `CODEX_TIMEOUT_MS`, `ANTIGRAVITY_TIMEOUT_MS`, `OPENCODE_TIMEOUT_MS`, `VIBE_TIMEOUT_MS`)
+- A stall and degenerate-output watchdog: a run with no output for `AGENT_STALL_TIMEOUT_MS` (10 minutes; 30 minutes, `AGENT_TOOL_STALL_TIMEOUT_MS`, while a silent tool call runs), or with `AGENT_DEGENERATE_OUTPUT_LIMIT` (50) consecutive whitespace-only text deltas, is stopped instead of holding its worker slot and repository capacity until the timeout
 
 GitHub's permission names are not a blanket ban on every mutation: its
 [Create a commit comment endpoint](https://docs.github.com/en/rest/commits/comments#create-a-commit-comment)
@@ -125,6 +126,7 @@ Safe runs are also about what happens when something fails:
 - Job state lives in Redis with correlation IDs, so every log line can be traced to a task.
 - Task records capture where the failure happened; logs and streamed output remain available for inspection.
 - Failed runs update the issue's state label (`<trigger>-failed-*`) instead of leaving it ambiguous.
+- A hung or degenerate agent run is stopped by the activity watchdog and finishes with `terminalReason` `stalled` or `degenerate_output`. Its partial work is published like a timed-out run's, a comment on the issue or PR explains the stop, the Inbox notifies you, and the task timeline records which rule tripped. Tune or disable the thresholds in **Settings → Automation → Agent watchdog**; see [Worker architecture](../architecture/worker.md#stall-and-degenerate-output-watchdog).
 - Revert operations run as signed system tasks: requests are authorized with `SYSTEM_TASK_SECRET`, so a revert cannot be injected through normal intake paths.
 
 For operational details, see [Observability And Control](./observability.md) and the architecture pages.

@@ -48,6 +48,10 @@ async function installSettingsFixture(page: Page): Promise<void> {
         pr_review_max_context_tokens: 0,
         pr_review_context_budget_percent: 100,
         github_user_whitelist: ['octocat', 'hubot'],
+        agent_stall_timeout_ms: 300_000,
+        agent_tool_stall_timeout_ms: null,
+        agent_degenerate_output_limit: null,
+        agent_watchdog_defaults: { agent_stall_timeout_ms: 600_000, agent_tool_stall_timeout_ms: 1_800_000, agent_degenerate_output_limit: 50 },
       },
       '/api/config/followup-keywords': { followup_keywords: ['PROPR', 'FIXIT'] },
       '/api/config/followup-ignore-keywords': { followup_ignore_keywords: ['Deployment In Progress'] },
@@ -284,4 +288,28 @@ test('ultrafix escalation controls retain ordered models and support direct hand
   await expect(models).toHaveValue('codex:gpt-6-astra');
   await expect(section.getByLabel('Escalation Patience')).toHaveValue('4');
   await expect(section.getByLabel('Max Reasoning Levels per Model')).toHaveValue('0');
+});
+
+test('agent watchdog thresholds save as overrides of the environment defaults', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installSettingsFixture(page);
+  await page.goto('/settings?tab=automation');
+  const section = page.getByRole('region', { name: 'Agent watchdog' });
+  await expect(section).toBeVisible();
+  const stall = section.getByLabel('Stall timeout (minutes)', { exact: true });
+  await expect(stall).toHaveValue('5');
+  await expect(section.getByLabel('Tool stall timeout (minutes)')).toHaveAttribute('placeholder', 'Default: 30');
+
+  const saved = page.waitForRequest(request => request.url().endsWith('/api/config/settings') && request.method() === 'POST');
+  await stall.fill('15');
+  await stall.blur();
+  expect((await saved).postDataJSON().settings).toMatchObject({
+    agent_stall_timeout_ms: 900_000, agent_tool_stall_timeout_ms: null, agent_degenerate_output_limit: null,
+  });
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    const directory = path.resolve('../.propr/previews');
+    await mkdir(directory, { recursive: true });
+    await section.scrollIntoViewIfNeeded();
+    await section.screenshot({ animations: 'disabled', path: path.join(directory, 'agent-watchdog-settings.png') });
+  }
 });

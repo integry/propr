@@ -1,0 +1,225 @@
+import assert from 'node:assert/strict';
+import { mock, test } from 'node:test';
+import type { Redis as RedisClient } from 'ioredis';
+
+class FakeRedis {
+    status = 'ready';
+    on() { return this; }
+    async eval(_script: string, _keys: number, _data: string, _meta: string, text: string) { return text.length; }
+    async get() { return null; }
+    async quit() { return 'OK'; }
+    disconnect() {}
+}
+mock.module('ioredis', { namedExports: { Redis: FakeRedis, default: FakeRedis } });
+// Instance settings for runs that do not pass `watchdog`; loading takes `settingsLoadDelayMs`.
+let settingsLoadDelayMs = 0;
+mock.module('../packages/core/src/config/configManagerAgentWatchdog.js', {
+    namedExports: {
+        loadAgentWatchdogSettings: async () => {
+            await new Promise(resolve => setTimeout(resolve, settingsLoadDelayMs));
+            return { stallTimeoutMs: 300, toolStallTimeoutMs: 1_500, degenerateOutputLimit: 5 };
+        },
+    },
+});
+const { executeDockerCommand } = await import('../packages/core/src/claude/docker/dockerExecutor.js');
+const { startExecutionWatchdog } = await import('../packages/core/src/claude/docker/dockerExecutionWatchdog.js');
+const { ACQUIRE_WORKFLOW_SLOT, RELEASE_WORKFLOW_SLOT, releaseRepositoryWorkflowSlot, withRepositoryWorkflowSlot } = await import('../packages/core/src/workflow/workflowConcurrency.js');
+const { resolveAgentTerminationReason } = await import('../packages/core/src/agents/termination.js');
+const { taskTerminalReasonForAgentTermination } = await import('../src/jobs/agentTerminalReason.js');
+type AgentWatchdogTrip = import('../packages/core/src/claude/docker/agentActivityWatchdog.js').AgentWatchdogTrip;
+
+const FAST = { stallTimeoutMs: 300, toolStallTimeoutMs: 1_500, degenerateOutputLimit: 5 };
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * A streamed agent run whose process prints `script` output, then stays alive.
+ * Output records are passed as process arguments (`process.argv[1..]`), never spliced into the script source.
+ */
+function runAgent(script: string, options: Record<string, unknown> = {}, data: string[] = []) {
+    const trips: Array<{ taskId: string; trip: AgentWatchdogTrip }> = [];
+    const execution = executeDockerCommand(process.execPath, ['-e', `${script}; setTimeout(() => {}, 60_000);`, ...data], {
+        taskId: 'watchdog-task', streamToRedis: true, preserveOutputOnTimeout: true, timeout: 30_000,
+        watchdog: FAST, onWatchdogTrip: (taskId: string, trip: AgentWatchdogTrip) => { trips.push({ taskId, trip }); },
+        ...options,
+    });
+    return { execution, trips };
+}
+
+test('a silent agent is stopped with partial output and a stalled termination', async () => {
+    const startedAt = Date.now();
+    const record = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Reading the code' }] } });
+    const { execution, trips } = runAgent('process.stdout.write(process.argv[1])', {}, [`${record}\n`]);
+    const result = await execution;
+    assert.ok(Date.now() - startedAt < 10_000, 'the watchdog stops the run long before the deadline');
+    assert.equal(result.timedOut, undefined);
+    assert.equal(result.watchdogTrip?.rule, 'inactivity');
+    assert.match(result.stdout, /Reading the code/, 'partial work is preserved like a timed-out run');
+    assert.match(result.stderr, /Agent watchdog stopped the run \(stalled\)/);
+    assert.equal(resolveAgentTerminationReason({ watchdogTrip: result.watchdogTrip, error: result.stderr }), 'stalled');
+    assert.equal(trips.length, 1, 'the trip is reported once');
+    assert.equal(trips[0].taskId, 'watchdog-task');
+});
+
+test('output keeps a long-running agent alive; only true silence counts', async () => {
+    const { execution, trips } = runAgent(`
+        let count = 0;
+        const timer = setInterval(() => {
+            process.stderr.write('npm test: still running\\n');
+            if (++count === 8) { clearInterval(timer); process.exit(0); }
+        }, 100);`);
+    const result = await execution;
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.watchdogTrip, undefined);
+    assert.equal(trips.length, 0);
+});
+
+test('a silent tool call gets the longer tool threshold', async () => {
+    const tool = JSON.stringify({ type: 'item.started', item: { type: 'command_execution', command: 'npm ci' } });
+    const done = JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', exit_code: 0 } });
+    const { execution, trips } = runAgent(`
+        process.stdout.write(process.argv[1]);
+        setTimeout(() => { process.stdout.write(process.argv[2]); process.exit(0); }, 800);`, {}, [`${tool}\n`, `${done}\n`]);
+    const result = await execution;
+    assert.equal(result.exitCode, 0, '800ms of silence is past the stall threshold but within the tool threshold');
+    assert.equal(trips.length, 0);
+});
+
+test('a tool started while the instance settings load still gets the tool threshold', async () => {
+    settingsLoadDelayMs = 400;
+    const tool = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'slow', name: 'Bash', input: {} }] } });
+    const done = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'slow', content: 'ok' }] } });
+    const { execution, trips } = runAgent(`
+        process.stdout.write(process.argv[1]);
+        setTimeout(() => { process.stdout.write(process.argv[2]); process.exit(0); }, 1_000);`, { watchdog: undefined }, [`${tool}\n`, `${done}\n`]);
+    const result = await execution;
+    settingsLoadDelayMs = 0;
+    assert.equal(result.exitCode, 0, 'the tool start arrived before the settings and must not be dropped');
+    assert.equal(trips.length, 0);
+});
+
+test('every tool in a multi-tool message keeps the tool threshold until its own result arrives', async () => {
+    const tools = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a' }, { type: 'tool_use', id: 'b' }] } });
+    const first = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'a', content: 'ok' }] } });
+    const second = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'b', content: 'ok' }] } });
+    const { execution, trips } = runAgent(`
+        process.stdout.write(process.argv[1]);
+        setTimeout(() => process.stdout.write(process.argv[2]), 100);
+        setTimeout(() => { process.stdout.write(process.argv[3]); process.exit(0); }, 1_000);`, {}, [`${tools}\n`, `${first}\n`, `${second}\n`]);
+    const result = await execution;
+    assert.equal(result.exitCode, 0, 'tool b ran silently past the stall threshold but within the tool threshold');
+    assert.equal(trips.length, 0);
+});
+
+test('tool calls seen only in a transcript snapshot get the tool threshold, and their results end it', async () => {
+    // Snapshots are polled every 2s, so the thresholds sit above that interval.
+    const settings = { stallTimeoutMs: 2_500, toolStallTimeoutMs: 20_000, degenerateOutputLimit: 5 };
+    const start = JSON.stringify({ role: 'assistant', content: '', tool_calls: [{ id: 'call_1', function: { name: 'bash', arguments: '{}' } }] });
+    const end = JSON.stringify({ role: 'tool', tool_call_id: 'call_1', content: 'ok' });
+    let transcript = `${start}\n`;
+    const startedAt = Date.now();
+    const finishTool = setTimeout(() => { transcript += `${end}\n`; }, 5_000);
+    const { execution } = runAgent('', { watchdog: settings, streamExtraOutput: () => transcript });
+    const result = await execution;
+    clearTimeout(finishTool);
+    const elapsed = Date.now() - startedAt;
+    assert.equal(result.watchdogTrip?.rule, 'inactivity', 'the run stops on ordinary inactivity once the tool result is in the transcript');
+    assert.ok(elapsed >= 6_000, `the snapshot tool start held off the ordinary threshold (stopped after ${elapsed}ms)`);
+});
+
+test('consecutive whitespace-only deltas stop the run as degenerate output', async () => {
+    const delta = (text: string) => JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } });
+    const lines = [delta(''), delta('ok'), ...Array.from({ length: 5 }, () => delta(' \n'))].join('\n');
+    const { execution, trips } = runAgent('setInterval(() => process.stdout.write(process.argv[1]), 20)', {}, [`${lines}\n`]);
+    const result = await execution;
+    assert.equal(result.watchdogTrip?.rule, 'degenerate_output');
+    assert.equal(result.watchdogTrip?.degenerateDeltas, 5);
+    assert.equal(resolveAgentTerminationReason({ watchdogTrip: result.watchdogTrip }), 'degenerate_output');
+    assert.equal(trips.length, 1);
+});
+
+test('whitespace-only assistant messages appended to a transcript snapshot stop the run as degenerate output', async () => {
+    // Each 2s snapshot changes, so only the degenerate rule can stop this run.
+    const settings = { stallTimeoutMs: 2_500, toolStallTimeoutMs: 20_000, degenerateOutputLimit: 3 };
+    let transcript = `${JSON.stringify({ role: 'assistant', content: 'Reading the repository' })}\n`;
+    const append = setInterval(() => { transcript += `${JSON.stringify({ role: 'assistant', content: ' ' })}\n`; }, 100);
+    const { execution } = runAgent('', { watchdog: settings, streamExtraOutput: () => transcript });
+    const result = await execution;
+    clearInterval(append);
+    assert.equal(result.watchdogTrip?.rule, 'degenerate_output');
+    assert.equal(result.watchdogTrip?.degenerateDeltas, 3);
+});
+
+test('a disabled watchdog never stops a run', async () => {
+    const { execution, trips } = runAgent('setTimeout(() => process.exit(0), 700)', {
+        watchdog: { stallTimeoutMs: 0, toolStallTimeoutMs: 0, degenerateOutputLimit: 0 },
+    });
+    const result = await execution;
+    assert.equal(result.exitCode, 0);
+    assert.equal(trips.length, 0);
+});
+
+test('a tool threshold alone stops a silent tool call', async () => {
+    const tool = JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1' }, { type: 'text', text: 'Running' }] } });
+    const { execution } = runAgent('process.stdout.write(process.argv[1])', {
+        watchdog: { stallTimeoutMs: 0, toolStallTimeoutMs: 400, degenerateOutputLimit: 0 },
+    }, [`${tool}\n`]);
+    const result = await execution;
+    assert.equal(result.watchdogTrip?.rule, 'tool_inactivity');
+    assert.equal(result.watchdogTrip?.threshold, 400);
+});
+
+test('plain commands do not run the watchdog by default', async () => {
+    const result = await executeDockerCommand(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 400)'], { taskId: 'plain', timeout: 10_000 });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.watchdogTrip, undefined);
+});
+
+test('the stop path is called exactly once and not after another stop began', async () => {
+    let stops = 0;
+    const tripped = startExecutionWatchdog({ watchdog: FAST, taskId: 'once', onWatchdogTrip: () => undefined }, () => { stops += 1; return true; });
+    await wait(1_000);
+    tripped.recordActivity();
+    tripped.observeLine(JSON.stringify({ msg: { type: 'agent_message_delta', delta: ' ' } }));
+    await wait(500);
+    assert.equal(stops, 1);
+    assert.equal(tripped.trip?.rule, 'inactivity');
+    tripped.stop();
+
+    // A run the deadline or a user is already stopping keeps that outcome.
+    const reports: unknown[] = [];
+    const refused = startExecutionWatchdog({ watchdog: FAST, taskId: 'refused', onWatchdogTrip: trip => { reports.push(trip); } }, () => false);
+    await wait(700);
+    assert.equal(refused.trip, null);
+    assert.equal(reports.length, 0);
+    refused.stop();
+});
+
+test('a watchdog stop releases the repository capacity lease', async () => {
+    const calls: string[] = [];
+    const redis = {
+        eval: async (script: string) => {
+            if (script === ACQUIRE_WORKFLOW_SLOT) { calls.push('acquire'); return 1; }
+            if (script === RELEASE_WORKFLOW_SLOT) { calls.push('release'); return []; }
+            calls.push('other');
+            return 1;
+        },
+    } as unknown as RedisClient;
+    const result = await withRepositoryWorkflowSlot({
+        redis, repository: 'integry/propr', limit: 1, checkCancelled: async () => {}, onLeaseError: error => { throw error; },
+    }, async () => {
+        const { execution } = runAgent('process.stdout.write("started\\n")');
+        const outcome = await execution;
+        // As runRepositoryWorkflow does once the agent container has exited.
+        await releaseRepositoryWorkflowSlot();
+        return outcome;
+    });
+    assert.equal(result.watchdogTrip?.terminationReason, 'stalled');
+    assert.deepEqual(calls, ['acquire', 'release'], 'capacity is released exactly once after the watchdog stop');
+});
+
+test('watchdog terminations finish the task with their own terminal reason', () => {
+    assert.equal(taskTerminalReasonForAgentTermination('stalled'), 'stalled');
+    assert.equal(taskTerminalReasonForAgentTermination('degenerate_output'), 'degenerate_output');
+    assert.equal(taskTerminalReasonForAgentTermination('timeout'), 'timed_out');
+    assert.equal(taskTerminalReasonForAgentTermination('max_turns'), undefined);
+});
