@@ -13,6 +13,7 @@ const SCRATCH_BASE = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-run-worktree
 process.env.GIT_WORKTREES_BASE_PATH = SCRATCH_BASE;
 
 const {
+  AGENT_RUN_ABANDONED_REASON,
   AGENT_RUN_USAGE_LIMIT_REASON,
   agentRunReportTaskId,
   createAgentRunProcessor,
@@ -238,13 +239,77 @@ describe('processAgentRunJob', () => {
     assert.equal(h.cleanup.mock.callCount(), 1);
   });
 
-  test('a cancel during execution is not overwritten by the late result', async () => {
+  test('a cancel during execution is not overwritten by the late result and cancels the task', async () => {
+    // The cancel endpoint could not stop the task, so the agent still returns a report.
     const h = harness({ onRunning: current => ({ ...current, state: 'cancelled' }) });
     const result = await createAgentRunProcessor(h.deps)(job);
     assert.equal(result.status, 'cancelled');
     assert.equal(h.run().state, 'cancelled');
     assert.equal(h.run().report, null);
+    assert.equal(h.stateCalls.at(-1)?.[0], 'cancelled');
+    assert.ok(!h.stateCalls.some(call => call[0] === 'completed' || call[0] === 'failed'));
     assert.equal(h.cleanup.mock.callCount(), 1);
+  });
+
+  test('a cancel during execution followed by an agent failure cancels the task instead of failing it', async () => {
+    const h = harness({
+      onRunning: current => ({ ...current, state: 'cancelled' }),
+      execute: async () => ({ success: false, error: 'container killed', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 }),
+    });
+    await createAgentRunProcessor(h.deps)(job);
+    assert.equal(h.run().state, 'cancelled');
+    assert.equal(h.stateCalls.at(-1)?.[0], 'cancelled');
+    assert.ok(!h.stateCalls.some(call => call[0] === 'failed'));
+    assert.equal(h.cleanup.mock.callCount(), 1);
+  });
+
+  test('a redelivery after the claiming worker was interrupted fails the abandoned run and task', async () => {
+    const taskId = agentRunReportTaskId('run-1');
+    const h = harness({ run: storedRun({ state: 'running', reportTaskId: taskId, startedAt: NOW }) });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'failed');
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.run().failureReason, AGENT_RUN_ABANDONED_REASON);
+    assert.deepEqual(h.transitions.map(t => [t.from, t.to]), [[['running'], 'failed']]);
+    assert.deepEqual(h.stateCalls.map(call => [call[0], call[1]]), [['failed', taskId]]);
+    assert.equal(h.prepareWorkspace.mock.callCount(), 0);
+    assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('a redelivered abandoned run that was cancelled meanwhile cancels its task', async () => {
+    const taskId = agentRunReportTaskId('run-1');
+    const h = harness({ run: storedRun({ state: 'running', reportTaskId: taskId }) });
+    let reads = 0;
+    const getRun = h.deps.getRun!;
+    // The cancel lands between the redelivery's read and its fail transition.
+    h.deps.getRun = async id => (reads++ === 0 ? getRun(id) : { ...h.run(), state: 'cancelled' });
+    h.deps.transitionRun = (async () => null) as unknown as AgentRunProcessorDeps['transitionRun'];
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'cancelled');
+    assert.deepEqual(h.stateCalls.map(call => call[0]), ['cancelled']);
+  });
+
+  test('a delivery competing with an attempt still executing in this worker is skipped', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const executing = new Promise<void>(resolve => { started = resolve; });
+    const h = harness({
+      execute: async () => {
+        started();
+        await new Promise<void>(resolve => { release = resolve; });
+        return { success: true, summary: 'Report', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 };
+      },
+    });
+    const processor = createAgentRunProcessor(h.deps);
+    const first = processor(job);
+    await executing;
+    const duplicate = await processor(job);
+    assert.equal(duplicate.status, 'skipped');
+    assert.equal(h.run().state, 'running');
+    release();
+    assert.equal((await first).status, 'complete');
+    assert.equal(h.run().state, 'completed');
+    assert.equal(h.executeTask.mock.callCount(), 1);
   });
 
   test('preview runs keep their report in report_ready until the acting step exists', async () => {
