@@ -137,7 +137,12 @@ test('an allowed host is tunnelled; a denied host gets 403 and is recorded', asy
 });
 
 test('plain HTTP requests in absolute form are forwarded only to allowed hosts', async () => {
-    const server = http.createServer((request, response) => response.writeHead(200, { 'Content-Type': 'text/plain' }).end(`hello ${request.url} ${request.headers['proxy-authorization'] ?? 'no-proxy-auth'}`));
+    // Record what arrived upstream instead of echoing it, so the response never reflects request data.
+    const received: string[] = [];
+    const server = http.createServer((request, response) => {
+        received.push(`${request.url} ${request.headers['proxy-authorization'] ?? 'no-proxy-auth'}`);
+        response.writeHead(200, { 'Content-Type': 'text/plain' }).end('hello');
+    });
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as net.AddressInfo).port;
     const proxy = await startEgressProxy({
@@ -157,7 +162,8 @@ test('plain HTTP requests in absolute form are forwarded only to allowed hosts',
     try {
         const allowed = await request(`http://mirror.example.com:${port}/simple/?q=1`);
         assert.equal(allowed.status, 200);
-        assert.equal(allowed.body, 'hello /simple/?q=1 no-proxy-auth', 'proxy credentials are not forwarded upstream');
+        assert.equal(allowed.body, 'hello');
+        assert.deepEqual(received, ['/simple/?q=1 no-proxy-auth'], 'proxy credentials are not forwarded upstream');
         const denied = await request('http://pastebin.example.org/upload');
         assert.equal(denied.status, 403);
         assert.match(denied.body, /pastebin\.example\.org is not in the allowlist/);
@@ -171,9 +177,11 @@ test('plain HTTP requests in absolute form are forwarded only to allowed hosts',
 test('plain HTTP requests carry the target URL authority as Host, whatever Host the client sent', async () => {
     // Routes by Host like a virtual-hosting upstream: any other site is unknown.
     let expectedHost = '';
+    const received: string[] = [];
     const server = http.createServer((request, response) => {
-        if (request.headers.host !== expectedHost) { response.writeHead(421, { 'Content-Type': 'text/plain' }).end(`unknown site ${request.headers.host}`); return; }
-        response.writeHead(200, { 'Content-Type': 'text/plain' }).end(`site ${request.headers.host}${request.url}`);
+        received.push(`${request.headers.host}${request.url}`);
+        if (request.headers.host !== expectedHost) { response.writeHead(421, { 'Content-Type': 'text/plain' }).end('unknown site'); return; }
+        response.writeHead(200, { 'Content-Type': 'text/plain' }).end('site');
     });
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as net.AddressInfo).port;
@@ -194,10 +202,12 @@ test('plain HTTP requests carry the target URL authority as Host, whatever Host 
     try {
         expectedHost = `vhost.example.com:${port}`;
         const withPort = await request(`http://vhost.example.com:${port}/a?b=1`, 'proxy.invalid');
-        assert.deepEqual(withPort, { status: 200, body: `site vhost.example.com:${port}/a?b=1` }, 'a non-default port stays in the forwarded authority');
+        assert.deepEqual(withPort, { status: 200, body: 'site' });
+        assert.equal(received.at(-1), `vhost.example.com:${port}/a?b=1`, 'a non-default port stays in the forwarded authority');
         expectedHost = 'vhost.example.com';
         const defaultPort = await request('http://vhost.example.com/index', 'other.example.org');
-        assert.deepEqual(defaultPort, { status: 200, body: 'site vhost.example.com/index' }, 'the default port is left out of the forwarded authority');
+        assert.deepEqual(defaultPort, { status: 200, body: 'site' });
+        assert.equal(received.at(-1), 'vhost.example.com/index', 'the default port is left out of the forwarded authority');
     } finally {
         await proxy.close();
         await new Promise(resolve => server.close(resolve));
