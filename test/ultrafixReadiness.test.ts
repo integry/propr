@@ -32,6 +32,7 @@ import {
     releaseResumeClaim,
     getUltrafixResumeClaimKey,
     evaluateStrandedLoopRearm,
+    loadStateSnapshot,
     syncStateWorkEpoch,
 } from '../src/jobs/ultrafixStrandedLoopRearm.js';
 import { requiresPassingChecks } from '../src/jobs/ultrafixReadinessPolicy.js';
@@ -79,6 +80,15 @@ function createMockRedis() {
                 if (store.get(claimKey) !== token) return 0;
                 store.delete(claimKey);
                 expiresAt.delete(claimKey);
+                return 1;
+            }
+            if (script.includes('local current_state')) {
+                // Epoch- and snapshot-conditional state replace/clear.
+                const [, stateKey, expectedEpoch, expectedState, value] = args;
+                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
+                if (store.get(stateKey) !== expectedState) return 0;
+                if (script.includes("redis.call('DEL', KEYS[2])")) store.delete(stateKey);
+                else store.set(stateKey, value);
                 return 1;
             }
             if (script.includes("local existing = redis.call('GET', KEYS[4])")) {
@@ -744,7 +754,7 @@ describe('stranded loop work epoch sync', () => {
     test('hands a loop fenced by a follow-up to the current epoch', async () => {
         await saveState(redis as any, makeState({ workEpoch: 0 }));
         const epoch = await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
-        const stale = await loadState(redis as any, 'acme', 'web', 42);
+        const stale = await loadStateSnapshot(redis as any, 'acme', 'web', 42);
 
         const synced = await syncStateWorkEpoch(redis as any, stale!, epoch);
 
@@ -756,10 +766,38 @@ describe('stranded loop work epoch sync', () => {
     test('cannot claim an epoch that was superseded in the meantime', async () => {
         await saveState(redis as any, makeState({ workEpoch: 0 }));
         await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
-        const stale = await loadState(redis as any, 'acme', 'web', 42);
+        const stale = await loadStateSnapshot(redis as any, 'acme', 'web', 42);
         await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
 
         assert.strictEqual(await syncStateWorkEpoch(redis as any, stale!, 1), null);
         assert.strictEqual((await loadState(redis as any, 'acme', 'web', 42))?.workEpoch, 0);
+    });
+
+    test('an older snapshot cannot replace a newer loop that took the current epoch', async () => {
+        await saveState(redis as any, makeState({ workEpoch: 0, reviewCount: 5, fixCount: 5, cycleCount: 5 }));
+        const stale = await loadStateSnapshot(redis as any, 'acme', 'web', 42);
+        // A new loop starts after the snapshot was read: it reserves the next
+        // epoch and commits fresh state before the stale caller reads the epoch.
+        const epoch = await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+        await saveState(redis as any, makeState({ workEpoch: epoch, reviewCount: 0, fixCount: 0, goal: 9 }));
+
+        assert.strictEqual(await syncStateWorkEpoch(redis as any, stale!, epoch), null);
+        const current = await loadState(redis as any, 'acme', 'web', 42);
+        assert.strictEqual(current?.reviewCount, 0);
+        assert.strictEqual(current?.goal, 9);
+    });
+
+    test('rejects a same-epoch update or deletion made after the snapshot was read', async () => {
+        await saveState(redis as any, makeState({ workEpoch: 0 }));
+        const epoch = await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+        const stale = await loadStateSnapshot(redis as any, 'acme', 'web', 42);
+        await saveState(redis as any, makeState({ workEpoch: 0, active: false }));
+
+        assert.strictEqual(await syncStateWorkEpoch(redis as any, stale!, epoch), null);
+        assert.strictEqual((await loadState(redis as any, 'acme', 'web', 42))?.active, false);
+
+        await redis.del(getUltrafixStateKey('acme', 'web', 42));
+        assert.strictEqual(await syncStateWorkEpoch(redis as any, stale!, epoch), null);
+        assert.strictEqual(await loadState(redis as any, 'acme', 'web', 42), null);
     });
 });

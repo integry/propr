@@ -37,7 +37,7 @@ import {
     hasUltrafixLabel,
 } from './ultrafixLoopContinuationHelpers.js';
 import { applyUltrafixCiDeferral } from './ultrafixCiWait.js';
-import { getNextStepNumber, rearmStrandedUltrafixLoop } from './ultrafixStrandedLoopRearm.js';
+import { getNextStepNumber, rearmStrandedUltrafixLoop, withResumeClaim } from './ultrafixStrandedLoopRearm.js';
 
 export interface UltrafixContinuationParams {
     owner: string;
@@ -383,6 +383,16 @@ export async function resumeDeferredContinuation(
     redisClient: Redis,
     correlatedLogger: Logger,
 ): Promise<ContinuationResult> {
+    // Both branches decide and enqueue under one per-PR claim, so a trigger
+    // resuming the deferred step and one re-arming the loop cannot interleave.
+    return withResumeClaim(prId, redisClient, correlatedLogger, () => resumeClaimedContinuation(prId, redisClient, correlatedLogger));
+}
+
+async function resumeClaimedContinuation(
+    prId: { owner: string; repo: string; pr: number },
+    redisClient: Redis,
+    correlatedLogger: Logger,
+): Promise<ContinuationResult> {
     const { owner, repo, pr } = prId;
     // Atomically claim the deferred record so concurrent check_run events
     // for the same PR cannot double-enqueue the next step.
@@ -392,11 +402,7 @@ export async function resumeDeferredContinuation(
     }
 
     const workEpoch = deferred.workEpoch ?? deferred.ultrafixMeta?.workEpoch;
-    if (!await isUltrafixAutomaticWorkCurrent(
-        redisClient,
-        { owner, repo, pr },
-        workEpoch,
-    )) {
+    if (!await isUltrafixAutomaticWorkCurrent(redisClient, { owner, repo, pr }, workEpoch)) {
         return rearmStrandedUltrafixLoop(prId, redisClient, correlatedLogger, getCheckRunDeps());
     }
 
@@ -450,11 +456,7 @@ export async function resumeDeferredContinuation(
         };
     }
 
-    if (!await isUltrafixAutomaticWorkCurrent(
-        redisClient,
-        { owner, repo, pr },
-        workEpoch,
-    )) {
+    if (!await isUltrafixAutomaticWorkCurrent(redisClient, { owner, repo, pr }, workEpoch)) {
         return { continued: false, reason: 'deferred_cancelled' };
     }
 

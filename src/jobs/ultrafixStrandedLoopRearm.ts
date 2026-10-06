@@ -8,14 +8,14 @@
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
-import { generateCorrelationId } from '@propr/core';
+import { generateCorrelationId, withUltrafixLabelTransition } from '@propr/core';
 import {
     clearDeferredContinuationIfCurrent,
-    clearUltrafixStateIfCurrent,
+    clearUltrafixStateIfUnchanged,
     getUltrafixAutomaticWorkEpoch,
-    saveUltrafixStateIfCurrent,
+    replaceUltrafixStateIfUnchanged,
 } from './ultrafixAutomaticWorkEpoch.js';
-import { getActionCounts, loadState } from './ultrafixOrchestrationService.js';
+import { getActionCounts, getUltrafixStateKey, loadDeferredContinuation, loadState } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction, UltrafixLoopState } from './ultrafixOrchestrationService.js';
 import {
     enqueueNextStep,
@@ -30,7 +30,7 @@ type UltrafixPrId = { owner: string; repo: string; pr: number };
 const RESUME_CLAIM_KEY_PREFIX = 'ultrafix:resume-claim';
 const RELEASE_RESUME_CLAIM_SCRIPT = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
 
-/** How long one resume trigger may hold the per-PR re-arm claim. */
+/** How long one resume trigger may hold the per-PR resume claim. */
 const RESUME_CLAIM_TTL_MS = 60_000;
 
 /** Ordinal of the next step for `action` (completed steps of that action + 1). */
@@ -45,7 +45,7 @@ export function getUltrafixResumeClaimKey(owner: string, repo: string, pr: numbe
 
 /**
  * Take the per-PR resume claim so concurrent check_run/status triggers cannot
- * re-arm the same loop twice. The TTL bounds the claim if its holder crashes.
+ * resume or re-arm the same loop twice. The TTL bounds the claim if its holder crashes.
  */
 export async function acquireResumeClaim(
     redis: Redis,
@@ -101,32 +101,89 @@ export function evaluateStrandedLoopRearm(state: UltrafixLoopState | null): Stra
     return { action: 'rearm' };
 }
 
+/** A loop state together with the exact serialized value it was parsed from. */
+export interface UltrafixStateSnapshot {
+    raw: string;
+    state: UltrafixLoopState;
+}
+
+export async function loadStateSnapshot(
+    redis: Redis,
+    owner: string,
+    repo: string,
+    pr: number,
+): Promise<UltrafixStateSnapshot | null> {
+    const raw = await redis.get(getUltrafixStateKey(owner, repo, pr));
+    return raw ? { raw, state: JSON.parse(raw) as UltrafixLoopState } : null;
+}
+
 /**
  * Hand a stranded loop to the current automatic-work epoch. The write is
- * conditional on that epoch, so a takeover racing this call still wins.
+ * conditional on that epoch and on the state still being the snapshot the
+ * decision was made from, so neither a racing takeover nor a newer or updated
+ * loop can be overwritten by this one.
  */
 export async function syncStateWorkEpoch(
     redis: Redis,
-    state: UltrafixLoopState,
+    snapshot: UltrafixStateSnapshot,
     workEpoch: number,
 ): Promise<UltrafixLoopState | null> {
+    const { state } = snapshot;
     const synced = { ...state, workEpoch };
-    const saved = await saveUltrafixStateIfCurrent(
+    const saved = await replaceUltrafixStateIfUnchanged(
         redis,
         { owner: state.owner, repo: state.repo, pr: state.pr },
-        workEpoch,
+        { workEpoch, rawState: snapshot.raw },
         JSON.stringify(synced),
     );
     return saved ? synced : null;
 }
 
 /**
+ * Run `operation` while holding the per-PR resume claim. Every resume trigger
+ * (deferred record or stranded-loop fallback) evaluates readiness and enqueues
+ * under this one claim, so concurrent triggers cannot schedule conflicting steps.
+ */
+export async function withResumeClaim(
+    prId: UltrafixPrId,
+    redisClient: Redis,
+    correlatedLogger: Logger,
+    operation: () => Promise<ContinuationResult>,
+): Promise<ContinuationResult> {
+    const { owner, repo, pr } = prId;
+    // Cheap Redis gate first: most check_run events are for PRs without a loop.
+    if (!await loadDeferredContinuation(redisClient, owner, repo, pr)
+        && evaluateStrandedLoopRearm(await loadState(redisClient, owner, repo, pr)).action === 'skip') {
+        return { continued: false, reason: 'no_deferred_continuation' };
+    }
+
+    const token = randomUUID();
+    if (!await acquireResumeClaim(redisClient, prId, token, RESUME_CLAIM_TTL_MS)) {
+        return { continued: false, reason: 'resume_in_progress' };
+    }
+    try {
+        return await operation();
+    } finally {
+        await releaseResumeClaim(redisClient, prId, token).catch((err: Error) => {
+            correlatedLogger.warn({ pr: prId.pr, error: err.message }, 'Ultrafix resume: failed to release resume claim');
+        });
+    }
+}
+
+/** Bound on re-evaluations when the loop state changes underneath a re-arm. */
+const MAX_REARM_ATTEMPTS = 3;
+
+const STATE_CHANGED = Symbol('state_changed');
+
+/**
  * Re-arm an active loop whose deferred continuation was cleared or superseded.
+ * The caller must hold the resume claim (see `withResumeClaim`).
  *
  * Every circuit breaker still applies: the loop must be active and labelled,
  * within its cycle budget, and short of its goal. A review is only scheduled
  * when the PR is idle (no Ultrafix job in flight, no pending batched comments)
- * and its head checks are green. A per-PR claim serializes concurrent triggers.
+ * and its head checks are green. If the loop state changes while this is being
+ * decided, the decision is discarded and recomputed from the new state.
  */
 export async function rearmStrandedUltrafixLoop(
     prId: UltrafixPrId,
@@ -134,45 +191,45 @@ export async function rearmStrandedUltrafixLoop(
     correlatedLogger: Logger,
     checkRunDeps: CheckRunDeps,
 ): Promise<ContinuationResult> {
-    const { owner, repo, pr } = prId;
-    // Cheap Redis gate first: most check_run events are for PRs without a loop.
-    if (evaluateStrandedLoopRearm(await loadState(redisClient, owner, repo, pr)).action === 'skip') {
-        return { continued: false, reason: 'no_deferred_continuation' };
+    for (let attempt = 1; attempt <= MAX_REARM_ATTEMPTS; attempt++) {
+        const result = await rearmFromSnapshot(prId, redisClient, correlatedLogger, checkRunDeps);
+        if (result !== STATE_CHANGED) return result;
+        correlatedLogger.info({ pr: prId.pr, attempt }, 'Ultrafix re-arm: loop state changed, re-evaluating');
     }
-
-    const token = randomUUID();
-    if (!await acquireResumeClaim(redisClient, prId, token, RESUME_CLAIM_TTL_MS)) {
-        return { continued: false, reason: 'rearm_in_progress' };
-    }
-    try {
-        return await rearmClaimedLoop(prId, redisClient, correlatedLogger, checkRunDeps);
-    } finally {
-        await releaseResumeClaim(redisClient, prId, token).catch((err: Error) => {
-            correlatedLogger.warn({ pr, error: err.message }, 'Ultrafix re-arm: failed to release resume claim');
-        });
-    }
+    return { continued: false, reason: 'ultrafix_superseded' };
 }
 
-async function rearmClaimedLoop(
+async function rearmFromSnapshot(
     prId: UltrafixPrId,
     redisClient: Redis,
     correlatedLogger: Logger,
     checkRunDeps: CheckRunDeps,
-): Promise<ContinuationResult> {
+): Promise<ContinuationResult | typeof STATE_CHANGED> {
     const { owner, repo, pr } = prId;
-    // Reload under the claim; another trigger may have changed it meanwhile.
-    const state = await loadState(redisClient, owner, repo, pr);
-    const decision = evaluateStrandedLoopRearm(state);
-    if (!state || decision.action === 'skip') return { continued: false, reason: 'no_active_loop' };
+    // Every write below is conditional on this exact snapshot.
+    const snapshot = await loadStateSnapshot(redisClient, owner, repo, pr);
+    const decision = evaluateStrandedLoopRearm(snapshot?.state ?? null);
+    if (!snapshot || decision.action === 'skip') return { continued: false, reason: 'no_active_loop' };
+    const { state } = snapshot;
 
     const currentEpoch = await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr);
     const identity = { owner, repo, pr };
+    // Startup reserves its epoch and commits its state under the label
+    // transition lease, so taking ownership under it never lands in between.
+    const takeOwnership = () => withUltrafixLabelTransition(
+        redisClient,
+        identity,
+        () => syncStateWorkEpoch(redisClient, snapshot, currentEpoch),
+    );
 
     if (!await hasUltrafixLabel(owner, repo, pr, correlatedLogger)) {
         correlatedLogger.info({ pr }, 'Ultrafix re-arm: label removed, clearing stranded loop');
-        if (!await clearUltrafixStateIfCurrent(redisClient, identity, currentEpoch)) {
-            return { continued: false, reason: 'ultrafix_superseded' };
-        }
+        const cleared = await withUltrafixLabelTransition(
+            redisClient,
+            identity,
+            () => clearUltrafixStateIfUnchanged(redisClient, identity, { workEpoch: currentEpoch, rawState: snapshot.raw }),
+        );
+        if (!cleared) return STATE_CHANGED;
         await clearDeferredContinuationIfCurrent(redisClient, identity, currentEpoch);
         return {
             continued: false, reason: 'label_removed', outcome: 'stopped',
@@ -201,8 +258,8 @@ async function rearmClaimedLoop(
 
     if (decision.action === 'complete') {
         // Take ownership first so terminal bookkeeping passes the epoch fence.
-        const owned = await syncStateWorkEpoch(redisClient, state, currentEpoch);
-        if (!owned) return { continued: false, reason: 'ultrafix_superseded' };
+        const owned = await takeOwnership();
+        if (!owned) return STATE_CHANGED;
         correlatedLogger.info(
             { pr, completionStatus: decision.completionStatus, reason: decision.reason },
             'Ultrafix re-arm: circuit breaker tripped, finishing loop',
@@ -227,8 +284,8 @@ async function rearmClaimedLoop(
         return { continued: false, reason: `rearm_not_ready: ${readiness.reasons.join(', ')}` };
     }
 
-    const owned = await syncStateWorkEpoch(redisClient, state, currentEpoch);
-    if (!owned) return { continued: false, reason: 'ultrafix_superseded' };
+    const owned = await takeOwnership();
+    if (!owned) return STATE_CHANGED;
 
     const enqueued = await enqueueNextStep(
         params,

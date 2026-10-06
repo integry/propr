@@ -392,6 +392,15 @@ function createRearmRedis() {
                 const [claimKey, token] = args;
                 return store.get(claimKey) === token && store.delete(claimKey) ? 1 : 0;
             }
+            if (script.includes('local current_state')) {
+                // Epoch- and snapshot-conditional state replace/clear.
+                const [epochKey, stateKey, expectedEpoch, expectedState, value] = args;
+                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
+                if (store.get(stateKey) !== expectedState) return 0;
+                if (script.includes("redis.call('DEL', KEYS[2])")) store.delete(stateKey);
+                else store.set(stateKey, value);
+                return 1;
+            }
             const [epochKey, targetKey, expectedEpoch, value] = args;
             if (script.includes("redis.call('INCR'")) {
                 const next = Number(store.get(epochKey) ?? '0') + 1;
@@ -509,7 +518,7 @@ describe('stranded Ultrafix loop re-arming', () => {
 
         const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 64 }, redis as never, logger as never);
 
-        assert.equal(result.reason, 'rearm_in_progress');
+        assert.equal(result.reason, 'resume_in_progress');
         assert.equal(mockQueueAdd.mock.callCount(), 0);
     });
 
@@ -604,5 +613,111 @@ describe('stranded Ultrafix loop re-arming', () => {
         assert.equal(result.reason, 'no_deferred_continuation');
         assert.equal(mockOctokitRequest.mock.callCount(), 0);
         assert.equal(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('a trigger arriving while a deferred fix is resumed cannot re-arm a conflicting review', async () => {
+        const redis = createRearmRedis();
+        await saveState(redis as never, {
+            ...createDefaultState({ owner: 'acme', repo: 'web', pr: 73, goal: 8, maxCycles: 5, pauseSeconds: 30 }),
+            lastAction: 'review', reviewCount: 1, fixCount: 0, cycleCount: 0,
+        });
+        await saveDeferredContinuation(redis as never, {
+            owner: 'acme', repo: 'web', pr: 73, nextAction: 'fix',
+            savedAt: new Date().toISOString(), reason: 'pending_comments', workEpoch: 0,
+        });
+        // Hold trigger A inside its pending-comments read, after it claimed the record.
+        let releasePendingRead!: () => void;
+        const pendingRead = new Promise<void>(resolve => { releasePendingRead = resolve; });
+        let signalReading!: () => void;
+        const reading = new Promise<void>(resolve => { signalReading = resolve; });
+        redis.llen = async (_key: string) => { signalReading(); await pendingRead; return 0; };
+
+        const first = resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 73 }, redis as never, logger as never);
+        await reading;
+        assert.equal(await loadDeferredContinuation(redis as never, 'acme', 'web', 73), null, 'A already claimed the record');
+        redis.llen = async (_key: string) => 0;
+
+        const second = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 73 }, redis as never, logger as never);
+        assert.equal(second.reason, 'resume_in_progress');
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+
+        releasePendingRead();
+        const result = await first;
+        assert.equal(result.reason, 'deferred_resumed');
+        assert.equal(result.nextAction, 'fix');
+        assert.equal(mockQueueAdd.mock.callCount(), 1);
+        const [, data] = mockQueueAdd.mock.calls[0].arguments as unknown as [string, any];
+        assert.equal(data.commandMode, 'fix');
+
+        // Once A finishes, the claim is free again for later triggers.
+        const third = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 73 }, redis as never, logger as never);
+        assert.notEqual(third.reason, 'resume_in_progress');
+    });
+
+    test('a stale exhausted snapshot cannot finish a newer loop that started meanwhile', async () => {
+        const redis = await strandLoop(74, { reviewCount: 5, fixCount: 5, cycleCount: 5 });
+        const epochKey = 'ultrafix:automatic-work-epoch:acme:web:74';
+        const get = redis.get.bind(redis);
+        let started = false;
+        redis.get = async (key: string) => {
+            if (key === epochKey && !started) {
+                // A new /ultrafix startup lands between the snapshot and the epoch read.
+                started = true;
+                const workEpoch = await invalidateUltrafixAutomaticWork(redis as never, 'acme', 'web', 74);
+                await saveState(redis as never, {
+                    ...createDefaultState({ owner: 'acme', repo: 'web', pr: 74, goal: 9, maxCycles: 5, pauseSeconds: 30 }),
+                    workEpoch,
+                });
+                mockQueueGetJobs.mock.mockImplementation(async () => [{
+                    id: 'startup-review',
+                    data: { repoOwner: 'acme', repoName: 'web', pullRequestNumber: 74, ultrafixMeta: { mode: 'ultrafix' } },
+                }]);
+            }
+            return get(key);
+        };
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 74 }, redis as never, logger as never);
+
+        assert.match(result.reason, /rearm_not_ready: .*follow_up_jobs_active/);
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+        const state = await loadState(redis as never, 'acme', 'web', 74);
+        assert.equal(state?.active, true);
+        assert.equal(state?.workEpoch, 2);
+        assert.equal(state?.reviewCount, 0);
+        assert.equal(state?.goal, 9);
+        assert.equal(state?.completionStatus, null);
+        const posts = mockOctokitRequest.mock.calls.filter(call => String(call.arguments[0]).startsWith('POST'));
+        assert.equal(posts.length, 0, 'no stopped-loop comment for the newer loop');
+    });
+
+    test('a loop stopped during the readiness check is not overwritten or re-armed', async () => {
+        const redis = await strandLoop(75);
+        redis.llen = async (_key: string) => {
+            const current = await loadState(redis as never, 'acme', 'web', 75);
+            await saveState(redis as never, { ...current!, active: false });
+            return 0;
+        };
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 75 }, redis as never, logger as never);
+
+        assert.equal(result.reason, 'no_active_loop');
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+        const state = await loadState(redis as never, 'acme', 'web', 75);
+        assert.equal(state?.active, false);
+        assert.equal(state?.workEpoch, 0);
+    });
+
+    test('a loop deleted during the label check is not resurrected', async () => {
+        const redis = await strandLoop(76);
+        mockOctokitRequest.mock.mockImplementation(async () => {
+            redis.store.delete('ultrafix:state:acme:web:76');
+            return { data: { labels: [{ name: 'ultrafix' }] } };
+        });
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 76 }, redis as never, logger as never);
+
+        assert.equal(result.reason, 'no_active_loop');
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+        assert.equal(await loadState(redis as never, 'acme', 'web', 76), null);
     });
 });
