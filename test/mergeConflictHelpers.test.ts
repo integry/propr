@@ -96,7 +96,7 @@ describe('buildMergeConflictCommitMessage', () => {
             headBranch: 'feature',
             pullRequestNumber: 5,
             conflictedFiles: ['a.ts', 'b.ts'],
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-opus-5-5',
             wasCleanMerge: false,
         });
 
@@ -104,7 +104,8 @@ describe('buildMergeConflictCommitMessage', () => {
         assert.ok(msg.includes('- a.ts'));
         assert.ok(msg.includes('- b.ts'));
         assert.ok(msg.includes('#5'));
-        assert.ok(msg.includes('claude-sonnet-4-20250514'));
+        assert.ok(msg.includes('Model: Claude Opus 5.5'));
+        assert.ok(!msg.includes('claude-opus-5-5'));
     });
 });
 
@@ -134,7 +135,7 @@ describe('buildMergeConflictComment', () => {
             baseBranch: 'main',
             headBranch: 'feature',
             conflictedFiles: ['src/app.ts', 'src/config.ts'],
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-opus-5-5',
             executionTimeMs: 125000,
             taskUrl: 'https://gitfix.dev/tasks/test-123',
             resolutionSummary: 'Kept both compatible changes.\nNo commits created.',
@@ -144,7 +145,8 @@ describe('buildMergeConflictComment', () => {
         assert.ok(comment.includes('def4567'));
         assert.ok(comment.includes('`src/app.ts`'));
         assert.ok(comment.includes('`src/config.ts`'));
-        assert.ok(comment.includes('claude-sonnet-4-20250514'));
+        assert.ok(comment.includes('* **Model:** Claude Opus 5.5'));
+        assert.ok(!comment.includes('claude-opus-5-5'));
         assert.ok(comment.includes('2m 5s'));
         assert.ok(comment.includes('https://gitfix.dev/tasks/test-123'));
         assert.ok(comment.includes('Kept both compatible changes.'));
