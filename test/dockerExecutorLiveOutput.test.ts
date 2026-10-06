@@ -19,6 +19,11 @@ class FakeRedis {
     disconnect() {}
 }
 mock.module('ioredis', { namedExports: { Redis: FakeRedis, default: FakeRedis } });
+// The executor prefers a host `docker` at these fixed paths over PATH; hide them
+// so the stand-in `docker` each spend-cap test puts on PATH is the one that runs.
+const hostDockerPaths = new Set(['/usr/bin/docker', '/usr/local/bin/docker', '/bin/docker']);
+const existsSync = fs.existsSync;
+mock.method(fs, 'existsSync', (target: fs.PathLike) => !hostDockerPaths.has(String(target)) && existsSync(target));
 const { executeDockerCommand } = await import('../packages/core/src/claude/docker/dockerExecutor.js');
 const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.js');
 const { RunCostGuard } = await import('../packages/core/src/budget/runCostGuard.js');
