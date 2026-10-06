@@ -148,6 +148,21 @@ export interface RescueBundlePruneResult {
     retained: number;
 }
 
+function errorCode(error: unknown): string | undefined {
+    return (error as NodeJS.ErrnoException | undefined)?.code;
+}
+
+/** Non-recursive, so a bundle a worker writes into the directory after the sweep emptied
+ * it is never deleted with it: the removal then fails with ENOTEMPTY instead. */
+async function removeDirectoryIfEmpty(dir: string): Promise<void> {
+    try {
+        await fs.rmdir(dir);
+    } catch (error) {
+        const code = errorCode(error);
+        if (code !== 'ENOTEMPTY' && code !== 'EEXIST' && code !== 'ENOENT') throw error;
+    }
+}
+
 /** Deletes bundles older than the retention period and the directories they leave empty. */
 export async function pruneRescueBundles(options: { olderThanDays?: number; directory?: string; now?: Date } = {}): Promise<RescueBundlePruneResult> {
     const directory = options.directory ?? getRescueBundleDirectory();
@@ -157,11 +172,18 @@ export async function pruneRescueBundles(options: { olderThanDays?: number; dire
     if (!await fs.pathExists(directory)) return result;
 
     const visit = async (dir: string): Promise<void> => {
-        for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+        let entries: fs.Dirent[];
+        try {
+            entries = await fs.readdir(dir, { withFileTypes: true });
+        } catch (error) {
+            if (errorCode(error) === 'ENOENT') return;
+            throw error;
+        }
+        for (const entry of entries) {
             const entryPath = path.join(dir, entry.name);
             if (entry.isDirectory()) {
                 await visit(entryPath);
-                if ((await fs.readdir(entryPath)).length === 0) await fs.remove(entryPath);
+                await removeDirectoryIfEmpty(entryPath);
             } else if (entry.isFile() && entry.name.endsWith('.bundle')) {
                 const stats = await fs.stat(entryPath);
                 if (stats.mtime.getTime() <= cutoff) {

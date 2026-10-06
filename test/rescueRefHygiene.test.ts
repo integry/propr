@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
+import fs from 'fs-extra';
 import {
     createGitRescueRefPruneDependencies, isRescueRef, pruneRescueBundles, pruneRescueRefs, rescueRefCreatedAt, rescueRefName, sanitizeRescueId,
 } from '../packages/core/src/git/rescueRefs.js';
@@ -128,6 +129,62 @@ test('expired rescue bundles are deleted and empty directories removed', async (
         assert.ok(!existsSync(repoDir));
         assert.ok(existsSync(newBundle));
     } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('a bundle written after the sweep emptied its directory survives the directory cleanup', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-bundles-'));
+    const originalRemove = fs.remove;
+    const originalRmdir = fs.rmdir;
+    try {
+        const repoDir = path.join(directory, 'integry', 'propr');
+        await mkdir(repoDir, { recursive: true });
+        const oldBundle = path.join(repoDir, 'old.bundle');
+        const freshBundle = path.join(repoDir, 'fresh.bundle');
+        await writeFile(oldBundle, 'old');
+        const fifteenDaysAgo = new Date(Date.now() - 15 * DAY);
+        await utimes(oldBundle, fifteenDaysAgo, fifteenDaysAgo);
+
+        // A worker salvages into the directory after the sweep deleted its last expired
+        // bundle, just before the sweep removes the directory.
+        const salvageBeforeDirectoryRemoval = async (target: unknown) => {
+            if (target === repoDir && !existsSync(freshBundle)) await writeFile(freshBundle, 'fresh');
+        };
+        (fs as { remove: unknown }).remove = async (target: string) => {
+            await salvageBeforeDirectoryRemoval(target);
+            return originalRemove(target);
+        };
+        (fs as { rmdir: unknown }).rmdir = async (target: string) => {
+            await salvageBeforeDirectoryRemoval(target);
+            return originalRmdir(target);
+        };
+
+        const result = await pruneRescueBundles({ directory, olderThanDays: 14 });
+        assert.deepEqual(result.deleted, [oldBundle]);
+        assert.ok(existsSync(freshBundle));
+    } finally {
+        (fs as { remove: unknown }).remove = originalRemove;
+        (fs as { rmdir: unknown }).rmdir = originalRmdir;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('directories that disappear during the sweep are skipped', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-bundles-'));
+    const originalRmdir = fs.rmdir;
+    try {
+        const repoDir = path.join(directory, 'integry', 'propr');
+        await mkdir(repoDir, { recursive: true });
+        (fs as { rmdir: unknown }).rmdir = async (target: string) => {
+            await originalRmdir(target);
+            if (target === repoDir) await originalRmdir(target);
+        };
+        const result = await pruneRescueBundles({ directory, olderThanDays: 14 });
+        assert.deepEqual(result.deleted, []);
+        assert.ok(!existsSync(path.join(directory, 'integry')));
+    } finally {
+        (fs as { rmdir: unknown }).rmdir = originalRmdir;
         await rm(directory, { recursive: true, force: true });
     }
 });
