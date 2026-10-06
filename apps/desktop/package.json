@@ -64,7 +64,7 @@
     "axe-core": "4.10.3",
     "electron": "^44.0.0",
     "playwright": "^1.62.1",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "socket.io": "^4.8.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",

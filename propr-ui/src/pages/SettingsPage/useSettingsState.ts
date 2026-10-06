@@ -5,20 +5,17 @@ import {
   getFollowupIgnoreKeywords, updateFollowupIgnoreKeywords,
   getPrLabel, updatePrLabel,
   getPrimaryProcessingLabels, updatePrimaryProcessingLabels,
-  getAgents,
-  getInstanceCatalog,
+  getAgents, getInstanceCatalog,
   getSummarizationSettings, updateSummarizationSettings,
   triggerReindexAll,
-  AgentConfig,
-  SummarizationSettings
+  AgentConfig, SummarizationSettings, type TriggerReindexAllResponse
 } from '../../api/proprApi';
-import { DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
+import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
 import { getAgentTankSettings } from '../../api/revertApi';
 import { Settings, type AgentWatchdogSettingName } from './types';
 import { parseLoadedData, runLimitSettingsToSave } from './parseLoadedData';
 import { useAgentTankSettings } from './useAgentTankSettings';
 import { useListManagement } from './useListManagement';
-import type { TriggerReindexAllResponse } from '../../api/proprApi';
 import { isCommittedConfigWriteError } from '../../api/apiClient';
 
 // Debounce delay for prompt changes (in milliseconds)
@@ -55,6 +52,7 @@ export function useSettingsState() {
 
   const [settings, setSettings] = useState<Settings>({
     worker_concurrency: '',
+    max_provider_replacements: DEFAULT_MAX_PROVIDER_REPLACEMENTS,
     analysis_model_fast: '',
     planner_context_model: '',
     planner_generation_model: '',
@@ -157,6 +155,7 @@ export function useSettingsState() {
       }
       const result = await updateSettings({
         worker_concurrency: settingsToSave.worker_concurrency ? concurrency : undefined,
+        max_provider_replacements: settingsToSave.max_provider_replacements,
         analysis_model_fast: settingsToSave.analysis_model_fast,
         planner_context_model: settingsToSave.planner_context_model,
         planner_generation_model: settingsToSave.planner_generation_model,

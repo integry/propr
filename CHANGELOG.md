@@ -27,6 +27,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run `gen:openapi:check`, which fails on a stale or invalid spec, and
   `check:client-contract`, which fails when the client's operations or method
   signatures drift from the spec.
+- **Automatic replacement runs**: an issue task lost with its worker (the
+  reconciler finds neither its queue job nor its task container) now gets one
+  replacement attempt instead of only being marked failed; a second loss in the
+  same lineage is final. A run that ends with a transient provider error that
+  `withRetry` treats as retryable (5xx, `529`/overloaded, connection resets,
+  timeouts; 429 and usage limits excluded) is replaced up to
+  `MAX_PROVIDER_REPLACEMENTS` times (default 2, also the instance setting
+  `max_provider_replacements`; `0` disables it). `INFRA_LOST_REPLACEMENT=false`
+  disables lost-run replacement. Replacements reuse the original agent, model
+  and per-task overrides, continue the pushed work branch, go through
+  repository capacity admission, and receive the per-run cost cap minus what
+  earlier attempts spent. User and withdrawal cancellations, watchdog, timeout
+  and cost-cap stops, goal tasks and closed issues are never replaced. Attempts
+  are linked with `replaces_task_id`, `replaced_by_task_id` and
+  `attempt_number`, so the cap survives restarts. The task timeline records
+  `replacement.dispatched`, `replacement.skipped` and `replacement.exhausted`;
+  the Inbox shows one "Replacement started" card instead of a failure alert;
+  the final GitHub failure comment links every attempt; task detail shows the
+  attempt lineage and `propr task get --json` includes `replacesTaskId`,
+  `replacedByTaskId` and `attemptNumber`. `withRetry` now also retries HTTP
+  `529` and "overloaded" errors.
 - **Persisted review scores and per-model review quality**: every `/review`
   and Ultrafix review cycle that produces a parsed `Score: N/10` now writes a
   `review_scores` row with the reviewer and implementer agent and model, blocker

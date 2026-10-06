@@ -1,5 +1,5 @@
 import { getIntegerSettingOrDefault } from './configSettings.js';
-import { parseUsageTipsSettings } from '@propr/shared';
+import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, parseMaxProviderReplacements, parseUsageTipsSettings } from '@propr/shared';
 import { assertConfigRevision, effectiveGithubUserWhitelist } from './configRevision.js';
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
@@ -251,6 +251,8 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         analysis_model_fast: settings.analysis_model_fast ?? envDefaults.analysis_model_fast,
         planner_context_model: settings.planner_context_model ?? envDefaults.planner_context_model,
         planner_generation_model: settings.planner_generation_model ?? envDefaults.planner_generation_model,
+        max_provider_replacements: parseMaxProviderReplacements(settings.max_provider_replacements)
+          ?? parseMaxProviderReplacements(process.env.MAX_PROVIDER_REPLACEMENTS) ?? DEFAULT_MAX_PROVIDER_REPLACEMENTS,
         pr_review_prompt: typeof settings.pr_review_prompt === 'string' ? settings.pr_review_prompt : '',
         pr_review_context_enabled: typeof settings.pr_review_context_enabled === 'boolean' ? settings.pr_review_context_enabled : true,
         pr_review_context_model: typeof settings.pr_review_context_model === 'string' ? settings.pr_review_context_model : '',

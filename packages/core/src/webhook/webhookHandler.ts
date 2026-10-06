@@ -399,6 +399,24 @@ async function handleIntentWithdrawal(payload: unknown, eventType: WebhookEventT
     }
 }
 
+/**
+ * Neither the daemon nor the API used to register a Redis client with the
+ * handler, so detection must not depend on one being injected (it silently
+ * never ran). Mergeability polling can take tens of seconds, so detection runs
+ * outside the delivery instead of holding the acknowledgement.
+ */
+function startConflictDetection(payload: unknown, eventType: WebhookEventType, correlationId: string, correlatedLogger: ReturnType<typeof logger.withCorrelation>): void {
+    let conflictDetection: Promise<unknown> | null = null;
+    if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
+        conflictDetection = handlePullRequestConflictDetection(payload, webhookRedisClient ?? getUltrafixStateRedis(), correlationId);
+    } else if (eventType === 'push' && isPushEvent(payload)) {
+        conflictDetection = handlePushConflictDetection(payload, webhookRedisClient ?? getUltrafixStateRedis(), correlationId);
+    }
+    void conflictDetection?.catch(conflictDetectionError => {
+        correlatedLogger.warn({ error: conflictDetectionError }, 'Merge conflict detection failed, continuing');
+    });
+}
+
 export async function processWebhookEvent(
     payload: unknown,
     eventType: WebhookEventType,
@@ -465,18 +483,8 @@ export async function processWebhookEvent(
         if (payload.action === 'closed') await recordClosedPullRequestForCiCancellation(payload, getClosedPullRequestCiRedis());
     }
 
-    // 7. Merge conflict detection: detect dirty PRs and enqueue auto-resolve work
-    if (webhookRedisClient) {
-        try {
-            if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
-                await handlePullRequestConflictDetection(payload, webhookRedisClient, correlationId);
-            } else if (eventType === 'push' && isPushEvent(payload)) {
-                await handlePushConflictDetection(payload, webhookRedisClient, correlationId);
-            }
-        } catch (conflictDetectionError) {
-            correlatedLogger.warn({ error: conflictDetectionError }, 'Merge conflict detection failed, continuing');
-        }
-    }
+    // 7. Merge conflict detection: detect dirty PRs and enqueue auto-resolve work.
+    startConflictDetection(payload, eventType, correlationId, correlatedLogger);
 
     // 8. Standard Local Processing
     return await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger);

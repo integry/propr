@@ -6,6 +6,7 @@ import React, { useEffect, useState } from 'react';
 import { RefreshCw, Square, Trash2 } from 'lucide-react';
 import type { MonitoredRepo, RepositoryIndexingStatus } from '../api/proprApi';
 import { RepositoryVisualPreviewControl, type RepositoryVisualPreviewSettings } from './RepositoryVisualPreviewControl';
+import { RepositoryAutoResolveConflictsControl } from './RepositoryAutoResolveConflictsControl';
 import { IndexingStatusIndicator } from './IndexingStatusIndicator';
 import { DeleteRepoDialog } from './DeleteRepoDialog';
 
@@ -245,6 +246,7 @@ interface RepositorySettingsBarProps {
   onUpdateCancelCiWorkflows: (repoId: string, workflows: string[]) => void;
   onUpdateNonBlockingChecks?: (repoId: string, checks: string[]) => void;
   onToggleNotifications: (repoId: string) => void;
+  onUpdateAutoResolveMergeConflicts?: (repoId: string, value: boolean | null) => void;
   onUpdateVisualPreview: (repoId: string, settings: RepositoryVisualPreviewSettings) => void;
   isReadOnly: boolean;
 }
@@ -252,7 +254,7 @@ interface RepositorySettingsBarProps {
 export const RepositorySettingsBar: React.FC<RepositorySettingsBarProps> = ({
   repo, indexingStatus, onToggle, onRemove, onStopIndexing, onReindex,
   onToggleStar, onToggleHidden, onToggleAutoCiFollowup, onToggleCancelCiDuringFollowup, onUpdateCancelCiWorkflows, onUpdateNonBlockingChecks,
-  onToggleNotifications, onUpdateVisualPreview, isReadOnly,
+  onToggleNotifications, onUpdateAutoResolveMergeConflicts, onUpdateVisualPreview, isReadOnly,
 }) => {
   const { isDemoMode } = useDemoMode();
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
@@ -324,6 +326,7 @@ export const RepositorySettingsBar: React.FC<RepositorySettingsBarProps> = ({
                 isReadOnly={isReadOnly}
               />
               {onUpdateNonBlockingChecks && <NonBlockingChecksControl key={`non-blocking-${repo.id}`} repo={repo} onUpdate={onUpdateNonBlockingChecks} />}
+              {onUpdateAutoResolveMergeConflicts && <RepositoryAutoResolveConflictsControl repo={repo} onUpdate={onUpdateAutoResolveMergeConflicts} isReadOnly={isReadOnly} />}
               <RepositoryVisualPreviewControl key={repo.id} repo={repo} onUpdate={onUpdateVisualPreview} isReadOnly={isReadOnly} />
             </div>
           </div>

@@ -55,6 +55,8 @@ npm run test:full      # builds the workspace packages, then runs the full serve
 
 The Web UI has its own checks in `propr-ui/`: `npm run lint`, `npm run typecheck` and `npm test`.
 
+The full suite also runs nightly on `main` (`.github/workflows/test-nightly.yml`). A red night opens a `Nightly test health` issue labelled `nightly-health`, or comments on the one already open, with the run link, failing jobs, a log excerpt and the commit SHA. The next green night comments and closes it. The issue never carries `AI` or `llm-*` labels, so ProPR does not pick it up; fix the failure in a normal pull request.
+
 ## Project structure
 
 ```
