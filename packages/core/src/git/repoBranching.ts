@@ -5,6 +5,7 @@ import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getAuthenticatedOctokit, getGitHubInstallationToken } from '../auth/githubAuth.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { redactAuthenticatedGitUrl } from './redactGitUrl.js';
+import { GitLockContentionError, GitLockRetryOptions, serializeSharedConfigWrite, withGitLockRetry } from './configLock.js';
 
 export { redactAuthenticatedGitUrl };
 
@@ -52,11 +53,29 @@ export async function configureGitRemoteAuthentication(git: SimpleGit, token?: s
     }
 }
 
-export async function setupAuthenticatedRemote(git: SimpleGit, repoUrl: string, authToken: string): Promise<void> {
+async function originUrlIsCurrent(git: SimpleGit, repoUrl: string): Promise<boolean> {
+    const { values } = await git.getConfig('remote.origin.url');
+    return values.length === 1 && values[0] === repoUrl;
+}
+
+/**
+ * Authenticate this command through its own environment and make sure the
+ * shared clone's origin is the clean repository URL. The shared config is only
+ * written when it differs (for example, a legacy credential-bearing URL that
+ * must be scrubbed), so parallel workers preparing the same clone do not
+ * contend on `.git/config.lock` for a no-op rewrite.
+ */
+export async function setupAuthenticatedRemote(git: SimpleGit, repoUrl: string, authToken: string, lockRetry?: GitLockRetryOptions): Promise<void> {
     configureGitAuthentication(git, authToken);
     try {
-        await git.remote(['set-url', 'origin', repoUrl]);
+        if (await originUrlIsCurrent(git, repoUrl)) return;
+        await serializeSharedConfigWrite(git, () => withGitLockRetry('updating remote.origin.url', async () => {
+            // Another worker may have written the same URL while this one waited.
+            if (await originUrlIsCurrent(git, repoUrl)) return;
+            await git.remote(['set-url', 'origin', repoUrl]);
+        }, lockRetry));
     } catch (error) {
+        if (error instanceof GitLockContentionError) throw error;
         throw new Error(redactAuthenticatedGitUrl((error as Error).message));
     }
 }
