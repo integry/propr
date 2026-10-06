@@ -5,7 +5,7 @@ import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import {
     generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree,
-    formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
+    formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel, getModelName,
     resolveModelAlias, getPendingPrCommentsKey,
     buildVisualPreviewPrompt, describeAgentTermination, resolveAgentTerminationReason,
     sanitizeAgentReport, getPushFailure, formatPushFailureMarkdown,
@@ -130,13 +130,14 @@ export function buildCommitMessage(options: CommitMessageOptions): string {
     const partialExecutionNote = terminationReason
         ? `\n\nPartial execution: ${describeAgentTermination(terminationReason)}`
         : '';
+    const modelId = claudeResult.model || llm || DEFAULT_MODEL_NAME;
     return `feat(ai): ${publishableSummary ? publishableSummary.split('\n')[0] : 'Apply follow-up changes from PR comment'}
 
 ${publishableSummary || `Implemented changes requested by ${authorsText}`}
 
 PR: #${pullRequestNumber}
 ${commentReferences}
-Model: ${claudeResult.model || llm || DEFAULT_MODEL_NAME || 'unconfigured'}${partialExecutionNote}`;
+Model: ${modelId ? getModelName(modelId) : 'unconfigured'}${partialExecutionNote}`;
 }
 
 export interface PromptOptions {

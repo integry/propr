@@ -9,13 +9,20 @@ const { setupAuthenticatedRemote, configureGitRemoteAuthentication } = await imp
 test('worker tokens authenticate git through its process environment and never the stored remote', async () => {
     let environment: Record<string, string> = {};
     let remote: string[] = [];
+    let storedUrl = 'https://x-access-token:legacy-token@github.com/owner/repo.git';
     const git = {
         env: (value: Record<string, string>) => { environment = value; },
-        remote: async (value: string[]) => { remote = value; },
-        getConfig: async () => ({ value: 'https://github.com/owner/repo.git' }),
+        remote: async (value: string[]) => { remote = value; storedUrl = value[2]; },
+        getConfig: async () => ({ value: storedUrl, values: [storedUrl] }),
+        raw: async () => '/clones/owner/repo/.git\n',
     } as unknown as SimpleGit;
+    // A legacy credential-bearing remote is scrubbed to the clean URL.
     await setupAuthenticatedRemote(git, 'https://github.com/owner/repo.git', 'write-token');
     assert.deepEqual(remote, ['set-url', 'origin', 'https://github.com/owner/repo.git']);
+    // An already-clean remote is not rewritten in the shared config.
+    remote = [];
+    await setupAuthenticatedRemote(git, 'https://github.com/owner/repo.git', 'write-token');
+    assert.deepEqual(remote, []);
     assert.equal(environment.GIT_CONFIG_KEY_1, 'http.https://github.com/.extraheader');
     assert.equal(environment.GIT_CONFIG_VALUE_1, `AUTHORIZATION: basic ${Buffer.from('x-access-token:write-token').toString('base64')}`);
     await configureGitRemoteAuthentication(git);

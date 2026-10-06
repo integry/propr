@@ -186,6 +186,8 @@ Configuration is stored in `~/.propr/config.json`.
 
 Run `propr init` from a repository root to scaffold `.propr/` setup files used inside agent execution containers. The generated `.propr/setup.sh` runs before each implementation execution; use it for repository-local setup such as installing npm helper packages from `.propr/package.json`.
 
+The scaffold also includes a commented `.propr/pr-template.md` for shaping pull request titles and descriptions. Run `propr repo validate` in the checkout to report unknown sections and placeholders; see [Pull request templates](./pr-templates.md).
+
 ## Agent Runtime Packages
 
 Installation-wide system packages are built into local derivatives of the unified Debian agent image. ProPR validates names against the runtime's `apt` package catalog, and the previous profile remains active until every derived image builds successfully.
@@ -401,9 +403,11 @@ propr repo toggle owner/repo --auto-ci-followup     # Enable failed-CI follow-up
 propr repo toggle owner/repo --no-auto-ci-followup  # Disable failed-CI follow-up
 propr repo toggle owner/repo --visual-previews --preview-types image,video
 propr repo toggle owner/repo --no-visual-previews
+propr repo toggle owner/repo --no-github-pr-template  # Don't append the GitHub PR template
 propr repo index owner/repo                  # Full reindex
 propr repo index owner/repo --incremental    # Incremental reindex
 propr repo status                            # Indexing status for all repos
+propr repo validate                          # Check .propr/pr-template.md in this checkout
 ```
 
 Automatic CI follow-up is configured per repository and is **off by default**. Enable it only for repositories whose CI failures are high-quality, trusted signals; noisy or flaky checks can otherwise create unnecessary follow-up work. `propr repo list` shows the current setting for every monitored repository.

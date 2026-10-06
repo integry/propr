@@ -23,6 +23,7 @@ import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfiguratio
 import { ensureSeedCommitIfEmpty } from './seedCommit.js';
 import { fetchLatestChanges, FetchLatestChangesOptions, FetchLatestChangesResult } from './fetchOperations.js';
 import { createHooklessGit } from './hooklessGit.js';
+import { GitLockRetryOptions, isGitLockContentionError, withGitLockRetry } from './configLock.js';
 import {
     assertGitHubRepositoryUrl,
     assertRepositoryClonePath,
@@ -60,6 +61,8 @@ export interface EnsureRepoClonedOptions {
     repoName: string;
     authToken: string;
     baseBranch?: string;
+    /** Bounded backoff while another process holds a lock in the shared clone. */
+    lockRetry?: GitLockRetryOptions;
 }
 
 export async function ensureRepoCloned(options: EnsureRepoClonedOptions): Promise<string> {
@@ -90,7 +93,7 @@ interface UpdateExistingRepoParams {
 }
 
 async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoParams): Promise<void> {
-    const { repoUrl, owner, repoName, authToken, baseBranch } = opts;
+    const { repoUrl, owner, repoName, authToken, baseBranch, lockRetry } = opts;
     logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Repository exists locally. Validating and fetching updates...');
 
     // Add to safe.directory BEFORE any git operations on this path
@@ -104,10 +107,17 @@ async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoPar
         const git: SimpleGit = createHooklessGit(localRepoPath);
         if (!await git.checkIsRepo()) throw new Error('Directory exists but is not a valid git repository');
         await configureGcWorktreePrune(git);
-        await setupAuthenticatedRemote(git, repoUrl, authToken);
-        await git.fetch(['origin', '--prune']);
+        await setupAuthenticatedRemote(git, repoUrl, authToken, lockRetry);
+        await withGitLockRetry('fetching origin', () => git.fetch(['origin', '--prune']), lockRetry);
     } catch (gitError) {
         const errorMessage = (gitError as Error).message;
+        // Another worker holding a lock in this shared clone says nothing about
+        // its health; removing or re-cloning would destroy that worker's state.
+        if (isGitLockContentionError(gitError)) {
+            const detail = redactAuthenticatedGitUrl(errorMessage);
+            logger.error({ repo: `${owner}/${repoName}`, path: localRepoPath, error: detail }, 'Shared repository is locked by another Git process; leaving it untouched.');
+            throw new Error(`Repository ${owner}/${repoName} could not be prepared because its shared clone stayed locked by another Git process (not corruption; nothing was removed): ${detail}`);
+        }
         if (await hasActiveWorktrees(localRepoPath)) {
             logger.error({ repo: `${owner}/${repoName}`, path: localRepoPath, error: errorMessage }, 'Git repository has issues but has active worktrees - cannot remove and re-clone.');
             throw new Error(`Repository ${owner}/${repoName} is corrupted but has active worktrees: ${errorMessage}`);
