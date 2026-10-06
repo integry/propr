@@ -288,31 +288,27 @@ const PlansPage: React.FC = () => {
   const visibleDrafts = hasCurrentScopeData ? drafts : [];
   const currentError = error?.scope === queryScope ? error.message : null;
 
-  if (!hasCurrentScopeData && !currentError) {
-    return (
-      <div className="flex h-full w-full min-w-0 flex-col bg-white">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Plans</h1>
-        </div>
+  // A scope still loading, or failing with nothing to show, replaces only the
+  // body. The header stays mounted so the search field being typed into (and
+  // its phone keyboard) survives each debounced reload.
+  const renderBlockingBody = () => {
+    if (!hasCurrentScopeData && !currentError) {
+      return (
         <div className="flex-1 overflow-auto px-4 sm:px-6 py-4 sm:py-6">
           <ListSkeleton rows={8} layout="table" columns={4} label="Loading plans…" data-testid="plans-skeleton" />
         </div>
-      </div>
-    );
-  }
-
-  if (currentError && visibleDrafts.length === 0) {
-    return (
-      <div className="flex h-full w-full min-w-0 flex-col bg-white">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Plans</h1>
-        </div>
+      );
+    }
+    if (currentError && visibleDrafts.length === 0) {
+      return (
         <div className="flex-1 overflow-auto px-4 sm:px-6 py-4 sm:py-6">
           <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{currentError}</div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
+    return null;
+  };
+  const blockingBody = renderBlockingBody();
 
   const renderContent = () => {
     if (visibleDrafts.length === 0
@@ -421,10 +417,12 @@ const PlansPage: React.FC = () => {
       </div>
 
       {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full">
-        {currentError && <div className="mx-4 mt-4 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">Couldn’t refresh plans: {currentError}</div>}
-        {renderContent()}
-      </div>
+      {blockingBody ?? (
+        <div className="flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full">
+          {currentError && <div className="mx-4 mt-4 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">Couldn’t refresh plans: {currentError}</div>}
+          {renderContent()}
+        </div>
+      )}
 
       {/* Anchored Footer */}
       {visibleDrafts.length > 0 && totalPages > 1 && (

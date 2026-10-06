@@ -80,6 +80,43 @@ function recordRequests(page: Page, pathname: string) {
   return seen;
 }
 
+/** Holds every searched request to `pathname` for a second, so a debounced reload is still pending while the user types. */
+async function delaySearchedRequests(page: Page, pathname: string) {
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === pathname && url.searchParams.get('search')) await new Promise(resolve => setTimeout(resolve, 1000));
+    await route.fallback();
+  });
+}
+
+/**
+ * Types `first`, waits past the debounce while that searched reload is still pending, then types
+ * `next` without touching the field again. The same focused input must take both keystrokes.
+ */
+async function typeAcrossPendingReload(page: Page, search: Locator, { requests, skeleton, first, next, preview }: { requests: URLSearchParams[]; skeleton: Locator; first: string; next: string; preview: string }) {
+  await search.tap();
+  const field = await search.elementHandle();
+  await page.keyboard.type(first);
+  await expect.poll(() => requests.some(params => params.get('search') === first)).toBe(true);
+  await expect(skeleton).toBeVisible();
+  await expect(page.getByRole('textbox')).toHaveCount(1);
+  await expect(search).toBeFocused();
+  await expect(search).toHaveValue(first);
+  expect(await field!.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
+  // All of that held while the reload was still pending.
+  await expect(skeleton).toBeVisible();
+  await capture(page, preview);
+
+  await page.keyboard.type(next);
+  await expect.poll(() => requests.some(params => params.get('search') === first + next)).toBe(true);
+  await expect(skeleton).toBeHidden();
+  await expect(search).toBeFocused();
+  await expect(search).toHaveValue(first + next);
+  expect(await field!.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
+  await expect(page).toHaveURL(new RegExp(`search=${first + next}(&|$)`));
+  expect(requests.at(-1)!.get('search')).toBe(first + next);
+}
+
 /** The search field and its clear action fit the phone: on screen, unclipped, clear of the bottom bar, finger-sized. */
 async function expectUsable(page: Page, search: Locator, width: number) {
   const clear = page.getByRole('button', { name: 'Clear search', exact: true });
@@ -159,6 +196,47 @@ for (const width of [320, 390]) {
       await expect(page.getByText('Mobile search for list pages').first()).toBeVisible();
       await expectUsable(page, search, width);
       await capture(page, `plans-search-${width}`);
+    });
+
+    test('Tasks: typing carries on in the same focused field while a searched reload is pending', async ({ page }) => {
+      await delaySearchedRequests(page, '/api/tasks');
+      const requests = recordRequests(page, '/api/tasks');
+      await page.goto('/tasks?status=completed&page=2');
+      const search = page.getByRole('textbox', { name: 'Search tasks' });
+      const cards = page.locator('[data-testid="task-card"]');
+      await expect(cards.first()).toBeVisible();
+
+      await typeAcrossPendingReload(page, search, { requests, skeleton: page.getByTestId('tasks-skeleton'), first: 'w', next: 'e', preview: `tasks-search-pending-${width}` });
+      // The search resets to the first page and keeps the status filter.
+      expect(requests.at(-1)!.get('offset')).toBe('0');
+      expect(requests.at(-1)!.get('status')).toBe('completed');
+      await expect(page).not.toHaveURL(/page=/);
+      await expect(page).toHaveURL(/status=completed/);
+      // "Retry webhook deliveries" and "Cache repository indexes between runs".
+      await expect(cards).toHaveCount(2);
+      await expect(cards.filter({ hasText: 'Retry webhook deliveries' })).toHaveCount(1);
+      await expect(cards.filter({ hasText: 'Cache repository indexes between runs' })).toHaveCount(1);
+      await expect(search).toBeFocused();
+      await expectUsable(page, search, width);
+    });
+
+    test('Plans: typing carries on in the same focused field while a searched reload is pending', async ({ page }) => {
+      await delaySearchedRequests(page, '/api/planner/drafts');
+      const requests = recordRequests(page, '/api/planner/drafts');
+      await page.goto('/plans?status=review&repository=integry%2Fpropr&page=2');
+      const search = page.getByRole('textbox', { name: 'Search plans' });
+      await expect(page.getByText('Retry webhook deliveries').first()).toBeVisible();
+
+      await typeAcrossPendingReload(page, search, { requests, skeleton: page.getByTestId('plans-skeleton'), first: 'w', next: 'e', preview: `plans-search-pending-${width}` });
+      expect(requests.at(-1)!.get('status')).toBe('review');
+      expect(requests.at(-1)!.get('repository')).toBe('integry/propr');
+      expect(requests.at(-1)!.get('page')).toBe('1');
+      await expect(page).toHaveURL(/page=1/);
+      await expect(page).toHaveURL(/status=review/);
+      await expect(page).toHaveURL(/repository=integry%2Fpropr/);
+      await expect(page.getByText('Retry webhook deliveries').first()).toBeVisible();
+      await expect(search).toBeFocused();
+      await expectUsable(page, search, width);
     });
 
     test('Goals: search narrows the queue, keeps the status filter, and a URL query with no matches clears from the field', async ({ page }) => {
