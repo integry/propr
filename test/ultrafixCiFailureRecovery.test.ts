@@ -124,11 +124,14 @@ const {
     loadDeferredContinuation,
     loadRearmRetry,
     loadState,
+    saveDeferredContinuation,
     saveState,
     startLoop,
 } = await import('../src/jobs/ultrafixOrchestrationService.js');
 const { getUltrafixStepJobId } = await import('../src/jobs/ultrafixLoopContinuationHelpers.js');
 const { getUltrafixCiWaitKey, ULTRAFIX_CI_TIMEOUT_REASON } = await import('../src/jobs/ultrafixCiWait.js');
+const { getUltrafixResumeClaimKey } = await import('../src/jobs/ultrafixResumeClaim.js');
+const { IN_FLIGHT_STEP_RETRY_DELAY_MS } = await import('../src/jobs/ultrafixStrandedLoopRearm.js');
 
 /** Redis mock that executes the epoch, deferred-record, state and claim scripts faithfully. */
 function createRedis() {
@@ -155,6 +158,17 @@ function createRedis() {
             if (script.includes("redis.call('DEL', KEYS[1])")) {
                 const [claimKey, token] = args;
                 return store.get(claimKey) === token && store.delete(claimKey) ? 1 : 0;
+            }
+            if (script.includes('-- reserve epoch and replace state')) {
+                // Epoch- and snapshot-conditional reservation of the next epoch.
+                const [epochKey, stateKey, deferredKey, expectedEpoch, expectedState, value] = args;
+                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
+                if (store.get(stateKey) !== expectedState) return 0;
+                const next = Number(expectedEpoch) + 1;
+                store.set(epochKey, String(next));
+                store.delete(deferredKey);
+                store.set(stateKey, value);
+                return next;
             }
             if (script.includes('local current_state')) {
                 const [epochKey, stateKey, expectedEpoch, expectedState, value] = args;
@@ -273,9 +287,11 @@ describe('Ultrafix recovery after a CI failure', () => {
 
     test('recovers a stranded loop once checks turn green', async () => {
         const redis = await strandLoopAfterCiFailure(101);
-        const newEpoch = await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 101);
+        const fencedEpoch = await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 101);
 
         const result = await checksTurnGreen(redis, 101);
+        const newEpoch = await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 101);
+        assert.equal(newEpoch, fencedEpoch + 1, 'the re-arm reserves its own epoch');
 
         assert.equal(result.continued, true);
         assert.equal(result.reason, 'stranded_loop_rearmed');
@@ -346,19 +362,22 @@ describe('Ultrafix recovery after a CI failure', () => {
         assert.equal(mockQueueAdd.mock.callCount(), 0);
     });
 
-    test('BullMQ job ID deduplication skips a step that is already pending', async () => {
+    test('a re-arm that misses a pending review in the queue scan supersedes it', async () => {
         const redis = await strandLoopAfterCiFailure(105);
         await checksTurnGreen(redis, 105);
         const [first] = reviewJobs(105);
-        // The queue scan misses the job (e.g. it moved between states), but its ID is retained.
+        // The queue scan misses the job (e.g. it moved between states).
         hideQueueScan = true;
 
         const second = await checksTurnGreen(redis, 105);
 
-        assert.equal(second.continued, false);
-        assert.equal(second.reason, 'rearm_duplicate');
-        assert.equal(reviewJobs(105).length, 1);
-        assert.equal(reviewJobs(105)[0].id, first.id);
+        // Each re-arm reserves its own epoch, so the earlier review is fenced
+        // and only the latest one passes the execution-time epoch check.
+        assert.equal(second.continued, true);
+        const current = await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 105);
+        const runnable = reviewJobs(105).filter(job => job.data.ultrafixMeta.workEpoch === current);
+        assert.equal(runnable.length, 1);
+        assert.notEqual(runnable[0].id, first.id);
     });
 
     test('enforces the max cycles circuit breaker', async () => {
@@ -617,5 +636,108 @@ describe('Ultrafix recovery after a CI failure', () => {
 
         assert.equal(result.continued, false);
         assert.equal(result.reason, 'next_step_already_queued');
+    });
+    test('a deferred final fix whose first queue insertion fails is retried, not dropped', async () => {
+        // Five reviews and four fixes with maxCycles 5: the fifth fix is still permitted.
+        const redis = createRedis();
+        const { state } = await startLoop(redis as never, { owner: OWNER, repo: REPO, pr: 119, goal: 8, maxCycles: 5, pauseSeconds: 30 }, false);
+        await saveState(redis as never, { ...state, lastAction: 'review', reviewCount: 5, fixCount: 4, cycleCount: 4 });
+        await saveDeferredContinuation(redis as never, {
+            owner: OWNER, repo: REPO, pr: 119, nextAction: 'fix',
+            savedAt: new Date().toISOString(), reason: 'follow_up_jobs_active', workEpoch: state.workEpoch,
+        });
+        ciStatus = GREEN;
+        mockQueueAdd.mock.mockImplementationOnce(async () => { throw new Error('queue unavailable'); });
+
+        await assert.rejects(
+            resumeDeferredContinuation({ owner: OWNER, repo: REPO, pr: 119 }, redis as never, logger as never),
+            /queue unavailable/,
+        );
+        const restored = await loadDeferredContinuation(redis as never, OWNER, REPO, 119);
+        assert.equal(restored?.nextAction, 'fix', 'the claimed fix is put back');
+        assert.equal(restored?.workEpoch, state.workEpoch);
+
+        // The queue recovers; only the periodic sweep runs.
+        const outcomes = await sweepUltrafixResumeCandidates(redis as never, () => logger as never);
+
+        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['deferred_resumed']);
+        const fixes = [...queuedJobs.values()].filter(job => job.data.pullRequestNumber === 119 && job.data.commandMode === 'fix');
+        assert.equal(fixes.length, 1, 'the permitted fifth fix is scheduled');
+        const after = await loadState(redis as never, OWNER, REPO, 119);
+        assert.equal(after?.active, true);
+        assert.equal(after?.completionStatus ?? null, null, 'the loop is not failed as cycles-exhausted');
+    });
+
+    test('a late trigger while the re-armed review is queued backs its retry off', async () => {
+        const redis = await strandLoopAfterCiFailure(120);
+        await checksTurnGreen(redis, 120);
+        assert.equal(reviewJobs(120).length, 1);
+
+        // A late check_suite finds the loop's own current-epoch review outstanding.
+        const late = await checksTurnGreen(redis, 120);
+        assert.match(late.reason, /rearm_not_ready: follow_up_jobs_active/);
+        const retry = await loadRearmRetry(redis as never, OWNER, REPO, 120);
+        assert.ok(retry?.notBefore, 'the backstop retry is recorded with a delay');
+        assert.ok(Date.parse(retry.notBefore) > Date.now() + IN_FLIGHT_STEP_RETRY_DELAY_MS - 60_000);
+
+        mockQueueGetJobs.mock.resetCalls();
+        const outcomes = await sweepUltrafixResumeCandidates(redis as never, () => logger as never);
+        assert.deepEqual(outcomes, [], 'the sweep leaves a loop owned by its in-flight step alone');
+        assert.equal(mockQueueGetJobs.mock.callCount(), 0);
+
+        // Once due, the sweep runs it again.
+        await redis.set(getUltrafixRearmRetryKey(OWNER, REPO, 120), JSON.stringify({ ...retry, notBefore: new Date(Date.now() - 1000).toISOString() }));
+        const due = await sweepUltrafixResumeCandidates(redis as never, () => logger as never);
+        assert.equal(due.length, 1);
+    });
+
+    test('an outstanding step from a fenced epoch still leaves an immediate retry', async () => {
+        const redis = await strandLoopAfterCiFailure(121);
+        // A review queued before the follow-up fenced its epoch: it will stop as superseded.
+        const staleId = getUltrafixStepJobId(OWNER, REPO, 121, { action: 'review', workEpoch: 0, stepNumber: 2 });
+        queuedJobs.set(staleId, {
+            id: staleId, name: 'processPullRequestComment', opts: {}, state: 'delayed',
+            data: { repoOwner: OWNER, repoName: REPO, pullRequestNumber: 121, commandMode: 'review', ultrafixMeta: { mode: 'ultrafix', workEpoch: 0 } },
+        });
+
+        const result = await checksTurnGreen(redis, 121);
+
+        assert.match(result.reason, /rearm_not_ready: follow_up_jobs_active/);
+        const retry = await loadRearmRetry(redis as never, OWNER, REPO, 121);
+        assert.ok(retry);
+        assert.equal(retry.notBefore, undefined);
+    });
+
+    test('a claim lost with no new holder still records a retry', async () => {
+        const redis = await strandLoopAfterCiFailure(122);
+        mockGetCheckRunsStatus.mock.mockImplementation(async () => {
+            // The claim expires mid-readiness and nobody re-acquires it.
+            redis.store.delete(getUltrafixResumeClaimKey(OWNER, REPO, 122));
+            return GREEN;
+        });
+
+        const result = await checksTurnGreen(redis, 122);
+
+        assert.equal(result.reason, 'resume_claim_lost');
+        assert.equal(reviewJobs(122).length, 0);
+        assert.ok(await loadRearmRetry(redis as never, OWNER, REPO, 122), 'the sweep can find the loop');
+
+        mockGetCheckRunsStatus.mock.restore();
+        await sweepUltrafixResumeCandidates(redis as never, () => logger as never);
+        assert.equal(reviewJobs(122).length, 1);
+        assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 122), null);
+    });
+
+    test('a claim taken over by another trigger leaves the retry to that trigger', async () => {
+        const redis = await strandLoopAfterCiFailure(123);
+        mockGetCheckRunsStatus.mock.mockImplementation(async () => {
+            redis.store.set(getUltrafixResumeClaimKey(OWNER, REPO, 123), 'trigger-b');
+            return GREEN;
+        });
+
+        const result = await checksTurnGreen(redis, 123);
+
+        assert.equal(result.reason, 'resume_claim_lost');
+        assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 123), null);
     });
 });

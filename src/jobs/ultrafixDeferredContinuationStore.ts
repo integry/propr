@@ -89,6 +89,8 @@ export interface UltrafixRearmRetry {
     workEpoch: number;
     reason: string;
     savedAt: string;
+    /** The sweep leaves the obligation alone until then (check events still run it). */
+    notBefore?: string;
 }
 
 export function getUltrafixRearmRetryKey(owner: string, repo: string, pr: number): string {

@@ -213,6 +213,17 @@ function createRedis() {
             if (script.includes("redis.call('DEL', KEYS[1])")) {
                 return store.get(args[0]) === args[1] && store.delete(args[0]) ? 1 : 0;
             }
+            if (script.includes('-- reserve epoch and replace state')) {
+                // Epoch- and snapshot-conditional reservation of the next epoch.
+                const [epochKey, stateKey, deferredKey, expectedEpoch, expectedState, value] = args;
+                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
+                if (store.get(stateKey) !== expectedState) return 0;
+                const next = Number(expectedEpoch) + 1;
+                store.set(epochKey, String(next));
+                store.delete(deferredKey);
+                store.set(stateKey, value);
+                return next;
+            }
             if (script.includes('local current_state')) {
                 const [epochKey, stateKey, expectedEpoch, expectedState, value] = args;
                 if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
@@ -314,7 +325,7 @@ describe('Ultrafix recovery through the real intake entry points', () => {
 
         const reviews = reviewJobs(201);
         assert.equal(reviews.length, 1);
-        assert.equal(reviews[0].data.ultrafixMeta.workEpoch, 1);
+        assert.equal(reviews[0].data.ultrafixMeta.workEpoch, 2, 'the re-arm reserves a fresh epoch');
         assert.equal(reviews[0].data.commandInstructions, 'Keep it small.');
     });
 

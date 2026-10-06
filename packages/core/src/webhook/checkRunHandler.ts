@@ -289,8 +289,6 @@ export async function handleCheckRunEvent(
     const targetPRs = await resolveTargetPRs(owner, repoName, {
         pullRequests: payload.check_run.pull_requests,
         headSha: payload.check_run.head_sha,
-        headBranch: payload.check_run.check_suite?.head_branch,
-        defaultBranch: payload.repository.default_branch,
     });
     if (targetPRs.length === 0) {
         log.debug({ owner, repoName, sha: payload.check_run.head_sha }, 'check_run skipped: no associated PRs');
@@ -344,18 +342,18 @@ export async function handleCheckRunEvent(
 
 /**
  * PRs a check run/suite applies to. When the payload lists none, open PRs are
- * looked up by commit — except for runs on the default branch, which are the
- * bulk of check traffic and do not back a PR head in practice.
+ * looked up by commit. The branch name cannot rule that lookup out: a PR may
+ * use the default branch as its head (`main` into `release`), and a fork PR's
+ * head branch may share the base repository's default-branch name.
  */
 async function resolveTargetPRs(
     owner: string,
     repoName: string,
-    source: { pullRequests?: Array<{ number: number }> | null; headSha: string; headBranch?: string | null; defaultBranch?: string },
+    source: { pullRequests?: Array<{ number: number }> | null; headSha: string },
 ): Promise<Array<{ number: number }>> {
     if (source.pullRequests && source.pullRequests.length > 0) {
         return source.pullRequests.map(pr => ({ number: pr.number }));
     }
-    if (source.headBranch && source.headBranch === source.defaultBranch) return [];
     return findPRsForCommit(owner, repoName, source.headSha);
 }
 
@@ -406,8 +404,6 @@ export async function handleCheckSuiteEvent(
     const targetPRs = await resolveTargetPRs(owner, repoName, {
         pullRequests: suite.pull_requests,
         headSha: suite.head_sha,
-        headBranch: suite.head_branch,
-        defaultBranch: payload.repository.default_branch,
     });
     if (targetPRs.length === 0) {
         log.debug({ owner, repoName, sha: suite.head_sha }, 'check_suite skipped: no associated PRs');

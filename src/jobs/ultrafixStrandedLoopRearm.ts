@@ -28,12 +28,19 @@ import {
     getNextStepNumber,
     loadStateSnapshot,
     RESUME_CLAIM_LOST_REASON,
-    syncStateWorkEpoch,
+    reserveStateWorkEpoch,
 } from './ultrafixResumeClaim.js';
 import type { ResumeClaim, StrandedLoopRearmDecision, UltrafixPrId, UltrafixStateSnapshot } from './ultrafixResumeClaim.js';
 
 /** Bound on re-evaluations when the loop state changes underneath a re-arm. */
 const MAX_REARM_ATTEMPTS = 3;
+
+/**
+ * Sweep cadence for a loop held only by its own in-flight step. That step's
+ * continuation owns the loop, so the retry is just a backstop in case the step
+ * never settles it, not something to re-run every sweep.
+ */
+export const IN_FLIGHT_STEP_RETRY_DELAY_MS = 15 * 60_000;
 
 const STATE_CHANGED = Symbol('state_changed');
 const CLAIM_LOST = Symbol('claim_lost');
@@ -94,10 +101,14 @@ async function rearmFromSnapshot(prId: UltrafixPrId, ctx: StrandedLoopRearmConte
 
     // A queued or running step (e.g. a permitted final fix) is not stranded:
     // finishing or clearing the loop here would cut that continuation off.
-    const outstanding = await findOutstandingUltrafixWork(owner, repo, pr, redisClient);
+    const { reasons: outstanding, currentStepsOnly } = await findOutstandingUltrafixWork(owner, repo, pr, redisClient);
     if (outstanding.length > 0) {
         correlatedLogger.info({ pr, outstanding }, 'Ultrafix re-arm: Ultrafix work outstanding, leaving loop to it');
-        return { continued: false, reason: `rearm_not_ready: ${outstanding.join(', ')}` };
+        return {
+            continued: false,
+            reason: `rearm_not_ready: ${outstanding.join(', ')}`,
+            ...(currentStepsOnly ? { retryDelayMs: IN_FLIGHT_STEP_RETRY_DELAY_MS } : {}),
+        };
     }
 
     const attempt: RearmAttempt = {
@@ -110,19 +121,20 @@ async function rearmFromSnapshot(prId: UltrafixPrId, ctx: StrandedLoopRearmConte
 }
 
 /**
- * Hand the snapshot's loop to the current epoch. Startup reserves its epoch and
- * commits its state under the label transition lease, so taking ownership
- * under it never lands in between.
+ * Hand the snapshot's loop to a freshly reserved epoch (the returned state
+ * carries it), so the re-armed step is fenced like any other automatic step.
+ * Startup reserves its epoch and commits its state under the label transition
+ * lease, so taking ownership under it never lands in between.
  */
 function takeOwnership({ prId, ctx, snapshot, currentEpoch }: RearmAttempt) {
     return withUltrafixLabelTransition(
         ctx.redisClient,
         prId,
-        async () => (await ctx.claim.confirm() ? syncStateWorkEpoch(ctx.redisClient, snapshot, currentEpoch) : CLAIM_LOST),
+        async () => (await ctx.claim.confirm() ? reserveStateWorkEpoch(ctx.redisClient, snapshot, currentEpoch) : CLAIM_LOST),
     );
 }
 
-function buildRearmParams({ prId, ctx, snapshot, currentEpoch }: RearmAttempt): UltrafixContinuationParams {
+function buildRearmParams({ prId, ctx, snapshot }: RearmAttempt, workEpoch: number): UltrafixContinuationParams {
     const { state } = snapshot;
     return {
         owner: prId.owner,
@@ -138,7 +150,7 @@ function buildRearmParams({ prId, ctx, snapshot, currentEpoch }: RearmAttempt): 
             reviewModel: state.reviewModel || undefined,
             // The deferred record that carried them is gone; the loop state keeps them.
             instructions: state.instructions ?? '',
-            workEpoch: currentEpoch,
+            workEpoch,
         },
         redisClient: ctx.redisClient,
         correlatedLogger: ctx.correlatedLogger,
@@ -179,7 +191,7 @@ async function completeStrandedLoop(
         { pr: attempt.prId.pr, completionStatus: decision.completionStatus, reason: decision.reason },
         'Ultrafix re-arm: circuit breaker tripped, finishing loop',
     );
-    const params = buildRearmParams(attempt);
+    const params = buildRearmParams(attempt, owned.workEpoch);
     const succeeded = decision.completionStatus === 'succeeded';
     return finishUltrafixLoop({
         params: { ...params, completedAction: succeeded ? 'review' : params.completedAction },
@@ -193,15 +205,14 @@ async function completeStrandedLoop(
 
 async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptResult> {
     const { prId: { pr }, ctx, snapshot, currentEpoch } = attempt;
-    const params = buildRearmParams(attempt);
-    const readiness = await evaluateReadiness(params, 'review', ctx.checkRunDeps);
+    const readiness = await evaluateReadiness(buildRearmParams(attempt, currentEpoch), 'review', ctx.checkRunDeps);
     ctx.correlatedLogger.info(
         { pr, ready: readiness.ready, reasons: readiness.reasons },
         'Ultrafix re-arm: readiness check for stranded loop',
     );
     if (!readiness.ready) {
         if (readiness.reasons.every(reason => reason === 'checks_not_passing')) {
-            return deferRearmedReview(attempt, params, readiness);
+            return deferRearmedReview(attempt, readiness);
         }
         return { continued: false, reason: `rearm_not_ready: ${readiness.reasons.join(', ')}` };
     }
@@ -212,7 +223,7 @@ async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptRe
     if (!await ctx.claim.confirm()) return claimLost();
 
     const enqueued = await enqueueNextStep(
-        params,
+        buildRearmParams(attempt, owned.workEpoch),
         'review',
         (owned.pauseSeconds || 60) * 1000,
         getNextStepNumber(owned, 'review'),
@@ -220,7 +231,7 @@ async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptRe
     if (!enqueued) return { continued: false, reason: 'rearm_duplicate' };
 
     ctx.correlatedLogger.info(
-        { pr, workEpoch: currentEpoch, previousWorkEpoch: snapshot.state.workEpoch },
+        { pr, workEpoch: owned.workEpoch, previousWorkEpoch: snapshot.state.workEpoch },
         'Ultrafix re-arm: enqueued review for stranded loop',
     );
     return {
@@ -233,21 +244,22 @@ async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptRe
 
 /**
  * The loop is idle and only CI holds the review back: take ownership and turn
- * it back into an ordinary deferred review under the current epoch. The CI
+ * it back into an ordinary deferred review under its reserved epoch. The CI
  * wait then applies exactly as for any deferral — one notice per head, and
  * the loop stops with "CI did not settle" once `ultrafix_ci_wait_timeout_ms`
  * elapses — and the deferred record keeps the review durable for the sweep.
  */
 async function deferRearmedReview(
     attempt: RearmAttempt,
-    params: UltrafixContinuationParams,
     readiness: UltrafixReadinessResult,
 ): Promise<RearmAttemptResult> {
-    const { prId, ctx, currentEpoch } = attempt;
+    const { prId, ctx } = attempt;
     const owned = await takeOwnership(attempt);
     if (owned === CLAIM_LOST) return claimLost();
     if (!owned) return STATE_CHANGED;
     if (!await ctx.claim.confirm()) return claimLost();
+    const { workEpoch } = owned;
+    const params = buildRearmParams(attempt, workEpoch);
 
     const reasons = readiness.reasons.join(', ');
     const saved = await saveDeferredContinuation(ctx.redisClient, {
@@ -259,10 +271,10 @@ async function deferRearmedReview(
         reason: reasons,
         ...(params.userId ? { userId: params.userId } : {}),
         ultrafixMeta: params.ultrafixMeta,
-        workEpoch: currentEpoch,
+        workEpoch,
     });
     if (!saved) return { continued: false, reason: 'ultrafix_superseded' };
-    ctx.correlatedLogger.info({ pr: prId.pr, workEpoch: currentEpoch, reasons }, 'Ultrafix re-arm: CI not green, review deferred under the current epoch');
+    ctx.correlatedLogger.info({ pr: prId.pr, workEpoch, reasons }, 'Ultrafix re-arm: CI not green, review deferred under its reserved epoch');
 
     if (!await ctx.claim.confirm()) return claimLost();
     const ci = await applyUltrafixCiDeferral(params, readiness, owned);

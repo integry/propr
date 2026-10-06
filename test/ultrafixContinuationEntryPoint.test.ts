@@ -396,6 +396,17 @@ function createRearmRedis() {
                 const [claimKey, token] = args;
                 return store.get(claimKey) === token && store.delete(claimKey) ? 1 : 0;
             }
+            if (script.includes('-- reserve epoch and replace state')) {
+                // Epoch- and snapshot-conditional reservation of the next epoch.
+                const [epochKey, stateKey, deferredKey, expectedEpoch, expectedState, value] = args;
+                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
+                if (store.get(stateKey) !== expectedState) return 0;
+                const next = Number(expectedEpoch) + 1;
+                store.set(epochKey, String(next));
+                store.delete(deferredKey);
+                store.set(stateKey, value);
+                return next;
+            }
             if (script.includes('local current_state')) {
                 // Epoch- and snapshot-conditional state replace/clear.
                 const [epochKey, stateKey, expectedEpoch, expectedState, value] = args;
@@ -470,11 +481,12 @@ describe('stranded Ultrafix loop re-arming', () => {
         assert.equal(mockQueueAdd.mock.callCount(), 1);
         const [, data, options] = mockQueueAdd.mock.calls[0].arguments as unknown as [string, any, any];
         assert.equal(data.commandMode, 'review');
-        assert.equal(data.ultrafixMeta.workEpoch, 1);
-        assert.equal(options.jobId, 'pr-comments-batch-acme-web-60-ultrafix-review-1-2');
+        // The fenced epoch was 1; the re-arm reserves its own so later fences supersede it.
+        assert.equal(data.ultrafixMeta.workEpoch, 2);
+        assert.equal(options.jobId, 'pr-comments-batch-acme-web-60-ultrafix-review-2-2');
         assert.equal(options.delay, 30_000);
-        assert.equal((await loadState(redis as never, 'acme', 'web', 60))?.workEpoch, 1);
-        assert.equal(await getUltrafixAutomaticWorkEpoch(redis as never, 'acme', 'web', 60), 1);
+        assert.equal((await loadState(redis as never, 'acme', 'web', 60))?.workEpoch, 2);
+        assert.equal(await getUltrafixAutomaticWorkEpoch(redis as never, 'acme', 'web', 60), 2);
     });
 
     test('a deferred record from a superseded epoch falls back to re-arming', async () => {
@@ -560,6 +572,18 @@ describe('stranded Ultrafix loop re-arming', () => {
 
         assert.equal(result.reason, 'stranded_loop_rearmed');
         assert.equal(remove.mock.callCount(), 1);
+        assert.equal(mockQueueAdd.mock.callCount(), 1);
+    });
+
+    test('a step ID whose job vanished (state unknown) does not block the enqueue', async () => {
+        const redis = await strandLoop(87);
+        const remove = mock.fn(async () => undefined);
+        mockQueueGetJob.mock.mockImplementation(async () => ({ getState: async () => 'unknown', remove }));
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 87 }, redis as never, logger as never);
+
+        assert.equal(result.reason, 'stranded_loop_rearmed');
+        assert.equal(remove.mock.callCount(), 0);
         assert.equal(mockQueueAdd.mock.callCount(), 1);
     });
 
@@ -797,7 +821,7 @@ describe('stranded Ultrafix loop re-arming', () => {
         assert.equal(redis.store.get('ultrafix:resume-claim:acme:web:81'), 'trigger-b', "B's claim is left intact");
     });
 
-    test('a deferred resume that lost its claim does not re-save the deferred record', async () => {
+    test('a deferred resume that lost its claim puts the claimed step back', async () => {
         const redis = createRearmRedis();
         await saveState(redis as never, {
             ...createDefaultState({ owner: 'acme', repo: 'web', pr: 82, goal: 8, maxCycles: 5, pauseSeconds: 30 }),
@@ -815,7 +839,11 @@ describe('stranded Ultrafix loop re-arming', () => {
         const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 82 }, redis as never, logger as never);
 
         assert.equal(result.reason, 'resume_claim_lost');
-        assert.equal(await loadDeferredContinuation(redis as never, 'acme', 'web', 82), null);
+        // Epoch-fenced: a taker that re-arms reserves a newer epoch, which drops it.
+        const restored = await loadDeferredContinuation(redis as never, 'acme', 'web', 82);
+        assert.equal(restored?.nextAction, 'review');
+        assert.equal(restored?.workEpoch, 0);
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
     });
 
     test('a re-arm whose claim expired mid-readiness neither takes ownership nor enqueues', async () => {

@@ -2259,7 +2259,9 @@ describe('check intake fallbacks and Ultrafix hook', () => {
         assert.deepStrictEqual(hookCalls, []);
     });
 
-    test('handleCheckRunEvent skips the commit lookup for runs on the default branch', async () => {
+    test('handleCheckRunEvent resolves a PR whose head is the default branch', async () => {
+        // e.g. an open `main` -> `release` PR: the run reports head_branch
+        // `main` with an empty pull_requests array.
         resetMocks();
         mockGreenAutoMergePR('main-sha');
         const hookCalls = installHookRecorder();
@@ -2272,8 +2274,10 @@ describe('check intake fallbacks and Ultrafix hook', () => {
             clearHook();
         }
 
-        assert.strictEqual(mockOctokit.request.mock.calls.length, 0, 'no GitHub calls for default-branch runs');
-        assert.deepStrictEqual(hookCalls, []);
+        const lookup = mockOctokit.request.mock.calls.find(call =>
+            (call.arguments[0] as string).includes('/commits/{commit_sha}/pulls'));
+        assert.ok(lookup, 'default-branch runs still look up PRs for the commit');
+        assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 77, 'main-sha']]);
     });
 
     test('handleCheckRunEvent still looks up PRs for runs on other branches', async () => {
@@ -2305,7 +2309,7 @@ describe('check intake fallbacks and Ultrafix hook', () => {
         assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 77, 'suite-sha']]);
     });
 
-    test('handleCheckSuiteEvent skips the commit lookup for suites on the default branch', async () => {
+    test('handleCheckSuiteEvent resolves a PR whose head is the default branch', async () => {
         resetMocks();
         mockGreenAutoMergePR('suite-sha');
         const hookCalls = installHookRecorder();
@@ -2318,8 +2322,9 @@ describe('check intake fallbacks and Ultrafix hook', () => {
             clearHook();
         }
 
-        assert.strictEqual(mockOctokit.request.mock.calls.length, 0);
-        assert.deepStrictEqual(hookCalls, []);
+        assert.ok(mockOctokit.request.mock.calls.some(call =>
+            (call.arguments[0] as string).includes('/commits/{commit_sha}/pulls')));
+        assert.deepStrictEqual(hookCalls, [['test-owner', 'test-repo', 77, 'suite-sha']]);
     });
 
     test('triggerUltrafixCheckRunHook dispatches to the registered hook', async () => {

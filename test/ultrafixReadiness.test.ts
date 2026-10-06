@@ -34,7 +34,7 @@ import {
     getUltrafixResumeClaimKey,
     evaluateStrandedLoopRearm,
     loadStateSnapshot,
-    syncStateWorkEpoch,
+    reserveStateWorkEpoch,
 } from '../src/jobs/ultrafixResumeClaim.js';
 import { requiresPassingChecks } from '../src/jobs/ultrafixReadinessPolicy.js';
 
@@ -90,6 +90,17 @@ function createMockRedis() {
                 store.delete(claimKey);
                 expiresAt.delete(claimKey);
                 return 1;
+            }
+            if (script.includes('-- reserve epoch and replace state')) {
+                // Epoch- and snapshot-conditional reservation of the next epoch.
+                const [epochKey, stateKey, deferredKey, expectedEpoch, expectedState, value] = args;
+                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
+                if (store.get(stateKey) !== expectedState) return 0;
+                const next = Number(expectedEpoch) + 1;
+                store.set(epochKey, String(next));
+                store.delete(deferredKey);
+                store.set(stateKey, value);
+                return next;
             }
             if (script.includes('local current_state')) {
                 // Epoch- and snapshot-conditional state replace/clear.
@@ -773,33 +784,45 @@ describe('stranded loop re-arming gate', () => {
     });
 });
 
-describe('stranded loop work epoch sync', () => {
+describe('stranded loop work epoch reservation', () => {
     let redis: ReturnType<typeof createMockRedis>;
 
     beforeEach(() => {
         redis = createMockRedis();
     });
 
-    test('hands a loop fenced by a follow-up to the current epoch', async () => {
+    test('hands a loop fenced by a follow-up to a freshly reserved epoch', async () => {
         await saveState(redis as any, makeState({ workEpoch: 0 }));
         const epoch = await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
         const stale = await loadStateSnapshot(redis as any, 'acme', 'web', 42);
 
-        const synced = await syncStateWorkEpoch(redis as any, stale!, epoch);
+        const reserved = await reserveStateWorkEpoch(redis as any, stale!, epoch);
 
-        assert.strictEqual(synced?.workEpoch, 1);
-        assert.strictEqual((await loadState(redis as any, 'acme', 'web', 42))?.workEpoch, 1);
+        assert.strictEqual(reserved?.workEpoch, 2);
+        assert.strictEqual(await getUltrafixAutomaticWorkEpoch(redis as any, 'acme', 'web', 42), 2);
+        assert.strictEqual((await loadState(redis as any, 'acme', 'web', 42))?.workEpoch, 2);
         assert.strictEqual(await hasUltrafixAutomaticWork(redis as any, 'acme', 'web', 42), true);
     });
 
-    test('cannot claim an epoch that was superseded in the meantime', async () => {
+    test('a later manual fence supersedes the re-armed epoch', async () => {
+        await saveState(redis as any, makeState({ workEpoch: 0 }));
+        const epoch = await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+        const reserved = await reserveStateWorkEpoch(redis as any, (await loadStateSnapshot(redis as any, 'acme', 'web', 42))!, epoch);
+
+        await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+
+        assert.strictEqual(await isUltrafixAutomaticWorkCurrent(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, reserved!.workEpoch), false);
+    });
+
+    test('cannot reserve from an epoch that was superseded in the meantime', async () => {
         await saveState(redis as any, makeState({ workEpoch: 0 }));
         await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
         const stale = await loadStateSnapshot(redis as any, 'acme', 'web', 42);
         await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
 
-        assert.strictEqual(await syncStateWorkEpoch(redis as any, stale!, 1), null);
+        assert.strictEqual(await reserveStateWorkEpoch(redis as any, stale!, 1), null);
         assert.strictEqual((await loadState(redis as any, 'acme', 'web', 42))?.workEpoch, 0);
+        assert.strictEqual(await getUltrafixAutomaticWorkEpoch(redis as any, 'acme', 'web', 42), 2, 'a rejected reservation reserves nothing');
     });
 
     test('an older snapshot cannot replace a newer loop that took the current epoch', async () => {
@@ -810,10 +833,11 @@ describe('stranded loop work epoch sync', () => {
         const epoch = await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
         await saveState(redis as any, makeState({ workEpoch: epoch, reviewCount: 0, fixCount: 0, goal: 9 }));
 
-        assert.strictEqual(await syncStateWorkEpoch(redis as any, stale!, epoch), null);
+        assert.strictEqual(await reserveStateWorkEpoch(redis as any, stale!, epoch), null);
         const current = await loadState(redis as any, 'acme', 'web', 42);
         assert.strictEqual(current?.reviewCount, 0);
         assert.strictEqual(current?.goal, 9);
+        assert.strictEqual(await getUltrafixAutomaticWorkEpoch(redis as any, 'acme', 'web', 42), epoch, 'the new loop is not fenced');
     });
 
     test('rejects a same-epoch update or deletion made after the snapshot was read', async () => {
@@ -822,11 +846,11 @@ describe('stranded loop work epoch sync', () => {
         const stale = await loadStateSnapshot(redis as any, 'acme', 'web', 42);
         await saveState(redis as any, makeState({ workEpoch: 0, active: false }));
 
-        assert.strictEqual(await syncStateWorkEpoch(redis as any, stale!, epoch), null);
+        assert.strictEqual(await reserveStateWorkEpoch(redis as any, stale!, epoch), null);
         assert.strictEqual((await loadState(redis as any, 'acme', 'web', 42))?.active, false);
 
         await redis.del(getUltrafixStateKey('acme', 'web', 42));
-        assert.strictEqual(await syncStateWorkEpoch(redis as any, stale!, epoch), null);
+        assert.strictEqual(await reserveStateWorkEpoch(redis as any, stale!, epoch), null);
         assert.strictEqual(await loadState(redis as any, 'acme', 'web', 42), null);
     });
 });

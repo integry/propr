@@ -18,6 +18,7 @@ import {
     clearUltrafixStateIfCurrent,
     completeLoop,
     hasReviewReachedGoal,
+    getUltrafixAutomaticWorkEpoch,
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
     isUltrafixAutomaticWorkCurrent,
@@ -266,14 +267,16 @@ export async function enqueueNextStep(
     const existing = await issueQueue.getJob(jobId);
     if (existing) {
         const existingState = await existing.getState();
-        if (existingState !== 'completed' && existingState !== 'failed') {
+        if (existingState === 'completed' || existingState === 'failed') {
+            await existing.remove();
+        } else if (existingState !== 'unknown') {
             correlatedLogger.info(
                 { pullRequestNumber, nextAction, jobId, existingState },
                 'Ultrafix loop: next step already queued, skipping duplicate',
             );
             return false;
         }
-        await existing.remove();
+        // 'unknown': the job vanished after getJob, so nothing holds the ID.
     }
 
     try {
@@ -372,19 +375,34 @@ export async function evaluateCIChecksPassing(
  * Ultrafix work for the PR that is still queued, running, or batched. Unlike
  * readiness this fails closed: when the queue or pending comments cannot be
  * read, the work is reported as unknown so no terminal decision is made blind.
+ *
+ * `currentStepsOnly` is set when the only outstanding work is Ultrafix steps of
+ * the current epoch: their own continuation owns the loop. Steps of a fenced
+ * epoch do not count, since their continuation will stop as superseded.
  */
 export async function findOutstandingUltrafixWork(
     owner: string,
     repo: string,
     pullRequestNumber: number,
     redisClient: UltrafixContinuationParams['redisClient'],
-): Promise<string[]> {
+): Promise<{ reasons: string[]; currentStepsOnly: boolean }> {
     const outstanding: string[] = [];
+    let currentSteps = false;
     try {
         const issueQueue = await getIssueQueue();
-        const followUpJobsExist = await hasFollowUpJobsForPR(owner, repo, pullRequestNumber, async () =>
-            await issueQueue.getJobs(['waiting', 'active', 'delayed']) as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>);
-        if (followUpJobsExist) outstanding.push('follow_up_jobs_active');
+        const jobs = await issueQueue.getJobs(['waiting', 'active', 'delayed']) as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: { workEpoch?: number } } }>;
+        const steps = jobs.filter(job => job.data.repoOwner === owner
+            && job.data.repoName === repo
+            && job.data.pullRequestNumber === pullRequestNumber
+            && job.data.ultrafixMeta != null);
+        if (steps.length > 0) {
+            outstanding.push('follow_up_jobs_active');
+            // Read after the scan: a step at this epoch was current once the scan saw it.
+            const currentEpoch = await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pullRequestNumber)
+                .catch(() => null);
+            currentSteps = currentEpoch !== null
+                && steps.every(job => (job.data.ultrafixMeta?.workEpoch ?? 0) === currentEpoch);
+        }
     } catch {
         outstanding.push('follow_up_jobs_unknown');
     }
@@ -395,7 +413,7 @@ export async function findOutstandingUltrafixWork(
     } catch {
         outstanding.push('pending_comments_unknown');
     }
-    return outstanding;
+    return { reasons: outstanding, currentStepsOnly: currentSteps && outstanding.length === 1 };
 }
 
 export async function evaluateReadiness(

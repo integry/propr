@@ -81,6 +81,23 @@ redis.call('DEL', KEYS[2])
 return 1
 `;
 
+// Marked so test doubles can tell it apart from the plain conditional replace.
+const RESERVE_EPOCH_AND_REPLACE_STATE_SCRIPT = `
+-- reserve epoch and replace state
+local current_epoch = redis.call('GET', KEYS[1]) or '0'
+if current_epoch ~= ARGV[1] then
+    return 0
+end
+local current_state = redis.call('GET', KEYS[2])
+if current_state ~= ARGV[2] then
+    return 0
+end
+local epoch = redis.call('INCR', KEYS[1])
+redis.call('DEL', KEYS[3])
+redis.call('SET', KEYS[2], ARGV[3])
+return epoch
+`;
+
 const INVALIDATE_AUTOMATIC_WORK_SCRIPT = `
 local epoch = redis.call('INCR', KEYS[1])
 redis.call('DEL', KEYS[2])
@@ -303,6 +320,33 @@ export async function replaceUltrafixStateIfUnchanged(
         serializedState,
     );
     return Number(saved) === 1;
+}
+
+/**
+ * Atomically reserve the next automatic-work epoch and store the loop state
+ * under it, only while `expected.workEpoch` is current and the state is still
+ * `expected.rawState`. Like any invalidation it drops the deferred record.
+ * `serializeState` receives the reserved epoch. Returns that epoch, or null
+ * when either precondition no longer holds (nothing is written then).
+ */
+export async function reserveEpochAndReplaceStateIfUnchanged(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    expected: { workEpoch: number; rawState: string },
+    serializeState: (workEpoch: number) => string,
+): Promise<number | null> {
+    const reservedEpoch = expected.workEpoch + 1;
+    const epoch = await redis.eval(
+        RESERVE_EPOCH_AND_REPLACE_STATE_SCRIPT,
+        3,
+        getUltrafixAutomaticWorkEpochKey(identity.owner, identity.repo, identity.pr),
+        `${ULTRAFIX_STATE_KEY_PREFIX}:${identity.owner}:${identity.repo}:${identity.pr}`,
+        getUltrafixDeferredKey(identity.owner, identity.repo, identity.pr),
+        String(expected.workEpoch),
+        expected.rawState,
+        serializeState(reservedEpoch),
+    );
+    return Number(epoch) === reservedEpoch ? reservedEpoch : null;
 }
 
 /** Clear the loop state only while `expected.workEpoch` is current and the state is still `expected.rawState`. */

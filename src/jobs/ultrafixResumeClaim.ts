@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
-import { replaceUltrafixStateIfUnchanged } from './ultrafixAutomaticWorkEpoch.js';
+import { reserveEpochAndReplaceStateIfUnchanged } from './ultrafixAutomaticWorkEpoch.js';
 import { clearRearmRetry, getActionCounts, getUltrafixStateKey, loadDeferredContinuation, loadState } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction, UltrafixLoopState } from './ultrafixOrchestrationService.js';
 import type { ContinuationResult } from './ultrafixLoopContinuation.js';
@@ -90,6 +90,11 @@ export async function renewResumeClaim(
  */
 export interface ResumeClaim {
     confirm(): Promise<boolean>;
+    /**
+     * Whether another trigger holds the per-PR claim now. A claim lost to a
+     * renewal fault or plain expiry has no new holder to take over its work.
+     */
+    heldByAnother(): Promise<boolean>;
 }
 
 export const RESUME_CLAIM_LOST_REASON = 'resume_claim_lost';
@@ -144,25 +149,26 @@ export async function loadStateSnapshot(
 }
 
 /**
- * Hand a stranded loop to the current automatic-work epoch. The write is
- * conditional on that epoch and on the state still being the snapshot the
- * decision was made from, so neither a racing takeover nor a newer or updated
- * loop can be overwritten by this one.
+ * Hand a stranded loop to a freshly reserved automatic-work epoch, so a later
+ * manual command or follow-up fences the re-armed step like any other
+ * automatic step. The reservation is conditional on `currentEpoch` still being
+ * current and on the state still being the snapshot the decision was made
+ * from, so neither a racing takeover nor a newer or updated loop can be
+ * overwritten by this one, and a rejected attempt reserves nothing.
  */
-export async function syncStateWorkEpoch(
+export async function reserveStateWorkEpoch(
     redis: Redis,
     snapshot: UltrafixStateSnapshot,
-    workEpoch: number,
+    currentEpoch: number,
 ): Promise<UltrafixLoopState | null> {
     const { state } = snapshot;
-    const synced = { ...state, workEpoch };
-    const saved = await replaceUltrafixStateIfUnchanged(
+    const workEpoch = await reserveEpochAndReplaceStateIfUnchanged(
         redis,
         { owner: state.owner, repo: state.repo, pr: state.pr },
-        { workEpoch, rawState: snapshot.raw },
-        JSON.stringify(synced),
+        { workEpoch: currentEpoch, rawState: snapshot.raw },
+        reserved => JSON.stringify({ ...state, workEpoch: reserved }),
     );
-    return saved ? synced : null;
+    return workEpoch === null ? null : { ...state, workEpoch };
 }
 
 /**
@@ -218,6 +224,10 @@ async function runWithHeldClaim(
             }
             if (lost) correlatedLogger.warn({ pr: prId.pr }, 'Ultrafix resume: resume claim lost, aborting');
             return !lost;
+        },
+        async heldByAnother() {
+            const holder = await redisClient.get(getUltrafixResumeClaimKey(prId.owner, prId.repo, prId.pr));
+            return holder !== null && holder !== token;
         },
     };
     // Keep the claim alive across slow awaits (GitHub, queue scans) between confirmations.
