@@ -88,10 +88,12 @@ export default function PreviewLightbox({ previews, index, onIndexChange, onClos
   // A render can take the focused control with it: navigating between media drops the zoom buttons, those
   // buttons disable themselves at their bounds, and a failed load replaces the player. Removing or disabling
   // the active element leaves focus on the body without firing `focusin`, so the boundary guard above never
-  // sees it and the dialog's Escape and arrow keys stop reaching a handler. Focus that is still inside stays put.
+  // sees it and the dialog's Escape and arrow keys stop reaching a handler. WebKit instead leaves focus on the
+  // disabled control, which is just as stranded. Focus that is still on a usable control inside stays put.
   useEffect(() => {
     const dialog = dialogRef.current;
-    if (dialog && !dialog.contains(document.activeElement)) closeRef.current?.focus();
+    const active = document.activeElement;
+    if (dialog && (!dialog.contains(active) || active?.matches(':disabled'))) closeRef.current?.focus();
   });
 
   useEffect(() => {
