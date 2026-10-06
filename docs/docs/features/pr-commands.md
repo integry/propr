@@ -364,8 +364,13 @@ The policy is captured when the first automatic fix starts and persisted with th
 Before each cycle, ProPR checks readiness:
 
 - Before each review cycle, CI on the PR head must be passing (every check run and commit status, except checks the repository marks [non-blocking](./pr-followup.md#checks-that-never-block-automation)); if it is not, the continuation is deferred and resumes when check results arrive. Fix cycles do not wait for CI.
+- Non-blocking checks never gate Ultrafix: a check run or legacy commit status whose name matches the repository's `nonBlockingChecks` patterns is ignored whether it failed, is still queued, or is running.
 - The PR must be inactive — no other queued or running job and no pending batched comments — so the loop does not race other work on the PR.
 - The configured `pause` delay is applied between cycles.
+
+When blocking CI defers a review, ProPR posts one comment on the PR naming the checks that hold the next Ultrafix step back (failed or not finished). It is posted once per deferral — per head commit — not on every re-check, and no extra comment is posted when CI turns green and the loop continues. MCP `start_ultrafix` / `run_ultrafix` receipts report the same deferral reason and blocking checks as the `waiting_for_ci` phase instead of a pickup failure.
+
+The wait is bounded. If the review stays deferred for longer than the CI wait timeout — the `ultrafix_ci_wait_timeout_ms` instance setting (default 2 hours, settable through MCP `update_execution_settings`, `propr setting update ultrafix_ci_wait_timeout_ms <ms>`, or the `ULTRAFIX_CI_WAIT_TIMEOUT_MS` environment variable) — the loop stops with the usual "Ultrafix stopped before reaching its goal" comment and the reason "CI did not settle". Fix or re-run the blocking checks, then re-arm the loop with `/ultrafix`.
 
 #### Stopping The Loop
 
@@ -374,7 +379,7 @@ The loop is controlled by the visible `ultrafix` PR label, which acts as a circu
 #### Completion
 
 - **Goal reached**: the `ultrafix` label is removed. If the PR belongs to a planned issue labeled `auto-merge`, ProPR re-enables GitHub auto-merge on the PR.
-- **Stopped before the goal** (max cycles exhausted, or a review that cannot advance the loop): ProPR posts a warning comment with the requested goal and the last score, and manual review takes over. The `ultrafix` label is left on the PR; remove it once you take over.
+- **Stopped before the goal** (max cycles exhausted, a review that cannot advance the loop, or CI that did not settle within the CI wait timeout): ProPR posts a warning comment with the requested goal and the last score, and manual review takes over. The `ultrafix` label is left on the PR; remove it once you take over.
 
 Reserve `/ultrafix` for stronger cleanup passes. For small edits and direct changes, a normal PR comment is usually better.
 

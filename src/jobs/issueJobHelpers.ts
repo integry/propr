@@ -26,7 +26,7 @@ export {
     type UsageLimitError,
     type GenericErrorOptions
 } from './errorHandlers.js';
-import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult, CompletionCommentParts } from '@propr/core';
+import type { ClaudeCodeResponse, IssueJobData, JobResult, WorkerStateManager, WorktreeInfo, CommitResult, RepoValidationResult, CompletionCommentParts, PushFailureRecord } from '@propr/core';
 import { PR_BODY_MAX_LENGTH, type PrBodyPiece } from '@propr/shared';
 import { loadPullRequestTemplate, recordPullRequestTemplateError } from './pullRequestTemplate.js';
 import {
@@ -51,6 +51,8 @@ export interface PostProcessingResult {
     } | null;
     updatedLabels: string[];
     error?: string;
+    /** Set when the final push failed; names the salvage rung and the recovery. */
+    pushFailure?: PushFailureRecord;
 }
 
 type Octokit = {

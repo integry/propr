@@ -128,6 +128,11 @@ export interface SystemSettings {
    * Pause duration in seconds between ultrafix cycles.
    */
   ultrafix_pause_seconds: number;
+
+  /**
+   * Milliseconds an Ultrafix review may wait for blocking CI before the loop stops.
+   */
+  ultrafix_ci_wait_timeout_ms: number;
 }
 
 export const NAMED_CONFIG_ENDPOINTS = {
@@ -259,6 +264,11 @@ export interface UpdateSettingsOptions {
    * Pause duration in seconds between ultrafix cycles.
    */
   ultrafix_pause_seconds?: number;
+
+  /**
+   * Milliseconds an Ultrafix review may wait for blocking CI before the loop stops.
+   */
+  ultrafix_ci_wait_timeout_ms?: number;
 }
 
 /**
@@ -314,6 +324,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "ultrafix_rating_goal",
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
+  "ultrafix_ci_wait_timeout_ms",
 ];
 
 /**
@@ -365,6 +376,7 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       return parsed;
     }
     case "ultrafix_escalation_patience":
+    case "ultrafix_ci_wait_timeout_ms":
     case "ultrafix_max_cycles": {
       if (!/^\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be a positive integer`);

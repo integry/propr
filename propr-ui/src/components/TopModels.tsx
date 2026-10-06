@@ -131,7 +131,7 @@ const TopModels: React.FC<TopModelsProps> = ({ overview, loading, error, limit }
           <DrillDownRow key={row.model} to={modelLogsHref(row.model)}>
             <DrillDownCell to={modelLogsHref(row.model)} label={`LLM log for ${row.model}`} className={CELL}>
               <ModelIcon modelId={row.model} />
-              <span className="truncate font-medium text-slate-800 group-hover:text-slate-950 group-hover:underline group-hover:decoration-slate-300 group-hover:underline-offset-2" title={row.model}>
+              <span className="truncate font-medium text-slate-800" title={row.model}>
                 {formatModelName(row.model)}
               </span>
             </DrillDownCell>

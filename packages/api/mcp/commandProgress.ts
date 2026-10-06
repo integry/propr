@@ -39,6 +39,22 @@ export interface UltrafixProgress {
   cycles: UltrafixCycleProgress[];
   latestTaskId?: string;
   failingTaskId?: string;
+  /** Why the loop is waiting, e.g. the blocking checks holding the next review. */
+  deferral?: UltrafixDeferral;
+}
+
+export interface UltrafixDeferral {
+  reason: string;
+  blockingChecks?: string[];
+}
+
+/** Deferral details recorded in task history metadata, if any. */
+export function deferralFrom(metadata: Record<string, unknown>): UltrafixDeferral | undefined {
+  if (metadata.ultrafixDeferred !== true) return undefined;
+  const checks = Array.isArray(metadata.ultrafixBlockingChecks)
+    ? metadata.ultrafixBlockingChecks.filter((name): name is string => typeof name === 'string').slice(0, 20) : [];
+  const reason = typeof metadata.ultrafixDeferralReason === 'string' ? metadata.ultrafixDeferralReason : 'waiting for readiness';
+  return { reason, ...(checks.length ? { blockingChecks: checks } : {}) };
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> {
@@ -217,12 +233,14 @@ export async function ultrafixProgress(db: Knex, input: {
   else phase = taskMode(latestTask?.data ?? {}) ?? 'waiting_for_ci';
 
   const boundedCycles = [...cycles.values()].sort((a, b) => a.cycle - b.cycle).slice(-10);
+  const deferral = phase === 'waiting_for_ci' ? deferralFrom(latestMetadata) : undefined;
   return {
     kind: 'ultrafix', goal: input.goal, maxCycles: input.maxCycles,
     cycle: terminalCycle ?? boundedCycles.at(-1)?.cycle ?? 0,
     lastScore, phase, outcome, cycles: boundedCycles,
     ...(latestTask ? { latestTaskId: latestTask.task_id } : {}),
     ...(failingTaskId ? { failingTaskId } : {}),
+    ...(deferral ? { deferral } : {}),
   };
 }
 
@@ -249,7 +267,10 @@ export function summarizeLifecycle(tool: string, lifecycle: Record<string, unkno
     if (progress.phase === 'stopping') return `Ultrafix is stopping after cycle ${cycle}; the circuit-breaker label was removed.`;
     const phase = progress.phase === 'waiting_for_ci' ? 'waiting for CI'
       : progress.phase === 'paused' ? 'paused' : `${String(progress.phase)}ing`;
-    return `Ultrafix cycle ${Math.max(1, cycle)} of ${maxCycles} is ${phase}; ${scoreText}${score === undefined ? '' : ` (goal ${goal})`}.`;
+    const deferral = jsonRecord(progress.deferral);
+    const blocking = progress.phase === 'waiting_for_ci' && Array.isArray(deferral.blockingChecks) && deferral.blockingChecks.length
+      ? ` Blocking checks: ${deferral.blockingChecks.map(String).join(', ')}.` : '';
+    return `Ultrafix cycle ${Math.max(1, cycle)} of ${maxCycles} is ${phase}; ${scoreText}${score === undefined ? '' : ` (goal ${goal})`}.${blocking}`;
   }
   const names: Record<string, string> = {
     review_pull_request: 'Pull request review', fix_review_findings: 'Review fix',

@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   placeholders. A template that cannot be read or rendered never fails a run:
   ProPR logs it, records it on the task timeline and uses the default
   description, which is unchanged when no template exists.
+- **Push salvage and rejection diagnosis**: when the final push of an
+  implementation run, PR follow-up, `/fix`, ultrafix cycle or merge-conflict
+  job fails, ProPR no longer loses the agent's commits with the worktree. It
+  retries once with a refreshed installation token, then pushes the commits to
+  `refs/propr/rescue/<taskId>--<timestamp>` on the same remote, then writes a git bundle to
+  `<DATA_DIR>/rescue/` (`PUSH_RESCUE_BUNDLE_DIR`), and finally keeps the
+  worktree, recorded in `<DATA_DIR>/rescue-worktrees/` (`PUSH_RESCUE_WORKTREE_RECORD_DIR`)
+  outside the checkout. The rejection is classified as
+  `push_protection` (with GitHub's unblock URL verbatim),
+  `ruleset_or_branch_protection`, `non_fast_forward`, `auth`, `network` or
+  `unknown`, and the class, the salvage rung and the exact recovery command are
+  shown on the task timeline, in `propr task get` (`pushFailure` in `--json`)
+  and in the GitHub failure comment. The daemon deletes rescue refs and bundles
+  older than `PUSH_RESCUE_RETENTION_DAYS` (default 14), aging rescue refs from
+  the creation time in their name; rescue refs are never
+  treated as task branches.
 - **Managed agent in Linux desktop previews**: the Preview Runtime Images
   workflow has separate `prepare-agent` and `publish-agent` operations. They
   build the existing linux/amd64-only managed agent image from the exact `main`
@@ -112,6 +128,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open the LLM log for that model. The toolbar shows the repository scope as a locked
   `All Repos`. `GET /api/stats/overview` adds `model_usage`, a per-model list
   of tasks, tokens and cost, and `usage.input_tokens` / `usage.output_tokens`.
+
+### Fixed
+
+- **Ultrafix no longer stalls on non-blocking checks**: Ultrafix review
+  readiness now honours the repository's `nonBlockingChecks` patterns, so a
+  failing or still-pending check such as `Validate unsigned *` no longer defers
+  the next `/review` forever. Matching legacy commit statuses are excluded too,
+  and `areAllChecksPassing` (Epic queue advance, auto-merge) applies the same
+  per-context exclusion. When blocking CI defers a review, ProPR posts one PR
+  comment naming the blocking checks; if CI has not settled within
+  `ultrafix_ci_wait_timeout_ms` (default 2 hours, also
+  `ULTRAFIX_CI_WAIT_TIMEOUT_MS`), the loop stops with "Ultrafix stopped" and the
+  reason "CI did not settle". `start_ultrafix`/`run_ultrafix` operation receipts
+  report the deferral and its blocking checks instead of `COMMAND_NOT_PICKED_UP`.
 
 ## [0.9.0] - 2026-09-29
 

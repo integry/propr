@@ -190,8 +190,10 @@ test('separate SQLite connections serialize distinct events and deduplication su
   const { installSqliteRetry } = await import('../src/db/sqliteRetry.js');
   const directory = await mkdtemp(join(tmpdir(), 'usage-tips-'));
   const clients: ReturnType<typeof knex>[] = [];
+  // The budget is generous on purpose: this test covers serialization and deduplication, not the retry
+  // budget (sqliteRetry.test.ts does), and on a loaded CI host one commit can hold the lock for over a second.
   const open = () => {
-    const client = installSqliteRetry(knex({ client: 'better-sqlite3', connection: { filename: join(directory, 'test.sqlite') }, useNullAsDefault: true }), { maxTotalMs: 1000 });
+    const client = installSqliteRetry(knex({ client: 'better-sqlite3', connection: { filename: join(directory, 'test.sqlite') }, useNullAsDefault: true }), { maxAttempts: 50, maxTotalMs: 30_000 });
     clients.push(client); return client;
   };
   try {

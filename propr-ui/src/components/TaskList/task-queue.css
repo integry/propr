@@ -101,10 +101,8 @@
   border-top: 2px solid var(--rail);
 }
 
+/* The whole row is the click target, so the title does not light up as a link of its own. */
 .task-title { border-radius: .125rem; line-height: 1.25rem; }
-.task-title:hover { color: #0f766e; text-decoration: underline; }
-/* The open task's title is already marked by its row, so it never reads as a link. */
-.task-title[aria-current]:hover { color: #0f172a; text-decoration: none; }
 .task-title:focus { outline: none; }
 .task-title:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
 

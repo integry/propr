@@ -381,7 +381,10 @@ export {
     loadUltrafixMaxCycles,
     saveUltrafixMaxCycles,
     loadUltrafixPauseSeconds,
-    saveUltrafixPauseSeconds
+    saveUltrafixPauseSeconds,
+    loadUltrafixCiWaitTimeoutMs,
+    saveUltrafixCiWaitTimeoutMs,
+    DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS
 } from './configManagerUltrafix.js';
 
 export {

@@ -12,6 +12,7 @@ import { up, down } from '../packages/core/src/db/migrations/20260914000000_add_
 import { up as checkpointUp, down as checkpointDown } from '../packages/core/src/db/migrations/20260914010000_add_pr_publication_checkpoint.js';
 
 import { up as completionUp, down as completionDown } from '../packages/core/src/db/migrations/20260914020000_add_pr_publication_completion.js';
+import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
 await up(database);
@@ -48,6 +49,7 @@ const token = 'ghs_worker_installation_token';
 const repoPath = (owner: string) => path.join(root, owner === 'upstream' ? 'upstream.git' : 'fork.git');
 
 await mock.module('@propr/core', { namedExports: {
+    ...pushSalvageExports,
     db: database,
     logger: { warn: () => undefined },
     getAuthenticatedOctokit: async () => octokit,
