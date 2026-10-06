@@ -14,8 +14,7 @@ import {
 } from './dockerExecutionOwnership.js';
 import { plannerAbortSignalKeyForTask, scheduleForceKill, setupAbortChecker } from './dockerAbortController.js';
 import { BoundedDiagnosticTail, BoundedProviderRecordBuffer, boundedProviderOutput } from '../../agents/impl/utils/boundedProviderOutput.js';
-import { LiveOutputLog } from '../../agents/impl/utils/liveOutputLog.js';
-import { buildLiveOutputSnapshot } from './dockerLiveOutputSnapshot.js';
+import { startLiveOutputStreaming } from './dockerLiveOutputStreaming.js';
 import { inspectSessionMessageLine, SessionLineInspectionContext } from './dockerSessionOutput.js';
 import type { AgentWatchdogTrip } from './agentActivityWatchdog.js';
 import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
@@ -70,13 +69,6 @@ export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'wa
     extraMounts?: string[]; extraEnvVars?: Record<string, string>; streamExtraOutput?: () => string;
     /** Cancels the spawned process and its Docker container when the protected execution loses ownership. */
     signal?: AbortSignal;
-}
-
-// ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
-const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
-
-function stripAnsiCodes(text: string): string {
-    return text.replace(ANSI_REGEX, '');
 }
 
 function resolveDockerPath(command: string): string {
@@ -433,46 +425,6 @@ function settleWatchdogStop(
     if (!preserveOutput) { reject(new Error(trip.message)); return; }
     const stderr = result.stderr.trim() ? `${result.stderr.trimEnd()}\n${trip.message}` : trip.message;
     resolve({ ...result, stderr, watchdogTrip: trip });
-}
-
-interface LiveOutputStreaming { stdout(chunk: string): void; stderr(chunk: string): void; close(): Promise<void> }
-
-/**
- * The task's live log is append-only: each record is sent once, as it arrives,
- * and a new execution replaces what an earlier one left. Providers whose
- * readable transcript only exists as a whole snapshot (Vibe's session
- * messages) publish that snapshot in place of the previous one instead.
- */
-function startLiveOutputStreaming(
-    options: Pick<DockerCommandOptions, 'taskId' | 'streamToRedis' | 'streamStderrToRedis' | 'streamExtraOutput' | 'stripAnsi'> & { onOverflow: (error: Error) => void; onActivity?: () => void },
-    readStdout: () => string,
-    readStderr: () => string,
-): LiveOutputStreaming | null {
-    const { taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow, onActivity } = options;
-    if (!streamToRedis || !taskId) return null;
-    const log = new LiveOutputLog(taskId, { reset: true, onOverflow, ...(stripAnsi ? { transformRecord: stripAnsiCodes } : {}) });
-    if (!streamExtraOutput) {
-        return { stdout: chunk => log.append(chunk, 'stdout'), stderr: chunk => { if (streamStderrToRedis) log.append(chunk, 'stderr'); }, close: () => log.close() };
-    }
-    let previous = '';
-    const publish = () => {
-        let extraOutput = '';
-        try { extraOutput = streamExtraOutput(); }
-        catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to read extra streaming output'); }
-        const snapshot = buildLiveOutputSnapshot(extraOutput, readStdout(), streamStderrToRedis ? readStderr() : '');
-        if (snapshot.text !== previous) {
-            log.replace(snapshot.text, { discarded: snapshot.discarded });
-            // Snapshot providers (Vibe) may say nothing on stdout; a changed transcript is activity.
-            onActivity?.();
-        }
-        previous = snapshot.text;
-    };
-    const interval = setInterval(publish, 2000);
-    return {
-        stdout: () => undefined,
-        stderr: () => undefined,
-        close: async () => { clearInterval(interval); publish(); await log.close(); },
-    };
 }
 
 function detectContainerId(
