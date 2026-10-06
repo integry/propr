@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mock, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +21,11 @@ class FakeRedis {
 mock.module('ioredis', { namedExports: { Redis: FakeRedis, default: FakeRedis } });
 const { executeDockerCommand } = await import('../packages/core/src/claude/docker/dockerExecutor.js');
 const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.js');
+const { RunCostGuard } = await import('../packages/core/src/budget/runCostGuard.js');
+const { closeConnection } = await import('../packages/core/src/db/connection.js');
+
+// The pricing import chain opens the SQLite connection, which otherwise keeps the process alive.
+after(async () => { await closeConnection(); });
 
 test('a streamed execution publishes stderr diagnostics without splitting an unfinished stdout record', async () => {
     const record = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Reading the code' }] } });
@@ -101,6 +106,35 @@ test('an agent that crosses its spend cap and exits before the next check ends w
         assert.equal(result.stdout, usage);
         await assert.rejects(run(false), { name: 'RunCostCapExceededError' });
     } finally {
+        process.env.PATH = originalPath;
+        fs.rmSync(bin, { recursive: true, force: true });
+    }
+});
+
+test('an agent on its default model is priced with the model it was started with when its usage names none', async () => {
+    const turn = JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 3000 } });
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fake-docker-'));
+    fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\nprintf '%s\\n' '${turn}'\n`, { mode: 0o755 });
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`;
+    const priced: string[] = [];
+    // A PR job without an explicit `llm` gives the guard no default model.
+    const guard = new RunCostGuard({
+        taskId: 'docker-default-model', inputs: { override: 2 },
+        readRecordedSpend: async () => 0,
+        priceUsage: async (model, totals) => { priced.push(model); return totals.outputTokens / 1000; },
+        checkIntervalMs: 60_000,
+    });
+    try {
+        await guard.start();
+        const result = await runWithActiveRunCostCap(guard, () =>
+            executeDockerCommand('docker', ['run', '--rm', 'agent-image'], { timeout: 10_000, preserveOutputOnTimeout: true, model: 'gpt-5-codex' }));
+        assert.equal(result.costCapExceeded, true);
+        assert.match(result.stderr, /run spend cap of \$2\.00 exceeded/);
+        assert.ok(priced.length > 0 && priced.every(model => model === 'gpt-5-codex'));
+        assert.equal(guard.exceededWith?.spentUsd, 3);
+    } finally {
+        guard.close();
         process.env.PATH = originalPath;
         fs.rmSync(bin, { recursive: true, force: true });
     }

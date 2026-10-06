@@ -140,7 +140,8 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
                 onContainerId,
                 worktreePath,
                 stdinData: prompt, // Always pass prompt via stdin
-                preserveOutputOnTimeout: true
+                preserveOutputOnTimeout: true,
+                model: modelName
             })
         );
 

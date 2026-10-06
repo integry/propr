@@ -88,7 +88,8 @@ export class OpenCodeAgent implements Agent {
                     stdinData: prompt,
                     taskId,
                     streamToRedis: true,
-                    preserveOutputOnTimeout: true
+                    preserveOutputOnTimeout: true,
+                    model: effectiveModel
                 })
             );
 
@@ -157,7 +158,7 @@ export class OpenCodeAgent implements Agent {
             const dockerArgs = await this.buildDockerArgs({ worktreePath: analysisWorkspace.path, ...await prepareAnalysisGitAccess(options, analysisWorkspace.path), modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands === true, configPath: analysisConfigPath, dataPath: analysisDataPath });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: resolveAnalysisTimeout(timeoutMs), stdinData: analysisPrompt, taskId })
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: resolveAnalysisTimeout(timeoutMs), stdinData: analysisPrompt, taskId, model: effectiveModel === 'unknown' ? undefined : effectiveModel })
             );
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);

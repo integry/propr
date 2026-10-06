@@ -113,6 +113,7 @@ export class VibeAgent implements Agent {
                     streamToRedis: true,
                     streamStderrToRedis: true,
                     preserveOutputOnTimeout: true,
+                    model: effectiveModel,
                     streamExtraOutput: () => readLatestVibeSessionMessages(runtimeHomePath)
                 })
             );
@@ -228,7 +229,8 @@ export class VibeAgent implements Agent {
                 'vibe',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: timeoutMs ?? parseInt(process.env.VIBE_ANALYSIS_TIMEOUT_MS || '1800000', 10),
-                    taskId
+                    taskId,
+                    model: effectiveModel
                 })
             );
             const executionTimeMs = Date.now() - startTime;

@@ -84,7 +84,8 @@ export class CodexAgent implements Agent {
                     stdinData: prompt,
                     taskId,
                     streamToRedis: true,
-                    preserveOutputOnTimeout: true
+                    preserveOutputOnTimeout: true,
+                    model: effectiveModel
                 }),
                 undefined,
                 this.config.alias
@@ -249,7 +250,8 @@ export class CodexAgent implements Agent {
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'codex',
                 async () => executeDockerCommand('docker', dockerArgs, {
-                    timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId
+                    timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId,
+                    model: effectiveModel === 'unknown' ? undefined : effectiveModel
                 }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS,
                 this.config.alias

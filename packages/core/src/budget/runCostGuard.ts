@@ -45,6 +45,12 @@ interface LiveExecution {
     stop: (message: string) => void;
 }
 
+interface FinishedExecution {
+    tally: RunUsageTally;
+    /** Recorded spend read once the execution ended, before its own row could be written. */
+    recordedAtFinish: number;
+}
+
 const DEFAULT_CHECK_INTERVAL_MS = 10_000;
 
 const defaultPricer: RunUsagePricer = async (model, totals) => {
@@ -70,8 +76,9 @@ export class RunCostGuard implements ActiveRunCostCap {
     private resolvedCap: RunCostCap | null;
     private readonly options: RunCostGuardOptions;
     private readonly live = new Set<LiveExecution>();
-    private readonly finished: RunUsageTally[] = [];
+    private readonly finished: FinishedExecution[] = [];
     private priorSpentUsd = 0;
+    private lastRecordedUsd = 0;
     private triggered = false;
     private timer: ReturnType<typeof setInterval> | null = null;
     private checking: Promise<RunCostSnapshot | null> | null = null;
@@ -93,6 +100,7 @@ export class RunCostGuard implements ActiveRunCostCap {
     /** Reads what earlier attempts spent; the cap for this attempt is what remains. */
     async start(): Promise<{ cap: RunCostCap | null; priorSpentUsd: number; remainingUsd: number | null }> {
         this.priorSpentUsd = await this.readRecorded(0);
+        this.lastRecordedUsd = this.priorSpentUsd;
         await this.publishCap();
         const remainingUsd = this.resolvedCap ? remainingRunBudget(this.resolvedCap.capUsd, this.priorSpentUsd) : null;
         if (this.resolvedCap) {
@@ -135,7 +143,10 @@ export class RunCostGuard implements ActiveRunCostCap {
      * spend-cap outcome instead of completing normally.
      */
     private async finishExecution(execution: LiveExecution): Promise<string | null> {
-        if (this.live.delete(execution)) this.finished.push(execution.tally);
+        // The execution's row is written only after it returns, so whatever is
+        // recorded now belongs to other calls; growth beyond this may be its own.
+        const recordedAtFinish = await this.readRecorded(this.lastRecordedUsd);
+        if (this.live.delete(execution)) this.finished.push({ tally: execution.tally, recordedAtFinish });
         if (this.live.size === 0) this.stopTimer();
         // A check already in flight may have priced the execution before its
         // final usage arrived; only one that starts after the move sees it all.
@@ -184,14 +195,21 @@ export class RunCostGuard implements ActiveRunCostCap {
         // execution twice. Both collections are captured together, before
         // pricing awaits: an execution finishing meanwhile moves its tally
         // from live to finished and would otherwise be priced in both.
-        const recorded = await this.readRecorded(this.priorSpentUsd);
+        const recorded = await this.readRecorded(this.lastRecordedUsd);
         const live = [...this.live].map(execution => execution.tally);
         const finished = [...this.finished];
-        const liveUsd = await this.cost(live);
-        const finishedUsd = await this.cost(finished);
-        // Recorded rows lag behind finished executions; observed usage misses
-        // calls made outside Docker. Both are lower bounds; use the larger.
-        const spentUsd = Math.max(recorded + liveUsd, this.priorSpentUsd + finishedUsd + liveUsd);
+        let liveUsd = 0;
+        for (const tally of live) liveUsd += await this.cost(tally);
+        // A finished execution's row may not be written yet. Recorded growth
+        // since it ended is taken as its row, so only the observed usage not yet
+        // covered by that growth is added; other recorded calls (analysis
+        // before it ended) still count beside it.
+        let unrecordedUsd = 0;
+        for (const execution of finished) {
+            const persistedSinceFinish = Math.max(0, recorded - execution.recordedAtFinish);
+            unrecordedUsd += Math.max(0, await this.cost(execution.tally) - persistedSinceFinish);
+        }
+        const spentUsd = recorded + liveUsd + unrecordedUsd;
         return {
             taskId: this.taskId, cap, spentUsd, priorSpentUsd: this.priorSpentUsd,
             remainingUsd: remainingRunBudget(cap.capUsd, spentUsd),
@@ -199,25 +217,23 @@ export class RunCostGuard implements ActiveRunCostCap {
         };
     }
 
-    private async cost(tallies: RunUsageTally[]): Promise<number> {
-        let total = 0;
-        for (const tally of tallies) {
-            const model = tally.model ?? this.options.defaultModel;
-            let priced = 0;
-            if (model) {
-                try { priced = await (this.options.priceUsage ?? defaultPricer)(model, tally.totals); } catch (error) {
-                    logger.debug({ taskId: this.taskId, model, error: (error as Error).message }, 'Could not price live usage');
-                }
+    private async cost(tally: RunUsageTally): Promise<number> {
+        const model = tally.model ?? this.options.defaultModel;
+        let priced = 0;
+        if (model) {
+            try { priced = await (this.options.priceUsage ?? defaultPricer)(model, tally.totals); } catch (error) {
+                logger.debug({ taskId: this.taskId, model, error: (error as Error).message }, 'Could not price live usage');
             }
-            total += Math.max(priced, tally.reportedCostUsd);
         }
-        return total;
+        return Math.max(priced, tally.reportedCostUsd);
     }
 
     private async readRecorded(fallback: number): Promise<number> {
         try {
             const value = await this.options.readRecordedSpend();
-            return Number.isFinite(value) && value > 0 ? value : 0;
+            const recorded = Number.isFinite(value) && value > 0 ? value : 0;
+            this.lastRecordedUsd = recorded;
+            return recorded;
         } catch (error) {
             logger.warn({ taskId: this.taskId, error: (error as Error).message }, 'Could not read recorded task spend');
             return fallback;

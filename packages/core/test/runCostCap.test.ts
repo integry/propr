@@ -155,6 +155,46 @@ test('usage that crosses the cap just before the execution exits still ends it a
     guard.close();
 });
 
+test('analysis recorded during the run counts beside usage reported just before an execution exits', async () => {
+    let recorded = 0;
+    const exceeded: Array<{ spentUsd: number }> = [];
+    const guard = guardFor(() => recorded, { override: 2 }, snapshot => exceeded.push(snapshot as { spentUsd: number }));
+    await guard.start();
+    const execution = guard.beginExecution(() => assert.fail('a finished execution is not stopped again'))!;
+    // Task-attributed analysis is recorded after the guard started.
+    recorded = 0.5;
+    execution.observeLine(JSON.stringify({ type: 'assistant', message: { id: 'a', usage: { output_tokens: 300 } } }));
+    assert.equal(await guard.check(), null, '$0.50 recorded + $0.30 live is under the $2 cap');
+    // The last usage arrives right before the exit; its execution row is not written yet.
+    execution.observeLine(JSON.stringify({ type: 'assistant', message: { id: 'b', usage: { output_tokens: 1400 } } }));
+    const message = await execution.finish();
+    assert.equal(message, runCostCapStopMessage({ capUsd: 2, source: 'override' }, 2.2));
+    assert.equal(exceeded.length, 1);
+    assert.equal(exceeded[0].spentUsd, 0.5 + 1.7);
+    guard.close();
+});
+
+test('a finished execution is not counted again once its row is recorded', async () => {
+    let recorded = 0.5;
+    const exceeded: Array<{ spentUsd: number }> = [];
+    const guard = guardFor(() => recorded, { override: 3 }, snapshot => exceeded.push(snapshot as { spentUsd: number }));
+    await guard.start();
+    const execution = guard.beginExecution(() => undefined)!;
+    execution.observeLine(JSON.stringify({ type: 'assistant', message: { id: 'a', usage: { output_tokens: 1700 } } }));
+    assert.equal(await execution.finish(), null, '$0.50 recorded + $1.70 unrecorded is under the $3 cap');
+    // The execution's own row is written after it returned.
+    recorded = 0.5 + 1.7;
+    const unchanged = await guard.check();
+    assert.equal(unchanged, null, 'the recorded row replaces the observed usage instead of adding to it');
+    // A later analysis call pushes the recorded spend past the cap.
+    recorded = 0.5 + 1.7 + 0.9;
+    const snapshot = await guard.check();
+    assert.ok(snapshot);
+    assert.equal(snapshot.spentUsd, 0.5 + 1.7 + 0.9);
+    assert.equal(exceeded.length, 1);
+    guard.close();
+});
+
 test('a retry whose earlier attempts used the whole budget stops as soon as it starts', async () => {
     const stops: string[] = [];
     const guard = guardFor(() => 5, { override: 5 });

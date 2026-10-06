@@ -110,7 +110,7 @@ export class AntigravityAgent implements Agent {
                 'antigravity',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData: prompt,
-                    taskId, streamToRedis: true, preserveOutputOnTimeout: true
+                    taskId, streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel
                 }),
                 undefined,
                 this.config.alias
@@ -380,7 +380,7 @@ export class AntigravityAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'antigravity',
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: effectiveTimeoutMs, stdinData: fullPrompt, taskId }),
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: effectiveTimeoutMs, stdinData: fullPrompt, taskId, model: effectiveModel }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS,
                 this.config.alias
             );

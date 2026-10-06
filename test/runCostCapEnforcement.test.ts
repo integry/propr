@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { closeConnection, getActiveRunCostGuard, runCostCapTerminalReason } from '@propr/core';
 import type { RunCostSnapshot } from '@propr/core';
-import { budgetExceededEvent, postCostCapNotice, withRunCostCap, type RunCostCapDeps, type RunCostCapTarget } from '../src/jobs/runCostCap.js';
+import { budgetExceededEvent, postCostCapNotice, pullRequestRunCostCapTarget, withRunCostCap, type RunCostCapDeps, type RunCostCapTarget } from '../src/jobs/runCostCap.js';
+import type { CommentJobData } from '@propr/core';
 
 after(async () => { await closeConnection(); });
 
@@ -50,6 +51,27 @@ test('a run past its cap is stopped once, records budget.exceeded and ends as co
     assert.equal(timeline[0].metadata.event, 'budget.exceeded');
     assert.deepEqual(timeline[0].metadata.budget, { capUsd: 2, spentUsd: 2.3, priorSpentUsd: 0.5, percent: 115, source: 'instance_default' });
     assert.match(timeline[0].reason, /Spend cap reached: estimated \$2\.30 of \$2\.00 \(cap from instance default\)/);
+});
+
+test('a PR job on the configured default model is priced with the model its agent execution resolved', async () => {
+    const { deps, timeline } = harness();
+    const priced: string[] = [];
+    deps.priceUsage = async (model, totals) => { priced.push(model); return totals.outputTokens / 1000; };
+    // No explicit `llm`: the agent runs its configured default model.
+    const job = { id: 'pr-job-1', data: { repoOwner: 'acme', repoName: 'app', pullRequestNumber: 12 } as CommentJobData };
+    const prTarget = { ...pullRequestRunCostCapTarget(job), taskId: 'task-cap', getOctokit: undefined };
+    assert.equal(prTarget.modelName, undefined);
+    let message: string | null = null;
+    await withRunCostCap(prTarget, async () => {
+        const execution = getActiveRunCostGuard()!.beginExecution(() => undefined, 'gpt-5-codex')!;
+        // Codex usage records name no model.
+        for (let turn = 0; turn < 3; turn++) execution.observeLine(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 1000 } }));
+        message = await execution.finish();
+    }, deps);
+    assert.match(message ?? '', /run spend cap of \$2\.00 exceeded/);
+    assert.ok(priced.length > 0 && priced.every(model => model === 'gpt-5-codex'));
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0].metadata.budget.spentUsd, 3);
 });
 
 test('the per-task override wins over the workflow and instance caps', async () => {

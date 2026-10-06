@@ -65,6 +65,8 @@ export interface DockerCommandOptions {
     extraMounts?: string[]; extraEnvVars?: Record<string, string>; streamExtraOutput?: () => string;
     /** Cancels the spawned process and its Docker container when the protected execution loses ownership. */
     signal?: AbortSignal;
+    /** Resolved model the agent runs, used to price streamed usage that does not name its model. */
+    model?: string;
 }
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
@@ -222,7 +224,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
     const initialAbortError = getExecutionAbortError(executionSignal);
     if (initialAbortError) return Promise.reject(initialAbortError);
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false } = options;
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, model } = options;
         const executionArgs = resolveExecutionArgs(command, withWorkflowExecutionDeadline(command, args, timeout), taskId, ownershipContext?.attemptGeneration);
         const executablePath = resolveDockerPath(command);
         const namedContainer = command === 'docker' ? getDockerRunContainerName(executionArgs) : null;
@@ -307,7 +309,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 if (state.aborted.value) return;
                 costCapStopMessage = message;
                 abortExecution(true);
-            }) ?? null
+            }, model) ?? null
             : null;
         // Awaits the final evaluation, so usage streamed after the last periodic
         // check still ends the execution with the spend-cap outcome.
