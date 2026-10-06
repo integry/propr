@@ -38,28 +38,35 @@ async function git(cwd: string, args: string[]): Promise<string> {
     return stdout.trim();
 }
 
-/** True when every directory from `dir` up to `/` lets other users traverse it. */
-async function traversableByOthers(dir: string): Promise<boolean> {
+/**
+ * The canonical path of `dir` when every directory from it up to `/` lets
+ * other users traverse it. Callers must use the returned path: access through
+ * the original spelling may cross a private directory that was never checked.
+ */
+async function traversableByOthers(dir: string): Promise<string | undefined> {
     try {
-        for (let current = await realpath(dir); ; current = path.dirname(current)) {
-            if (!((await stat(current)).mode & 0o001)) return false;
-            if (current === path.dirname(current)) return true;
+        const resolved = await realpath(dir);
+        for (let current = resolved; ; current = path.dirname(current)) {
+            if (!((await stat(current)).mode & 0o001)) return undefined;
+            if (current === path.dirname(current)) return resolved;
         }
     } catch {
-        return false;
+        return undefined;
     }
 }
 
 /**
- * Where the fixture root is created. Root runs hand part of the fixture to an
+ * Where the fixture root is created, as a canonical path so permission grants
+ * cover the same path Git uses. Root runs hand part of the fixture to an
  * unprivileged account, which needs to traverse the base's ancestors; when the
  * configured TMPDIR sits under a private directory a fresh fixture is created
  * in a public temp location instead of relaxing that directory.
  */
 async function fixtureBase(): Promise<string> {
-    if (process.getuid?.() !== 0) return os.tmpdir();
+    if (process.getuid?.() !== 0) return realpath(os.tmpdir());
     for (const candidate of new Set([os.tmpdir(), '/tmp', '/var/tmp', '/dev/shm'])) {
-        if (await traversableByOthers(candidate)) return candidate;
+        const base = await traversableByOthers(candidate);
+        if (base) return base;
     }
     assert.fail(`no temp directory traversable by UID ${UNPRIVILEGED_ID} for the root permission fixtures (TMPDIR=${os.tmpdir()})`);
 }
@@ -302,6 +309,22 @@ async function denyGitDirWrites(clonePath: string): Promise<() => Promise<void>>
         await chownTree(clonePath, 0);
     };
 }
+
+test('the permission fixture base is the validated canonical path, not a symlinked spelling', async () => {
+    const privateDir = await mkdtemp(path.join(rootDir, 'private-base-'));
+    try {
+        await chmod(privateDir, 0o700);
+        const link = path.join(privateDir, 'public-tmp');
+        await symlink('/', link);
+        // A traversable target reached through a private directory must be
+        // returned as the target itself, never as the inaccessible link path.
+        assert.strictEqual(await traversableByOthers(link), await traversableByOthers('/'));
+        assert.strictEqual(await traversableByOthers(link), '/');
+    } finally {
+        await rm(privateDir, { recursive: true, force: true });
+    }
+    assert.strictEqual(rootDir, await realpath(rootDir), 'fixture paths must not keep an unvalidated prefix');
+});
 
 test('an unwritable shared config fails immediately with the original error, not as lock contention', async () => {
     const clonePath = await createSharedClone('denied', LEGACY_URL);
