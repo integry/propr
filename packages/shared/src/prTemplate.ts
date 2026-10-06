@@ -165,15 +165,161 @@ export function parsePrTemplate(source: string): ParsedPrTemplate {
   return { sections, problems };
 }
 
+/** Text with the origin of every UTF-16 unit: untrusted units come from issue authors or agent output. */
+interface MarkedText { text: string; untrusted: boolean[] }
+
+function marked(text: string, untrusted: boolean): MarkedText {
+  // CommonMark treats a lone CR as a line ending; normalize so line analysis matches GitHub's.
+  const normalized = text.replace(/\r\n?/g, '\n');
+  return { text: normalized, untrusted: new Array<boolean>(normalized.length).fill(untrusted) };
+}
+
+function concatMarked(parts: readonly MarkedText[]): MarkedText {
+  return { text: parts.map(part => part.text).join(''), untrusted: parts.flatMap(part => part.untrusted) };
+}
+
+function trimMarked({ text, untrusted }: MarkedText): MarkedText {
+  const start = text.length - text.trimStart().length;
+  const end = text.trimEnd().length;
+  return start >= end ? { text: '', untrusted: [] } : { text: text.slice(start, end), untrusted: untrusted.slice(start, end) };
+}
+
+const ASCII_PUNCTUATION = /[!-/:-@[-`{-~]/;
+const HTML_BLOCK_STARTS: ReadonlyArray<[RegExp, RegExp]> = [
+  [/^ {0,3}<(?:script|pre|style|textarea)(?:[ \t>]|$)/i, /<\/(?:script|pre|style|textarea)>/i],
+  [/^ {0,3}<!--/, /-->/],
+  [/^ {0,3}<\?/, /\?>/],
+  [/^ {0,3}<![A-Za-z]/, />/],
+  [/^ {0,3}<!\[CDATA\[/, /\]\]>/],
+];
+
+/**
+ * Code spans on one line following CommonMark: an opening backtick string
+ * closes at the next backtick string of exactly the same length, and outside
+ * spans a backslash escapes the next punctuation character. `balanced` is
+ * false when an opening backtick string has no closer on the line.
+ */
+function lineCodeSpans(line: string): { spans: Array<[number, number]>; balanced: boolean } {
+  const runsByLength = new Map<number, number[]>();
+  for (const run of line.matchAll(/`+/g)) {
+    const starts = runsByLength.get(run[0].length) ?? [];
+    starts.push(run.index);
+    runsByLength.set(run[0].length, starts);
+  }
+  const spans: Array<[number, number]> = [];
+  let balanced = true;
+  let index = 0;
+  while (index < line.length) {
+    const char = line[index];
+    if (char === '\\' && ASCII_PUNCTUATION.test(line[index + 1] ?? '')) {
+      index += 2;
+      continue;
+    }
+    if (char !== '`') {
+      index++;
+      continue;
+    }
+    let end = index;
+    while (line[end] === '`') end++;
+    const length = end - index;
+    const closer = (runsByLength.get(length) ?? []).find(start => start >= end);
+    if (closer === undefined) {
+      balanced = false;
+      index = end;
+      continue;
+    }
+    spans.push([index, closer + length]);
+    index = closer + length;
+  }
+  return { spans, balanced };
+}
+
+/**
+ * Units of `text` that GitHub certainly renders as code. Only fences and code
+ * spans whose boundaries cannot be reinterpreted by their surroundings count:
+ * a fence must open at column 0 at the start of the document, after a blank
+ * line or after another fence, outside multi-paragraph HTML blocks; a code
+ * span must sit in a block whose lines all close their own spans, without
+ * raw HTML from the template and without crossing a table cell. Anything else
+ * is treated as text, so the worst case is a visible `&lt;` inside code.
+ */
+function certainCode({ text, untrusted }: MarkedText): boolean[] {
+  const code = new Array<boolean>(text.length).fill(false);
+  let fence: Fence | undefined;
+  let htmlEnd: RegExp | undefined;
+  let blockStart = true;
+  let blockHasHtml = false;
+  let blockUnbalanced = false;
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    const lineOffset = offset;
+    offset += line.length + 1;
+    const markCode = (start: number, end: number) => code.fill(true, lineOffset + start, lineOffset + end);
+    if (fence) {
+      markCode(0, line.length);
+      fence = advanceFence(fence, line);
+      if (!fence) [blockStart, blockHasHtml, blockUnbalanced] = [true, false, false];
+      continue;
+    }
+    if (htmlEnd) {
+      if (htmlEnd.test(line)) htmlEnd = undefined;
+      continue;
+    }
+    if (/^[ \t]*$/.test(line)) {
+      [blockStart, blockHasHtml, blockUnbalanced] = [true, false, false];
+      continue;
+    }
+    if (blockStart && /^(?:`{3}|~{3})/.test(line)) {
+      fence = advanceFence(undefined, line);
+      if (fence) {
+        markCode(0, line.length);
+        continue;
+      }
+    }
+    blockStart = false;
+    const trustedTag = [...line.matchAll(/</g)].some(match => !untrusted[lineOffset + match.index]);
+    if (trustedTag) {
+      blockHasHtml = true;
+      for (const [startPattern, endPattern] of HTML_BLOCK_STARTS) {
+        const start = startPattern.exec(line);
+        if (!start) continue;
+        if (!endPattern.test(line.slice(start[0].length))) htmlEnd = endPattern;
+        break;
+      }
+      continue;
+    }
+    const { spans, balanced } = lineCodeSpans(line);
+    if (!balanced) blockUnbalanced = true;
+    if (blockHasHtml || blockUnbalanced) continue;
+    for (const [start, end] of spans) {
+      if (!line.slice(start, end).includes('|')) markCode(start, end);
+    }
+  }
+  return code;
+}
+
+/** Escape tag-like `<` in untrusted units unless the composed Markdown certainly renders them as code. */
+function neutralizeMarked(input: MarkedText): string {
+  const code = certainCode(input);
+  return input.text.replace(/<(?=[A-Za-z!/?])/g, (match, index: number) => input.untrusted[index] && !code[index] ? '&lt;' : match);
+}
+
 /** Escape tag-like `<` outside code so untrusted text cannot inject raw HTML. */
 export function neutralizeHtml(text: string): string {
-  let fence: Fence | undefined;
-  return text.split('\n').map(line => {
-    const wasInFence = fence !== undefined;
-    fence = advanceFence(fence, line);
-    if (wasInFence || fence) return line;
-    return line.split(/(`+[^`]*`+)/).map((part, index) => index % 2 === 1 ? part : part.replace(/<(?=[A-Za-z!/?])/g, '&lt;')).join('');
-  }).join('\n');
+  return neutralizeMarked(marked(text, true));
+}
+
+function renderMarked(text: string, values: PrTemplateValues): MarkedText {
+  const parts: MarkedText[] = [];
+  let last = 0;
+  for (const match of text.matchAll(PLACEHOLDER_PATTERN)) {
+    const name = (match[1] ?? '').trim();
+    if (!isKnownPlaceholder(name)) throw new PrTemplateError(`Unknown placeholder {{${name}}}`);
+    parts.push(marked(text.slice(last, match.index), false), marked(values[name] ?? '', UNTRUSTED_PLACEHOLDERS.has(name)));
+    last = match.index + match[0].length;
+  }
+  parts.push(marked(text.slice(last), false));
+  return concatMarked(parts);
 }
 
 /**
@@ -181,12 +327,11 @@ export function neutralizeHtml(text: string): string {
  * placeholder; callers fall back to the default description.
  */
 export function renderPrTemplateSection(text: string, values: PrTemplateValues, context: 'title' | 'body' = 'body'): string {
+  if (context === 'body') return neutralizeMarked(renderMarked(text, values));
   return text.replace(PLACEHOLDER_PATTERN, (_match, rawName: string) => {
     const name = rawName.trim();
     if (!isKnownPlaceholder(name)) throw new PrTemplateError(`Unknown placeholder {{${name}}}`);
-    const value = values[name] ?? '';
-    if (context === 'title') return value.replace(/\s+/g, ' ').trim();
-    return UNTRUSTED_PLACEHOLDERS.has(name) ? neutralizeHtml(value) : value;
+    return (values[name] ?? '').replace(/\s+/g, ' ').trim();
   });
 }
 
@@ -214,10 +359,13 @@ function defaultSectionText(pieces: readonly PrBodyPiece[], section: PrTemplateB
  * default content (whitespace-only removes it), absent sections keep it.
  */
 export function composePrBody(pieces: readonly PrBodyPiece[], template: ParsedPrTemplate, values: PrTemplateValues): string {
-  return PR_TEMPLATE_BODY_SECTIONS.map(section => {
+  const sections = PR_TEMPLATE_BODY_SECTIONS.map(section => {
     const override = template.sections[section];
-    return override === undefined ? defaultSectionText(pieces, section) : renderPrTemplateSection(override, values).trim();
-  }).filter(Boolean).join('\n\n');
+    return override === undefined ? marked(defaultSectionText(pieces, section), false) : trimMarked(renderMarked(override, values));
+  }).filter(section => section.text);
+  // Neutralize the composed description: where substituted text lands decides
+  // whether its backticks really open code.
+  return neutralizeMarked(concatMarked(sections.flatMap((section, index) => index ? [marked('\n\n', false), section] : [section])));
 }
 
 /** GitHub template fallback: ProPR's summary and run block, then the repository's own template. */

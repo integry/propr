@@ -104,6 +104,48 @@ test('renderPrTemplateSection neutralizes HTML in untrusted values only', () => 
   assert.equal(neutralizeHtml('```\n<div>\n```\n<div>'), '```\n<div>\n```\n&lt;div>');
 });
 
+test('renderPrTemplateSection escapes HTML whose code fence only exists inside the value', () => {
+  const summary = '```\n<details><summary>Hidden content</summary>\n```';
+  assert.equal(renderPrTemplateSection('{{summary}}', { ...values, summary }), summary);
+  assert.equal(
+    renderPrTemplateSection('Agent result: {{summary}}', { ...values, summary }),
+    'Agent result: ```\n&lt;details>&lt;summary>Hidden content&lt;/summary>\n```',
+  );
+  // A lone CR is a line ending on GitHub, so it cannot hide the prefix either.
+  assert.equal(renderPrTemplateSection('Agent result: {{summary}}', { ...values, summary: '```\r<details>\r```' }), 'Agent result: ```\n&lt;details>\n```');
+  // A fence nested in a list item closes with the item.
+  assert.equal(neutralizeHtml('- a\n\n  ```\n<details>\n  ```'), '- a\n\n  ```\n&lt;details>\n  ```');
+});
+
+test('neutralizeHtml only exempts real inline code spans', () => {
+  assert.equal(neutralizeHtml('``<details>`'), '``&lt;details>`');
+  assert.equal(neutralizeHtml('`<details>``'), '`&lt;details>``');
+  assert.equal(neutralizeHtml('`a`` <details> ``b`'), '`a`` <details> ``b`');
+  assert.equal(neutralizeHtml('\\`<details>`'), '\\`&lt;details>`');
+  // The first backtick pairs with one on the next line, so `<details>` is outside code.
+  assert.equal(neutralizeHtml('a `b\nc` <details> `d`'), 'a `b\nc` &lt;details> `d`');
+  // Table cells split before code spans.
+  assert.equal(neutralizeHtml('| `x | <details> ` |'), '| `x | &lt;details> ` |');
+  assert.equal(neutralizeHtml('Use ``Array<`T`>`` and `Map<K, V>`'), 'Use ``Array<`T`>`` and `Map<K, V>`');
+});
+
+test('renderPrTemplateSection escapes values that template HTML turns into raw HTML', () => {
+  const hostile = { ...values, summary: '`<details>`' };
+  assert.equal(renderPrTemplateSection('<div>\n{{summary}}', hostile), '<div>\n`&lt;details>`');
+  const fenced = { ...values, summary: '```\n<details>\n```' };
+  assert.equal(renderPrTemplateSection('<pre>\n\n{{summary}}', fenced), '<pre>\n\n```\n&lt;details>\n```');
+});
+
+test('composePrBody decides code boundaries in the composed description', () => {
+  const template = parsePrTemplate('## summary\n{{summary}}\n## review_guidelines\n```\n{{issue_title}}\n```\n');
+  const body = composePrBody(pieces, template, { ...values, summary: '```', issue_title: '<details>' });
+  // The summary's unclosed fence swallows everything up to the template's opening fence, which closes it.
+  assert.match(body, /\n```\n&lt;details>\n```\n/);
+  assert.doesNotMatch(body, /<details>/);
+  const intact = composePrBody(pieces, template, { ...values, issue_title: '<details>' });
+  assert.match(intact, /\n```\n<details>\n```\n/);
+});
+
 test('renderPrTemplateSection throws on unknown placeholders', () => {
   assert.throws(() => renderPrTemplateSection('{{nope}}', values), PrTemplateError);
 });
