@@ -137,14 +137,29 @@ export class RunCostGuard implements ActiveRunCostCap {
         await this.publishCap();
     }
 
+    /**
+     * Completes the effective-cap check before a chargeable container starts.
+     * A retry whose earlier attempts already used the whole budget is refused
+     * here (and the stop recorded) instead of launching and being stopped later.
+     */
+    async admit(): Promise<void> {
+        if (!this.triggered && this.resolvedCap) {
+            // A check already in flight may have read the recorded spend before
+            // the latest rows were written; admission needs a fresh read.
+            if (this.checking) await this.checking.catch(() => null);
+            await this.check();
+        }
+        this.refuseIfExceeded();
+    }
+
     beginExecution(stop: (message: string) => void, model?: string): RunCostExecution | null {
         // Once the run is stopped at its cap, no further agent work may spend.
-        if (this.triggered) throw new RunCostCapExceededError(this.stopMessage ?? 'Run spend cap exceeded');
+        this.refuseIfExceeded();
         if (!this.resolvedCap) return null;
         const execution: LiveExecution = { tally: new RunUsageTally(model), stop };
         this.live.add(execution);
         this.ensureTimer();
-        // A retry whose earlier attempts used the whole budget stops right away.
+        // Callers that skipped `admit` still stop right away when nothing is left.
         void this.check();
         let finishing: Promise<string | null> | null = null;
         return {
@@ -154,6 +169,10 @@ export class RunCostGuard implements ActiveRunCostCap {
                 return finishing;
             },
         };
+    }
+
+    private refuseIfExceeded(): void {
+        if (this.triggered) throw new RunCostCapExceededError(this.stopMessage ?? 'Run spend cap exceeded');
     }
 
     /**

@@ -225,6 +225,24 @@ export function executeDockerCommand(command: string, args: string[], options: D
     const executionSignal = options.signal ?? ownershipContext?.signal;
     const initialAbortError = getExecutionAbortError(executionSignal);
     if (initialAbortError) return Promise.reject(initialAbortError);
+    // A chargeable container starts only once its run's cap admitted it: a run
+    // whose recorded spend already reaches the cap launches nothing.
+    const admission = admitCostExecution(command, args, options);
+    if (!admission) return startDockerCommand(command, args, options, { ownershipContext, executionSignal });
+    return admission.then(refusal => {
+        if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
+        const abortError = getExecutionAbortError(executionSignal);
+        if (abortError) throw abortError;
+        return startDockerCommand(command, args, options, { ownershipContext, executionSignal });
+    });
+}
+
+function startDockerCommand(
+    command: string,
+    args: string[],
+    options: DockerCommandOptions,
+    { ownershipContext, executionSignal }: { ownershipContext: ReturnType<typeof getExecutionOwnershipContext>; executionSignal: AbortSignal | undefined },
+): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, model, costCapExempt } = options;
         const executionArgs = resolveExecutionArgs(command, withWorkflowExecutionDeadline(command, args, timeout), taskId, ownershipContext?.attemptGeneration);
@@ -237,8 +255,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         let stopForCostCap: (message: string) => void = () => undefined;
         const costCap = registerCostExecution(command, args, { model, costCapExempt }, message => stopForCostCap(message));
         if ('refusal' in costCap) {
-            settleCostCapStop(costCap.refusal, { exitCode: null, stdout: '', stderr: '', messageTimestamps: new Map() },
-                { preserveOutput: preserveOutputOnTimeout, resolve, reject });
+            refuseCostExecution(costCap.refusal, preserveOutputOnTimeout).then(resolve, reject);
             return;
         }
         const costExecution = costCap.execution;
@@ -437,6 +454,24 @@ export function executeDockerCommand(command: string, args: string[], options: D
     });
 }
 
+/** Agent containers spend toward their run's cap; other commands and exempt containers do not. */
+function isChargeableExecution(command: string, args: string[], options: Pick<DockerCommandOptions, 'costCapExempt'>): boolean {
+    return command === 'docker' && args[0] === 'run' && !options.costCapExempt;
+}
+
+/**
+ * Null when no cap applies; otherwise resolves once the run's cap admitted the
+ * container, with the refusal message when its budget is already used up.
+ */
+function admitCostExecution(command: string, args: string[], options: Pick<DockerCommandOptions, 'costCapExempt'>): Promise<string | null> | null {
+    const costCap = isChargeableExecution(command, args, options) ? getActiveRunCostCap() : undefined;
+    if (!costCap) return null;
+    return costCap.admit().then(() => null, error => {
+        if (error instanceof RunCostCapExceededError) return error.message;
+        throw error;
+    });
+}
+
 /** Registers an agent container with its run's spend cap; refused once the run was stopped at its cap. */
 function registerCostExecution(
     command: string,
@@ -444,13 +479,19 @@ function registerCostExecution(
     options: Pick<DockerCommandOptions, 'model' | 'costCapExempt'>,
     stop: (message: string) => void,
 ): { execution: RunCostExecution | null } | { refusal: string } {
-    if (command !== 'docker' || args[0] !== 'run' || options.costCapExempt) return { execution: null };
+    if (!isChargeableExecution(command, args, options)) return { execution: null };
     try {
         return { execution: getActiveRunCostCap()?.beginExecution(stop, options.model) ?? null };
     } catch (error) {
         if (error instanceof RunCostCapExceededError) return { refusal: error.message };
         throw error;
     }
+}
+
+/** A refused container never started: it ends with the spend-cap outcome and no output. */
+function refuseCostExecution(message: string, preserveOutput: boolean): Promise<ExecutionResult> {
+    return new Promise((resolve, reject) => settleCostCapStop(message, { exitCode: null, stdout: '', stderr: '', messageTimestamps: new Map() },
+        { preserveOutput, resolve, reject }));
 }
 
 /** A run stopped at its spend cap ends like a timeout: partial output when the caller can publish it. */

@@ -86,6 +86,7 @@ test('an agent that crosses its spend cap and exits before the next check ends w
     const events: string[] = [];
     const guard = {
         taskId: 'docker-cost-cap', exceeded: false,
+        admit: async () => undefined,
         beginExecution: () => ({
             observeLine: (line: string) => { observed.push(line); },
             finish: async () => {
@@ -175,6 +176,43 @@ test('a run stopped at its spend cap refuses later implementation and analysis c
         assert.equal(probe.exitCode, 0);
         assert.deepEqual(launched(), ['implementation', 'usage-probe']);
         assert.equal(guard.exceededWith?.spentUsd, 3, 'the exempt probe is not counted toward the run');
+    } finally {
+        guard.close();
+        process.env.PATH = originalPath;
+        fs.rmSync(bin, { recursive: true, force: true });
+    }
+});
+
+test('a retry whose earlier attempts used the whole budget launches no container', async () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fake-docker-'));
+    const launches = path.join(bin, 'launches');
+    fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\nfor arg; do image="$arg"; done\necho "$image" >> '${launches}'\n`, { mode: 0o755 });
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`;
+    const exceeded: unknown[] = [];
+    // The recorded spend read is slow, so a launch that does not wait for it starts first.
+    const guard = new RunCostGuard({
+        taskId: 'docker-exhausted-retry', inputs: { override: 5 }, defaultModel: 'claude-sonnet-4',
+        readRecordedSpend: () => new Promise(resolve => setTimeout(() => resolve(5), 50)),
+        priceUsage: async () => 0,
+        onExceeded: snapshot => { exceeded.push(snapshot); },
+        checkIntervalMs: 60_000,
+    });
+    const run = (image: string, preserveOutputOnTimeout: boolean) => runWithActiveRunCostCap(guard, () =>
+        executeDockerCommand('docker', ['run', '--rm', image], { timeout: 10_000, preserveOutputOnTimeout }));
+    const launched = () => fs.existsSync(launches) ? fs.readFileSync(launches, 'utf8').split('\n').filter(Boolean) : [];
+    try {
+        const start = await guard.start();
+        assert.equal(start.remainingUsd, 0);
+        const implementation = await run('implementation', true);
+        assert.equal(implementation.costCapExceeded, true);
+        assert.equal(implementation.exitCode, null);
+        assert.equal(implementation.stdout, '');
+        assert.match(implementation.stderr, /run spend cap of \$5\.00 exceeded/);
+        await assert.rejects(run('analysis', false), { name: 'RunCostCapExceededError' });
+        assert.deepEqual(launched(), [], 'no agent container starts with an exhausted budget');
+        assert.equal(guard.exceeded, true);
+        assert.equal(exceeded.length, 1, 'the stop is recorded once');
     } finally {
         guard.close();
         process.env.PATH = originalPath;

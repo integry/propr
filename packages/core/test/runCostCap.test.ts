@@ -206,6 +206,34 @@ test('a retry whose earlier attempts used the whole budget stops as soon as it s
     guard.close();
 });
 
+test('an exhausted retry is refused at admission, before any container is registered', async () => {
+    const exceeded: unknown[] = [];
+    // The recorded spend is only known once its read resolves.
+    const guard = new RunCostGuard({
+        taskId: 'task-1', inputs: { override: 5 }, defaultModel: 'test-model',
+        readRecordedSpend: () => new Promise(resolve => setTimeout(() => resolve(5), 10)),
+        priceUsage: async () => 0,
+        onExceeded: snapshot => { exceeded.push(snapshot); },
+        checkIntervalMs: 60_000,
+    });
+    const start = await guard.start();
+    assert.equal(start.remainingUsd, 0);
+    assert.equal(guard.exceeded, false, 'start alone does not stop the run');
+    await assert.rejects(guard.admit(), { name: 'RunCostCapExceededError', message: /run spend cap of \$5\.00 exceeded/ });
+    assert.equal(guard.exceeded, true);
+    assert.equal(exceeded.length, 1, 'the stop is recorded once');
+    assert.throws(() => guard.beginExecution(() => assert.fail('a refused execution is never stopped')), { name: 'RunCostCapExceededError' });
+    await assert.rejects(guard.admit(), { name: 'RunCostCapExceededError' });
+    assert.equal(exceeded.length, 1);
+
+    const funded = guardFor(() => 4, { override: 5 });
+    await funded.start();
+    await funded.admit();
+    assert.equal(funded.exceeded, false, 'a run with budget left is admitted');
+    funded.close();
+    guard.close();
+});
+
 test('the workflow cap applies once known, unless a task override already wins', async () => {
     const guard = guardFor(() => 0, { instanceDefault: 10 });
     await guard.start();

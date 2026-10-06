@@ -20,6 +20,12 @@ export interface ActiveRunCostCap {
     readonly taskId: string;
     readonly exceeded: boolean;
     /**
+     * Awaited before a chargeable container starts: rejects with
+     * `RunCostCapExceededError` when the run's recorded and live spend already
+     * reach its cap, so an exhausted run launches nothing.
+     */
+    admit(): Promise<void>;
+    /**
      * Registers an agent container; `stop` runs once if the run reaches its cap.
      * Null when nothing is enforced. Throws `RunCostCapExceededError` once the
      * run was stopped at its cap: the container must not start.
