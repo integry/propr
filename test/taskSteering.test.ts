@@ -114,6 +114,7 @@ test('a replacement run receives undelivered steers once and announces its capab
         assert.match(replacement.promptContext, /Operator input during the run/);
         assert.match(replacement.promptContext, /Keep the public API unchanged/);
         assert.deepEqual(await replacement.steering!.claim(), []);
+        replacement.onPromptHandoff();
         await replacement.finish();
         const again = await startTaskSteeringRun({ taskId: 'task-restart', agent: claude, redisClient, db: database });
         assert.equal(again.promptContext, '');
@@ -131,6 +132,55 @@ test('a replacement run receives undelivered steers once and announces its capab
         assert.equal(unsteerable.steering, undefined);
         assert.equal(JSON.parse(redis.get(taskSteeringRedisKey('task-restart'))!).capability, 'none');
         await unsteerable.finish();
+    } finally {
+        await database.destroy();
+    }
+});
+
+test('a replacement run that fails before its prompt reaches an agent returns the carried steers', async () => {
+    const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+    try {
+        await database.schema.createTable('tasks', table => { table.string('task_id', 255).primary(); });
+        await database.schema.createTable('task_history', table => {
+            table.increments('history_id').primary();
+            table.string('task_id', 255).notNullable();
+            table.string('state', 50).notNullable();
+            table.timestamp('timestamp').notNullable();
+            table.text('reason');
+            table.json('metadata');
+        });
+        await createTaskSteers(database);
+        await database('tasks').insert({ task_id: 'task-prepare' });
+        const redisClient = { async set() { return 'OK'; }, async del() { return 1; } };
+        const claude = { steeringCapability: 'live' as const, config: { alias: 'claude-default', type: 'claude' as const } };
+        await createTaskSteer(database, {
+            taskId: 'task-prepare', runKey: 'run:earlier', author: 'octocat', authorSource: 'session',
+            message: 'Keep the public API unchanged',
+        });
+
+        // Preparation (git access, reasoning level) failed: no agent process was started.
+        const failed = await startTaskSteeringRun({ taskId: 'task-prepare', agent: claude, redisClient, db: database });
+        assert.match(failed.promptContext, /Keep the public API unchanged/);
+        await failed.finish();
+        const [pending] = await listTaskSteers(database, 'task-prepare');
+        assert.equal(pending!.deliveredAt, null);
+        assert.equal(pending!.delivery, null);
+        assert.equal((await database('task_history')).length, 0, 'no delivery is reported');
+
+        // The next run receives it; once its agent started, it is not replayed even if that run fails.
+        const next = await startTaskSteeringRun({ taskId: 'task-prepare', agent: claude, redisClient, db: database });
+        assert.match(next.promptContext, /Keep the public API unchanged/);
+        next.onPromptHandoff();
+        next.onPromptHandoff();
+        await next.finish();
+        const [delivered] = await listTaskSteers(database, 'task-prepare');
+        assert.equal(delivered!.delivery, 'replacement_prompt');
+        const timeline = await database('task_history').select('reason');
+        assert.equal(timeline.length, 1);
+        assert.match(timeline[0].reason, /carried into this run's prompt/);
+        const after = await startTaskSteeringRun({ taskId: 'task-prepare', agent: claude, redisClient, db: database });
+        assert.equal(after.promptContext, '');
+        await after.finish();
     } finally {
         await database.destroy();
     }

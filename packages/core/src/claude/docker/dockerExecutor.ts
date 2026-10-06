@@ -81,6 +81,8 @@ export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'wa
     costCapExempt?: boolean;
     /** Keep stdin open as a live operator-input channel instead of writing `stdinData`; delivered input counts as activity. */
     liveInput?: LiveInputOptions;
+    /** Called once the process was spawned with its input; from then on the input may have reached the agent. */
+    onPromptHandoff?: () => void;
 }
 
 function resolveDockerPath(command: string): string {
@@ -222,6 +224,13 @@ export function executeDockerCommand(command: string, args: string[], options: D
     });
 }
 
+/** The process was spawned with its input: from now on it may have reached the agent. */
+function notifyPromptHandoff(callback: (() => void) | undefined, taskId: string | undefined): void {
+    try { callback?.(); } catch (error) {
+        logger.warn({ taskId, error: (error as Error).message }, 'Prompt handoff callback failed');
+    }
+}
+
 function startDockerCommand(
     command: string,
     args: string[],
@@ -250,6 +259,7 @@ function startDockerCommand(
             void costExecution?.finish().catch(() => null);
             throw error;
         }
+        notifyPromptHandoff(options.onPromptHandoff, taskId);
 
         let sessionLineBuffer = '';
         const stderrTail = new BoundedDiagnosticTail(), workflowMarkers = captureWorkflowMarkers(args);

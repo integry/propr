@@ -152,6 +152,7 @@ export class ClaudeAgent implements Agent {
                 'claude',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId,
+                    onPromptHandoff: options.onPromptHandoff,
                     worktreePath, stdinData: prompt, taskId,
                     streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel,
                     // Steerable runs read the prompt and operator input as

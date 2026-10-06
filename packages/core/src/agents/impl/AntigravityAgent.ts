@@ -112,6 +112,7 @@ export class AntigravityAgent implements Agent {
                 'antigravity',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData: prompt,
+                    onPromptHandoff: options.onPromptHandoff,
                     taskId, streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel
                 }),
                 undefined,

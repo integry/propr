@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { afterEach, beforeEach, describe, test } from 'node:test';
+import { Writable } from 'node:stream';
+import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import { TASK_STEER_MAX_PER_RUN } from '@propr/shared';
 import { up as createTaskSteers } from '../src/db/migrations/20261006000000_create_task_steers.js';
 import { executeDockerCommand } from '../src/claude/docker/dockerExecutor.js';
-import type { LiveInputMessage, LiveInputSource } from '../src/claude/docker/dockerLiveInput.js';
+import { startLiveInput, type LiveInputMessage, type LiveInputSource } from '../src/claude/docker/dockerLiveInput.js';
 import { encodeClaudeUserMessage, isClaudeResultRecord } from '../src/agents/impl/utils/claudeStreamInput.js';
 import {
     TaskSteerLimitError,
@@ -183,5 +184,57 @@ readline.createInterface({ input: process.stdin }).on('line', () => {
         await run;
         assert.deepEqual(source.claimed, []);
         assert.equal(source.pending.length, 1);
+    });
+
+    test('stops polling when the agent input fails, and close stays safe afterwards', async () => {
+        const source = new QueueSource();
+        const stdin = new Writable({
+            write(_chunk, _encoding, callback) { callback(new Error('EPIPE: the agent closed its input')); },
+        });
+        const cleared: unknown[] = [];
+        const realClearInterval = globalThis.clearInterval;
+        const clearSpy = mock.method(globalThis, 'clearInterval', (timer: Parameters<typeof clearInterval>[0]) => {
+            cleared.push(timer);
+            realClearInterval(timer);
+        });
+        let timer: unknown;
+        const realSetInterval = globalThis.setInterval;
+        const setSpy = mock.method(globalThis, 'setInterval', ((callback: () => void, ms: number) => {
+            timer = realSetInterval(callback, ms);
+            return timer;
+        }) as typeof setInterval);
+        try {
+            const channel = startLiveInput(stdin, {
+                initialInput: encodeClaudeUserMessage('Implement the issue.'),
+                source,
+                encode: encodeClaudeUserMessage,
+                endsInput: isClaudeResultRecord,
+                pollIntervalMs: 10,
+            }, { taskId: 'task-1' });
+            await new Promise(resolve => setImmediate(resolve));
+            assert.ok(timer, 'polling started');
+            assert.deepEqual(cleared, [timer], 'the stdin error cancels polling');
+            // The executor still closes the channel when the process exits.
+            channel.close();
+            channel.close();
+            await channel.settled();
+            source.pending.push({ id: 'steer-1', text: 'Never claimed' });
+            await new Promise(resolve => setTimeout(resolve, 50));
+            assert.deepEqual(source.claimed, []);
+        } finally {
+            setSpy.mock.restore();
+            clearSpy.mock.restore();
+        }
+    });
+
+    test('reports the prompt handoff once the agent process started', async () => {
+        let handoffs = 0;
+        const result = await executeDockerCommand(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0));'], {
+            timeout: 10_000,
+            stdinData: 'Implement the issue.',
+            onPromptHandoff: () => { handoffs += 1; },
+        });
+        assert.equal(result.exitCode, 0);
+        assert.equal(handoffs, 1);
     });
 });

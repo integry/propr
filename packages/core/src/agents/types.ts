@@ -112,6 +112,12 @@ export interface AgentTaskOptions {
      * running session; others ignore it.
      */
     steering?: LiveInputSource;
+
+    /**
+     * Called once the agent process was started with the prompt. Until then
+     * the prompt has definitely not reached an agent.
+     */
+    onPromptHandoff?: () => void;
 }
 
 export interface GoalControlInput {

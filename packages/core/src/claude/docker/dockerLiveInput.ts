@@ -68,9 +68,22 @@ export function startLiveInput(
     const acknowledgements = new Set<Promise<void>>();
     const writable = (): boolean => !closed && !!stdin?.writable && !stdin.writableEnded;
 
+    let timer: ReturnType<typeof setInterval> | undefined;
+    // Idempotent and unconditional: an input that already failed or ended
+    // still stops polling, so no timer outlives the execution.
+    const close = (): void => {
+        if (timer !== undefined) {
+            clearInterval(timer);
+            timer = undefined;
+        }
+        if (closed) return;
+        closed = true;
+        try { stdin?.end(); } catch { /* the process already closed its input */ }
+    };
+
     stdin?.on('error', error => {
         logger.warn({ taskId: context.taskId, error: error.message }, 'Agent live input channel closed with an error');
-        closed = true;
+        close();
     });
     stdin?.write(options.initialInput);
 
@@ -116,18 +129,15 @@ export function startLiveInput(
         }
     };
 
-    const timer = setInterval(() => {
-        // Never overlap claims: each poll waits for the previous one.
-        polling = polling.then(deliver);
-    }, options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
-    timer.unref?.();
-
-    const close = (): void => {
-        if (closed) return;
-        closed = true;
-        clearInterval(timer);
-        try { stdin?.end(); } catch { /* the process already closed its input */ }
-    };
+    // The initial write can fail synchronously into the error handler; never
+    // start polling an input that is already closed.
+    if (!closed) {
+        timer = setInterval(() => {
+            // Never overlap claims: each poll waits for the previous one.
+            polling = polling.then(deliver);
+        }, options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
+        timer.unref?.();
+    }
 
     return {
         observeLine: line => { if (!closed && options.endsInput(line)) close(); },

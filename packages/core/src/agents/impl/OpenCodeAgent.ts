@@ -85,6 +85,7 @@ export class OpenCodeAgent implements Agent {
                     cwd: worktreePath,
                     onSessionId,
                     onContainerId,
+                    onPromptHandoff: options.onPromptHandoff,
                     worktreePath,
                     stdinData: prompt,
                     taskId,

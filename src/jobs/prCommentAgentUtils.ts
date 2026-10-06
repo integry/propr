@@ -331,6 +331,7 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
         prNumber: pullRequestNumber,
         reasoningLevel,
         steering: steeringRun.steering,
+        onPromptHandoff: steeringRun.onPromptHandoff,
     });
     let agentResult;
     try {

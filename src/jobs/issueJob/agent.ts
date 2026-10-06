@@ -150,7 +150,8 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
       onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
       taskId,
-      steering: steeringRun.steering
+      steering: steeringRun.steering,
+      onPromptHandoff: steeringRun.onPromptHandoff
     }));
   } finally {
     clearInterval(fileChangesInterval);
