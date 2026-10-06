@@ -161,7 +161,8 @@ export function budgetExceededEvent(snapshot: RunCostSnapshot, budgetTaskIds: re
     };
 }
 
-async function writeTimelineEvent(target: RunCostCapTarget, snapshot: RunCostSnapshot): Promise<void> {
+/** Records the `budget.exceeded` event on the run's task timeline, if the task exists. */
+export async function writeTimelineEvent(target: Pick<RunCostCapTarget, 'taskId' | 'budgetTaskIds'>, snapshot: RunCostSnapshot): Promise<void> {
     const task = await db('tasks').where({ task_id: target.taskId }).first('task_id');
     if (!task) return;
     const current = await getStateManager().getTaskState(target.taskId);
