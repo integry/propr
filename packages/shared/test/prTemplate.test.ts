@@ -122,3 +122,12 @@ test('composePrTitle renders plain text and keeps the default when absent or emp
   assert.equal(composePrTitle('default', undefined, values), 'default');
   assert.equal(composePrTitle('default', parsePrTemplate('## title\n{{issue_title}}'), { ...values, issue_title: 'x'.repeat(300) }).length, 256);
 });
+
+test('placeholder matching stays linear on unterminated braces followed by whitespace', () => {
+  const hostile = `{{{{${'\t'.repeat(50_000)}`;
+  const started = Date.now();
+  assert.equal(renderPrTemplateSection(hostile, values), hostile);
+  assert.deepEqual(parsePrTemplate(`## summary\n${hostile}`).problems, []);
+  assert.equal(renderPrTemplateSection('{{ \tissue_number\t }}', values), '42');
+  assert.ok(Date.now() - started < 1000);
+});

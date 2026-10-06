@@ -68,7 +68,9 @@ export class PrTemplateError extends Error {
   }
 }
 
-const PLACEHOLDER_PATTERN = /\{\{\s*([^{}]*?)\s*\}\}/g;
+// Capture the raw contents and trim in code: optional whitespace around a lazy
+// group backtracks polynomially on long runs of whitespace.
+const PLACEHOLDER_PATTERN = /\{\{([^{}]*)\}\}/g;
 const HEADING_PATTERN = /^ {0,3}##(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
 const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
 
@@ -91,10 +93,11 @@ function findUnknownPlaceholders(body: string, firstLine: number): PrTemplatePro
   const problems: PrTemplateProblem[] = [];
   body.split('\n').forEach((line, index) => {
     for (const match of line.matchAll(PLACEHOLDER_PATTERN)) {
-      if (!isKnownPlaceholder(match[1])) {
+      const name = match[1].trim();
+      if (!isKnownPlaceholder(name)) {
         problems.push({
           kind: 'unknown_placeholder',
-          message: `Unknown placeholder {{${match[1]}}}; supported placeholders: ${Object.keys(PR_TEMPLATE_PLACEHOLDERS).join(', ')}`,
+          message: `Unknown placeholder {{${name}}}; supported placeholders: ${Object.keys(PR_TEMPLATE_PLACEHOLDERS).join(', ')}`,
           line: firstLine + index,
         });
       }
@@ -165,7 +168,8 @@ export function neutralizeHtml(text: string): string {
  * placeholder; callers fall back to the default description.
  */
 export function renderPrTemplateSection(text: string, values: PrTemplateValues, context: 'title' | 'body' = 'body'): string {
-  return text.replace(PLACEHOLDER_PATTERN, (_match, name: string) => {
+  return text.replace(PLACEHOLDER_PATTERN, (_match, rawName: string) => {
+    const name = rawName.trim();
     if (!isKnownPlaceholder(name)) throw new PrTemplateError(`Unknown placeholder {{${name}}}`);
     const value = values[name] ?? '';
     if (context === 'title') return value.replace(/\s+/g, ' ').trim();
