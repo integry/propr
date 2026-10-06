@@ -134,6 +134,17 @@ test('implementation and direct goals replace the worker token with installation
     }
 });
 
+test('launches without repository access mint no token and mount no clones, even without a context policy', async () => {
+    await fs.mkdir(path.join(root, 'owner', 'task', '.git'), { recursive: true });
+    await fs.mkdir(path.join(legacyRoot, 'retained-owner', 'repo', '.git'), { recursive: true });
+    for (const extra of [{}, { executionMode: 'goal' as const, environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate' } }]) {
+        const result = await prepareAgentGitAccess({ ...options, ...extra, repositoryAccess: 'none' });
+        assert.equal(result.githubToken, '');
+        assert.deepEqual(result.gitMountArgs, []);
+    }
+    assert.deepEqual(requests, []);
+});
+
 test('only explicit orchestrated goals retain full permissions and writable git', async () => {
     const result = await prepareAgentGitAccess({ ...options, executionMode: 'goal', environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate' } });
     assert.deepEqual(requests[0], { type: 'installation', refresh: true });

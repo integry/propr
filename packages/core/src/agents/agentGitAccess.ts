@@ -146,6 +146,8 @@ async function taskGitMetadataMount(worktreePath: string, clones: string[], writ
 
 /** Called at the adapter boundary, including follow-ups, fixes and native goal resumes. */
 export async function prepareAgentGitAccess(options: AgentTaskOptions, readOnlyWorkspace = false): Promise<AgentTaskOptions> {
+    // No token is minted and no clone is mounted, whatever the repository settings.
+    if (options.repositoryAccess === 'none') return { ...options, githubToken: '', gitMountArgs: [] };
     const writable = agentOwnsGit(options);
     const repository = `${options.issueRef.repoOwner}/${options.issueRef.repoName}`;
     const entries = (await loadMonitoredReposStrict()).filter(repo => repo.name.toLowerCase() === repository.toLowerCase());

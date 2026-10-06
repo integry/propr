@@ -16,6 +16,7 @@ const {
   AGENT_RUN_ABANDONED_REASON,
   AGENT_RUN_USAGE_LIMIT_REASON,
   AgentRunPersistenceError,
+  AgentRunSettlementError,
   agentRunReportTaskId,
   createAgentRunProcessor,
 } = await import('../src/jobs/processAgentRunJob.ts');
@@ -143,6 +144,27 @@ function harness(options: {
   };
 }
 
+/** What the cancel endpoint stores: running → cancelled. */
+async function cancelRun(h: Harness): Promise<void> {
+  await h.deps.transitionRun!('run-1', ['queued', 'running'], 'cancelled');
+}
+
+/** Makes one task-state call fail once, as a Redis outage would. */
+function failTaskCallOnce(h: Harness, name: 'markTaskFailed' | 'markTaskCancelled'): void {
+  const stateManager = h.deps.stateManager!;
+  let failed = false;
+  h.deps.stateManager = () => {
+    const manager = stateManager();
+    return {
+      ...manager,
+      [name]: async (...args: unknown[]) => {
+        if (!failed) { failed = true; throw new Error('redis unavailable'); }
+        return (manager[name] as (...callArgs: unknown[]) => Promise<unknown>)(...args);
+      },
+    } as typeof manager;
+  };
+}
+
 describe('processAgentRunJob', () => {
   test('a queued dry_run produces a stored report and completes with a visible task', async () => {
     const h = harness();
@@ -256,7 +278,12 @@ describe('processAgentRunJob', () => {
 
   test('a cancel during execution is not overwritten by the late result and cancels the task', async () => {
     // The cancel endpoint could not stop the task, so the agent still returns a report.
-    const h = harness({ onRunning: current => ({ ...current, state: 'cancelled' }) });
+    const h: Harness = harness({
+      execute: async () => {
+        await cancelRun(h);
+        return { success: true, summary: 'Report', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 };
+      },
+    });
     const result = await createAgentRunProcessor(h.deps)(job);
     assert.equal(result.status, 'cancelled');
     assert.equal(h.run().state, 'cancelled');
@@ -267,11 +294,14 @@ describe('processAgentRunJob', () => {
   });
 
   test('a cancel during execution followed by an agent failure cancels the task instead of failing it', async () => {
-    const h = harness({
-      onRunning: current => ({ ...current, state: 'cancelled' }),
-      execute: async () => ({ success: false, error: 'container killed', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 }),
+    const h: Harness = harness({
+      execute: async () => {
+        await cancelRun(h);
+        return { success: false, error: 'container killed', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 };
+      },
     });
     await createAgentRunProcessor(h.deps)(job);
+    assert.equal(h.executeTask.mock.callCount(), 1);
     assert.equal(h.run().state, 'cancelled');
     assert.equal(h.stateCalls.at(-1)?.[0], 'cancelled');
     assert.ok(!h.stateCalls.some(call => call[0] === 'failed'));
@@ -445,6 +475,152 @@ describe('processAgentRunJob', () => {
     await assert.rejects(createAgentRunProcessor(h.deps)(job), AgentRunPersistenceError);
     assert.equal(h.run().state, 'running');
     assert.equal(h.stateCalls.length, 0);
+  });
+
+  test('without repository_read the agent launches with no repository mounts or credentials', async () => {
+    const h = harness({ run: storedRun({ definitionSnapshot: definition({ capabilities: [] }) }) });
+    await createAgentRunProcessor(h.deps)(job);
+    const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;
+    assert.equal(options.repositoryAccess, 'none');
+    assert.equal(options.githubToken, '');
+  });
+
+  test('repository_read without a readable workspace still launches without repository access', async () => {
+    const h = harness({
+      prepare: async () => ({
+        worktreePath: '/tmp/scratch', branchName: 'agent-run/run-1',
+        promptWorkspace: { repositoriesReadable: false, primaryRepository: '.', contextRepositories: [] },
+        attachments: [], cleanup: async () => undefined,
+      }),
+    });
+    await createAgentRunProcessor(h.deps)(job);
+    const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;
+    assert.equal(options.repositoryAccess, 'none');
+    assert.equal(options.githubToken, '');
+  });
+
+  test('with repository_read the agent gets the worker credential for the adapter to scope', async () => {
+    const h = harness();
+    await createAgentRunProcessor(h.deps)(job);
+    const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;
+    assert.equal(options.repositoryAccess, undefined);
+    assert.equal(options.githubToken, 'ghs_token');
+  });
+
+  test('a run cancelled while its workspace is prepared never starts the agent', async () => {
+    const h: Harness = harness({
+      prepare: async () => {
+        await cancelRun(h);
+        return {
+          worktreePath: '/tmp/worktree', branchName: 'agent-run/run-1',
+          promptWorkspace: { repositoriesReadable: true, primaryRepository: '.', contextRepositories: [] },
+          attachments: [], cleanup: h.cleanup,
+        };
+      },
+    });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'cancelled');
+    assert.equal(h.executeTask.mock.callCount(), 0);
+    assert.equal(h.run().state, 'cancelled');
+    assert.equal(h.taskState(), 'cancelled');
+    assert.equal(h.cleanup.mock.callCount(), 1);
+  });
+
+  test('a task stopped while its workspace is prepared cancels the run and never starts the agent', async () => {
+    const h: Harness = harness({
+      prepare: async () => {
+        await h.deps.stateManager!().markTaskCancelled(agentRunReportTaskId('run-1'), 'user');
+        return {
+          worktreePath: '/tmp/worktree', branchName: 'agent-run/run-1',
+          promptWorkspace: { repositoriesReadable: true, primaryRepository: '.', contextRepositories: [] },
+          attachments: [], cleanup: h.cleanup,
+        };
+      },
+    });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'cancelled');
+    assert.equal(h.executeTask.mock.callCount(), 0);
+    assert.equal(h.run().state, 'cancelled');
+    assert.equal(h.taskState(), 'cancelled');
+    assert.equal(h.cleanup.mock.callCount(), 1);
+  });
+
+  test('a task that could not be failed rejects the delivery; the retry fails the task of the failed run', async () => {
+    const h = harness({
+      execute: async () => ({ success: false, error: 'container exited', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 }),
+    });
+    failTaskCallOnce(h, 'markTaskFailed');
+    const processor = createAgentRunProcessor(h.deps);
+    await assert.rejects(processor(job), AgentRunSettlementError);
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.taskState(), 'claude_execution');
+
+    const retried = await processor(job);
+    assert.equal(retried.status, 'failed');
+    assert.equal(h.taskState(), 'failed');
+    assert.equal(h.executeTask.mock.callCount(), 1);
+  });
+
+  test('a redelivered failed run whose worker stopped before the task followed fails the task', async () => {
+    const taskId = agentRunReportTaskId('run-1');
+    const h = harness({
+      run: storedRun({ state: 'failed', reportTaskId: taskId, failureReason: 'Agent execution failed: container exited' }),
+      task: 'claude_execution',
+    });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'failed');
+    assert.deepEqual(h.stateCalls.map(call => [call[0], call[1]]), [['failed', taskId]]);
+    assert.equal((h.stateCalls[0][2] as Error).message, 'Agent execution failed: container exited');
+    assert.equal(h.transitions.length, 0);
+    assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('a redelivered cancelled run whose task was never stopped cancels the task', async () => {
+    const h = harness({ run: storedRun({ state: 'cancelled' }), task: 'pending' });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'cancelled');
+    assert.equal(h.taskState(), 'cancelled');
+    assert.equal(h.prepareWorkspace.mock.callCount(), 0);
+  });
+
+  test('a redelivered failed run whose task already ended is left alone', async () => {
+    const h = harness({ run: storedRun({ state: 'failed', reportTaskId: agentRunReportTaskId('run-1') }), task: 'failed' });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'skipped');
+    assert.equal(h.stateCalls.length, 0);
+  });
+
+  test('an abandoned run whose task could not be failed rejects the delivery; the retry fails the task', async () => {
+    const h = harness({ run: storedRun({ state: 'running', reportTaskId: agentRunReportTaskId('run-1') }), task: 'claude_execution' });
+    failTaskCallOnce(h, 'markTaskFailed');
+    const processor = createAgentRunProcessor(h.deps);
+    await assert.rejects(processor(job), AgentRunSettlementError);
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.taskState(), 'claude_execution');
+
+    const retried = await processor(job);
+    assert.equal(retried.status, 'failed');
+    assert.equal(h.taskState(), 'failed');
+  });
+
+  test('a cancelled run whose task could not be cancelled rejects the delivery; the retry cancels the task', async () => {
+    const h: Harness = harness({
+      execute: async () => {
+        await cancelRun(h);
+        return { success: true, summary: 'Report', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 };
+      },
+    });
+    failTaskCallOnce(h, 'markTaskCancelled');
+    const processor = createAgentRunProcessor(h.deps);
+    await assert.rejects(processor(job), AgentRunSettlementError);
+    assert.equal(h.run().state, 'cancelled');
+    assert.equal(h.taskState(), 'post_processing');
+    assert.equal(h.cleanup.mock.callCount(), 1);
+
+    const retried = await processor(job);
+    assert.equal(retried.status, 'cancelled');
+    assert.equal(h.taskState(), 'cancelled');
+    assert.equal(h.executeTask.mock.callCount(), 1);
   });
 
   test('the executor never calls a commit or push helper', async () => {

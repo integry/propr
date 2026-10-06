@@ -80,6 +80,11 @@ export interface AgentTaskOptions {
     githubToken: string;
     /** Worker-prepared mounts; never supplied by the agent. */
     gitMountArgs?: string[];
+    /**
+     * `none` launches without repository clone mounts or repository
+     * credentials (for example an agent run without `repository_read`).
+     */
+    repositoryAccess?: 'none';
 
     // Branch information
     branchName?: string;
