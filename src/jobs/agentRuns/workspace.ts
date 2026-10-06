@@ -73,6 +73,36 @@ export function contextRepositoryDir(repository: string): string {
     return path.join(AGENT_CONTEXT_DIR, `${owner}__${repo}`);
 }
 
+/**
+ * Make a reserved workspace directory (`.propr/agent-inputs`, `.propr/context`)
+ * a fresh, empty, real directory and return its resolved path. The checked-out
+ * repository controls these paths, so a tracked symlink or file on the way
+ * (or anything already at the leaf) is removed first; otherwise host-side
+ * writes could follow it outside the workspace.
+ */
+export async function prepareReservedDirectory(workspacePath: string, relativeDir: string): Promise<string> {
+    const root = await fs.realpath(workspacePath);
+    const segments = path.normalize(relativeDir).split(path.sep).filter(Boolean);
+    if (segments.length === 0 || segments.includes('..')) throw new Error(`Invalid reserved workspace directory: ${relativeDir}`);
+    let current = root;
+    for (const [index, segment] of segments.entries()) {
+        current = path.join(current, segment);
+        const stat = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT') return null;
+            throw error;
+        });
+        if (stat?.isDirectory() && index < segments.length - 1) continue;
+        // fs.remove unlinks a symlink itself, never its target.
+        if (stat) await fs.remove(current);
+        await fs.mkdir(current);
+    }
+    const resolved = await fs.realpath(current);
+    if (resolved !== path.join(root, ...segments)) {
+        throw new Error(`Reserved workspace directory ${relativeDir} resolves outside the workspace`);
+    }
+    return resolved;
+}
+
 function safeFileName(name: string, used: Set<string>): string {
     const base = path.basename(name).replace(/[^\w.\- ]+/g, '_').replace(/^\.+/, '').trim() || 'input';
     let candidate = base;
@@ -97,8 +127,7 @@ export async function copyAgentInputFiles(
 ): Promise<AgentReportPromptAttachment[]> {
     if (attachments.length === 0) return [];
     const sourceDir = path.join(inputRoot, path.basename(definitionId));
-    const targetDir = path.join(workspacePath, AGENT_INPUTS_DIR);
-    await fs.ensureDir(targetDir);
+    const targetDir = await prepareReservedDirectory(workspacePath, AGENT_INPUTS_DIR);
     const used = new Set<string>();
     const copied: AgentReportPromptAttachment[] = [];
     for (const attachment of attachments) {
@@ -155,9 +184,10 @@ async function prepareRepositoryWorkspace(input: PrepareAgentRunWorkspaceInput, 
 
     try {
         const contextRepositories: string[] = [];
+        const contextRoot = additional.length > 0 ? await prepareReservedDirectory(worktree.worktreePath, AGENT_CONTEXT_DIR) : '';
         for (const repository of additional) {
             const relative = contextRepositoryDir(repository);
-            await cloneContextRepository(repository, path.join(worktree.worktreePath, relative), githubToken);
+            await cloneContextRepository(repository, path.join(contextRoot, path.basename(relative)), githubToken);
             contextRepositories.push(relative);
         }
         const attachments = await copyAgentInputFiles(worktree.worktreePath, definition.id, definition.attachments, { log });

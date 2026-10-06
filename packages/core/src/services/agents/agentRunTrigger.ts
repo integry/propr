@@ -32,10 +32,12 @@ export const AGENT_RUN_JOB_NAMES: Readonly<Record<AgentRunPhase, string>> = {
 };
 
 /**
- * Not retried by BullMQ: a failure after the agent ran would spend tokens
- * again. Recovery is an explicit new trigger.
+ * Retried only to finish storing state: a delivery fails when a run's state
+ * could not be persisted. The processor never executes a claimed run again (a
+ * retry fails an abandoned `running` run, or finishes one whose report is
+ * stored), so a retry does not spend tokens twice.
  */
-export const AGENT_RUN_JOB_OPTIONS: Readonly<JobsOptions> = { attempts: 1 };
+export const AGENT_RUN_JOB_OPTIONS: Readonly<JobsOptions> = { attempts: 3, backoff: { type: 'exponential', delay: 5_000 } };
 
 export type AgentRunTriggerErrorCode = 'AGENT_DISABLED' | 'AGENT_INVALID';
 

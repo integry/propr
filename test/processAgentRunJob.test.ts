@@ -15,11 +15,12 @@ process.env.GIT_WORKTREES_BASE_PATH = SCRATCH_BASE;
 const {
   AGENT_RUN_ABANDONED_REASON,
   AGENT_RUN_USAGE_LIMIT_REASON,
+  AgentRunPersistenceError,
   agentRunReportTaskId,
   createAgentRunProcessor,
 } = await import('../src/jobs/processAgentRunJob.ts');
 const { advanceAfterReport } = await import('../src/jobs/agentRuns/autonomy.ts');
-const { AGENT_INPUTS_DIR, copyAgentInputFiles, prepareAgentRunWorkspace } = await import('../src/jobs/agentRuns/workspace.ts');
+const { AGENT_CONTEXT_DIR, AGENT_INPUTS_DIR, copyAgentInputFiles, prepareAgentRunWorkspace, prepareReservedDirectory } = await import('../src/jobs/agentRuns/workspace.ts');
 type AgentRunProcessorDeps = import('../src/jobs/processAgentRunJob.ts').AgentRunProcessorDeps;
 type AgentRunWorkspace = import('../src/jobs/agentRuns/workspace.ts').AgentRunWorkspace;
 
@@ -62,6 +63,7 @@ interface Harness {
   run: () => StoredAgentRun;
   transitions: Array<{ from: readonly AgentRunState[]; to: AgentRunState; patch: Record<string, unknown> }>;
   stateCalls: Array<[string, ...unknown[]]>;
+  taskState: () => string | null;
   executeTask: ReturnType<typeof mock.fn>;
   listPreviousReports: ReturnType<typeof mock.fn>;
   buildPrompt: ReturnType<typeof mock.fn>;
@@ -76,12 +78,23 @@ function harness(options: {
   execute?: (options: AgentTaskOptions) => Promise<unknown>;
   prepare?: () => Promise<AgentRunWorkspace>;
   onRunning?: (current: StoredAgentRun) => StoredAgentRun;
+  /** Stored state of the report task before the delivery; null when it does not exist. */
+  task?: string | null;
 } = {}): Harness {
   let current = options.run ?? storedRun();
   const transitions: Harness['transitions'] = [];
   const stateCalls: Harness['stateCalls'] = [];
   const cleanup = mock.fn(async () => undefined);
-  const record = (name: string) => async (...args: unknown[]) => { stateCalls.push([name, ...args]); return null; };
+  let task: string | null = options.task ?? null;
+  const taskStates: Record<string, string> = { create: 'pending', completed: 'completed', failed: 'failed', cancelled: 'cancelled' };
+  const terminal = new Set(['completed', 'failed', 'cancelled']);
+  const record = (name: string) => async (...args: unknown[]) => {
+    stateCalls.push([name, ...args]);
+    const next = name === 'update' ? args[1] as string : taskStates[name];
+    // Like WorkerStateManager: a terminal task keeps its state.
+    if (name === 'create' ? task === null : task === null || !terminal.has(task)) task = next;
+    return null;
+  };
 
   const transitionRun = (async (_id: string, from: readonly AgentRunState[], to: AgentRunState, patch: Record<string, unknown> = {}) => {
     transitions.push({ from, to, patch });
@@ -105,6 +118,7 @@ function harness(options: {
 
   return {
     run: () => current,
+    taskState: () => task,
     transitions, stateCalls, executeTask, listPreviousReports, buildPrompt, prepareWorkspace, cleanup,
     deps: {
       getRun: async () => current,
@@ -113,6 +127,7 @@ function harness(options: {
       listPreviousReports: listPreviousReports as unknown as AgentRunProcessorDeps['listPreviousReports'],
       stateManager: () => ({
         createTaskStateIfAbsent: record('create'),
+        getTaskState: async () => (task === null ? null : { state: task }),
         updateTaskState: record('update'),
         markTaskCompleted: record('completed'),
         markTaskFailed: record('failed'),
@@ -319,6 +334,119 @@ describe('processAgentRunJob', () => {
     assert.ok(h.run().report);
   });
 
+  test('a redelivery after the worker stopped once the report was stored completes the dry run and its task', async () => {
+    const taskId = agentRunReportTaskId('run-1');
+    const h = harness({
+      run: storedRun({ state: 'report_ready', reportTaskId: taskId, report: '## Summary\nStored report.' }),
+      task: 'post_processing',
+    });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.equal(h.run().state, 'completed');
+    assert.equal(h.run().report, '## Summary\nStored report.');
+    assert.deepEqual(h.transitions.map(t => [t.from, t.to]), [[['report_ready'], 'completed']]);
+    assert.deepEqual(h.stateCalls.map(call => [call[0], call[1]]), [['completed', taskId]]);
+    assert.equal((h.stateCalls[0][2] as { notificationRecap?: string }).notificationRecap, 'Stored report.');
+    assert.equal(h.taskState(), 'completed');
+    assert.equal(h.prepareWorkspace.mock.callCount(), 0);
+    assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('a redelivery after the run completed but before its task did completes the task', async () => {
+    const taskId = agentRunReportTaskId('run-1');
+    const h = harness({ run: storedRun({ state: 'completed', reportTaskId: taskId, report: 'Report' }), task: 'post_processing' });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.equal(h.transitions.length, 0);
+    assert.deepEqual(h.stateCalls.map(call => [call[0], call[1]]), [['completed', taskId]]);
+    assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('a duplicate delivery of a finished run leaves its completed task alone', async () => {
+    const taskId = agentRunReportTaskId('run-1');
+    const h = harness({ run: storedRun({ state: 'completed', reportTaskId: taskId, report: 'Report' }), task: 'completed' });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.equal(h.transitions.length, 0);
+    assert.equal(h.stateCalls.length, 0);
+    assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('a redelivered preview run keeps report_ready and completes its task', async () => {
+    const taskId = agentRunReportTaskId('run-1');
+    const h = harness({
+      run: storedRun({ state: 'report_ready', autonomyMode: 'preview', reportTaskId: taskId, report: 'Report' }),
+      task: 'post_processing',
+    });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.equal(h.run().state, 'report_ready');
+    assert.equal(h.transitions.length, 0);
+    assert.deepEqual(h.stateCalls.map(call => [call[0], call[1]]), [['completed', taskId]]);
+  });
+
+  test('a finalization error after the report is stored keeps the report and is retried by the next delivery', async () => {
+    const h = harness();
+    const advance = h.deps.advanceAfterReport!;
+    let attempts = 0;
+    h.deps.advanceAfterReport = async run => {
+      if (attempts++ === 0) throw new Error('connection reset');
+      return advance(run);
+    };
+    const processor = createAgentRunProcessor(h.deps);
+    await assert.rejects(processor(job), /connection reset/);
+    assert.equal(h.run().state, 'report_ready');
+    assert.ok(h.run().report);
+    assert.ok(!h.stateCalls.some(call => call[0] === 'failed' || call[0] === 'completed'));
+    assert.equal(h.cleanup.mock.callCount(), 1);
+
+    const retried = await processor(job);
+    assert.equal(retried.status, 'complete');
+    assert.equal(h.run().state, 'completed');
+    assert.equal(h.taskState(), 'completed');
+    assert.equal(h.executeTask.mock.callCount(), 1);
+  });
+
+  test('a failure transition that cannot be stored rejects the delivery; the retry fails the abandoned run', async () => {
+    const h = harness({
+      execute: async () => ({ success: false, error: 'container exited', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 }),
+    });
+    const transitionRun = h.deps.transitionRun!;
+    let outage = true;
+    h.deps.transitionRun = (async (...args: Parameters<typeof transitionRun>) => {
+      if (outage && args[2] === 'failed') throw new Error('database unavailable');
+      return transitionRun(...args);
+    }) as typeof transitionRun;
+    const processor = createAgentRunProcessor(h.deps);
+    await assert.rejects(processor(job), AgentRunPersistenceError);
+    assert.equal(h.run().state, 'running');
+    assert.ok(!h.stateCalls.some(call => call[0] === 'failed'));
+    assert.equal(h.cleanup.mock.callCount(), 1);
+
+    outage = false;
+    const retried = await processor(job);
+    assert.equal(retried.status, 'failed');
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.run().failureReason, AGENT_RUN_ABANDONED_REASON);
+    assert.equal(h.taskState(), 'failed');
+    assert.equal(h.executeTask.mock.callCount(), 1);
+  });
+
+  test('a validation failure that cannot be stored rejects the delivery', async () => {
+    const h = harness({ invalid: 'Repositories are not enabled: acme/web' });
+    h.deps.transitionRun = (async () => { throw new Error('database unavailable'); }) as unknown as AgentRunProcessorDeps['transitionRun'];
+    await assert.rejects(createAgentRunProcessor(h.deps)(job), AgentRunPersistenceError);
+    assert.equal(h.run().state, 'queued');
+  });
+
+  test('an abandoned run whose failure cannot be stored rejects the delivery and leaves the task running', async () => {
+    const h = harness({ run: storedRun({ state: 'running', reportTaskId: agentRunReportTaskId('run-1') }), task: 'claude_execution' });
+    h.deps.transitionRun = (async () => { throw new Error('database unavailable'); }) as unknown as AgentRunProcessorDeps['transitionRun'];
+    await assert.rejects(createAgentRunProcessor(h.deps)(job), AgentRunPersistenceError);
+    assert.equal(h.run().state, 'running');
+    assert.equal(h.stateCalls.length, 0);
+  });
+
   test('the executor never calls a commit or push helper', async () => {
     const source = await fs.readFile(new URL('../src/jobs/processAgentRunJob.ts', import.meta.url), 'utf8')
       + await fs.readFile(new URL('../src/jobs/agentRuns/workspace.ts', import.meta.url), 'utf8');
@@ -356,6 +484,58 @@ describe('agent run workspace', () => {
       assert.equal(await fs.pathExists(workspace.worktreePath), false);
     } finally {
       await fs.remove(inputs);
+    }
+  });
+
+  test('input files are not written through a checked-out symlink to a directory outside the workspace', async () => {
+    const inputs = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-inputs-'));
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-workspace-'));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-outside-'));
+    try {
+      const storedPath = path.join(inputs, 'def-1', 'abc-notes.txt');
+      await fs.outputFile(storedPath, 'notes');
+      await fs.outputFile(path.join(outside, 'notes.txt'), 'original');
+      await fs.ensureDir(path.join(workspace, '.propr'));
+      await fs.symlink(outside, path.join(workspace, AGENT_INPUTS_DIR));
+
+      const copied = await copyAgentInputFiles(workspace, 'def-1', [{
+        id: 'a1', originalName: 'notes.txt', storedPath, mimeType: 'text/plain', size: 5, tokenEstimate: 1, type: 'text',
+      }], { inputRoot: inputs });
+
+      assert.deepEqual(copied, [{ originalName: 'notes.txt', workspacePath: path.join(AGENT_INPUTS_DIR, 'notes.txt') }]);
+      assert.equal(await fs.readFile(path.join(outside, 'notes.txt'), 'utf8'), 'original');
+      assert.ok(!(await fs.lstat(path.join(workspace, AGENT_INPUTS_DIR))).isSymbolicLink());
+      assert.equal(await fs.readFile(path.join(workspace, AGENT_INPUTS_DIR, 'notes.txt'), 'utf8'), 'notes');
+    } finally {
+      await fs.remove(inputs);
+      await fs.remove(workspace);
+      await fs.remove(outside);
+    }
+  });
+
+  test('reserved directories replace symlinks anywhere on their path and anything already inside them', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-workspace-'));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-outside-'));
+    try {
+      await fs.outputFile(path.join(outside, 'context', 'keep.txt'), 'outside');
+      // `.propr` itself points outside the workspace.
+      await fs.symlink(outside, path.join(workspace, '.propr'));
+      const contextDir = await prepareReservedDirectory(workspace, AGENT_CONTEXT_DIR);
+      assert.equal(contextDir, path.join(await fs.realpath(workspace), AGENT_CONTEXT_DIR));
+      assert.ok(!(await fs.lstat(path.join(workspace, '.propr'))).isSymbolicLink());
+      assert.deepEqual(await fs.readdir(contextDir), []);
+      assert.equal(await fs.readFile(path.join(outside, 'context', 'keep.txt'), 'utf8'), 'outside');
+
+      // A tracked file symlink inside a real reserved directory is removed, not followed.
+      await fs.outputFile(path.join(outside, 'notes.txt'), 'original');
+      await fs.ensureDir(path.join(workspace, AGENT_INPUTS_DIR));
+      await fs.symlink(path.join(outside, 'notes.txt'), path.join(workspace, AGENT_INPUTS_DIR, 'notes.txt'));
+      const inputsDir = await prepareReservedDirectory(workspace, AGENT_INPUTS_DIR);
+      assert.deepEqual(await fs.readdir(inputsDir), []);
+      assert.equal(await fs.readFile(path.join(outside, 'notes.txt'), 'utf8'), 'original');
+    } finally {
+      await fs.remove(workspace);
+      await fs.remove(outside);
     }
   });
 

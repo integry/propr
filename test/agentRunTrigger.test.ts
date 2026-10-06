@@ -90,7 +90,7 @@ describe('triggerAgentRun', () => {
     const [job] = queue.calls;
     assert.equal(job.name, 'processAgentRun');
     assert.equal(job.options.jobId, `agent-run-${result.run.id}-report`);
-    assert.equal(job.options.attempts, 1);
+    assert.equal(job.options.attempts, 3);
     assert.deepEqual({ ...job.data, correlationId: undefined }, {
       runId: result.run.id, definitionId: definition.id, ownerId: 'alice', phase: 'report', correlationId: undefined,
     });

@@ -55,7 +55,7 @@ export interface ResolvedAgentRunAgent {
     model: string | undefined;
 }
 
-export type AgentRunStateManager = Pick<WorkerStateManager, 'createTaskStateIfAbsent' | 'updateTaskState' | 'markTaskCompleted' | 'markTaskFailed' | 'markTaskCancelled'>;
+export type AgentRunStateManager = Pick<WorkerStateManager, 'createTaskStateIfAbsent' | 'getTaskState' | 'updateTaskState' | 'markTaskCompleted' | 'markTaskFailed' | 'markTaskCancelled'>;
 
 export interface AgentRunProcessorDeps {
     getRun: (runId: string) => Promise<StoredAgentRun | undefined>;
@@ -144,6 +144,19 @@ function failureMessage(result: AgentExecutionResult): string {
 
 class AgentRunReportError extends Error {}
 
+/**
+ * A run's failure could not be persisted. Thrown out of the processor so the
+ * delivery fails and BullMQ retries it, instead of resolving as if settled.
+ */
+export class AgentRunPersistenceError extends Error {
+    constructor(runId: string, cause: unknown) {
+        super(`Could not mark agent run ${runId} failed: ${(cause as Error)?.message ?? String(cause)}`, { cause });
+        this.name = 'AgentRunPersistenceError';
+    }
+}
+
+const TERMINAL_TASK_STATES = new Set<string>([TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED]);
+
 function reportFromResult(result: AgentExecutionResult): string {
     if (!result.success) throw new AgentRunReportError(failureMessage(result));
     const report = extractAgentReport(result);
@@ -157,16 +170,21 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
     /** Run ids this process is executing; a redelivery of one of them competes with a live attempt. */
     const activeRuns = new Set<string>();
 
-    /** Returns false only when the run had already left `from` (another writer got there first). */
+    /**
+     * Returns false when the run had already left `from` (another writer got
+     * there first). Throws `AgentRunPersistenceError` when the transition
+     * itself could not be stored.
+     */
     async function failRun(runId: string, from: AgentRunState[], reason: string, log: Logger): Promise<boolean> {
+        let failed: StoredAgentRun | null;
         try {
-            const failed = await deps.transitionRun(runId, from, 'failed', { failureReason: reason });
-            if (!failed) log.info({ runId }, 'Agent run left its state before it could be marked failed');
-            return failed !== null;
+            failed = await deps.transitionRun(runId, from, 'failed', { failureReason: reason });
         } catch (error) {
             log.error({ runId, err: error }, 'Could not mark agent run failed');
-            return true;
+            throw new AgentRunPersistenceError(runId, error);
         }
+        if (!failed) log.info({ runId }, 'Agent run left its state before it could be marked failed');
+        return failed !== null;
     }
 
     /**
@@ -255,6 +273,65 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         return { status: 'failed', runId, taskId, reason: AGENT_RUN_ABANDONED_REASON, correlationId };
     }
 
+    /**
+     * Advances a run whose report is stored and completes its report task.
+     * Idempotent, so a redelivery after an interrupted attempt can finish it:
+     * a run already advanced is not advanced again, and a task that already
+     * ended is left as it is. Errors propagate so the delivery is retried.
+     */
+    async function finalizeReportedRun(
+        { run, taskId, stateManager, log }: { run: StoredAgentRun; taskId: string; stateManager: AgentRunStateManager; log: Logger },
+    ): Promise<StoredAgentRun | null> {
+        let settled = run.state === 'report_ready' ? await deps.advanceAfterReport(run) : run;
+        // Another writer moved the run on; follow what it stored.
+        if (!settled) settled = await deps.getRun(run.id) ?? null;
+        if (!settled || (settled.state !== 'report_ready' && settled.state !== 'completed')) {
+            await settleTaskWithRun({ runId: run.id, taskId, stateManager, log });
+            return settled;
+        }
+        const task = await stateManager.getTaskState(taskId);
+        if (task && !TERMINAL_TASK_STATES.has(task.state)) {
+            await stateManager.markTaskCompleted(taskId, { status: 'complete', notificationRecap: agentReportRecap(settled.report ?? run.report ?? '') });
+        }
+        return settled;
+    }
+
+    /**
+     * A redelivered job whose report is already stored: the worker stopped
+     * between storing the report and finishing the run or its task. The agent
+     * is not executed again; only the remaining lifecycle steps run.
+     */
+    async function recoverReportedRun(run: StoredAgentRun, correlationId: string, log: Logger): Promise<JobResult> {
+        const runId = run.id;
+        const taskId = run.reportTaskId ?? agentRunReportTaskId(runId);
+        if (activeRuns.has(runId)) {
+            log.warn({ runId, taskId }, 'Agent run is already finishing in this worker; ignoring duplicate delivery');
+            return { status: 'skipped', runId, taskId, correlationId };
+        }
+        log.info({ runId, taskId, state: run.state }, 'Finishing agent run whose report was stored by an interrupted attempt');
+        const settled = await finalizeReportedRun({ run, taskId, stateManager: deps.stateManager(), log });
+        return reportedRunResult(settled, { runId, taskId, correlationId });
+    }
+
+    function reportedRunResult(settled: StoredAgentRun | null, ids: { runId: string; taskId: string; correlationId: string }): JobResult {
+        const state = settled?.state ?? null;
+        if (state === 'report_ready' || state === 'completed') return { status: 'complete', ...ids, state };
+        return { status: state === 'failed' ? 'failed' : state === 'cancelled' ? 'cancelled' : 'skipped', ...ids };
+    }
+
+    /** Entry for a delivery whose run is no longer `queued`. */
+    async function handleUnqueuedRun(
+        run: StoredAgentRun | undefined,
+        { runId, correlationId, log }: { runId: string; correlationId: string; log: Logger },
+    ): Promise<JobResult> {
+        if (run?.state === 'running') return recoverAbandonedRun(run, correlationId, log);
+        if (run?.report != null && (run.state === 'report_ready' || run.state === 'completed')) {
+            return recoverReportedRun(run, correlationId, log);
+        }
+        log.info({ runId, state: run?.state ?? null }, 'Agent run is not queued; skipping');
+        return { status: 'skipped', runId, correlationId };
+    }
+
     async function previousReportsFor(definition: StoredAgentDefinition, run: StoredAgentRun) {
         if (!definition.includePreviousReports) return [];
         return deps.listPreviousReports(definition.id, {
@@ -269,13 +346,10 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         const log: Logger = logger.withCorrelation(correlationId);
 
         // 1. A run cancelled or skipped before pickup does nothing; one left
-        //    running by an interrupted attempt is recovered.
+        //    running by an interrupted attempt is recovered, and one whose
+        //    report was stored has its remaining lifecycle steps finished.
         const run = await deps.getRun(runId);
-        if (run?.state === 'running') return recoverAbandonedRun(run, correlationId, log);
-        if (!run || run.state !== 'queued') {
-            log.info({ runId, state: run?.state ?? null }, 'Agent run is not queued; skipping');
-            return { status: 'skipped', runId, correlationId };
-        }
+        if (!run || run.state !== 'queued') return handleUnqueuedRun(run, { runId, correlationId, log });
 
         // 2. Execute the definition as it was when the run was triggered.
         const definition = run.definitionSnapshot;
@@ -301,6 +375,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
 
         activeRuns.add(runId);
         let workspace: AgentRunWorkspace | undefined;
+        let reportStored = false;
         try {
             await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Preparing agent workspace' });
             const { token, octokit } = await deps.getGitHubAccess();
@@ -347,13 +422,15 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             if (!reported) {
                 return discardLateReport({ runId, taskId, stateManager, log }, correlationId);
             }
-            const advanced = await deps.advanceAfterReport(reported);
+            reportStored = true;
 
-            // 10. Close the task.
-            await stateManager.markTaskCompleted(taskId, { status: 'complete', notificationRecap: agentReportRecap(report) });
-            log.info({ runId, taskId, agentAlias: alias, model, state: advanced?.state ?? reported.state }, 'Agent run report stored');
-            return { status: 'complete', runId, taskId, state: advanced?.state ?? reported.state, correlationId };
+            // 10. Close the task. A redelivery repeats this if it is interrupted.
+            const settled = await finalizeReportedRun({ run: reported, taskId, stateManager, log });
+            log.info({ runId, taskId, agentAlias: alias, model, state: settled?.state ?? null }, 'Agent run report stored');
+            return reportedRunResult(settled, { runId, taskId, correlationId });
         } catch (error) {
+            // The report is kept; the retried delivery finishes the run.
+            if (reportStored) throw error;
             const reason = await failRunningRun({ runId, taskId, stateManager, log }, error);
             return { status: 'failed', runId, taskId, reason, correlationId };
         } finally {
