@@ -15,9 +15,10 @@ const scoreSemanticRelevance = mock.fn(async () => {
 // The semantic miner's LLM scores the shared file only when it is shown the
 // main-only commit, so a score proves which history was mined.
 const minerPrompts: string[] = [];
+let minerFeatureFiles: Array<{ path: string; score: number; reason: string }> = [];
 const runLightweightLLMAnalysis = mock.fn(async ({ prompt }: { prompt: string }) => {
   minerPrompts.push(prompt);
-  const files = prompt.includes('tune widget on main') ? [{ path: 'src/widget/main.ts', score: 95, reason: 'main' }] : [];
+  const files = prompt.includes('tune widget on main') ? [{ path: 'src/widget/main.ts', score: 95, reason: 'main' }] : minerFeatureFiles;
   return JSON.stringify({ files });
 });
 
@@ -68,6 +69,7 @@ beforeEach(() => {
   summaryScores = [];
   summaryError = null;
   minerPrompts.length = 0;
+  minerFeatureFiles = [];
 });
 
 const agent = { config: { alias: 'claude' } } as never;
@@ -136,4 +138,21 @@ test('commit-scoped semantic history mining reads the commit history, not the ch
   const unscoped = await findRelevantFiles(repoPath, 'widget', { useSemanticMining: true, semanticMiningOptions });
   assert.ok(minerPrompts[1].includes('tune widget on main'));
   assert.ok(unscoped.files.find(file => file.path === 'src/widget/main.ts')?.signals?.includes('llm-semantic'));
+});
+
+test('semantic history candidates absent from the commit tree do not keep semantic weighting', async () => {
+  const semanticMiningOptions = {
+    worktreePath: repoPath, githubToken: 'token', issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo' },
+  };
+  const baseline = await findRelevantFiles(repoPath, 'widget', { commit: featureCommit });
+  const baselineShared = baseline.files.find(file => file.path === 'src/widget/main.ts');
+  assert.ok(baselineShared, 'heuristic scoring finds the shared file');
+
+  minerFeatureFiles = [{ path: 'src/widget/deleted.ts', score: 95, reason: 'deleted' }];
+  const scoped = await findRelevantFiles(repoPath, 'widget', { commit: featureCommit, useSemanticMining: true, semanticMiningOptions });
+
+  assert.equal(minerPrompts.length, 1);
+  assert.ok(!scoped.files.some(file => file.path === 'src/widget/deleted.ts'));
+  assert.equal(scoped.files.find(file => file.path === 'src/widget/main.ts')?.score, baselineShared.score);
+  assert.deepEqual(scoped.files.map(file => file.path).sort(), baseline.files.map(file => file.path).sort());
 });

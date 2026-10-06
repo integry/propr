@@ -345,22 +345,31 @@ async function performSummaryScoring(
   }
 }
 
+interface SemanticParticipation {
+  usedSemanticMining: boolean;
+  usedSummaryScoring: boolean;
+}
+
 /**
  * Removes scored paths that do not exist in the given commit's tree (no-op
- * without a commit). Returns whether summary scoring still contributes.
+ * without a commit). Returns which semantic sources still contribute.
  */
 async function restrictToCommitTree(
   repoPath: string,
   commit: string | undefined,
   finalScores: Record<string, AggregatedFileScore>,
-  usedSummaryScoring: boolean
-): Promise<boolean> {
-  if (!commit) return usedSummaryScoring;
+  participation: SemanticParticipation
+): Promise<SemanticParticipation> {
+  if (!commit) return participation;
   const treeFiles = new Set(await listTrackedFiles(repoPath, commit));
   for (const filePath of Object.keys(finalScores)) {
     if (!treeFiles.has(filePath)) delete finalScores[filePath];
   }
-  return usedSummaryScoring && Object.values(finalScores).some(data => data.reasons.has('semantic'));
+  const retained = Object.values(finalScores);
+  return {
+    usedSemanticMining: participation.usedSemanticMining && retained.some(data => data.reasons.has('llm-semantic')),
+    usedSummaryScoring: participation.usedSummaryScoring && retained.some(data => data.reasons.has('semantic')),
+  };
 }
 
 export async function findRelevantFiles(
@@ -434,7 +443,9 @@ export async function findRelevantFiles(
   }
 
   // Summaries and history can name files absent from the requested commit.
-  usedSummaryScoring = await restrictToCommitTree(repoPath, commit, finalScores, usedSummaryScoring);
+  ({ usedSemanticMining, usedSummaryScoring } = await restrictToCommitTree(
+    repoPath, commit, finalScores, { usedSemanticMining, usedSummaryScoring }
+  ));
 
   // --- Phase 4: Weighted Score Aggregation ---
   const hasSemanticScores = usedSemanticMining || usedSummaryScoring;

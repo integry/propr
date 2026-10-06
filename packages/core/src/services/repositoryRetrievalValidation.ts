@@ -67,7 +67,9 @@ export interface RemoteRefMapping {
  * Where a validated ref may live on origin, most specific first, and where it
  * is kept locally once fetched. Qualified refs keep their namespace (so
  * `refs/heads/x` is never looked up as `refs/heads/refs/heads/x`); a short
- * name may be either a branch or a tag. HEAD and commit SHAs have no mapping.
+ * name may be either a branch or a tag, and `origin/x` is remote-tracking
+ * shorthand for branch `x` (after a tag of that name, as git resolves it).
+ * HEAD and commit SHAs have no mapping.
  */
 export function remoteRefMappings(ref: string): RemoteRefMapping[] {
   if (ref === 'HEAD' || isFullCommitSha(ref)) return [];
@@ -75,7 +77,9 @@ export function remoteRefMappings(ref: string): RemoteRefMapping[] {
   if (ref.startsWith('refs/heads/')) return [branch(ref.slice('refs/heads/'.length))];
   if (ref.startsWith('refs/remotes/origin/')) return [branch(ref.slice('refs/remotes/origin/'.length))];
   if (ref.startsWith('refs/')) return [{ remote: ref, local: ref }];
-  return [branch(ref), { remote: `refs/tags/${ref}`, local: `refs/tags/${ref}` }];
+  const tag = { remote: `refs/tags/${ref}`, local: `refs/tags/${ref}` };
+  if (ref.startsWith('origin/')) return [tag, branch(ref.slice('origin/'.length))];
+  return [branch(ref), tag];
 }
 
 export interface IntegerBounds {

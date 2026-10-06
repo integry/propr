@@ -544,6 +544,59 @@ test('fetches qualified branch and tag refs missing from a shallow single-branch
   }
 });
 
+test('fetches origin/<branch> shorthand missing from a shallow single-branch managed clone', async () => {
+  const managedPath = path.join(clonesBasePath, 'owner', 'managed-shorthand');
+  execFileSync('git', ['clone', '-q', '--depth=1', '--single-branch', '--branch', 'main', `file://${repoPath}`, managedPath]);
+  const managedGit = (...args: string[]) => execFileSync('git', args, { cwd: managedPath, encoding: 'utf8' }).trim();
+  ensureRepoCloned.mock.mockImplementation(async () => {
+    managedGit('fetch', '-q', 'origin', '--prune');
+    return managedPath;
+  });
+  const managed = { repository: 'owner/managed-shorthand' };
+  try {
+    assert.throws(() => managedGit('rev-parse', '--verify', '--quiet', 'refs/remotes/origin/feature'));
+
+    const search = await searchRepositoryFiles({ ...managed, query: 'featureOnlyNeedle', mode: 'literal', ref: 'origin/feature' });
+    assert.equal(search.commit, featureCommit);
+    assert.deepEqual(search.matches.map(match => match.path), ['src/feature.ts']);
+    // Fetched as branch `feature`, not as a branch literally named `origin/feature`.
+    assert.equal(managedGit('rev-parse', 'refs/remotes/origin/feature'), featureCommit);
+    assert.throws(() => managedGit('rev-parse', '--verify', '--quiet', 'refs/remotes/origin/origin/feature'));
+
+    // Resolves directly on the next call without another refresh.
+    const callsBefore = ensureRepoCloned.mock.callCount();
+    const read = await readRepositoryFileContent({ ...managed, path: 'src/feature.ts', ref: 'origin/feature' });
+    assert.equal(read.commit, featureCommit);
+    assert.equal(ensureRepoCloned.mock.callCount(), callsBefore);
+
+    await expectRetrievalError(
+      readRepositoryFileContent({ ...managed, path: 'src/util.ts', ref: 'origin/no-such-branch' }),
+      404,
+      /not found/,
+    );
+  } finally {
+    ensureRepoCloned.mock.restore();
+    ensureRepoCloned.mock.resetCalls();
+  }
+});
+
+test('reads origin/<branch> shorthand freshly from a shallow managed clone', async () => {
+  const managedPath = path.join(clonesBasePath, 'owner', 'managed-shorthand-read');
+  execFileSync('git', ['clone', '-q', '--depth=1', '--single-branch', '--branch', 'main', `file://${repoPath}`, managedPath]);
+  const managedGit = (...args: string[]) => execFileSync('git', args, { cwd: managedPath, encoding: 'utf8' }).trim();
+  ensureRepoCloned.mock.mockImplementation(async () => {
+    managedGit('fetch', '-q', 'origin', '--prune');
+    return managedPath;
+  });
+  try {
+    const read = await readRepositoryFileContent({ repository: 'owner/managed-shorthand-read', path: 'src/feature.ts', ref: 'origin/feature' });
+    assert.equal(read.commit, featureCommit);
+  } finally {
+    ensureRepoCloned.mock.restore();
+    ensureRepoCloned.mock.resetCalls();
+  }
+});
+
 test('clones without the index branch when an explicit ref is given and no managed clone exists', async () => {
   const managedPath = path.join(clonesBasePath, 'owner', 'managed-fresh');
   assert.equal(fs.existsSync(managedPath), false);
