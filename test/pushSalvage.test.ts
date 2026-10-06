@@ -14,6 +14,7 @@ import { extractUnblockUrls } from '../packages/core/src/git/pushRejection.js';
 import { rescueRefCreatedAt } from '../packages/core/src/git/rescueRefs.js';
 import { cleanupExpiredWorktrees, cleanupWorktree } from '../packages/core/src/git/worktreeOperations.js';
 import { pushBranch } from '../packages/core/src/git/repoBranching.js';
+import { recordingCredentialHelper, startGitHttpServer } from './gitHttpServer.js';
 
 test('recovery commands quote branch names with shell metacharacters and paths with spaces', () => {
     const branchName = "fix;id>pwned;#it's";
@@ -270,6 +271,50 @@ test('a rejected non-fast-forward push is saved to the rescue ref on the same re
         // The rescue ref is not a branch.
         assert.ok(!(await git(remote, ['branch', '--list'])).includes('rescue'));
     } finally {
+        await rm(tempDir, { recursive: true, force: true });
+    }
+});
+
+test('the rescue push sends no URL credentials and runs no repository credential helper', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-helper-'));
+    // Challenges like GitHub: URL credentials would be sent and then approved to helpers.
+    const server = await startGitHttpServer(tempDir, { challenge: true });
+    const previousPrompt = process.env.GIT_TERMINAL_PROMPT;
+    process.env.GIT_TERMINAL_PROMPT = '0';
+    try {
+        const remote = path.join(tempDir, 'remote.git');
+        const repo = path.join(tempDir, 'repo');
+        const helperLog = path.join(tempDir, 'helper.log');
+        await git(tempDir, ['init', '--bare', remote]);
+        await git(remote, ['config', 'http.receivepack', 'true']);
+        await git(tempDir, ['init', repo]);
+        await git(repo, ['config', 'user.email', 'test@example.com']);
+        await git(repo, ['config', 'user.name', 'Test']);
+        // Repository-controlled configuration: a helper that would receive the token.
+        await git(repo, ['config', 'credential.helper', recordingCredentialHelper(helperLog)]);
+        // The fixture server speaks plain HTTP; the job's repository URL is HTTPS.
+        await git(repo, ['config', 'url.http://.insteadOf', 'https://']);
+        await writeFile(path.join(repo, 'agent.txt'), 'agent work\n');
+        await git(repo, ['add', '.']);
+        await git(repo, ['commit', '-m', 'agent work']);
+
+        const token = 'installation-token';
+        const operations = createWorktreePushSalvageOperations({
+            worktreePath: repo, taskId: 'task-5', branchName: 'main', repoUrl: `${server.url.replace('http://', 'https://')}/remote.git`,
+            refreshToken: async () => token, retryPush: async () => { throw new Error('rejected'); },
+        });
+        // The installation token is only supplied as a github.com header, so this host gets none.
+        const error = await operations.pushRescueRef('refs/propr/rescue/task-5--20261006T000000Z').then(
+            () => assert.fail('push without credentials should be refused'), (e: unknown) => e as Error);
+
+        assert.ok(!error.message.includes(token));
+        assert.equal(existsSync(helperLog), false, `credential helper ran: ${existsSync(helperLog) ? await readFile(helperLog, 'utf8') : ''}`);
+        const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
+        assert.ok(!server.authorizations.some(header => header.includes(encoded)), 'token was sent as URL credentials');
+    } finally {
+        if (previousPrompt === undefined) delete process.env.GIT_TERMINAL_PROMPT;
+        else process.env.GIT_TERMINAL_PROMPT = previousPrompt;
+        await server.close();
         await rm(tempDir, { recursive: true, force: true });
     }
 });

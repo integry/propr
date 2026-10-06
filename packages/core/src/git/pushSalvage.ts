@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs-extra';
 import logger from '../utils/logger.js';
 import { createHooklessGit } from './hooklessGit.js';
+import { configureGitAuthentication } from './repoBranching.js';
 import { redactAuthenticatedGitUrl } from './redactGitUrl.js';
 import { classifyPushError, formatPushRejectionClass, type PushRejectionDiagnosis } from './pushRejection.js';
 import { getRescueRetentionDays, rescueBundlePath, rescueRefName } from './rescueRefs.js';
@@ -387,9 +388,12 @@ export function createWorktreePushSalvageOperations<T>(options: WorktreePushSalv
             return options.retryPush(token);
         },
         async pushRescueRef(ref) {
-            const url = options.repoUrl.replace('https://', `https://x-access-token:${await freshToken()}@`);
+            // Same process-local authentication as normal pushes: the token never appears in
+            // the URL, and repository-configured credential helpers are cleared, not run.
+            const rescueGit = createHooklessGit(options.worktreePath);
+            configureGitAuthentication(rescueGit, await freshToken());
             try {
-                await git.raw(['push', '--force', url, `HEAD:${ref}`]);
+                await rescueGit.raw(['push', '--force', options.repoUrl, `HEAD:${ref}`]);
             } catch (error) {
                 throw redact(error);
             }

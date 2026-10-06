@@ -10,6 +10,7 @@ import fs from 'fs-extra';
 import {
     createGitRescueRefPruneDependencies, isRescueRef, pruneRescueBundles, pruneRescueRefs, rescueRefCreatedAt, rescueRefName, sanitizeRescueId,
 } from '../packages/core/src/git/rescueRefs.js';
+import { recordingCredentialHelper, startGitHttpServer } from './gitHttpServer.js';
 
 const execGit = promisify(execFile);
 const DAY = 24 * 60 * 60 * 1000;
@@ -106,6 +107,79 @@ test('git prune dependencies list and delete rescue refs on the remote only', as
         assert.equal(await git(remote, ['for-each-ref', 'refs/propr']), '');
         assert.notEqual(await git(remote, ['rev-parse', 'refs/heads/main']), '');
     } finally {
+        await rm(tempDir, { recursive: true, force: true });
+    }
+});
+
+async function createRemoteWithExpiredRescue(tempDir: string): Promise<{ remote: string; ref: string }> {
+    const remote = path.join(tempDir, 'remote.git');
+    const clone = path.join(tempDir, 'clone');
+    await git(tempDir, ['init', '--bare', remote]);
+    await git(tempDir, ['clone', remote, clone]);
+    await git(clone, ['config', 'user.email', 'test@example.com']);
+    await git(clone, ['config', 'user.name', 'Test']);
+    await writeFile(path.join(clone, 'file.txt'), 'work\n');
+    await git(clone, ['add', '.']);
+    await git(clone, ['commit', '-m', 'work']);
+    const ref = rescueRefName('task-1', new Date(Date.now() - 30 * DAY));
+    await git(clone, ['push', 'origin', 'HEAD:refs/heads/main', `HEAD:${ref}`]);
+    return { remote, ref };
+}
+
+test('expired rescue refs are deleted when the daemon runs outside a git repository', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-no-repo-'));
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-cwd-'));
+    const cwd = process.cwd();
+    try {
+        const { remote, ref } = await createRemoteWithExpiredRescue(tempDir);
+        process.chdir(outside);
+        const result = await pruneRescueRefs(createGitRescueRefPruneDependencies({ repoUrl: remote, token: 'token' }), { olderThanDays: 14 });
+        assert.deepEqual(result, { deleted: [ref], retained: 0, failed: 0 });
+        assert.equal(await git(remote, ['for-each-ref', 'refs/propr']), '');
+    } finally {
+        process.chdir(cwd);
+        await rm(tempDir, { recursive: true, force: true });
+        await rm(outside, { recursive: true, force: true });
+    }
+});
+
+test('the rescue ref sweep sends no URL credentials and runs no credential helper', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-sweep-helper-'));
+    // Challenges like GitHub: URL credentials would be sent and then approved to helpers.
+    const server = await startGitHttpServer(tempDir, { challenge: true });
+    const previousHome = process.env.HOME;
+    const previousPrompt = process.env.GIT_TERMINAL_PROMPT;
+    try {
+        const { remote, ref } = await createRemoteWithExpiredRescue(tempDir);
+        const helperLog = path.join(tempDir, 'helper.log');
+        // A user-level helper, the only kind the sweep's disposable repository can inherit.
+        const home = path.join(tempDir, 'home');
+        const userConfig = path.join(home, '.gitconfig');
+        await mkdir(home);
+        await writeFile(userConfig, '');
+        await git(tempDir, ['config', '--file', userConfig, 'credential.helper', recordingCredentialHelper(helperLog)]);
+        await git(tempDir, ['config', '--file', userConfig, 'safe.directory', '*']);
+        // The fixture server speaks plain HTTP; the sweep's repository URL is HTTPS.
+        await git(tempDir, ['config', '--file', userConfig, 'url.http://.insteadOf', 'https://']);
+        process.env.HOME = home;
+        process.env.GIT_TERMINAL_PROMPT = '0';
+
+        const token = 'installation-token';
+        const deps = createGitRescueRefPruneDependencies({ repoUrl: `${server.url.replace('http://', 'https://')}/remote.git`, token });
+        // The installation token is only supplied as a github.com header, so this host gets none.
+        const error = await pruneRescueRefs(deps, { olderThanDays: 14 }).then(
+            () => assert.fail('listing without credentials should be refused'), (e: unknown) => e as Error);
+
+        assert.ok(!error.message.includes(token));
+        assert.equal(existsSync(helperLog), false, 'credential helper ran');
+        const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
+        assert.ok(!server.authorizations.some(header => header.includes(encoded)), 'token was sent as URL credentials');
+        assert.notEqual(await git(remote, ['rev-parse', ref]), '');
+    } finally {
+        process.env.HOME = previousHome;
+        if (previousPrompt === undefined) delete process.env.GIT_TERMINAL_PROMPT;
+        else process.env.GIT_TERMINAL_PROMPT = previousPrompt;
+        await server.close();
         await rm(tempDir, { recursive: true, force: true });
     }
 });

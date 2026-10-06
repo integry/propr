@@ -1,7 +1,9 @@
+import os from 'os';
 import path from 'path';
 import fs from 'fs-extra';
 import logger from '../utils/logger.js';
 import { createHooklessGit } from './hooklessGit.js';
+import { configureGitAuthentication } from './repoBranching.js';
 import { redactAuthenticatedGitUrl } from './redactGitUrl.js';
 
 /** Namespace for commits salvaged from a rejected push. Never under refs/heads, so
@@ -112,33 +114,35 @@ export async function pruneRescueRefs(
     return result;
 }
 
-function authenticatedUrl(repoUrl: string, token: string): string {
-    return repoUrl.replace('https://', `https://x-access-token:${token}@`);
-}
-
 /** Remote-only operations: nothing is fetched into a clone, so rescue refs never become
- * local or remote-tracking branches. */
+ * local or remote-tracking branches. Every command runs in a disposable bare repository,
+ * because `git push` needs one and the daemon's working directory may not be a repository. */
 export function createGitRescueRefPruneDependencies(options: {
     repoUrl: string;
     token: string;
 }): RescueRefPruneDependencies {
-    const git = createHooklessGit();
-    const url = authenticatedUrl(options.repoUrl, options.token);
     const run = async (args: string[]) => {
+        const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-rescue-prune-'));
         try {
+            const git = createHooklessGit(directory);
+            // Credentials stay process-local and credential helpers are cleared, not run.
+            configureGitAuthentication(git, options.token);
+            await git.raw(['init', '--bare', '-q']);
             return await git.raw(args);
         } catch (error) {
             throw new Error(redactAuthenticatedGitUrl((error as Error).message).replaceAll(options.token, '[REDACTED]'));
+        } finally {
+            await fs.remove(directory).catch(() => undefined);
         }
     };
     return {
         async listRefs() {
-            const output = await run(['ls-remote', url, `${RESCUE_REF_PREFIX}*`]);
+            const output = await run(['ls-remote', options.repoUrl, `${RESCUE_REF_PREFIX}*`]);
             return output.split('\n').map(line => line.trim().split(/\s+/)).filter(parts => parts.length === 2)
                 .map(([sha, ref]) => ({ sha, ref }));
         },
         async deleteRef(ref) {
-            await run(['push', url, `:${ref}`]);
+            await run(['push', options.repoUrl, `:${ref}`]);
         },
     };
 }
