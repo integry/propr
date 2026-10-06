@@ -7,7 +7,8 @@ declare global {
         interface User extends GitHubUser {}
         interface Request {
             authorization?: InstanceAuthorization;
-            authenticationMethod?: 'session' | 'github_bearer' | 'instance_token' | 'demo';
+            /** `mcp` marks a workflow handler called by an MCP tool for its verified principal. */
+            authenticationMethod?: 'session' | 'github_bearer' | 'instance_token' | 'demo' | 'mcp';
             instanceTokenId?: string;
         }
     }

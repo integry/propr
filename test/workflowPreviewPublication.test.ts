@@ -48,6 +48,8 @@ await mock.module('@propr/core', {
         cleanupWorktree: noOp,
         safeUpdateLabels: async () => ({ success: true, removed: [], added: [], errors: [] }),
         generateCompletionComment: async () => '',
+        formatTaskSteersForComment: () => '',
+        listTaskSteers: async () => [],
         describeAgentTermination: () => '',
         resolveAgentTerminationReason: () => undefined,
         sanitizeAgentReport: (value: string | null | undefined) => value ?? '',

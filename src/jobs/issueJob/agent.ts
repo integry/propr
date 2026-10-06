@@ -12,6 +12,7 @@ import { localizeContentImages } from '../issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from '../issueJobCallbacks.js';
 import { runRepositoryWorkflow } from '../repositoryWorkflow.js';
 import { redisClient } from './config.js';
+import { startTaskSteeringRun } from '../taskSteering.js';
 
 export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
   return {
@@ -128,6 +129,10 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     }
   }, FILE_CHANGES_INTERVAL_MS);
 
+  // Announce the run for operator steering; steers an earlier run never
+  // delivered are carried into this run's prompt.
+  const steeringRun = await startTaskSteeringRun({ taskId, agent, redisClient });
+
   // Execute task via agent abstraction
   let agentResult;
   try {
@@ -137,17 +142,19 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     }, () => agent.executeTask({
       worktreePath: worktreeInfo.worktreePath,
       issueRef: agentIssueRef,
-      prompt: [prompt, workflowPrompt].filter(Boolean).join('\n\n'),
+      prompt: [prompt, workflowPrompt, steeringRun.promptContext].filter(Boolean).join('\n\n'),
       model: modelName,
       githubToken: githubToken.token,
       branchName: worktreeInfo.branchName,
       reasoningLevel: issueRef.reasoningLevel,
       onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
       onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
-      taskId
+      taskId,
+      steering: steeringRun.steering
     }));
   } finally {
     clearInterval(fileChangesInterval);
+    await steeringRun.finish();
   }
 
   // Convert to ClaudeCodeResponse for backwards compatibility

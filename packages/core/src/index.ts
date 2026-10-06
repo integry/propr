@@ -532,6 +532,8 @@ export * from './workflow/prTemplate.js';
 export { executeWithRepositoryWorkflow, buildRepositoryValidationReport, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH } from './workflow/workflowExecution.js';
 export { withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, reconcileRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError } from './workflow/workflowConcurrency.js';
 export * from './services/taskCancellation.js';
+export * from './services/taskSteeringStore.js';
+export type { LiveInputMessage, LiveInputOptions, LiveInputSource } from './claude/docker/dockerLiveInput.js';
 export * from './services/taskIntent.js';
 export * from './services/taskPlanning/epicExecutionQueue.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';

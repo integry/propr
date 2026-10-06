@@ -557,3 +557,6 @@ export * from './text.js';
 
 // Repository pull request templates (.propr/pr-template.md), parsed identically by workers and the CLI.
 export * from './prTemplate.js';
+
+// Live steering limits and per-agent capabilities for ordinary tasks.
+export * from './taskSteering.js';

@@ -348,6 +348,31 @@ export interface FollowupTaskResponse {
   jobId: string;
 }
 
+export type TaskSteeringCapability = "none" | "next-step" | "live";
+
+export interface TaskSteer {
+  id: string;
+  sequence: number;
+  taskId: string;
+  author: string;
+  authorSource: "session" | "token" | "mcp";
+  message: string;
+  createdAt: string;
+  deliveredAt: string | null;
+  delivery: "live" | "replacement_prompt" | null;
+  acknowledgedAt: string | null;
+}
+
+export interface SteerTaskResponse {
+  steer: TaskSteer;
+  running: boolean;
+  capability: TaskSteeringCapability;
+  agentAlias: string | null;
+  agentType: string | null;
+  maxMessageLength: number;
+  maxSteersPerRun: number;
+}
+
 export interface ImportTasksResponse {
   jobId: string;
 }
@@ -422,6 +447,20 @@ export async function revertTask(
     { body }
   );
 
+  return response.data;
+}
+
+/** Queue operator input for the agent of a running task. */
+export async function steerTask(
+  taskId: string,
+  message: string,
+  client?: ApiClient
+): Promise<SteerTaskResponse> {
+  const apiClient = client ?? (await createApiClient());
+  const response = await apiClient.post<SteerTaskResponse>(
+    `/api/tasks/${encodeURIComponent(taskId)}/steer`,
+    { body: { message } }
+  );
   return response.data;
 }
 

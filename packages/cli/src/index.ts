@@ -243,7 +243,7 @@ Command Groups:
   Plans:          plan [create|list|get|delete|abort]
   Implementation: issue [implement]
   Goals:          goal [capabilities|create|list|inspect|input|inputs|pause|resume|cancel|model]
-  Tasks:          task [inspect|list|get|stop|delete|followup|import|revert]
+  Tasks:          task [inspect|list|get|stop|delete|followup|steer|import|revert]
   Repositories:   repo [list|add|remove|toggle|index|status]
   Agents:         agent [list|add|enable|disable|delete|pool]
   Settings:       setting [get|update|reindex-summaries]

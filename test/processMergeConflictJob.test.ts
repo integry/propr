@@ -190,6 +190,10 @@ const mockRegistry = {
 await mock.module('@propr/core', {
     namedExports: {
         ...pushSalvageExports,
+        // Task steering (imported by the PR comment agent runner) is unused by merge conflicts.
+        claimTaskSteers: async () => [], createTaskSteeringSource: () => undefined,
+        formatReplacementRunSteers: () => '', recordTaskSteerTimeline: async () => undefined,
+        formatTaskSteersForComment: () => '', listTaskSteers: async () => [],
         logger: {
             info: mock.fn(),
             warn: mock.fn(),

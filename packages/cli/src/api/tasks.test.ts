@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deleteTask, followupTask, getRevertPreview, importTasks, listTasks, stopTask } from "./tasks.js";
+import { deleteTask, followupTask, getRevertPreview, importTasks, listTasks, steerTask, stopTask } from "./tasks.js";
 import { getTaskStatus } from "./implement.js";
 import type { ApiClient } from "./client.js";
 
@@ -32,6 +32,18 @@ test("followupTask posts the task follow-up body", async () => {
     method: "POST",
     endpoint: "/api/tasks/task-123/followup",
     options: { body: { body: "Please add tests" } },
+  }]);
+});
+
+test("steerTask posts the steering message to the encoded task", async () => {
+  const { client, calls } = clientWithCalls({ steer: { id: "steer-1" }, capability: "live" });
+
+  await steerTask("task/123", "Use the existing helper", client);
+
+  assert.deepEqual(calls, [{
+    method: "POST",
+    endpoint: "/api/tasks/task%2F123/steer",
+    options: { body: { message: "Use the existing helper" } },
   }]);
 });
 

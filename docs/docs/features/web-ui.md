@@ -44,7 +44,19 @@ Planner Studio is covered step by step in the [Planner Studio tutorial](../tutor
 - the exact prompt and execution log files;
 - a live event log, a thinking log where the agent emits one, and per-file diffs as they change;
 - a progress bar over the agent's to-do list;
-- actions to **Follow Up**, **Stop**, and **Delete**.
+- actions to **Follow Up**, **Stop**, and **Delete**;
+- while the agent runs, a **Steer the running agent** box below the live log.
+
+### Steering a running task
+
+Type a correction in **Steer the running agent** and choose **Send** (or press Ctrl/Cmd+Enter). The message is delivered once to the running agent, and the panel lists every message sent during the run with its author and delivery state (**Queued**, **Delivering**, **Delivered**, or **In the next run prompt** when the run ended first). Whether the box appears depends on the agent's steering capability:
+
+| Agent | Capability | In the task detail page |
+|---|---|---|
+| Claude | `live` | Message box; delivered immediately into the running session. |
+| Codex, Antigravity, OpenCode, Vibe | `none` | An explanation instead of the box; send a follow-up when the run finishes. |
+
+Messages are limited to 4,000 characters and 20 per run. PR comments posted during a run still wait until it finishes. See [Launching Work](./launching-work.md#steer-a-running-task) for the API, CLI and MCP equivalents.
 
 These records are the heart of ProPR's observability — see [Observability And Control](./observability.md). To undo a committed change, the **Revert** flow (`/revert`) previews the target commit and the resulting HEAD before running a signed revert.
 

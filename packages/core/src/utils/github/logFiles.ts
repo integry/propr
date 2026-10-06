@@ -24,6 +24,8 @@ interface IssueRef {
 
 interface CompletionCommentOptions {
     publishedAs?: 'pull_request' | 'issue_comment';
+    /** Task whose operator steering is listed in the report. */
+    taskId?: string;
 }
 
 interface ConversationMessage {
@@ -363,6 +365,22 @@ function buildLogFilesSection(logFiles: LogFiles, claudeResult: ClaudeResult): s
     return lines.join('\n') + '\n';
 }
 
+async function buildOperatorInputSection(taskId: string | undefined, issueRef: IssueRef): Promise<string> {
+    if (!taskId) return '';
+    try {
+        // Loaded lazily so rendering a report without a task never opens the database.
+        const [{ db }, { formatTaskSteersForComment, listTaskSteers }] = await Promise.all([
+            import('../../db/connection.js'),
+            import('../../services/taskSteeringStore.js'),
+        ]);
+        const section = formatTaskSteersForComment(await listTaskSteers(db, taskId));
+        return section ? `${redactSecrets(section)}\n\n` : '';
+    } catch (error) {
+        logger.warn({ issueNumber: issueRef.number, taskId, error: (error as Error).message }, 'Failed to load operator input for the completion report');
+        return '';
+    }
+}
+
 export interface CompletionCommentParts {
     /** Status, repository, time, tokens and cost. */
     run: string;
@@ -370,6 +388,8 @@ export interface CompletionCommentParts {
     summary: string;
     /** Container-observed repository validation report. */
     validation: string;
+    /** "Operator input during the run" section, or '' when nobody steered the run. */
+    operatorInput: string;
     /** Log file locations and the latest conversation messages. */
     logs: string;
     /** Attribution line; generateCompletionComment puts a horizontal rule above it. */
@@ -397,6 +417,7 @@ export async function generateCompletionCommentParts(
     return {
         run: execution.text,
         summary: buildSummarySection(result),
+        operatorInput: await buildOperatorInputSection(options.taskId, issueRef),
         validation: result.repositoryValidation ? `${redactSecrets(result.repositoryValidation)}\n\n` : '',
         logs,
         trailer: options.publishedAs === 'issue_comment'
@@ -412,5 +433,5 @@ export async function generateCompletionComment(
     options: CompletionCommentOptions = {},
 ): Promise<string> {
     const parts = await generateCompletionCommentParts(claudeResultInput, issueRef, options);
-    return `${parts.run}${parts.summary}${parts.validation}${parts.logs}---\n${parts.trailer}`;
+    return `${parts.run}${parts.summary}${parts.operatorInput}${parts.validation}${parts.logs}---\n${parts.trailer}`;
 }

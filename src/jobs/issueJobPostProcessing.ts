@@ -53,8 +53,9 @@ async function handleUnpublishableAgentFailure(options: {
     claudeResult: ClaudeCodeResponse;
     AI_PROCESSING_TAG: string;
     correlatedLogger: Logger;
+    taskId?: string;
 }): Promise<PostProcessingResult> {
-    const { octokit, issueRef, claudeResult, AI_PROCESSING_TAG, correlatedLogger } = options;
+    const { octokit, issueRef, claudeResult, AI_PROCESSING_TAG, correlatedLogger, taskId } = options;
     const errorMessage = claudeResult.error?.trim() || 'The coding agent stopped before producing publishable work.';
 
     correlatedLogger.warn({ issueNumber: issueRef.number, error: redactSecrets(errorMessage) }, 'Agent execution failed without publishable work');
@@ -72,7 +73,7 @@ async function handleUnpublishableAgentFailure(options: {
         number: issueRef.number,
         repoOwner: issueRef.repoOwner,
         repoName: issueRef.repoName,
-    }, { publishedAs: 'issue_comment' });
+    }, { publishedAs: 'issue_comment', taskId });
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: issueRef.repoOwner,
         repo: issueRef.repoName,
@@ -145,7 +146,7 @@ async function handlePostProcessingFailure(
         const completionComment = await generateCompletionComment(
             claudeResult,
             { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
-            { publishedAs: 'issue_comment' },
+            { publishedAs: 'issue_comment', taskId: options.taskId },
         );
         const fallbackHeading = canMarkDone
             ? '⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**'
@@ -171,7 +172,7 @@ async function handleMissingCommit(options: PostProcessOptions): Promise<PostPro
             currentIssueData,
             AI_PROCESSING_TAG,
             AI_DONE_TAG,
-            correlatedLogger,
+            correlatedLogger, taskId: options.taskId,
         });
     }
 
@@ -180,7 +181,7 @@ async function handleMissingCommit(options: PostProcessOptions): Promise<PostPro
         issueRef,
         claudeResult,
         AI_PROCESSING_TAG,
-        correlatedLogger,
+        correlatedLogger, taskId: options.taskId,
     });
 }
 
@@ -197,7 +198,7 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
                 issueRef,
                 claudeResult,
                 AI_PROCESSING_TAG,
-                correlatedLogger,
+                correlatedLogger, taskId,
             });
             return { commitResult, postProcessingResult };
         }

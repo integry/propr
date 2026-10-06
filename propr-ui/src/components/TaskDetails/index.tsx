@@ -8,6 +8,7 @@ import ResultOverview from './ResultOverview';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
 import FollowupModal from './FollowupModal';
+import TaskSteeringPanel from './TaskSteeringPanel';
 import ContextStrip from './ContextStrip';
 import ActionBar from './ActionBar';
 import TaskHeader, { ReturnToRunButton } from './TaskHeader';
@@ -429,6 +430,9 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
           runNumber={inspectionContext?.runNumber}
         />
       </div>
+
+      {/* Operator steering sits next to the live log it reacts to; earlier runs are read-only. */}
+      <TaskSteeringPanel taskId={taskId} isTaskActive={derivedData.isTaskActive} hidden={Boolean(inspectionContext)} />
 
       {/* Modals */}
       <PromptModal

@@ -1,4 +1,5 @@
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
+import { AGENT_TASK_STEERING } from '@propr/shared';
 /** Claude Agent Implementation. */
 
 import logger from '../../utils/logger.js';
@@ -35,6 +36,7 @@ import {
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
+import { encodeClaudeUserMessage, isClaudeResultRecord } from './utils/claudeStreamInput.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import {
@@ -96,6 +98,7 @@ function warnIfAnswerContinued(claudeOutput: ClaudeOutput, analysisText: string,
 export class ClaudeAgent implements Agent {
     readonly config: AgentConfig;
     readonly goalCapable = true;
+    readonly steeringCapability = AGENT_TASK_STEERING.claude;
     private readonly maxTurns: number;
     private readonly timeoutMs: number;
 
@@ -137,10 +140,12 @@ export class ClaudeAgent implements Agent {
 
             effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel);
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+            const steering = options.steering;
             const dockerArgs = buildDockerArgs(this.config, options.maxTurns ?? this.maxTurns, {
                 worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number,
                 systemPrompt, tools, environment, taskId,
-                reasoningLevel: effectiveReasoningLevel
+                reasoningLevel: effectiveReasoningLevel,
+                liveInput: !!steering
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -148,7 +153,17 @@ export class ClaudeAgent implements Agent {
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId,
                     worktreePath, stdinData: prompt, taskId,
-                    streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel
+                    streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel,
+                    // Steerable runs read the prompt and operator input as
+                    // stream-json user messages, the channel native goals use.
+                    ...(steering ? {
+                        liveInput: {
+                            initialInput: encodeClaudeUserMessage(prompt),
+                            source: steering,
+                            encode: encodeClaudeUserMessage,
+                            endsInput: isClaudeResultRecord,
+                        }
+                    } : {})
                 }),
                 undefined,
                 this.config.alias

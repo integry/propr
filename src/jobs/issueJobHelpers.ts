@@ -204,6 +204,7 @@ export function buildIssuePullRequestBodyPieces(options: {
         { section: null, text: '\n\n---\n\n' },
         { section: 'run', text: completion.run },
         { section: 'summary', text: completion.summary },
+        { section: 'run', text: completion.operatorInput ?? '' },
         { section: 'run', text: completion.validation + completion.logs },
         { section: null, text: '---\n' },
         { section: 'trailer', text: completion.trailer },
@@ -229,7 +230,7 @@ export async function createPullRequest(
     const modelShortName = getModelShortName(modelName);
     const baseBranch = issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main';
 
-    const completion = await generateCompletionCommentParts(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
+    const completion = await generateCompletionCommentParts(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName }, { taskId: options.taskId });
     const visualPreviewSection = visualPreview && commitResult
         ? renderVisualPreviewSection({
             assets: [],

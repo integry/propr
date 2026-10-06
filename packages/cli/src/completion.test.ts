@@ -29,6 +29,7 @@ test("completion scripts include new command groups and options", () => {
   const bash = completionScript(buildTestProgram(), "bash");
 
   assert.match(bash, /task followup/);
+  assert.match(bash, /task steer/);
   assert.match(bash, /task import/);
   assert.match(bash, /task revert/);
   assert.match(bash, /setting reindex-summaries/);

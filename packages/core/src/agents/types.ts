@@ -1,9 +1,10 @@
 import { IssueRef, IssueDetails } from '../claude/prompts/promptGenerator.js';
 import type { CliVersionType } from '../config/configManager.js';
 import type { UsageTrackingMetrics } from './impl/utils/usageTrackingWrapper.js';
-import type { AgentType as SharedAgentType, ReasoningLevel } from '@propr/shared';
+import type { AgentType as SharedAgentType, ReasoningLevel, TaskSteeringCapability } from '@propr/shared';
+import type { LiveInputSource } from '../claude/docker/dockerLiveInput.js';
 
-export { AGENT_TYPES } from '@propr/shared';
+export { AGENT_TYPES, AGENT_TASK_STEERING } from '@propr/shared';
 
 /**
  * Configuration for a specific agent instance.
@@ -104,6 +105,13 @@ export interface AgentTaskOptions {
 
     /** PR number when this is a PR follow-up task (distinct from issueRef.number) */
     prNumber?: number;
+
+    /**
+     * Durable operator steering for this task run. Agents whose
+     * `steeringCapability` is not `none` deliver claimed messages into the
+     * running session; others ignore it.
+     */
+    steering?: LiveInputSource;
 }
 
 export interface GoalControlInput {
@@ -304,6 +312,9 @@ export interface Agent {
 
     /** Whether this provider implements a proven durable goal/session path. */
     readonly goalCapable: boolean;
+
+    /** How an ordinary task run of this agent accepts operator steering (see AGENT_TASK_STEERING). */
+    readonly steeringCapability: TaskSteeringCapability;
 
     /**
      * Executes a complex task modifying files in the worktree.

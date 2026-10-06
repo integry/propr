@@ -269,6 +269,7 @@ export async function handleNoCodeChanges(options: {
     AI_PROCESSING_TAG: string;
     AI_DONE_TAG: string;
     correlatedLogger: Logger;
+    taskId?: string;
 }): Promise<PostProcessingResult> {
     const {
         octokit,
@@ -278,6 +279,7 @@ export async function handleNoCodeChanges(options: {
         AI_PROCESSING_TAG,
         AI_DONE_TAG,
         correlatedLogger,
+        taskId,
     } = options;
 
     correlatedLogger.info({ issueNumber: issueRef.number }, 'No code changes needed - work was already complete');
@@ -291,7 +293,7 @@ export async function handleNoCodeChanges(options: {
         number: issueRef.number,
         repoOwner: issueRef.repoOwner,
         repoName: issueRef.repoName,
-    }, { publishedAs: 'issue_comment' });
+    }, { publishedAs: 'issue_comment', taskId });
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: issueRef.repoOwner,
         repo: issueRef.repoName,

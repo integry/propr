@@ -1,4 +1,4 @@
-import type { SyntheticAgentConfig } from '@propr/shared';
+import type { SyntheticAgentConfig, TaskSteeringCapability } from '@propr/shared';
 import type { Agent, AgentConfig, AgentExecutionResult, AgentTaskOptions, AnalysisResult, AnalyzeOptions } from './types.js';
 import {
   estimateTaskRequiredTokens,
@@ -11,6 +11,8 @@ import { estimateTokens } from '../utils/tokenCalculation.js';
 export class SyntheticAgent implements Agent {
   readonly config: AgentConfig;
   readonly goalCapable = false;
+  /** The routed member is chosen per call, so steering is not promised up front. */
+  readonly steeringCapability: TaskSteeringCapability = 'none';
 
   constructor(
     readonly syntheticConfig: SyntheticAgentConfig,

@@ -1,5 +1,6 @@
 export { createStatusRoutes } from './statusRoutes.js';
 export { createTaskRoutes } from './taskRoutes.js';
+export { createTaskSteeringRoutes } from './taskSteeringRoutes.js';
 export { createTaskHistoryRoutes } from './taskHistoryRoutes.js';
 export { createLiveDetailsRoutes } from './liveDetailsRoutes.js';
 export { createFileChangesRoutes } from './fileChangesRoutes.js';

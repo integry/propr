@@ -1,8 +1,7 @@
-import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
+import { buildAgentGitCredentialArgs, buildAgentGitMountArgs, prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import fs from 'fs';
-import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
-import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
+import { AGENT_TASK_STEERING, Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { buildAgentContainerResourceArgs, wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
@@ -52,6 +51,7 @@ interface VibeDockerArgsParams {
 export class VibeAgent implements Agent {
     readonly config: AgentConfig;
     readonly goalCapable = false;
+    readonly steeringCapability = AGENT_TASK_STEERING.vibe;
     private readonly maxTurns: number;
     private readonly timeoutMs: number;
 

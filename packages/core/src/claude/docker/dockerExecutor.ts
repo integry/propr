@@ -1,5 +1,4 @@
 import { captureWorkflowMarkers, withWorkflowExecutionDeadline } from '../../workflow/workflowExecution.js';
-import { spawn, SpawnOptions, ChildProcess } from 'child_process';
 import { StringDecoder } from 'node:string_decoder';
 import fs from 'fs';
 import logger from '../../utils/logger.js';
@@ -21,6 +20,8 @@ import { detectContainerId } from './dockerContainerDetection.js';
 import type { AgentWatchdogTrip } from './agentActivityWatchdog.js';
 import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
 import { settleTimeoutStop, settleWatchdogStop } from './dockerExecutionSettlement.js';
+import { INACTIVE_LIVE_INPUT, startLiveInput, type LiveInputOptions } from './dockerLiveInput.js';
+import { spawnCommandProcess } from './dockerCommandProcess.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
@@ -78,6 +79,8 @@ export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'wa
     model?: string;
     /** A container that runs no agent and spends nothing (e.g. a usage probe): not counted toward, or refused by, the run's spend cap. */
     costCapExempt?: boolean;
+    /** Keep stdin open as a live operator-input channel instead of writing `stdinData`; delivered input counts as activity. */
+    liveInput?: LiveInputOptions;
 }
 
 function resolveDockerPath(command: string): string {
@@ -202,26 +205,6 @@ export async function inspectLegacyDockerContainerLivenessForTask(taskId: string
     }
 }
 
-function spawnCommandProcess(
-    executablePath: string,
-    args: string[],
-    cwd: string | undefined,
-    stdinData: string | undefined,
-): ChildProcess {
-    const spawnOptions: SpawnOptions = { stdio: [stdinData ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: process.env };
-    if (cwd && fs.existsSync(cwd)) spawnOptions.cwd = cwd;
-    else if (cwd) logger.warn({ cwd }, 'Working directory does not exist, spawning from current directory');
-
-    const child = spawn(executablePath, args, spawnOptions);
-    if (stdinData && child.stdin) {
-        child.stdin.on('error', (err) => { logger.warn({ error: err.message, code: (err as NodeJS.ErrnoException).code }, 'Stdin write error'); });
-        child.stdin.write(stdinData);
-        child.stdin.end();
-        logger.debug({ stdinDataLength: stdinData.length }, 'Wrote prompt data to stdin');
-    }
-    return child;
-}
-
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
     const ownershipContext = getExecutionOwnershipContext();
     const executionSignal = options.signal ?? ownershipContext?.signal;
@@ -262,7 +245,7 @@ function startDockerCommand(
         }
         const costExecution = costCap.execution;
         let child: ReturnType<typeof spawnCommandProcess>;
-        try { child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData); } catch (error) {
+        try { child = spawnCommandProcess({ executablePath, args: executionArgs, cwd, stdinData, liveInput: !!options.liveInput }); } catch (error) {
             // A container that never started must not stay registered with the guard.
             void costExecution?.finish().catch(() => null);
             throw error;
@@ -345,6 +328,7 @@ function startDockerCommand(
             sessionLineBuffer = flush ? '' : remainder;
             if (flush && remainder) lines.push(remainder);
             for (const line of lines) {
+                liveInput.observeLine(line);
                 inspectSessionMessageLine(line, timestamp, sessionInspectionContext);
                 costExecution?.observeLine(line);
                 watchdog.observeLine(line);
@@ -382,6 +366,10 @@ function startDockerCommand(
             : null;
 
         const recordWatchdogActivity = (): void => watchdog.recordActivity();
+        // A delivered steer is activity: the agent is about to act on it.
+        const liveInput = options.liveInput
+            ? startLiveInput(child.stdin, options.liveInput, { taskId, onDelivered: recordWatchdogActivity })
+            : INACTIVE_LIVE_INPUT;
 
         const liveOutput = startLiveOutputStreaming({ taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow: warnFromLiveOutput, onActivity: recordWatchdogActivity, onTranscriptRecord: watchdog.observeLine }, readStdout, () => stderrTail.value);
         if (command === 'docker' && args[0] === 'run' && worktreePath) {
@@ -411,6 +399,7 @@ function startDockerCommand(
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
             watchdog.stop();
+            liveInput.close();
             const finalStdout = stdoutDecoder.end();
             if (finalStdout) stdoutBuffer.append(finalStdout);
             const finalStderr = stderrDecoder.end();
@@ -426,6 +415,7 @@ function startDockerCommand(
             await Promise.allSettled([...pendingCallbacks]);
             if (state.teardownPromise) await state.teardownPromise;
             await watchdog.settled();
+            await liveInput.settled();
             executionSignal?.removeEventListener('abort', abortForExecutionSignal);
             try { await liveOutput?.close(); }
             catch (error) { logger.warn({ error: (error as Error).message, taskId }, 'Failed to publish final live output'); }
@@ -453,6 +443,7 @@ function startDockerCommand(
             processError = error;
             clearTimeout(timeoutHandle);
             watchdog.stop();
+            liveInput.close();
             inspectSessionLines('', new Date().toISOString(), true);
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
             await finishCostExecution();

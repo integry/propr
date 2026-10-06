@@ -117,7 +117,8 @@ test('an agent failure without publishable work remains retryable and never crea
     assert.match(comment, /\[REDACTED\]/);
     assert.doesNotMatch(comment, /Post-processing encountered an error/);
     assert.doesNotMatch(comment, /AI-done/);
-    assert.deepEqual(generateCompletionComment.mock.calls[0].arguments[2], { publishedAs: 'issue_comment' });
+    // The task (none here) names whose operator steering the report lists.
+    assert.deepEqual(generateCompletionComment.mock.calls[0].arguments[2], { publishedAs: 'issue_comment', taskId: undefined });
 });
 
 test('an unsuccessful processing-label removal is retried by failure post-processing', async () => {

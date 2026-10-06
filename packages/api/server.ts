@@ -22,7 +22,7 @@ import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeMode
 import { initSocketService, closeSocketService } from './services/socketService.js';
 import { CORS_PREFLIGHT_MAX_AGE_SECONDS, corsRejectionHandler, createCorsOriginValidator, isTrustedMcpWebOrigin, type CorsOriginValidator } from './corsValidation.js';
 import {
-  createStatusRoutes, createTaskRoutes,
+  createStatusRoutes, createTaskRoutes, createTaskSteeringRoutes,
   createTaskHistoryRoutes, createLiveDetailsRoutes,
   createFileChangesRoutes, createConfigRoutes,
   createQueueRoutes, createExecutionRoutes,
@@ -350,6 +350,7 @@ function setupRoutes(): void {
   const repositoryMediaRoutes = createRepositoryMediaRoutes({ db });
   const previewMediaRoutes = createPreviewMediaRoutes();
   const taskRoutes = createTaskRoutes({ db, taskQueue });
+  const taskSteeringRoutes = createTaskSteeringRoutes({ db, redisClient });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
   const fileChangesRoutes = createFileChangesRoutes({ db });
@@ -399,7 +400,7 @@ function setupRoutes(): void {
     ['get', '/api/goals/capabilities', goalRoutes.capabilities], ['get', '/api/goals', goalRoutes.list], ['get', '/api/goals/attention', goalRoutes.attention], ['post', '/api/goals', goalAttachmentUpload, goalRoutes.create], ['get', '/api/goals/:goalId', goalRoutes.get], ['get', '/api/goals/:goalId/detail', goalRoutes.detail], ['get', '/api/goals/:goalId/inputs', goalRoutes.inputs], ['get', '/api/goals/:goalId/wait', goalRoutes.wait], ['get', '/api/goals/:goalId/previews', goalRoutes.previews], ['delete', '/api/goals/:goalId', goalRoutes.remove],
     ['post', '/api/goals/:goalId/pause', goalRoutes.pause], ['post', '/api/goals/:goalId/resume', goalRoutes.resume], ['post', '/api/goals/:goalId/cancel', goalRoutes.cancel], ['patch', '/api/goals/:goalId/model', goalRoutes.requestModel], ['post', '/api/goals/:goalId/input', goalAttachmentUpload, goalRoutes.input], ['get', '/api/goals/:goalId/attachments/:attachmentId', goalRoutes.attachment],
     ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],
-    ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ...createTaskDeleteRouteEntries({ taskRoutes }), ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
+    ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ['post', '/api/tasks/:taskId/steer', taskSteeringRoutes.steer], ['get', '/api/tasks/:taskId/steers', taskSteeringRoutes.list], ...createTaskDeleteRouteEntries({ taskRoutes }), ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
     ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
     ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary], ['get', '/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId], ['get', '/api/llm-logs', llmLogsRoutes.getLlmLogs], ['get', '/api/execution/:sessionId/prompt', executionRoutes.getPrompt],
     ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs], ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType], ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],

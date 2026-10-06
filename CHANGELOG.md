@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Live steering for ordinary tasks**: `POST /api/tasks/:id/steer`,
+  `propr task steer <id> "<message>"`, the MCP tool `steer_task` and a
+  **Steer the running agent** box below the live log on the task detail page
+  send operator input to a running task's agent. Each agent declares its task
+  steering capability (`none`, `next-step` or `live`) in its agent definition.
+  Claude task runs are `live`: they now read their prompt and steers as
+  stream-json user messages over stdin, the channel Claude goals use. Codex,
+  Antigravity, OpenCode and Vibe task runs are one-shot invocations and declare
+  `none`. A steer to a task that is not running, or whose agent declares `none`,
+  returns 409 with the capability. Steers are stored with their author
+  (session user, bearer-token identity or MCP identity) and delivered at most
+  once; a steer that a run never delivered is included in the prompt of the
+  replacement run. Delivered steers appear in the task timeline and under
+  "Operator input during the run" in the GitHub completion comment. Messages are
+  limited to 4,000 characters and 20 per run, and a delivered steer counts as
+  activity for the stall watchdog. PR comments that arrive during a run keep the
+  existing batch-after-completion behaviour.
 - **Fail-closed auto-merge policy with protected paths**: `.propr/workflow.yml`
   accepts an `auto_merge` block (`enabled`, `method`, `protected_paths`), and
   `.propr/**` is always protected. Before arming GitHub auto-merge (after the PR

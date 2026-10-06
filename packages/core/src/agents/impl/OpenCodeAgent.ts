@@ -1,4 +1,5 @@
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
+import { AGENT_TASK_STEERING, isManagedAgentConfigPath } from '@propr/shared';
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
@@ -12,7 +13,6 @@ import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTracking
 import { buildOpenCodeDockerArgs, buildOpenCodePrompt, evaluateOpenCodeAnalysis, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
-import { isManagedAgentConfigPath } from '@propr/shared';
 import { resolveAgentTerminationReason } from '../termination.js';
 
 export { UsageLimitError };
@@ -45,6 +45,7 @@ function buildFailedExecutionResult(error: Error & { stderr?: string }, executio
 export class OpenCodeAgent implements Agent {
     readonly config: AgentConfig;
     readonly goalCapable = false;
+    readonly steeringCapability = AGENT_TASK_STEERING.opencode;
     private readonly timeoutMs: number;
 
     constructor(config: AgentConfig) {

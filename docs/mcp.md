@@ -230,6 +230,16 @@ a draft; `publish_plan` creates GitHub issues with the non-executing
 models and uses the existing implementation handler. Auto-merge defaults off
 and additionally requires merge scope. `create_goal` explicitly starts work.
 
+`steer_task` sends operator input to the agent of a running ordinary task. It
+is delivered at most once, live into the running session for agents whose
+task steering capability is `live` (Claude). A task that is not running, or
+whose agent's capability is `none` (Codex, Antigravity, OpenCode and Vibe task
+runs), is rejected with HTTP 409, a `TASK_NOT_RUNNING` or
+`STEERING_UNSUPPORTED` reason and the capability. Messages are at most 4,000
+characters and a run accepts 20. The steer records the MCP identity as its
+author. PR comments posted during a run keep the existing batch-after-completion
+behaviour; `send_task_followup` remains the way to queue work for after the run.
+
 `generate_repository_improvements` answers "what should we work on next?"
 with the same generator as the web UI **Improve** tab. Pass `categories`
 (`code-quality`, `performance`, `security`, `testing`, `documentation`,

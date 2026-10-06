@@ -9,6 +9,7 @@ import { Command } from "commander";
 import {
   ACTIVE_TASK_LIFECYCLE_STATES,
   TASK_LIFECYCLE_STATES,
+  TASK_STEER_MAX_LENGTH,
   type TaskLifecycleState,
 } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
@@ -19,6 +20,8 @@ import {
   stopTask,
   deleteTask,
   followupTask,
+  steerTask,
+  ApiError,
   importTasks,
   getRevertPreview,
   revertTask,
@@ -1073,6 +1076,47 @@ Examples:
           forbiddenMessage: "Error: Access denied. You do not have permission to post a follow-up.",
           fallbackMessage: (message) => `Error posting follow-up: ${message}`,
         });
+        process.exit(1);
+      }
+    });
+
+  // task steer
+  task
+    .command("steer <task-id> [message...]")
+    .description("Send operator input to the agent of a running task")
+    .option("-f, --file <path>", "Read the message from a file")
+    .option("--stdin", "Read the message from standard input")
+    .addHelpText("after", `
+Steering reaches the agent while it runs, unlike a follow-up, which is posted
+as a PR comment and processed after the run. Each message is delivered once.
+Only agents whose task runs accept live input can be steered (Claude); other
+agents and tasks that are not running are rejected with the agent's capability.
+Messages are at most ${TASK_STEER_MAX_LENGTH} characters.
+
+Examples:
+  $ propr task steer abc123 "Use the existing retry helper instead of a new one"
+  $ propr task steer abc123 --file steer.md
+`)
+    .action(async (taskId: string, messageArg: string[] | undefined, options: { file?: string; stdin?: boolean }) => {
+      try {
+        const message = (await resolveTextInput(messageArg, options))?.trim();
+        if (!message) {
+          console.error("Error: A steering message is required via an argument, --file, or --stdin.");
+          process.exit(1);
+        }
+
+        const result = await steerTask(taskId, message);
+        console.log(`Steer queued for the running ${result.agentType ?? "agent"} (${result.capability} delivery).`);
+        console.log(`Steer ID: ${result.steer.id}`);
+      } catch (error) {
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to steer this task.",
+          fallbackMessage: (message) => `Error steering task: ${message}`,
+        });
+        const capability = error instanceof ApiError
+          ? (error.response as { capability?: string } | undefined)?.capability
+          : undefined;
+        if (capability) console.error(`Steering capability: ${capability}`);
         process.exit(1);
       }
     });

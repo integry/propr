@@ -1,6 +1,6 @@
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
+import { AGENT_TASK_STEERING, isManagedAgentConfigPath, type ModelReasoningLevel } from '@propr/shared';
 import logger from '../../utils/logger.js';
-import { isManagedAgentConfigPath, type ModelReasoningLevel } from '@propr/shared';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions, type TokenUsage } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
@@ -64,6 +64,7 @@ function formatAnalysisFailure(protocolError: string | undefined, stderr: string
 export class AntigravityAgent implements Agent {
     readonly config: AgentConfig;
     readonly goalCapable = true;
+    readonly steeringCapability = AGENT_TASK_STEERING.antigravity;
     private readonly timeoutMs: number;
 
     constructor(config: AgentConfig) {

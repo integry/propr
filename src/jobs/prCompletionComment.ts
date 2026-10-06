@@ -34,6 +34,8 @@ export interface CommentContext {
     /** Review records this /fix run acted on; absent for non-fix workflows. */
     addressedFeedback?: ReviewFeedbackSelection;
     visualPreviewSection?: string;
+    /** "Operator input during the run" section; empty when nobody steered the run. */
+    operatorInputSection?: string;
 }
 
 export interface UndoLinkContext {
@@ -155,6 +157,7 @@ function buildAddressedFeedbackLine(addressed: ReviewFeedbackSelection | undefin
     return `> Addressed ${describeReviewFeedbackSelection(addressed)}\n\n`;
 }
 
+/** A redacted report section followed by a blank line, or '' when there is none. */
 function buildRepositoryValidationSection(report: string | undefined): string {
     return report ? `${redactSecrets(report)}\n\n` : '';
 }
@@ -166,6 +169,7 @@ export async function buildCompletionComment(
     claudeResult: ClaudeCodeResponse
 ): Promise<string> {
     const { changesSummary, commitMessage, llm, authorsText, undoContext, taskUrl, consumedReviewCommentIds, addressedFeedback, visualPreviewSection } = commentContext;
+    const operatorInput = buildRepositoryValidationSection(commentContext.operatorInputSection);
     const addressedLine = buildAddressedFeedbackLine(addressedFeedback);
     const terminationReason = resolveAgentTerminationReason(claudeResult);
     const partial = !claudeResult.success && terminationReason !== undefined;
@@ -205,6 +209,8 @@ export async function buildCompletionComment(
             prCommentBody += `## Work Completed Before Interruption\n\n${claudeResult.modifiedFiles.slice(0, 20).map(file => `- \`${file}\``).join('\n')}\n\n`;
         }
 
+        prCommentBody += operatorInput;
+
         if (partial) {
             prCommentBody += '## Remaining Work\n\nThe agent stopped before validating every request. Review this partial commit against the follow-up instructions and complete any unaddressed implementation, tests, or documentation.\n\n';
         }
@@ -240,6 +246,7 @@ export async function buildCompletionComment(
         if (changesSummary) {
             noChangesBody += `## Analysis Summary\n\n${cleanBody(changesSummary)}\n\n`;
         }
+        noChangesBody += operatorInput;
 
         noChangesBody += visualPreviewSection
             ? `No code changes were necessary based on the current state of the branch. Visual preview results are included below.\n\n${visualPreviewSection}\n\n`

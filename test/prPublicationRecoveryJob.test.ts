@@ -93,6 +93,7 @@ await mock.module('../src/jobs/runCostCap.js', { namedExports: {
 } });
 await mock.module('@propr/core', { namedExports: {
     ...pushSalvageExports,
+    formatTaskSteersForComment: () => '', listTaskSteers: async () => [],
     preventWithdrawnJob: async () => null,
     db: database, AI_COMMIT_AUTHOR: { name: 'Test Worker', email: 'worker@example.test' },
     logger: { ...log, withCorrelation: () => log },

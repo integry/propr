@@ -361,9 +361,12 @@ propr task get <task-id>                   # Details with run history
 propr task stop <task-id>                  # Stop a running task
 propr task delete <task-id> --force        # Force-delete an active task
 propr task followup <task-id> "Also add tests"    # Post and queue a follow-up (or --file / --stdin)
+propr task steer <task-id> "Use the existing helper"  # Steer the running agent (or --file / --stdin)
 propr task import "Recover missing tasks"  # Reconcile or recover tasks from GitHub
 propr task revert owner/repo <pr> <sha> [comment-id]   # Revert a commit from a PR (--dry-run to preview)
 ```
+
+`task steer` sends operator input to the agent of a running task, delivered once while it runs (see [Steer a running task](./launching-work.md#steer-a-running-task)). Messages are at most 4,000 characters and 20 per run. A task that is not running, or whose agent cannot be steered, is rejected and the CLI prints the agent's steering capability.
 
 Status values for `-s`: `pending`, `queued`, `processing`, `completed`, `failed`, `cancelled`, `all`. These are queue-level filters; task details additionally display the finer-grained worker states `claude_execution` ("Executing", agent run for any agent type) and `post_processing` (see [Worker Runtime](../architecture/worker-runtime.md)).
 

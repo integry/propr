@@ -41,7 +41,7 @@ export async function callWorkflow(handler: WorkflowHandler, principal: McpPrinc
   let data: unknown;
   const headers = new Map<string, string>();
   const req = {
-    user: principal.user, authorization: principal.authorization,
+    user: principal.user, authorization: principal.authorization, authenticationMethod: 'mcp',
     params: input.params || {}, query: input.query || {}, body: input.body || {}, file: input.file, files: input.files,
     get: (name: string) => name.toLowerCase() === 'idempotency-key' ? input.idempotencyKey : undefined,
   } as unknown as Request<never>;

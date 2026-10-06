@@ -5,7 +5,9 @@ import {
     commitChanges,
     cleanupPreparedVisualPreviewEvidence,
     db,
+    formatTaskSteersForComment,
     getAuthenticatedOctokit,
+    listTaskSteers,
     loadRepositoryVisualPreviewSettings,
     prepareVisualPreviewEvidence,
     appendVisualPreviewSection,
@@ -167,6 +169,19 @@ interface CompletionCommentPublicationOptions {
     taskUrl: string;
     unprocessedReviewComments: AIReviewComment[];
     visualPreviewEvidence?: Awaited<ReturnType<typeof prepareVisualPreviewEvidence>>['evidence'];
+    /** Task whose operator steering is listed in the comment. */
+    taskId?: string;
+}
+
+/** "Operator input during the run" section for a PR follow-up task; '' when nobody steered it. */
+async function loadOperatorInputSection(taskId: string | undefined, logger: Logger): Promise<string> {
+    if (!taskId) return '';
+    try {
+        return formatTaskSteersForComment(await listTaskSteers(db, taskId));
+    } catch (error) {
+        logger.warn({ taskId, error: (error as Error).message }, 'Failed to load operator input for the completion comment');
+        return '';
+    }
 }
 
 async function updateCompletionComment(state: ReadyPostExecutionState, context: PostExecutionContext, body: string) {
@@ -214,7 +229,8 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
         taskUrl,
         consumedReviewCommentIds,
         addressedFeedback,
-        visualPreviewSection: hasVisualPreviewContent ? VISUAL_PREVIEW_SLOT : undefined
+        visualPreviewSection: hasVisualPreviewContent ? VISUAL_PREVIEW_SLOT : undefined,
+        operatorInputSection: await loadOperatorInputSection(options.taskId, correlatedLogger),
     }, state.claudeResult);
     const prCommentTemplate = [context.publication.status, completionBody].filter(Boolean).join('\n\n');
     const prCommentBody = appendVisualPreviewSection(prCommentTemplate, visualPreviewSection);
@@ -339,7 +355,8 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
             llm,
             taskUrl,
             unprocessedReviewComments,
-            visualPreviewEvidence: preparedVisualPreview?.evidence
+            visualPreviewEvidence: preparedVisualPreview?.evidence,
+            taskId,
         });
         correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
 

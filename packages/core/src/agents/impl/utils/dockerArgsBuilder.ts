@@ -78,6 +78,11 @@ export interface DockerArgsParams {
     resumeSessionId?: string;
     /** Identity to assign a fresh goal session so it is durable before any work starts. */
     sessionId?: string;
+    /**
+     * Read the task prompt and later operator steering as stream-json user
+     * messages on stdin (task mode only; goal sessions always do).
+     */
+    liveInput?: boolean;
 }
 
 function repositoryInspectionArgs(enabled: boolean): string[] {
@@ -128,13 +133,15 @@ function buildBaseDockerArgs(options: {
     executionMode: 'task' | 'goal';
     resumeSessionId?: string;
     sessionId?: string;
+    liveInput?: boolean;
 }): string[] {
     const {
         config, maxTurns, worktreePath, workspaceMountTarget, configPath, containerName,
         githubToken, envVars, claudeJsonMount, inspectionArgs, reasoningLevel, readOnlyWorkspace, repositoryInspection,
-        workerOwnedGit, executionMode, resumeSessionId, sessionId,
+        workerOwnedGit, executionMode, resumeSessionId, sessionId, liveInput = false,
     } = options;
     const goal = executionMode === 'goal';
+    const streamInput = goal || liveInput;
     return [
         'run', '--rm', '-i',
         '--name', containerName,
@@ -153,9 +160,10 @@ function buildBaseDockerArgs(options: {
         ...buildAgentGitCredentialArgs(),
         '-w', '/home/node/workspace',
         config.dockerImage,
-        // Goal sessions keep stdin open as a stream-json control channel, so
-        // `/goal` and later steering arrive as real user messages.
-        'claude', '-p', ...(goal ? ['--input-format', 'stream-json'] : ['-']),
+        // Goal sessions and steerable task runs keep stdin open as a
+        // stream-json control channel, so the prompt, `/goal` and later
+        // steering arrive as real user messages.
+        'claude', '-p', ...(streamInput ? ['--input-format', 'stream-json'] : ['-']),
         ...(goal ? [] : ['--no-session-persistence']),
         ...(goal && resumeSessionId ? ['--resume', resumeSessionId] : []),
         ...(goal && !resumeSessionId && sessionId ? ['--session-id', sessionId] : []),
@@ -190,7 +198,7 @@ export function buildDockerArgs(
     const {
         worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment,
         taskId, executionType, reasoningLevel, readOnlyWorkspace = false, repositoryInspection = false,
-        executionMode = 'task', resumeSessionId, sessionId,
+        executionMode = 'task', resumeSessionId, sessionId, liveInput,
     } = params;
     const configPath = resolveConfigPath(config.configPath);
     if (repositoryInspection && !readOnlyWorkspace) {
@@ -226,6 +234,7 @@ export function buildDockerArgs(
         executionMode,
         resumeSessionId,
         sessionId,
+        liveInput,
     });
 
     // Add model parameter if specified

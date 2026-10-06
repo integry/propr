@@ -1,4 +1,5 @@
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
+import { AGENT_TASK_STEERING } from '@propr/shared';
 import fs from 'fs';
 import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
@@ -34,6 +35,7 @@ type CodexUsageMetrics = Awaited<ReturnType<typeof executeWithUsageTracking>>['u
 export class CodexAgent implements Agent {
     readonly config: AgentConfig;
     readonly goalCapable = true;
+    readonly steeringCapability = AGENT_TASK_STEERING.codex;
     private readonly maxTurns: number;
     private readonly timeoutMs: number;
 
