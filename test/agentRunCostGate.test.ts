@@ -152,6 +152,21 @@ describe('evaluateProviderCapacity', () => {
     assert.equal(unknownMember.status, 'unknown');
   });
 
+  test('a pool with a weekly-limited and a session-limited member reports only the session-limited member', async () => {
+    const usage = {
+      claude: { weeklyPercent: 95 },
+      'claude-2': { sessionPercent: 95, sessionResetsAt: new Date(NOW + 5 * MINUTE) },
+    };
+    const missingWeekly = await evaluateProviderCapacity('pool', 90, capacityDeps(usage));
+    assert.deepEqual(missingWeekly, { status: 'near_limit', provider: 'pool', sessionPercent: 95, resetsInMs: 5 * MINUTE });
+
+    const lowWeekly = await evaluateProviderCapacity('pool', 90, capacityDeps({
+      claude: { sessionPercent: 10, weeklyPercent: 97 },
+      'claude-2': { sessionPercent: 95, weeklyPercent: 40, sessionResetsAt: new Date(NOW + 5 * MINUTE) },
+    }));
+    assert.deepEqual(lowWeekly, { status: 'near_limit', provider: 'pool', sessionPercent: 95, weeklyPercent: 40, resetsInMs: 5 * MINUTE });
+  });
+
   test('a failing snapshot provider or configuration read is unknown, never an error', async () => {
     const failing = { getSnapshot: async () => { throw new Error('Agent Tank unreachable'); } };
     assert.equal((await evaluateProviderCapacity('claude', 90, capacityDeps({}, { snapshotProvider: failing }))).status, 'unknown');
@@ -201,6 +216,17 @@ describe('createAgentRunCostGate', () => {
 
     const noReset = await gateFor({ claude: { sessionPercent: 95 } })(context('api'));
     assert.equal((noReset as { until: number }).until, NOW + 30 * MINUTE);
+  });
+
+  test('a pool with one weekly-limited and one session-limited member defers instead of skipping', async () => {
+    const gate = gateFor({
+      claude: { weeklyPercent: 95 },
+      'claude-2': { sessionPercent: 95, sessionResetsAt: new Date(NOW + 5 * MINUTE) },
+    });
+    const decision = await gate({ definition: definition({ agentAlias: 'pool' }), trigger: 'schedule', triggerSource: null, run: undefined });
+    assert.equal(decision?.action, 'defer');
+    assert.equal((decision as { until: number }).until, NOW + 7 * MINUTE);
+    assert.match((decision as { reason: string }).reason, /^Session subscription usage for pool is at 95% \(pause threshold 90%\)/);
   });
 
   test('after 6 deferrals the 7th evaluation skips', async () => {

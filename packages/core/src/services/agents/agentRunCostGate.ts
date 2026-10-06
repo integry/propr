@@ -133,16 +133,18 @@ function minimum(values: (number | undefined)[]): number | undefined {
  * A pool is near its limit only when every member is. The pool is then
  * weekly-limited only if every member is weekly-limited (`weeklyPercent` is the
  * lowest member's); otherwise it recovers when the first session-limited
- * member resets.
+ * member resets, and every figure, including `weeklyPercent`, comes from the
+ * session-limited members only, so the gate never mistakes it for a weekly
+ * limit.
  */
 function combinePoolCapacity(alias: string, members: ProviderCapacity[], threshold: number): ProviderCapacity {
   if (members.some(member => member.status === 'ok')) return { status: 'ok', provider: alias };
   if (members.length === 0 || members.some(member => member.status === 'unknown')) return { status: 'unknown', provider: alias };
-  const weeklyPercent = minimum(members.map(member => member.weeklyPercent));
   if (members.every(member => atOrOver(member.weeklyPercent, threshold))) {
-    return { status: 'near_limit', provider: alias, weeklyPercent: weeklyPercent! };
+    return { status: 'near_limit', provider: alias, weeklyPercent: minimum(members.map(member => member.weeklyPercent))! };
   }
   const sessionLimited = members.filter(member => !atOrOver(member.weeklyPercent, threshold));
+  const weeklyPercent = minimum(sessionLimited.map(member => member.weeklyPercent));
   const sessionPercent = minimum(sessionLimited.map(member => member.sessionPercent));
   const resetsInMs = minimum(sessionLimited.map(member => member.resetsInMs));
   return {
