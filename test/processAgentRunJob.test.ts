@@ -195,12 +195,12 @@ describe('processAgentRunJob', () => {
     assert.ok(completed);
     assert.equal((completed[2] as { notificationRecap?: string }).notificationRecap, 'Two dependencies are outdated.');
 
-    const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions & { toolPolicy: unknown };
+    const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;
     assert.equal(options.prompt, 'PROMPT');
     assert.equal(options.taskId, 'agent-run-run-1-report');
     assert.equal(options.model, 'opus');
     assert.equal(options.worktreePath, '/tmp/worktree');
-    assert.deepEqual(options.toolPolicy, { capabilities: ['repository_read'], readOnly: true });
+    assert.deepEqual(options.toolPolicy, { allowWeb: false });
     assert.equal(h.cleanup.mock.callCount(), 1);
   });
 

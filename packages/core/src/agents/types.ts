@@ -39,6 +39,24 @@ export interface AgentConfig {
     cliVersionResolved?: string;      // Resolved semver version (populated by backend)
 }
 
+/** Bearer-authenticated MCP server exposed to one run; the token travels only through the container environment. */
+export interface AgentToolPolicyMcpServer {
+    name: string;
+    url: string;
+    /** Container environment variable holding the token. */
+    bearerTokenEnv: string;
+    bearerToken: string;
+}
+
+/**
+ * Per-run tool restrictions enforced with the runtime's native CLI switches
+ * (Claude, Codex); other runtimes apply the web restriction through the prompt only.
+ */
+export interface AgentToolPolicy {
+    allowWeb: boolean;
+    mcpServers?: AgentToolPolicyMcpServer[];
+}
+
 export interface AgentTaskOptions {
     worktreePath: string;
     issueRef: IssueRef;
@@ -91,6 +109,11 @@ export interface AgentTaskOptions {
 
     // Additional options
     tools?: string;
+    /**
+     * Absent keeps the runtime's default tools. Task execution only: Claude,
+     * Codex and Antigravity reject it in goal mode rather than run unrestricted.
+     */
+    toolPolicy?: AgentToolPolicy;
     /**
      * Turn limit for this task when it needs more than the configured default
      * (for example writing a plan task by task). Agents without a turn limit ignore it.

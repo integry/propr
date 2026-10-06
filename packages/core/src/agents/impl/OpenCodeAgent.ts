@@ -1,3 +1,4 @@
+import { withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import fs from 'fs';
 import path from 'path';
@@ -53,7 +54,9 @@ export class OpenCodeAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
+        const { worktreePath, issueRef, prompt: rawCustomPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
+        // No native web switch: the restriction is best effort through the prompt.
+        const customPrompt = withPromptOnlyToolPolicy(rawCustomPrompt, options.toolPolicy);
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;

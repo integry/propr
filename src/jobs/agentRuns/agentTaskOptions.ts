@@ -1,16 +1,6 @@
-import type { AgentCapability } from '@propr/shared';
 import type { AgentTaskOptions, IssueRef, StoredAgentDefinition } from '@propr/core';
 import { definitionReadsRepositories, type AgentRunWorkspace } from './workspace.js';
-
-/**
- * Capability-derived tool restrictions for the report run; enforced by agents once issue 8 lands.
- * Repository access is already enforced at launch through `repositoryAccess`.
- */
-export interface AgentRunToolPolicy {
-    capabilities: AgentCapability[];
-    /** The report run never writes to the repository or GitHub. */
-    readOnly: true;
-}
+import { agentRunToolPolicy, type AgentRunMcpGrant } from './toolPolicy.js';
 
 /** Launch options for the report run's agent. */
 export function agentTaskOptions(input: {
@@ -22,10 +12,13 @@ export function agentTaskOptions(input: {
     model: string | undefined;
     token: string;
     workspace: AgentRunWorkspace;
-}): AgentTaskOptions & { toolPolicy: AgentRunToolPolicy } {
-    const { runId, taskId, definition, issueRef, prompt, model, token, workspace } = input;
+    /** Run-scoped ProPR MCP credential, when one was issued. */
+    mcpGrant?: AgentRunMcpGrant | null;
+}): AgentTaskOptions {
+    const { runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant } = input;
     const repositoryReadable = definitionReadsRepositories(definition) && workspace.promptWorkspace.repositoriesReadable;
-    const toolPolicy: AgentRunToolPolicy = { capabilities: [...definition.capabilities], readOnly: true };
+    // Web and MCP are enforced by the runtime; repository access through `repositoryAccess`.
+    const toolPolicy = agentRunToolPolicy({ phase: 'report', capabilities: definition.capabilities, mcpGrant });
     return {
         worktreePath: workspace.worktreePath,
         issueRef,
