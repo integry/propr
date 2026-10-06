@@ -153,6 +153,12 @@ describe('validateAgentSchedule', () => {
     // 23:55 to 00:05 the next day is only 10 minutes apart.
     assert.match(validateAgentSchedule('5,55 0,23 * * *') ?? '', /every 15 minutes/);
     assert.equal(validateAgentSchedule('5,55 0,23 * * 1'), null);
+    // Feb 29 and Mar 1 fall on Friday and Saturday only in some leap years
+    // (e.g. 2036), where 23:55 to 00:05 is only 10 minutes apart.
+    assert.match(validateAgentSchedule('5,55 0,23 */28 * 5,6') ?? '', /every 15 minutes/);
+    assert.equal(nextCronOccurrence('5,55 0,23 */28 * 5,6', new Date('2036-02-29T23:55:00Z')).toISOString(), '2036-03-01T00:05:00.000Z');
+    assert.match(validateAgentSchedule('5,55 0,23 1,29 2,3 *') ?? '', /every 15 minutes/);
+    assert.equal(validateAgentSchedule('5,55 0,23 1,15 * *'), null);
   });
 
   test('rejects schedules that never fire or fire less than yearly', () => {

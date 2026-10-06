@@ -163,23 +163,24 @@ export function nextCronOccurrence(expr: string | ParsedCronExpression, after: D
 }
 
 /** Smallest gap, in minutes, between two consecutive firings of the expression. */
-function minimumCronIntervalMinutes(cron: ParsedCronExpression): number {
+function minimumCronIntervalMinutes(cron: ParsedCronExpression, matchingDays: readonly number[]): number {
   const timesOfDay: number[] = [];
   for (const hour of [...cron.hours].sort((a, b) => a - b)) {
     for (const minute of [...cron.minutes].sort((a, b) => a - b)) timesOfDay.push(hour * 60 + minute);
   }
   let minimum = Infinity;
   for (let i = 1; i < timesOfDay.length; i += 1) minimum = Math.min(minimum, timesOfDay[i] - timesOfDay[i - 1]);
-  if (firesOnConsecutiveDays(cron)) {
+  if (firesOnConsecutiveDays(matchingDays)) {
     minimum = Math.min(minimum, timesOfDay[0] + 24 * 60 - timesOfDay[timesOfDay.length - 1]);
   }
   return minimum;
 }
 
-// An 8-year window starting on a leap year covers every month-length and
-// weekday alignment that matters for day matching.
-const DAY_SCAN_START = Date.UTC(2024, 0, 1);
-const DAY_SCAN_DAYS = 8 * 365 + 2;
+// The Gregorian calendar repeats exactly every 400 years (146,097 days, a whole
+// number of weeks), so scanning one full cycle covers every combination of
+// date, month length, leap day and weekday. The scan is treated as circular.
+const DAY_SCAN_START = Date.UTC(2000, 0, 1);
+const DAY_SCAN_DAYS = 146_097;
 
 function matchingDayIndexes(cron: ParsedCronExpression): number[] {
   const indexes: number[] = [];
@@ -189,9 +190,10 @@ function matchingDayIndexes(cron: ParsedCronExpression): number[] {
   return indexes;
 }
 
-function firesOnConsecutiveDays(cron: ParsedCronExpression): boolean {
-  const days = matchingDayIndexes(cron);
-  return days.some((day, index) => index > 0 && day - days[index - 1] === 1);
+function firesOnConsecutiveDays(matchingDays: readonly number[]): boolean {
+  if (matchingDays.length === 0) return false;
+  const wraps = matchingDays[0] === 0 && matchingDays[matchingDays.length - 1] === DAY_SCAN_DAYS - 1;
+  return wraps || matchingDays.some((day, index) => index > 0 && day - matchingDays[index - 1] === 1);
 }
 
 /**
@@ -215,7 +217,7 @@ export function validateAgentSchedule(expr: unknown): string | null {
     || lastGap > CRON_SEARCH_LIMIT_DAYS
     || days.some((day, index) => index > 0 && day - days[index - 1] > CRON_SEARCH_LIMIT_DAYS);
   if (yearlyGapExceeded) return 'schedule must fire at least once a year';
-  if (minimumCronIntervalMinutes(cron) < MIN_AGENT_SCHEDULE_INTERVAL_MINUTES) {
+  if (minimumCronIntervalMinutes(cron, days) < MIN_AGENT_SCHEDULE_INTERVAL_MINUTES) {
     return `schedule must not run more often than every ${MIN_AGENT_SCHEDULE_INTERVAL_MINUTES} minutes`;
   }
   return null;
