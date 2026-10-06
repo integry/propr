@@ -11,7 +11,7 @@ import {
   UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
 import type { TaskStateData, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult, RunCostGuard } from '@propr/core';
-import { issueRunCostCapTarget, withRunCostCap, type CommentOctokit } from './runCostCap.js';
+import { issueRunCostCapDeps, issueRunCostCapTarget, withRunCostCap, type CommentOctokit } from './runCostCap.js';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
@@ -27,6 +27,7 @@ import {
   withRepositoryWorkflowAdmission, reconcileRepositoryWorkflowAdmission, deferRepositoryWorkflowJob, RepositoryWorkflowCapacityError, isUserCancellationError, nonRetryableRepositoryWorkflowError,
 } from './repositoryWorkflow.js';
 import { redisClient } from './issueJob/config.js';
+import { recordReplayableIssueTask } from '../taskReplacement/store.js';
 
 function isStoppedTask(task: TaskStateData | null): task is TaskStateData & { state: 'cancelled' } {
   return !!task && task.state === TaskStates.CANCELLED && !isBookkeepingCancellation(task);
@@ -56,6 +57,12 @@ async function prepareIssueJob(job: Job<IssueJobData>, context: Awaited<ReturnTy
     }
   } catch (stateError) {
     correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');
+  }
+  try {
+    // Lets an infrastructure-lost or transient-provider failure be re-run with the same selection.
+    await recordReplayableIssueTask(db, taskId, { ...job.data, correlationId, agentAlias, modelName });
+  } catch (replayError) {
+    correlatedLogger.warn({ taskId, error: (replayError as Error).message }, 'Failed to record replayable task data');
   }
 
   if (job.data.isRetryFromRateLimit && jobId !== undefined) {
@@ -348,7 +355,7 @@ async function withIssueRunCostCap(
     return await withRunCostCap(await issueRunCostCapTarget(job.data, context, () => octokit as unknown as CommentOctokit), guard => {
       started = true;
       return operation(guard);
-    });
+    }, issueRunCostCapDeps());
   } catch (error) {
     // The run's own failures are already handled inside it.
     if (started) throw error;

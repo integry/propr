@@ -13,6 +13,7 @@ let issueEvents: Array<{ event: string; commit_id: string | null; created_at: st
 let afterEvents: (() => void) | undefined;
 let eventsFailure = false;
 const writes: Array<{ prNumber: number; status: string }> = [];
+const outcomes: Array<Record<string, unknown>> = [];
 const log = { info() {}, warn() {}, error() {}, debug() {}, withCorrelation: () => log };
 
 await mock.module('../src/utils/logger.js', { defaultExport: log });
@@ -44,6 +45,7 @@ await mock.module('../src/webhook/planIssueTrackingHelpers.js', { namedExports: 
 await mock.module('../src/services/notificationService.js', { namedExports: { notificationService: {
   markPullRequestMergedAndDismissNotifications: async () => undefined,
   dismissNotificationsForPullRequest: async () => undefined,
+  recordPullRequestOutcome: async (outcome: Record<string, unknown>) => { outcomes.push(outcome); },
 } } });
 const { handlePlanPRUpdate } = await import('../src/webhook/planIssueTracking.js');
 
@@ -52,7 +54,7 @@ beforeEach(() => {
   stored = { draft_id: 'draft', issue_number: 10, pr_number: 100, status: 'closed' };
   livePR = { state: 'open', merged_at: null };
   liveIssue = { state: 'open', closed_at: null };
-  writes.length = 0; issueEvents = []; afterEvents = undefined; eventsFailure = false;
+  writes.length = 0; outcomes.length = 0; issueEvents = []; afterEvents = undefined; eventsFailure = false;
 });
 
 function event(action: string, merged = false, prNumber = 100) {
@@ -141,4 +143,17 @@ test('missing closure evidence or a failed event lookup preserves closed status'
   eventsFailure = true;
   await event('closed', true);
   assert.deepEqual(writes, []);
+});
+
+test('merged, closed and reopened events record the PR outcome for review-score analytics', async () => {
+  await event('closed', true);
+  await event('closed', false, 101);
+  await event('reopened', false, 101);
+  await event('synchronize');
+  assert.deepEqual(outcomes.map(({ prNumber, action, merged, mergedAt }) => ({ prNumber, action, merged, mergedAt })), [
+    { prNumber: 100, action: 'closed', merged: true, mergedAt: MERGED_AT },
+    { prNumber: 101, action: 'closed', merged: false, mergedAt: null },
+    { prNumber: 101, action: 'reopened', merged: false, mergedAt: null },
+  ]);
+  assert.ok(outcomes.every(outcome => outcome.repository === 'acme/repo'));
 });

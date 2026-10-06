@@ -1,4 +1,4 @@
-import { isUsageTipsCooldownDays } from '@propr/shared';
+import { isUsageTipsCooldownDays, MAX_PROVIDER_REPLACEMENTS_LIMIT, parseMaxProviderReplacements } from '@propr/shared';
 /**
  * System Settings API
  *
@@ -40,6 +40,11 @@ export interface SystemSettings {
    * Number of concurrent workers for processing tasks.
    */
   worker_concurrency: number;
+
+  /**
+   * Replacement attempts dispatched after transient provider failures (0 disables).
+   */
+  max_provider_replacements?: number;
 
   /**
    * List of GitHub usernames allowed to use the system.
@@ -201,6 +206,11 @@ export interface UpdateSettingsOptions {
   worker_concurrency?: number;
 
   /**
+   * Replacement attempts dispatched after transient provider failures (0 disables).
+   */
+  max_provider_replacements?: number;
+
+  /**
    * List of GitHub usernames allowed to use the system.
    */
   github_user_whitelist?: string[];
@@ -331,6 +341,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "usage_tips_dismissal_cooldown_days",
   "default_agent_alias",
   "worker_concurrency",
+  "max_provider_replacements",
   "github_user_whitelist",
   "analysis_model_fast",
   "planner_context_model",
@@ -433,6 +444,13 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       return parsed;
     }
     case "ultrafix_escalation_max_reasoning_levels":
+    case "max_provider_replacements": {
+      const parsed = parseMaxProviderReplacements(value);
+      if (parsed === null) {
+        throw new Error(`Invalid value for ${key}: must be an integer from 0 to ${MAX_PROVIDER_REPLACEMENTS_LIMIT}`);
+      }
+      return parsed;
+    }
     case "ultrafix_pause_seconds": {
       if (!/^\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be a non-negative integer`);

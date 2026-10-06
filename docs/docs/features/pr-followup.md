@@ -81,6 +81,81 @@ for reason codes and issue state labels.
 
 **Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Enable it only where CI failures are trustworthy signals.
 
+## Automatic Merge-Conflict Resolution
+
+When the base branch of a ProPR pull request moves on (typically because another
+pull request merged) and the two now conflict, ProPR can merge the base branch
+into the pull request and let an agent resolve the conflicts. It is off unless
+you turn it on.
+
+### Where it is configured
+
+| Level | Where | Values |
+|---|---|---|
+| Instance default | Settings → Automation → **Auto-Resolve Merge Conflicts (default for repositories)**, MCP `update_execution_settings` (`auto_resolve_merge_conflicts`), `propr setting update auto_resolve_merge_conflicts <true\|false>` | on / off (default off) |
+| Repository override | Repositories → repository → Automation → **Auto-resolve merge conflicts**, MCP `update_repository_configuration` (`autoResolveMergeConflicts`), `propr repo add\|toggle owner/repo --auto-resolve-conflicts <on\|off\|inherit>` | Always / Never / Use instance default |
+
+The effective value is the repository override when one is set, otherwise the
+instance default, otherwise off. The override is repository-wide: every branch
+entry of a monitored repository shares it. `inherit` (or `null` through MCP)
+removes the override. Clients that do not send the field never change it.
+MCP `get_repository_configuration` returns the stored override and
+`effective.autoResolveMergeConflicts` with `enabled`, `source` (`repository` or
+`instance`), `repositoryOverride` and `instanceDefault`; `propr repo list` shows
+`On`, `Off` or `Inherit (On/Off)`.
+
+### When it runs
+
+- **Base branch push.** A push to branch `X` evaluates up to 30 open pull requests
+  whose base is `X`. Every one is read once first so GitHub starts computing
+  mergeability, then each is evaluated.
+- **Pull request events.** `opened`, `reopened`, `synchronize` and
+  `ready_for_review`.
+- **Sweep.** A safety net evaluates open pull requests of every repository with
+  the setting on: every 5 minutes with `GITHUB_EVENT_INTAKE_MODE=polling` (which
+  never receives push events) and every 15 minutes otherwise.
+  `MERGE_CONFLICT_SWEEP_INTERVAL_MS` overrides the interval.
+
+GitHub computes mergeability lazily and answers `mergeable: null` right after a
+push, so ProPR re-reads the pull request after 2, 5, 10 and 20 seconds before
+giving up. A pull request is conflicted when GitHub reports `mergeable: false`
+or `mergeable_state: "dirty"`.
+
+Only ProPR pull requests are touched: those carrying the PR label, a processing
+label or the AI primary tag, an `llm-*` model label, or that ProPR has a task
+for. Human pull requests are never modified. Each head+base pair is queued once
+(for 30 minutes), and a pull request gets at most 3 automatic attempts in 24
+hours so a constantly moving base cannot cause a loop.
+
+The resolution job merges the base into the pull request branch, asks the agent
+to resolve the conflicted files, refuses to continue while any conflict marker
+remains, records a merge commit (hooks disabled) whose parents are the previous
+head and the base, and pushes it. Any failure aborts the merge and leaves the
+remote branch untouched.
+
+The `/merge` comment is unaffected by these settings: it is an explicit request
+and always runs for a ProPR pull request.
+
+### Why a pull request was not resolved
+
+Every decision not to act is logged at `info` (`warn` for
+`mergeability_unknown` and `attempt_limit`) with
+`{ repository, pullNumber, trigger, reason }`:
+
+| Reason | Meaning |
+|---|---|
+| `auto_resolve_disabled` | The effective setting for the repository is off. |
+| `pull_request_closed` | The pull request is no longer open. |
+| `draft_pull_request` | Drafts are left alone until they are ready for review. |
+| `fork_pull_request` | The head repository no longer exists. |
+| `not_propr_pull_request` | No ProPR label and no ProPR task for the pull request. |
+| `mergeability_unknown` | GitHub had still not computed mergeability after polling. |
+| `not_conflicted` | GitHub reports the pull request as mergeable. |
+| `already_queued` | This exact head+base state was already queued. |
+| `attempt_limit` | 3 automatic attempts in the last 24 hours. |
+
+Queued jobs are logged with their job ID, head and base.
+
 ## Cancelling Obsolete Checks During Follow-Up
 
 While a follow-up implements, the checks running on the commit it is about to replace are already obsolete, and on a busy repository they keep runners occupied for work nobody will read. GitHub's own `cancel-in-progress` concurrency only helps once a replacement workflow starts, which is after the new commit is pushed.

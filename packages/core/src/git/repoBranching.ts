@@ -171,7 +171,7 @@ export async function ensureBranchAndPush(worktreePath: string, branchName: stri
     }
 }
 
-interface PushBranchOptions {
+export interface PushBranchOptions {
     repoUrl?: string;
     authToken?: string;
     remote?: string;

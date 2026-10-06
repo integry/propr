@@ -1,209 +1,38 @@
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { loadAutoResolveMergeConflicts, hasValidTriggerLabel } from '../config/configManager.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
-import { getMergeConflictIdempotencyKey } from '../utils/constants.js';
 import { generateCorrelationId } from '../utils/logger.js';
 import type { MergeConflictJobData } from '../queue/taskQueue.types.js';
 import type { PullRequestEvent, PushEvent } from '@octokit/webhooks-types';
-import type { Redis } from 'ioredis';
 import { isRescueRef } from '../git/rescueRefs.js';
+import { loadEffectiveAutoResolveMergeConflicts } from '../config/mergeConflictSettings.js';
+import {
+    evaluateOpenPullRequests,
+    isProprManagedPullRequest,
+    maybeQueueConflictResolution,
+    normalizeLabelNames,
+    type ConflictDetectionResult,
+    type MergeConflictDetectionDeps,
+    type MergeConflictRedis,
+} from './mergeConflictAutoResolve.js';
 
-export type ConflictDetectionOutcome =
-    | 'skipped_disabled'
-    | 'skipped_clean'
-    | 'skipped_draft'
-    | 'skipped_duplicate'
-    | 'skipped_not_conflicted'
-    | 'skipped_no_trigger_label'
-    | 'queued';
-
-export interface ConflictDetectionResult {
-    outcome: ConflictDetectionOutcome;
-    prNumber: number;
-    repository: string;
-}
-
-interface PRConflictInfo {
-    number: number;
-    headBranch: string;
-    baseBranch: string;
-    headSha: string;
-    baseSha: string;
-    isDraft: boolean;
-    mergeable: boolean | null;
-    mergeableState: string;
-    labels?: Array<{ name: string }>;
-}
-
-/**
- * Normalizes GitHub label payloads (objects or bare strings) into `{ name }` records.
- */
-function normalizeLabels(labels: unknown): Array<{ name: string }> {
-    if (!Array.isArray(labels)) return [];
-    return labels
-        .map(label => (typeof label === 'string' ? label : (label as { name?: unknown } | null)?.name))
-        .filter((name): name is string => typeof name === 'string' && name.length > 0)
-        .map(name => ({ name }));
-}
-
-const IDEMPOTENCY_TTL_SECONDS = 24 * 3600; // 24 hours
-
-/**
- * Checks a single PR for merge conflicts and enqueues a resolution job if needed.
- */
-async function detectAndEnqueueForPR(
-    prInfo: PRConflictInfo,
-    options: { owner: string; repoName: string; triggerSource: MergeConflictJobData['triggerSource']; redisClient: Redis; correlationId: string }
-): Promise<ConflictDetectionResult> {
-    const { owner, repoName, triggerSource, redisClient, correlationId } = options;
-    const log = logger.withCorrelation(correlationId);
-    const repository = `${owner}/${repoName}`;
-    const { number: prNumber } = prInfo;
-
-    // Only PRs that were explicitly opted into ProPR automation may be acted on.
-    if (!await hasValidTriggerLabel(prInfo.labels)) {
-        log.info({ repository, prNumber, labels: (prInfo.labels ?? []).map(l => l.name), outcome: 'skipped_no_trigger_label' }, 'Merge conflict detection: PR has no valid trigger label, skipping');
-        return { outcome: 'skipped_no_trigger_label', prNumber, repository };
-    }
-
-    // Skip draft PRs
-    if (prInfo.isDraft) {
-        log.info({ repository, prNumber, outcome: 'skipped_draft' }, 'Merge conflict detection: skipping draft PR');
-        return { outcome: 'skipped_draft', prNumber, repository };
-    }
-
-    // Check if PR is actually conflicted
-    const isConflicted = prInfo.mergeable === false || prInfo.mergeableState === 'dirty';
-    if (!isConflicted) {
-        log.debug({ repository, prNumber, mergeable: prInfo.mergeable, mergeableState: prInfo.mergeableState, outcome: 'skipped_not_conflicted' }, 'Merge conflict detection: PR is not conflicted');
-        return { outcome: 'skipped_not_conflicted', prNumber, repository };
-    }
-
-    // Check idempotency: same PR + head SHA + base SHA already queued?
-    const idempotencyKey = getMergeConflictIdempotencyKey({ owner, repo: repoName, prNumber, headSha: prInfo.headSha, baseSha: prInfo.baseSha });
-    const alreadyQueued = await redisClient.get(idempotencyKey);
-    if (alreadyQueued) {
-        log.info({ repository, prNumber, headSha: prInfo.headSha, baseSha: prInfo.baseSha, outcome: 'skipped_duplicate' }, 'Merge conflict detection: already queued for this conflict state');
-        return { outcome: 'skipped_duplicate', prNumber, repository };
-    }
-
-    // Enqueue the merge conflict resolution job
-    const jobCorrelationId = generateCorrelationId();
-    const jobData: MergeConflictJobData = {
-        pullRequestNumber: prNumber,
-        repoOwner: owner,
-        repoName,
-        headBranch: prInfo.headBranch,
-        baseBranch: prInfo.baseBranch,
-        headSha: prInfo.headSha,
-        baseSha: prInfo.baseSha,
-        triggerSource,
-        correlationId: jobCorrelationId,
-        systemGenerated: true,
-    };
-
-    const jobId = `merge-conflict-${owner}-${repoName}-${prNumber}-${Date.now()}`;
-    const queue = await getIssueQueue();
-    await queue.add('processMergeConflict', jobData, { jobId });
-
-    // Mark as queued in Redis
-    await redisClient.setex(idempotencyKey, IDEMPOTENCY_TTL_SECONDS, Date.now().toString());
-
-    log.info({
-        repository,
-        prNumber,
-        headBranch: prInfo.headBranch,
-        baseBranch: prInfo.baseBranch,
-        headSha: prInfo.headSha,
-        baseSha: prInfo.baseSha,
-        triggerSource,
-        jobId,
-        outcome: 'queued',
-    }, 'Merge conflict detection: enqueued conflict resolution job');
-
-    return { outcome: 'queued', prNumber, repository };
-}
-
-/**
- * Fetches PR details including mergeable status from GitHub.
- * GitHub may return null for mergeable if it hasn't computed it yet,
- * so we retry briefly to allow the computation to complete.
- */
-async function fetchPRConflictInfo(
-    owner: string,
-    repoName: string,
-    prNumber: number
-): Promise<PRConflictInfo | null> {
-    const octokit = await getAuthenticatedOctokit();
-
-    // GitHub sometimes needs time to compute mergeable status; retry up to 3 times
-    for (let attempt = 0; attempt < 3; attempt++) {
-        const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-            owner,
-            repo: repoName,
-            pull_number: prNumber,
-        });
-
-        if (pr.state !== 'open') return null;
-
-        if (pr.mergeable !== null) {
-            return {
-                number: pr.number,
-                headBranch: pr.head.ref,
-                baseBranch: pr.base.ref,
-                headSha: pr.head.sha,
-                baseSha: pr.base.sha,
-                isDraft: pr.draft ?? false,
-                mergeable: pr.mergeable,
-                mergeableState: (pr as Record<string, unknown>).mergeable_state as string ?? 'unknown',
-                labels: normalizeLabels(pr.labels),
-            };
-        }
-
-        // Wait briefly for GitHub to compute mergeable status
-        if (attempt < 2) {
-            await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-    }
-
-    // If mergeable is still null after retries, return what we have
-    const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-        owner,
-        repo: repoName,
-        pull_number: prNumber,
-    });
-
-    if (pr.state !== 'open') return null;
-
-    return {
-        number: pr.number,
-        headBranch: pr.head.ref,
-        baseBranch: pr.base.ref,
-        headSha: pr.head.sha,
-        baseSha: pr.base.sha,
-        isDraft: pr.draft ?? false,
-        mergeable: pr.mergeable,
-        mergeableState: (pr as Record<string, unknown>).mergeable_state as string ?? 'unknown',
-        labels: normalizeLabels(pr.labels),
-    };
-}
+export type { ConflictDetectionResult, ConflictSkipReason } from './mergeConflictAutoResolve.js';
+export type ConflictDetectionOutcome = ConflictDetectionResult['outcome'];
 
 export interface HandleMergeCommandOptions {
     owner: string;
     repoName: string;
     prNumber: number;
     userId?: string;
-    redisClient: Redis;
+    redisClient: unknown;
     correlationId: string;
 }
 
 /**
  * Handles a /merge comment on a PR by enqueuing a merge conflict resolution job.
- * This bypasses the auto_resolve_merge_conflicts setting since the user explicitly requested it,
- * but still requires the PR to carry a valid trigger label (AI, propr, or a configured primary label).
- * Unlike automatic detection, this does not check if the PR is actually conflicted —
- * it will perform the merge regardless (clean or with conflicts).
+ * This is an explicit user command: it never consults the auto-resolve setting,
+ * but the PR must still be ProPR-managed. Unlike automatic detection, it does not
+ * check whether the PR is conflicted — it merges regardless (clean or with conflicts).
  */
 export async function handleMergeCommand(
     options: HandleMergeCommandOptions
@@ -220,15 +49,14 @@ export async function handleMergeCommand(
     });
 
     if (pr.state !== 'open') {
-        log.info({ repository, prNumber }, '/merge command: PR is not open, skipping');
+        log.info({ repository, pullNumber: prNumber, trigger: 'comment', reason: 'pull_request_closed' }, '/merge command: PR is not open, skipping');
         return null;
     }
 
     // Defense in depth: never enqueue merge work for a PR that was not opted into ProPR.
-    const prLabels = normalizeLabels(pr.labels);
-    if (!await hasValidTriggerLabel(prLabels)) {
-        log.info({ repository, prNumber, labels: prLabels.map(l => l.name), outcome: 'skipped_no_trigger_label' }, '/merge command: PR has no valid trigger label, skipping');
-        return { outcome: 'skipped_no_trigger_label', prNumber, repository };
+    if (!await isProprManagedPullRequest({ repository, prNumber, labels: pr.labels })) {
+        log.info({ repository, pullNumber: prNumber, trigger: 'comment', reason: 'not_propr_pull_request', labels: normalizeLabelNames(pr.labels) }, '/merge command: PR is not ProPR-managed, skipping');
+        return { outcome: 'skipped', reason: 'not_propr_pull_request', prNumber, repository };
     }
 
     const jobCorrelationId = generateCorrelationId();
@@ -252,15 +80,18 @@ export async function handleMergeCommand(
 
     log.info({
         repository,
-        prNumber,
+        pullNumber: prNumber,
+        trigger: 'comment',
         headBranch: pr.head.ref,
         baseBranch: pr.base.ref,
         jobId,
         outcome: 'queued',
     }, '/merge command: enqueued merge job');
 
-    return { outcome: 'queued', prNumber, repository };
+    return { outcome: 'queued', prNumber, repository, jobId };
 }
+
+const RELEVANT_PULL_REQUEST_ACTIONS = new Set(['opened', 'reopened', 'synchronize', 'ready_for_review']);
 
 /**
  * Handles pull_request events that could indicate a new merge conflict.
@@ -268,51 +99,34 @@ export async function handleMergeCommand(
  */
 export async function handlePullRequestConflictDetection(
     payload: PullRequestEvent,
-    redisClient: Redis,
-    correlationId: string
+    redisClient: MergeConflictRedis,
+    correlationId: string,
+    deps?: MergeConflictDetectionDeps
 ): Promise<ConflictDetectionResult | null> {
-    const log = logger.withCorrelation(correlationId);
-    const action = payload.action;
-
-    const relevantActions = ['opened', 'reopened', 'synchronize', 'ready_for_review'];
-    if (!relevantActions.includes(action)) return null;
-
-    // Check feature flag
-    const enabled = await loadAutoResolveMergeConflicts();
-    if (!enabled) {
-        const [owner, repoName] = payload.repository.full_name.split('/');
-        log.info({ repository: payload.repository.full_name, prNumber: payload.pull_request.number, outcome: 'skipped_disabled' }, 'Merge conflict detection: feature disabled');
-        return { outcome: 'skipped_disabled', prNumber: payload.pull_request.number, repository: `${owner}/${repoName}` };
-    }
+    if (!RELEVANT_PULL_REQUEST_ACTIONS.has(payload.action)) return null;
 
     const [owner, repoName] = payload.repository.full_name.split('/');
-    const prNumber = payload.pull_request.number;
-    const repository = `${owner}/${repoName}`;
-
-    // Verify the PR opted into ProPR automation before making any external API requests.
-    const payloadLabels = normalizeLabels(payload.pull_request.labels);
-    if (!await hasValidTriggerLabel(payloadLabels)) {
-        log.info({ repository, prNumber, labels: payloadLabels.map(l => l.name), outcome: 'skipped_no_trigger_label' }, 'Merge conflict detection: PR has no valid trigger label, skipping');
-        return { outcome: 'skipped_no_trigger_label', prNumber, repository };
-    }
-
-    const prInfo = await fetchPRConflictInfo(owner, repoName, prNumber);
-    if (!prInfo) {
-        log.debug({ repository: payload.repository.full_name, prNumber }, 'Merge conflict detection: PR not open, skipping');
-        return null;
-    }
-
-    return detectAndEnqueueForPR(prInfo, { owner, repoName, triggerSource: 'pull_request', redisClient, correlationId });
+    return maybeQueueConflictResolution({
+        owner,
+        repoName,
+        prNumber: payload.pull_request.number,
+        trigger: 'pull_request',
+        redisClient,
+        correlationId,
+        deps,
+    });
 }
 
 /**
- * Handles push events by checking all open PRs targeting the pushed branch.
- * When a base branch receives new commits, open PRs against it may become conflicted.
+ * Handles push events by checking open PRs targeting the pushed branch: when a
+ * base branch receives new commits (typically another PR merging), open PRs
+ * against it may become conflicted without receiving any pull_request event.
  */
 export async function handlePushConflictDetection(
     payload: PushEvent,
-    redisClient: Redis,
-    correlationId: string
+    redisClient: MergeConflictRedis,
+    correlationId: string,
+    deps?: MergeConflictDetectionDeps
 ): Promise<ConflictDetectionResult[]> {
     const log = logger.withCorrelation(correlationId);
     const [owner, repoName] = payload.repository.full_name.split('/');
@@ -323,66 +137,17 @@ export async function handlePushConflictDetection(
         log.debug({ repository, ref: payload.ref }, 'Merge conflict detection: ignoring push salvage rescue ref');
         return [];
     }
+    if (!payload.ref.startsWith('refs/heads/') || payload.deleted) return [];
+    const branchName = payload.ref.slice('refs/heads/'.length);
 
-    // Check feature flag
-    const enabled = await loadAutoResolveMergeConflicts();
-    if (!enabled) {
-        log.info({ repository, outcome: 'skipped_disabled' }, 'Merge conflict detection: feature disabled');
+    // Evaluate the setting first so disabled repositories cost no GitHub calls.
+    const setting = await loadEffectiveAutoResolveMergeConflicts(repository);
+    if (!setting.enabled) {
+        log.info({ repository, branchName, trigger: 'push', reason: 'auto_resolve_disabled', source: setting.source }, 'Merge conflict auto-resolve skipped: auto_resolve_disabled');
         return [];
     }
 
-    // Extract branch name from ref (refs/heads/main -> main)
-    const ref = payload.ref;
-    if (!ref.startsWith('refs/heads/')) return [];
-    const branchName = ref.replace('refs/heads/', '');
-
-    log.info({ repository, branchName }, 'Merge conflict detection: checking open PRs targeting pushed branch');
-
-    // Find all open PRs targeting this branch
-    const octokit = await getAuthenticatedOctokit();
-    const { data: openPRs } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
-        owner,
-        repo: repoName,
-        state: 'open',
-        base: branchName,
-        per_page: 100,
+    return evaluateOpenPullRequests({
+        owner, repoName, baseBranch: branchName, trigger: 'push', redisClient, correlationId, setting, deps,
     });
-
-    if (openPRs.length === 0) {
-        log.debug({ repository, branchName }, 'Merge conflict detection: no open PRs targeting this branch');
-        return [];
-    }
-
-    log.info({ repository, branchName, prCount: openPRs.length }, 'Merge conflict detection: found open PRs to check');
-
-    // Only PRs carrying a valid trigger label are eligible for automated conflict resolution.
-    const results: ConflictDetectionResult[] = [];
-    const eligiblePRs: typeof openPRs = [];
-    for (const pr of openPRs) {
-        if (await hasValidTriggerLabel(normalizeLabels(pr.labels))) {
-            eligiblePRs.push(pr);
-        } else {
-            log.info({ repository, prNumber: pr.number, outcome: 'skipped_no_trigger_label' }, 'Merge conflict detection: PR has no valid trigger label, skipping');
-            results.push({ outcome: 'skipped_no_trigger_label', prNumber: pr.number, repository });
-        }
-    }
-
-    if (eligiblePRs.length === 0) {
-        log.debug({ repository, branchName }, 'Merge conflict detection: no open PRs with a valid trigger label');
-        return results;
-    }
-
-    for (const pr of eligiblePRs) {
-        try {
-            const prInfo = await fetchPRConflictInfo(owner, repoName, pr.number);
-            if (!prInfo) continue;
-
-            const result = await detectAndEnqueueForPR(prInfo, { owner, repoName, triggerSource: 'push', redisClient, correlationId });
-            results.push(result);
-        } catch (error) {
-            log.error({ repository, prNumber: pr.number, error: (error as Error).message }, 'Merge conflict detection: error checking PR');
-        }
-    }
-
-    return results;
 }
