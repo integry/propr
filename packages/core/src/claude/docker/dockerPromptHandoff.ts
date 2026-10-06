@@ -25,8 +25,12 @@ export interface PromptHandoffTracker {
     output(): void;
     /** The process was never started (spawn failure, refused before spawn). */
     notStarted(): void;
-    /** The process exited; only a daemon failure without any output proves nothing was received. */
-    exited(exitCode: number | null): void;
+    /**
+     * The process exited; only a daemon failure without any output, or a
+     * live input session that never wrote the prompt to it, proves nothing
+     * was received.
+     */
+    exited(exitCode: number | null, input?: { promptWithheld?(): boolean }): void;
 }
 
 const INACTIVE_TRACKER: PromptHandoffTracker = Object.freeze({
@@ -55,8 +59,8 @@ export function trackPromptHandoff(
     return {
         output: () => settle(() => handoff.received()),
         notStarted: () => settle(() => handoff.notReceived()),
-        exited: exitCode => {
-            if (context.dockerRun && exitCode === DOCKER_RUN_DAEMON_FAILURE) settle(() => handoff.notReceived());
+        exited: (exitCode, input) => {
+            if (input?.promptWithheld?.() || (context.dockerRun && exitCode === DOCKER_RUN_DAEMON_FAILURE)) settle(() => handoff.notReceived());
         },
     };
 }

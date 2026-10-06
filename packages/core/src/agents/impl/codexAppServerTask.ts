@@ -149,6 +149,9 @@ export class CodexAppServerTaskSession implements LiveInputSession {
         let threadId: string | null = null;
         let turnId: string | null = null;
         let turnEnded = false;
+        // The prompt leaves the worker only in `turn/start`: until that request
+        // is written, a run that ends reached no agent with it.
+        let promptSent = false;
         let usage: CodexUsage | null = null;
         let lineBuffer = '';
         // Records produced outside of a translated line (request failures).
@@ -200,7 +203,7 @@ export class CodexAppServerTaskSession implements LiveInputSession {
             if (typeof thread.id !== 'string') return fail('Codex App Server did not return thread.id');
             threadId = thread.id;
             const model = text(thread.model) ?? text(result.model);
-            request('turn/start', {
+            promptSent = request('turn/start', {
                 threadId,
                 input: [{ type: 'text', text: options.prompt, text_elements: [] }],
             }, {
@@ -328,6 +331,8 @@ export class CodexAppServerTaskSession implements LiveInputSession {
             // The App Server answers its handshake before the prompt is sent:
             // only a started turn shows the agent received it.
             promptReceived: () => turnId !== null,
+            // A handshake the App Server refused (or never finished) sent no prompt.
+            promptWithheld: () => !promptSent,
             translateOutput: (chunk, flush) => {
                 lineBuffer += chunk;
                 const lines = lineBuffer.split('\n');

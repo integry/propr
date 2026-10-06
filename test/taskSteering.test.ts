@@ -374,3 +374,73 @@ test('a handoff that cannot be persisted starts no agent with the carried steers
         await database.destroy();
     }
 });
+
+/** A Codex App Server stand-in: answers the handshake per mode, then exits once its input closes. */
+const CODEX_APP_SERVER = `
+const readline = require('node:readline');
+const mode = process.argv[1];
+const send = message => process.stdout.write(JSON.stringify(message) + '\\n');
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    if (mode === 'initialize-fail') send({ id: message.id, error: { code: -32603, message: 'not logged in' } });
+    else send({ id: message.id, result: {} });
+  } else if (message.method === 'thread/start') {
+    if (mode === 'thread-fail') send({ id: message.id, error: { code: -32603, message: 'not logged in' } });
+    else send({ id: message.id, result: { thread: { id: 'thread-1' } } });
+  } else if (message.method === 'turn/start') {
+    // The prompt was sent: the App Server dies before reporting the turn.
+    process.exit(1);
+  }
+}).on('close', () => process.exit(0));
+`;
+
+for (const mode of ['initialize-fail', 'thread-fail'] as const) {
+    test(`carried steers survive a Codex App Server that refused its ${mode === 'initialize-fail' ? 'initialization' : 'thread'} before the prompt was sent`, async () => {
+        const { CodexAppServerTaskSession } = await import('../packages/core/src/agents/impl/codexAppServerTask.js');
+        const taskId = `task-codex-${mode}`;
+        const database = await steeringDatabase(taskId);
+        const codex = { steeringCapability: 'live' as const, config: { alias: 'codex-default', type: 'codex' as const } };
+        try {
+            const run = await startTaskSteeringRun({ taskId, agent: codex, redisClient: steeringRedis, db: database });
+            assert.match(run.promptContext, /Keep the public API unchanged/);
+            const session = new CodexAppServerTaskSession({ prompt: run.promptContext, source: run.steering, pollIntervalMs: 10 });
+            await executeDockerCommand(process.execPath, ['-e', CODEX_APP_SERVER, mode], {
+                timeout: 10_000, liveInput: session, promptHandoff: run.promptHandoff,
+            });
+            await run.finish();
+            const [released] = await listTaskSteers(database, taskId);
+            assert.equal(released!.deliveredAt, null);
+            assert.equal(released!.delivery, null);
+            assert.equal((await database('task_history')).length, 0, 'no delivery is reported');
+
+            const next = await startTaskSteeringRun({ taskId, agent: codex, redisClient: steeringRedis, db: database });
+            assert.match(next.promptContext, /Keep the public API unchanged/, 'a replacement run still receives it');
+            await next.finish();
+        } finally {
+            await database.destroy();
+        }
+    });
+}
+
+test('carried steers whose Codex turn request was sent are never replayed, even without an answer', async () => {
+    const { CodexAppServerTaskSession } = await import('../packages/core/src/agents/impl/codexAppServerTask.js');
+    const database = await steeringDatabase('task-codex-sent');
+    const codex = { steeringCapability: 'live' as const, config: { alias: 'codex-default', type: 'codex' as const } };
+    try {
+        const run = await startTaskSteeringRun({ taskId: 'task-codex-sent', agent: codex, redisClient: steeringRedis, db: database });
+        const session = new CodexAppServerTaskSession({ prompt: run.promptContext, source: run.steering, pollIntervalMs: 10 });
+        await executeDockerCommand(process.execPath, ['-e', CODEX_APP_SERVER, 'turn-crash'], {
+            timeout: 10_000, liveInput: session, promptHandoff: run.promptHandoff,
+        });
+        await run.finish();
+        const [uncertain] = await listTaskSteers(database, 'task-codex-sent');
+        assert.equal(uncertain!.delivery, 'replacement_prompt');
+        assert.equal(uncertain!.acknowledgedAt, null, 'not reported as confirmed');
+        const next = await startTaskSteeringRun({ taskId: 'task-codex-sent', agent: codex, redisClient: steeringRedis, db: database });
+        assert.equal(next.promptContext, '', 'the next run does not send it again');
+        await next.finish();
+    } finally {
+        await database.destroy();
+    }
+});

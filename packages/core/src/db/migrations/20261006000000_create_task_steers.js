@@ -8,7 +8,9 @@
  * replacement run because the previous run ended before delivering it).
  * A replacement claim is stored as `prompt_preparing` until just before an
  * agent process is started with that prompt, so a claim abandoned during
- * preparation can be reclaimed by the next run.
+ * preparation can be reclaimed by the next run. A live claim held until a
+ * step boundary is stored as `live_held` until just before it is written, so
+ * held input abandoned by a worker that died is reclaimed the same way.
  * `acknowledged_at` is set once a live write was fully flushed to the agent,
  * or once the agent's output showed it received a replacement prompt.
  * `run_key` identifies the run that accepted the steer, for the per-run limit.

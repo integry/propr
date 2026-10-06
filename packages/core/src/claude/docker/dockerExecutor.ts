@@ -421,7 +421,7 @@ function startDockerCommand(
         });
 
         child.on('close', async (exitCode: number | null) => {
-            promptHandoff.exited(exitCode);
+            promptHandoff.exited(exitCode, liveInput);
             clearTimeout(timeoutHandle);
             watchdog.stop();
             liveInput.close();

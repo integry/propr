@@ -17,6 +17,16 @@ export interface LiveInputSource {
     acknowledge(id: string): Promise<void>;
     /** Returns claimed messages that were never written, so a later run can receive them. */
     release(ids: string[]): Promise<void>;
+    /**
+     * Claim messages to hold for a later write: until {@link markWritten},
+     * a later run reclaims them if this worker dies holding them.
+     */
+    hold?(): Promise<LiveInputMessage[]>;
+    /**
+     * Record, immediately before writing held messages, that they may reach
+     * the agent. Returns the ids still held, the only ones to write.
+     */
+    markWritten?(ids: string[]): Promise<string[]>;
 }
 
 /**
@@ -51,6 +61,12 @@ export interface LiveInputChannel {
      * without it, any output record is that evidence.
      */
     promptReceived?(): boolean;
+    /**
+     * Whether the prompt was never handed to the process, for protocols that
+     * send it only after a handshake: once the process exited, startup then
+     * conclusively failed before any agent could receive it.
+     */
+    promptWithheld?(): boolean;
     /** Stop polling and close stdin; safe to call repeatedly. */
     close(): void;
     /** Resolves once in-flight claims and acknowledgements have settled. */

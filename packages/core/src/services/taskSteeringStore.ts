@@ -19,6 +19,11 @@ import type { LiveInputMessage, LiveInputSource } from '../claude/docker/dockerL
  * worker that died never exposed its prompt, so the next replacement run of
  * the task reclaims it; a `replacement_prompt` claim may have reached an agent
  * and is never reclaimed.
+ *
+ * A live claim held until a step boundary is likewise stored as being held
+ * (`live_held`) and becomes `live` immediately before it is written to the
+ * agent: input held by a worker that died reached no agent, so the next
+ * replacement run reclaims it, while a `live` claim is never replayed.
  */
 
 export type TaskSteerAuthorSource = 'session' | 'token' | 'mcp';
@@ -63,6 +68,8 @@ type Db = Knex | Knex.Transaction;
 
 /** Stored `delivery` of a replacement claim whose prompt has not reached an agent process yet. */
 const REPLACEMENT_PREPARING = 'prompt_preparing';
+/** Stored `delivery` of a live claim held for a later write that has not been written yet. */
+const LIVE_HELD = 'live_held';
 
 function timestamp(value: string | Date | null): string | null {
     if (value === null || value === undefined) return null;
@@ -70,8 +77,8 @@ function timestamp(value: string | Date | null): string | null {
 }
 
 function toSteer(row: TaskSteerRow): TaskSteer {
-    // A claim still being prepared has reached no agent: it is reported as pending.
-    const preparing = row.delivery === REPLACEMENT_PREPARING;
+    // A claim still being prepared or held has reached no agent: it is reported as pending.
+    const preparing = row.delivery === REPLACEMENT_PREPARING || row.delivery === LIVE_HELD;
     return {
         id: row.steer_id,
         sequence: Number(row.sequence),
@@ -131,17 +138,21 @@ export async function listTaskSteers(db: Db, taskId: string): Promise<TaskSteer[
  *
  * A `replacement_prompt` claim is stored as being prepared until
  * {@link markTaskSteersHandedOff} records that an agent process received the
- * prompt. It also reclaims preparation claims an earlier run abandoned (its
- * worker exited before any agent process started), since a replacement run
- * only starts once the task's previous run ended.
+ * prompt. It also reclaims preparation and held claims an earlier run
+ * abandoned (its worker exited before writing them to any agent), since a
+ * replacement run only starts once the task's previous run ended.
+ *
+ * With `held`, a `live` claim is stored as held until
+ * {@link markTaskSteersWritten} records, just before the write, that it may
+ * reach the agent.
  */
-export async function claimTaskSteers(db: Knex, taskId: string, delivery: TaskSteerDelivery): Promise<TaskSteer[]> {
+export async function claimTaskSteers(db: Knex, taskId: string, delivery: TaskSteerDelivery, options: { held?: boolean } = {}): Promise<TaskSteer[]> {
     const claimable = (query: Knex.QueryBuilder): Knex.QueryBuilder => delivery === 'replacement_prompt'
         ? query.where(pending => pending
             .whereNull('delivered_at')
-            .orWhere(abandoned => abandoned.where('delivery', REPLACEMENT_PREPARING).whereNull('acknowledged_at')))
+            .orWhere(abandoned => abandoned.whereIn('delivery', [REPLACEMENT_PREPARING, LIVE_HELD]).whereNull('acknowledged_at')))
         : query.whereNull('delivered_at');
-    const stored = delivery === 'replacement_prompt' ? REPLACEMENT_PREPARING : delivery;
+    const stored = delivery === 'replacement_prompt' ? REPLACEMENT_PREPARING : options.held ? LIVE_HELD : delivery;
     return db.transaction(async trx => {
         const pending: TaskSteerRow[] = await claimable(trx('task_steers').where('task_id', taskId))
             .orderBy('sequence', 'asc');
@@ -168,6 +179,27 @@ export async function markTaskSteersHandedOff(db: Db, steerIds: string[]): Promi
         .whereIn('steer_id', steerIds)
         .where('delivery', REPLACEMENT_PREPARING)
         .update({ delivered_at: db.fn.now(), delivery: 'replacement_prompt' });
+}
+
+/**
+ * Record, immediately before held live claims are written to the agent, that
+ * they may reach it: from then on they are never reclaimed. Returns the ids
+ * still held by this claim, the only ones that may be written.
+ */
+export async function markTaskSteersWritten(db: Knex, steerIds: string[]): Promise<string[]> {
+    if (!steerIds.length) return [];
+    return db.transaction(async trx => {
+        const moved: string[] = [];
+        for (const steerId of steerIds) {
+            const updated = await trx('task_steers')
+                .where('steer_id', steerId)
+                .where('delivery', LIVE_HELD)
+                .whereNull('acknowledged_at')
+                .update({ delivered_at: trx.fn.now(), delivery: 'live' });
+            if (updated === 1) moved.push(steerId);
+        }
+        return moved;
+    });
 }
 
 /** Record that the agent's own output showed it received the prompt carrying these claims. */
@@ -316,6 +348,17 @@ export function createTaskSteeringSource(db: Knex, taskId: string): LiveInputSou
             const steers = await claimTaskSteers(db, taskId, 'live');
             for (const steer of steers) claimed.set(steer.id, steer);
             return steers.map(steer => ({ id: steer.id, text: formatTaskSteerForAgent(steer) }));
+        },
+        async hold(): Promise<LiveInputMessage[]> {
+            const steers = await claimTaskSteers(db, taskId, 'live', { held: true });
+            for (const steer of steers) claimed.set(steer.id, steer);
+            return steers.map(steer => ({ id: steer.id, text: formatTaskSteerForAgent(steer) }));
+        },
+        async markWritten(steerIds: string[]): Promise<string[]> {
+            const moved = await markTaskSteersWritten(db, steerIds);
+            // A claim no longer held was reclaimed elsewhere: it is not this run's to record.
+            for (const steerId of steerIds) if (!moved.includes(steerId)) claimed.delete(steerId);
+            return moved;
         },
         async acknowledge(steerId: string): Promise<void> {
             await acknowledgeTaskSteer(db, steerId);

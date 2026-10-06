@@ -126,6 +126,8 @@ export class AntigravityTaskSteeringSession implements LiveInputSession {
         // Claimed while the step runs, written at the next boundary.
         let held: LiveInputMessage[] = [];
         let heldSince: number | null = null;
+        // Held input being recorded as written, just before its write.
+        let writing = false;
         // Written; delivered once the resumed invocation reports its conversation.
         let resuming: { invocation: number; messages: LiveInputMessage[] } | null = null;
         let polling: Promise<void> = Promise.resolve();
@@ -159,6 +161,7 @@ export class AntigravityTaskSteeringSession implements LiveInputSession {
             if (closed) return;
             closed = true;
             // Held input was never written: the run ended before a boundary.
+            // Input being recorded as written is released once that settled.
             release(held);
             held = [];
             try { stdin?.end(); } catch { /* the process already closed its input */ }
@@ -170,13 +173,12 @@ export class AntigravityTaskSteeringSession implements LiveInputSession {
         });
         stdin?.write(`${encodeCommand(this.options.prompt)}\n`);
 
-        const resumeAtBoundary = (): void => {
-            if (!held.length || !conversationId || invocationEnded || resuming || !writable()) return;
-            const atBoundary = !stepActive && stepCompleted;
-            if (!atBoundary && Date.now() - (heldSince ?? Date.now()) < graceMs) return;
-            const messages = held;
-            held = [];
-            heldSince = null;
+        // Held input is recorded as possibly delivered just before it is
+        // written; until then a later run reclaims it if this worker dies.
+        const markWritten = (messages: LiveInputMessage[]): Promise<string[]> => source.markWritten
+            ? source.markWritten(messages.map(message => message.id))
+            : Promise.resolve(messages.map(message => message.id));
+        const write = (messages: LiveInputMessage[]): void => {
             invocation += 1;
             resuming = { invocation, messages };
             const text = messages.map(message => message.text).join('\n\n');
@@ -190,16 +192,47 @@ export class AntigravityTaskSteeringSession implements LiveInputSession {
             for (const message of messages) context.onDelivered?.(message);
         };
 
+        const resumeAtBoundary = (): void => {
+            if (!held.length || writing || !conversationId || invocationEnded || resuming || !writable()) return;
+            const atBoundary = !stepActive && stepCompleted;
+            if (!atBoundary && Date.now() - (heldSince ?? Date.now()) < graceMs) return;
+            const messages = held;
+            held = [];
+            heldSince = null;
+            writing = true;
+            settle(markWritten(messages).then(ids => {
+                writing = false;
+                // Messages no longer held were reclaimed by another run: not this run's to write or release.
+                const owned = messages.filter(message => ids.includes(message.id));
+                if (!owned.length) return;
+                if (!conversationId || invocationEnded || resuming || !writable()) {
+                    release(owned);
+                    return;
+                }
+                write(owned);
+            }, error => {
+                writing = false;
+                logger.warn({ taskId: context.taskId, error: (error as Error).message }, 'Failed to record operator input as written');
+                // Still held: retried at the next boundary, or released once the run ended.
+                if (closed || invocationEnded) {
+                    release(messages);
+                    return;
+                }
+                held = [...messages, ...held];
+                heldSince ??= Date.now();
+            }));
+        };
+
         const poll = async (): Promise<void> => {
             // Claim only once the agent runs and its invocation can still be
             // resumed: claiming before the agent ran, or after it ended, would
             // hold input no boundary will deliver.
-            if (!writable() || !conversationId || invocationEnded || resuming || held.length) {
+            if (!writable() || !conversationId || invocationEnded || resuming || writing || held.length) {
                 resumeAtBoundary();
                 return;
             }
             try {
-                const claimed = await source.claim();
+                const claimed = await (source.hold ? source.hold() : source.claim());
                 if (!claimed.length) return;
                 if (closed || invocationEnded) {
                     release(claimed);

@@ -35,6 +35,24 @@ class QueueSource implements LiveInputSource {
     async release(ids: string[]): Promise<void> { this.released.push(...ids); }
 }
 
+/** A source whose held input is recorded as written before the agent is resumed with it. */
+class HoldingSource extends QueueSource {
+    held: string[] = [];
+    written: string[] = [];
+    /** Ids another run reclaimed while this run held them. */
+    reclaimed = new Set<string>();
+    async hold(): Promise<LiveInputMessage[]> {
+        const messages = this.pending.splice(0);
+        this.held.push(...messages.map(message => message.id));
+        return messages;
+    }
+    async markWritten(ids: string[]): Promise<string[]> {
+        const owned = ids.filter(id => !this.reclaimed.has(id));
+        this.written.push(...owned);
+        return owned;
+    }
+}
+
 test('Codex and Antigravity task runs advertise the input mechanisms their goals use', () => {
     assert.equal(AGENT_TASK_STEERING.codex, 'live');
     assert.equal(AGENT_TASK_STEERING.antigravity, 'next-step');
@@ -56,7 +74,8 @@ const finish = text => {
 readline.createInterface({ input: process.stdin }).on('line', line => {
   const message = JSON.parse(line);
   process.stderr.write(JSON.stringify({ method: message.method, params: message.params }) + '\\n');
-  if (message.method === 'initialize') send({ id: message.id, result: {} });
+  if (message.method === 'initialize' && mode === 'initialize-fail') send({ id: message.id, error: { code: -32603, message: 'not logged in' } });
+  else if (message.method === 'initialize') send({ id: message.id, result: {} });
   else if (message.method === 'thread/start' && mode === 'thread-fail') { send({ id: message.id, error: { code: -32603, message: 'not logged in' } }); }
   else if (message.method === 'thread/start') send({ id: message.id, result: { thread: { id: thread, model: message.params.model } } });
   else if (message.method === 'turn/start') {
@@ -89,7 +108,7 @@ class HandoffSpy implements PromptHandoff {
     notReceived(): void { this.notReceived_ += 1; }
 }
 
-async function runCodex(source: QueueSource, mode: 'accept' | 'reject' | 'crash' | 'thread-fail', promptHandoff = new HandoffSpy()) {
+async function runCodex(source: QueueSource, mode: 'accept' | 'reject' | 'crash' | 'thread-fail' | 'initialize-fail', promptHandoff = new HandoffSpy()) {
     const session = new CodexAppServerTaskSession({ prompt: 'Implement the issue.', model: 'gpt-test', source, pollIntervalMs: 10 });
     const previous = process.env.FAKE_CODEX_MODE;
     process.env.FAKE_CODEX_MODE = mode;
@@ -152,8 +171,18 @@ describe('Codex task steering through App Server', () => {
         assert.match(parsed.error ?? '', /could not start the task thread: not logged in/);
     });
 
+    for (const mode of ['initialize-fail', 'thread-fail'] as const) {
+        test(`a ${mode === 'initialize-fail' ? 'refused initialization' : 'refused thread'} reports that no agent received the prompt`, async () => {
+            const { result, promptHandoff } = await runCodex(new QueueSource(), mode);
+            assert.equal(requests(result.stderr).some(request => request.method === 'turn/start'), false);
+            assert.equal(promptHandoff.received_, 0);
+            assert.equal(promptHandoff.notReceived_, 1);
+        });
+    }
+
     test('a run whose App Server exits before the turn completes fails', async () => {
-        const { session, parsed } = await runCodex(new QueueSource(), 'crash');
+        const { session, parsed, promptHandoff } = await runCodex(new QueueSource(), 'crash');
+        assert.equal(promptHandoff.notReceived_, 0, 'a sent prompt may have been received');
         assert.equal(session.completed, false);
         assert.equal(parsed.success, false);
         assert.match(parsed.error ?? '', /exited before the task turn completed/);
@@ -268,6 +297,28 @@ describe('Antigravity task steering at the next step boundary', () => {
         assert.equal(parsed.terminalStatus, 'success');
         assert.equal(parsed.conversationId, 'conv-1');
         assert.equal(parsed.summary, 'Handled: Use the existing helper instead.');
+    });
+
+    test('holds a steer until the boundary and records it as written just before resuming with it', async () => {
+        const source = new HoldingSource();
+        source.pending.push({ id: 'steer-1', text: 'Use the existing helper instead.' });
+        const { invocations } = await runAntigravity(source);
+        assert.deepEqual(source.claimed, [], 'held, not claimed as delivered');
+        assert.deepEqual(source.held, ['steer-1']);
+        assert.deepEqual(source.written, ['steer-1']);
+        assert.equal(invocations[1]!.prompt, 'Use the existing helper instead.');
+        assert.deepEqual(source.acknowledged, ['steer-1']);
+    });
+
+    test('never writes held input another run reclaimed', async () => {
+        const source = new HoldingSource();
+        source.pending.push({ id: 'steer-1', text: 'Reclaimed elsewhere' });
+        source.reclaimed.add('steer-1');
+        const { invocations } = await runAntigravity(source, { FAKE_AGY_STEPS: '4' });
+        assert.deepEqual(source.held, ['steer-1']);
+        assert.equal(invocations.length, 1);
+        assert.deepEqual(source.acknowledged, []);
+        assert.deepEqual(source.released, [], 'not this run\'s to release');
     });
 
     test('a run nobody steers ends after its single invocation', async () => {

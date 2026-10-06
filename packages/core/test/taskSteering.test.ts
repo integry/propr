@@ -122,6 +122,35 @@ describe('task steer persistence', () => {
         assert.deepEqual(await claimTaskSteers(db, 'task-1', 'replacement_prompt'), []);
     });
 
+    test('live input held for a step boundary by a worker that died is reclaimed by the next run', async () => {
+        await steer('keep the public API unchanged');
+        const source = createTaskSteeringSource(db, 'task-1');
+        // The worker holds the steer until the running step ends, then dies before writing it.
+        const [held] = await source.hold!();
+        assert.match(held!.text, /keep the public API unchanged/);
+        const [listed] = await listTaskSteers(db, 'task-1');
+        assert.equal(listed!.deliveredAt, null, 'held input reached no agent');
+        assert.equal(listed!.delivery, null);
+        assert.deepEqual(await claimTaskSteers(db, 'task-1', 'live'), [], 'no live claim takes it twice');
+
+        const [recovered] = await claimTaskSteers(db, 'task-1', 'replacement_prompt');
+        assert.equal(recovered!.id, held!.id);
+        // The dead worker's held claim is no longer its to write.
+        assert.deepEqual(await source.markWritten!([held!.id]), []);
+    });
+
+    test('held live input is never replayed once it was recorded as written', async () => {
+        await steer('keep the public API unchanged');
+        const source = createTaskSteeringSource(db, 'task-1');
+        const [held] = await source.hold!();
+        assert.deepEqual(await source.markWritten!([held!.id]), [held!.id]);
+        const [written] = await listTaskSteers(db, 'task-1');
+        assert.equal(written!.delivery, 'live');
+        assert.ok(written!.deliveredAt);
+        // The worker dies after the write: the write may have reached the agent.
+        assert.deepEqual(await claimTaskSteers(db, 'task-1', 'replacement_prompt'), []);
+    });
+
     test('released steers that were acknowledged stay delivered', async () => {
         await steer('written');
         const source = createTaskSteeringSource(db, 'task-1');
