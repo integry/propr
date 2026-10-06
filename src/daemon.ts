@@ -28,6 +28,8 @@ import {
     loadUltrafixPauseSeconds,
     loadPrReviewModel,
     AgentRegistry,
+    sweepConflictedPullRequests,
+    getMergeConflictSweepIntervalMs,
     runMigrations
 } from '@propr/core';
 import type { CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
@@ -155,6 +157,27 @@ async function pollForIssues(): Promise<DetectedIssue[]> {
     }, 'Polling cycle completed');
 
     return allDetectedIssues;
+}
+
+// Safety net for merge-conflict auto-resolution: polling intake never sees push
+// events, and webhook deliveries can be missed. Only repositories whose effective
+// setting is on cost GitHub calls.
+function scheduleMergeConflictSweep(intakeMode: string): NodeJS.Timeout {
+    const intervalMs = getMergeConflictSweepIntervalMs(intakeMode);
+    let running = false;
+    const sweep = async (): Promise<void> => {
+        if (running) return;
+        running = true;
+        try {
+            await sweepConflictedPullRequests({ repositories: getRepos(), redisClient });
+        } catch (error) {
+            logger.error({ error: (error as Error).message }, 'Merge conflict sweep failed');
+        } finally {
+            running = false;
+        }
+    };
+    logger.info({ intakeMode, intervalMs }, 'Scheduled merge conflict sweep');
+    return setInterval(() => { void sweep(); }, intervalMs);
 }
 
 interface DaemonOptions {
@@ -323,6 +346,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             commentProcessor: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => processCommentEvent(payload, eventType, correlationId, commentConfig),
             commentDeletedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
             commentEditedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig),
+            redisClient,
             repositoryFilter: (repository: string) => isMonitoredRepository(repository),
         });
     };
@@ -414,6 +438,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         routingUrl: process.env.PROPR_ROUTING_URL,
     });
     intervalId = intakeStartup.intervalId;
+    const mergeConflictSweepInterval = scheduleMergeConflictSweep(EVENT_INTAKE_MODE);
     routingService = intakeStartup.routingService;
     routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
@@ -424,6 +449,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
         clearInterval(pushRescueSweepInterval);
+        clearInterval(mergeConflictSweepInterval);
         // Stop the routing service first so it can drain in-flight deliveries and
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the

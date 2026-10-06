@@ -5,7 +5,8 @@ import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
-import { getRepoUrl, mergeBaseIntoBranch } from '@propr/core';
+import { getRepoUrl } from '@propr/core';
+import type { MergeBaseIntoBranchOptions, MergeResult } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
 import { UsageLimitError, AgentRegistry } from '@propr/core';
@@ -35,7 +36,6 @@ import {
 import type { GitHubToken } from './githubTypes.js';
 
 const DEFAULT_MODEL_NAME = process.env.DEFAULT_CLAUDE_MODEL || getDefaultModel() || null;
-type MergeResult = Awaited<ReturnType<typeof mergeBaseIntoBranch>>;
 type MergeTaskPrInfo = { prTitle: string; linkedIssueNumber: number | null };
 type LivePullRequest = Contribution & {
     head: Contribution['head'] & { sha: string };
@@ -271,26 +271,20 @@ async function updateMergeTaskAfterLocalMerge(options: {
     }
 }
 
-async function mergeBaseIntoTarget(options: {
-    worktreePath: string;
-    baseBranch: string;
+/**
+ * A fork worktree keeps its own origin, so the base must be fetched from the base
+ * repository; a same-repository head keeps fetching it from origin.
+ */
+function buildBaseMergeOptions(options: {
     target: PullRequestGitTarget;
     repoOwner: string;
     repoName: string;
     githubToken: GitHubToken;
-}): Promise<MergeResult & { baseCommit: string }> {
-    const { worktreePath, baseBranch, target, repoOwner, repoName, githubToken } = options;
-    const mergeResult = await mergeBaseIntoBranch(worktreePath, baseBranch, target.isFork
+}): MergeBaseIntoBranchOptions {
+    const { target, repoOwner, repoName, githubToken } = options;
+    return target.isFork
         ? { baseRepoUrl: getRepoUrl({ repoOwner, repoName }), authToken: githubToken.token }
-        : {});
-
-    if (mergeResult.outcome === 'failed') {
-        throw new Error(`Merge failed: ${mergeResult.error}`);
-    }
-    if (!mergeResult.baseCommit) {
-        throw new Error(`Merge did not identify the fetched base commit for ${baseBranch}`);
-    }
-    return { ...mergeResult, baseCommit: mergeResult.baseCommit };
+        : {};
 }
 
 async function releaseMergeJobResources(options: {
@@ -322,10 +316,10 @@ async function releaseMergeJobResources(options: {
  * Processes a merge conflict resolution job.
  * This job:
  * 1. Creates a worktree from the PR head branch
- * 2. Merges the base branch into it (git leaves conflict markers if any)
- * 3. Always invokes the AI agent to verify/resolve the merge
- * 4. Commits and pushes the result
- * 5. Posts GitHub comments about the outcome
+ * 2. Delegates the git work to performConflictResolution: merge the base branch
+ *    (git leaves conflict markers if any), let the AI agent verify/resolve it,
+ *    check no markers remain, create the merge commit and push it
+ * 3. Posts GitHub comments about the outcome
  */
 export async function processMergeConflictJob(job: Job<MergeConflictJobData>): Promise<JobResult> {
     const { pullRequestNumber, repoOwner, repoName, headBranch, baseBranch, headSha, baseSha, triggerSource, correlationId } = job.data;
@@ -408,33 +402,31 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
             headRepository: `${target.repoOwner}/${target.repoName}`,
         }, 'Created worktree for merge conflict resolution');
 
-        const mergeResult = await mergeBaseIntoTarget({
-            worktreePath: worktreeInfo.worktreePath, baseBranch, target, repoOwner, repoName, githubToken,
-        });
-
-        if ((mergeResult.conflictedFiles?.length ?? 0) > 0 || prInfo) {
-            await updateMergeTaskAfterLocalMerge({
-                mergeResult,
-                mergeTitleInfo: prInfo ?? { prTitle: 'Untitled pull request', linkedIssueNumber: null },
-                prDescription,
-                recentComments,
-                worktreeInfo,
-                githubToken,
-                stateManager,
-                taskId,
-                pullRequestNumber,
-                repoOwner,
-                repoName,
-                baseBranch,
-                headBranch: target.branchName,
-                correlationId,
-                correlatedLogger,
-            });
-        }
-
+        const mergeTarget = target;
+        const preparedWorktree = worktreeInfo;
         const result = await handleMergeWithAgent({
-            conflictedFiles: mergeResult.conflictedFiles,
-            worktreeInfo, publication, baseBranch, baseCommit: mergeResult.baseCommit,
+            mergeOptions: buildBaseMergeOptions({ target: mergeTarget, repoOwner, repoName, githubToken }),
+            onMerged: async ({ conflictedFiles, baseCommit }) => {
+                if (conflictedFiles.length === 0 && !prInfo) return;
+                await updateMergeTaskAfterLocalMerge({
+                    mergeResult: { outcome: conflictedFiles.length > 0 ? 'conflicts' : 'clean', baseCommit, conflictedFiles },
+                    mergeTitleInfo: prInfo ?? { prTitle: 'Untitled pull request', linkedIssueNumber: null },
+                    prDescription,
+                    recentComments,
+                    worktreeInfo: preparedWorktree,
+                    githubToken,
+                    stateManager,
+                    taskId,
+                    pullRequestNumber,
+                    repoOwner,
+                    repoName,
+                    baseBranch,
+                    headBranch: mergeTarget.branchName,
+                    correlationId,
+                    correlatedLogger,
+                });
+            },
+            worktreeInfo, publication, baseBranch,
             pullRequestNumber, repoOwner, repoName,
             githubToken, octokit, startingCommentId,
             stateManager, taskId, correlationId, correlatedLogger, redisClient,

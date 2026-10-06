@@ -12,6 +12,7 @@ import { loadGitHubAttachmentCapacity } from '../services/visualPreviewCapacityS
 import logger from '../utils/logger.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
 import { getConfig, getConfigStrict, saveConfig } from './configStore.js';
+import { loadInstanceAutoResolveMergeConflicts } from './mergeConflictSettings.js';
 import type { Knex } from 'knex';
 export {
     clearRemovedRepositoryIndexData,
@@ -41,6 +42,9 @@ export interface RepoToMonitor {
     // follow-ups and the check status reviews see. GitHub still shows them.
     nonBlockingChecks?: string[];
     notificationsEnabled?: boolean; // Defaults to true; undefined (legacy configurations) reads as enabled
+    // Repository-wide override of the instance `auto_resolve_merge_conflicts` default.
+    // undefined/null inherits the instance default; never defaulted to false.
+    autoResolveMergeConflicts?: boolean | null;
     visualPreview?: VisualPreviewSettings; // Defaults to disabled for legacy configurations
     // Without .propr/pr-template.md, append the repository's GitHub pull request
     // template to ProPR's summary and run block. Defaults to true; undefined reads as enabled.
@@ -475,7 +479,7 @@ export {
  * Returns false if the setting has not been explicitly set (backward-compatible default).
  */
 export async function loadAutoResolveMergeConflicts(): Promise<boolean> {
-    const value = await getConfig<boolean>('auto_resolve_merge_conflicts', false);
+    const value = await loadInstanceAutoResolveMergeConflicts();
     logger.info({ auto_resolve_merge_conflicts: value }, 'Successfully loaded auto-resolve merge conflicts setting');
     return value;
 }
