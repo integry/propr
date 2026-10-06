@@ -202,6 +202,28 @@ test('a held config lock ("File exists") is retried as contention', async () => 
     assert.strictEqual(calls, 3);
 });
 
+/**
+ * Whether directory modes stop this process from writing. Root and
+ * CAP_DAC_OVERRIDE runners (as in CI containers) bypass them, so the
+ * unwritable-clone scenarios cannot be reproduced there.
+ */
+async function directoryModesAreEnforced(): Promise<boolean> {
+    const probe = await mkdtemp(path.join(os.tmpdir(), 'propr-mode-probe-'));
+    try {
+        await chmod(probe, 0o555);
+        try {
+            await writeFile(path.join(probe, 'write-test'), '');
+            return false;
+        } catch {
+            return true;
+        }
+    } finally {
+        await chmod(probe, 0o755);
+        await rm(probe, { recursive: true, force: true });
+    }
+}
+const unenforcedModesSkip = await directoryModesAreEnforced() ? false : 'directory modes are not enforced for this user (root or CAP_DAC_OVERRIDE)';
+
 /** Make the clone's Git directory unwritable so Git cannot create `config.lock`. */
 async function denyGitDirWrites(clonePath: string): Promise<() => Promise<void>> {
     const gitDir = path.join(clonePath, '.git');
@@ -209,7 +231,7 @@ async function denyGitDirWrites(clonePath: string): Promise<() => Promise<void>>
     return () => chmod(gitDir, 0o755);
 }
 
-test('an unwritable shared config fails immediately with the original error, not as lock contention', async () => {
+test('an unwritable shared config fails immediately with the original error, not as lock contention', { skip: unenforcedModesSkip }, async () => {
     const clonePath = await createSharedClone('denied', LEGACY_URL);
     const restore = await denyGitDirWrites(clonePath);
     try {
@@ -229,7 +251,7 @@ test('an unwritable shared config fails immediately with the original error, not
     assert.ok(!existsSync(path.join(clonePath, '.git', 'config.lock')));
 });
 
-test('preparation of an unwritable shared clone is not reported as lock contention', async () => {
+test('preparation of an unwritable shared clone is not reported as lock contention', { skip: unenforcedModesSkip }, async () => {
     const owner = `${OWNER}-readonly`;
     const clonePath = await createSharedClone('readonly', LEGACY_URL);
     const worktreePath = path.join(rootDir, 'readonly-worktree');
