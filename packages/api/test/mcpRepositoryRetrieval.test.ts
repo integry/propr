@@ -43,6 +43,18 @@ write('src/billing/invoice.ts', 'export function totalInvoice(lines: number[]) {
 write('docs/auth.md', '# Authentication\n\nCall validateToken before login.\n');
 write('assets/logo.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a, 0x1a, 0x00]));
 write('notes/long.txt', Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join('\n') + '\n');
+// Source text the result redactor must treat as opaque: pretty-printed JSON
+// with redactor-looking keys and a 201-entry array, a JSON-looking line, and
+// a credential-shaped string that must still be masked in place.
+const configJson = `${JSON.stringify({ name: 'x', password: 'not-a-secret', credentials: { user: 'u' }, list: Array.from({ length: 201 }, (_, index) => index), ci: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' }, null, 2)}\n`;
+write('data/config.json', configJson);
+write('data/matrix.ts', 'export const matrix =\n  [1, 2, 3]\n;\n');
+// 3000 lines of 100 bytes: larger than any single page.
+write('data/large.txt', Array.from({ length: 3000 }, (_, index) => `${String(index + 1).padStart(6, '0')} ${'x'.repeat(92)}`).join('\n') + '\n');
+// One line within maxBytes whose JSON encoding (every quote escaped) is larger than a response.
+write('data/quotes.txt', `${'"'.repeat(150_000)}\n`);
+// 100 files whose five previews each JSON-encode to ~1000 bytes: a full page would exceed the response limit.
+for (let index = 0; index < 100; index++) write(`wide/f${String(index).padStart(3, '0')}.txt`, Array.from({ length: 5 }, () => `wideNeedle ${'"'.repeat(480)}`).join('\n') + '\n');
 git(work, 'add', '-A');
 git(work, 'commit', '-q', '-m', 'initial');
 const head = git(work, 'rev-parse', 'HEAD');
@@ -306,6 +318,67 @@ describe('read_repository_file', () => {
   });
 });
 
+describe('result fidelity and response bounds', () => {
+  test('reads a JSON file byte-for-byte instead of reshaping it through the result redactor', async () => {
+    const result = await call('read_repository_file', { repository, path: 'data/config.json' });
+
+    const expected = configJson.replace('ghp_abcdefghijklmnopqrstuvwxyz0123456789', '[redacted]').replace(/\n$/, '');
+    assert.equal(result.content, expected, 'line structure, every array entry and redactor-looking keys survive; credentials are still masked');
+    assert.equal(result.totalLines, configJson.split('\n').length - 1);
+    assert.equal(result.endLine, result.totalLines);
+    assert.equal(result.truncated, false);
+    assert.equal(result.returnedBytes, Buffer.byteLength(result.content), 'returnedBytes describes the delivered content');
+  });
+
+  test('literal line previews and reads of JSON-looking lines agree with the repository', async () => {
+    const search = await call('search_repository_files', { repository, query: '[1, 2, 3]', mode: 'literal' });
+    assert.equal(search.query, '[1, 2, 3]');
+    assert.deepEqual(search.matches.map((match: Data) => [match.path, match.lineMatches]), [['data/matrix.ts', [{ lineNumber: 2, text: '  [1, 2, 3]' }]]]);
+
+    const read = await call('read_repository_file', { repository, path: 'data/matrix.ts', startLine: 2, endLine: 2 });
+    assert.equal(read.content, search.matches[0].lineMatches[0].text);
+  });
+
+  test('the largest accepted maxBytes returns a page that fits the response and continues from nextStartLine', async () => {
+    const page = await call('read_repository_file', { repository, path: 'data/large.txt', maxLines: 1000, maxBytes: 200000 });
+    assert.equal(page.endLine, 1000);
+    assert.equal(page.truncated, true);
+    assert.equal(page.nextStartLine, 1001);
+
+    const wide = await call('read_repository_file', { repository, path: 'data/large.txt', startLine: 1001, maxLines: 1000, maxBytes: 200000 });
+    assert.equal(wide.content.split('\n')[0].slice(0, 6), '001001');
+    assert.ok(Buffer.byteLength(JSON.stringify(wide)) <= 256 * 1024);
+
+    const tooLarge = await callError('read_repository_file', { repository, path: 'data/large.txt', maxBytes: 300000 });
+    assert.equal(tooLarge.code, 'INVALID_INPUT', 'maxBytes beyond what a response can carry is rejected up front');
+  });
+
+  test('a line that cannot fit any response is FILE_TOO_LARGE without advice the executor would reject', async () => {
+    const error = await callError('read_repository_file', { repository, path: 'data/quotes.txt' });
+    assert.deepEqual(pick(error), { code: 'FILE_TOO_LARGE', status: 413 });
+    assert.match(error.message, /once JSON-encoded.*cannot be read at any maxBytes/);
+    assert.doesNotMatch(error.message, /request it with maxBytes/);
+  });
+
+  test('a literal page that would exceed the response limit ends early and continues from nextOffset', async () => {
+    const first = await call('search_repository_files', { repository, query: 'wideNeedle', mode: 'literal', limit: 100 });
+    assert.ok(first.matches.length > 0 && first.matches.length < 100, `page holds ${first.matches.length} files`);
+    assert.equal(first.pagination.totalMatches, 100);
+    assert.equal(first.pagination.nextOffset, first.matches.length);
+    assert.equal(first.scanTruncated, false);
+    for (const match of first.matches) assert.equal(match.lineMatches.length, 5);
+
+    const seen = first.matches.map((match: Data) => match.path);
+    let offset = first.pagination.nextOffset;
+    while (offset !== null) {
+      const next = await call('search_repository_files', { repository, query: 'wideNeedle', mode: 'literal', limit: 100, offset });
+      seen.push(...next.matches.map((match: Data) => match.path));
+      offset = next.pagination.nextOffset;
+    }
+    assert.equal(new Set(seen).size, 100, 'continuing from nextOffset reaches every file exactly once');
+  });
+});
+
 function pick(error: { code: string; status: number }) {
   return { code: error.code, status: error.status };
 }
@@ -367,4 +440,25 @@ test('an MCP client can run a search-then-read loop over the protocol', async (t
   const missing = await client.callTool({ name: 'read_repository_file', arguments: { repository, path: 'src/missing.ts' } });
   assert.equal(missing.isError, true);
   assert.equal((missing.structuredContent as Data).error.code, 'FILE_NOT_FOUND');
+});
+
+test('reads without a ref follow the configured base branch on origin, not the shared clone\'s stale local branch', async () => {
+  // Like a worker run, leave the shared clone checked out on another branch with main behind origin.
+  git(clone, 'checkout', '-q', '-b', 'worker-task');
+  write('src/added.ts', 'export const addedOnOrigin = true;\n');
+  git(work, 'add', '-A');
+  git(work, 'commit', '-q', '-m', 'advance main');
+  const advanced = git(work, 'rev-parse', 'HEAD');
+  git(work, 'push', '-q', origin, 'HEAD:refs/heads/main');
+  assert.equal(git(clone, 'rev-parse', 'refs/heads/main'), head);
+
+  const read = await call('read_repository_file', { repository, path: 'src/added.ts' });
+  assert.equal(read.ref, 'main');
+  assert.equal(read.commit, advanced);
+  assert.equal(read.content, 'export const addedOnOrigin = true;');
+
+  const search = await call('search_repository_files', { repository, query: 'addedOnOrigin', mode: 'literal' });
+  assert.equal(search.commit, advanced);
+  assert.deepEqual(search.matches.map((match: Data) => match.path), ['src/added.ts']);
+  assert.equal(git(clone, 'rev-parse', '--abbrev-ref', 'HEAD'), 'worker-task', 'retrieval leaves the shared checkout alone');
 });

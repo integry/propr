@@ -94,6 +94,13 @@ export interface SearchRepositoryFilesResult {
   freshness?: RepositorySearchFreshness;
   /** Keywords the relevance engine extracted (semantic mode). */
   keywordsDetected?: string[];
+  /**
+   * Literal mode: the grep stopped at its output budget, so `totalMatches` is
+   * a lower bound and later files may also match. Narrow the query or path.
+   */
+  scanTruncated?: boolean;
+  /** Present when the ref could not be refreshed from origin and a cached commit answered. */
+  refCaveat?: string;
 }
 
 export interface ReadRepositoryFileOptions extends RepositoryTargetOptions {
@@ -105,6 +112,14 @@ export interface ReadRepositoryFileOptions extends RepositoryTargetOptions {
   maxLines?: number;
   /** Lines are never split; a first line larger than this is rejected with a 413. */
   maxBytes?: number;
+  /** Largest `maxBytes` the caller can request (defaults to the service's hard limit); used to clamp and in hints. */
+  maxBytesLimit?: number;
+  /**
+   * Ceiling on the content's size once JSON-encoded (escapes included), for
+   * callers that serialize the result into a bounded response. Reads stop
+   * before it like `maxBytes`, and a first line that cannot fit is a 413.
+   */
+  encodedByteLimit?: number;
 }
 
 export interface ReadRepositoryFileResult {
@@ -123,4 +138,6 @@ export interface ReadRepositoryFileResult {
   truncated: boolean;
   /** Line to request next to continue reading, or null when the range was fully returned. */
   nextStartLine: number | null;
+  /** Present when the ref could not be refreshed from origin and a cached commit answered. */
+  refCaveat?: string;
 }

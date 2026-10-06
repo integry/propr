@@ -335,6 +335,21 @@ repository's configured base branch, so the answer never depends on what is
 checked out. Every result reports the resolved `ref` and `commit`; pass that
 `commit` as `ref` to keep a multi-step loop on one snapshot.
 
+The managed clone is a cache shared with worker runs, whose local branches
+are not kept up to date, so each call refreshes the requested ref from
+GitHub before resolving it: a branch, `origin/<branch>`, `refs/heads/…` or tag
+is fetched and resolved through the fetched copy, and `HEAD` means GitHub's
+default branch, not the clone's checkout. A short name is resolved as a tag
+before a branch, as git does; that a short name is *not* a tag is remembered
+for a minute, so a tag created on GitHub with the same name as a branch is
+seen up to a minute late. Full commit SHAs already in the clone are answered
+without a fetch. A branch or tag GitHub no longer has is `REF_NOT_FOUND`
+even if the clone still holds an old copy. If GitHub cannot be reached and the
+ref is cached, the result is answered from the cached commit and carries a
+`refCaveat` saying it may be behind; with nothing cached the call fails with
+`REPOSITORY_RETRIEVAL_FAILED`. Retrieval never checks out or moves branches
+in the shared clone; it only clones a repository that has no clone yet.
+
 `search_repository_files` returns paths, never file contents:
 
 | Parameter | Meaning |
@@ -379,7 +394,12 @@ commit. It needs no index and so carries no `freshness`. Each file reports its
 total `matchCount` and up to five `lineMatches` (text capped at 500
 characters). Binary files are skipped. No match is an ordinary result with an
 empty `matches` array and `totalMatches: 0`, not an error. Follow
-`pagination.nextOffset` until it is `null` to see every file.
+`pagination.nextOffset` until it is `null` to see every file. A page whose
+previews would not fit in the 256 KiB response ends early, with `nextOffset`
+pointing at the first file left out. The grep output is streamed with a
+budget (10000 matching files or 64 MiB of output); when it runs out,
+`scanTruncated` is `true`, `totalMatches` is a lower bound and later files may
+also match, so narrow the query or `path`.
 
 `read_repository_file` reads one text file from the git object database:
 
@@ -390,7 +410,7 @@ empty `matches` array and `totalMatches: 0`, not an error. Follow
 | `startLine` | First line, 1-based; default 1. |
 | `endLine` | Optional last line, inclusive; must be ≥ `startLine`. |
 | `maxLines` | Default 800, at most 1000. |
-| `maxBytes` | Default 120000, at most 500000; counts UTF-8 bytes including newlines between returned lines. |
+| `maxBytes` | Default 120000, at most 200000; counts UTF-8 bytes including newlines between returned lines. |
 
 ```json
 { "repository": "acme/web", "path": "src/auth/login.ts", "ref": "main", "commit": "4f1c…",
@@ -398,14 +418,23 @@ empty `matches` array and `totalMatches: 0`, not an error. Follow
   "totalLines": 2140, "totalBytes": 81234, "returnedBytes": 31877, "truncated": true, "nextStartLine": 801 }
 ```
 
-Only whole lines are returned. When `maxLines` or `maxBytes` stops the read
-before `endLine` (or the end of the file), `truncated` is `true` and
-`nextStartLine` is where to continue; otherwise `nextStartLine` is `null`. A
-`startLine` past the end returns empty content. Failures are `FILE_NOT_FOUND`
+Only whole lines are returned. When `maxLines`, `maxBytes` or the response
+limit stops the read before `endLine` (or the end of the file), `truncated` is
+`true` and `nextStartLine` is where to continue; otherwise `nextStartLine` is
+`null`. The response limit counts the content once JSON-encoded, so text with
+many quotes, backslashes or control characters can stop before `maxBytes`.
+`content` is the file's text exactly as committed (a `.json` file is not
+reformatted); only credential-shaped strings such as GitHub tokens are masked
+as `[redacted]`, and `returnedBytes` is the UTF-8 size of the `content`
+actually returned. A `startLine` past the end returns empty content. Failures are `FILE_NOT_FOUND`
 (404) for a path absent at that commit, `REF_NOT_FOUND` (404) for an unknown
 ref, `BINARY_FILE` (400), `INVALID_PATH` (400) for traversal, absolute or
-backslash paths and directories, and `FILE_TOO_LARGE` (413) for a blob over
-20 MiB or a single line larger than `maxBytes`.
+backslash paths and directories, `INVALID_REF` (400) for a malformed ref,
+`FILE_TOO_LARGE` (413) for a blob over 20 MiB, a single line larger than
+`maxBytes` (the message gives the `maxBytes` that would read it, when one
+exists) or a line too large for any response, and
+`REPOSITORY_RETRIEVAL_FAILED` (502, retryable) when cloning or fetching from
+GitHub fails, or 500 for a local git or ranking failure.
 
 A search-then-read loop looks like this:
 
@@ -477,6 +506,8 @@ Stable codes introduced by the observable operator surface are:
 | `INVALID_PATH` | A repository path is absolute, contains `..` or backslashes, or names a directory where a file is required. |
 | `FILE_NOT_FOUND`, `REF_NOT_FOUND` | `read_repository_file` found no such file at the resolved commit, or the requested ref does not exist. |
 | `BINARY_FILE`, `FILE_TOO_LARGE` | The file is binary, or is too large (or has a line too long) to return as bounded text. |
+| `INVALID_REF` | A `ref` or `branch` is malformed (for example starts with `-`, or contains whitespace, `..`, `~`, `^`, `:` or `@{`). |
+| `REPOSITORY_RETRIEVAL_FAILED` | Repository search or read could not complete: 502 and retryable when cloning or fetching from GitHub failed with nothing cached to answer from, 500 for a local git or relevance-engine failure. |
 
 ## Did it actually happen? Following a receipt
 

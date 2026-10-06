@@ -724,3 +724,174 @@ test('reports a nonexistent branch as a 404 when no managed clone exists yet', a
     ensureRepoCloned.mock.resetCalls();
   }
 });
+
+// --- Managed clone freshness ---
+
+/** A bare origin, a work clone that pushes to it, and an existing managed clone of it. */
+function managedFixture(name: string) {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), `repo-retrieval-${name}-`));
+  const originPath = path.join(fixtureRoot, 'origin.git');
+  const workPath = path.join(fixtureRoot, 'work');
+  const managedPath = path.join(clonesBasePath, 'owner', name);
+  execFileSync('git', ['clone', '-q', '--bare', repoPath, originPath]);
+  execFileSync('git', ['clone', '-q', originPath, workPath]);
+  execFileSync('git', ['clone', '-q', originPath, managedPath]);
+  const workGit = (...args: string[]) => execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=T', '-c', 'commit.gpgsign=false', ...args], { cwd: workPath, encoding: 'utf8' }).trim();
+  const managedGit = (...args: string[]) => execFileSync('git', args, { cwd: managedPath, encoding: 'utf8', stdio: 'pipe' }).trim();
+  const pushCommit = (file: string, content: string, branch = 'main') => {
+    workGit('checkout', '-q', branch);
+    fs.mkdirSync(path.dirname(path.join(workPath, file)), { recursive: true });
+    fs.writeFileSync(path.join(workPath, file), content);
+    workGit('add', '-A');
+    workGit('commit', '-q', '-m', `add ${file}`);
+    workGit('push', '-q', 'origin', `HEAD:refs/heads/${branch}`);
+    return workGit('rev-parse', 'HEAD');
+  };
+  return { repository: `owner/${name}`, workGit, managedGit, pushCommit, cleanup: () => fs.rmSync(fixtureRoot, { recursive: true, force: true }) };
+}
+
+test('answers the configured branch, origin/<branch> and HEAD from origin, not a stale local branch of the shared clone', async () => {
+  const fixture = managedFixture('managed-stale-main');
+  try {
+    // A worker left the shared clone on another branch; its local main is at the old head.
+    fixture.managedGit('checkout', '-q', '-b', 'worker-task');
+    const advanced = fixture.pushCommit('src/added.ts', 'export const addedOnOrigin = true;\n');
+    assert.equal(fixture.managedGit('rev-parse', 'refs/heads/main'), headCommit);
+
+    const read = await readRepositoryFileContent({ repository: fixture.repository, branch: 'main', path: 'src/added.ts' });
+    assert.equal(read.commit, advanced);
+    assert.equal(read.content, 'export const addedOnOrigin = true;');
+    assert.equal(read.refCaveat, undefined);
+
+    const search = await searchRepositoryFiles({ repository: fixture.repository, branch: 'main', query: 'addedOnOrigin', mode: 'literal' });
+    assert.equal(search.commit, advanced);
+    assert.deepEqual(search.matches.map(match => match.path), ['src/added.ts']);
+
+    // The semantic caveat compares the index against origin's head, not the stale local branch.
+    indexRow = { indexing_status: 'completed', last_indexed_at: '2026-10-01T00:00:00.000Z', last_indexed_hash: advanced };
+    const semantic = await searchRepositoryFiles({ repository: fixture.repository, branch: 'main', query: 'added' });
+    assert.equal(semantic.commit, advanced);
+    assert.equal(semantic.freshness?.stale, false);
+
+    for (const ref of ['origin/main', 'refs/heads/main', 'HEAD']) {
+      const pinned = await readRepositoryFileContent({ repository: fixture.repository, ref, path: 'src/added.ts' });
+      assert.equal(pinned.commit, advanced, ref);
+    }
+
+    // Retrieval never moves the shared clone's checkout or local branches.
+    assert.equal(fixture.managedGit('rev-parse', '--abbrev-ref', 'HEAD'), 'worker-task');
+    assert.equal(fixture.managedGit('rev-parse', 'refs/heads/main'), headCommit);
+    assert.equal(ensureRepoCloned.mock.callCount(), 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('does not answer for a branch deleted on origin from its stale remote-tracking ref', async () => {
+  const fixture = managedFixture('managed-deleted-branch');
+  try {
+    const read = await readRepositoryFileContent({ repository: fixture.repository, ref: 'feature', path: 'src/feature.ts' });
+    assert.equal(read.commit, featureCommit);
+    fixture.workGit('push', '-q', 'origin', '--delete', 'feature');
+    assert.equal(fixture.managedGit('rev-parse', 'refs/remotes/origin/feature'), featureCommit);
+
+    await expectRetrievalError(readRepositoryFileContent({ repository: fixture.repository, ref: 'feature', path: 'src/feature.ts' }), 404, /Ref "feature" not found/);
+    // Commit SHAs still resolve from the clone, abbreviated or not.
+    const bySha = await readRepositoryFileContent({ repository: fixture.repository, ref: featureCommit.slice(0, 12), path: 'src/feature.ts' });
+    assert.equal(bySha.commit, featureCommit);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('answers from the cached commit with a caveat when origin cannot be reached', async () => {
+  const fixture = managedFixture('managed-offline');
+  try {
+    fixture.managedGit('remote', 'set-url', 'origin', 'file:///nonexistent/propr-origin.git');
+
+    const read = await readRepositoryFileContent({ repository: fixture.repository, branch: 'main', path: 'src/util.ts' });
+    assert.equal(read.commit, headCommit);
+    assert.match(read.refCaveat ?? '', /Could not refresh "main" from origin/);
+    const search = await searchRepositoryFiles({ repository: fixture.repository, branch: 'main', query: 'VALIDATETOKEN', mode: 'literal' });
+    assert.match(search.refCaveat ?? '', /cached copy/);
+
+    // A full SHA already in the clone needs no fetch, so no caveat.
+    const pinned = await readRepositoryFileContent({ repository: fixture.repository, ref: headCommit, path: 'src/util.ts' });
+    assert.equal(pinned.refCaveat, undefined);
+
+    // A ref with nothing cached cannot be answered and stays a retryable failure.
+    await expectRetrievalError(readRepositoryFileContent({ repository: fixture.repository, ref: 'feature-never-fetched', path: 'src/util.ts' }), 502, /Failed to fetch/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('remembers a missing tag briefly instead of probing origin for it on every branch request', async () => {
+  const fixture = managedFixture('managed-tag-probe');
+  try {
+    const first = await readRepositoryFileContent({ repository: fixture.repository, branch: 'main', path: 'src/util.ts' });
+    assert.equal(first.commit, headCommit);
+    // A same-named tag appearing on origin is not probed again within the cache window...
+    fixture.workGit('tag', 'main', firstCommit);
+    fixture.workGit('push', '-q', 'origin', 'refs/tags/main');
+    const cached = await readRepositoryFileContent({ repository: fixture.repository, branch: 'main', path: 'src/util.ts' });
+    assert.equal(cached.commit, headCommit);
+    assert.throws(() => fixture.managedGit('rev-parse', '--verify', '--quiet', 'refs/tags/main'));
+    // ...while the branch itself is still refreshed on every request.
+    const advanced = fixture.pushCommit('src/later.ts', 'later\n');
+    const refreshed = await readRepositoryFileContent({ repository: fixture.repository, branch: 'main', path: 'src/later.ts' });
+    assert.equal(refreshed.commit, advanced);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// --- Bounded literal scans, encoded read limits and relevance failures ---
+
+test('the grep aggregator parses records split across chunks and stops at its file budget', async () => {
+  const { GrepAggregator } = await import('../src/services/repositoryLiteralGrep.js');
+  const sha = 'c'.repeat(40);
+  const output = `${sha}:a.ts\x001\x00one\n${sha}:a.ts\x002\x00two\n${sha}:b\nc.ts\x003\x00three\n${sha}:d.ts\x004\x00four\n`;
+  for (let size = 1; size <= 7; size++) {
+    const aggregator = new GrepAggregator(sha, 5);
+    for (let at = 0; at < output.length; at += size) aggregator.push(output.slice(at, at + size));
+    assert.deepEqual(aggregator.finish(), parseGitGrepOutput(output, sha, 5), `chunk size ${size}`);
+  }
+
+  const bounded = new GrepAggregator(sha, 1, 2);
+  bounded.push(output);
+  assert.equal(bounded.full, true);
+  // Retained files keep complete counts; the file over budget is not partially counted.
+  assert.deepEqual(bounded.finish().map(file => [file.path, file.matchCount]), [['a.ts', 2], ['b\nc.ts', 1]]);
+});
+
+test('literal search reports an unbounded scan as complete', async () => {
+  const result = await searchRepositoryFiles({ ...base, query: 'validateToken', mode: 'literal' });
+  assert.equal(result.scanTruncated, false);
+  assert.equal(result.pagination.totalMatches, 5);
+});
+
+test('an encoded byte limit bounds reads by their JSON size and refuses a line no maxBytes can return', async () => {
+  // Encoded, the newline separator takes two bytes: "line 1\nline 2" is 14 bytes, a third line would need 22.
+  const quoted = await readRepositoryFileContent({ ...base, path: 'big.txt', maxBytes: 1000, encodedByteLimit: 15 });
+  assert.equal(quoted.content, 'line 1\nline 2');
+  assert.equal(quoted.truncated, true);
+  assert.equal(quoted.nextStartLine, 3);
+
+  await expectRetrievalError(
+    readRepositoryFileContent({ ...base, path: 'big.txt', encodedByteLimit: 5 }),
+    413,
+    /Line 1 of "big\.txt" is 6 bytes once JSON-encoded, more than the 5-byte response limit, so it cannot be read at any maxBytes/,
+  );
+  // A hint never advises a maxBytes above what the caller accepts.
+  await expectRetrievalError(
+    readRepositoryFileContent({ ...base, path: 'big.txt', maxBytes: 4, maxBytesLimit: 5 }),
+    413,
+    /exceeds the 5-byte read limit/,
+  );
+});
+
+test('semantic search reports relevance engine failures as retrieval errors', async () => {
+  findRelevantFiles.mock.mockImplementationOnce(async () => { throw new Error('git ls-tree failed'); });
+  await expectRetrievalError(searchRepositoryFiles({ ...base, query: 'auth' }), 500, /Semantic search failed: git ls-tree failed/);
+});

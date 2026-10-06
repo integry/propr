@@ -16,13 +16,14 @@ import { createHooklessGit } from '../git/hooklessGit.js';
 import { resolveRepositoryClonePath } from '../git/repositoryPaths.js';
 import { findRelevantFiles, type RelevantFile } from './relevanceService.js';
 import logger from '../utils/logger.js';
-import { cloneOrRefresh, fetchRequestedRef, resolveCloneToken } from './repositoryManagedClone.js';
+import { selectLines, splitLines } from './repositoryFileLines.js';
+import { GrepAggregator, MAX_GREP_MATCHED_FILES, streamGitGrep } from './repositoryLiteralGrep.js';
+import { cloneManagedRepository, fetchRequestedRef, managedRefMappings, resolveCloneToken } from './repositoryManagedClone.js';
 import {
   RepositoryRetrievalError,
   type ReadRepositoryFileOptions,
   type ReadRepositoryFileResult,
   type RepositoryIndexingState,
-  type RepositoryLineMatch,
   type RepositoryMatchReason,
   type RepositorySearchMatch,
   type RepositorySearchMode,
@@ -35,6 +36,7 @@ import {
   assertSafeRepositoryPath,
   boundedInteger,
   buildPagination,
+  isFullCommitSha,
   normalizePathPrefix,
   parseRepository,
   remoteRefMappings,
@@ -46,7 +48,6 @@ const DEFAULT_SEARCH_LIMIT = 20;
 const MAX_SEARCH_LIMIT = 100;
 const DEFAULT_LINE_MATCHES_PER_FILE = 5;
 const MAX_LINE_MATCHES_PER_FILE = 50;
-const MAX_LINE_MATCH_TEXT_LENGTH = 500;
 const MAX_QUERY_LENGTH = 1000;
 const DEFAULT_MAX_LINES = 800;
 const HARD_MAX_LINES = 5000;
@@ -56,6 +57,7 @@ const HARD_MAX_BYTES = 1_000_000;
 const MAX_BLOB_BYTES = 20 * 1024 * 1024;
 
 export * from './repositoryRetrievalTypes.js';
+export { parseGitGrepOutput } from './repositoryLiteralGrep.js';
 export { assertSafeRepositoryPath } from './repositoryRetrievalValidation.js';
 
 // --- Repository and ref resolution ---
@@ -64,6 +66,8 @@ interface ResolvedTarget {
   repoPath: string;
   ref: string;
   commit: string;
+  /** Set when origin could not be reached and a cached commit answered. */
+  refCaveat?: string;
 }
 
 async function revParseCommit(repoPath: string, candidate: string): Promise<string | null> {
@@ -89,26 +93,73 @@ async function resolveCommit(repoPath: string, ref: string): Promise<string | nu
 }
 
 /**
- * Resolves `ref` in a managed clone. A short name may be a tag or a branch and
- * git prefers the tag, but a managed clone only holds the refs earlier
- * requests fetched; when the name resolved without its tag being present
- * locally (e.g. through a cached branch), fetch the tag first so the answer
- * does not depend on which refs were cached. Unresolved refs are left to the
- * caller's tag-first fetch.
+ * Resolves `ref` through the local refs origin's copy is fetched into, most
+ * specific first (a tag before a branch, as git resolves a short name), so a
+ * stale local branch or the worker's checked-out HEAD never shadows the
+ * freshly fetched remote-tracking ref.
  */
-async function resolveManagedCommit(repoPath: string, ref: string, getAuthToken: () => Promise<string>): Promise<string | null> {
-  const commit = await resolveCommit(repoPath, ref);
-  const mappings = remoteRefMappings(ref);
-  if (!commit || mappings.length < 2) return commit;
-  const tag = mappings[0].local;
-  if (await revParseCommit(repoPath, tag)) return commit;
-  await fetchRequestedRef(repoPath, tag, await getAuthToken());
-  return resolveCommit(repoPath, ref);
+async function resolveFetchedCommit(repoPath: string, ref: string): Promise<string | null> {
+  for (const { local } of managedRefMappings(ref)) {
+    const commit = await revParseCommit(repoPath, local);
+    if (commit) return commit;
+  }
+  return null;
+}
+
+/** An abbreviated commit SHA, the one short name origin cannot have as a tag or branch yet git can resolve. */
+const ABBREVIATED_SHA = /^[0-9a-f]{4,39}$/;
+
+/**
+ * Resolves `ref` in a managed clone. The clone's local refs are a cache of
+ * whatever earlier worker runs fetched (local branches are never
+ * fast-forwarded), so every branch, tag and HEAD request is refreshed from
+ * origin first and resolved through the refs that fetch stores it under.
+ * Only full commit SHAs, which cannot move, are answered without a fetch
+ * when already present. When origin cannot be reached but the ref resolves
+ * from cache, that commit answers with a caveat instead of failing.
+ */
+async function resolveManagedCommit(
+  repoPath: string,
+  ref: string,
+  getAuthToken: () => Promise<string>,
+): Promise<{ commit: string; refCaveat?: string } | null> {
+  if (isFullCommitSha(ref)) {
+    const cached = await revParseCommit(repoPath, ref);
+    if (cached) return { commit: cached };
+    await fetchRequestedRef(repoPath, ref, await getAuthToken());
+    const fetched = await revParseCommit(repoPath, ref);
+    return fetched ? { commit: fetched } : null;
+  }
+
+  let found: boolean;
+  try {
+    found = await fetchRequestedRef(repoPath, ref, await getAuthToken());
+  } catch (error) {
+    if (!(error instanceof RepositoryRetrievalError) || (error.status !== 502 && error.status !== 503)) throw error;
+    const cached = await resolveFetchedCommit(repoPath, ref)
+      ?? (ABBREVIATED_SHA.test(ref) ? await revParseCommit(repoPath, ref) : null);
+    if (!cached) throw error;
+    return {
+      commit: cached,
+      refCaveat: `Could not refresh "${ref}" from origin, so it was resolved from the managed clone's cached copy, which may be behind origin.`,
+    };
+  }
+
+  if (found) {
+    const commit = await resolveFetchedCommit(repoPath, ref);
+    if (commit) return { commit };
+  }
+  // Origin has no tag or branch of this name. A stale remote-tracking or
+  // local branch left behind must not answer for it; only an abbreviated
+  // commit SHA can still resolve.
+  if (!ABBREVIATED_SHA.test(ref)) return null;
+  const commit = await revParseCommit(repoPath, ref);
+  return commit ? { commit } : null;
 }
 
 /**
- * Finds a local clone (cloning or fetching when needed) and resolves the
- * requested ref to an exact commit.
+ * Finds a local clone (cloning when needed) and resolves the requested ref to
+ * an exact commit, refreshed from origin.
  */
 async function resolveTarget(options: RepositoryTargetOptions): Promise<ResolvedTarget> {
   const { owner, repoName } = parseRepository(options.repository);
@@ -120,23 +171,19 @@ async function resolveTarget(options: RepositoryTargetOptions): Promise<Resolved
     return { repoPath: options.repoPath, ref, commit };
   }
 
-  const localPath = resolveRepositoryClonePath(CLONES_BASE_PATH, owner, repoName);
-  if (await fs.pathExists(path.join(localPath, '.git'))) {
-    const commit = await resolveManagedCommit(localPath, ref, () => resolveCloneToken(options.authToken));
-    if (commit) return { repoPath: localPath, ref, commit };
+  let repoPath = resolveRepositoryClonePath(CLONES_BASE_PATH, owner, repoName);
+  let getAuthToken = () => resolveCloneToken(options.authToken);
+  if (!(await fs.pathExists(path.join(repoPath, '.git')))) {
+    // The fresh clone only covers its default branch (a single branch for
+    // shallow clones); the requested ref is fetched explicitly below.
+    const cloned = await cloneManagedRepository(owner, repoName, options);
+    repoPath = cloned.repoPath;
+    getAuthToken = async () => cloned.authToken;
   }
 
-  // Missing clone or unknown ref: clone/fetch, then retry. The refresh only
-  // covers the clone's configured refspec (a single branch for shallow
-  // clones), so fetch the requested ref explicitly before giving up.
-  const { repoPath, authToken } = await cloneOrRefresh(owner, repoName, options);
-  let commit = await resolveManagedCommit(repoPath, ref, async () => authToken);
-  if (!commit) {
-    await fetchRequestedRef(repoPath, ref, authToken);
-    commit = await resolveCommit(repoPath, ref);
-  }
-  if (!commit) throw new RepositoryRetrievalError(`Ref "${ref}" not found in ${options.repository}`, 404);
-  return { repoPath, ref, commit };
+  const resolved = await resolveManagedCommit(repoPath, ref, getAuthToken);
+  if (!resolved) throw new RepositoryRetrievalError(`Ref "${ref}" not found in ${options.repository}`, 404);
+  return { repoPath, ref, ...resolved };
 }
 
 // --- Semantic search ---
@@ -192,6 +239,16 @@ interface SearchRequest {
   limit: number;
 }
 
+/** Runs the relevance engine, reporting its failures (e.g. a failed `git ls-tree`) as retrieval errors. */
+async function scoreRelevance(...args: Parameters<typeof findRelevantFiles>): ReturnType<typeof findRelevantFiles> {
+  try {
+    return await findRelevantFiles(...args);
+  } catch (error) {
+    if (error instanceof RepositoryRetrievalError) throw error;
+    throw new RepositoryRetrievalError(`Semantic search failed: ${(error as Error)?.message ?? String(error)}`, 500);
+  }
+}
+
 async function searchSemantic({ options, query, pathPrefix, offset, limit }: SearchRequest): Promise<SearchRepositoryFilesResult> {
   const repository = options.repository.trim();
   const target = await resolveTarget(options);
@@ -220,7 +277,7 @@ async function searchSemantic({ options, query, pathPrefix, offset, limit }: Sea
 
   // Score against the resolved commit (not the checkout) and keep every
   // eligible file so path filtering and pagination see the full result set.
-  const relevance = await findRelevantFiles(target.repoPath, query, {
+  const relevance = await scoreRelevance(target.repoPath, query, {
     correlationId: options.correlationId,
     useSummaryScoring: usedIndex,
     agent,
@@ -266,66 +323,11 @@ async function searchSemantic({ options, query, pathPrefix, offset, limit }: Sea
       ...(caveat ? { caveat } : {}),
     },
     keywordsDetected: relevance.keywordsDetected,
+    ...(target.refCaveat ? { refCaveat: target.refCaveat } : {}),
   };
 }
 
 // --- Literal search ---
-
-interface GrepFileMatch {
-  path: string;
-  matchCount: number;
-  lineMatches: RepositoryLineMatch[];
-}
-
-/**
- * Parses `git grep -n -z <commit>` output. Each record looks like
- * `<commit>:<path>\0<line>\0<text>\n`. The path and line number are read up
- * to their NUL delimiters before the text is read up to its newline, so paths
- * containing ':' or newlines stay intact.
- */
-export function parseGitGrepOutput(output: string, commit: string, maxLineMatchesPerFile: number): GrepFileMatch[] {
-  const files = new Map<string, GrepFileMatch>();
-  const commitPrefix = `${commit}:`;
-
-  let position = 0;
-  while (position < output.length) {
-    const firstNul = output.indexOf('\0', position);
-    const secondNul = firstNul === -1 ? -1 : output.indexOf('\0', firstNul + 1);
-    if (secondNul === -1) break;
-    const newline = output.indexOf('\n', secondNul + 1);
-    const textEnd = newline === -1 ? output.length : newline;
-
-    let filePath = output.slice(position, firstNul);
-    const lineNumber = Number.parseInt(output.slice(firstNul + 1, secondNul), 10);
-    const text = output.slice(secondNul + 1, textEnd);
-    position = textEnd + 1;
-
-    if (filePath.startsWith(commitPrefix)) filePath = filePath.slice(commitPrefix.length);
-    if (!filePath || !Number.isFinite(lineNumber)) continue;
-
-    let entry = files.get(filePath);
-    if (!entry) {
-      entry = { path: filePath, matchCount: 0, lineMatches: [] };
-      files.set(filePath, entry);
-    }
-    entry.matchCount += 1;
-    if (entry.lineMatches.length < maxLineMatchesPerFile) {
-      entry.lineMatches.push({
-        lineNumber,
-        text: text.length > MAX_LINE_MATCH_TEXT_LENGTH ? `${text.slice(0, MAX_LINE_MATCH_TEXT_LENGTH)}…` : text,
-      });
-    }
-  }
-
-  return Array.from(files.values());
-}
-
-function isNoMatchError(error: unknown): boolean {
-  const err = error as { exitCode?: number; message?: string };
-  if (err?.exitCode === 1) return true;
-  // simple-git reports `git grep` exit code 1 (no matches) as an empty error.
-  return typeof err?.message === 'string' && err.message.trim() === '';
-}
 
 async function searchLiteral({ options, query, pathPrefix, offset, limit }: SearchRequest): Promise<SearchRepositoryFilesResult> {
   const target = await resolveTarget(options);
@@ -334,7 +336,7 @@ async function searchLiteral({ options, query, pathPrefix, offset, limit }: Sear
   });
 
   // --no-column keeps a configured grep.column from adding a third metadata
-  // field that parseGitGrepOutput would read as line text.
+  // field that the parser would read as line text.
   const args = ['grep', '-n', '-I', '-z', '--no-color', '--no-column', '-F'];
   if (!options.caseSensitive) args.push('-i');
   args.push('-e', query, target.commit, '--');
@@ -346,17 +348,15 @@ async function searchLiteral({ options, query, pathPrefix, offset, limit }: Sear
     if (directory) args.push(`:(literal,top)${directory}`);
   }
 
-  let output = '';
+  const aggregator = new GrepAggregator(target.commit, maxLineMatchesPerFile, MAX_GREP_MATCHED_FILES,
+    filePath => !pathPrefix || filePath.startsWith(pathPrefix));
+  let scanTruncated: boolean;
   try {
-    output = await createHooklessGit(target.repoPath).raw(args);
+    ({ scanTruncated } = await streamGitGrep(target.repoPath, args, aggregator));
   } catch (error) {
-    if (!isNoMatchError(error)) {
-      throw new RepositoryRetrievalError(`git grep failed: ${(error as Error).message}`, 500);
-    }
+    throw new RepositoryRetrievalError(`git grep failed: ${(error as Error).message}`, 500);
   }
-
-  const all = parseGitGrepOutput(output, target.commit, maxLineMatchesPerFile)
-    .filter(file => !pathPrefix || file.path.startsWith(pathPrefix));
+  const all = aggregator.finish();
 
   const matches = all.slice(offset, offset + limit).map((file): RepositorySearchMatch => ({
     path: file.path,
@@ -373,6 +373,8 @@ async function searchLiteral({ options, query, pathPrefix, offset, limit }: Sear
     pathPrefix,
     matches,
     pagination: buildPagination(offset, limit, all.length),
+    scanTruncated,
+    ...(target.refCaveat ? { refCaveat: target.refCaveat } : {}),
   };
 }
 
@@ -407,13 +409,6 @@ export async function searchRepositoryFiles(options: SearchRepositoryFilesOption
 }
 
 // --- File reading ---
-
-function splitLines(content: string): string[] {
-  if (content === '') return [];
-  const lines = content.split('\n');
-  if (lines[lines.length - 1] === '') lines.pop();
-  return lines;
-}
 
 async function readBlob(repoPath: string, commit: string, filePath: string, repository: string): Promise<string> {
   const git = createHooklessGit(repoPath);
@@ -453,7 +448,8 @@ export async function readRepositoryFileContent(options: ReadRepositoryFileOptio
     throw new RepositoryRetrievalError('endLine must be greater than or equal to startLine', 400);
   }
   const maxLines = boundedInteger(options.maxLines, 'maxLines', { fallback: DEFAULT_MAX_LINES, min: 1, max: HARD_MAX_LINES });
-  const maxBytes = boundedInteger(options.maxBytes, 'maxBytes', { fallback: DEFAULT_MAX_BYTES, min: 1, max: HARD_MAX_BYTES });
+  const maxBytesLimit = Math.min(options.maxBytesLimit ?? HARD_MAX_BYTES, HARD_MAX_BYTES);
+  const maxBytes = boundedInteger(options.maxBytes, 'maxBytes', { fallback: Math.min(DEFAULT_MAX_BYTES, maxBytesLimit), min: 1, max: maxBytesLimit });
 
   const target = await resolveTarget(options);
   const content = await readBlob(target.repoPath, target.commit, filePath, options.repository.trim());
@@ -466,34 +462,9 @@ export async function readRepositoryFileContent(options: ReadRepositoryFileOptio
   const totalLines = lines.length;
   const rangeEnd = Math.min(requestedEnd ?? totalLines, totalLines);
 
-  const selected: string[] = [];
-  let returnedBytes = 0;
-  let truncated = false;
-
-  for (let lineNo = startLine; lineNo <= rangeEnd; lineNo++) {
-    if (selected.length >= maxLines) {
-      truncated = true;
-      break;
-    }
-    const line = lines[lineNo - 1];
-    const lineBytes = Buffer.byteLength(line, 'utf8') + (selected.length > 0 ? 1 : 0);
-    if (returnedBytes + lineBytes > maxBytes) {
-      if (selected.length === 0) {
-        // Returning part of the line would leave no cursor for the rest of it.
-        const hint = lineBytes <= HARD_MAX_BYTES
-          ? `; request it with maxBytes of at least ${lineBytes}`
-          : `, which exceeds the ${HARD_MAX_BYTES}-byte read limit`;
-        throw new RepositoryRetrievalError(
-          `Line ${lineNo} of "${filePath}" is ${lineBytes} bytes and does not fit in maxBytes (${maxBytes})${hint}`,
-          413,
-        );
-      }
-      truncated = true;
-      break;
-    }
-    selected.push(line);
-    returnedBytes += lineBytes;
-  }
+  const { selected, returnedBytes, truncated } = selectLines(lines, { filePath, startLine, rangeEnd }, {
+    maxLines, maxBytes, maxBytesLimit, encodedByteLimit: options.encodedByteLimit,
+  });
 
   const lastReturned = startLine + selected.length - 1;
   const nextStartLine = truncated && lastReturned < rangeEnd ? lastReturned + 1 : null;
@@ -511,5 +482,6 @@ export async function readRepositoryFileContent(options: ReadRepositoryFileOptio
     returnedBytes,
     truncated,
     nextStartLine,
+    ...(target.refCaveat ? { refCaveat: target.refCaveat } : {}),
   };
 }

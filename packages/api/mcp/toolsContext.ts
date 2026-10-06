@@ -1,7 +1,8 @@
 import { z } from 'zod';
-import { loadMonitoredReposRaw, searchRepositoryFiles, readRepositoryFileContent, RepositoryRetrievalError } from '@propr/core';
+import { loadMonitoredReposRaw, searchRepositoryFiles, readRepositoryFileContent, RepositoryRetrievalError, type ReadRepositoryFileResult, type SearchRepositoryFilesResult } from '@propr/core';
 import { type McpTool, type ToolDeps, repositorySchema, pageShape, ok } from './tools.js';
-import { McpError } from './config.js';
+import { MAX_TOOL_RESULT_BYTES, McpError } from './config.js';
+import { redactText } from './adapter.js';
 
 const refShape = { branch: z.string().min(1).max(255).optional(), ref: z.string().min(1).max(255).optional() };
 
@@ -28,8 +29,61 @@ async function retrieval<T>(run: () => Promise<T>): Promise<T> {
       if (/^(path|")/.test(message)) throw new McpError('INVALID_PATH', message);
       throw new McpError('INVALID_INPUT', message);
     }
+    // 500 is a local git or relevance-engine failure; retrying will not help.
+    if (error.status === 500) throw new McpError('REPOSITORY_RETRIEVAL_FAILED', 'Repository retrieval failed.', 500);
     throw new McpError('REPOSITORY_RETRIEVAL_FAILED', 'Repository retrieval failed.', 502, { retryable: true });
   }
+}
+
+/** Largest `maxBytes` a read accepts; the JSON-encoded content is separately held under the response limit. */
+const MAX_READ_BYTES = 200_000;
+/** Response bytes reserved for everything except `content` or `matches` (paths, refs, pagination, freshness). */
+const RESULT_ENVELOPE_RESERVE = 16 * 1024;
+
+const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+
+/**
+ * Masks credentials in the returned lines (the executor treats them as opaque
+ * text) and keeps the result inside the response limit. The service already
+ * bounded the encoded content, so this only drops trailing lines when masking
+ * grew it, keeping endLine, returnedBytes and nextStartLine true to `content`.
+ */
+function fitReadResult(result: ReadRepositoryFileResult): ReadRepositoryFileResult {
+  const lines = result.content === '' ? [] : redactText(result.content).split('\n');
+  const budget = MAX_TOOL_RESULT_BYTES - jsonBytes({ ...result, content: '', endLine: Number.MAX_SAFE_INTEGER, returnedBytes: Number.MAX_SAFE_INTEGER, nextStartLine: Number.MAX_SAFE_INTEGER, truncated: false });
+  let used = 0, kept = 0;
+  for (const line of lines) {
+    const cost = jsonBytes(line) - 2 + (kept ? 2 : 0);
+    if (used + cost > budget) break;
+    used += cost;
+    kept += 1;
+  }
+  if (kept === 0 && lines.length) throw new McpError('FILE_TOO_LARGE', `Line ${result.startLine} of "${result.path}" does not fit in the ${MAX_TOOL_RESULT_BYTES}-byte response once encoded, so it cannot be read at any maxBytes.`, 413);
+  const content = lines.slice(0, kept).join('\n');
+  if (kept === lines.length) return { ...result, content, returnedBytes: Buffer.byteLength(content) };
+  const endLine = result.startLine + kept - 1;
+  return { ...result, content, endLine, returnedBytes: Buffer.byteLength(content), truncated: true, nextStartLine: endLine + 1 };
+}
+
+/**
+ * Masks credentials in line previews and keeps a search page inside the
+ * response limit by ending the page early; `nextOffset` then continues from
+ * the first match left out.
+ */
+function fitSearchResult(result: SearchRepositoryFilesResult): SearchRepositoryFilesResult {
+  const matches = result.matches.map(match => match.lineMatches ? { ...match, lineMatches: match.lineMatches.map(line => ({ ...line, text: redactText(line.text) })) } : match);
+  let used = jsonBytes({ ...result, matches: [], pagination: { ...result.pagination, nextOffset: Number.MAX_SAFE_INTEGER } });
+  let kept = 0;
+  for (const match of matches) {
+    const cost = jsonBytes(match) + 1;
+    if (used + cost > MAX_TOOL_RESULT_BYTES) break;
+    used += cost;
+    kept += 1;
+  }
+  if (kept === matches.length) return { ...result, matches };
+  // A single match always fits (previews are capped); keeping one guarantees progress.
+  kept = Math.max(kept, 1);
+  return { ...result, matches: matches.slice(0, kept), pagination: { ...result.pagination, nextOffset: result.pagination.offset + kept } };
 }
 
 export function addContextTools(tools: McpTool[], { db, policy }: ToolDeps): void {
@@ -86,22 +140,22 @@ export function addContextTools(tools: McpTool[], { db, policy }: ToolDeps): voi
       const directories = await build('directory_summaries'), files = args.mode === 'overview' ? [] : await build('file_summaries');
       return ok({ repository: args.repository, branch: args.branch, freshness: { state: repository.indexing_status, indexedAt: repository.last_indexed_at, revision: repository.last_indexed_hash }, directories, files, nextOffset: Math.max(directories.length, files.length) === args.limit ? args.offset + args.limit : null });
     } });
-  tools.push({ name: 'search_repository_files', description: 'Search repository files and return matching paths (no full file contents). mode "semantic" (default) ranks files with the index-based planner relevance engine (file summaries, path and git-history signals) and reports index freshness; mode "literal" runs an exact, non-regex string grep across the git tree at the requested ref and returns per-file match counts with the first matching lines. Optionally restrict to a repository-relative path prefix. Follow up with read_repository_file to read a match.', scope: 'read', readOnly: true,
+  tools.push({ name: 'search_repository_files', description: 'Search repository files and return matching paths (no full file contents). mode "semantic" (default) ranks files with the index-based planner relevance engine (file summaries, path and git-history signals) and reports index freshness; mode "literal" runs an exact, non-regex string grep across the git tree at the requested ref and returns per-file match counts with the first matching lines (scanTruncated means the grep hit its output budget, so totalMatches is a lower bound; narrow the query or path). Optionally restrict to a repository-relative path prefix. Follow up with read_repository_file to read a match.', scope: 'read', readOnly: true,
     schema: z.object({ repository: repositorySchema, query: z.string().min(1).max(1000), mode: z.enum(['semantic', 'literal']).default('semantic'), ...refShape, path: z.string().max(1024).optional(), caseSensitive: z.boolean().optional(), ...pageShape }).strict(), run: async ({ principal, args }) => {
-      await policy.repository(principal, args.repository);
+      // The executor has already authorized args.repository for this call.
       if (args.path) assertRelativePath(args.path);
       const branch = await defaultBranch(args.repository, args.branch);
-      return ok(await retrieval(() => searchRepositoryFiles({ repository: args.repository, branch, ref: args.ref, query: args.query, mode: args.mode, path: args.path || undefined,
-        caseSensitive: args.caseSensitive, offset: args.offset, limit: args.limit, authToken: principal.user.accessToken || undefined })));
+      return ok(fitSearchResult(await retrieval(() => searchRepositoryFiles({ repository: args.repository, branch, ref: args.ref, query: args.query, mode: args.mode, path: args.path || undefined,
+        caseSensitive: args.caseSensitive, offset: args.offset, limit: args.limit, authToken: principal.user.accessToken || undefined }))));
     } });
-  tools.push({ name: 'read_repository_file', description: 'Read a text file at a branch, ref or commit straight from git, in bounded line chunks, without cloning locally. Returns content with startLine, endLine, totalLines and a truncated flag; when truncated, continue from nextStartLine. Paths are repository-relative; binary files are rejected.', scope: 'read', readOnly: true,
+  tools.push({ name: 'read_repository_file', description: 'Read a text file at a branch, ref or commit straight from git, in bounded line chunks, without cloning locally. Returns content with startLine, endLine, totalLines and a truncated flag; when truncated (by maxLines, maxBytes or the response size limit), continue from nextStartLine. Paths are repository-relative; binary files are rejected.', scope: 'read', readOnly: true,
     schema: z.object({ repository: repositorySchema, path: z.string().min(1).max(1024), ...refShape, startLine: z.number().int().min(1).default(1), endLine: z.number().int().min(1).optional(),
-      maxLines: z.number().int().min(1).max(1000).default(800), maxBytes: z.number().int().min(1).max(500000).default(120000) }).strict(), run: async ({ principal, args }) => {
-      await policy.repository(principal, args.repository);
+      maxLines: z.number().int().min(1).max(1000).default(800), maxBytes: z.number().int().min(1).max(MAX_READ_BYTES).default(120000) }).strict(), run: async ({ principal, args }) => {
+      // The executor has already authorized args.repository for this call.
       assertRelativePath(args.path);
       if (args.endLine !== undefined && args.endLine < args.startLine) throw new McpError('INVALID_INPUT', 'endLine must be greater than or equal to startLine.');
       const branch = await defaultBranch(args.repository, args.branch);
-      return ok(await retrieval(() => readRepositoryFileContent({ repository: args.repository, branch, ref: args.ref, path: args.path, startLine: args.startLine, endLine: args.endLine,
-        maxLines: args.maxLines, maxBytes: args.maxBytes, authToken: principal.user.accessToken || undefined })));
+      return ok(fitReadResult(await retrieval(() => readRepositoryFileContent({ repository: args.repository, branch, ref: args.ref, path: args.path, startLine: args.startLine, endLine: args.endLine,
+        maxLines: args.maxLines, maxBytes: args.maxBytes, maxBytesLimit: MAX_READ_BYTES, encodedByteLimit: MAX_TOOL_RESULT_BYTES - RESULT_ENVELOPE_RESERVE, authToken: principal.user.accessToken || undefined }))));
     } });
 }

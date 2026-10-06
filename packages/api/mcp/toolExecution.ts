@@ -1,9 +1,9 @@
-import { McpError } from './config.js';
+import { MAX_TOOL_RESULT_BYTES, McpError } from './config.js';
 import { accessPrincipal, claimMcpSurface, classifyMcpFailure, recordMcpAccess, type McpAccessOutcome } from './accessLog.js';
 import { McpPolicy, type McpPrincipal } from './policy.js';
 import { McpOperations } from './operations.js';
 import { cancellationTarget } from './operationTracking.js';
-import { redact } from './adapter.js';
+import { redact, redactText } from './adapter.js';
 import { presentResult, type PresentedResult } from './presentation.js';
 import type { Args, McpTool, ToolDeps } from './tools.js';
 import type { ContentBlock } from '@modelcontextprotocol/sdk/types.js';
@@ -85,14 +85,38 @@ function noteToolOutcome(tool: McpTool, access: ToolAccess, data: Record<string,
  * offsets are calculated. Preserve that exact slice while retaining the
  * dispatch safeguard for every other result field: re-redacting a continuation
  * that happens to start with JSON can otherwise parse and reshape the text.
+ * Repository source text, paths and queries are opaque for the same reason:
+ * a `.json` file or a matched `[1, 2]` line must come back byte-for-byte, so
+ * those fields only get the in-place credential masking.
  */
 function redactToolResult(tool: McpTool, result: unknown): Record<string, unknown> {
   const data = redact(result) as Record<string, unknown>;
-  if (tool.name === 'get_doc' && result && typeof result === 'object') {
-    const content = (result as Record<string, unknown>).content;
-    if (typeof content === 'string') data.content = content;
+  if (!result || typeof result !== 'object') return data;
+  const source = result as Record<string, unknown>;
+  if (tool.name === 'get_doc' && typeof source.content === 'string') data.content = source.content;
+  if (tool.name === 'read_repository_file') restoreOpaqueText(source, data, ['content', 'path']);
+  if (tool.name === 'search_repository_files') {
+    restoreOpaqueText(source, data, ['query', 'pathPrefix']);
+    if (Array.isArray(source.matches) && Array.isArray(data.matches)) {
+      data.matches = (data.matches as Record<string, unknown>[]).map((match, index) => {
+        const original = (source.matches as Record<string, unknown>[])[index];
+        const restored = { ...match };
+        restoreOpaqueText(original, restored, ['path']);
+        if (Array.isArray(original.lineMatches)) {
+          restored.lineMatches = (original.lineMatches as Record<string, unknown>[]).map(line => ({
+            lineNumber: line.lineNumber,
+            text: typeof line.text === 'string' ? redactText(line.text) : line.text,
+          }));
+        }
+        return restored;
+      });
+    }
   }
   return data;
+}
+
+function restoreOpaqueText(source: Record<string, unknown>, data: Record<string, unknown>, fields: string[]): void {
+  for (const field of fields) if (typeof source[field] === 'string') data[field] = redactText(source[field] as string);
 }
 
 /** Preserve binary content while applying the result-redaction boundary to text overrides. */
@@ -145,7 +169,7 @@ async function runTool({ tool, raw, principal, deps, access, signal }: ToolInvoc
   // Binary content has its own tool-specific bound and is intentionally not
   // subject to the JSON page limit below.
   noteToolOutcome(tool, access, data, content);
-  if (jsonBytes > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
+  if (jsonBytes > MAX_TOOL_RESULT_BYTES) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
   return { ...presentResult(tool, args, data, deps.policy.config), data, ...(content ? { content } : {}) };
 }
 
