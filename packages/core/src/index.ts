@@ -158,7 +158,32 @@ export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isRevi
 export { parseSlashCommand, buildCommandMeta } from './webhook/slashCommandParser.js';
 export type { ParsedSlashCommand, SlashCommandName, CommandMeta, ReviewCommandMeta, FixCommandMeta, MergeCommandMeta, UltrafixCommandMeta } from './webhook/slashCommandParser.js';
 export { handlePullRequestConflictDetection, handlePushConflictDetection, handleMergeCommand } from './webhook/mergeConflictDetector.js';
-export type { ConflictDetectionOutcome, ConflictDetectionResult, HandleMergeCommandOptions } from './webhook/mergeConflictDetector.js';
+export type { ConflictDetectionOutcome, ConflictDetectionResult, ConflictSkipReason, HandleMergeCommandOptions } from './webhook/mergeConflictDetector.js';
+export {
+    classifyMergeability,
+    evaluateOpenPullRequests,
+    getMergeConflictSweepIntervalMs,
+    isProprManagedPullRequest,
+    maybeQueueConflictResolution,
+    pollMergeability,
+    sweepConflictedPullRequests,
+    CONFLICT_DEDUP_TTL_SECONDS,
+    MAX_CONFLICT_ATTEMPTS_PER_WINDOW,
+    MERGEABILITY_POLL_DELAYS_MS,
+} from './webhook/mergeConflictAutoResolve.js';
+export type { ConflictPullRequest, ConflictTrigger, Mergeability, MergeConflictRedis } from './webhook/mergeConflictAutoResolve.js';
+export {
+    AUTO_RESOLVE_MERGE_CONFLICTS_CONFIG_KEY,
+    loadEffectiveAutoResolveMergeConflicts,
+    loadInstanceAutoResolveMergeConflicts,
+    normalizeAutoResolveMergeConflictsOverride,
+    parseBooleanSetting,
+    resolveAutoResolveMergeConflicts,
+    resolveRepositoryAutoResolveMergeConflictsOverride,
+} from './config/mergeConflictSettings.js';
+export type { AutoResolveMergeConflictsSource, EffectiveAutoResolveMergeConflicts } from './config/mergeConflictSettings.js';
+export { performConflictResolution, findConflictMarkers } from './git/conflictResolution.js';
+export type { ConflictResolutionOptions, ConflictResolutionOutcome, ConflictResolverContext } from './git/conflictResolution.js';
 export {
     determinePRStatusUpdate,
     isTerminalStatus,

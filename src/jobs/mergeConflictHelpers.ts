@@ -197,7 +197,7 @@ export function mergeConflictJobToCommentJob(mergeJob: {
     baseBranch: string;
     headSha: string;
     baseSha: string;
-    triggerSource: 'pull_request' | 'push' | 'auto_merge';
+    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'sweep';
     correlationId: string;
 }): {
     userId?: string;

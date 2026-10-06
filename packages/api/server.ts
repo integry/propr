@@ -661,7 +661,7 @@ async function start(): Promise<void> {
         enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
       });
       if (apiIntakeMode === 'direct_webhook') {
-        await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper, repositoryFilter: isMonitoredRepository });
+        await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper, redisClient: getIoRedisClient(), repositoryFilter: isMonitoredRepository });
         console.log('[webhook] Webhook handler initialized');
       }
       setInterval(async () => {

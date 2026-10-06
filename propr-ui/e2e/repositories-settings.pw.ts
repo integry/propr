@@ -57,6 +57,7 @@ async function stubRepositoryApis(page: Page, canManage = true, initialRepos?: M
         break;
       case '/api/instance/catalog': json = { repositories: repos, agents: [] }; break;
       case '/api/github/repos': json = { repos: [] }; break;
+      case '/api/config/settings': json = { auto_resolve_merge_conflicts: true }; break;
       case '/api/user/repo-preferences': json = { preferences: { 'integry/propr': { starred: true } } }; break;
       case '/api/repositories/indexing-status':
         json = { repositories: repos.map((repo, index) => ({
@@ -114,6 +115,29 @@ test('shows and updates the follow-up CI cancellation option and its workflow se
   await expect(cancelCi).not.toBeChecked();
   await expect(workflows).toBeHidden();
   await expect.poll(() => api.writes.at(-1)?.map(repo => repo.cancelCiDuringFollowup)).toEqual([false, false]);
+});
+
+test('sets the repository-wide merge-conflict auto-resolve override against the instance default', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const api = await stubRepositoryApis(page, true, [
+    { id: 'propr-main', name: 'integry/propr', baseBranch: 'main', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+    { id: 'propr-release', name: 'integry/propr', baseBranch: 'release', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+  ]);
+  await page.goto('/repositories');
+  await page.getByRole('button', { name: 'Select integry/propr', exact: true }).first().click();
+  const settings = page.getByRole('region', { name: 'Settings for integry/propr', exact: true });
+  const autoResolve = settings.getByRole('combobox', { name: 'Auto-resolve merge conflicts for integry/propr', exact: true });
+  await expect(autoResolve).toHaveValue('inherit');
+  await expect(autoResolve.getByRole('option', { name: 'Use instance default (currently On)' })).toHaveCount(1);
+  await settings.evaluate(element => element.scrollTo({ top: element.scrollHeight }));
+  await capturePreview(page, 'repository-auto-resolve-inherit');
+
+  await autoResolve.selectOption('never');
+  await expect.poll(() => api.writes.at(-1)?.map(repo => repo.autoResolveMergeConflicts)).toEqual([false, false]);
+  await capturePreview(page, 'repository-auto-resolve-never');
+
+  await autoResolve.selectOption('inherit');
+  await expect.poll(() => api.writes.at(-1)?.map(repo => repo.autoResolveMergeConflicts)).toEqual([null, null]);
 });
 
 test('shows the whole repository-wide selection the worker may cancel', async ({ page }) => {

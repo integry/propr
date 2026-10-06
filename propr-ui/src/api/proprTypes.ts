@@ -129,6 +129,8 @@ export interface MonitoredRepo {
   nonBlockingChecks?: string[];
   /** Whether Inbox and push notifications are generated for this repository. Missing values are on. */
   notificationsEnabled?: boolean;
+  /** Repository-wide merge-conflict auto-resolve override; missing or null inherits the instance default. */
+  autoResolveMergeConflicts?: boolean | null;
   /** Generated media to embed in PRs when a change has a visible result. */
   visualPreview?: {
     githubAttachmentPlan?: GitHubAttachmentPlanOverride;

@@ -29,6 +29,7 @@ import {
   resolveRepositoryNotificationsEnabled,
   toggleRepositoryCancelCiDuringFollowup,
   toggleRepositoryNotifications,
+  updateRepositoryAutoResolveMergeConflicts,
   updateRepositoryVisualPreview,
   type ManagedRepo,
   type VisualPreviewSettings
@@ -76,6 +77,7 @@ export interface UseRepositoryManagementResult {
   handleUpdateCancelCiWorkflows: (repoId: string, workflows: string[]) => void;
   handleUpdateNonBlockingChecks: (repoId: string, checks: string[]) => void;
   handleToggleNotifications: (repoId: string) => void;
+  handleUpdateAutoResolveMergeConflicts: (repoId: string, value: boolean | null) => void;
   handleUpdateVisualPreview: (repoId: string, settings: VisualPreviewSettings) => void;
   handleToggleStar: (repoId: string) => Promise<void>;
   handleToggleHidden: (repoId: string) => Promise<void>;
@@ -135,13 +137,15 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
             const nonBlockingChecks = parseWorkflowSelection(repoObj.nonBlockingChecks);
             // An absent field means enabled: the product default and legacy behaviour.
             const notificationsEnabled = repoObj.notificationsEnabled !== false;
+            // Absent means the repository inherits the instance default.
+            const autoResolveMergeConflicts = typeof repoObj.autoResolveMergeConflicts === 'boolean' ? repoObj.autoResolveMergeConflicts : null;
             const visualPreview = parseVisualPreview(repoObj.visualPreview);
             const id = (repoObj.id as string) || generateId();
             const alias = repoObj.alias as string | undefined;
             const baseBranch = repoObj.baseBranch as string | undefined;
             const userPref = name ? (prefs[name] || {}) : {};
             if (name) {
-              return { id, name, enabled, autoFollowupOnFailedCi, cancelCiDuringFollowup, cancelCiDuringFollowupWorkflows, nonBlockingChecks, notificationsEnabled, visualPreview, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
+              return { id, name, enabled, autoFollowupOnFailedCi, cancelCiDuringFollowup, cancelCiDuringFollowupWorkflows, nonBlockingChecks, notificationsEnabled, autoResolveMergeConflicts, visualPreview, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
             }
           }
           return null;
@@ -443,6 +447,14 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     performAutoSave(newRepos);
   };
 
+  const handleUpdateAutoResolveMergeConflicts = (repoId: string, value: boolean | null) => {
+    if (!canManageRepositories) return;
+    const newRepos = updateRepositoryAutoResolveMergeConflicts(repos, repoId, value);
+    if (newRepos === repos) return;
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
   const handleUpdateVisualPreview = (repoId: string, settings: VisualPreviewSettings) => {
     if (!canManageRepositories) return;
     const newRepos = updateRepositoryVisualPreview(repos, repoId, settings);
@@ -491,7 +503,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   return {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
     filteredRepos, hiddenCount, loadRepos, handleStopIndexing, handleReindexRepo, handleAddRepo,
-    handleRemoveRepo, handleToggleRepo, handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows, handleUpdateNonBlockingChecks, handleToggleNotifications, handleUpdateVisualPreview, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
+    handleRemoveRepo, handleToggleRepo, handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows, handleUpdateNonBlockingChecks, handleToggleNotifications, handleUpdateAutoResolveMergeConflicts, handleUpdateVisualPreview, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
     handleRetry, setError
   };
 }
