@@ -1,4 +1,4 @@
-import { withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
+import { assertToolPolicySupported, withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
 import { isManagedAgentConfigPath, type ModelReasoningLevel } from '@propr/shared';
@@ -93,6 +93,7 @@ export class AntigravityAgent implements Agent {
         const customPrompt = withPromptOnlyToolPolicy(rawCustomPrompt, options.toolPolicy);
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
+        assertToolPolicySupported(options);
         if (options.executionMode === 'goal') return this.executeNativeGoal(options, effectiveModel);
         const transcriptPath = this.createTransientTranscriptPath(taskId);
 

@@ -14,8 +14,11 @@ import {
 } from '../packages/core/src/agents/agentToolPolicy.ts';
 import { buildDockerArgs as buildClaudeDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts';
 import { buildCodexDockerArgs } from '../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts';
+import { ClaudeAgent } from '../packages/core/src/agents/impl/ClaudeAgent.ts';
+import { CodexAgent } from '../packages/core/src/agents/impl/CodexAgent.ts';
+import { AntigravityAgent } from '../packages/core/src/agents/impl/AntigravityAgent.ts';
 import { redactSecrets } from '../packages/core/src/utils/secretRedaction.ts';
-import type { AgentConfig, AgentToolPolicy } from '../packages/core/src/agents/types.ts';
+import type { Agent, AgentConfig, AgentTaskOptions, AgentToolPolicy } from '../packages/core/src/agents/types.ts';
 import { agentRunToolPolicy } from '../src/jobs/agentRuns/toolPolicy.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
 
@@ -91,7 +94,8 @@ describe('claudeToolPolicyArgs', () => {
 
 describe('codexToolPolicyArgs', () => {
     test('turns off web search when web is off', () => {
-        assert.deepEqual(codexToolPolicyArgs({ allowWeb: false }), { cliArgs: ['-c', 'tools.web_search=false'], env: {} });
+        // The pinned Codex CLI ignores `tools.web_search=false`; see agentToolPolicyRuntime.test.ts.
+        assert.deepEqual(codexToolPolicyArgs({ allowWeb: false }), { cliArgs: ['-c', 'web_search="disabled"'], env: {} });
     });
 
     test('configures the MCP server by URL and bearer token env var', () => {
@@ -137,7 +141,7 @@ describe('launcher integration', () => {
 
     test('Codex: no toolPolicy leaves the arguments unchanged', () => {
         const without = buildCodexDockerArgs(codexConfig, baseParams);
-        assert.ok(!without.includes('tools.web_search=false'));
+        assert.ok(!without.includes('web_search="disabled"'));
         assert.deepEqual(
             withoutContainerName(buildCodexDockerArgs(codexConfig, { ...baseParams, toolPolicy: undefined })),
             withoutContainerName(without),
@@ -146,12 +150,34 @@ describe('launcher integration', () => {
 
     test('Codex: web off and MCP add -c overrides before the prompt and pass the token by name only', () => {
         const args = buildCodexDockerArgs(codexConfig, { ...baseParams, toolPolicy: MCP_POLICY });
-        assert.ok(hasSequence(args, ['-c', 'tools.web_search=false']));
+        assert.ok(hasSequence(args, ['-c', 'web_search="disabled"']));
         assert.ok(args.includes('mcp_servers.propr.url="https://propr.example/mcp"'));
         assert.ok(hasSequence(args, ['-e', PROPR_MCP_BEARER_TOKEN_ENV]));
         assert.ok(!args.some(arg => arg.includes(TOKEN)));
-        assert.ok(args.indexOf('tools.web_search=false') < args.lastIndexOf('-'));
+        assert.ok(args.indexOf('web_search="disabled"') < args.lastIndexOf('-'));
     });
+});
+
+describe('goal mode', () => {
+    const antigravityConfig: AgentConfig = {
+        ...claudeConfig, id: 'antigravity', type: 'antigravity', alias: 'antigravity',
+        supportedModels: ['gemini-3-pro'], defaultModel: 'gemini-3-pro',
+    };
+    const goalOptions = {
+        worktreePath: '/tmp/worktree', issueRef: { number: 42, repoOwner: 'acme', repoName: 'widgets' },
+        executionMode: 'goal', taskId: 'task-1', toolPolicy: MCP_POLICY,
+    } as AgentTaskOptions;
+    const agents: Array<[string, Agent]> = [
+        ['Claude', new ClaudeAgent(claudeConfig)],
+        ['Codex', new CodexAgent(codexConfig)],
+        ['Antigravity', new AntigravityAgent(antigravityConfig)],
+    ];
+
+    for (const [name, agent] of agents) {
+        test(`${name}: refuses a tool policy instead of launching an unrestricted goal`, async () => {
+            await assert.rejects(agent.executeTask(goalOptions), /only supported for task execution/);
+        });
+    }
 });
 
 describe('agentRunToolPolicy', () => {

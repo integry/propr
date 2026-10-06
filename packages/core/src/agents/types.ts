@@ -109,7 +109,10 @@ export interface AgentTaskOptions {
 
     // Additional options
     tools?: string;
-    /** Absent keeps the runtime's default tools. */
+    /**
+     * Absent keeps the runtime's default tools. Task execution only: Claude,
+     * Codex and Antigravity reject it in goal mode rather than run unrestricted.
+     */
     toolPolicy?: AgentToolPolicy;
     /**
      * Turn limit for this task when it needs more than the configured default

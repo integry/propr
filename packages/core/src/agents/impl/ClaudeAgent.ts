@@ -37,7 +37,7 @@ import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
-import { claudeToolPolicyArgs } from '../agentToolPolicy.js';
+import { assertToolPolicySupported, claudeToolPolicyArgs } from '../agentToolPolicy.js';
 import {
     claudeSessionTranscriptExists,
     claudeSessionTranscriptPath,
@@ -126,6 +126,7 @@ export class ClaudeAgent implements Agent {
             dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason
         }, isRetry ? 'Starting Claude agent execution (RETRY)...' : 'Starting Claude agent execution...');
 
+        assertToolPolicySupported(options);
         if (executionMode === 'goal') return this.executeNativeGoal(options, effectiveModel);
 
         try {

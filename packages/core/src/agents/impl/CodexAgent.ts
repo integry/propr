@@ -19,7 +19,7 @@ import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/ind
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { buildCodexDockerArgs, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
-import { codexToolPolicyArgs } from '../agentToolPolicy.js';
+import { assertToolPolicySupported, codexToolPolicyArgs } from '../agentToolPolicy.js';
 import { executeCodexAppServerGoal } from './codexAppServer.js';
 
 // Re-export UsageLimitError for convenience
@@ -45,6 +45,7 @@ export class CodexAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        assertToolPolicySupported(options);
         if (options.executionMode === 'goal') return this.executeNativeGoal(options);
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,

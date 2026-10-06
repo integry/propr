@@ -1,4 +1,4 @@
-import type { AgentToolPolicy } from './types.js';
+import type { AgentTaskOptions, AgentToolPolicy } from './types.js';
 
 /**
  * Pure builders that turn a per-run {@link AgentToolPolicy} into native CLI
@@ -55,11 +55,15 @@ export function claudeToolPolicyArgs(policy: AgentToolPolicy): ToolPolicyLaunchA
     return { cliArgs, env: tokenEnv(servers) };
 }
 
-/** Codex: `-c tools.web_search=false` and `mcp_servers.<name>.*` reading the token from the environment. */
+/**
+ * Codex: `-c web_search="disabled"` and `mcp_servers.<name>.*` reading the token
+ * from the environment. The pinned Codex CLI ignores the legacy
+ * `tools.web_search=false` and still offers the `web_search` tool.
+ */
 export function codexToolPolicyArgs(policy: AgentToolPolicy): ToolPolicyLaunchArgs {
     const servers = mcpServers(policy);
     const cliArgs: string[] = [];
-    if (!policy.allowWeb) cliArgs.push('-c', 'tools.web_search=false');
+    if (!policy.allowWeb) cliArgs.push('-c', 'web_search="disabled"');
     for (const server of servers) {
         cliArgs.push(
             '-c', `mcp_servers.${server.name}.url=${JSON.stringify(server.url)}`,
@@ -67,6 +71,17 @@ export function codexToolPolicyArgs(policy: AgentToolPolicy): ToolPolicyLaunchAr
         );
     }
     return { cliArgs, env: tokenEnv(servers) };
+}
+
+/**
+ * Tool policies are only applied to task execution. Goal mode launches through
+ * separate builders that do not apply them, so a goal run would silently drop
+ * the restriction: refuse it instead.
+ */
+export function assertToolPolicySupported(options: Pick<AgentTaskOptions, 'executionMode' | 'toolPolicy'>): void {
+    if (options.executionMode === 'goal' && options.toolPolicy) {
+        throw new Error('A tool policy is only supported for task execution, not goal mode');
+    }
 }
 
 /**
