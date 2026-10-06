@@ -21,6 +21,14 @@ import {
     parseDeferredKey,
     createDefaultState,
     areChecksReadyForUltrafix,
+    acquireResumeClaim,
+    releaseResumeClaim,
+    getUltrafixResumeClaimKey,
+    evaluateStrandedLoopRearm,
+    getActionCounts,
+    syncStateWorkEpoch,
+    loadState,
+    saveState,
     type UltrafixLoopState,
     type UltrafixDeferredContinuation,
 } from '../src/jobs/ultrafixOrchestrationService.js';
@@ -31,12 +39,30 @@ import { requiresPassingChecks } from '../src/jobs/ultrafixReadinessPolicy.js';
 function createMockRedis() {
     const store = new Map<string, string>();
     const lists = new Map<string, string[]>();
+    const expiresAt = new Map<string, number>();
+    const expire = (key: string) => {
+        const deadline = expiresAt.get(key);
+        if (deadline !== undefined && deadline <= Date.now()) {
+            store.delete(key);
+            expiresAt.delete(key);
+        }
+    };
     return {
         store,
         lists,
-        async get(key: string) { return store.get(key) ?? null; },
-        async set(key: string, value: string) { store.set(key, value); return 'OK'; },
-        async del(key: string) { store.delete(key); lists.delete(key); return 1; },
+        expiresAt,
+        async get(key: string) { expire(key); return store.get(key) ?? null; },
+        // Supports plain SET and `SET key value PX <ms> NX`.
+        async set(key: string, value: string, ...options: Array<string | number>) {
+            expire(key);
+            if (options.includes('NX') && store.has(key)) return null;
+            store.set(key, value);
+            const pxIndex = options.indexOf('PX');
+            if (pxIndex >= 0) expiresAt.set(key, Date.now() + Number(options[pxIndex + 1]));
+            else expiresAt.delete(key);
+            return 'OK';
+        },
+        async del(key: string) { store.delete(key); lists.delete(key); expiresAt.delete(key); return 1; },
         async getdel(key: string) {
             const value = store.get(key) ?? null;
             store.delete(key);
@@ -44,6 +70,15 @@ function createMockRedis() {
         },
         async eval(script: string, _keyCount: number, ...args: string[]) {
             const [epochKey, deferredKey] = args;
+            if (script.includes("redis.call('DEL', KEYS[1])")) {
+                // Compare-and-delete release of a token-owned claim.
+                const [claimKey, token] = args;
+                expire(claimKey);
+                if (store.get(claimKey) !== token) return 0;
+                store.delete(claimKey);
+                expiresAt.delete(claimKey);
+                return 1;
+            }
             if (script.includes("local existing = redis.call('GET', KEYS[4])")) {
                 const [, , stateKey, takeoverKey, ttl] = args;
                 const existing = store.get(takeoverKey);
@@ -598,5 +633,131 @@ describe('parseDeferredKey', () => {
 
     test('returns null for key with non-numeric PR', () => {
         assert.strictEqual(parseDeferredKey('ultrafix:deferred:acme:web:notanumber'), null);
+    });
+});
+
+// --- Resume claim ---
+
+describe('resume claim', () => {
+    let redis: ReturnType<typeof createMockRedis>;
+
+    beforeEach(() => {
+        redis = createMockRedis();
+    });
+
+    test('only one concurrent trigger acquires the claim', async () => {
+        const results = await Promise.all([
+            acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-a', 60_000),
+            acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-b', 60_000),
+        ]);
+
+        assert.deepStrictEqual(results, [true, false]);
+        assert.strictEqual(redis.store.get(getUltrafixResumeClaimKey('acme', 'web', 42)), 'token-a');
+        assert.ok(redis.expiresAt.has(getUltrafixResumeClaimKey('acme', 'web', 42)), 'claim carries a TTL');
+    });
+
+    test('claims are scoped per pull request', async () => {
+        assert.strictEqual(await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-a', 60_000), true);
+        assert.strictEqual(await acquireResumeClaim(redis as any, 'acme', 'web', 43, 'token-b', 60_000), true);
+    });
+
+    test('release only removes a claim held by the same token', async () => {
+        await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-a', 60_000);
+
+        assert.strictEqual(await releaseResumeClaim(redis as any, 'acme', 'web', 42, 'token-b'), false);
+        assert.strictEqual(await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-b', 60_000), false);
+
+        assert.strictEqual(await releaseResumeClaim(redis as any, 'acme', 'web', 42, 'token-a'), true);
+        assert.strictEqual(await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-b', 60_000), true);
+    });
+
+    test('an expired claim from a crashed holder can be re-acquired', async () => {
+        await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-a', 60_000);
+        redis.expiresAt.set(getUltrafixResumeClaimKey('acme', 'web', 42), Date.now() - 1);
+
+        assert.strictEqual(await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-b', 60_000), true);
+        // The crashed holder can no longer release the new owner's claim.
+        assert.strictEqual(await releaseResumeClaim(redis as any, 'acme', 'web', 42, 'token-a'), false);
+    });
+});
+
+// --- Stranded loop re-arming gate ---
+
+describe('stranded loop re-arming gate', () => {
+    test('does not resume a missing or inactive loop', () => {
+        assert.deepStrictEqual(evaluateStrandedLoopRearm(null), { action: 'skip', reason: 'no_active_loop' });
+        assert.deepStrictEqual(
+            evaluateStrandedLoopRearm(makeState({ active: false })),
+            { action: 'skip', reason: 'no_active_loop' },
+        );
+    });
+
+    test('re-arms an active loop within its cycle budget', () => {
+        const state = makeState({ lastAction: 'fix', reviewCount: 2, fixCount: 2, cycleCount: 2 });
+        assert.deepStrictEqual(evaluateStrandedLoopRearm(state), { action: 'rearm' });
+    });
+
+    test('completes as failed once reviews reach maxCycles', () => {
+        const decision = evaluateStrandedLoopRearm(makeState({ lastAction: 'fix', reviewCount: 5, fixCount: 4 }));
+        assert.strictEqual(decision.action, 'complete');
+        assert.strictEqual(decision.action === 'complete' && decision.completionStatus, 'failed');
+    });
+
+    test('completes as failed once fixes reach maxCycles', () => {
+        const decision = evaluateStrandedLoopRearm(makeState({ lastAction: 'fix', reviewCount: 4, fixCount: 5 }));
+        assert.strictEqual(decision.action === 'complete' && decision.completionStatus, 'failed');
+    });
+
+    test('derives legacy action counts when enforcing maxCycles', () => {
+        const legacy = makeState({ lastAction: 'review', cycleCount: 4 }) as Partial<UltrafixLoopState>;
+        delete legacy.reviewCount;
+        delete legacy.fixCount;
+        assert.deepStrictEqual(getActionCounts(legacy as UltrafixLoopState), { reviewCount: 5, fixCount: 4 });
+        const decision = evaluateStrandedLoopRearm(legacy as UltrafixLoopState);
+        assert.strictEqual(decision.action === 'complete' && decision.completionStatus, 'failed');
+    });
+
+    test('completes as succeeded when the goal was already reached', () => {
+        const decision = evaluateStrandedLoopRearm(makeState({ finalScore: 8, goal: 7, reviewCount: 1 }));
+        assert.strictEqual(decision.action === 'complete' && decision.completionStatus, 'succeeded');
+    });
+
+    test('a reached goal takes precedence over an exhausted cycle budget', () => {
+        const decision = evaluateStrandedLoopRearm(makeState({ finalScore: 7, goal: 7, reviewCount: 5, fixCount: 5 }));
+        assert.strictEqual(decision.action === 'complete' && decision.completionStatus, 'succeeded');
+    });
+
+    test('a score below the goal does not stop the loop', () => {
+        assert.deepStrictEqual(evaluateStrandedLoopRearm(makeState({ finalScore: 6, goal: 7 })), { action: 'rearm' });
+    });
+});
+
+describe('stranded loop work epoch sync', () => {
+    let redis: ReturnType<typeof createMockRedis>;
+
+    beforeEach(() => {
+        redis = createMockRedis();
+    });
+
+    test('hands a loop fenced by a follow-up to the current epoch', async () => {
+        await saveState(redis as any, makeState({ workEpoch: 0 }));
+        const epoch = await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+        const stale = await loadState(redis as any, 'acme', 'web', 42);
+
+        const synced = await syncStateWorkEpoch(redis as any, stale!, epoch);
+
+        assert.strictEqual(synced?.workEpoch, 1);
+        assert.strictEqual((await loadState(redis as any, 'acme', 'web', 42))?.workEpoch, 1);
+        assert.strictEqual(await hasUltrafixAutomaticWork(redis as any, 'acme', 'web', 42), true);
+    });
+
+    test('cannot claim an epoch that was superseded in the meantime', async () => {
+        await saveState(redis as any, makeState({ workEpoch: 0 }));
+        await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+        const stale = await loadState(redis as any, 'acme', 'web', 42);
+        await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+
+        assert.strictEqual(await syncStateWorkEpoch(redis as any, stale!, 1), null);
+        assert.strictEqual((await loadState(redis as any, 'acme', 'web', 42))?.workEpoch, 0);
     });
 });
