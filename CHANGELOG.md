@@ -95,6 +95,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `All Repos`. `GET /api/stats/overview` adds `model_usage`, a per-model list
   of tasks, tokens and cost, and `usage.input_tokens` / `usage.output_tokens`.
 
+### Fixed
+
+- **Ultrafix no longer stalls on non-blocking checks**: Ultrafix review
+  readiness now honours the repository's `nonBlockingChecks` patterns, so a
+  failing or still-pending check such as `Validate unsigned *` no longer defers
+  the next `/review` forever. Matching legacy commit statuses are excluded too,
+  and `areAllChecksPassing` (Epic queue advance, auto-merge) applies the same
+  per-context exclusion. When blocking CI defers a review, ProPR posts one PR
+  comment naming the blocking checks; if CI has not settled within
+  `ultrafix_ci_wait_timeout_ms` (default 2 hours, also
+  `ULTRAFIX_CI_WAIT_TIMEOUT_MS`), the loop stops with "Ultrafix stopped" and the
+  reason "CI did not settle". `start_ultrafix`/`run_ultrafix` operation receipts
+  report the deferral and its blocking checks instead of `COMMAND_NOT_PICKED_UP`.
+
 ## [0.9.0] - 2026-09-29
 
 Release preparation covering v0.8.15 through base commit `c2de30509`. This section

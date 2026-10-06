@@ -6,7 +6,7 @@ import { Redis } from 'ioredis';
 import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager, runMigrations } from '@propr/core';
 import { logger, reconcileEpicExecutionQueues } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
-import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from '@propr/core';
+import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatusForRepo } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
 import { loadSettingsFromConfig } from '@propr/core';
 import { setUltrafixDeps } from '@propr/core';
@@ -323,7 +323,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     setCheckRunDeps({
         areAllChecksPassing,
         getCurrentPRHead,
-        getCheckRunsStatus,
+        getCheckRunsStatus: getCheckRunsStatusForRepo,
     });
     logger.info('Check run dependencies initialized for ultrafix');
 

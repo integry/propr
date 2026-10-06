@@ -111,7 +111,7 @@ await mock.module('@propr/core', { namedExports: {
         assert.equal(pr, 100);
         return git(repoPath('upstream'), 'rev-parse', 'refs/heads/propr/continuation-pr-42');
     },
-    getCheckRunsStatus: async (_owner: string, _repo: string, sha: string) => {
+    getCheckRunsStatusForRepo: async (_owner: string, _repo: string, sha: string) => {
         events.push(`checks:${sha}`);
         const allPassing = completedCheckHeads.has(sha);
         return { count: 1, allPassing, anyPending: !allPassing, anyFailed: false };

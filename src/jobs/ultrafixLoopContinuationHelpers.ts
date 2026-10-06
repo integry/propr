@@ -21,6 +21,7 @@ import {
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
     isUltrafixAutomaticWorkCurrent,
+    type UltrafixCiObservation,
     type UltrafixLoopState,
     type UltrafixReadinessResult,
 } from './ultrafixOrchestrationService.js';
@@ -258,7 +259,13 @@ export async function enqueueNextStep(
     );
 }
 
-export async function evaluateCIChecksPassing(
+export interface UltrafixCIEvaluation {
+    passing: boolean;
+    /** Present when an exact-head check status was read and blocking checks are not passing. */
+    ci?: UltrafixCiObservation;
+}
+
+export async function evaluateCIChecks(
     params: Pick<UltrafixContinuationParams, 'owner' | 'repo' | 'pullRequestNumber' | 'completedAction' | 'correlatedLogger'> & {
         nextAction: UltrafixAction;
     },
@@ -267,33 +274,42 @@ export async function evaluateCIChecksPassing(
         getCurrentPRHead: GetPRHeadFn | null;
         getCheckRunsStatus: GetCheckRunsStatusFn | null;
     },
-): Promise<boolean> {
+): Promise<UltrafixCIEvaluation> {
     const { owner, repo, pullRequestNumber, completedAction, nextAction, correlatedLogger } = params;
     if (!requiresPassingChecks(nextAction)) {
         correlatedLogger.debug(
             { pullRequestNumber, completedAction, nextAction },
             'Ultrafix readiness: allowing fix transition without passing CI checks',
         );
-        return true;
+        return { passing: true };
     }
     if (!deps.getCurrentPRHead) {
         correlatedLogger.warn({ pullRequestNumber }, 'Ultrafix readiness: check_run deps not wired, assuming checks NOT passing');
-        return false;
+        return { passing: false };
     }
 
     try {
         const headSha = await deps.getCurrentPRHead(owner, repo, pullRequestNumber);
-        if (!headSha) return false;
+        if (!headSha) return { passing: false };
         if (deps.getCheckRunsStatus) {
+            // Wired to getCheckRunsStatusForRepo: nonBlockingChecks never gate the loop.
             const status = await deps.getCheckRunsStatus(owner, repo, headSha);
             correlatedLogger.debug({ pullRequestNumber, ...status, completedAction }, 'Ultrafix readiness: check runs status');
-            return areChecksReadyForUltrafix(status);
+            const passing = areChecksReadyForUltrafix(status);
+            return passing ? { passing } : { passing, ci: { headSha, status } };
         }
-        return deps.areAllChecksPassing ? deps.areAllChecksPassing(owner, repo, headSha) : false;
+        return { passing: deps.areAllChecksPassing ? await deps.areAllChecksPassing(owner, repo, headSha) : false };
     } catch (err) {
         correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Ultrafix readiness: failed to check CI status, assuming NOT passing (fail-closed)');
-        return false;
+        return { passing: false };
     }
+}
+
+export async function evaluateCIChecksPassing(
+    params: Parameters<typeof evaluateCIChecks>[0],
+    deps: Parameters<typeof evaluateCIChecks>[1],
+): Promise<boolean> {
+    return (await evaluateCIChecks(params, deps)).passing;
 }
 
 export async function evaluateReadiness(
@@ -306,7 +322,7 @@ export async function evaluateReadiness(
     },
 ): Promise<UltrafixReadinessResult> {
     const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, currentJobId, completedAction } = params;
-    const allChecksPassing = await evaluateCIChecksPassing(
+    const ciEvaluation = await evaluateCIChecks(
         { owner, repo, pullRequestNumber, completedAction, nextAction, correlatedLogger },
         deps,
     );
@@ -330,9 +346,10 @@ export async function evaluateReadiness(
         correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Ultrafix readiness: failed to check pending comments, assuming none');
     }
 
-    return checkReadiness({
-        allChecksPassing,
+    const readiness = checkReadiness({
+        allChecksPassing: ciEvaluation.passing,
         hasFollowUpJobs: followUpJobsExist,
         hasPendingComments: pendingComments,
     });
+    return ciEvaluation.ci ? { ...readiness, ci: ciEvaluation.ci } : readiness;
 }
