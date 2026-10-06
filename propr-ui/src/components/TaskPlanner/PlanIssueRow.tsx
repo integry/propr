@@ -11,6 +11,7 @@ import {
   IssueMetadata
 } from './PlanIssueRowComponents';
 import { getContainerClassName, getTitleClassName } from './planIssueRowUtils';
+import { getOutlineTitle } from './planDisplayName';
 
 interface PlanIssueRowProps {
   issue: PlanIssue;
@@ -137,8 +138,9 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
             </a>
             <span className="w-24 flex-shrink-0"><StatusBadge status={issue.status} /></span>
             {issueTitle && (
-              <span className={`text-sm ${getTitleClassName(isMerged)} truncate`}>
-                {issueTitle}
+              // The plan name and step counter ("Agents v1 (6/17):") repeat on every row, so rows lead with the step itself.
+              <span className={`text-sm ${getTitleClassName(isMerged)} truncate`} title={issueTitle}>
+                {getOutlineTitle(issueTitle)}
               </span>
             )}
           </div>

@@ -80,7 +80,8 @@ const OutlineItem: React.FC<OutlineItemProps> = ({
           {...attributes}
           {...listeners}
           aria-label={`Reorder step ${index + 1}`}
-          className="absolute left-0 flex h-full w-4 items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
+          // Inset past the 2px active border so the handle sits inside the row, left of the step number.
+          className="absolute left-1.5 z-10 flex h-full w-4 items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
           style={{ touchAction: 'none' }}
         >
           <GripVertical size={12} className="text-slate-400" />
@@ -91,7 +92,7 @@ const OutlineItem: React.FC<OutlineItemProps> = ({
         onClick={() => onSelect(id, index)}
         aria-current={isActive ? 'step' : undefined}
         title={title}
-        className={`flex w-full min-w-0 items-baseline gap-2 border-l-2 py-1.5 pl-4 pr-3 text-left text-[13px] leading-5 transition-colors ${
+        className={`flex w-full min-w-0 items-baseline gap-2 border-l-2 py-1.5 ${canReorder ? 'pl-6' : 'pl-4'} pr-3 text-left text-[13px] leading-5 transition-colors ${
           isActive
             ? 'border-teal-600 bg-white font-medium text-slate-900'
             : 'border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900'

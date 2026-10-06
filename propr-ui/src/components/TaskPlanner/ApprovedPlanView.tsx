@@ -1,13 +1,14 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Trash2, Loader2, Edit3, Pause, Play } from 'lucide-react';
+import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Loader2, Edit3, Pause, Play } from 'lucide-react';
 import { DraftWithPlan, deleteDraft } from '../../api/proprApi';
 import DeletePlanDialog from './DeletePlanDialog';
 import RevisePlanDialog from './RevisePlanDialog';
 import PlanIssuesManager from './PlanIssuesManager';
 import { getDraftDisplayName } from './planDisplayName';
 import { StudioPhaseSwitcher } from './StudioStepper';
+import { PlanOverflowMenu } from './PlanEditorComponents';
 import { PlanTask, reviseDraft, pauseDraft, resumeDraft, updateExecutionSettings } from '../../api/plannerApi';
 import { PlanIssue } from '../../api/planIssuesApi';
 import { useToast } from '../ui/useToast';
@@ -140,27 +141,26 @@ async function persistExecutionSetting(draftId: string, update: Parameters<typeo
   return updateExecutionSettings(draftId, update);
 }
 
+const HEADER_GHOST_BUTTON_CLASS = 'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-200 hover:text-slate-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+
+/** Pause/Revise as quiet ghost buttons, a compact GitHub link, and Delete behind "…" so the title keeps its room. */
 const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl, onPauseResume, onRevise, onDelete, isReadOnly = false }) => {
   const showPauseResume = draftStatus === 'executed' || draftStatus === 'pr_created';
   return (
-    <div className="flex w-full flex-wrap items-center gap-2 md:w-auto md:flex-shrink-0 md:justify-end">
+    <div className="flex w-full flex-wrap items-center gap-1 md:w-auto md:flex-shrink-0 md:flex-nowrap md:justify-end">
       {showPauseResume && (
         <button
           onClick={onPauseResume}
           disabled={isPauseLoading || isReadOnly}
-          className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-            isPaused
-              ? 'text-green-600 hover:text-green-700 hover:bg-green-50'
-              : 'text-orange-600 hover:text-orange-700 hover:bg-orange-50'
-          }`}
+          className={HEADER_GHOST_BUTTON_CLASS}
           title={isReadOnly ? 'Demo mode is read-only' : isPaused ? 'Resume plan execution' : 'Pause plan execution'}
         >
           {isPauseLoading ? (
-            <Loader2 size={16} className="animate-spin" />
+            <Loader2 size={15} className="animate-spin" />
           ) : isPaused ? (
-            <Play size={16} />
+            <Play size={15} />
           ) : (
-            <Pause size={16} />
+            <Pause size={15} />
           )}
           <span>{isPaused ? 'Resume' : 'Pause'}</span>
         </button>
@@ -168,35 +168,32 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPa
       <button
         onClick={onRevise}
         disabled={isRevising || isReadOnly}
-        className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className={HEADER_GHOST_BUTTON_CLASS}
         title={isReadOnly ? 'Demo mode is read-only' : 'Revise Plan'}
       >
-        {isRevising ? <Loader2 size={16} className="animate-spin" /> : <Edit3 size={16} />}
+        {isRevising ? <Loader2 size={15} className="animate-spin" /> : <Edit3 size={15} />}
         <span>Revise</span>
       </button>
-      <button
-        onClick={onDelete}
-        disabled={isDeleting || isReadOnly}
-        className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        title={isReadOnly ? 'Demo mode is read-only' : 'Delete Plan'}
-      >
-        {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
-      </button>
       {repoUrl && (
-        <>
-          <div className="h-6 w-px bg-gray-300 mx-1 hidden sm:block" />
-          <a
-            href={repoUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm"
-          >
-            <Github size={16} />
-            <span>View Issues on GitHub</span>
-            <ExternalLink size={14} />
-          </a>
-        </>
+        <a
+          href={repoUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="View issues on GitHub"
+          title="View issues on GitHub"
+          className="ml-1 flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors"
+        >
+          <Github size={15} />
+          <span>GitHub</span>
+          <ExternalLink size={12} className="text-slate-400" />
+        </a>
       )}
+      <PlanOverflowMenu
+        isDeleting={isDeleting}
+        deleteDisabled={isDeleting || isReadOnly}
+        deleteTitle={isReadOnly ? 'Demo mode is read-only' : 'Delete Plan'}
+        onDelete={onDelete}
+      />
     </div>
   );
 };
@@ -211,7 +208,8 @@ interface PlanHeaderSummaryProps {
 }
 const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftStatus, isPaused, repository, baseBranch, initialPrompt }) => (
   <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
-    <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
+    {/* The title keeps at least 320px before the header controls are allowed to squeeze it. */}
+    <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 md:min-w-[320px] max-w-lg flex-shrink" title={planName}>
       {planName}
     </h1>
     {draftStatus === 'merged' && (

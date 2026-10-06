@@ -222,7 +222,7 @@ interface PlanOverflowMenuProps {
 }
 
 /** Destructive plan actions live behind "…" so they are never one stray click away. */
-const PlanOverflowMenu: React.FC<PlanOverflowMenuProps> = ({ isDeleting, deleteDisabled, deleteTitle, onDelete }) => {
+export const PlanOverflowMenu: React.FC<PlanOverflowMenuProps> = ({ isDeleting, deleteDisabled, deleteTitle, onDelete }) => {
   const [isOpen, setIsOpen] = useState(false);
 
   return (

@@ -17,32 +17,37 @@ const drafts = [
   { draft_id: 'plan-failed', name: 'Migrate Webhook Intake to the Durable Queue', status: 'failed', updated_at: ago(30), issue_summary: null },
 ].map(draft => ({ repository, initial_prompt: draft.name ?? '', created_at: ago(200), ...draft }));
 
-const agentTitles = [
-  'Shared contracts for agent definitions, runs, capabilities, autonomy and cron schedules',
-  'Database migration and definition store for agent definitions and runs',
-  'Agent run store with guarded state machine and idempotent creation',
-  'Trigger primitive service and agent-run queue jobs',
-  'REST API for agent definitions, runs, attachments and run-now',
-  'Report-run prompt builder with previous reports and input files',
-  'Report-run executor: spawn an isolated task run from a definition',
-  'Capability enforcement: per-run tool policy for web access and MCP',
-  'Run-scoped, short-lived ProPR MCP grants for agent containers',
-  'Separate report-to-actions agent step with dry-run and approve',
-  'Agent Tank usage / cost gate for scheduled and unattended runs',
-  'Cron schedule sweep in the daemon and deferred-run retry',
-  'ProPR MCP tools: list/read agents and runs, trigger primitive',
-  'CLI: propr automation command group with the run trigger',
-  'Web UI: Agents list and agent detail/edit view',
-  'Web UI: run history, run detail, report view and approvals',
-  'Documentation: feature guide, API/MCP/CLI reference',
+// Each step carries its own requirements so the specification is checked against varying lengths, not one repeated body.
+const agentSteps: Array<{ title: string; context: string; requirements: string[] }> = [
+  { title: 'Shared contracts for agent definitions, runs, capabilities, autonomy and cron schedules', context: 'Every other step imports these types, so they land first.', requirements: ['Add `packages/shared/src/agentDefinitions.ts` exporting the shared contracts.', 'Unit tests in `test/agentDefinitionsContract.test.ts`.'] },
+  { title: 'Database migration and definition store for agent definitions and runs', context: 'Definitions and runs need durable storage before the run store and API can use them.', requirements: ['Add migration `migrations/0042_agent_definitions.sql` creating `agent_definitions` and `agent_runs`.', 'Add `packages/core/src/agents/definitionStore.ts` with create, update, list and soft delete.', 'Index `agent_runs (definition_id, created_at)` for run history queries.', 'Tests in `test/agentDefinitionStore.test.ts`.'] },
+  { title: 'Agent run store with guarded state machine and idempotent creation', context: 'Runs move through `queued → running → succeeded | failed | cancelled`; every other transition is rejected.', requirements: ['Add `packages/server/src/runStore.ts` with `createRun(idempotencyKey)` returning the existing run on retry.', 'Guard transitions in `packages/server/src/runStateMachine.ts`.', 'Tests in `test/stateMachine.test.ts` covering every illegal transition.'] },
+  { title: 'Trigger primitive service and agent-run queue jobs', context: 'Manual, scheduled and API triggers all enqueue the same job.', requirements: ['Add `packages/core/src/agents/triggerService.ts`.', 'Register the `agent-run` job in `packages/worker/src/jobs/index.ts`.'] },
+  { title: 'REST API for agent definitions, runs, attachments and run-now', context: 'The web UI and CLI share these endpoints.', requirements: ['Add `packages/api/routes/agentRoutes.ts` with CRUD for definitions.', 'Add `POST /api/agents/:id/run` that calls the trigger service.', 'Accept input files through the existing attachment upload.', 'Route tests in `test/agentRoutes.test.ts`.'] },
+  { title: 'Report-run prompt builder with previous reports and input files', context: 'Report runs see the last three reports so they can describe what changed.', requirements: ['Add `packages/core/src/agents/reportPrompt.ts`.', 'Snapshot tests in `test/reportPrompt.test.ts`.'] },
+  { title: 'Report-run executor: spawn an isolated task run from a definition', context: 'Each run gets a fresh container and its own task record.', requirements: ['Add `packages/worker/src/agents/reportExecutor.ts`.', 'Store the report on the run when the task finishes.', 'Tests in `test/reportExecutor.test.ts` with a stubbed container.'] },
+  { title: 'Capability enforcement: per-run tool policy for web access and MCP', context: 'A definition can only use the tools it declares.', requirements: ['Add `packages/core/src/agents/capabilityPolicy.ts`.', 'Deny undeclared web and MCP calls in `packages/worker/src/toolGate.ts`.'] },
+  { title: 'Run-scoped, short-lived ProPR MCP grants for agent containers', context: 'Grants expire with the run and cannot outlive it.', requirements: ['Add `packages/core/src/agents/mcpGrants.ts` issuing 15-minute tokens.', 'Revoke the grant when the run reaches a terminal state.', 'Tests in `test/mcpGrants.test.ts`.'] },
+  { title: 'Separate report-to-actions agent step with dry-run and approve', context: 'Actions proposed by a report never run without approval.', requirements: ['Add `packages/core/src/agents/actionPlanner.ts` with a dry-run mode.', 'Add `POST /api/agents/runs/:id/approve`.'] },
+  { title: 'Agent Tank usage / cost gate for scheduled and unattended runs', context: 'Unattended runs stop before they exceed the configured budget.', requirements: ['Check the Agent Tank balance in `packages/worker/src/agents/costGate.ts` before each run.', 'Record skipped runs with reason `budget_exhausted`.'] },
+  { title: 'Cron schedule sweep in the daemon and deferred-run retry', context: 'The daemon sweeps every minute and retries runs deferred by the cost gate.', requirements: ['Add `packages/daemon/src/agentScheduleSweep.ts`.', 'Parse schedules with the existing cron helper in `packages/shared/src/cron.ts`.', 'Retry deferred runs with exponential backoff, capped at one hour.', 'Tests in `test/agentScheduleSweep.test.ts` using fake timers.'] },
+  { title: 'ProPR MCP tools: list/read agents and runs, trigger primitive', context: 'Agents become scriptable from any MCP client.', requirements: ['Add `list_agents`, `get_agent`, `list_agent_runs` and `run_agent` in `packages/api/mcp/agentTools.ts`.'] },
+  { title: 'CLI: propr automation command group with the run trigger', context: 'Operators can run an agent from a terminal or CI job.', requirements: ['Add `packages/cli/src/commands/automation.ts` with `list`, `show` and `run`.', 'Print the run URL and exit non-zero on failure.'] },
+  { title: 'Web UI: Agents list and agent detail/edit view', context: 'Agents get their own page in the sidebar.', requirements: ['Add `propr-ui/src/pages/AgentsPage.tsx`.', 'Add `propr-ui/src/components/Agents/AgentDefinitionForm.tsx`.', 'Unit tests next to each component.'] },
+  { title: 'Web UI: run history, run detail, report view and approvals', context: 'Reports render as markdown with the proposed actions underneath.', requirements: ['Add `propr-ui/src/pages/AgentRunPage.tsx`.', 'Add approve and reject buttons wired to the approve endpoint.'] },
+  { title: 'Documentation: feature guide, API/MCP/CLI reference', context: 'Ships with the feature.', requirements: ['Add `docs/agents.md`.', 'Extend `docs/api.md`, `docs/mcp.md` and `docs/cli.md`.'] },
 ];
+const agentTitles = agentSteps.map(step => step.title);
 // Step counters follow the plan they belong to: (n/17) in the full plan, (n/3) in the short one.
-const agentTasks = (titles: string[]) => titles.map((title, index) => ({
-  id: `agent-task-${index + 1}`,
-  title: `Agents v1 (${index + 1}/${titles.length}): ${title}`,
-  body: '## Context\nProPR is getting an **Agents** feature: a saved, reusable definition that runs on demand or on a schedule and produces a free-form report.\n\n## Requirements\n1. Add `packages/shared/src/agentDefinitions.ts` exporting the shared contracts.\n2. Unit tests in `test/agentDefinitionsContract.test.ts`.',
-  implementation: '',
-}));
+const agentTasks = (titles: string[]) => titles.map((title, index) => {
+  const step = agentSteps.find(candidate => candidate.title === title)!;
+  return {
+    id: `agent-task-${index + 1}`,
+    title: `Agents v1 (${index + 1}/${titles.length}): ${title}`,
+    body: `## Context\n${step.context}\n\n## Requirements\n${step.requirements.map((requirement, n) => `${n + 1}. ${requirement}`).join('\n')}`,
+    implementation: '',
+  };
+});
 const agentPlan = agentTasks(agentTitles);
 
 const executionTitles = [
@@ -64,7 +69,19 @@ const executionIssues = [
   issue(3, 'pending'),
 ];
 
+// A 17-issue plan mid-execution: 5 merged, 2 running, 10 waiting to be queued.
+const agentExecutionPlan = agentPlan.map((task, index) => ({ ...task, issue_number: 2900 + index }));
+const agentExecutionIssues = agentExecutionPlan.map((task, index) => issue(index, index < 5 ? 'merged' : index < 7 ? 'processing' : 'pending', {
+  draft_id: 'plan-agents-exec', issue_number: task.issue_number, pr_number: index < 5 ? 2950 + index : null, task_id: index >= 5 && index < 7 ? `task-${task.issue_number}` : null,
+}));
+const planIssues: Record<string, unknown[]> = { 'plan-mcp-exec': executionIssues, 'plan-agents-exec': agentExecutionIssues };
+
 const studioDrafts: Record<string, Record<string, unknown>> = {
+  'plan-agents-exec': {
+    draft_id: 'plan-agents-exec', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
+    status: 'executed', plan_json: agentExecutionPlan, context_config: { baseBranch: 'main', useEpic: false, autoMerge: true, runUltrafix: true, ultrafixGoal: 8, ultrafixMaxCycles: 5 },
+    created_at: ago(5), updated_at: ago(1),
+  },
   'plan-agents': {
     draft_id: 'plan-agents', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
     status: 'review', plan_json: agentPlan, chat_history: [], context_config: { baseBranch: 'main' }, created_at: ago(5), updated_at: ago(1),
@@ -96,7 +113,7 @@ async function fixture(page: Page) {
     if (draftMatch && studioDrafts[draftMatch[1]]) {
       const [, draftId, suffix] = draftMatch;
       if (!suffix) return route.fulfill({ json: studioDrafts[draftId] });
-      if (suffix === '/issues') return route.fulfill({ json: draftId === 'plan-mcp-exec' ? executionIssues : [] });
+      if (suffix === '/issues') return route.fulfill({ json: planIssues[draftId] ?? [] });
       if (suffix === '/repository-info') return route.fulfill({ json: { defaultBranch: 'main', branches: ['main'] } });
     }
     const responses: Record<string, unknown> = {
@@ -151,15 +168,36 @@ test('review step lists the plan outline with titles instead of a blind numbered
   await expect(page.getByTitle('Delete Plan')).toHaveCount(0);
   await capture(page, 'review-plan-outline');
   await expect(outline.getByRole('listitem')).toHaveCount(17);
+  // The Assistant is a fixed 340px companion column; the specification takes the rest.
+  expect((await page.getByTestId('plan-assistant').boundingBox())!.width).toBe(340);
+  expect((await page.locator('[data-task-list]').boundingBox())!.width).toBeGreaterThan(540);
   await outline.getByRole('button', { name: /Database migration and definition store/ }).click();
   await expect(outline.getByRole('button', { name: /Database migration and definition store/ })).toHaveAttribute('aria-current', 'step');
+  // Each step renders its own requirements.
+  await expect(page.locator('[data-task-index="1"]')).toContainText('migrations/0042_agent_definitions.sql');
+  await expect(page.locator('[data-task-index="1"]')).not.toContainText('agentDefinitions.ts');
+  // The drag handle sits inside the row, past the active border and left of the step number.
+  const cronStep = outline.getByRole('button', { name: /Cron schedule sweep/ });
+  await cronStep.click();
+  await expect(cronStep).toHaveAttribute('aria-current', 'step');
+  await expect(page.locator('[data-task-index="11"]')).toContainText('agentScheduleSweep.ts');
+  // The outline click scrolls the specification to step 12.
+  await expect.poll(() => page.locator('[data-task-index="11"]').evaluate(card => Math.round(card.getBoundingClientRect().top - card.closest('[data-task-list]')!.getBoundingClientRect().top))).toBe(0);
+  await cronStep.hover();
+  const handle = (await outline.getByLabel('Reorder step 12').boundingBox())!;
+  const row = (await cronStep.boundingBox())!;
+  const number = (await cronStep.locator('span').first().boundingBox())!;
+  expect(handle.x).toBeGreaterThanOrEqual(row.x + 2);
+  expect(handle.x + handle.width).toBeLessThanOrEqual(number.x + number.width - 12);
+  await page.waitForTimeout(300);
+  await capture(page, 'review-plan-outline-drag-handle');
 
   const specBefore = (await page.locator('[data-task-list]').boundingBox())!.width;
   await page.getByRole('button', { name: 'Collapse outline' }).click();
   await page.getByRole('button', { name: 'Assistant' }).click();
   await expect(outline).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Assistant' })).toHaveAttribute('aria-pressed', 'false');
-  expect((await page.locator('[data-task-list]').boundingBox())!.width).toBeGreaterThan(specBefore + 600);
+  expect((await page.locator('[data-task-list]').boundingBox())!.width).toBeGreaterThan(specBefore + 500);
   await capture(page, 'review-plan-full-width');
   await page.getByRole('button', { name: 'Show outline' }).click();
   await expect(outline).toBeVisible();
@@ -171,7 +209,8 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
   await expect(tabs).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Plan outline' })).toHaveCount(0);
   await expect(tabs.getByRole('button')).toHaveCount(3);
-  await expect(tabs.getByRole('button', { name: /Shared contracts for agent definitions/ })).toHaveAttribute('aria-current', 'step');
+  await expect(tabs.getByRole('button', { name: '1. Shared Contracts' })).toHaveAttribute('aria-current', 'step');
+  await expect(tabs.getByRole('button', { name: '3. Agent Run Store' })).toBeVisible();
   // Tabs share the bar instead of stopping at a fixed width and leaving the right side empty.
   const tabList = (await tabs.locator('ol').boundingBox())!;
   const lastTab = (await tabs.getByRole('listitem').last().boundingBox())!;
@@ -185,8 +224,13 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
   // The tab bar is a fixed row above the scroll container, not sticky inside it.
   await expect(tabs).not.toHaveCSS('position', 'sticky');
   expect(await page.locator('[data-task-list]').evaluate(list => list.contains(document.querySelector('nav[aria-label="Plan steps"]')))).toBe(false);
-  // Titles wrap onto a second line instead of being cut off after a few words.
-  expect(await tabs.getByRole('listitem').first().locator('span').last().evaluate(element => element.clientHeight > parseFloat(getComputedStyle(element).lineHeight) * 1.5)).toBe(true);
+  // Tabs show a short feature label on one line, with no ellipsis.
+  for (const label of await tabs.getByRole('listitem').locator('span:last-child').all()) {
+    expect(await label.evaluate(element => element.scrollWidth <= element.clientWidth && element.clientHeight <= parseFloat(getComputedStyle(element).lineHeight) + 1)).toBe(true);
+  }
+  // Each task has its own requirements, not task 1's copied.
+  await expect(page.locator('[data-task-index="2"]')).toContainText('packages/server/src/runStore.ts');
+  await expect(page.locator('[data-task-index="2"]')).not.toContainText('agentDefinitions.ts');
   // Step counters match the 3-step plan.
   await expect(page.getByText('Agents v1 (1/3): Shared contracts for agent definitions')).toBeVisible();
   await expect(page.getByText(/\(\d+\/17\)/)).toHaveCount(0);
@@ -219,6 +263,17 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
   const listTop = (await page.locator('[data-task-list]').boundingBox())!.y;
   expect(listTop).toBeGreaterThanOrEqual(tabTop + tabBox.height - 1);
   await capture(page, 'review-plan-tabs-scrolled');
+  // Scroll-spy: the specification is one continuous document, so scrolling moves the active tab.
+  const list = page.locator('[data-task-list]');
+  const task2Top = await page.locator('[data-task-index="1"]').evaluate(card => {
+    const container = card.closest('[data-task-list]')!;
+    return container.scrollTop + card.getBoundingClientRect().top - container.getBoundingClientRect().top;
+  });
+  await list.evaluate((element, top) => { element.scrollTop = top; }, task2Top);
+  await expect(tabs.getByRole('button').nth(1)).toHaveAttribute('aria-current', 'step');
+  await capture(page, 'review-plan-tabs-scroll-spy');
+  await list.evaluate(element => { element.scrollTop = 0; });
+  await expect(tabs.getByRole('button').nth(0)).toHaveAttribute('aria-current', 'step');
   await page.locator('[data-task-list]').evaluate(element => { element.scrollTop = 0; });
   await notes.scrollIntoViewIfNeeded();
   await capture(page, 'review-plan-user-notes');
@@ -254,12 +309,38 @@ test('execution step renders one matrix with batch controls and labelled ultrafi
   const matrix = page.getByTestId('plan-execution-matrix');
   await expect(matrix.getByRole('combobox')).toHaveCount(0);
   await expect(matrix.getByTestId('agent-override-chip').first()).toHaveText('Opus 5.5');
-  await expect(page.getByRole('button', { name: 'Execute All Remaining (2 tasks)' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Queue Remaining (2 tasks)' })).toBeEnabled();
   await capture(page, 'execution-config-popover');
   await page.keyboard.press('Escape');
   await matrix.getByTestId('agent-override-chip').first().click();
   await expect(page.getByRole('dialog', { name: /Agent override for #2799/ })).toBeVisible();
   await capture(page, 'execution-agent-override');
+});
+
+test('execution step for a 17-issue plan keeps the title readable and queues remaining tasks while others run', async ({ page }) => {
+  await page.goto('/studio/plan-agents-exec');
+  const matrix = page.getByTestId('plan-execution-matrix');
+  await expect(matrix.getByTestId('plan-execution-row')).toHaveCount(12);
+  // The title keeps at least 320px next to the grouped header controls.
+  const title = page.getByRole('heading', { level: 1 });
+  expect((await title.boundingBox())!.width).toBeGreaterThanOrEqual(320);
+  await expect(page.getByRole('link', { name: 'View issues on GitHub' })).toHaveText('GitHub');
+  await expect(page.getByTitle('Delete Plan')).toHaveCount(0);
+  await page.getByRole('button', { name: 'More plan actions' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Delete plan' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.mouse.click(5, 5);
+  // Rows lead with the step, not "Agents v1 (6/17):".
+  await expect(matrix.getByText('Report-run prompt builder with previous reports and input files', { exact: true })).toBeVisible();
+  await expect(matrix.getByText(/Agents v1 \(/)).toHaveCount(0);
+  // Running issues don't block queueing the rest.
+  const queue = page.getByRole('button', { name: 'Queue Remaining (10 tasks)' });
+  await expect(queue).toBeEnabled();
+  await expect(page.getByTestId('execute-all-hint')).toHaveText('10 tasks will be dispatched automatically as concurrency slots become available.');
+  await page.waitForTimeout(500);
+  await capture(page, 'execution-17-issues');
+  await queue.scrollIntoViewIfNeeded();
+  await capture(page, 'execution-17-issues-queue');
 });
 
 test('define step shows technical scope estimates and consistent token units', async ({ page }) => {

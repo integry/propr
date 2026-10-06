@@ -198,10 +198,23 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     [issues]
   );
 
+  // The batch heads the queue with the earliest pending issue, even while earlier issues are
+  // still running; the server chains the rest behind it.
+  const batchIssue = useMemo(() => intentIssue ?? [...activeIssues]
+    .filter(issue => issue.status === 'pending')
+    .sort((left, right) => left.issue_number - right.issue_number)[0] ?? null, [activeIssues, intentIssue]);
+  const batchIntent = useMemo(() => buildExecutionIntentDetails({
+    issue: batchIssue,
+    multiMode: batchIssue ? Boolean(issueMultiModeMap[batchIssue.issue_number]) : false,
+    selectedModels: batchIssue ? issueSelectedModelsMap[batchIssue.issue_number] ?? [] : [],
+    settingsSaving: isSavingExecutionSettings,
+    readOnly: isReadOnly,
+  }), [batchIssue, isReadOnly, isSavingExecutionSettings, issueMultiModeMap, issueSelectedModelsMap]);
+
   const handleExecuteAll = useCallback(() => {
-    if (!executionIntent.canExecute || !executionIntent.issue) return;
-    void handleImplementIssue(executionIntent.issue.issue_number, executionIntent.models);
-  }, [executionIntent, handleImplementIssue]);
+    if (!batchIntent.canExecute || !batchIntent.issue) return;
+    void handleImplementIssue(batchIntent.issue.issue_number, batchIntent.models);
+  }, [batchIntent, handleImplementIssue]);
 
   const handleConfirmExecutionIntent = useCallback(() => {
     if (!executionIntent.canExecute || !executionIntent.issue) return;
@@ -333,8 +346,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         useEpic={useEpic}
         autoMerge={autoMerge}
         hasRunningIssues={hasRunningIssues}
-        canExecute={executionIntent.canExecute}
-        unavailableReason={executionIntent.unavailableReason}
+        canExecute={batchIntent.canExecute}
+        unavailableReason={batchIntent.unavailableReason}
         executing={implementingIssue !== null}
         onExecuteAll={handleExecuteAll}
       />

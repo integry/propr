@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getDraftDisplayName, isStalePromptDerivedName } from './planDisplayName';
+import { getDraftDisplayName, getTabLabel, isStalePromptDerivedName } from './planDisplayName';
 
 describe('isStalePromptDerivedName', () => {
   it('detects a name derived from an earlier, shorter version of the prompt', () => {
@@ -59,5 +59,23 @@ describe('getDraftDisplayName', () => {
 
   it('defaults to Untitled Plan when no fallback is given', () => {
     expect(getDraftDisplayName({ name: '   ', initial_prompt: '  ' })).toBe('Untitled Plan');
+  });
+});
+
+describe('getTabLabel', () => {
+  it('keeps only the step subject so tabs fit on one line', () => {
+    expect(getTabLabel('Agents v1 (1/3): Shared contracts for agent definitions, runs, capabilities, autonomy and cron schedules')).toBe('Shared Contracts');
+    expect(getTabLabel('Agents v1 (3/3): Agent run store with guarded state machine and idempotent creation')).toBe('Agent Run Store');
+    expect(getTabLabel('Report-run executor: spawn an isolated task run from a definition')).toBe('Report-run Executor');
+  });
+
+  it('abbreviates common words and stops at a joined phrase instead of mid-phrase', () => {
+    expect(getTabLabel('Agents v1 (2/3): Database migration and definition store for agent definitions and runs')).toBe('DB Migration');
+    expect(getTabLabel('REST API for agent definitions, runs, attachments and run-now')).toBe('REST API');
+  });
+
+  it('drops the leading verb and caps the label at three words', () => {
+    expect(getTabLabel('Implement Core Repository Retrieval Engine for Semantic and Literal File Matching')).toBe('Core Repo Retrieval');
+    expect(getTabLabel('Add Rate Limits and Audit Logging for Repository Retrieval Tools')).toBe('Rate Limits');
   });
 });

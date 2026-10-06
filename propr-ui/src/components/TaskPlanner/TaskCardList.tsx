@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import TaskCard from './TaskCard';
 import TaskTimeline from './TaskTimeline';
@@ -30,27 +30,42 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
   const [isOutlineCollapsed, setIsOutlineCollapsed] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Handle scroll-based timeline highlighting
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const container = e.currentTarget;
-    const cards = container.querySelectorAll('[data-task-index]');
-
-    let closestIndex = 0;
-    let closestDistance = Infinity;
-
-    cards.forEach((card) => {
-      const rect = card.getBoundingClientRect();
-      const containerRect = container.getBoundingClientRect();
-      const distance = Math.abs(rect.top - containerRect.top - 100);
-
-      if (distance < closestDistance) {
-        closestDistance = distance;
-        closestIndex = parseInt(card.getAttribute('data-task-index') || '0', 10);
-      }
-    });
-
-    setActiveTaskIndex(closestIndex);
+  // While a tab or outline click scrolls the specification, the clicked step stays active
+  // instead of flickering through the steps the smooth scroll passes.
+  const clickScrollLockRef = useRef<number | null>(null);
+  const lockScrollSpy = useCallback((ms: number) => {
+    if (clickScrollLockRef.current !== null) window.clearTimeout(clickScrollLockRef.current);
+    clickScrollLockRef.current = window.setTimeout(() => { clickScrollLockRef.current = null; }, ms);
   }, []);
+  useEffect(() => () => {
+    if (clickScrollLockRef.current !== null) window.clearTimeout(clickScrollLockRef.current);
+  }, []);
+
+  // Scroll-spy: the specification is one continuous document, so the active step follows
+  // the scroll position. A step is active once its heading passes the reading line near the
+  // top of the pane; at the very bottom the last step wins even if it is too short to get there.
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (clickScrollLockRef.current !== null) {
+      lockScrollSpy(150);
+      return;
+    }
+    const container = e.currentTarget;
+    const cards = Array.from(container.querySelectorAll('[data-task-index]'));
+    if (cards.length === 0) return;
+    const containerRect = container.getBoundingClientRect();
+    const readingLine = containerRect.top + Math.min(120, containerRect.height / 3);
+    const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 2;
+
+    let activeIndex = 0;
+    if (atBottom && container.scrollTop > 0) {
+      activeIndex = cards.length - 1;
+    } else {
+      cards.forEach((card, index) => {
+        if (card.getBoundingClientRect().top <= readingLine) activeIndex = index;
+      });
+    }
+    setActiveTaskIndex(parseInt(cards[activeIndex].getAttribute('data-task-index') || '0', 10));
+  }, [lockScrollSpy]);
 
   // Scroll only the specification container. scrollIntoView would also scroll every
   // ancestor (including overflow-hidden ones), shifting the tab bar out of place.
@@ -58,6 +73,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
     const container = listRef.current;
     if (!container || !card) return;
     const top = container.scrollTop + card.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    lockScrollSpy(1000);
     container.scrollTo({ top, behavior: 'smooth' });
   };
 

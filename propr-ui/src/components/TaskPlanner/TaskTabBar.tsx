@@ -1,6 +1,6 @@
 import React from 'react';
 import { PanelLeftOpen } from 'lucide-react';
-import { getOutlineTitle } from './planDisplayName';
+import { getOutlineTitle, getTabLabel } from './planDisplayName';
 
 /** Plans with fewer steps than this navigate with a tab bar instead of the outline rail. */
 export const OUTLINE_RAIL_MIN_TASKS = 5;
@@ -24,23 +24,23 @@ export const TaskTabBar: React.FC<TaskTabBarProps> = ({ taskTitles, taskIds, act
     <ol className="flex min-w-0 gap-1 overflow-x-auto scrollbar-thin">
       {taskIds.map((id, index) => {
         const isActive = index === activeIndex;
-        const title = getOutlineTitle(taskTitles[index] || `Step ${index + 1}`);
+        const fullTitle = taskTitles[index] || `Step ${index + 1}`;
         return (
           <li key={id} className="min-w-0 flex-1">
             <button
               type="button"
               onClick={() => onSelect(id, index)}
               aria-current={isActive ? 'step' : undefined}
-              title={title}
-              className={`-mb-px flex h-full w-full min-w-0 items-baseline gap-1.5 border-b-2 px-3 py-2 text-left text-[13px] leading-snug transition-colors ${
+              title={getOutlineTitle(fullTitle)}
+              className={`-mb-px flex h-full w-full min-w-0 items-baseline gap-1.5 whitespace-nowrap border-b-2 px-3 py-2 text-left text-[13px] leading-snug transition-colors ${
                 isActive
                   ? 'border-teal-600 font-medium text-slate-900'
                   : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
               }`}
             >
               <span className={`flex-shrink-0 font-mono text-xs tabular-nums ${isActive ? 'text-teal-700' : 'text-slate-400'}`}>{index + 1}.</span>
-              {/* Wraps to a second line instead of cutting the title off after a few words. */}
-              <span className="line-clamp-2 break-words">{title}</span>
+              {/* Tabs index the plan with a short feature label; the full title is in the tooltip and the specification. */}
+              <span className="truncate">{getTabLabel(fullTitle)}</span>
             </button>
           </li>
         );

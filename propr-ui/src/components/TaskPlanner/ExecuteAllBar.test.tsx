@@ -16,21 +16,26 @@ describe('ExecuteAllBar', () => {
     const onExecuteAll = vi.fn();
     render(<ExecuteAllBar {...baseProps} useEpic onExecuteAll={onExecuteAll} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Execute All Remaining (14 tasks)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Queue Remaining (14 tasks)' }));
     expect(onExecuteAll).toHaveBeenCalledTimes(1);
   });
 
   it('explains why individual tasks cannot be chained without auto-merge', () => {
     render(<ExecuteAllBar {...baseProps} onExecuteAll={vi.fn()} />);
 
-    expect(screen.getByRole('button', { name: /Execute All Remaining/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Queue Remaining/ })).toBeDisabled();
     expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('auto-merge');
   });
 
-  it('waits for running issues before queueing the batch', () => {
-    render(<ExecuteAllBar {...baseProps} autoMerge hasRunningIssues onExecuteAll={vi.fn()} />);
+  it('queues the remaining tasks while other issues are still running', () => {
+    const onExecuteAll = vi.fn();
+    render(<ExecuteAllBar {...baseProps} remainingCount={10} autoMerge hasRunningIssues onExecuteAll={onExecuteAll} />);
 
-    expect(screen.getByRole('button', { name: /Execute All Remaining/ })).toBeDisabled();
+    const button = screen.getByRole('button', { name: 'Queue Remaining (10 tasks)' });
+    expect(button).toBeEnabled();
+    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('10 tasks will be dispatched automatically as concurrency slots become available.');
+    fireEvent.click(button);
+    expect(onExecuteAll).toHaveBeenCalledTimes(1);
   });
 
   it('is hidden for single-task plans', () => {

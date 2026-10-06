@@ -1,6 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { GripVertical } from 'lucide-react';
 import type { ChatMessage, GranularityEnforcementMetadata, PlanTask } from '../../api/proprApi';
 import type { usePlanRefinement } from '../../hooks/usePlanRefinement';
 import TaskCardList from './TaskCardList';
@@ -68,43 +66,33 @@ const PlanEditorPanels: React.FC<PlanEditorPanelsProps> = ({
   focusComposerRequest,
   isAssistantOpen,
 }) => (
-  <div className="flex-1 overflow-hidden">
-    <PanelGroup direction="horizontal">
-      <Panel id="plan-specification" order={1} defaultSize={60} minSize={30}>
-        <div className="h-full bg-white">
-          <TaskCardList
-            tasks={plan}
-            highlightedIds={highlightedIds}
-            draftId={draftId}
-            onTaskChange={onTaskChange}
-            onDeleteTask={onDeleteTask}
-            onReorderTasks={onReorderTasks}
-          />
-        </div>
-      </Panel>
+  // The specification is the primary document and takes every pixel the Assistant does not need.
+  // The Assistant is a companion chat at the IDE-standard sidebar width.
+  <div className="flex flex-1 overflow-hidden">
+    <div id="plan-specification" className="h-full min-w-0 flex-1 bg-white">
+      <TaskCardList
+        tasks={plan}
+        highlightedIds={highlightedIds}
+        draftId={draftId}
+        onTaskChange={onTaskChange}
+        onDeleteTask={onDeleteTask}
+        onReorderTasks={onReorderTasks}
+      />
+    </div>
 
-      {isAssistantOpen && (
-        <>
-          <PanelResizeHandle className="w-2 bg-gray-200 hover:bg-teal-500 transition-colors flex items-center justify-center cursor-col-resize">
-            <GripVertical size={12} className="text-gray-400" />
-          </PanelResizeHandle>
-
-          <Panel id="plan-assistant" order={2} defaultSize={40} minSize={25}>
-            <div className="h-full bg-slate-50">
-              <RefinementChat
-                onSendMessage={onRefine}
-                initialMessages={chatHistory}
-                onMessagesChange={onChatMessagesChange}
-                refinementProgress={refinementProgress}
-                defaultModel={defaultModel}
-                onStop={onStopRefinement}
-                focusComposerRequest={focusComposerRequest}
-              />
-            </div>
-          </Panel>
-        </>
-      )}
-    </PanelGroup>
+    {isAssistantOpen && (
+      <div id="plan-assistant" data-testid="plan-assistant" className="h-full w-[340px] flex-shrink-0 border-l border-slate-200 bg-slate-50">
+        <RefinementChat
+          onSendMessage={onRefine}
+          initialMessages={chatHistory}
+          onMessagesChange={onChatMessagesChange}
+          refinementProgress={refinementProgress}
+          defaultModel={defaultModel}
+          onStop={onStopRefinement}
+          focusComposerRequest={focusComposerRequest}
+        />
+      </div>
+    )}
   </div>
 );
 
