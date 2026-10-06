@@ -3,7 +3,7 @@ import type { WorktreeInfo } from '@propr/core';
 import type { AutoResolveContext } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
-import { db, sanitizeAgentReport, TaskStates } from '@propr/core';
+import { db, getModelName, sanitizeAgentReport, TaskStates } from '@propr/core';
 import { buildDeterministicPrTaskSubtitle, buildPrTaskTitle } from './prTaskTitleHelpers.js';
 
 const RESTRICTED_FAILURE_DETAIL = 'Agent execution failed; detailed output is available in restricted logs.';
@@ -107,7 +107,7 @@ PR: #${pullRequestNumber}`;
 Automatically resolved merge conflicts after merging target branch into PR branch.${fileList}
 
 PR: #${pullRequestNumber}
-Model: ${model || 'unknown'}`;
+Model: ${model ? getModelName(model) : 'unknown'}`;
 }
 
 /**
@@ -134,7 +134,7 @@ export function buildMergeConflictComment(options: {
 
         if (model || executionTimeMs) {
             comment += `\n---\n### 🤖 Verification Details\n\n`;
-            if (model) comment += `* **Model:** ${model}\n`;
+            if (model) comment += `* **Model:** ${getModelName(model)}\n`;
             if (executionTimeMs) {
                 const seconds = Math.floor(executionTimeMs / 1000);
                 const m = Math.floor(seconds / 60);
@@ -168,7 +168,7 @@ export function buildMergeConflictComment(options: {
 
     if (model || executionTimeMs) {
         comment += `---\n### 🤖 Resolution Details\n\n`;
-        if (model) comment += `* **Model:** ${model}\n`;
+        if (model) comment += `* **Model:** ${getModelName(model)}\n`;
         if (executionTimeMs) {
             const seconds = Math.floor(executionTimeMs / 1000);
             const m = Math.floor(seconds / 60);

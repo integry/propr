@@ -219,6 +219,7 @@ await mock.module('@propr/core', {
         recordLLMMetrics: mock.fn(async () => {}),
         issueQueue: { add: mockQueueAdd },
         getDefaultModel: mock.fn(() => 'claude-sonnet-4-20250514'),
+        getModelName: mock.fn((model: string) => model),
         NoDefaultModelConfiguredError: class NoDefaultModelConfiguredError extends Error { name = 'NoDefaultModelConfiguredError'; },
         loadSettings: mock.fn(async () => mockSettings),
         loadSummarizationSettings: mock.fn(async () => ({ agent_alias: '' })),
