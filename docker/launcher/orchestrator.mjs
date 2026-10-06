@@ -614,10 +614,15 @@ function dockerRunDetached(cfg, name, service, args, networkMode = cfg.network) 
     }
 }
 
-function latestTagFor(imageTag) {
-    const slashIndex = imageTag.lastIndexOf('/');
-    const tagIndex = imageTag.lastIndexOf(':');
-    return tagIndex > slashIndex ? `${imageTag.slice(0, tagIndex)}:latest` : null;
+export function latestTagFor(imageTag) {
+    // A digest-pinned reference (repo:tag@sha256:…, as bound by Linux previews)
+    // names its repository before the digest; never derive a tag from the digest.
+    const digestIndex = imageTag.indexOf('@');
+    const reference = digestIndex === -1 ? imageTag : imageTag.slice(0, digestIndex);
+    const slashIndex = reference.lastIndexOf('/');
+    const tagIndex = reference.lastIndexOf(':');
+    if (tagIndex > slashIndex) return `${reference.slice(0, tagIndex)}:latest`;
+    return digestIndex === -1 ? null : `${reference}:latest`;
 }
 
 export function tagAgentLatest(key, imageTag) {
