@@ -33,7 +33,7 @@ export { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from '
 export { ensureGitRepository } from './utils/git/gitValidation.js';
 export { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from './utils/github/labelOperations.js';
 export type { LabelContext, UpdateResults } from './utils/github/labelOperations.js';
-export { createLogFiles, generateCompletionComment, redactSecrets } from './utils/github/logFiles.js';
+export { createLogFiles, generateCompletionComment, generateCompletionCommentParts, redactSecrets, type CompletionCommentParts, type CompletionRunStats } from './utils/github/logFiles.js';
 export { formatSubscriptionUsage } from './utils/github/formatSubscriptionUsage.js';
 export type { SubscriptionUsageRecord, SubscriptionUsageMetrics } from './utils/github/formatSubscriptionUsage.js';
 
@@ -514,6 +514,7 @@ export * from './services/usageTips/index.js';
 export * from './workflow/repositoryWorkflow.js';
 export * from './workflow/autoMergePolicy.js';
 export * from './services/autoMergeGate.js';
+export * from './workflow/prTemplate.js';
 export { executeWithRepositoryWorkflow, buildRepositoryValidationReport, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH } from './workflow/workflowExecution.js';
 export { withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, reconcileRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError } from './workflow/workflowConcurrency.js';
 export * from './services/taskCancellation.js';

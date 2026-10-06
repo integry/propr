@@ -8,6 +8,7 @@ import { Command } from "commander";
 import path from "path";
 import { chmod, mkdir, writeFile } from "fs/promises";
 import { existsSync } from "fs";
+import { PR_TEMPLATE_SCAFFOLD } from "@propr/shared";
 import { printOutput } from "../utils/io.js";
 import { createInitStackCommand } from "./initStack.js";
 
@@ -76,6 +77,9 @@ This directory configures repository-local setup for ProPR agent executions.
 
 Edit \`.propr/workflow.yml\` to version lifecycle hooks, instructions, validation, previews, task limits and the auto-merge policy.
 
+Edit \`.propr/pr-template.md\` to shape the pull request titles and descriptions ProPR writes.
+Check it with \`propr repo validate\`.
+
 Before each implementation execution, ProPR runs:
 
 \`\`\`bash
@@ -116,6 +120,7 @@ hooks:
 
 const SCAFFOLD_FILES: ScaffoldFile[] = [
   { relativePath: "workflow.yml", content: WORKFLOW_YML },
+  { relativePath: "pr-template.md", content: PR_TEMPLATE_SCAFFOLD },
   { relativePath: "setup.sh", content: SETUP_SH, mode: 0o755 },
   { relativePath: "package.json", content: PACKAGE_JSON },
   { relativePath: ".gitignore", content: GITIGNORE },

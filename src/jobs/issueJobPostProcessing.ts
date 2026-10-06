@@ -266,10 +266,9 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
                 PR_LABEL,
                 correlatedLogger,
                 issueTitle: currentIssueData.data.title,
-                visualPreview: {
-                    evidence: preparedVisualPreview.evidence,
-                    worktreePath: worktreeInfo.worktreePath
-                }
+                visualPreview: { evidence: preparedVisualPreview.evidence, worktreePath: worktreeInfo.worktreePath },
+                taskId,
+                stateManager
             }
         );
 
