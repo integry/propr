@@ -17,7 +17,8 @@ The analytics page (`/analytics`) and the rest of the UI continue to read the ag
 - `GET /api/queue/stats` — waiting, active, completed, failed, and delayed job counts from the BullMQ queue
 - `GET /api/stats/tasks` — daily task counts (last 30 days), status distribution, and average processing time from the SQLite task history
 - `GET /api/stats/repositories` — per-repository totals, completed, failed, and in-progress counts with success rates
-- `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens (with the input and output split), total cost, and task counts per model
+- `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens (with the input and output split), total cost, and task counts per model; each `model_usage` entry also carries `mean_final_score` and `n_scored` from [review scores](#review-scores)
+- `GET /api/stats/review-scores` — review quality per implementer model (see [Review scores](#review-scores))
 - `GET /api/status` — daemon heartbeat, active worker count, Redis connectivity, GitHub App configuration, per-agent health, and indexing state
 
 The dashboard refreshes these on task updates over the WebSocket connection, so the numbers track live activity. Unavailable data — a success rate with nothing finished, or spend on an instance that records no cost — is reported as null and rendered as "—" rather than as zero. For the screen layout, see the [Web UI Guide](../features/web-ui.md).
@@ -78,6 +79,54 @@ The API also aggregates run metrics in Redis, available at `GET /api/llm-metrics
 - `watchdogTrips`: agent runs stopped by the stall/degenerate-output watchdog, per rule (`inactivity`, `tool_inactivity`, `degenerate_output`)
 
 `GET /api/llm-metrics/<correlationId>` returns the detailed metrics for a single run.
+
+## Review scores
+
+Every `/review` and every Ultrafix review cycle ends with a `Score: N/10` line. ProPR stores each parsed score in the `review_scores` table, so you can ask which model writes the pull requests that review best, at what cost, on a given repository. A review that fails or does not follow the review contract has no score and writes no row. Scores recorded before this table existed are not backfilled.
+
+### Schema
+
+| Column | Meaning |
+|---|---|
+| `id` | Row identity |
+| `repository_id` | Repository full name (`owner/repo`), the key the `repositories` and `tasks` tables use |
+| `pr_number` | The reviewed pull request |
+| `task_id` | The review task that produced the score |
+| `implementation_task_id` | The task that opened the pull request (the earliest non-follow-up task recorded with this PR number), or null if ProPR did not open it |
+| `implementer_agent`, `implementer_model` | Agent and model of that task, resolved when the score is written. The model is the one the task's LLM executions recorded, so it matches the overview's model names |
+| `reviewer_agent`, `reviewer_model` | The agent and model that ran the review, after synthetic routing |
+| `score` | 1–10, as the review parser reads it. A review that still lists merge blockers is capped at 6, the same score the published comment and the Ultrafix goal check use |
+| `blocker_count`, `suggestion_count` | Number of F# blockers and S# suggestions in the review |
+| `cycle_number` | The Ultrafix review cycle; null for a plain `/review` |
+| `goal` | The Ultrafix goal in effect for that cycle; null for a plain `/review` |
+| `source` | `review` or `ultrafix` |
+| `head_sha` | The reviewed head commit |
+| `created_at` | When the score was recorded (ISO 8601, UTC) |
+
+When a pull request is merged or closed, the webhook handler records the outcome on the PR's existing `notification_pull_request_state` row: `outcome` (`merged` or `closed`), `closed_at`, and the existing `merged_at`. Reopening a closed (unmerged) PR clears the outcome again.
+
+### Endpoints
+
+- `GET /api/stats/review-scores?period=&repository=` — one entry per implementer model. `period` takes the Analytics timeframes (`24h`, `7d`, `30d`, `90d`, `1y`, `all`) and bounds which scores count by when they were recorded; `repository` is `all` (the default) or `owner/repo`.
+- `GET /api/stats/review-scores.csv?period=&repository=` — the same summary as CSV, one row per model; an unknown value is an empty cell.
+- `GET /api/pull-requests/<number>/scores?repository=owner/repo` — one PR's score history, oldest first (cycle, source, score, goal, blocker and suggestion counts, reviewer model, head SHA, timestamp), with its recorded outcome.
+
+The pull request is the unit. Each per-model entry reports:
+
+| Field | How it is computed | Denominator `n` |
+|---|---|---|
+| `prs_scored` | Pull requests with at least one score in the period | — |
+| `first_score.mean`, `first_score.median` | The earliest score of each PR | PRs scored |
+| `final_score.mean` | The last score recorded at or before the merge; for a PR that was not merged, its latest score | PRs scored |
+| `cycles_to_goal.mean` | The Ultrafix cycle of the first clean review (no blockers) whose score met the goal | PRs that reached the goal; `attempted` counts PRs with an Ultrafix goal |
+| `merge_rate.value` | Merged ÷ (merged + closed). Open PRs have no outcome yet | PRs merged or closed |
+| `cost_per_merged_pr.usd` | Mean recorded cost per merged PR (see below) | Merged PRs with recorded cost |
+
+Every figure carries its own `n`. A figure with nothing behind it — no merged PRs, no recorded cost, no Ultrafix goal — is `null`, never `0`. PRs whose implementer is unknown are grouped under `implementer_model: null`.
+
+**Cost per merged PR** sums `llm_executions.cost_usd` over every task attached to the pull request: the implementation task and every task that acted on the PR afterwards (follow-ups, `/fix`, Ultrafix fixes and reviews, merge-conflict resolution). The cost is the PR's whole recorded spend, not only the spend inside the period. A merged PR none of whose executions recorded a cost is left out of the mean and of `n`, rather than counted as free.
+
+The Analytics page shows the summary as **Review quality by model**, using the page's `?period=` timeframe. Task details on a PR show its score history as a small sparkline and list. From the CLI, `propr stats review-scores [--period 30d] [--repository owner/repo] [--json]` prints the same summary, and the MCP `get_pull_request` tool includes the PR's `scoreHistory`.
 
 ## Cost Tracking
 

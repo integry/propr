@@ -224,6 +224,32 @@ async function checkRenamesFromPRBody(
 }
 
 /**
+ * Records merged/closed (and clears it on reopen) beside the PR's merge marker,
+ * so review-score analytics can join a PR's final score with its outcome.
+ * Best effort: analytics must never block plan issue tracking.
+ */
+async function recordPullRequestOutcomeForScores(
+    payload: PullRequestEvent,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    if (payload.action !== 'closed' && payload.action !== 'reopened') return;
+    const repository = payload.repository.full_name;
+    const prNumber = payload.pull_request.number;
+    try {
+        await notificationService.recordPullRequestOutcome({
+            repository,
+            prNumber,
+            action: payload.action,
+            merged: payload.pull_request.merged === true,
+            mergedAt: payload.pull_request.merged_at,
+            closedAt: payload.pull_request.closed_at,
+        });
+    } catch (error) {
+        log.warn({ error, repository, prNumber }, 'Failed to record pull request outcome for review scores');
+    }
+}
+
+/**
  * Handles PR events to track PR associations with plan issues.
  */
 export async function handlePlanPRUpdate(
@@ -257,6 +283,8 @@ export async function handlePlanPRUpdate(
                 log.warn({ error, repository, prNumber }, 'Failed to dismiss closed PR notifications');
             }
         }
+
+        await recordPullRequestOutcomeForScores(payload, log);
 
         await checkRenamesFromPRBody(payload, repository, prNumber, log);
 

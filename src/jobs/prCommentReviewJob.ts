@@ -16,6 +16,7 @@ import { loadReviewRuntimeSettings } from './reviewRuntimeSettings.js';
 import { getNextAuthenticatedReviewRecordNumbers } from './reviewCommentFormatter.js';
 import { routeReviewAssignments, runReviewRoutingOutcomes, type ReviewAssignment, type ReviewResult, type RunReviewsContext } from './prReviewRunner.js';
 import { recordReviewMetrics } from './reviewResultMetrics.js';
+import { persistReviewScores } from './reviewScorePersistence.js';
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
@@ -429,6 +430,8 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
 
     const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, redisClient, { repoOwner, repoName, pullRequestNumber });
+    await persistReviewScores(reviewResults, { repository: `${repoOwner}/${repoName}`, pullRequestNumber, taskId,
+        headSha: prData!.data.head.sha, ultrafix: ultrafixHistoryMeta }, correlatedLogger);
 
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Review processing completed successfully',

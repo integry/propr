@@ -471,6 +471,7 @@ propr log list --agent my-claude --draft <draft-id> --page 2 -l 100
 
 propr remote-status     # Backend health check (daemon, workers, Redis, GitHub auth)
 propr queue             # Queue statistics
+propr stats review-scores --period 30d [--repository owner/repo] [--json]  # Review quality per implementer model
 ```
 
 Settings keys:
