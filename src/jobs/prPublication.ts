@@ -1,4 +1,5 @@
-import { cleanupWorktree, createHooklessGit, getAuthenticatedOctokit, logger } from '@propr/core';
+import { cleanupWorktree, createHooklessGit, createWorktreePushSalvageOperations, getAuthenticatedOctokit, getRepoUrl, logger, salvageFailedPush } from '@propr/core';
+import type { PushSalvageEvent } from '@propr/core';
 import { createPullRequestHeadWorktree, pushPullRequestHeadBranch } from './prGitOperations.js';
 import type { PublicationCompletion } from './prCommentPostExecution.js';
 import { resolvePullRequestGitTarget } from './prGitTarget.js';
@@ -11,6 +12,12 @@ import { checkPullRequestHeadWritable, createPublicationBundle, restorePublicati
 
 /** Runs before a saved checkpoint is pushed; reject to keep it unpublished. */
 export type PublishGuard = () => Promise<void>;
+
+/** Identifies the task whose commits a failed final push must not lose. */
+export interface PublicationSalvage {
+    taskId: string;
+    onEvent?: (event: PushSalvageEvent) => Promise<void>;
+}
 
 /** One publication session spans preflight, agent execution and the final push.
  * Discussion/comment identity stays with the request; only the mutable Git target changes.
@@ -205,10 +212,43 @@ export class PullRequestPublication {
         await savePublicationCheckpoint(this.continuation!, bundle, completion ? JSON.stringify(completion) : undefined);
     }
 
+    /** With `salvage`, a failed final push runs the salvage ladder (credential refresh,
+     * rescue ref, bundle, retained worktree) and rethrows a PushFailedError. */
     async push(
         worktreePath: string,
         completion?: PublicationCompletion,
-        options: { rebaseOnNonFastForward?: boolean } = {},
+        options: { rebaseOnNonFastForward?: boolean; salvage?: PublicationSalvage } = {},
+    ) {
+        try {
+            return await this.pushOnce(worktreePath, completion, options);
+        } catch (error) {
+            if (!options.salvage) throw error;
+            const target = this.target;
+            return salvageFailedPush({
+                taskId: options.salvage.taskId,
+                repoOwner: target.repoOwner,
+                repoName: target.repoName,
+                branchName: target.branchName,
+                worktreePath,
+                error,
+                onEvent: options.salvage.onEvent,
+                operations: createWorktreePushSalvageOperations({
+                    worktreePath,
+                    taskId: options.salvage.taskId,
+                    branchName: target.branchName,
+                    repoUrl: getRepoUrl({ repoOwner: target.repoOwner, repoName: target.repoName }),
+                    refreshToken: async () => (await this.octokit.auth({ type: 'installation', refresh: true }) as { token: string }).token,
+                    // pushOnce reads the installation token again and gets the refreshed one.
+                    retryPush: () => this.pushOnce(worktreePath, completion, options),
+                }),
+            });
+        }
+    }
+
+    private async pushOnce(
+        worktreePath: string,
+        completion: PublicationCompletion | undefined,
+        options: { rebaseOnNonFastForward?: boolean },
     ) {
         // An adopted continuation already has committed work in the worktree; a rejected
         // token refresh must not lose it once the worktree is cleaned up.

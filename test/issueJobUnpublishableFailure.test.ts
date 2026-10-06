@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import { sanitizeAgentReport } from '../packages/core/src/agents/agentReportSanitizer.js';
+import * as pushSalvageExports from '../packages/core/src/git/pushSalvage.js';
 
 const commitChanges = mock.fn(async () => null);
 const pushBranch = mock.fn(async () => undefined);
@@ -11,6 +12,7 @@ const resolveAgentTerminationReason = mock.fn((result: { terminationReason?: 'ti
 
 await mock.module('@propr/core', {
     namedExports: {
+        ...pushSalvageExports,
         cleanupWorktree: mock.fn(async () => undefined),
         cleanupPreparedVisualPreviewEvidence: mock.fn(async () => undefined),
         commitChanges,

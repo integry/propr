@@ -21,6 +21,32 @@ export interface UsageMetrics {
   agent?: string;
 }
 
+export type PushRejectionClass = 'push_protection' | 'ruleset_or_branch_protection' | 'non_fast_forward' | 'auth' | 'network' | 'unknown';
+
+/** Which salvage rung kept the commits of a rejected push (`retry` means the push succeeded). */
+export interface PushSalvageEvent {
+  rung: 'retry' | 'rescue_ref' | 'bundle' | 'worktree' | 'none';
+  classification: PushRejectionClass;
+  summary: string;
+  rescueRef?: string;
+  bundlePath?: string;
+  worktreePath?: string;
+  recoveryInstruction?: string;
+  unblockUrls?: string[];
+}
+
+/** Stored on the FAILED entry of a task whose final push was rejected. */
+export interface PushFailure {
+  diagnosis: { classification: PushRejectionClass; summary: string; unblockUrls: string[]; excerpt?: string };
+  rung: 'rescue_ref' | 'bundle' | 'worktree' | 'none';
+  branchName: string;
+  repository: string;
+  rescueRef?: string;
+  bundlePath?: string;
+  worktreePath?: string;
+  recoveryInstruction: string;
+}
+
 export interface HistoryItemMetadata {
   repositoryWorkflow?: { path: string; baseBranch: string; revision: string; fileRevision: string; maxParallelTasks: number; timeoutMs: number };
   /** Admission refusals so far for a task waiting on repository workflow capacity. */
@@ -28,6 +54,8 @@ export interface HistoryItemMetadata {
   /** ISO timestamp of the next admission attempt. */
   repositoryWorkflowRetryAt?: string;
   terminalReason?: string;
+  pushFailure?: PushFailure;
+  pushSalvage?: PushSalvageEvent;
   model?: string;
   pr?: { url?: string; number?: number };
   pullRequest?: { url?: string; number?: number };

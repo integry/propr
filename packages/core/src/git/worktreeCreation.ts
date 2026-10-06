@@ -14,6 +14,7 @@ import {
 import { createHooklessGit } from './hooklessGit.js';
 import { assertRepositoryClonePath } from './repositoryPaths.js';
 import { configureGitRemoteAuthentication, redactAuthenticatedGitUrl } from './repoBranching.js';
+import { isRescueRef } from './rescueRefs.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones';
 
@@ -276,6 +277,8 @@ interface WorktreeResult {
 
 export async function createWorktreeFromExistingBranch(localRepoPath: string, branchName: string, options: CreateWorktreeFromExistingBranchOptions): Promise<WorktreeResult> {
     const { worktreeDirName, owner, repoName } = options;
+    // Rescue refs preserve rejected pushes; they are never a branch a task works on.
+    if (isRescueRef(branchName)) throw new Error(`Refusing to use push salvage rescue ref ${branchName} as a task branch`);
     assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, owner, repoName);
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
 
