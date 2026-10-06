@@ -120,7 +120,10 @@ PROPR_DESKTOP_RUNTIME_MANIFEST="$PWD/.propr/desktop-runtime/$revision/manifest.j
 `propr-desktop-local/app:<full-commit>` and `propr-desktop-local/ui:<full-commit>`, and marks them `local` in the generated
 manifest. The wizard inspects those exact local images instead of attempting a registry pull. The smoke uses a unique
 labelled network, Redis/API containers, random loopback port, and private temporary data root; its cleanup refuses any
-container or network it does not own. It does not address or replace an existing ProPR stack.
+container or network it does not own. It does not address or replace an existing ProPR stack. With a rootful Docker daemon
+the API container creates root-owned private entries (such as `data/web-push`) in the temporary root; after the host user
+removes what it can, a network-less, capability-dropped container that bind-mounts only that verified root (same owner,
+mode `0700`, recorded inode) empties it. The smoke exits non-zero if any owned container, network or generated data remains.
 
 If the compatibility gate finds an already-running legacy stack under Desktop's private managed root, ordinary Retry
 continues to preserve it. The explicit **Restart with aligned runtime** recovery instead enumerates only containers with
