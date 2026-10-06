@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { after, mock, test } from 'node:test';
@@ -114,7 +115,8 @@ test('a replacement run receives undelivered steers once and announces its capab
         assert.match(replacement.promptContext, /Operator input during the run/);
         assert.match(replacement.promptContext, /Keep the public API unchanged/);
         assert.deepEqual(await replacement.steering!.claim(), []);
-        replacement.onPromptHandoff();
+        await replacement.promptHandoff.beforeStart();
+        replacement.promptHandoff.received();
         await replacement.finish();
         const again = await startTaskSteeringRun({ taskId: 'task-restart', agent: claude, redisClient, db: database });
         assert.equal(again.promptContext, '');
@@ -167,14 +169,16 @@ test('a replacement run that fails before its prompt reaches an agent returns th
         assert.equal(pending!.delivery, null);
         assert.equal((await database('task_history')).length, 0, 'no delivery is reported');
 
-        // The next run receives it; once its agent started, it is not replayed even if that run fails.
+        // The next run receives it; once its agent received it, it is not replayed even if that run fails.
         const next = await startTaskSteeringRun({ taskId: 'task-prepare', agent: claude, redisClient, db: database });
         assert.match(next.promptContext, /Keep the public API unchanged/);
-        next.onPromptHandoff();
-        next.onPromptHandoff();
+        await next.promptHandoff.beforeStart();
+        next.promptHandoff.received();
+        next.promptHandoff.received();
         await next.finish();
         const [delivered] = await listTaskSteers(database, 'task-prepare');
         assert.equal(delivered!.delivery, 'replacement_prompt');
+        assert.ok(delivered!.acknowledgedAt, 'the agent output confirmed the delivery');
         const timeline = await database('task_history').select('reason');
         assert.equal(timeline.length, 1);
         assert.match(timeline[0].reason, /carried into this run's prompt/);
@@ -217,7 +221,7 @@ test('carried steers survive a worker that died, or an agent process that failed
         const spawnFailed = await startTaskSteeringRun({ taskId: 'task-crash', agent: claude, redisClient, db: database });
         assert.match(spawnFailed.promptContext, /Keep the public API unchanged/);
         await assert.rejects(executeDockerCommand('/nonexistent/propr-agent-binary', [], {
-            timeout: 10_000, stdinData: spawnFailed.promptContext, onPromptHandoff: spawnFailed.onPromptHandoff,
+            timeout: 10_000, stdinData: spawnFailed.promptContext, promptHandoff: spawnFailed.promptHandoff,
         }), /ENOENT/);
         await spawnFailed.finish();
         const [released] = await listTaskSteers(database, 'task-crash');
@@ -225,11 +229,11 @@ test('carried steers survive a worker that died, or an agent process that failed
         assert.equal(released!.delivery, null);
         assert.equal((await database('task_history')).length, 0, 'no delivery is reported');
 
-        // A run whose agent process started records the delivery; it is never replayed afterwards.
+        // A run whose agent answered records the delivery; it is never replayed afterwards.
         const started = await startTaskSteeringRun({ taskId: 'task-crash', agent: claude, redisClient, db: database });
         assert.match(started.promptContext, /Keep the public API unchanged/);
-        const result = await executeDockerCommand(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0));'], {
-            timeout: 10_000, stdinData: started.promptContext, onPromptHandoff: started.onPromptHandoff,
+        const result = await executeDockerCommand(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => { console.log("{}"); process.exit(0); });'], {
+            timeout: 10_000, stdinData: started.promptContext, promptHandoff: started.promptHandoff,
         });
         assert.equal(result.exitCode, 0);
         await started.finish();
@@ -238,6 +242,132 @@ test('carried steers survive a worker that died, or an agent process that failed
         const after = await startTaskSteeringRun({ taskId: 'task-crash', agent: claude, redisClient, db: database });
         assert.equal(after.promptContext, '');
         await after.finish();
+    } finally {
+        await database.destroy();
+    }
+});
+
+async function steeringDatabase(taskId: string) {
+    const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+    await database.schema.createTable('tasks', table => { table.string('task_id', 255).primary(); });
+    await database.schema.createTable('task_history', table => {
+        table.increments('history_id').primary();
+        table.string('task_id', 255).notNullable();
+        table.string('state', 50).notNullable();
+        table.timestamp('timestamp').notNullable();
+        table.text('reason');
+        table.json('metadata');
+    });
+    await createTaskSteers(database);
+    await database('tasks').insert({ task_id: taskId });
+    await createTaskSteer(database, {
+        taskId, runKey: 'run:earlier', author: 'octocat', authorSource: 'session', message: 'Keep the public API unchanged',
+    });
+    return database;
+}
+
+const steeringRedis = { async set() { return 'OK'; }, async del() { return 1; } };
+const steerableClaude = { steeringCapability: 'live' as const, config: { alias: 'claude-default', type: 'claude' as const } };
+
+/** A `docker` client that starts, reads its input, and exits on a daemon failure, or runs a shell body. */
+async function fakeDocker(body: string): Promise<{ docker: string; dir: string }> {
+    const dir = await mkdtemp(path.join(tmpdir(), 'propr-fake-docker-'));
+    const docker = path.join(dir, 'docker');
+    await writeFile(docker, `#!/bin/sh\n${body}\n`);
+    await chmod(docker, 0o755);
+    return { docker, dir };
+}
+
+test('a started docker client whose daemon fails before any container runs returns the carried steers', async () => {
+    const database = await steeringDatabase('task-daemon');
+    const { docker, dir } = await fakeDocker('cat >/dev/null\necho "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock." >&2\nexit 125');
+    try {
+        const run = await startTaskSteeringRun({ taskId: 'task-daemon', agent: steerableClaude, redisClient: steeringRedis, db: database });
+        assert.match(run.promptContext, /Keep the public API unchanged/);
+        const result = await executeDockerCommand(docker, ['run', '-i', '--rm', 'agent-image'], {
+            timeout: 10_000, stdinData: run.promptContext, promptHandoff: run.promptHandoff,
+        });
+        assert.equal(result.exitCode, 125);
+        await run.finish();
+        const [released] = await listTaskSteers(database, 'task-daemon');
+        assert.equal(released!.deliveredAt, null);
+        assert.equal(released!.delivery, null);
+        assert.equal((await database('task_history')).length, 0, 'no delivery is reported');
+
+        const next = await startTaskSteeringRun({ taskId: 'task-daemon', agent: steerableClaude, redisClient: steeringRedis, db: database });
+        assert.match(next.promptContext, /Keep the public API unchanged/, 'a replacement run still receives it');
+        await next.finish();
+    } finally {
+        await database.destroy();
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
+test('a container that may have run without answering is never replayed nor reported as confirmed', async () => {
+    const database = await steeringDatabase('task-silent');
+    const { docker, dir } = await fakeDocker('cat >/dev/null\nexit 1');
+    try {
+        const run = await startTaskSteeringRun({ taskId: 'task-silent', agent: steerableClaude, redisClient: steeringRedis, db: database });
+        const result = await executeDockerCommand(docker, ['run', '-i', '--rm', 'agent-image'], {
+            timeout: 10_000, stdinData: run.promptContext, promptHandoff: run.promptHandoff,
+        });
+        assert.equal(result.exitCode, 1);
+        await run.finish();
+        const [uncertain] = await listTaskSteers(database, 'task-silent');
+        assert.equal(uncertain!.delivery, 'replacement_prompt');
+        assert.equal(uncertain!.acknowledgedAt, null);
+        assert.equal((await database('task_history')).length, 0, 'no confirmed delivery is reported');
+        const next = await startTaskSteeringRun({ taskId: 'task-silent', agent: steerableClaude, redisClient: steeringRedis, db: database });
+        assert.equal(next.promptContext, '');
+        await next.finish();
+    } finally {
+        await database.destroy();
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
+test('the handoff is committed before the agent process starts, so a worker that dies afterwards never replays it', async () => {
+    const database = await steeringDatabase('task-exposed');
+    try {
+        const run = await startTaskSteeringRun({ taskId: 'task-exposed', agent: steerableClaude, redisClient: steeringRedis, db: database });
+        let deliveryAtStart: string | null | undefined;
+        const observed = {
+            ...run.promptHandoff,
+            beforeStart: async () => {
+                await run.promptHandoff.beforeStart();
+                [{ delivery: deliveryAtStart }] = await listTaskSteers(database, 'task-exposed') as [{ delivery: string | null }];
+            },
+        };
+        // The agent read its prompt; the worker then dies: received bookkeeping and finish() never run.
+        await executeDockerCommand(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0));'], {
+            timeout: 10_000, stdinData: run.promptContext, promptHandoff: { ...observed, received: () => undefined },
+        });
+        assert.equal(deliveryAtStart, 'replacement_prompt', 'persisted before the process was started');
+        const next = await startTaskSteeringRun({ taskId: 'task-exposed', agent: steerableClaude, redisClient: steeringRedis, db: database });
+        assert.equal(next.promptContext, '', 'the next run does not send it again');
+        await next.finish();
+    } finally {
+        await database.destroy();
+    }
+});
+
+test('a handoff that cannot be persisted starts no agent with the carried steers', async () => {
+    const database = await steeringDatabase('task-unpersisted');
+    const marker = path.join(isolatedDbDir, 'unpersisted-agent-started');
+    try {
+        const run = await startTaskSteeringRun({ taskId: 'task-unpersisted', agent: steerableClaude, redisClient: steeringRedis, db: database });
+        // The database stops accepting the handoff after the claim.
+        await database.raw(`CREATE TRIGGER reject_handoff BEFORE UPDATE ON task_steers
+            WHEN NEW.delivery = 'replacement_prompt' BEGIN SELECT RAISE(ABORT, 'database unavailable'); END`);
+        await assert.rejects(executeDockerCommand(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, '')`], {
+            timeout: 10_000, stdinData: run.promptContext, promptHandoff: run.promptHandoff,
+        }), /database unavailable/);
+        assert.equal(existsSync(marker), false, 'the prompt carrying the steers was never exposed');
+        await database.raw('DROP TRIGGER reject_handoff');
+        await run.finish();
+        const next = await startTaskSteeringRun({ taskId: 'task-unpersisted', agent: steerableClaude, redisClient: steeringRedis, db: database });
+        assert.match(next.promptContext, /Keep the public API unchanged/, 'still recoverable');
+        await next.finish();
     } finally {
         await database.destroy();
     }

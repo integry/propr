@@ -5,16 +5,19 @@
  * agent's declared steering capability; the API accepts steers only for an
  * announced run. Steers that a previous run accepted but never delivered are
  * claimed into this run's prompt, so each steer reaches an agent at most once.
- * The claim is stored as being prepared and recorded as delivered only once
- * the agent process was started with that prompt; a run that ends before then
- * returns the steers to the pending queue, and a preparation claim left by a
- * worker that died is reclaimed by the next run.
+ * The claim is stored as being prepared; the handoff is persisted before an
+ * agent process is started with that prompt, and the delivery is confirmed by
+ * the agent's own output. A run whose agent startup conclusively failed (or
+ * never began) returns the steers to the pending queue, and a preparation
+ * claim left by a worker that died is reclaimed by the next run. A handoff
+ * whose outcome is uncertain is never replayed.
  */
 
 import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import {
   claimTaskSteers,
+  confirmTaskSteersReceived,
   createTaskSteeringSource,
   db as defaultDb,
   formatReplacementRunSteers,
@@ -23,7 +26,7 @@ import {
   recordTaskSteerTimeline,
   releaseTaskSteers,
 } from '@propr/core';
-import type { Agent, LiveInputSource, TaskSteer } from '@propr/core';
+import type { Agent, LiveInputSource, PromptHandoff, TaskSteer } from '@propr/core';
 import { taskSteeringRedisKey, type TaskSteeringRunAnnouncement } from '@propr/shared';
 
 /** Announcements expire on their own if the worker dies mid-run. */
@@ -40,11 +43,11 @@ export interface TaskSteeringRun {
   steering?: LiveInputSource;
   /** Prompt context carrying steers a previous run never delivered ('' when none). */
   promptContext: string;
-  /** Pass to the agent as `onPromptHandoff`: an agent process was started with the prompt carrying the steers. */
-  onPromptHandoff(): void;
+  /** Pass to the agent as `promptHandoff`: delivery bookkeeping for the prompt carrying the steers. */
+  promptHandoff: PromptHandoff;
   /**
    * Withdraw the announcement once the agent stopped. Carried steers whose
-   * prompt never reached an agent process are returned to the pending queue.
+   * prompt definitely reached no agent are returned to the pending queue.
    */
   finish(): Promise<void>;
 }
@@ -70,24 +73,41 @@ export async function startTaskSteeringRun(params: {
     logger.warn({ taskId, error: (error as Error).message }, 'Could not load undelivered operator input for this run');
   }
 
-  // Once an agent process was started with the prompt, its delivery is
-  // settled (or uncertain): the steers are never replayed after that. A
-  // worker that dies before the handoff is recorded leaves the claim being
-  // prepared, so the next run reclaims it.
-  let handedOff = false;
+  // The handoff is committed before an agent process is started with the
+  // prompt, so a worker that dies after exposing it never leaves a claim the
+  // next run would reclaim. Every started execution may have reached an agent
+  // unless its startup conclusively failed; only then are the steers released.
+  const carriedIds = carried.map(steer => steer.id);
+  let started = 0;
+  let notReceived = 0;
+  let received = false;
   const timelineWrites: Promise<unknown>[] = [];
-  const onPromptHandoff = (): void => {
-    if (handedOff) return;
-    handedOff = true;
-    if (!carried.length) return;
-    timelineWrites.push(markTaskSteersHandedOff(database, carried.map(steer => steer.id)).catch(error => {
-      logger.warn({ taskId, error: (error as Error).message }, 'Could not record that carried operator input reached the agent');
-    }));
-    for (const steer of carried) {
-      timelineWrites.push(recordTaskSteerTimeline(database, steer, 'replacement_prompt').catch(error => {
-        logger.warn({ taskId, steerId: steer.id, error: (error as Error).message }, 'Could not record carried operator input in the timeline');
+  const promptHandoff: PromptHandoff = {
+    async beforeStart(): Promise<void> {
+      if (!carried.length) return;
+      // Throws on failure: the prompt carrying the steers is then not sent.
+      const moved = await markTaskSteersHandedOff(database, carriedIds);
+      // A later execution of this run (a retry) finds them already handed off.
+      if (moved !== carried.length && started === 0) {
+        throw new Error('Carried operator input is no longer claimed by this run; not starting the agent with it');
+      }
+      started += 1;
+    },
+    received(): void {
+      if (received || !carried.length) return;
+      received = true;
+      timelineWrites.push(confirmTaskSteersReceived(database, carriedIds).catch(error => {
+        logger.warn({ taskId, error: (error as Error).message }, 'Could not record that carried operator input reached the agent');
       }));
-    }
+      for (const steer of carried) {
+        timelineWrites.push(recordTaskSteerTimeline(database, steer, 'replacement_prompt').catch(error => {
+          logger.warn({ taskId, steerId: steer.id, error: (error as Error).message }, 'Could not record carried operator input in the timeline');
+        }));
+      }
+    },
+    notReceived(): void {
+      if (carried.length) notReceived += 1;
+    },
   };
 
   const announcement: TaskSteeringRunAnnouncement = {
@@ -111,13 +131,13 @@ export async function startTaskSteeringRun(params: {
   return {
     ...(capability !== 'none' ? { steering: createTaskSteeringSource(database, taskId) } : {}),
     promptContext,
-    onPromptHandoff,
+    promptHandoff,
     async finish(): Promise<void> {
       clearInterval(refresh);
-      if (!handedOff && carried.length) {
-        // No agent process ever received the prompt, so releasing cannot duplicate input.
+      if (carried.length && !received && started === notReceived) {
+        // No agent ever received the prompt, so releasing cannot duplicate input.
         try {
-          await releaseTaskSteers(database, carried.map(steer => steer.id));
+          await releaseTaskSteers(database, carriedIds);
           logger.info({ taskId, steers: carried.length }, 'Returned carried operator input that no agent received');
         } catch (error) {
           logger.warn({ taskId, error: (error as Error).message }, 'Could not return undelivered operator input to the queue');

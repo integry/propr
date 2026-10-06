@@ -13,10 +13,12 @@ import type { LiveInputMessage, LiveInputSource } from '../claude/docker/dockerL
  * or, when the run ended first, in the prompt of the replacement run.
  *
  * A replacement-run claim is first recorded as being prepared
- * (`prompt_preparing`) and only becomes `replacement_prompt` once an
- * agent process was started with that prompt. A preparation claim abandoned
- * by a worker that died stays recoverable: the next replacement run of the
- * task reclaims it.
+ * (`prompt_preparing`). It becomes `replacement_prompt` before any agent
+ * process is started with that prompt, and is acknowledged once the agent's
+ * own output shows it received the prompt. A preparation claim abandoned by a
+ * worker that died never exposed its prompt, so the next replacement run of
+ * the task reclaims it; a `replacement_prompt` claim may have reached an agent
+ * and is never reclaimed.
  */
 
 export type TaskSteerAuthorSource = 'session' | 'token' | 'mcp';
@@ -156,16 +158,26 @@ export async function claimTaskSteers(db: Knex, taskId: string, delivery: TaskSt
 }
 
 /**
- * Record that an agent process was started with the prompt carrying these
- * replacement claims: from now on they may have reached the agent, so they
- * are never reclaimed or released again.
+ * Record, before any agent process is started with the prompt carrying these
+ * replacement claims, that it may reach an agent: from then on they are never
+ * reclaimed. Returns how many claims were still being prepared and moved.
  */
-export async function markTaskSteersHandedOff(db: Db, steerIds: string[]): Promise<void> {
-    if (!steerIds.length) return;
-    await db('task_steers')
+export async function markTaskSteersHandedOff(db: Db, steerIds: string[]): Promise<number> {
+    if (!steerIds.length) return 0;
+    return db('task_steers')
         .whereIn('steer_id', steerIds)
         .where('delivery', REPLACEMENT_PREPARING)
         .update({ delivered_at: db.fn.now(), delivery: 'replacement_prompt' });
+}
+
+/** Record that the agent's own output showed it received the prompt carrying these claims. */
+export async function confirmTaskSteersReceived(db: Db, steerIds: string[]): Promise<void> {
+    if (!steerIds.length) return;
+    await db('task_steers')
+        .whereIn('steer_id', steerIds)
+        .where('delivery', 'replacement_prompt')
+        .whereNull('acknowledged_at')
+        .update({ acknowledged_at: db.fn.now() });
 }
 
 export async function acknowledgeTaskSteer(db: Db, steerId: string): Promise<void> {
@@ -239,7 +251,9 @@ export function formatTaskSteersForComment(steers: TaskSteer[], options: { taskU
     const entries = steers.map(steer => {
         const state = steer.delivery === 'live'
             ? (steer.acknowledgedAt ? 'delivered live' : 'claimed, not confirmed')
-            : steer.delivery === 'replacement_prompt' ? 'delivered in the replacement run prompt' : 'not delivered';
+            : steer.delivery === 'replacement_prompt'
+                ? (steer.acknowledgedAt ? 'delivered in the replacement run prompt' : 'carried into the replacement run prompt, not confirmed')
+                : 'not delivered';
         const message = redactSecrets(steer.message);
         const shortened = message.length > TASK_STEER_COMMENT_MESSAGE_MAX_LENGTH;
         const excerpt = shortened ? `${message.slice(0, TASK_STEER_COMMENT_MESSAGE_MAX_LENGTH)}…` : message;

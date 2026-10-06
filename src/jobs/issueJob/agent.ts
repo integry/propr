@@ -151,7 +151,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
       taskId,
       steering: steeringRun.steering,
-      onPromptHandoff: steeringRun.onPromptHandoff
+      promptHandoff: steeringRun.promptHandoff
     }));
   } finally {
     clearInterval(fileChangesInterval);

@@ -107,7 +107,7 @@ export class VibeAgent implements Agent {
                     timeout: this.timeoutMs,
                     cwd: worktreePath,
                     onSessionId,
-                    onContainerId, onPromptHandoff: options.onPromptHandoff,
+                    onContainerId, promptHandoff: options.promptHandoff,
                     worktreePath,
                     taskId,
                     streamToRedis: true,

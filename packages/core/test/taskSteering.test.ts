@@ -17,6 +17,7 @@ import {
     TASK_STEER_COMMENT_MAX_LENGTH,
     listTaskSteers,
     markTaskSteersHandedOff,
+    confirmTaskSteersReceived,
 } from '../src/services/taskSteeringStore.js';
 
 let db: Knex;
@@ -79,9 +80,12 @@ describe('task steer persistence', () => {
         const replacement = await claimTaskSteers(db, 'task-1', 'replacement_prompt');
         assert.deepEqual(replacement.map(item => item.message), ['claimed but never written', 'arrived as the container died']);
         assert.match(formatReplacementRunSteers(replacement), /arrived as the container died/);
-        // Its agent process started with that prompt: a second restart delivers nothing again.
-        await markTaskSteersHandedOff(db, replacement.map(item => item.id));
+        // Its agent process is about to start with that prompt: a second restart delivers nothing again.
+        assert.equal(await markTaskSteersHandedOff(db, replacement.map(item => item.id)), 2);
         assert.deepEqual(await claimTaskSteers(db, 'task-1', 'replacement_prompt'), []);
+        assert.match(formatTaskSteersForComment(await listTaskSteers(db, 'task-1')), /carried into the replacement run prompt, not confirmed/);
+        // The agent's output shows it received the prompt.
+        await confirmTaskSteersReceived(db, replacement.map(item => item.id));
 
         const timeline = await db('task_history').orderBy('history_id');
         assert.deepEqual(timeline.map(row => [row.state, JSON.parse(row.metadata).taskSteer.message]), [['processing', 'delivered live']]);
@@ -283,24 +287,60 @@ readline.createInterface({ input: process.stdin }).on('line', () => {
         }
     });
 
-    test('reports the prompt handoff once the agent process started', async () => {
-        let handoffs = 0;
-        const result = await executeDockerCommand(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0));'], {
+    function recordingHandoff(beforeStart: () => Promise<void> = async () => undefined) {
+        const events: string[] = [];
+        return {
+            events,
+            handoff: {
+                beforeStart: async () => { await beforeStart(); events.push('persisted'); },
+                received: () => { events.push('received'); },
+                notReceived: () => { events.push('not-received'); },
+            },
+        };
+    }
+
+    test('persists the handoff before the process starts and confirms it on the agent output', async () => {
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const { events, handoff } = recordingHandoff(() => gate);
+        let spawned = false;
+        const execution = executeDockerCommand(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => { console.log("{}"); process.exit(0); });'], {
             timeout: 10_000,
             stdinData: 'Implement the issue.',
-            onPromptHandoff: () => { handoffs += 1; },
+            promptHandoff: { ...handoff, received: () => { spawned = true; handoff.received(); } },
         });
+        await new Promise(resolve => setTimeout(resolve, 100));
+        assert.equal(spawned, false, 'nothing starts until the handoff is persisted');
+        assert.deepEqual(events, []);
+        release();
+        const result = await execution;
         assert.equal(result.exitCode, 0);
-        assert.equal(handoffs, 1);
+        assert.deepEqual(events, ['persisted', 'received']);
     });
 
-    test('does not report a prompt handoff when the agent process fails to start', async () => {
-        let handoffs = 0;
+    test('starts nothing when the handoff cannot be persisted', async () => {
+        const { events, handoff } = recordingHandoff(async () => { throw new Error('database unavailable'); });
+        await assert.rejects(executeDockerCommand(process.execPath, ['-e', 'console.log("started")'], {
+            timeout: 10_000, stdinData: 'Implement the issue.', promptHandoff: handoff,
+        }), /database unavailable/);
+        assert.deepEqual(events, []);
+    });
+
+    test('reports no receipt when the agent process fails to start', async () => {
+        const { events, handoff } = recordingHandoff();
         await assert.rejects(executeDockerCommand('/nonexistent/propr-agent-binary', [], {
-            timeout: 10_000,
-            stdinData: 'Implement the issue.',
-            onPromptHandoff: () => { handoffs += 1; },
+            timeout: 10_000, stdinData: 'Implement the issue.', promptHandoff: handoff,
         }), /ENOENT/);
-        assert.equal(handoffs, 0);
+        assert.deepEqual(events, ['persisted', 'not-received']);
+    });
+
+    test('a process that exits without output leaves the receipt uncertain', async () => {
+        const { events, handoff } = recordingHandoff();
+        const result = await executeDockerCommand(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(125));'], {
+            timeout: 10_000, stdinData: 'Implement the issue.', promptHandoff: handoff,
+        });
+        // Only a `docker run` daemon failure (125) proves no agent ran.
+        assert.equal(result.exitCode, 125);
+        assert.deepEqual(events, ['persisted']);
     });
 });

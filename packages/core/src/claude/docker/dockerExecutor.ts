@@ -22,6 +22,7 @@ import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerE
 import { settleTimeoutStop, settleWatchdogStop } from './dockerExecutionSettlement.js';
 import { INACTIVE_LIVE_INPUT, startLiveInput, type LiveInputOptions } from './dockerLiveInput.js';
 import { spawnCommandProcess } from './dockerCommandProcess.js';
+import { trackPromptHandoff, type PromptHandoff } from './dockerPromptHandoff.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
@@ -81,8 +82,8 @@ export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'wa
     costCapExempt?: boolean;
     /** Keep stdin open as a live operator-input channel instead of writing `stdinData`; delivered input counts as activity. */
     liveInput?: LiveInputOptions;
-    /** Called once the process was spawned with its input; from then on the input may have reached the agent. */
-    onPromptHandoff?: () => void;
+    /** Delivery bookkeeping for a prompt carrying operator input: made durable before the process starts, settled by the agent's output. */
+    promptHandoff?: PromptHandoff;
 }
 
 function resolveDockerPath(command: string): string {
@@ -215,20 +216,15 @@ export function executeDockerCommand(command: string, args: string[], options: D
     // A chargeable container starts only once its run's cap admitted it: a run
     // whose recorded spend already reaches the cap launches nothing.
     const admission = admitCostExecution(command, args, options);
-    if (!admission) return startDockerCommand(command, args, options, { ownershipContext, executionSignal });
-    return admission.then(refusal => {
-        if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
+    const startNow = (): Promise<ExecutionResult> => startDockerCommand(command, args, options, { ownershipContext, executionSignal });
+    // A prompt handoff is persisted before the process starts: if that fails, nothing starts.
+    const start = (): Promise<ExecutionResult> => !options.promptHandoff ? startNow() : options.promptHandoff.beforeStart().then(() => {
         const abortError = getExecutionAbortError(executionSignal);
-        if (abortError) throw abortError;
-        return startDockerCommand(command, args, options, { ownershipContext, executionSignal });
+        if (abortError) { trackPromptHandoff(options.promptHandoff, { dockerRun: false, taskId: options.taskId }).notStarted(); throw abortError; }
+        return startNow();
     });
-}
-
-/** The process was created with its input: from now on it may have reached the agent. */
-function notifyPromptHandoff(callback: (() => void) | undefined, taskId: string | undefined): void {
-    try { callback?.(); } catch (error) {
-        logger.warn({ taskId, error: (error as Error).message }, 'Prompt handoff callback failed');
-    }
+    if (!admission) return start();
+    return admission.then(refusal => refusal ? refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false) : start());
 }
 
 function startDockerCommand(
@@ -247,8 +243,11 @@ function startDockerCommand(
         // the run was stopped at its cap, a new agent container is refused before
         // it starts.
         let stopForCostCap: (message: string) => void = () => undefined;
+        // Only the agent's output proves it received the prompt: a started `docker` client may still fail.
+        const promptHandoff = trackPromptHandoff(options.promptHandoff, { dockerRun: /(?:^|\/)docker$/.test(command) && args[0] === 'run', taskId });
         const costCap = registerCostExecution(command, args, { model, costCapExempt }, message => stopForCostCap(message));
         if ('refusal' in costCap) {
+            promptHandoff.notStarted();
             refuseCostExecution(costCap.refusal, preserveOutputOnTimeout).then(resolve, reject);
             return;
         }
@@ -257,11 +256,9 @@ function startDockerCommand(
         try { child = spawnCommandProcess({ executablePath, args: executionArgs, cwd, stdinData, liveInput: !!options.liveInput }); } catch (error) {
             // A container that never started must not stay registered with the guard.
             void costExecution?.finish().catch(() => null);
+            promptHandoff.notStarted();
             throw error;
         }
-        // spawn() can return a child that then fails to start ('error' without 'spawn'):
-        // the input only may have reached an agent once the process was created.
-        child.once('spawn', () => notifyPromptHandoff(options.onPromptHandoff, taskId));
 
         let sessionLineBuffer = '';
         const stderrTail = new BoundedDiagnosticTail(), workflowMarkers = captureWorkflowMarkers(args);
@@ -395,6 +392,7 @@ function startDockerCommand(
 
         child.stdout?.on('data', (data: Buffer) => {
             const chunk = stdoutDecoder.write(data), ts = new Date().toISOString();
+            promptHandoff.output();
             recordWatchdogActivity();
             stdoutBuffer.append(chunk);
             liveOutput?.stdout(chunk);
@@ -409,6 +407,7 @@ function startDockerCommand(
         });
 
         child.on('close', async (exitCode: number | null) => {
+            promptHandoff.exited(exitCode);
             clearTimeout(timeoutHandle);
             watchdog.stop();
             liveInput.close();
@@ -453,6 +452,8 @@ function startDockerCommand(
         child.on('error', async (error: Error) => {
             // close may run during cleanup; capture the process result before awaiting.
             processError = error;
+            // spawn() can return a child that then fails to start: it never got a pid.
+            if (child.pid === undefined) promptHandoff.notStarted();
             clearTimeout(timeoutHandle);
             watchdog.stop();
             liveInput.close();

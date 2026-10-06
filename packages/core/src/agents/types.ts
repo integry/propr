@@ -3,6 +3,7 @@ import type { CliVersionType } from '../config/configManager.js';
 import type { UsageTrackingMetrics } from './impl/utils/usageTrackingWrapper.js';
 import type { AgentType as SharedAgentType, ReasoningLevel, TaskSteeringCapability } from '@propr/shared';
 import type { LiveInputSource } from '../claude/docker/dockerLiveInput.js';
+import type { PromptHandoff } from '../claude/docker/dockerPromptHandoff.js';
 
 export { AGENT_TYPES, AGENT_TASK_STEERING } from '@propr/shared';
 
@@ -114,10 +115,10 @@ export interface AgentTaskOptions {
     steering?: LiveInputSource;
 
     /**
-     * Called once the agent process was started with the prompt. Until then
-     * the prompt has definitely not reached an agent.
+     * Delivery bookkeeping for a prompt carrying operator input: persisted
+     * before the agent process starts, settled by the agent's own output.
      */
-    onPromptHandoff?: () => void;
+    promptHandoff?: PromptHandoff;
 }
 
 export interface GoalControlInput {

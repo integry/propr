@@ -82,7 +82,7 @@ export class CodexAgent implements Agent {
                     cwd: worktreePath,
                     onSessionId,
                     onContainerId,
-                    onPromptHandoff: options.onPromptHandoff,
+                    promptHandoff: options.promptHandoff,
                     worktreePath,
                     stdinData: prompt,
                     taskId,
