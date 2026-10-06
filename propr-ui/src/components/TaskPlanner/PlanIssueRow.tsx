@@ -72,7 +72,6 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
 
   const isPending = issue.status === 'pending';
   const isMerged = issue.status === 'merged';
-  const isProcessing = issue.status === 'processing' || issue.status === 'refinement_processing';
 
   const issueUrl = `https://github.com/${issue.repository}/issues/${issue.issue_number}`;
 
@@ -146,7 +145,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
 
           {/* Bottom row (mobile) / Right side (desktop): Metadata + Actions */}
           <div className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2 lg:w-auto lg:flex-none lg:justify-end lg:gap-3">
-            <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} selectedModels={selectedModels} />
+            <IssueMetadata issue={issue} />
             <RowActions
               isPending={isPending}
               hasExpandableContent={hasExpandableContent}

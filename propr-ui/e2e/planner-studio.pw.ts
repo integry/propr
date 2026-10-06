@@ -178,10 +178,28 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
   await expect(notes).toHaveCSS('border-top-style', 'solid');
   await expect(notes.locator('.border-dashed')).toHaveCount(0);
   expect((await page.locator('[data-task-list]').boundingBox())!.width).toBeGreaterThan(700);
+  await expect(tabs).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await expect(tabs).toHaveCSS('z-index', '10');
+  // Phases sit on the title row and the primary action sits in the header: no stepper band, no footer bar.
+  const header = page.getByRole('heading', { level: 1 }).locator('xpath=ancestor::div[contains(@class, "justify-between")][1]');
+  await expect(header.getByRole('navigation', { name: 'Plan phase' })).toContainText('Review(3)');
+  await expect(page.getByRole('navigation', { name: 'Progress' })).toBeHidden();
+  await expect(header.getByRole('button', { name: 'Create 3 GitHub Issues' })).toBeVisible();
+  await expect(page.getByText('3 tasks in plan')).toHaveCount(0);
+  expect((await tabs.boundingBox())!.y).toBeLessThan(150);
   await page.getByRole('button', { name: 'More plan actions' }).click();
   await expect(page.getByRole('menuitem', { name: 'Delete plan' })).toBeVisible();
   await page.mouse.click(5, 5);
   await capture(page, 'review-plan-tabs');
+  // Scrolled specification text stays below the tabs instead of showing through them.
+  await page.locator('[data-task-list]').evaluate(element => { element.scrollTop = 330; });
+  const tabBox = (await tabs.boundingBox())!;
+  for (const x of [0.2, 0.5, 0.8]) {
+    const hit = await page.evaluate(([px, py]) => !!document.elementFromPoint(px, py)?.closest('nav[aria-label="Plan steps"]'), [tabBox.x + tabBox.width * x, tabBox.y + tabBox.height - 2]);
+    expect(hit).toBe(true);
+  }
+  await capture(page, 'review-plan-tabs-scrolled');
+  await page.locator('[data-task-list]').evaluate(element => { element.scrollTop = 0; });
   await notes.scrollIntoViewIfNeeded();
   await capture(page, 'review-plan-user-notes');
 });
@@ -196,6 +214,16 @@ test('execution step renders one matrix with batch controls and labelled ultrafi
   await expect(configButton).toContainText('Opus 5.5 · Ultrafix (8/10) · Auto-merge');
   await expect(page.getByText('PR Options')).toHaveCount(0);
   expect((await page.getByTestId('execution-options-bar').boundingBox())!.height).toBeLessThanOrEqual(56);
+  // Agent and action columns line up across running and pending rows.
+  const rows = page.getByTestId('plan-execution-matrix').getByTestId('plan-execution-row');
+  const agentX = await rows.getByTestId('agent-column').evaluateAll(cells => cells.map(cell => Math.round(cell.getBoundingClientRect().x)));
+  const actionX = await rows.getByTestId('action-column').evaluateAll(cells => cells.map(cell => Math.round(cell.getBoundingClientRect().x)));
+  expect(new Set(agentX).size).toBe(1);
+  expect(new Set(actionX).size).toBe(1);
+  expect(actionX[0]).toBeGreaterThan(agentX[0]);
+  await expect(rows.nth(0).getByTestId('action-column')).toContainText('View Progress');
+  await expect(rows.nth(1).getByTestId('action-column')).toContainText('Implement');
+  await expect(page.getByRole('navigation', { name: 'Plan phase' })).toBeVisible();
   await page.waitForTimeout(500);
   await capture(page, 'execution-matrix');
   await configButton.click();
@@ -222,5 +250,11 @@ test('define step shows technical scope estimates and consistent token units', a
   const breakPlan = page.getByText('Break plan:');
   expect(Math.abs((await generate.boundingBox())!.y + (await generate.boundingBox())!.height / 2 - ((await breakPlan.boundingBox())!.y + (await breakPlan.boundingBox())!.height / 2))).toBeLessThan(8);
   await expect(page.getByTestId('branch-chip')).toContainText('main');
+  // Generation settings are docked to the prompt box, not pinned to a page-wide footer.
+  const composerFooter = page.getByTestId('composer-footer');
+  await expect(composerFooter.getByRole('button', { name: /Generate Plan/ })).toBeVisible();
+  await expect(composerFooter.getByText('Break plan:')).toBeVisible();
+  expect((await composerFooter.boundingBox())!.y + (await composerFooter.boundingBox())!.height).toBeLessThan(700);
+  await expect(page.getByRole('navigation', { name: 'Plan phase' })).toContainText('Define');
   await capture(page, 'define-context-scope');
 });

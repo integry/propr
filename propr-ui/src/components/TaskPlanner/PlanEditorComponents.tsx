@@ -2,15 +2,18 @@ import React, { useState } from 'react';
 import { FileQuestion, Info, X, Undo2, Redo2, Loader2, ArrowLeft, Github, GitBranch, Trash2, AlertCircle, History, MessageSquare, MoreHorizontal } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GranularityEnforcementMetadata } from '../../api/proprApi';
+import { StudioPhaseSwitcher } from './StudioStepper';
+import { FinalizeButton } from './FinalizeButton';
 
 interface OriginalPromptPopoverProps {
   prompt: string;
   buttonClassName?: string;
+  labelClassName?: string;
 }
 
 const PROMPT_BUTTON_CLASS = 'flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors text-teal-700 hover:bg-teal-50';
 
-export const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt, buttonClassName = PROMPT_BUTTON_CLASS }) => {
+export const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt, buttonClassName = PROMPT_BUTTON_CLASS, labelClassName = 'hidden sm:inline' }) => {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
@@ -19,9 +22,10 @@ export const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ pr
         onClick={() => setIsOpen(!isOpen)}
         className={buttonClassName}
         title="View original prompt"
+        aria-label="Prompt"
       >
         <FileQuestion size={14} />
-        <span className="hidden sm:inline font-medium">Prompt</span>
+        <span className={`${labelClassName} font-medium`}>Prompt</span>
       </button>
       <AnimatePresence>
         {isOpen && (
@@ -106,6 +110,9 @@ export interface PlanEditorHeaderProps {
   /** Desktop only: whether the Assistant pane is shown, and the toggle for it. */
   isAssistantOpen?: boolean;
   onToggleAssistant?: () => void;
+  /** Desktop only: the plan's primary action ("Create N GitHub Issues") sits in the header. */
+  planLength?: number;
+  onFinalize?: () => void;
 }
 
 const isPlanActionDisabled = (
@@ -270,43 +277,48 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
   onShowHistory,
   isReadOnly = false,
   isAssistantOpen,
-  onToggleAssistant
+  onToggleAssistant,
+  planLength,
+  onFinalize
 }) => {
   const actionDisabled = isPlanActionDisabled(isFinalizing, isResettingToSetup, isDeleting, isReadOnly);
 
   const repoName = repository.split('/').pop() || repository;
 
   return (
-    <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-4">
+    <div className="flex items-center justify-between px-6 py-2 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-4">
       <div className="flex items-center gap-3 min-w-0 flex-1">
         {/* Plan Name - takes the space the actions no longer need */}
-        <h1 className="text-lg font-semibold text-gray-900 truncate min-w-0 flex-1" title={planName}>
+        <h1 className="text-base font-semibold text-gray-900 truncate min-w-0 flex-1" title={planName}>
           {planName}
         </h1>
         {/* Repository and branch as quiet code metadata */}
         <div className="flex items-center gap-2 text-xs flex-shrink-0">
-          <span className="font-mono text-slate-600 truncate max-w-[160px]" title={repository}>{repoName}</span>
+          <span className="hidden 2xl:inline font-mono text-slate-600 truncate max-w-[160px]" title={repository}>{repoName}</span>
           <span className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-slate-700">
             <GitBranch size={12} />
             {baseBranch}
           </span>
         </div>
+        <StudioPhaseSwitcher counts={planLength !== undefined ? { review: planLength } : undefined} />
       </div>
 
       <div className="flex items-center gap-2 flex-shrink-0">
         {/* Secondary navigation: the source prompt and the way back to setup */}
         <div className="flex items-center rounded-md border border-slate-200 bg-white divide-x divide-slate-200">
           {originalPrompt && (
-            <OriginalPromptPopover prompt={originalPrompt} buttonClassName={SECONDARY_GROUP_BUTTON_CLASS} />
+            <OriginalPromptPopover prompt={originalPrompt} buttonClassName={SECONDARY_GROUP_BUTTON_CLASS} labelClassName="hidden 2xl:inline" />
           )}
+          {/* Labels only on wide screens so the plan title keeps its room on the title row */}
           <button
             onClick={onBackToSetup}
             disabled={actionDisabled}
             className={SECONDARY_GROUP_BUTTON_CLASS}
             title={getReadOnlyTitle(isReadOnly, 'Back to Setup')}
+            aria-label="Back to Setup"
           >
             <ArrowLeft size={14} />
-            Back to Setup
+            <span className="hidden 2xl:inline">Back to Setup</span>
           </button>
         </div>
         {/* Undo / Redo / History as one segmented icon pill */}
@@ -352,6 +364,9 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
             <MessageSquare size={14} />
             Assistant
           </button>
+        )}
+        {onFinalize && planLength !== undefined && (
+          <FinalizeButton planLength={planLength} isFinalizing={isFinalizing} isReadOnly={isReadOnly} onFinalize={onFinalize} />
         )}
         <PlanOverflowMenu
           isDeleting={isDeleting}

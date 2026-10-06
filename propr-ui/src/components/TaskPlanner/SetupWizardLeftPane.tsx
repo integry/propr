@@ -6,6 +6,7 @@ import { GenerationProgress } from './GenerationProgress';
 import { NewModeHeader, EditModeHeader } from './SetupWizardHeaders';
 import { ManualFileSelector } from './ManualFileSelector';
 import { RepoSelection } from '../RepositorySelector';
+import { StudioPhaseSwitcher } from './StudioStepper';
 
 interface Repo { name: string; enabled: boolean; baseBranch?: string; starred?: boolean; iconPath?: string | null; }
 
@@ -124,6 +125,8 @@ interface SetupWizardLeftPaneProps {
   onRemoveManualFile: (filePath: string) => void;
   hideManualFileSelector?: boolean;
   attachButtonPressed?: boolean;
+  /** Generation settings and the Generate button, docked to the bottom edge of the prompt box. */
+  composerFooter?: React.ReactNode;
 }
 
 export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
@@ -163,6 +166,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
   onRemoveManualFile,
   hideManualFileSelector,
   attachButtonPressed,
+  composerFooter,
 }) => (
   <div className="w-full md:w-[65%] h-auto md:h-full flex flex-col">
     {/* Header with repo/branch - Toolbar border for alignment with right pane */}
@@ -193,13 +197,13 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             reposLoading={reposLoading}
           />
         )}
+        <StudioPhaseSwitcher className="ml-auto hidden md:block" />
       </div>
     </div>
 
-    {/* Main content area */}
-    <div className="flex-1 flex flex-col min-h-0">
-      {/* Borderless textarea - white canvas stands on its own with gray Header/Footer framing */}
-      <div className="flex-1 flex flex-col min-h-0 relative">
+    {/* One composer: prompt, attachments and generation settings in a single bordered box */}
+    <div className="flex-1 min-h-0 overflow-auto p-3 md:p-4">
+      <div className="flex flex-col rounded-lg border border-slate-200 bg-white focus-within:border-slate-300 focus-within:ring-1 focus-within:ring-slate-200">
         <textarea
           ref={textareaRef}
           value={prompt}
@@ -208,11 +212,11 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           onPaste={onPaste}
           disabled={isGenerating || isUploading}
           placeholder="Describe the feature, bug fix, or improvement you want to implement..."
-          className={`flex-1 w-full text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 pb-16 focus:outline-none min-h-[320px] md:min-h-[160px] ${
+          className={`w-full rounded-t-lg text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 focus:outline-none min-h-[320px] md:min-h-[160px] max-h-[60vh] ${
             isGenerating || isUploading ? 'opacity-70 cursor-not-allowed bg-gray-50' : ''
           }`}
         />
-        <div className="absolute bottom-0 left-0 right-0 px-4 py-3 bg-white border-t border-gray-100">
+        <div className="px-4 py-3 border-t border-slate-100">
           <div className="flex flex-col gap-3">
             <AttachmentsSection
               isNewMode={isNewMode}
@@ -237,6 +241,11 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
             )}
           </div>
         </div>
+        {composerFooter && (
+          <div data-testid="composer-footer" className="rounded-b-lg border-t border-slate-200 bg-slate-50 px-3 py-2">
+            {composerFooter}
+          </div>
+        )}
       </div>
     </div>
 

@@ -109,6 +109,50 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const isMobile = useIsMobile(768);
   const stats = contextRefresh.preview.data?.stats;
   const showPreviewProgress = shouldShowPreviewProgress(isGenerating, isMobile);
+  // Plan shape, model and Generate are docked to the prompt box rather than a page-wide footer
+  const composerFooter = (
+    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3 md:flex-nowrap">
+      <div className="flex min-w-0 max-w-full items-center gap-2 overflow-x-auto md:flex-shrink-0">
+        <span className="text-xs text-gray-500 whitespace-nowrap">Break plan:</span>
+        <GranularityPills
+          value={config.granularity}
+          onChange={setGranularity}
+          hideEstimate
+          compact
+        />
+      </div>
+      <ModelSelector
+        agents={agents}
+        generationModel={config.generationModel}
+        onModelChange={handleModelChange}
+        modelName={stats?.modelName}
+        disabled={isGenerating}
+      />
+      <div className="ml-auto flex flex-shrink-0 items-center gap-1 sm:gap-2">
+        <button
+          onClick={handleExportContext}
+          disabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
+          className="hidden md:flex items-center p-1.5 text-gray-500 hover:text-gray-700 hover:bg-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          title="Export context as XML"
+          aria-label="Export Context"
+        >
+          {contextExport.isExporting ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Download className="w-4 h-4" />
+          )}
+        </button>
+        <button
+          onClick={isDemoMode ? undefined : handleGenerate}
+          disabled={isGenerateDisabled}
+          title={isDemoMode ? 'Demo mode is read-only' : undefined}
+          className="flex max-w-full items-center justify-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-white text-xs font-medium rounded-md bg-[rgb(29,138,138)] hover:bg-[rgb(24,118,118)] disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+        >
+          {isDemoMode ? 'Read-only demo' : <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />}
+        </button>
+      </div>
+    </div>
+  );
   return (
     <div className="h-full flex flex-col bg-white">
       <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-auto">
@@ -147,6 +191,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           manualFiles={config.manualFiles}
           onAddManualFile={handleAddManualFile}
           onRemoveManualFile={handleRemoveManualFile}
+          composerFooter={composerFooter}
         />
         <SetupWizardRightPane
           contextLevel={config.contextLevel}
@@ -166,52 +211,6 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           showPreviewProgress={showPreviewProgress}
           onExcludeFile={handleExcludeFile}
         />
-      </div>
-      <div className="mobile-safe-action-area sticky bottom-0 z-20 flex-shrink-0 px-3 md:px-6 pt-2 md:py-4 bg-gray-100 border-t border-gray-300">
-        {/* One docked action bar: plan shape and model on the left, export and generate on the right */}
-        <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3 md:gap-4">
-          <div className="flex min-w-0 max-w-full items-center gap-2 overflow-x-auto">
-            <span className="text-xs sm:text-sm text-gray-500 whitespace-nowrap">Break plan:</span>
-            <GranularityPills
-              value={config.granularity}
-              onChange={setGranularity}
-              hideEstimate
-            />
-          </div>
-          <ModelSelector
-            agents={agents}
-            generationModel={config.generationModel}
-            onModelChange={handleModelChange}
-            modelName={stats?.modelName}
-            disabled={isGenerating}
-          />
-          <div className="ml-auto flex items-center gap-2 sm:gap-3">
-            <button
-              onClick={handleExportContext}
-              disabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
-              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
-              title="Export context as XML"
-            >
-              {contextExport.isExporting ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Download className="w-4 h-4" />
-              )}
-              <span>Export Context</span>
-            </button>
-            <button
-              onClick={isDemoMode ? undefined : handleGenerate}
-              disabled={isGenerateDisabled}
-              title={isDemoMode ? 'Demo mode is read-only' : undefined}
-              className="flex max-w-full items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 md:px-5 py-2 text-white text-sm font-medium rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex-shrink-0"
-              style={{ backgroundColor: isGenerateDisabled ? undefined : 'rgb(29, 138, 138)' }}
-              onMouseEnter={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
-              onMouseLeave={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
-            >
-              {isDemoMode ? 'Read-only demo' : <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />}
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );

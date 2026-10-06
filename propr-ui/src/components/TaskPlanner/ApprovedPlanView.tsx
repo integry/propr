@@ -7,6 +7,7 @@ import DeletePlanDialog from './DeletePlanDialog';
 import RevisePlanDialog from './RevisePlanDialog';
 import PlanIssuesManager from './PlanIssuesManager';
 import { getDraftDisplayName } from './planDisplayName';
+import { StudioPhaseSwitcher } from './StudioStepper';
 import { PlanTask, reviseDraft, pauseDraft, resumeDraft, updateExecutionSettings } from '../../api/plannerApi';
 import { PlanIssue } from '../../api/planIssuesApi';
 import { useToast } from '../ui/useToast';
@@ -223,7 +224,7 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
         <Pause size={12} /><span className="hidden sm:inline">Paused</span>
       </span>
     )}
-    <div className="hidden md:flex items-center gap-2 text-sm flex-shrink-0">
+    <div className="hidden 2xl:flex items-center gap-2 text-sm flex-shrink-0">
       <div className="h-4 w-px bg-gray-300" />
       <Github size={16} className="text-gray-500" />
       <span className="font-medium text-gray-900 truncate max-w-[200px]" title={repository}>{repository}</span>
@@ -237,6 +238,7 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
         <div className="hidden lg:block"><OriginalPromptPopover prompt={initialPrompt} /></div>
       </>
     )}
+    <StudioPhaseSwitcher className="hidden md:block" />
   </div>
 );
 
@@ -395,7 +397,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
-      <div className="flex flex-col gap-2 border-b border-gray-200 bg-gray-100 px-4 py-3 flex-shrink-0 sm:px-6 md:flex-row md:items-center md:justify-between md:gap-4">
+      <div className="flex flex-col gap-2 border-b border-gray-200 bg-gray-100 px-4 py-2 flex-shrink-0 sm:px-6 md:flex-row md:items-center md:justify-between md:gap-4">
         <PlanHeaderSummary planName={planName} draftStatus={draft.status} isPaused={isPaused} repository={repository} baseBranch={baseBranch} initialPrompt={draft.initial_prompt} />
         <PlanHeaderActions draftStatus={draft.status} isPaused={isPaused} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => { if (!isDemoMode) setShowReviseDialog(true); }} onDelete={() => { if (!isDemoMode) setShowDeleteDialog(true); }} isReadOnly={isDemoMode} />
       </div>

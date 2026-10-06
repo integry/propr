@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import type { PlanIssue } from '../../api/planIssuesApi';
-import { UltrafixSettingsControls } from './PlanIssueRowComponents';
+import { RowActions, UltrafixSettingsControls } from './PlanIssueRowComponents';
 import { AgentOverrideChip } from './AgentOverrideChip';
 
 const issue = {
@@ -50,5 +51,27 @@ describe('UltrafixSettingsControls', () => {
     const goal = screen.getByLabelText('Min Review Score') as HTMLSelectElement;
     expect(goal.selectedOptions[0].textContent).toBe('◆ 8/10 (Standard)');
     expect(screen.getByLabelText('Max Loops')).toHaveValue(5);
+  });
+});
+
+describe('RowActions', () => {
+  const rowProps = {
+    hasExpandableContent: false, isExpanded: false, implementing: false, isMultiMode: false, selectedModels: [],
+    hasAgent: true, isFirstPending: true, agents, onAgentChange: vi.fn(), onModelChange: vi.fn(),
+    handleMultiToggle: vi.fn(), handleMultiModelChange: vi.fn(), handleImplementClick: vi.fn(), handleToggleExpand: vi.fn(),
+  };
+
+  it.each([
+    ['pending', { ...issue }, 'agent-override-chip', 'Implement'],
+    ['running', { ...issue, status: 'processing', task_id: 'task-1' } as PlanIssue, 'agent-chip', 'View Progress'],
+  ])('keeps the agent column before the action column for a %s row', (_state, rowIssue, chipTestId, action) => {
+    const { container } = render(
+      <MemoryRouter><RowActions {...rowProps} issue={rowIssue} isPending={rowIssue.status === 'pending'} /></MemoryRouter>
+    );
+
+    const columns = Array.from(container.querySelectorAll('[data-testid$="-column"]')).map(el => el.getAttribute('data-testid'));
+    expect(columns).toEqual(['agent-column', 'action-column']);
+    expect(within(screen.getByTestId('agent-column')).getByTestId(chipTestId)).toHaveTextContent('Opus 5.5');
+    expect(screen.getByTestId('action-column')).toHaveTextContent(action);
   });
 });

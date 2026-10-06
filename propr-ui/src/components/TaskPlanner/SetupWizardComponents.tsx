@@ -67,9 +67,9 @@ export const ModelSelector: React.FC<{
 
   return (
     <div className={`flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm min-w-0 flex-1 sm:flex-initial ${disabled ? 'text-gray-400' : 'text-gray-600'}`}>
-      <span className={`${disabled ? 'text-gray-400' : 'text-gray-500'} hidden sm:inline`}>Model:</span>
+      <span className={`${disabled ? 'text-gray-400' : 'text-gray-500'} hidden sm:inline text-xs`}>Model:</span>
       <div
-        className="relative inline-flex items-center flex-1 sm:flex-initial max-w-[180px] sm:max-w-[200px]"
+        className="relative inline-flex min-w-0 items-center flex-1 max-w-[160px]"
         title={disabled ? 'Model is locked while plan generation is running' : 'Select AI model for plan generation'}
       >
         {selectedAgent && (
@@ -82,7 +82,7 @@ export const ModelSelector: React.FC<{
           value={generationModel || ''}
           onChange={handleChange}
           disabled={disabled}
-          className={`appearance-none border rounded-md text-xs sm:text-sm py-1 sm:py-1.5 pr-6 sm:pr-7 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition-colors truncate w-full ${disabled ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-gray-200 text-gray-700 hover:border-gray-300 cursor-pointer'} ${selectedAgent ? 'pl-7' : 'pl-2'}`}
+          className={`appearance-none border rounded-md text-xs py-1 pr-6 sm:pr-7 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition-colors truncate w-full ${disabled ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-gray-200 text-gray-700 hover:border-gray-300 cursor-pointer'} ${selectedAgent ? 'pl-7' : 'pl-2'}`}
         >
           <option value="">{modelName ? `${modelName}` : 'Default'}</option>
           {modelOptions.map(opt => (

@@ -26,7 +26,9 @@ export const GranularityPills: React.FC<{
   onChange: (g: Granularity) => void;
   fileCount?: number;
   hideEstimate?: boolean;
-}> = ({ value, onChange, hideEstimate = false }) => {
+  /** Tighter pills for the prompt box's docked settings row. */
+  compact?: boolean;
+}> = ({ value, onChange, hideEstimate = false, compact = false }) => {
   const options: { id: Granularity; label: string; shortLabel: string; icon: typeof Square }[] = [
     { id: 'single', label: 'Single', shortLabel: '1', icon: Square },
     { id: 'balanced', label: 'Balanced', shortLabel: '3-5', icon: Layers },
@@ -45,7 +47,7 @@ export const GranularityPills: React.FC<{
             <button
               key={opt.id}
               onClick={() => onChange(opt.id)}
-              className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs sm:text-sm font-medium transition-all ${
+              className={`flex items-center gap-1 rounded-md font-medium transition-all ${compact ? 'px-2 py-1 text-xs' : 'sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm'} ${
                 isSelected
                   ? 'bg-white shadow-sm'
                   : 'text-gray-500 hover:text-gray-700'

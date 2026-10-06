@@ -121,7 +121,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
 
         {/* Main Task List */}
         <div
-          className={`task-list-scroll flex-1 overflow-y-auto [scrollbar-gutter:stable] ${isMobile ? 'p-3' : 'p-4'} ${!showOutlineRail && !isMobile ? 'px-6' : ''}`}
+          className={`task-list-scroll relative isolate flex-1 overflow-y-auto [scrollbar-gutter:stable] ${isMobile ? 'p-3' : 'p-4'} ${!showOutlineRail && !isMobile ? 'px-6' : ''}`}
           data-task-list
           onScroll={handleScroll}
           style={{

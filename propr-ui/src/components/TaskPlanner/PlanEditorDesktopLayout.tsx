@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Loader2, GripVertical, Github } from 'lucide-react';
+import { GripVertical } from 'lucide-react';
 import type { ChatMessage, GranularityEnforcementMetadata, PlanTask } from '../../api/proprApi';
 import type { usePlanRefinement } from '../../hooks/usePlanRefinement';
 import TaskCardList from './TaskCardList';
@@ -10,14 +10,6 @@ import DeletePlanDialog from './DeletePlanDialog';
 import { GranularityEnforcementNotice, PlanEditorErrorBanner, PlanEditorHeader } from './PlanEditorComponents';
 
 type PlanRefinementState = ReturnType<typeof usePlanRefinement>;
-
-const isFinalizeDisabled = (isFinalizing: boolean, planLength: number, isReadOnly: boolean) => (
-  isFinalizing || planLength === 0 || isReadOnly
-);
-
-const getFinalizeButtonStyle = (isDisabled: boolean) => ({
-  backgroundColor: isDisabled ? undefined : 'rgb(29, 138, 138)'
-});
 
 interface PlanEditorNoticesProps {
   finalizeError: string | null;
@@ -115,75 +107,6 @@ const PlanEditorPanels: React.FC<PlanEditorPanelsProps> = ({
     </PanelGroup>
   </div>
 );
-
-const FinalizeButtonContent: React.FC<{ isReadOnly: boolean; isFinalizing: boolean; planLength: number }> = ({
-  isReadOnly,
-  isFinalizing,
-  planLength
-}) => {
-  if (isReadOnly) {
-    return (
-      <>
-        <Github size={16} />
-        Read-only Demo
-      </>
-    );
-  }
-
-  if (isFinalizing) {
-    return (
-      <>
-        <Loader2 size={16} className="animate-spin" />
-        Creating Issues...
-      </>
-    );
-  }
-
-  return (
-      <>
-        <Github size={16} />
-        Create {planLength} GitHub {planLength === 1 ? 'Issue' : 'Issues'}
-      </>
-    );
-  };
-
-  interface PlanEditorFooterProps {
-    planLength: number;
-    isFinalizing: boolean;
-    isReadOnly: boolean;
-    onFinalize: () => void;
-    isAssistantOpen: boolean;
-  }
-
-  const PlanEditorFooter: React.FC<PlanEditorFooterProps> = ({ planLength, isFinalizing, isReadOnly, onFinalize, isAssistantOpen }) => {
-    const finalizeDisabled = isFinalizeDisabled(isFinalizing, planLength, isReadOnly);
-
-    return (
-      <div className="flex items-center justify-between px-6 py-5 border-t border-gray-200 bg-gray-100 flex-shrink-0">
-        <div className="flex items-center justify-between" style={{ width: isAssistantOpen ? 'calc(60% - 4px)' : '100%' }}>
-          <div className="text-sm text-gray-500">
-            {planLength} {planLength === 1 ? 'task' : 'tasks'} in plan
-          </div>
-          <button
-            onClick={onFinalize}
-            disabled={finalizeDisabled}
-            className="flex items-center gap-2 px-5 py-2.5 text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
-            title={isReadOnly ? 'Demo mode is read-only' : undefined}
-            style={getFinalizeButtonStyle(finalizeDisabled)}
-            onMouseEnter={(e) => { if (!finalizeDisabled) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
-            onMouseLeave={(e) => { if (!finalizeDisabled) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
-          >
-            <FinalizeButtonContent
-              isReadOnly={isReadOnly}
-              isFinalizing={isFinalizing}
-              planLength={planLength}
-            />
-          </button>
-        </div>
-        <div />
-      </div>
-    );
-  };
 
   interface PlanEditorDialogsProps {
     showBackToSetupDialog: boolean;
@@ -333,6 +256,8 @@ const FinalizeButtonContent: React.FC<{ isReadOnly: boolean; isFinalizing: boole
         isReadOnly={isReadOnly}
         isAssistantOpen={isAssistantOpen}
         onToggleAssistant={() => setIsAssistantOpen(open => !open)}
+        planLength={plan.length}
+        onFinalize={onFinalize}
       />
 
       <PlanEditorNotices
@@ -356,14 +281,6 @@ const FinalizeButtonContent: React.FC<{ isReadOnly: boolean; isFinalizing: boole
         onChatMessagesChange={onChatMessagesChange}
         onStopRefinement={onStopRefinement}
         focusComposerRequest={focusComposerRequest}
-        isAssistantOpen={isAssistantOpen}
-      />
-
-      <PlanEditorFooter
-        planLength={plan.length}
-        isFinalizing={isFinalizing}
-        isReadOnly={isReadOnly}
-        onFinalize={onFinalize}
         isAssistantOpen={isAssistantOpen}
       />
 

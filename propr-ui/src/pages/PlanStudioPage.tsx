@@ -8,7 +8,8 @@ import SetupWizard from '../components/TaskPlanner/SetupWizard';
 import PlanEditor from '../components/TaskPlanner/PlanEditor';
 import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import { GenerationProgress } from '../components/TaskPlanner/GenerationProgress';
-import StudioStepper, { StudioStage } from '../components/TaskPlanner/StudioStepper';
+import StudioStepper, { StudioPhaseSwitcher } from '../components/TaskPlanner/StudioStepper';
+import { StudioStageContext, type StudioStage } from '../components/TaskPlanner/studioStageContext';
 import { PlannerDraft, DraftWithPlan } from '../api/plannerApi';
 import { getDraftDisplayName } from '../components/TaskPlanner/planDisplayName';
 import type { PromptPersistedUpdate } from '../components/TaskPlanner/setupWizardHooks';
@@ -80,6 +81,27 @@ const ErrorView: React.FC<{ error: string | null }> = ({ error }) => (
   </div>
 );
 
+/**
+ * Page frame for every studio phase. On desktop the phases sit in each view's own title row
+ * (see StudioPhaseSwitcher), so there is no separate stepper band; phone widths keep the
+ * full stepper because their headers have no room for it.
+ */
+const StudioShell: React.FC<{ currentStage: StudioStage; intro?: React.ReactNode; children: React.ReactNode }> = ({ currentStage, intro, children }) => (
+  <StudioStageContext.Provider value={currentStage}>
+    <div className="planner-studio-viewport flex flex-col">
+      {intro && <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-3 border-b border-gray-300">{intro}</div>}
+      <div className="md:hidden bg-gray-100 px-4 py-2 border-b border-gray-300">
+        <StudioStepper currentStage={currentStage} />
+      </div>
+
+      {/* Scrollable Canvas */}
+      <div className="flex-1 overflow-auto bg-white">
+        {children}
+      </div>
+    </div>
+  </StudioStageContext.Provider>
+);
+
 const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => {
   const { generationTrace, startPolling, stopPolling } = useGenerationPolling({
     draftId: draft.draft_id,
@@ -96,39 +118,32 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft;
   const taskTitle = getTaskTitle(draft);
 
   return (
-    <div className="planner-studio-viewport flex flex-col">
-      {/* Fixed Header */}
-      <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
-        <StudioStepper currentStage={currentStage} />
-      </div>
-
-      {/* Scrollable Canvas */}
-      <div className="flex-1 overflow-auto bg-white">
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="h-full"
-        >
-          <div className="flex items-center justify-between px-6 py-3 border-b border-gray-100">
-            <div className="flex items-center gap-4">
-              <div className="text-sm text-gray-500 truncate max-w-md">{taskTitle}</div>
-              <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-700 flex items-center gap-1">
-                <motion.span
-                  animate={{ opacity: [1, 0.5, 1] }}
-                  transition={{ duration: 1.5, repeat: Infinity }}
-                  className="w-2 h-2 bg-yellow-500 rounded-full"
-                />
-                Generating
-              </span>
-            </div>
+    <StudioShell currentStage={currentStage}>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="h-full"
+      >
+        <div className="flex items-center justify-between px-6 py-3 border-b border-gray-100">
+          <div className="flex items-center gap-4">
+            <div className="text-sm text-gray-500 truncate max-w-md">{taskTitle}</div>
+            <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-700 flex items-center gap-1">
+              <motion.span
+                animate={{ opacity: [1, 0.5, 1] }}
+                transition={{ duration: 1.5, repeat: Infinity }}
+                className="w-2 h-2 bg-yellow-500 rounded-full"
+              />
+              Generating
+            </span>
           </div>
+          <StudioPhaseSwitcher className="hidden md:block" />
+        </div>
 
-          <div className="px-6 py-4">
-            <GenerationProgress trace={displayTrace} hideCompletedSteps={false} />
-          </div>
-        </motion.div>
-      </div>
-    </div>
+        <div className="px-6 py-4">
+          <GenerationProgress trace={displayTrace} hideCompletedSteps={false} />
+        </div>
+      </motion.div>
+    </StudioShell>
   );
 };
 
@@ -148,22 +163,14 @@ const ApprovedView: React.FC<{
   notificationIntent,
   onNotificationIntentConsumed,
 }) => (
-  <div className="planner-studio-viewport flex flex-col">
-    {/* Fixed Header */}
-    <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
-      <StudioStepper currentStage={currentStage} />
-    </div>
-
-    {/* Scrollable Canvas */}
-    <div className="flex-1 overflow-auto bg-white">
-      <ApprovedPlanView
-        draft={draft}
-        onRefetch={onRefetch}
-        notificationIntent={notificationIntent}
-        onNotificationIntentConsumed={onNotificationIntentConsumed}
-      />
-    </div>
-  </div>
+  <StudioShell currentStage={currentStage}>
+    <ApprovedPlanView
+      draft={draft}
+      onRefetch={onRefetch}
+      notificationIntent={notificationIntent}
+      onNotificationIntentConsumed={onNotificationIntentConsumed}
+    />
+  </StudioShell>
 );
 
 const ReviewView: React.FC<{
@@ -177,43 +184,27 @@ const ReviewView: React.FC<{
   notificationIntent,
   onNotificationIntentConsumed,
 }) => (
-  <div className="planner-studio-viewport flex flex-col">
-    {/* Fixed Header */}
-    <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
-      <StudioStepper currentStage={currentStage} />
-    </div>
-
-    {/* Scrollable Canvas */}
-    <div className="flex-1 overflow-auto bg-white">
-      <PlanEditor
-        draft={draft}
-        originalPrompt={draft.initial_prompt}
-        onFinalize={onRefetch}
-        onBackToSetup={onRefetch}
-        notificationIntent={notificationIntent}
-        onNotificationIntentConsumed={onNotificationIntentConsumed}
-      />
-    </div>
-  </div>
+  <StudioShell currentStage={currentStage}>
+    <PlanEditor
+      draft={draft}
+      originalPrompt={draft.initial_prompt}
+      onFinalize={onRefetch}
+      onBackToSetup={onRefetch}
+      notificationIntent={notificationIntent}
+      onNotificationIntentConsumed={onNotificationIntentConsumed}
+    />
+  </StudioShell>
 );
 
 const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void; onGenerationStarted: (runId: string) => void; onDraftMetadataPersisted?: (update: PromptPersistedUpdate) => void }> = ({ currentStage, draft, onRefetch, onGenerationStarted, onDraftMetadataPersisted }) => (
-  <div className="planner-studio-viewport flex flex-col">
-    {/* Fixed Header */}
-    <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
-      <StudioStepper currentStage={currentStage} />
-    </div>
-
-    {/* Scrollable Canvas */}
-    <div className="flex-1 overflow-auto bg-white">
-      <SetupWizard
-        draft={draft}
-        onGenerateComplete={onRefetch}
-        onGenerationStarted={onGenerationStarted}
-        onDraftMetadataPersisted={onDraftMetadataPersisted}
-      />
-    </div>
-  </div>
+  <StudioShell currentStage={currentStage}>
+    <SetupWizard
+      draft={draft}
+      onGenerateComplete={onRefetch}
+      onGenerationStarted={onGenerationStarted}
+      onDraftMetadataPersisted={onDraftMetadataPersisted}
+    />
+  </StudioShell>
 );
 
 const getNewDraftTitle = (search: string): string =>
@@ -251,24 +242,18 @@ const NewDraftView: React.FC<{
   onGenerationStarted?: (runId: string) => void;
   onDraftMetadataPersisted?: (update: PromptPersistedUpdate) => void;
 }> = ({ draft, onDraftCreated, onRefetch, onGenerationStarted, onDraftMetadataPersisted, singleTask }) => (
-  <div className="planner-studio-viewport flex flex-col">
-    {/* Fixed Header */}
-    <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
-      {singleTask && <div className="mb-3"><h1 className="text-lg font-semibold">New Task</h1><p className="text-sm text-slate-600">Describe one task, review the generated plan, then create and run its issue.</p></div>}
-      <StudioStepper currentStage="draft" />
-    </div>
-
-    {/* Scrollable Canvas */}
-    <div className="flex-1 overflow-auto bg-white">
-      <SetupWizard
-        draft={draft}
-        onGenerateComplete={onRefetch || (() => {})}
-        onDraftCreatedInPlace={onDraftCreated}
-        onGenerationStarted={onGenerationStarted}
-        onDraftMetadataPersisted={onDraftMetadataPersisted}
-      />
-    </div>
-  </div>
+  <StudioShell
+    currentStage="draft"
+    intro={singleTask && <div><h1 className="text-lg font-semibold">New Task</h1><p className="text-sm text-slate-600">Describe one task, review the generated plan, then create and run its issue.</p></div>}
+  >
+    <SetupWizard
+      draft={draft}
+      onGenerateComplete={onRefetch || (() => {})}
+      onDraftCreatedInPlace={onDraftCreated}
+      onGenerationStarted={onGenerationStarted}
+      onDraftMetadataPersisted={onDraftMetadataPersisted}
+    />
+  </StudioShell>
 );
 
 interface DraftViewOptions extends IntentAwareViewProps {

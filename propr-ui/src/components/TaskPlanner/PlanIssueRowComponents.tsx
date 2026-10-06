@@ -182,7 +182,7 @@ export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
 );
 
 export interface ViewProgressLinkProps { taskId: string; }
-export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (<Link to={`/tasks/${encodeURIComponent(taskId)}`} className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800 hover:underline transition-colors" onClick={(e) => e.stopPropagation()}><Eye size={12} />View Progress</Link>);
+export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (<Link to={`/tasks/${encodeURIComponent(taskId)}`} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium text-teal-700 hover:bg-slate-50 hover:text-teal-800 transition-colors" onClick={(e) => e.stopPropagation()}><Eye size={14} />View Progress</Link>);
 
 export interface RowActionsProps {
   isPending: boolean;
@@ -229,34 +229,50 @@ export const RowActions: React.FC<RowActionsProps> = ({
   handleImplementClick,
   handleToggleExpand
 }) => {
+  const showProgressLink = (issue.status === 'processing' || issue.status === 'refinement_processing') && !!issue.task_id;
+  const showMultiAgentInfo = !isPending && selectedModels.length > 0;
+
+  // Fixed columns, same order in every state: agent on the left, the row's action on the far
+  // right. Running rows swap "Implement" for "View Progress" in place, so neither column moves.
   return (
-    <div className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:w-auto lg:flex-none lg:flex-nowrap lg:justify-end lg:gap-3">
-      {isPending && (
-        <AgentOverrideChip
-          agents={agents}
-          issue={issue}
-          disabled={implementing}
-          isMultiMode={isMultiMode}
-          selectedModels={selectedModels}
-          onAgentChange={onAgentChange}
-          onModelChange={onModelChange}
-          handleMultiToggle={handleMultiToggle}
-          handleMultiModelChange={handleMultiModelChange}
-          handleImplementClick={handleImplementClick}
-        />
-      )}
-      {isPending && showImplementButton && (
-        <ImplementButton
-          implementing={implementing}
-          disabled={disableImplementation}
-          hasAgent={hasAgent}
-          isFirstPending={isFirstPending}
-          pressed={implementButtonPressed}
-          label={implementButtonLabel}
-          onClick={handleImplementClick}
-        />
-      )}
-      {hasExpandableContent && <button onClick={handleToggleExpand} className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors" title={isExpanded ? 'Collapse details' : 'Expand details'}><motion.div animate={{ rotate: isExpanded ? 180 : 0 }} transition={{ duration: 0.2 }}><ChevronDown size={16} /></motion.div></button>}
+    <div className="flex min-w-0 items-center gap-2 lg:flex-none lg:gap-3">
+      <div data-testid="agent-column" className="flex w-36 min-w-0 justify-start">
+        {isPending ? (
+          <AgentOverrideChip
+            agents={agents}
+            issue={issue}
+            disabled={implementing}
+            isMultiMode={isMultiMode}
+            selectedModels={selectedModels}
+            onAgentChange={onAgentChange}
+            onModelChange={onModelChange}
+            handleMultiToggle={handleMultiToggle}
+            handleMultiModelChange={handleMultiModelChange}
+            handleImplementClick={handleImplementClick}
+          />
+        ) : showMultiAgentInfo ? (
+          <MultiAgentInfo selectedModels={selectedModels} />
+        ) : issue.agent_alias ? (
+          <AgentModelInfo agentAlias={issue.agent_alias} modelName={issue.model_name} />
+        ) : null}
+      </div>
+      <div data-testid="action-column" className="flex w-32 justify-end">
+        {isPending && showImplementButton && (
+          <ImplementButton
+            implementing={implementing}
+            disabled={disableImplementation}
+            hasAgent={hasAgent}
+            isFirstPending={isFirstPending}
+            pressed={implementButtonPressed}
+            label={implementButtonLabel}
+            onClick={handleImplementClick}
+          />
+        )}
+        {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
+      </div>
+      <div className="flex w-7 justify-end">
+        {hasExpandableContent && <button onClick={handleToggleExpand} className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors" title={isExpanded ? 'Collapse details' : 'Expand details'}><motion.div animate={{ rotate: isExpanded ? 180 : 0 }} transition={{ duration: 0.2 }}><ChevronDown size={16} /></motion.div></button>}
+      </div>
     </div>
   );
 };
@@ -338,27 +354,28 @@ export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId 
   );
 };
 
-export interface IssueMetadataProps { issue: PlanIssue; isPending: boolean; isProcessing: boolean; selectedModels?: AgentModelPair[]; }
-export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, isProcessing, selectedModels }) => {
+const MultiAgentInfo: React.FC<{ selectedModels: AgentModelPair[] }> = ({ selectedModels }) => (
+  <span
+    className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded bg-slate-100 px-2 py-1 text-xs text-slate-600"
+    title={selectedModels.map(m => `${m.agent_alias} / ${getModelName(m.model_name)}`).join('\n')}
+    data-testid="agent-chip"
+  >
+    <ProviderLogo provider={selectedModels[0].agent_alias} className="w-3 h-3 flex-shrink-0" />
+    <span className="truncate">{getShortModelName(selectedModels[0].model_name) || selectedModels[0].agent_alias}</span>
+    {selectedModels.length > 1 && <span className="flex-shrink-0 tabular-nums text-slate-500">+{selectedModels.length - 1}</span>}
+  </span>
+);
+
+/** Secondary row facts (PR link, follow-ups). Agent and action live in RowActions' fixed columns. */
+export interface IssueMetadataProps { issue: PlanIssue; }
+export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue }) => {
   const prUrl = issue.pr_number ? `https://github.com/${issue.repository}/pull/${issue.pr_number}` : null;
-  const showProgressLink = isProcessing && issue.task_id;
-  const showMultiAgentInfo = !isPending && selectedModels && selectedModels.length > 0;
-  const showAgentInfo = !isPending && !showMultiAgentInfo && issue.agent_alias;
-  if (!prUrl && !showProgressLink && issue.followup_count <= 0 && !showMultiAgentInfo && !showAgentInfo) return null;
+  if (!prUrl && issue.followup_count <= 0) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs sm:gap-3">
       {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
-      {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
       {issue.followup_count > 0 && <span className="hidden sm:block"><FollowupCount count={issue.followup_count} /></span>}
-      {showMultiAgentInfo && (
-        <div className="hidden sm:flex items-center gap-1 flex-wrap">
-          {selectedModels.map((m, idx) => (
-            <span key={`${m.agent_alias}-${m.model_name}`} className="flex items-center gap-1 text-gray-500">{idx > 0 && <span className="text-gray-300 mx-1">|</span>}<ProviderLogo provider={m.agent_alias} className="w-3 h-3" /><span>{getModelName(m.model_name)}</span></span>
-          ))}
-        </div>
-      )}
-      {showAgentInfo && <span className="hidden sm:block"><AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} /></span>}
     </div>
   );
 };

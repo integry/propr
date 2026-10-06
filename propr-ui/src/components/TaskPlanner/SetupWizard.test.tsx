@@ -116,6 +116,7 @@ vi.mock('./SetupWizardLeftPane', () => ({
     return (
       <div data-testid="setup-wizard-left-pane">
         {props.isGenerating ? <div data-testid="generation-progress">generation progress</div> : null}
+        {props.composerFooter as import('react').ReactNode}
       </div>
     );
   },

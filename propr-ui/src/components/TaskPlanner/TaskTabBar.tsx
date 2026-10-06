@@ -18,13 +18,14 @@ interface TaskTabBarProps {
  * the specification keeps the full reading width.
  */
 export const TaskTabBar: React.FC<TaskTabBarProps> = ({ taskTitles, taskIds, activeIndex, onSelect }) => (
-  <nav aria-label="Plan steps" className="flex-shrink-0 border-b border-slate-200 bg-white px-6">
+  // Opaque and above the specification, so scrolled content never shows through the tabs.
+  <nav aria-label="Plan steps" className="sticky top-0 z-10 flex-shrink-0 border-b border-slate-200 bg-white px-6">
     <ol className="flex min-w-0 gap-1 overflow-x-auto scrollbar-thin">
       {taskIds.map((id, index) => {
         const isActive = index === activeIndex;
         const title = getOutlineTitle(taskTitles[index] || `Step ${index + 1}`);
         return (
-          <li key={id} className="min-w-0 max-w-xs flex-1">
+          <li key={id} className="min-w-0 flex-1">
             <button
               type="button"
               onClick={() => onSelect(id, index)}
