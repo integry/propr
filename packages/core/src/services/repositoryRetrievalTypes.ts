@@ -6,14 +6,22 @@ export type RepositorySearchMode = 'semantic' | 'literal';
 export type RepositoryMatchReason = 'semantic' | 'path-match' | 'git-history';
 export type RepositoryIndexingState = 'idle' | 'indexing' | 'completed' | 'failed';
 
-/** Error carrying an HTTP-style status so API/MCP layers can map it directly. */
+/**
+ * What a client-facing retrieval failure was about, so callers can classify it
+ * without parsing the message. Absent for failures `status` alone describes.
+ */
+export type RepositoryRetrievalErrorKind = 'invalid_path' | 'invalid_ref' | 'binary_file' | 'file_not_found' | 'ref_not_found';
+
+/** Error carrying an HTTP-style status (and a `kind` where useful) so API/MCP layers can map it directly. */
 export class RepositoryRetrievalError extends Error {
   readonly status: number;
+  readonly kind?: RepositoryRetrievalErrorKind;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, kind?: RepositoryRetrievalErrorKind) {
     super(message);
     this.name = 'RepositoryRetrievalError';
     this.status = status;
+    if (kind) this.kind = kind;
   }
 }
 
@@ -40,7 +48,11 @@ export interface SearchRepositoryFilesOptions extends RepositoryTargetOptions {
   caseSensitive?: boolean;
   offset?: number;
   limit?: number;
-  /** Literal mode only: line matches returned per file (counts are always complete). */
+  /**
+   * Literal mode only: line matches returned per file. Counts are complete
+   * except for a match flagged `countTruncated`, the file a truncated scan
+   * stopped inside.
+   */
   maxLineMatchesPerFile?: number;
 }
 
@@ -55,8 +67,14 @@ export interface RepositorySearchMatch {
   score?: number;
   /** Signals that contributed to the score (semantic mode). */
   reasons?: RepositoryMatchReason[];
-  /** Number of matching lines in the file (literal mode). */
+  /** Number of matching lines in the file (literal mode); a lower bound when `countTruncated`. */
   matchCount?: number;
+  /**
+   * Literal mode: present when the scan stopped inside this file (see
+   * `scanTruncated`), so it may have more matching lines than `matchCount`.
+   * Every other returned file's count is complete.
+   */
+  countTruncated?: boolean;
   /** First matching lines (literal mode). */
   lineMatches?: RepositoryLineMatch[];
 }
@@ -95,8 +113,10 @@ export interface SearchRepositoryFilesResult {
   /** Keywords the relevance engine extracted (semantic mode). */
   keywordsDetected?: string[];
   /**
-   * Literal mode: the grep stopped at its output budget, so `totalMatches` is
-   * a lower bound and later files may also match. Narrow the query or path.
+   * Literal mode: the grep stopped at its output or file budget, so
+   * `totalMatches` is a lower bound and later files may also match. The file
+   * the scan stopped inside, if returned, is flagged `countTruncated` because
+   * its `matchCount` is a lower bound too. Narrow the query or path.
    */
   scanTruncated?: boolean;
   /** Present when the ref could not be refreshed from origin and a cached commit answered. */

@@ -8,14 +8,17 @@ import { after, beforeEach, mock, test } from 'node:test';
 type IndexRow = { indexing_status: string; last_indexed_at: string | null; last_indexed_hash: string | null } | undefined;
 
 let indexRow: IndexRow;
+/** When set, index rows are looked up by branch instead of `indexRow` answering every branch. */
+let indexRowsByBranch: Record<string, IndexRow> | null = null;
 const dbWhereCalls: unknown[] = [];
 
 const db = mock.fn((table: string) => {
   assert.equal(table, 'repositories');
+  let branch: string | undefined;
   const builder = {
-    where(criteria: unknown) { dbWhereCalls.push(criteria); return builder; },
+    where(criteria: { branch?: string }) { dbWhereCalls.push(criteria); branch = criteria.branch; return builder; },
     select() { return builder; },
-    first: async () => indexRow,
+    first: async () => indexRowsByBranch ? indexRowsByBranch[branch ?? ''] : indexRow,
   };
   return builder;
 });
@@ -115,6 +118,7 @@ after(() => {
 
 beforeEach(() => {
   indexRow = { indexing_status: 'completed', last_indexed_at: '2026-10-01T00:00:00.000Z', last_indexed_hash: headCommit };
+  indexRowsByBranch = null;
   relevanceFiles = [];
   summaryScoringSucceeds = true;
   defaultAgent = { config: { alias: 'claude', defaultModel: 'test-model' } };
@@ -202,6 +206,50 @@ test('semantic search flags an index built from an older commit as stale', async
   assert.equal(result.freshness?.usedIndex, true);
   assert.equal(result.freshness?.stale, true);
   assert.match(result.freshness?.caveat ?? '', new RegExp(firstCommit.slice(0, 12)));
+});
+
+test('semantic search reports a completed index that records no commit as stale while still using its summaries', async () => {
+  indexRow = { indexing_status: 'completed', last_indexed_at: '2026-10-01T00:00:00Z', last_indexed_hash: null };
+  relevanceFiles = [{ path: 'src/auth/login.ts', score: 90, reason: 'semantic', signals: ['semantic'] }];
+
+  for (const ref of [undefined, firstCommit]) {
+    const result = await searchRepositoryFiles({ ...base, query: 'login', ref });
+    assert.equal(findRelevantFiles.mock.calls.at(-1)?.arguments[2].useSummaryScoring, true);
+    assert.equal(result.freshness?.usedIndex, true);
+    assert.equal(result.freshness?.stale, true, `ref ${ref ?? 'HEAD'}`);
+    assert.equal(result.freshness?.lastIndexedHash, null);
+    assert.match(result.freshness?.caveat ?? '', /does not record the commit it was built from/);
+  }
+});
+
+test('semantic search falls back to the HEAD index when the requested branch has none', async () => {
+  indexRowsByBranch = { HEAD: { indexing_status: 'completed', last_indexed_at: '2026-10-01T00:00:00.000Z', last_indexed_hash: headCommit } };
+  relevanceFiles = [{ path: 'src/auth/login.ts', score: 90, reason: 'semantic', signals: ['semantic'] }];
+
+  const result = await searchRepositoryFiles({ ...base, query: 'login', branch: 'main' });
+
+  assert.deepEqual(dbWhereCalls, [{ full_name: 'owner/repo', branch: 'main' }, { full_name: 'owner/repo', branch: 'HEAD' }]);
+  const options = findRelevantFiles.mock.calls[0].arguments[2];
+  assert.equal(options.useSummaryScoring, true);
+  assert.equal(options.branch, 'HEAD');
+  assert.equal(result.freshness?.indexBranch, 'HEAD');
+  assert.equal(result.freshness?.usedIndex, true);
+  assert.equal(result.freshness?.stale, false);
+  assert.equal(result.freshness?.caveat, undefined);
+
+  // A stale HEAD index says which index was consulted.
+  indexRowsByBranch = { HEAD: { indexing_status: 'completed', last_indexed_at: '2026-10-01T00:00:00.000Z', last_indexed_hash: firstCommit } };
+  const stale = await searchRepositoryFiles({ ...base, query: 'other', branch: 'main' });
+  assert.equal(stale.freshness?.indexBranch, 'HEAD');
+  assert.equal(stale.freshness?.stale, true);
+  assert.match(stale.freshness?.caveat ?? '', /^Branch "main" has no index, so the default-branch \(HEAD\) index was consulted\. Index for branch "HEAD" was built at/);
+
+  // With neither index the requested branch is reported as unindexed.
+  indexRowsByBranch = {};
+  const none = await searchRepositoryFiles({ ...base, query: 'third', branch: 'main' });
+  assert.equal(none.freshness?.indexBranch, 'main');
+  assert.equal(none.freshness?.usedIndex, false);
+  assert.match(none.freshness?.caveat ?? '', /not been indexed for branch "main"/);
 });
 
 test('semantic search scores the resolved commit of a non-checked-out ref', async () => {
@@ -482,6 +530,38 @@ test('rejects binary files, directories, missing files and bad ranges with clear
   await expectRetrievalError(readRepositoryFileContent({ ...base, path: 'big.txt', startLine: 5, endLine: 2 }), 400, /endLine/);
   await expectRetrievalError(readRepositoryFileContent({ ...base, path: 'big.txt', startLine: 0 }), 400, /startLine/);
   assert.equal(ensureRepoCloned.mock.callCount(), 0);
+});
+
+test('client-facing failures carry a typed kind, so callers need not parse messages', async () => {
+  const kindOf = (promise: Promise<unknown>) => promise.then(
+    () => assert.fail('expected a retrieval error'),
+    (error: unknown) => { assert.ok(error instanceof RepositoryRetrievalError); return error.kind; },
+  );
+  assert.equal(await kindOf(readRepositoryFileContent({ ...base, path: 'assets/logo.bin' })), 'binary_file');
+  assert.equal(await kindOf(readRepositoryFileContent({ ...base, path: 'src/auth' })), 'invalid_path');
+  assert.equal(await kindOf(readRepositoryFileContent({ ...base, path: 'util-link.ts' })), 'invalid_path');
+  assert.equal(await kindOf(readRepositoryFileContent({ ...base, path: '../outside' })), 'invalid_path');
+  assert.equal(await kindOf(searchRepositoryFiles({ ...base, query: 'x', path: '/abs' })), 'invalid_path');
+  assert.equal(await kindOf(readRepositoryFileContent({ ...base, path: 'src/missing.ts' })), 'file_not_found');
+  assert.equal(await kindOf(readRepositoryFileContent({ ...base, path: 'src/util.ts', ref: 'no-such-ref' })), 'ref_not_found');
+  assert.equal(await kindOf(readRepositoryFileContent({ ...base, path: 'src/util.ts', ref: 'bad..ref' })), 'invalid_ref');
+  assert.equal(await kindOf(readRepositoryFileContent({ ...base, path: 'big.txt', startLine: 0 })), undefined);
+});
+
+test('accepts commit SHAs written in upper case', async () => {
+  const read = await readRepositoryFileContent({ ...base, path: 'src/util.ts', ref: firstCommit.toUpperCase() });
+  assert.equal(read.commit, firstCommit);
+  assert.equal(read.ref, firstCommit);
+
+  const fixture = managedFixture('managed-upper-sha');
+  try {
+    for (const ref of [headCommit.toUpperCase(), headCommit.slice(0, 10).toUpperCase()]) {
+      const managed = await readRepositoryFileContent({ repository: fixture.repository, ref, path: 'src/util.ts' });
+      assert.equal(managed.commit, headCommit, ref);
+    }
+  } finally {
+    fixture.cleanup();
+  }
 });
 
 // --- Managed clones ---
@@ -892,10 +972,66 @@ test('the grep aggregator parses records split across chunks and stops at its fi
   assert.deepEqual(bounded.finish().map(file => [file.path, file.matchCount]), [['a.ts', 2], ['b\nc.ts', 1]]);
 });
 
+test('the grep aggregator flags only the file a truncated scan stopped inside', async () => {
+  const { GrepAggregator } = await import('../src/services/repositoryLiteralGrep.js');
+  const sha = 'c'.repeat(40);
+  const records = `${sha}:a.ts\x001\x00one\n${sha}:b.ts\x001\x00two\n${sha}:b.ts\x002\x00three\n`;
+
+  // Stopped while b.ts was being emitted: its count is a lower bound, a.ts is complete.
+  const stopped = new GrepAggregator(sha, 5);
+  stopped.push(`${records}${sha}:b.ts\x003\x00partial`);
+  assert.deepEqual(stopped.finish(true).map(file => [file.path, file.matchCount, file.countTruncated ?? false]),
+    [['a.ts', 1, false], ['b.ts', 3, true]]);
+
+  // A complete scan flags nothing.
+  const complete = new GrepAggregator(sha, 5);
+  complete.push(records);
+  assert.ok(complete.finish(false).every(file => file.countTruncated === undefined));
+
+  // Stopping at the file budget happens at a new file, so every retained file is complete.
+  const bounded = new GrepAggregator(sha, 5, 1);
+  bounded.push(records);
+  assert.deepEqual(bounded.finish(true).map(file => [file.path, file.matchCount, file.countTruncated ?? false]), [['a.ts', 1, false]]);
+
+  // The last record belonged to a file the path filter excluded, so the retained file was finished.
+  const filtered = new GrepAggregator(sha, 5, Number.POSITIVE_INFINITY, filePath => filePath !== 'b.ts');
+  filtered.push(records);
+  assert.deepEqual(filtered.finish(true).map(file => [file.path, file.countTruncated ?? false]), [['a.ts', false]]);
+});
+
+test('a scan stopped by its output budget inside one file reports that file\'s count as a lower bound', async () => {
+  const { GrepAggregator, streamGitGrep } = await import('../src/services/repositoryLiteralGrep.js');
+  const manyPath = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-retrieval-many-'));
+  try {
+    const manyGit = (...args: string[]) => execFileSync('git', args, { cwd: manyPath, encoding: 'utf8' }).trim();
+    manyGit('init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(manyPath, 'many.txt'), 'needle\n'.repeat(20_000));
+    manyGit('add', '-A');
+    manyGit('-c', 'user.email=t@example.com', '-c', 'user.name=T', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'many');
+    const sha = manyGit('rev-parse', 'HEAD');
+    const args = ['grep', '-n', '-I', '-z', '--no-color', '--no-column', '-F', '-e', 'needle', sha, '--'];
+
+    const aggregator = new GrepAggregator(sha, 5);
+    const { scanTruncated } = await streamGitGrep(manyPath, args, aggregator, 1024);
+    assert.equal(scanTruncated, true);
+    const [file] = aggregator.finish(scanTruncated);
+    assert.equal(file.path, 'many.txt');
+    assert.ok(file.matchCount < 20_000, `partial count ${file.matchCount}`);
+    assert.equal(file.countTruncated, true);
+
+    const full = new GrepAggregator(sha, 5);
+    assert.equal((await streamGitGrep(manyPath, args, full)).scanTruncated, false);
+    assert.deepEqual(full.finish(false).map(entry => [entry.matchCount, entry.countTruncated]), [[20_000, undefined]]);
+  } finally {
+    fs.rmSync(manyPath, { recursive: true, force: true });
+  }
+});
+
 test('literal search reports an unbounded scan as complete', async () => {
   const result = await searchRepositoryFiles({ ...base, query: 'validateToken', mode: 'literal' });
   assert.equal(result.scanTruncated, false);
   assert.equal(result.pagination.totalMatches, 5);
+  assert.ok(result.matches.every(match => !('countTruncated' in match)));
 });
 
 test('an encoded byte limit bounds reads by their JSON size and refuses a line no maxBytes can return', async () => {

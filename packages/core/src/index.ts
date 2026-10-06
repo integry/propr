@@ -218,6 +218,7 @@ export type {
   RepositorySearchPagination,
   ReadRepositoryFileOptions,
   ReadRepositoryFileResult,
+  RepositoryRetrievalErrorKind,
 } from './services/repositoryRetrievalService.js';
 export { generatePlan, refinePlan, normalizeRefinedPlan, RefinementOutputError, REFINEMENT_OUTPUT_INVALID, generateContextPreview, checkoutBranch, PlanningFailedError, BranchNotFoundError, buildFullContext } from './services/taskPlanningService.js';
 export type { GeneratePlanOptions, RefinePlanOptions, RefinePlanResult, RefinePlanEstimation, GenerateContextPreviewOptions, PreviewResult, PreviewStats, SmartFileSelection, TaskDraftConfig, Granularity } from './services/taskPlanningService.js';

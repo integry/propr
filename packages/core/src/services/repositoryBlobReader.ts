@@ -23,10 +23,10 @@ export async function readBlob(repoPath: string, commit: string, filePath: strin
   try {
     type = (await git.raw(['cat-file', '-t', object])).trim();
   } catch {
-    throw new RepositoryRetrievalError(`File "${filePath}" not found in ${repository} at ${commit.slice(0, 12)}`, 404);
+    throw new RepositoryRetrievalError(`File "${filePath}" not found in ${repository} at ${commit.slice(0, 12)}`, 404, 'file_not_found');
   }
   if (type !== 'blob') {
-    throw new RepositoryRetrievalError(`"${filePath}" is a ${type === 'tree' ? 'directory' : type}, not a file`, 400);
+    throw new RepositoryRetrievalError(`"${filePath}" is a ${type === 'tree' ? 'directory' : type}, not a file`, 400, 'invalid_path');
   }
 
   // The object exists, so any failure below is a local git problem.
@@ -57,7 +57,7 @@ export async function readBlob(repoPath: string, commit: string, filePath: strin
   const isSymlink = entries.split('\0').some(entry => entry.startsWith('120000 ') && entry.slice(entry.indexOf('\t') + 1) === filePath);
   if (isSymlink) {
     const target = content.length > MAX_SYMLINK_TARGET_CHARS ? `${content.slice(0, MAX_SYMLINK_TARGET_CHARS)}...` : content;
-    throw new RepositoryRetrievalError(`"${filePath}" is a symbolic link to "${target}", not a file; read the link target instead`, 400);
+    throw new RepositoryRetrievalError(`"${filePath}" is a symbolic link to "${target}", not a file; read the link target instead`, 400, 'invalid_path');
   }
   return content;
 }

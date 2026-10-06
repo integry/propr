@@ -359,7 +359,7 @@ in the shared clone; it only clones a repository that has no clone yet.
 | `repository` | Exact `owner/name` in the grant. |
 | `query` | 1–1000 characters. |
 | `mode` | `semantic` (default) or `literal`. |
-| `branch`, `ref` | Optional. `ref` may be a branch, tag, `origin/<branch>`, fully qualified ref or commit SHA. `branch` also selects the index used by semantic search. |
+| `branch`, `ref` | Optional. `ref` may be a branch, tag, `origin/<branch>`, fully qualified ref or commit SHA (either case). `branch` also selects the index used by semantic search. |
 | `path` | Optional repository-relative prefix (`src/` or a partial name such as `src/auth`). Absolute paths, `..` segments and backslashes are `INVALID_PATH`; names such as `CHANGELOG..md` are allowed. |
 | `caseSensitive` | Literal mode only; defaults to case-insensitive. |
 | `offset`, `limit` | Pagination; `limit` defaults to 20 and is at most 100. |
@@ -389,7 +389,10 @@ nothing, the search still answers from path and history heuristics with
 `usedIndex: false`, `stale: true` and a `caveat`. An index built from an older
 commit keeps `usedIndex: true` but sets `stale: true` and a caveat naming both
 commits, because recently changed files may be ranked from outdated summaries.
-Index the branch with `index_repository` to remove the caveat. Repeating or
+An index that does not record the commit it was built from is treated the same
+way, since its summaries cannot be verified against the searched commit. When
+the requested branch has no index but `HEAD` does, the `HEAD` index is used and
+`freshness.indexBranch` is `"HEAD"`. Index the branch with `index_repository` to remove the caveat. Repeating or
 paging the same semantic query reuses the ranking for up to a minute while the
 resolved commit and index build are unchanged, so walking `nextOffset` does
 not rerun the ranking.
@@ -404,7 +407,9 @@ previews would not fit in the 256 KiB response ends early, with `nextOffset`
 pointing at the first file left out. The grep output is streamed with a
 budget (10000 matching files or 64 MiB of output); when it runs out,
 `scanTruncated` is `true`, `totalMatches` is a lower bound and later files may
-also match, so narrow the query or `path`.
+also match, so narrow the query or `path`. If the budget ran out partway
+through a file, that file carries `countTruncated: true` and its `matchCount`
+is a lower bound; every other file's count is complete.
 
 `read_repository_file` reads one text file from the git object database:
 

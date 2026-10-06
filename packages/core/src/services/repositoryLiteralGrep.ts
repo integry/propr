@@ -13,13 +13,16 @@ export interface GrepFileMatch {
   path: string;
   matchCount: number;
   lineMatches: RepositoryLineMatch[];
+  /** The scan stopped inside this file, so `matchCount` is a lower bound. */
+  countTruncated?: boolean;
 }
 
 /**
  * Hard budget for one literal search. A short query in a large repository can
  * match millions of lines, so `git grep` output is streamed and aggregated
  * (complete counts, bounded previews) and the scan stops once either bound is
- * reached, reporting `scanTruncated`.
+ * reached, reporting `scanTruncated`. A file the scan stopped inside keeps its
+ * partial count flagged as `countTruncated`.
  */
 export const MAX_GREP_MATCHED_FILES = 10_000;
 const MAX_GREP_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -35,6 +38,8 @@ export class GrepAggregator {
   private readonly files = new Map<string, GrepFileMatch>();
   private buffer = '';
   private readonly commitPrefix: string;
+  /** Path of the last parsed record, retained or not; git grep emits each file's matches contiguously. */
+  private lastPath: string | null = null;
   /** Set once a new file would exceed `maxFiles`; later records are ignored. */
   full = false;
 
@@ -52,8 +57,16 @@ export class GrepAggregator {
     this.drain(false);
   }
 
-  finish(): GrepFileMatch[] {
+  /**
+   * Consumes any buffered record and returns the aggregated files. When the
+   * scan was stopped early, the file its last record belonged to may have had
+   * more matches, so a retained entry for it is flagged `countTruncated`.
+   * Every earlier file was followed by another file's record and is complete.
+   */
+  finish(scanTruncated = false): GrepFileMatch[] {
     this.drain(true);
+    const last = scanTruncated && this.lastPath !== null ? this.files.get(this.lastPath) : undefined;
+    if (last) last.countTruncated = true;
     return Array.from(this.files.values());
   }
 
@@ -74,6 +87,7 @@ export class GrepAggregator {
       position = textEnd + 1;
 
       if (filePath.startsWith(this.commitPrefix)) filePath = filePath.slice(this.commitPrefix.length);
+      this.lastPath = filePath;
       if (!filePath || !Number.isFinite(lineNumber) || !this.include(filePath)) continue;
       this.record(filePath, lineNumber, text);
     }
@@ -112,7 +126,12 @@ export function parseGitGrepOutput(output: string, commit: string, maxLineMatche
  * output budget or the aggregator's file budget is exhausted. Exit code 1 is
  * `git grep`'s "no matches".
  */
-export function streamGitGrep(repoPath: string, args: string[], aggregator: GrepAggregator): Promise<{ scanTruncated: boolean }> {
+export function streamGitGrep(
+  repoPath: string,
+  args: string[],
+  aggregator: GrepAggregator,
+  maxOutputBytes = MAX_GREP_OUTPUT_BYTES,
+): Promise<{ scanTruncated: boolean }> {
   return new Promise((resolve, reject) => {
     const child = spawn('git', ['-c', `core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`, ...args], { cwd: repoPath, stdio: ['ignore', 'pipe', 'pipe'] });
     const decoder = new StringDecoder('utf8');
@@ -128,7 +147,7 @@ export function streamGitGrep(repoPath: string, args: string[], aggregator: Grep
       if (scanTruncated) return;
       bytes += chunk.length;
       aggregator.push(decoder.write(chunk));
-      if (aggregator.full || bytes >= MAX_GREP_OUTPUT_BYTES) stop();
+      if (aggregator.full || bytes >= maxOutputBytes) stop();
     });
     child.stderr.on('data', (chunk: Buffer) => {
       if (stderr.length < 4096) stderr += chunk.toString('utf8');

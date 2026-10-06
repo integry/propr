@@ -39,6 +39,7 @@ import {
   boundedInteger,
   buildPagination,
   isFullCommitSha,
+  normalizeCommitSha,
   normalizePathPrefix,
   parseRepository,
   remoteRefMappings,
@@ -75,7 +76,7 @@ async function revParseCommit(repoPath: string, candidate: string): Promise<stri
   try {
     const output = await createHooklessGit(repoPath).raw(['rev-parse', '--verify', '--quiet', '--end-of-options', `${candidate}^{commit}`]);
     const sha = output.trim();
-    return /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
+    return /^[0-9a-f]{40,64}$/i.test(sha) ? sha.toLowerCase() : null;
   } catch {
     return null;
   }
@@ -110,8 +111,12 @@ async function resolveCachedCommit(repoPath: string, ref: string): Promise<strin
   return null;
 }
 
-/** An abbreviated commit SHA, the one short name origin cannot have as a tag or branch yet git can resolve. */
-const ABBREVIATED_SHA = /^[0-9a-f]{4,39}$/;
+/**
+ * An abbreviated commit SHA, the one short name origin cannot have as a tag or
+ * branch yet git can resolve. Either case is accepted, as git does; it is only
+ * tried after origin reported no tag or branch of that exact name.
+ */
+const ABBREVIATED_SHA = /^[0-9a-f]{4,39}$/i;
 
 /**
  * Resolves `ref` as an abbreviated object id only. Plain `rev-parse` would
@@ -120,7 +125,7 @@ const ABBREVIATED_SHA = /^[0-9a-f]{4,39}$/;
  */
 async function resolveAbbreviatedSha(repoPath: string, ref: string): Promise<string | null> {
   try {
-    const output = await createHooklessGit(repoPath).raw(['rev-parse', `--disambiguate=${ref}`]);
+    const output = await createHooklessGit(repoPath).raw(['rev-parse', `--disambiguate=${ref.toLowerCase()}`]);
     const candidates = output.split('\n').map(line => line.trim()).filter(Boolean);
     const commits: string[] = [];
     for (const candidate of candidates) {
@@ -190,11 +195,11 @@ async function resolveManagedCommit(
  */
 async function resolveTarget(options: RepositoryTargetOptions): Promise<ResolvedTarget> {
   const { owner, repoName } = parseRepository(options.repository);
-  const ref = assertSafeRef((options.ref || options.branch || 'HEAD').trim());
+  const ref = normalizeCommitSha(assertSafeRef((options.ref || options.branch || 'HEAD').trim()));
 
   if (options.repoPath) {
     const commit = await resolveCommit(options.repoPath, ref);
-    if (!commit) throw new RepositoryRetrievalError(`Ref "${ref}" not found in ${options.repository}`, 404);
+    if (!commit) throw new RepositoryRetrievalError(`Ref "${ref}" not found in ${options.repository}`, 404, 'ref_not_found');
     return { repoPath: options.repoPath, ref, commit };
   }
 
@@ -209,7 +214,7 @@ async function resolveTarget(options: RepositoryTargetOptions): Promise<Resolved
   }
 
   const resolved = await resolveManagedCommit(repoPath, ref, getAuthToken);
-  if (!resolved) throw new RepositoryRetrievalError(`Ref "${ref}" not found in ${options.repository}`, 404);
+  if (!resolved) throw new RepositoryRetrievalError(`Ref "${ref}" not found in ${options.repository}`, 404, 'ref_not_found');
   return { repoPath, ref, ...resolved };
 }
 
@@ -248,6 +253,32 @@ function describeIndexCaveat(row: IndexRow | null, indexBranch: string): string 
   return null;
 }
 
+/**
+ * Loads the index row for `branch`, falling back (like summary scoring) to the
+ * default-branch (HEAD) index when the branch has none; `indexBranch` reports
+ * which index was consulted.
+ */
+async function loadIndexRowWithFallback(repository: string, branch: string): Promise<{ row: IndexRow | null; indexBranch: string }> {
+  const row = await loadIndexRow(repository, branch);
+  if (row || branch === 'HEAD') return { row, indexBranch: branch };
+  const headRow = await loadIndexRow(repository, 'HEAD');
+  return headRow ? { row: headRow, indexBranch: 'HEAD' } : { row: null, indexBranch: branch };
+}
+
+/**
+ * Says why a usable index's summaries may not describe the searched commit,
+ * or null when the index was verifiably built from it. An index that does not
+ * record its commit cannot be verified, so its freshness is unknown.
+ */
+function describeRevisionCaveat(row: IndexRow | null, indexBranch: string, target: ResolvedTarget): string | null {
+  const commit = target.commit.slice(0, 12);
+  if (!row?.last_indexed_hash) {
+    return `Index for branch "${indexBranch}" does not record the commit it was built from, so it cannot be verified against ${target.ref} at ${commit}; files may be ranked using outdated summaries.`;
+  }
+  if (row.last_indexed_hash === target.commit) return null;
+  return `Index for branch "${indexBranch}" was built at ${row.last_indexed_hash.slice(0, 12)}, but ${target.ref} is at ${commit}; recently changed files may be ranked using outdated summaries.`;
+}
+
 function toMatchReasons(file: RelevantFile): RepositoryMatchReason[] {
   const signals = file.signals?.length ? file.signals : [file.reason];
   const reasons = new Set<RepositoryMatchReason>();
@@ -279,8 +310,8 @@ async function scoreRelevance(...args: Parameters<typeof findRelevantFiles>): Re
 async function searchSemantic({ options, query, pathPrefix, offset, limit }: SearchRequest): Promise<SearchRepositoryFilesResult> {
   const repository = options.repository.trim();
   const target = await resolveTarget(options);
-  const indexBranch = options.branch?.trim() || 'HEAD';
-  const row = await loadIndexRow(repository, indexBranch);
+  const requestedIndexBranch = options.branch?.trim() || 'HEAD';
+  const { row, indexBranch } = await loadIndexRowWithFallback(repository, requestedIndexBranch);
 
   let caveat = describeIndexCaveat(row, indexBranch);
   let usedIndex = caveat === null;
@@ -297,9 +328,13 @@ async function searchSemantic({ options, query, pathPrefix, offset, limit }: Sea
   }
 
   let stale = !usedIndex;
-  if (usedIndex && row?.last_indexed_hash && row.last_indexed_hash !== target.commit) {
+  const revisionCaveat = usedIndex ? describeRevisionCaveat(row, indexBranch, target) : null;
+  if (revisionCaveat) {
     stale = true;
-    caveat = `Index for branch "${indexBranch}" was built at ${row.last_indexed_hash.slice(0, 12)}, but ${target.ref} is at ${target.commit.slice(0, 12)}; recently changed files may be ranked using outdated summaries.`;
+    caveat = revisionCaveat;
+  }
+  if (caveat && indexBranch !== requestedIndexBranch) {
+    caveat = `Branch "${requestedIndexBranch}" has no index, so the default-branch (HEAD) index was consulted. ${caveat}`;
   }
 
   // Score against the resolved commit (not the checkout) and keep every
@@ -384,12 +419,13 @@ async function searchLiteral({ options, query, pathPrefix, offset, limit }: Sear
   } catch (error) {
     throw new RepositoryRetrievalError(`git grep failed: ${(error as Error).message}`, 500);
   }
-  const all = aggregator.finish();
+  const all = aggregator.finish(scanTruncated);
 
   const matches = all.slice(offset, offset + limit).map((file): RepositorySearchMatch => ({
     path: file.path,
     matchCount: file.matchCount,
     lineMatches: file.lineMatches,
+    ...(file.countTruncated ? { countTruncated: true } : {}),
   }));
 
   return {
@@ -461,7 +497,7 @@ export async function readRepositoryFileContent(options: ReadRepositoryFileOptio
   const content = await readBlob(target.repoPath, target.commit, filePath, options.repository.trim());
 
   if (content.includes('\0')) {
-    throw new RepositoryRetrievalError(`"${filePath}" appears to be a binary file and cannot be read as text`, 400);
+    throw new RepositoryRetrievalError(`"${filePath}" appears to be a binary file and cannot be read as text`, 400, 'binary_file');
   }
 
   const lines = splitLines(content);

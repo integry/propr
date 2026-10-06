@@ -90,34 +90,44 @@ function noteToolOutcome(tool: McpTool, access: ToolAccess, data: Record<string,
  * those fields only get the in-place credential masking.
  */
 function redactToolResult(tool: McpTool, result: unknown): Record<string, unknown> {
-  const data = redact(result) as Record<string, unknown>;
-  if (!result || typeof result !== 'object') return data;
-  const source = result as Record<string, unknown>;
-  if (tool.name === 'get_doc' && typeof source.content === 'string') data.content = source.content;
-  if (tool.name === 'read_repository_file') restoreOpaqueText(source, data, ['content', 'path']);
-  if (tool.name === 'search_repository_files') {
-    restoreOpaqueText(source, data, ['query', 'pathPrefix']);
-    if (Array.isArray(source.matches) && Array.isArray(data.matches)) {
-      data.matches = (data.matches as Record<string, unknown>[]).map((match, index) => {
-        const original = (source.matches as Record<string, unknown>[])[index];
-        const restored = { ...match };
-        restoreOpaqueText(original, restored, ['path']);
-        if (Array.isArray(original.lineMatches)) {
-          restored.lineMatches = (original.lineMatches as Record<string, unknown>[]).map(line => ({
-            lineNumber: line.lineNumber,
-            text: typeof line.text === 'string' ? redactText(line.text) : line.text,
-          }));
-        }
-        return restored;
-      });
-    }
-  }
-  return data;
+  const opaque = OPAQUE_RESULT_FIELDS[tool.name];
+  return (opaque ? redactExceptOpaque(result, opaque) : redact(result)) as Record<string, unknown>;
 }
 
-function restoreOpaqueText(source: Record<string, unknown>, data: Record<string, unknown>, fields: string[]): void {
-  for (const field of fields) if (typeof source[field] === 'string') data[field] = redactText(source[field] as string);
+type OpaqueFields = Record<string, (value: unknown) => unknown>;
+
+/**
+ * Opaque fields are left out of the generic pass rather than redacted and then
+ * discarded, so large file content is not parsed and rebuilt for nothing. The
+ * object's field order is kept.
+ */
+function redactExceptOpaque(value: unknown, opaque: OpaqueFields): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return redact(value);
+  const source = value as Record<string, unknown>;
+  const isOpaque = (key: string) => Object.hasOwn(opaque, key);
+  const data = redact(Object.fromEntries(Object.entries(source).filter(([key]) => !isOpaque(key)))) as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(source)
+    .filter(key => isOpaque(key) || Object.hasOwn(data, key))
+    .map(key => [key, isOpaque(key) ? opaque[key](source[key]) : data[key]]));
 }
+
+const maskText = (value: unknown) => typeof value === 'string' ? redactText(value) : redact(value);
+const maskLineMatches = (value: unknown) => Array.isArray(value)
+  ? (value as Record<string, unknown>[]).map(line => ({ lineNumber: line.lineNumber, text: typeof line.text === 'string' ? redactText(line.text) : line.text }))
+  : redact(value);
+
+/** Per-tool result fields exempt from the generic redaction pass, with the masking each gets instead. */
+const OPAQUE_RESULT_FIELDS: Record<string, OpaqueFields> = {
+  get_doc: { content: value => typeof value === 'string' ? value : redact(value) },
+  read_repository_file: { content: maskText, path: maskText },
+  search_repository_files: {
+    query: maskText,
+    pathPrefix: maskText,
+    matches: value => Array.isArray(value)
+      ? value.slice(0, 200).map(match => redactExceptOpaque(match, { path: maskText, lineMatches: maskLineMatches }))
+      : redact(value),
+  },
+};
 
 /** Preserve binary content while applying the result-redaction boundary to text overrides. */
 function redactToolContent(content: ContentBlock[] | undefined): ContentBlock[] | undefined {

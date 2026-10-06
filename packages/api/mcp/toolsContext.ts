@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { loadMonitoredReposRaw, searchRepositoryFiles, readRepositoryFileContent, RepositoryRetrievalError, type ReadRepositoryFileResult, type SearchRepositoryFilesResult } from '@propr/core';
+import { loadMonitoredReposRaw, searchRepositoryFiles, readRepositoryFileContent, RepositoryRetrievalError, type ReadRepositoryFileResult, type RepositoryRetrievalErrorKind, type SearchRepositoryFilesResult } from '@propr/core';
 import { type McpTool, type ToolDeps, repositorySchema, pageShape, ok } from './tools.js';
 import { MAX_TOOL_RESULT_BYTES, McpError } from './config.js';
 import { redactText } from './adapter.js';
@@ -10,25 +10,31 @@ function assertRelativePath(path: string): void {
   if (path.startsWith('/') || path.split('/').includes('..') || path.includes('\\') || path.includes('\0')) throw new McpError('INVALID_PATH', 'Use a repository-relative path without traversal.');
 }
 
-async function defaultBranch(repository: string, branch?: string): Promise<string | undefined> {
-  return branch || (await loadMonitoredReposRaw()).find(repo => repo.name.toLowerCase() === repository.toLowerCase())?.baseBranch || undefined;
+/**
+ * Resolves the configured spelling of an authorized repository (the policy
+ * matches names case-insensitively) and its base branch when none was given,
+ * so a differently cased name reuses the same clone, index and summaries.
+ */
+async function configuredTarget(repository: string, branch?: string): Promise<{ repository: string; branch: string | undefined }> {
+  const configured = (await loadMonitoredReposRaw()).find(repo => repo.name.toLowerCase() === repository.toLowerCase());
+  return { repository: configured?.name ?? repository, branch: branch || configured?.baseBranch || undefined };
 }
 
-/** Maps retrieval service failures onto stable MCP error codes. */
+const ERROR_CODES: Record<RepositoryRetrievalErrorKind, string> = {
+  invalid_path: 'INVALID_PATH', invalid_ref: 'INVALID_REF', binary_file: 'BINARY_FILE', file_not_found: 'FILE_NOT_FOUND', ref_not_found: 'REF_NOT_FOUND',
+};
+
+/** Maps retrieval service failures onto stable MCP error codes by their kind and status. */
 async function retrieval<T>(run: () => Promise<T>): Promise<T> {
   try { return await run(); }
   catch (error) {
     if (!(error instanceof RepositoryRetrievalError)) throw error;
     const message = error.message;
     if (error.status === 403) throw new McpError('REPOSITORY_FORBIDDEN', 'Current GitHub repository access denied.', 403);
-    if (error.status === 404) throw /^Ref /.test(message) ? new McpError('REF_NOT_FOUND', message, 404) : new McpError('FILE_NOT_FOUND', message, 404);
+    if (error.kind && (error.status === 400 || error.status === 404)) throw new McpError(ERROR_CODES[error.kind], message, error.status);
+    if (error.status === 404) throw new McpError('FILE_NOT_FOUND', message, 404);
     if (error.status === 413) throw new McpError('FILE_TOO_LARGE', message, 413);
-    if (error.status === 400) {
-      if (/binary file/i.test(message)) throw new McpError('BINARY_FILE', message);
-      if (/^Invalid ref/.test(message)) throw new McpError('INVALID_REF', message);
-      if (/^(path|")/.test(message)) throw new McpError('INVALID_PATH', message);
-      throw new McpError('INVALID_INPUT', message);
-    }
+    if (error.status === 400) throw new McpError('INVALID_INPUT', message);
     // 500 is a local git or relevance-engine failure; retrying will not help.
     if (error.status === 500) throw new McpError('REPOSITORY_RETRIEVAL_FAILED', 'Repository retrieval failed.', 500);
     throw new McpError('REPOSITORY_RETRIEVAL_FAILED', 'Repository retrieval failed.', 502, { retryable: true });
@@ -43,12 +49,39 @@ const RESULT_ENVELOPE_RESERVE = 16 * 1024;
 const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 
 /**
- * Masks credentials in the returned lines (the executor treats them as opaque
- * text) and keeps the result inside the response limit. The service already
- * bounded the encoded content, so this only drops trailing lines when masking
- * grew it, keeping endLine, returnedBytes and nextStartLine true to `content`.
+ * Applies the executor's credential masking to the result's text fields other
+ * than file content and line previews (which the fit helpers mask themselves)
+ * before the response is measured, so masking that lengthens a string
+ * (`ghp_a` becomes `[redacted]`) cannot push a fitted page over the limit.
+ * Masking is idempotent, so the executor's pass leaves these unchanged.
  */
-function fitReadResult(result: ReadRepositoryFileResult): ReadRepositoryFileResult {
+function maskReadEnvelope(result: ReadRepositoryFileResult): ReadRepositoryFileResult {
+  return { ...result, repository: redactText(result.repository), path: redactText(result.path), ref: redactText(result.ref),
+    ...(result.refCaveat !== undefined ? { refCaveat: redactText(result.refCaveat) } : {}) };
+}
+
+function maskSearchEnvelope(result: SearchRepositoryFilesResult): SearchRepositoryFilesResult {
+  return {
+    ...result,
+    repository: redactText(result.repository),
+    query: redactText(result.query),
+    ref: redactText(result.ref),
+    pathPrefix: result.pathPrefix === null ? null : redactText(result.pathPrefix),
+    ...(result.keywordsDetected ? { keywordsDetected: result.keywordsDetected.map(redactText) } : {}),
+    ...(result.refCaveat !== undefined ? { refCaveat: redactText(result.refCaveat) } : {}),
+    ...(result.freshness ? { freshness: { ...result.freshness, ...(result.freshness.caveat !== undefined ? { caveat: redactText(result.freshness.caveat) } : {}) } } : {}),
+  };
+}
+
+/**
+ * Masks credentials in the returned lines (the executor treats them as opaque
+ * text) and the other text fields, and keeps the result inside the response
+ * limit. The service already bounded the encoded content, so this only drops
+ * trailing lines when masking grew it, keeping endLine, returnedBytes and
+ * nextStartLine true to `content`.
+ */
+export function fitReadResult(unmasked: ReadRepositoryFileResult): ReadRepositoryFileResult {
+  const result = maskReadEnvelope(unmasked);
   const lines = result.content === '' ? [] : redactText(result.content).split('\n');
   const budget = MAX_TOOL_RESULT_BYTES - jsonBytes({ ...result, content: '', endLine: Number.MAX_SAFE_INTEGER, returnedBytes: Number.MAX_SAFE_INTEGER, nextStartLine: Number.MAX_SAFE_INTEGER, truncated: false });
   let used = 0, kept = 0;
@@ -66,12 +99,14 @@ function fitReadResult(result: ReadRepositoryFileResult): ReadRepositoryFileResu
 }
 
 /**
- * Masks credentials in line previews and keeps a search page inside the
- * response limit by ending the page early; `nextOffset` then continues from
- * the first match left out.
+ * Masks credentials in paths, line previews and the other text fields, and
+ * keeps a search page inside the response limit by ending the page early;
+ * `nextOffset` then continues from the first match left out.
  */
-function fitSearchResult(result: SearchRepositoryFilesResult): SearchRepositoryFilesResult {
-  const matches = result.matches.map(match => match.lineMatches ? { ...match, lineMatches: match.lineMatches.map(line => ({ ...line, text: redactText(line.text) })) } : match);
+export function fitSearchResult(unmasked: SearchRepositoryFilesResult): SearchRepositoryFilesResult {
+  const result = maskSearchEnvelope(unmasked);
+  const matches = result.matches.map(match => ({ ...match, path: redactText(match.path),
+    ...(match.lineMatches ? { lineMatches: match.lineMatches.map(line => ({ ...line, text: redactText(line.text) })) } : {}) }));
   let used = jsonBytes({ ...result, matches: [], pagination: { ...result.pagination, nextOffset: Number.MAX_SAFE_INTEGER } });
   let kept = 0;
   for (const match of matches) {
@@ -140,12 +175,12 @@ export function addContextTools(tools: McpTool[], { db, policy }: ToolDeps): voi
       const directories = await build('directory_summaries'), files = args.mode === 'overview' ? [] : await build('file_summaries');
       return ok({ repository: args.repository, branch: args.branch, freshness: { state: repository.indexing_status, indexedAt: repository.last_indexed_at, revision: repository.last_indexed_hash }, directories, files, nextOffset: Math.max(directories.length, files.length) === args.limit ? args.offset + args.limit : null });
     } });
-  tools.push({ name: 'search_repository_files', description: 'Search repository files and return matching paths (no full file contents). mode "semantic" (default) ranks files with the index-based planner relevance engine (file summaries, path and git-history signals) and reports index freshness; mode "literal" runs an exact, non-regex string grep across the git tree at the requested ref and returns per-file match counts with the first matching lines (scanTruncated means the grep hit its output budget, so totalMatches is a lower bound; narrow the query or path). Optionally restrict to a repository-relative path prefix. Follow up with read_repository_file to read a match.', scope: 'read', readOnly: true,
+  tools.push({ name: 'search_repository_files', description: 'Search repository files and return matching paths (no full file contents). mode "semantic" (default) ranks files with the index-based planner relevance engine (file summaries, path and git-history signals) and reports index freshness; mode "literal" runs an exact, non-regex string grep across the git tree at the requested ref and returns per-file match counts with the first matching lines (scanTruncated means the grep hit its output budget, so totalMatches is a lower bound and a file flagged countTruncated has a matchCount that is only a lower bound; narrow the query or path). Optionally restrict to a repository-relative path prefix. Follow up with read_repository_file to read a match.', scope: 'read', readOnly: true,
     schema: z.object({ repository: repositorySchema, query: z.string().min(1).max(1000), mode: z.enum(['semantic', 'literal']).default('semantic'), ...refShape, path: z.string().max(1024).optional(), caseSensitive: z.boolean().optional(), ...pageShape }).strict(), run: async ({ principal, args }) => {
       // The executor has already authorized args.repository for this call.
       if (args.path) assertRelativePath(args.path);
-      const branch = await defaultBranch(args.repository, args.branch);
-      return ok(fitSearchResult(await retrieval(() => searchRepositoryFiles({ repository: args.repository, branch, ref: args.ref, query: args.query, mode: args.mode, path: args.path || undefined,
+      const { repository, branch } = await configuredTarget(args.repository, args.branch);
+      return ok(fitSearchResult(await retrieval(() => searchRepositoryFiles({ repository, branch, ref: args.ref, query: args.query, mode: args.mode, path: args.path || undefined,
         caseSensitive: args.caseSensitive, offset: args.offset, limit: args.limit, authToken: principal.user.accessToken || undefined }))));
     } });
   tools.push({ name: 'read_repository_file', description: 'Read a text file at a branch, ref or commit straight from git, in bounded line chunks, without cloning locally. Returns content with startLine, endLine, totalLines and a truncated flag; when truncated (by maxLines, maxBytes or the response size limit), continue from nextStartLine. Paths are repository-relative; binary files are rejected.', scope: 'read', readOnly: true,
@@ -154,8 +189,8 @@ export function addContextTools(tools: McpTool[], { db, policy }: ToolDeps): voi
       // The executor has already authorized args.repository for this call.
       assertRelativePath(args.path);
       if (args.endLine !== undefined && args.endLine < args.startLine) throw new McpError('INVALID_INPUT', 'endLine must be greater than or equal to startLine.');
-      const branch = await defaultBranch(args.repository, args.branch);
-      return ok(fitReadResult(await retrieval(() => readRepositoryFileContent({ repository: args.repository, branch, ref: args.ref, path: args.path, startLine: args.startLine, endLine: args.endLine,
+      const { repository, branch } = await configuredTarget(args.repository, args.branch);
+      return ok(fitReadResult(await retrieval(() => readRepositoryFileContent({ repository, branch, ref: args.ref, path: args.path, startLine: args.startLine, endLine: args.endLine,
         maxLines: args.maxLines, maxBytes: args.maxBytes, maxBytesLimit: MAX_READ_BYTES, encodedByteLimit: MAX_TOOL_RESULT_BYTES - RESULT_ENVELOPE_RESERVE, authToken: principal.user.accessToken || undefined }))));
     } });
 }

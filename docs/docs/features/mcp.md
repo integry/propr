@@ -38,7 +38,8 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 `search_repository_files` returns paths only. Its default semantic mode uses
 the repository index and reports `freshness`. If the branch has not been
 indexed, indexing is running or failed, or the index was built from an older
-commit, the search still answers, but marks the result `stale` with a `caveat`.
+(or unrecorded) commit, the search still answers, but marks the result `stale`
+with a `caveat`.
 Re-index the branch with `index_repository` if the caveat matters. Literal mode
 greps the exact commit and needs no index. An empty result means no match, not
 an error. `read_repository_file` returns at most 800 lines (or `maxLines`, up

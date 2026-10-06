@@ -156,3 +156,21 @@ test('semantic history candidates absent from the commit tree do not keep semant
   assert.equal(scoped.files.find(file => file.path === 'src/widget/main.ts')?.score, baselineShared.score);
   assert.deepEqual(scoped.files.map(file => file.path).sort(), baseline.files.map(file => file.path).sort());
 });
+
+test('commit-scoped git-history scoring keeps paths git would quote', async () => {
+  git('checkout', '-q', '-b', 'quoted-paths', featureCommit);
+  for (const message of ['gadget overhaul', 'gadget follow-up']) {
+    write('src/café.ts', `// ${message}\n`);
+    write('src/say "hi".ts', `// ${message}\n`);
+    git('add', '-A');
+    git('commit', '-q', '-m', message);
+  }
+  const quotedCommit = git('rev-parse', 'HEAD');
+  git('checkout', '-q', 'main');
+
+  const result = await findRelevantFiles(repoPath, 'gadget', { commit: quotedCommit });
+  assert.deepEqual(
+    result.files.map(file => [file.path, file.signals]).sort(),
+    [['src/café.ts', ['git-history']], ['src/say "hi".ts', ['git-history']]],
+  );
+});

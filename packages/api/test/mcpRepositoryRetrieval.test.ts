@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -402,6 +402,12 @@ describe('result fidelity and response bounds', () => {
 function pick(error: { code: string; status: number }) {
   return { code: error.code, status: error.status };
 }
+
+test('a differently cased repository name uses the configured clone, index and summaries', async () => {
+  await setIndexState({ indexing_status: 'completed', last_indexed_at: new Date('2026-10-01T00:00:00.000Z'), last_indexed_hash: head });
+  const [semantic, read] = [await call('search_repository_files', { repository: 'Acme/Repo', query: 'token validation' }), await call('read_repository_file', { repository: 'Acme/Repo', path: 'src/auth/token.ts' })];
+  assert.deepEqual([semantic.repository, read.repository, semantic.freshness.usedIndex, semantic.freshness.caveat, semantic.matches[0].reasons.includes('semantic'), existsSync(join(root, 'clones', 'Acme'))], [repository, repository, true, undefined, true, false]);
+});
 
 describe('authorization', () => {
   test('both tools reject repositories outside the grant, instance or GitHub access with REPOSITORY_FORBIDDEN', async () => {

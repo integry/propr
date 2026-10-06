@@ -18,20 +18,20 @@ export function parseRepository(repository: string): { owner: string; repoName: 
  */
 export function assertSafeRepositoryPath(value: string, label = 'path'): string {
   if (typeof value !== 'string' || value.length === 0) {
-    throw new RepositoryRetrievalError(`${label} is required`, 400);
+    throw new RepositoryRetrievalError(`${label} is required`, 400, 'invalid_path');
   }
   if (value.includes('\0')) {
-    throw new RepositoryRetrievalError(`${label} must not contain null bytes`, 400);
+    throw new RepositoryRetrievalError(`${label} must not contain null bytes`, 400, 'invalid_path');
   }
   if (value.includes('\\')) {
-    throw new RepositoryRetrievalError(`${label} must use forward slashes, not backslashes`, 400);
+    throw new RepositoryRetrievalError(`${label} must use forward slashes, not backslashes`, 400, 'invalid_path');
   }
   if (value.startsWith('/')) {
-    throw new RepositoryRetrievalError(`${label} must be relative to the repository root`, 400);
+    throw new RepositoryRetrievalError(`${label} must be relative to the repository root`, 400, 'invalid_path');
   }
   // Only a ".." segment can escape the tree; names such as "CHANGELOG..md" are ordinary paths.
   if (value.split('/').includes('..')) {
-    throw new RepositoryRetrievalError(`${label} must not contain ".." segments`, 400);
+    throw new RepositoryRetrievalError(`${label} must not contain ".." segments`, 400, 'invalid_path');
   }
   return value;
 }
@@ -55,7 +55,7 @@ const hasControlCharacter = (value: string) => Array.from(value).some(char => ch
 export function assertSafeRef(ref: string): string {
   if (!ref || ref.startsWith('-') || ref === '@' || hasControlCharacter(ref) || /[\s\\]|\.\.|[~^:?*[]|@\{|\/\/|^\/|\/$|\.$/.test(ref)
     || ref.split('/').some(component => component.startsWith('.') || component.endsWith('.lock'))) {
-    throw new RepositoryRetrievalError(`Invalid ref "${ref}"`, 400);
+    throw new RepositoryRetrievalError(`Invalid ref "${ref}"`, 400, 'invalid_ref');
   }
   return ref;
 }
@@ -64,6 +64,16 @@ const FULL_COMMIT_SHA = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
 export function isFullCommitSha(ref: string): boolean {
   return FULL_COMMIT_SHA.test(ref);
+}
+
+/**
+ * Lower-cases a full commit SHA written in upper or mixed case, the form git
+ * itself stores and fetches; any other ref is returned unchanged, since ref
+ * names are case-sensitive.
+ */
+export function normalizeCommitSha(ref: string): string {
+  const lower = ref.toLowerCase();
+  return lower !== ref && isFullCommitSha(lower) ? lower : ref;
 }
 
 /** A ref name on origin and the local ref an explicit fetch stores it under. */
