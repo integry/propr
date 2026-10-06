@@ -269,6 +269,7 @@ function patchToRowChanges(patch: AgentRunTransitionPatch): Record<string, unkno
  * Throws for a `from → to` pair that `AGENT_RUN_TRANSITIONS` does not allow;
  * that is a programming error, not a race.
  */
+// eslint-disable-next-line max-params -- id, the from → to pair and its patch, plus the shared store dependencies
 export async function transitionAgentRun(
   id: string,
   from: readonly AgentRunState[],
