@@ -1,5 +1,6 @@
 export interface Settings {
   worker_concurrency: string;
+  max_provider_replacements: number;
   analysis_model_fast: string;
   planner_context_model: string;
   planner_generation_model: string;

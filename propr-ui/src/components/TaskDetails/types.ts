@@ -81,8 +81,8 @@ export interface HistoryItemMetadata {
   /** ISO timestamp of the next admission attempt. */
   repositoryWorkflowRetryAt?: string;
   terminalReason?: string;
-  /** `budget.exceeded`: the run was stopped at its spend cap. */
-  event?: string;
+  /** Timeline event that repeats the current state, e.g. `budget.exceeded` or `replacement.dispatched`. */
+  event?: 'budget.exceeded' | 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted' | string;
   budget?: { capUsd: number; spentUsd: number; priorSpentUsd?: number; percent?: number; source?: 'override' | 'workflow' | 'instance_default' };
   /** `network.egress`: one run's network mode and every host its egress proxy denied. */
   networkEgress?: NetworkEgressSummary;
@@ -105,6 +105,8 @@ export interface HistoryItemMetadata {
   ultrafixNextAction?: string;
   ultrafixStopReason?: string;
   ultrafixOutcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
+  replacementTaskId?: string;
+  attemptNumber?: number;
   syntheticRouting?: {
     virtualAgentAlias?: string;
     virtualModel?: string;
@@ -142,6 +144,20 @@ export interface TaskInfo {
   /** Normalized by the API: `true` whenever any history entry belongs to an ultrafix cycle. */
   ultrafixCycle?: boolean;
   previewMedia?: PublishedVisualPreview[];
+  /** 1-based attempt number within an automatic-replacement lineage. */
+  attemptNumber?: number;
+  replacesTaskId?: string | null;
+  replacedByTaskId?: string | null;
+  /** Every attempt of the lineage, oldest first; present for replaced and replacement tasks. */
+  attemptLineage?: TaskAttempt[];
+}
+
+export interface TaskAttempt {
+  taskId: string;
+  attemptNumber: number;
+  replacementCause?: 'infra_lost' | 'provider_transient' | null;
+  state?: string | null;
+  createdAt?: string | null;
 }
 
 export interface PromptData {

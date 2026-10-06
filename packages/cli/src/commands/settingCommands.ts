@@ -51,6 +51,7 @@ function getSettingDescription(key: SettingKey): string {
     usage_tips_dismissal_cooldown_days: "Base dismissal cooldown (1–365 days; changes recalculate existing cooldowns)",
     default_agent_alias: "Alias of the default implementation agent",
     worker_concurrency: "Number of concurrent workers for processing tasks",
+    max_provider_replacements: "Replacement attempts after transient provider failures (0 disables)",
     github_user_whitelist: "GitHub usernames allowed to use the system",
     analysis_model_fast: "Used by /review to gather repository context before the review",
     planner_context_model: "Model for planner context generation",

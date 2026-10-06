@@ -1,0 +1,498 @@
+import type { Knex } from 'knex';
+import type { IssueJobData } from '@propr/core';
+import type { ReplacementCause, ReplacementSkipReason } from './policy.js';
+
+export type ReplacementState = 'pending' | 'dispatched' | 'skipped' | 'exhausted';
+
+/** What a replacement re-runs, with the spend cap its lineage is budgeted from. */
+export type ReplayJobData = IssueJobData & {
+    /** Effective spend cap the lineage's first attempt resolved; earlier attempts' spend is subtracted from it. */
+    lineageCostCapUsd?: number;
+};
+
+/**
+ * A released decision whose follow-up is not finished yet: its timeline events,
+ * and the held-back failure alert when one must be published. It is recorded with
+ * the state that releases the decision and cleared only after the follow-up ran,
+ * so recovery repeats whatever an interruption skipped.
+ */
+export interface FailureNoticeRecord {
+    id: string;
+    cause: ReplacementCause;
+    /** Why no replacement supersedes the failure; absent for a withdrawn decision. */
+    reason?: ReplacementSkipReason;
+    exhausted?: boolean;
+    maxReplacements?: number;
+    failure?: string;
+    replacementTaskId?: string;
+    attemptNumber?: number;
+    /** Whether the task's failure alert was held back and must be published. */
+    publish: boolean;
+    recordedAt: string;
+    /**
+     * An exhausted lineage's final comment, recorded apart from its timeline event: posting
+     * attempts started (a GitHub response may be lost after any), and whether it is settled.
+     */
+    commentAttempts?: number; commentDelivered?: boolean;
+}
+
+export interface ReplacementRequestRecord {
+    cause: ReplacementCause;
+    terminalReason?: string | null;
+    requestedAt: string;
+    /**
+     * `finalizedBy` of the failure this decision was made for. The decision is
+     * completed only after that failure; a failure written by another actor withdraws it.
+     */
+    finalizedBy?: string;
+    /** Set with the claim; kept until queue delivery of the replacement is confirmed. */
+    dispatch?: ReplacementDispatchRecord;
+    /** Follow-up of the released decision, kept until it was delivered. */
+    failureNotice?: FailureNoticeRecord;
+}
+
+/** What redelivering a claimed replacement needs, persisted in the claim's transaction. */
+export interface ReplacementDispatchRecord {
+    replacementTaskId: string;
+    jobId: string;
+    jobData: IssueJobData;
+    attemptNumber: number;
+    maxReplacements: number;
+    remainingBudgetUsd?: number;
+    failure?: string;
+    claimedAt: string;
+}
+
+export interface ReplaceableTask {
+    taskId: string;
+    repository: string;
+    issueNumber: number | null;
+    taskType: string | null;
+    modelName: string | null;
+    replacesTaskId: string | null;
+    replacedByTaskId: string | null;
+    attemptNumber: number;
+    lineageRootTaskId: string;
+    replacementCause: ReplacementCause | null;
+    replacementState: ReplacementState | null;
+    replacementRequest: ReplacementRequestRecord | null;
+    replayJobData: ReplayJobData | null;
+    branchName: string | null;
+    latestState: string | null;
+    latestTerminalReason: string | null;
+    /** `finalizedBy` of the latest state transition, when a reconciler wrote it. */
+    latestFinalizedBy: string | null;
+}
+
+export interface LineageAttempt {
+    taskId: string;
+    attemptNumber: number;
+    replacementCause: ReplacementCause | null;
+    state: string | null;
+    costUsd: number;
+}
+
+export interface CreateReplacementInput {
+    original: ReplaceableTask;
+    replacementTaskId: string;
+    jobId: string;
+    correlationId: string;
+    attemptNumber: number;
+    cause: ReplacementCause;
+    jobData: IssueJobData;
+    /** What a later replacement of this attempt re-runs; keeps the lineage's original cost cap. */
+    replayData: ReplayJobData;
+    timestamp: string;
+    maxReplacements: number;
+    remainingBudgetUsd?: number;
+    failure?: string;
+}
+
+/** A timeline event recorded on a task without changing its state. */
+export interface TimelineEvent {
+    taskId: string;
+    event: 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted';
+    reason: string;
+    metadata: Record<string, unknown>;
+    timestamp: string;
+    /**
+     * Record the event only if the task does not have it yet, so recovery can repeat it.
+     * A string limits the check to events carrying it as their `noticeId`.
+     */
+    once?: boolean | string;
+}
+
+export interface PendingReplacementRequest {
+    taskId: string;
+    request: ReplacementRequestRecord;
+    latestState: string | null;
+    latestFinalizedBy: string | null;
+    /** The claimed replacement awaiting confirmed queue delivery, if any. */
+    replacedByTaskId: string | null;
+}
+
+export interface PendingFailureNotice {
+    taskId: string;
+    notice: FailureNoticeRecord;
+}
+
+export interface TaskReplacementStore {
+    loadTask(taskId: string): Promise<ReplaceableTask | null>;
+    loadLineage(rootTaskId: string): Promise<LineageAttempt[]>;
+    markRequested(taskId: string, request: ReplacementRequestRecord): Promise<boolean>;
+    setState(taskId: string, state: ReplacementState | null): Promise<void>;
+    /** Releases the decision as skipped or exhausted together with the follow-up it still owes. */
+    recordSkipped(taskId: string, state: 'skipped' | 'exhausted', notice: FailureNoticeRecord): Promise<void>;
+    /** Merges progress into the task's follow-up, unless a newer one replaced it. */
+    updateFailureNotice(taskId: string, noticeId: string, patch: Partial<Pick<FailureNoticeRecord, 'commentAttempts' | 'commentDelivered' | 'publish'>>): Promise<void>;
+    /** Clears a delivered follow-up, unless a newer one replaced it. */
+    clearFailureNotice(taskId: string, noticeId: string): Promise<void>;
+    listFailureNotices(recordedBefore: string, limit: number): Promise<PendingFailureNotice[]>;
+    /**
+     * Claims the original's single replacement slot and persists the new attempt
+     * together with its dispatch record; the original stays `pending` until delivery is confirmed.
+     */
+    createReplacement(input: CreateReplacementInput): Promise<boolean>;
+    /**
+     * Clears a pending decision only while it is still exactly `request` and unclaimed,
+     * keeping `notice` until its held-back failure was published.
+     */
+    withdrawRequest(taskId: string, request: ReplacementRequestRecord, notice: FailureNoticeRecord): Promise<boolean>;
+    /** Returns whether the event was recorded (false when `once` found it already). */
+    appendEvent(entry: TimelineEvent): Promise<boolean>;
+    /**
+     * Whether the task recorded a transition after it was queued that no reconciler
+     * wrote: evidence that a worker (or a user) acted on it, unlike a reconciler's finalization.
+     */
+    hasRunTransition(taskId: string): Promise<boolean>;
+    listPendingRequests(requestedBefore: string, limit: number): Promise<PendingReplacementRequest[]>;
+}
+
+/** Fields that describe one queue delivery rather than the task, or are re-read on every run. */
+const TRANSIENT_JOB_FIELDS = ['issuePayload', 'repoPayload', 'isRetryFromRateLimit', 'replacementBranch', 'costBudgetTaskIds'] as const;
+
+/** The queue payload a replacement re-runs: agent/model selection and per-task overrides. */
+export function replayJobData(data: ReplayJobData): ReplayJobData {
+    const replay: Record<string, unknown> = { ...data };
+    for (const field of TRANSIENT_JOB_FIELDS) delete replay[field];
+    // Repository workflow policy and capacity deferrals are resolved again by every run.
+    for (const field of Object.keys(replay)) {
+        if (field.startsWith('repositoryWorkflow')) delete replay[field];
+    }
+    return replay as unknown as ReplayJobData;
+}
+
+function parseJson<T>(value: unknown): T | null {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'object') return value as T;
+    if (typeof value !== 'string') return null;
+    try {
+        const parsed = JSON.parse(value) as unknown;
+        return parsed && typeof parsed === 'object' ? parsed as T : null;
+    } catch {
+        return null;
+    }
+}
+
+function text(value: unknown): string | null {
+    return value === null || value === undefined || value === '' ? null : String(value);
+}
+
+function positiveInteger(value: unknown): number | null {
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function latestHistorySubquery(database: Knex, column: 'state' | 'metadata', alias: string): Knex.Raw {
+    // Timeline events repeat the current state; metadata comes from the last transition.
+    const transitionsOnly = column === 'metadata'
+        ? "AND (latest_h.metadata IS NULL OR json_extract(latest_h.metadata, '$.event') IS NULL)"
+        : '';
+    return database.raw(`(
+        SELECT latest_h.${column}
+        FROM task_history AS latest_h
+        WHERE latest_h.task_id = t.task_id ${transitionsOnly}
+        ORDER BY latest_h.history_id DESC
+        LIMIT 1
+    ) AS ${alias}`);
+}
+
+function finalizedBy(latestMetadata: unknown): string | null {
+    const value = parseJson<{ finalizedBy?: unknown }>(latestMetadata)?.finalizedBy;
+    return typeof value === 'string' ? value : null;
+}
+
+function taskFromRow(row: Record<string, unknown>): ReplaceableTask {
+    const taskId = String(row.task_id);
+    const latestMetadata = parseJson<{ terminalReason?: unknown }>(row.latest_metadata);
+    return {
+        taskId,
+        repository: String(row.repository),
+        issueNumber: positiveInteger(row.issue_number),
+        taskType: text(row.task_type),
+        modelName: text(row.model_name),
+        replacesTaskId: text(row.replaces_task_id),
+        replacedByTaskId: text(row.replaced_by_task_id),
+        attemptNumber: positiveInteger(row.attempt_number) ?? 1,
+        lineageRootTaskId: text(row.lineage_root_task_id) ?? taskId,
+        replacementCause: text(row.replacement_cause) as ReplacementCause | null,
+        replacementState: text(row.replacement_state) as ReplacementState | null,
+        replacementRequest: parseJson<ReplacementRequestRecord>(row.replacement_request),
+        replayJobData: parseJson<ReplayJobData>(row.replay_job_data),
+        branchName: text(row.branch_name),
+        latestState: text(row.latest_state),
+        latestTerminalReason: typeof latestMetadata?.terminalReason === 'string' ? latestMetadata.terminalReason : null,
+        latestFinalizedBy: finalizedBy(row.latest_metadata),
+    };
+}
+
+function initialIssueRef(data: IssueJobData, correlationId: string): Record<string, unknown> {
+    return {
+        number: data.number, repoOwner: data.repoOwner, repoName: data.repoName, type: 'issue',
+        ...Object.fromEntries(['triggeringLabel', 'modelName', 'agentAlias'].flatMap(key =>
+            typeof (data as unknown as Record<string, unknown>)[key] === 'string'
+                ? [[key, (data as unknown as Record<string, unknown>)[key]]]
+                : [])),
+        correlationId,
+    };
+}
+
+export function createTaskReplacementStore(database: Knex): TaskReplacementStore {
+    const selectTask = () => database('tasks as t').select(
+        't.task_id', 't.repository', 't.issue_number', 't.task_type', 't.model_name',
+        't.replaces_task_id', 't.replaced_by_task_id', 't.attempt_number', 't.lineage_root_task_id',
+        't.replacement_cause', 't.replacement_state', 't.replacement_request', 't.replay_job_data', 't.branch_name',
+        latestHistorySubquery(database, 'state', 'latest_state'),
+        latestHistorySubquery(database, 'metadata', 'latest_metadata'),
+    );
+
+    return {
+        async loadTask(taskId) {
+            const row = await selectTask().where('t.task_id', taskId).first() as Record<string, unknown> | undefined;
+            return row ? taskFromRow(row) : null;
+        },
+
+        async loadLineage(rootTaskId) {
+            const rows = await selectTask()
+                .where('t.task_id', rootTaskId)
+                .orWhere('t.lineage_root_task_id', rootTaskId) as Array<Record<string, unknown>>;
+            const tasks = rows.map(taskFromRow);
+            const costs = new Map<string, number>();
+            if (tasks.length > 0) {
+                const costRows = await database('llm_executions')
+                    .whereIn('task_id', tasks.map(task => task.taskId))
+                    .groupBy('task_id')
+                    .select('task_id')
+                    .sum({ cost: 'cost_usd' }) as Array<{ task_id: string; cost: unknown }>;
+                for (const row of costRows) costs.set(String(row.task_id), Number(row.cost) || 0);
+            }
+            return tasks
+                .map(task => ({
+                    taskId: task.taskId,
+                    attemptNumber: task.attemptNumber,
+                    replacementCause: task.replacementCause,
+                    state: task.latestState,
+                    costUsd: costs.get(task.taskId) ?? 0,
+                }))
+                .sort((left, right) => left.attemptNumber - right.attemptNumber);
+        },
+
+        async markRequested(taskId, request) {
+            const updated = await database('tasks')
+                .where({ task_id: taskId })
+                .whereNull('replaced_by_task_id')
+                .update({ replacement_state: 'pending', replacement_request: JSON.stringify(request) });
+            return updated > 0;
+        },
+
+        async setState(taskId, state) {
+            await database('tasks').where({ task_id: taskId }).update({ replacement_state: state });
+        },
+
+        async recordSkipped(taskId, state, notice) {
+            await database('tasks').where({ task_id: taskId }).update({
+                replacement_state: state,
+                replacement_request: database.raw("json_set(COALESCE(replacement_request, '{}'), '$.failureNotice', json(?))", [JSON.stringify(notice)]),
+            });
+        },
+
+        async updateFailureNotice(taskId, noticeId, patch) {
+            const merged = database.raw("json_set(replacement_request, '$.failureNotice', json_patch(json_extract(replacement_request, '$.failureNotice'), json(?)))", [JSON.stringify(patch)]);
+            await database('tasks').where({ task_id: taskId }).whereRaw("json_extract(replacement_request, '$.failureNotice.id') = ?", [noticeId]).update({ replacement_request: merged });
+        },
+
+        async clearFailureNotice(taskId, noticeId) {
+            const remaining = "json_remove(replacement_request, '$.failureNotice')";
+            await database('tasks').where({ task_id: taskId })
+                .whereRaw("json_extract(replacement_request, '$.failureNotice.id') = ?", [noticeId])
+                // A withdrawn decision kept nothing but its follow-up.
+                .update({ replacement_request: database.raw(`CASE WHEN ${remaining} = '{}' THEN NULL ELSE ${remaining} END`) });
+        },
+
+        async listFailureNotices(recordedBefore, limit) {
+            const rows = await database('tasks')
+                .whereRaw("json_extract(replacement_request, '$.failureNotice.recordedAt') <= ?", [recordedBefore])
+                .select('task_id', 'replacement_request').orderBy('task_id').limit(limit) as Array<Record<string, unknown>>;
+            return rows.flatMap(row => {
+                const notice = parseJson<ReplacementRequestRecord>(row.replacement_request)?.failureNotice;
+                return notice && typeof notice.id === 'string' ? [{ taskId: String(row.task_id), notice }] : [];
+            });
+        },
+
+        async createReplacement(input) {
+            const { original, replacementTaskId, jobId, correlationId, attemptNumber, cause, jobData, replayData, timestamp } = input;
+            const dispatch: ReplacementDispatchRecord = {
+                replacementTaskId, jobId, jobData, attemptNumber, maxReplacements: input.maxReplacements,
+                ...(input.remainingBudgetUsd === undefined ? {} : { remainingBudgetUsd: input.remainingBudgetUsd }),
+                ...(input.failure ? { failure: input.failure } : {}),
+                claimedAt: timestamp,
+            };
+            const request: ReplacementRequestRecord = {
+                ...(original.replacementRequest ?? { requestedAt: timestamp }),
+                cause,
+                dispatch,
+            };
+            return database.transaction(async trx => {
+                const claimed = await trx('tasks')
+                    .where({ task_id: original.taskId })
+                    .whereNull('replaced_by_task_id')
+                    .update({
+                        replaced_by_task_id: replacementTaskId,
+                        replacement_state: 'pending',
+                        replacement_request: JSON.stringify(request),
+                    });
+                if (claimed === 0) return false;
+                await trx('tasks').where({ job_id: jobId }).whereNot({ task_id: replacementTaskId }).update({ job_id: null });
+                await trx('tasks').insert({
+                    task_id: replacementTaskId,
+                    job_id: jobId,
+                    correlation_id: correlationId,
+                    repository: original.repository,
+                    issue_number: original.issueNumber,
+                    task_type: original.taskType ?? 'issue',
+                    model_name: jobData.modelName ?? original.modelName,
+                    created_at: timestamp,
+                    initial_job_data: JSON.stringify(initialIssueRef(jobData, correlationId)),
+                    replaces_task_id: original.taskId,
+                    attempt_number: attemptNumber,
+                    lineage_root_task_id: original.lineageRootTaskId,
+                    replacement_cause: cause,
+                    replay_job_data: JSON.stringify(replayJobData(replayData)),
+                });
+                await trx('task_history').insert({
+                    task_id: replacementTaskId,
+                    state: 'pending',
+                    timestamp,
+                    reason: `Replacement attempt ${attemptNumber} queued`,
+                    metadata: JSON.stringify({ replacesTaskId: original.taskId, attemptNumber, replacementCause: cause }),
+                });
+                // The original stays the root of its lineage even when it predates lineage stamps.
+                await trx('tasks').where({ task_id: original.taskId }).whereNull('lineage_root_task_id')
+                    .update({ lineage_root_task_id: original.lineageRootTaskId });
+                return true;
+            });
+        },
+
+        async withdrawRequest(taskId, request, notice) {
+            const updated = await database('tasks')
+                .where({ task_id: taskId, replacement_state: 'pending', replacement_request: JSON.stringify(request) })
+                .whereNull('replaced_by_task_id')
+                .update({ replacement_state: null, replacement_request: JSON.stringify({ failureNotice: notice }) });
+            return updated > 0;
+        },
+
+        async appendEvent({ taskId, event, reason, metadata, timestamp, once }) {
+            if (once) {
+                const query = database('task_history')
+                    .where({ task_id: taskId })
+                    .whereRaw("json_extract(metadata, '$.event') = ?", [event]);
+                if (typeof once === 'string') query.whereRaw("json_extract(metadata, '$.noticeId') = ?", [once]);
+                if (await query.first('history_id')) return false;
+            }
+            // Timeline events repeat the task's current state so they never change it.
+            const latest = await database('task_history')
+                .where({ task_id: taskId })
+                .orderBy('history_id', 'desc')
+                .first('state') as { state?: unknown } | undefined;
+            await database('task_history').insert({
+                task_id: taskId,
+                state: typeof latest?.state === 'string' ? latest.state : 'failed',
+                timestamp,
+                reason,
+                metadata: JSON.stringify({ ...metadata, event }),
+            });
+            return true;
+        },
+
+        async hasRunTransition(taskId) {
+            const rows = await database('task_history')
+                .where({ task_id: taskId })
+                .whereNot({ state: 'pending' })
+                .select('metadata') as Array<{ metadata: unknown }>;
+            return rows.some(row => {
+                const metadata = parseJson<{ event?: unknown; finalizedBy?: unknown }>(row.metadata);
+                return metadata?.event === undefined && typeof metadata?.finalizedBy !== 'string';
+            });
+        },
+
+        async listPendingRequests(requestedBefore, limit) {
+            const rows = await database('tasks as t')
+                .where('t.replacement_state', 'pending')
+                .select(
+                    't.task_id', 't.replaced_by_task_id', 't.replacement_request',
+                    latestHistorySubquery(database, 'state', 'latest_state'),
+                    latestHistorySubquery(database, 'metadata', 'latest_metadata'),
+                )
+                .orderBy('t.task_id')
+                .limit(limit) as Array<Record<string, unknown>>;
+            return rows.flatMap(row => {
+                const request = parseJson<ReplacementRequestRecord>(row.replacement_request);
+                if (!request || typeof request.requestedAt !== 'string') return [];
+                const replacedByTaskId = text(row.replaced_by_task_id);
+                // A claim is listed only with the dispatch record that can redeliver it.
+                if (replacedByTaskId && request.dispatch?.replacementTaskId !== replacedByTaskId) return [];
+                if ((replacedByTaskId ? request.dispatch!.claimedAt : request.requestedAt) > requestedBefore) return [];
+                return [{
+                    taskId: String(row.task_id), request, latestState: text(row.latest_state),
+                    latestFinalizedBy: finalizedBy(row.latest_metadata), replacedByTaskId,
+                }];
+            });
+        },
+    };
+}
+
+/** Persists what a replacement needs from a running issue task, once per task. */
+export async function recordReplayableIssueTask(
+    database: Knex,
+    taskId: string,
+    data: IssueJobData,
+): Promise<void> {
+    await database('tasks').where({ task_id: taskId }).whereNull('replay_job_data')
+        .update({ replay_job_data: JSON.stringify(replayJobData(data)) });
+    if (data.replacesTaskId) {
+        // Normally stamped when the replacement was queued; repeat for rows created by the worker.
+        await database('tasks').where({ task_id: taskId }).whereNull('replaces_task_id').update({
+            replaces_task_id: data.replacesTaskId,
+            attempt_number: data.attemptNumber ?? 2,
+            lineage_root_task_id: data.lineageRootTaskId ?? data.replacesTaskId,
+            replacement_cause: data.replacementCause ?? null,
+        });
+    }
+}
+
+/**
+ * Records the spend cap an original attempt resolved, so its replacements are budgeted
+ * from it. A replacement keeps the cap its lineage started with.
+ */
+export async function recordLineageCostCap(database: Knex, taskId: string, capUsd: number | null): Promise<void> {
+    await database('tasks').where({ task_id: taskId }).whereNull('replaces_task_id').whereNotNull('replay_job_data').update({
+        replay_job_data: capUsd === null
+            ? database.raw("json_remove(replay_job_data, '$.lineageCostCapUsd')")
+            : database.raw("json_set(replay_job_data, '$.lineageCostCapUsd', ?)", [capUsd]),
+    });
+}
+
+/** Records the pushed work branch so a replacement can continue on it. */
+export async function recordPushedBranch(database: Knex, taskId: string, branchName: string): Promise<void> {
+    await database('tasks').where({ task_id: taskId }).update({ branch_name: branchName });
+}

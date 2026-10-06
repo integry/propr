@@ -460,3 +460,34 @@ test('saturated repository jobs release shared BullMQ processors so another repo
         await rm(directory, { recursive: true, force: true });
     }
 });
+
+test('a replacement attempt waits for repository capacity like any other task', async () => {
+    // max_parallel_tasks: 1 is held by another run of the repository.
+    let capacityFree = false;
+    const acquisitions: string[] = [];
+    const redisClient = { eval: async (script: string) => {
+        if (script !== ACQUIRE_WORKFLOW_SLOT) return 1;
+        acquisitions.push(capacityFree ? 'admitted' : 'refused');
+        return capacityFree ? 2 : 0;
+    } };
+    const delayed: number[] = [];
+    let executions = 0;
+    const replacementJob = {
+        token: 'replacement-token',
+        data: { replacesTaskId: 'task-1', attemptNumber: 2, replacementCause: 'infra_lost', isChildJob: true },
+        moveToDelayed: async (deadline: number) => { delayed.push(deadline); },
+    };
+    const process = () => deferRepositoryWorkflowJob(replacementJob as never, () => withRepositoryWorkflowAdmission({
+        workflow: { maxParallelTasks: 1 } as never, redisClient: redisClient as never, repoOwner: 'owner', repoName: 'repo',
+        taskId: 'replacement-task', stateManager: { getTaskState: async () => ({ state: 'pending' }) } as never,
+        correlatedLogger: log as never,
+    }, async () => { executions++; }));
+
+    await assert.rejects(process(), DelayedError);
+    assert.equal(executions, 0, 'the replacement does not bypass max_parallel_tasks');
+    assert.equal(delayed.length, 1);
+    capacityFree = true;
+    await process();
+    assert.equal(executions, 1);
+    assert.deepEqual(acquisitions, ['refused', 'admitted']);
+});

@@ -2,9 +2,11 @@ import React from 'react';
 import { SettingsCheckboxField, SettingsField, SettingsSection } from './SettingsLayout';
 import { buildAllModelOptions, type ModelSelectionAgent } from './modelSelectionHelpers';
 import { SETTINGS_CONTROL } from './settingsStyles';
+import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, MAX_PROVIDER_REPLACEMENTS_LIMIT } from '@propr/shared';
 
 interface GeneralSettings {
   worker_concurrency: string;
+  max_provider_replacements: number;
   auto_resolve_merge_conflicts: boolean;
   ultrafix_escalation_enabled: boolean;
   ultrafix_escalation_models: string[];
@@ -53,6 +55,27 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
             placeholder="2"
             className={SETTINGS_CONTROL}
           />
+        </SettingsField>
+
+        <SettingsField
+          label="Provider Failure Replacements"
+          htmlFor="max_provider_replacements"
+          helperText="Replacement runs started automatically when a run ends with a transient provider error (for example 5xx or overloaded). 0 disables them. Usage limits (429) are re-queued separately."
+        >
+          <select
+            id="max_provider_replacements"
+            name="max_provider_replacements"
+            value={settings.max_provider_replacements}
+            onChange={onSettingChange}
+            onBlur={onBlur}
+            className={SETTINGS_CONTROL}
+          >
+            {Array.from({ length: MAX_PROVIDER_REPLACEMENTS_LIMIT + 1 }, (_, i) => i).map(n => (
+              <option key={n} value={n}>
+                {n === 0 ? '0 (Disabled)' : n}{n === DEFAULT_MAX_PROVIDER_REPLACEMENTS ? ' (Default)' : ''}
+              </option>
+            ))}
+          </select>
         </SettingsField>
 
         <SettingsCheckboxField
