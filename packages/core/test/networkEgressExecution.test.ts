@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { resolveInstanceNetworkPolicy, resolveNetworkPolicy, validateAgentNetworkSetting, type ResolvedNetworkPolicy } from '../src/network/networkPolicy.js';
@@ -145,4 +145,24 @@ test('the sweep removes directories left by dead or forgotten owners and keeps l
     assert.equal(removed, 3);
     assert.ok(!existsSync(dead) && !existsSync(forgotten) && !existsSync(stale));
     assert.ok(existsSync(live) && existsSync(otherHost));
+});
+
+test('the sweep never removes a directory whose proxy is still serving, however long the run lasts', async () => {
+    await executeWithNetworkPolicy(restricted(), async () => {
+        const before = new Set(await readdir(root));
+        const run = await prepareDockerRunNetwork('docker', agentRunArgs());
+        assert.ok(run);
+        const id = (await readdir(root)).find(entry => !before.has(entry))!;
+        const directory = path.join(root, id);
+        try {
+            const longAgo = new Date(Date.now() - EGRESS_ORPHAN_MAX_AGE_MS - 60_000);
+            await utimes(directory, longAgo, longAgo);
+            await sweepOrphanedEgressProxies({ root });
+            assert.ok(existsSync(path.join(directory, 'proxy.sock')), 'an active run keeps its proxy socket past the age limit');
+            assert.ok(Date.now() - (await stat(directory)).mtimeMs < EGRESS_ORPHAN_MAX_AGE_MS, 'the sweep refreshes an active directory for workers on other hosts');
+        } finally {
+            await run.release();
+        }
+        assert.ok(!existsSync(directory));
+    });
 });

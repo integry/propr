@@ -167,6 +167,46 @@ test('plain HTTP requests in absolute form are forwarded only to allowed hosts',
     }
 });
 
+test('an unfinished plain HTTP response ends its upstream when the client leaves or the proxy closes', async () => {
+    const upstreamClosed: Array<Promise<void>> = [];
+    const server = http.createServer((_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'text/plain' });
+        response.write('first chunk\n'); // and never ends
+    });
+    server.on('connection', socket => upstreamClosed.push(new Promise(resolve => socket.once('close', () => resolve()))));
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    const proxy = await startEgressProxy({
+        socketPath: await socketPath(),
+        allowlist: compileEgressAllowlist([`stream.example.com:${port}`]),
+        connect: (targetPort) => net.connect({ port: targetPort, host: '127.0.0.1' }),
+    });
+    const streaming = () => new Promise<http.ClientRequest>((resolve, reject) => {
+        const outgoing = http.request({ socketPath: proxy.socketPath, path: `http://stream.example.com:${port}/events` }, response => {
+            response.once('data', () => resolve(outgoing));
+        });
+        outgoing.on('error', () => undefined);
+        outgoing.once('error', reject);
+        outgoing.end();
+    });
+    const within = (promise: Promise<void>, message: string) => Promise.race([
+        promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(message)), 2000).unref()),
+    ]);
+    try {
+        const disconnecting = await streaming();
+        disconnecting.destroy();
+        await within(upstreamClosed[0], 'upstream stayed open after the client disconnected');
+
+        await streaming();
+        await proxy.close();
+        await within(upstreamClosed[1], 'upstream stayed open after the proxy closed');
+    } finally {
+        await proxy.close();
+        server.closeAllConnections();
+        await new Promise(resolve => server.close(resolve));
+    }
+});
+
 test('denials past the named-host limit are still counted, never dropped', () => {
     const recorder = new EgressDenialRecorder(2);
     for (const host of ['a.example.com', 'b.example.com', 'c.example.com', 'c.example.com', 'd.example.com', 'a.example.com']) recorder.deny(host);

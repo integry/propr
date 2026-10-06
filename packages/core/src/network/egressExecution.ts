@@ -239,16 +239,21 @@ function processAlive(pid: number): boolean {
 /**
  * Removes egress proxy directories whose owner is gone: one left by a dead
  * process on this host, one this process no longer serves, or any directory
- * older than {@link EGRESS_ORPHAN_MAX_AGE_MS}. Directories from live workers on
- * other hosts sharing the same root are left alone.
+ * not refreshed for {@link EGRESS_ORPHAN_MAX_AGE_MS}. Each sweep first touches
+ * the directories this process still serves, so a live worker on another host
+ * sharing the same root keeps its directories fresh however long its runs last,
+ * and this process never removes its own.
  */
 export async function sweepOrphanedEgressProxies(options: { now?: number; root?: string } = {}): Promise<{ removed: number }> {
     const root = options.root ?? egressSocketRoots().local;
     const now = options.now ?? Date.now();
     let entries: string[];
     try { entries = await fs.readdir(root); } catch { return { removed: 0 }; }
+    const touched = new Date(now);
+    await Promise.all([...ownedDirectories].map(id => fs.utimes(path.join(root, id), touched, touched).catch(() => undefined)));
     let removed = 0;
     for (const id of entries) {
+        if (ownedDirectories.has(id)) continue;
         const directory = path.join(root, id);
         try {
             const stat = await fs.stat(directory);

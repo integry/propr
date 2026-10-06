@@ -122,12 +122,15 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
         const headers = Object.fromEntries(Object.entries(request.headers).filter(([name]) => !HOP_BY_HOP.has(name.toLowerCase())));
         const upstream = http.request({
             host, port, method: request.method, path: `${url.pathname}${url.search}`, headers,
-            createConnection: () => connect(port, host),
+            // Tracked like CONNECT upstreams so close() ends them too.
+            createConnection: () => { const socket = connect(port, host); track(socket); return socket; },
         }, upstreamResponse => {
             const responseHeaders = Object.fromEntries(Object.entries(upstreamResponse.headers).filter(([name]) => !HOP_BY_HOP.has(name.toLowerCase())));
             response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
             upstreamResponse.pipe(response);
         });
+        // A client that goes away mid-response takes its upstream request with it.
+        response.once('close', () => { if (!response.writableFinished) upstream.destroy(); });
         upstream.on('error', () => {
             if (!response.headersSent) response.writeHead(502, { 'Content-Type': 'text/plain' }).end('ProPR egress proxy: upstream connection failed\n');
             else response.destroy();
