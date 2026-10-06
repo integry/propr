@@ -1,7 +1,36 @@
 import { z } from 'zod';
-import { loadMonitoredReposRaw } from '@propr/core';
+import { loadMonitoredReposRaw, searchRepositoryFiles, readRepositoryFileContent, RepositoryRetrievalError } from '@propr/core';
 import { type McpTool, type ToolDeps, repositorySchema, pageShape, ok } from './tools.js';
 import { McpError } from './config.js';
+
+const refShape = { branch: z.string().min(1).max(255).optional(), ref: z.string().min(1).max(255).optional() };
+
+function assertRelativePath(path: string): void {
+  if (path.startsWith('/') || path.split('/').includes('..') || path.includes('\\') || path.includes('\0')) throw new McpError('INVALID_PATH', 'Use a repository-relative path without traversal.');
+}
+
+async function defaultBranch(repository: string, branch?: string): Promise<string | undefined> {
+  return branch || (await loadMonitoredReposRaw()).find(repo => repo.name.toLowerCase() === repository.toLowerCase())?.baseBranch || undefined;
+}
+
+/** Maps retrieval service failures onto stable MCP error codes. */
+async function retrieval<T>(run: () => Promise<T>): Promise<T> {
+  try { return await run(); }
+  catch (error) {
+    if (!(error instanceof RepositoryRetrievalError)) throw error;
+    const message = error.message;
+    if (error.status === 403) throw new McpError('REPOSITORY_FORBIDDEN', 'Current GitHub repository access denied.', 403);
+    if (error.status === 404) throw /^Ref /.test(message) ? new McpError('REF_NOT_FOUND', message, 404) : new McpError('FILE_NOT_FOUND', message, 404);
+    if (error.status === 413) throw new McpError('FILE_TOO_LARGE', message, 413);
+    if (error.status === 400) {
+      if (/binary file/i.test(message)) throw new McpError('BINARY_FILE', message);
+      if (/^Invalid ref/.test(message)) throw new McpError('INVALID_REF', message);
+      if (/^(path|")/.test(message)) throw new McpError('INVALID_PATH', message);
+      throw new McpError('INVALID_INPUT', message);
+    }
+    throw new McpError('REPOSITORY_RETRIEVAL_FAILED', 'Repository retrieval failed.', 502, { retryable: true });
+  }
+}
 
 export function addContextTools(tools: McpTool[], { db, policy }: ToolDeps): void {
   tools.push({ name: 'resolve_reference', description: 'Find authorized repositories by name/alias, or plans, goals, tasks and TODOs within a repository by exact ID/name or fuzzy words. Returns candidates; never silently chooses a mutation target.', scope: 'read', readOnly: true,
@@ -56,5 +85,23 @@ export function addContextTools(tools: McpTool[], { db, policy }: ToolDeps): voi
       };
       const directories = await build('directory_summaries'), files = args.mode === 'overview' ? [] : await build('file_summaries');
       return ok({ repository: args.repository, branch: args.branch, freshness: { state: repository.indexing_status, indexedAt: repository.last_indexed_at, revision: repository.last_indexed_hash }, directories, files, nextOffset: Math.max(directories.length, files.length) === args.limit ? args.offset + args.limit : null });
+    } });
+  tools.push({ name: 'search_repository_files', description: 'Search repository files and return matching paths (no full file contents). mode "semantic" (default) ranks files with the index-based planner relevance engine (file summaries, path and git-history signals) and reports index freshness; mode "literal" runs an exact, non-regex string grep across the git tree at the requested ref and returns per-file match counts with the first matching lines. Optionally restrict to a repository-relative path prefix. Follow up with read_repository_file to read a match.', scope: 'read', readOnly: true,
+    schema: z.object({ repository: repositorySchema, query: z.string().min(1).max(1000), mode: z.enum(['semantic', 'literal']).default('semantic'), ...refShape, path: z.string().max(1024).optional(), caseSensitive: z.boolean().optional(), ...pageShape }).strict(), run: async ({ principal, args }) => {
+      await policy.repository(principal, args.repository);
+      if (args.path) assertRelativePath(args.path);
+      const branch = await defaultBranch(args.repository, args.branch);
+      return ok(await retrieval(() => searchRepositoryFiles({ repository: args.repository, branch, ref: args.ref, query: args.query, mode: args.mode, path: args.path || undefined,
+        caseSensitive: args.caseSensitive, offset: args.offset, limit: args.limit, authToken: principal.user.accessToken || undefined })));
+    } });
+  tools.push({ name: 'read_repository_file', description: 'Read a text file at a branch, ref or commit straight from git, in bounded line chunks, without cloning locally. Returns content with startLine, endLine, totalLines and a truncated flag; when truncated, continue from nextStartLine. Paths are repository-relative; binary files are rejected.', scope: 'read', readOnly: true,
+    schema: z.object({ repository: repositorySchema, path: z.string().min(1).max(1024), ...refShape, startLine: z.number().int().min(1).default(1), endLine: z.number().int().min(1).optional(),
+      maxLines: z.number().int().min(1).max(1000).default(800), maxBytes: z.number().int().min(1).max(500000).default(120000) }).strict(), run: async ({ principal, args }) => {
+      await policy.repository(principal, args.repository);
+      assertRelativePath(args.path);
+      if (args.endLine !== undefined && args.endLine < args.startLine) throw new McpError('INVALID_INPUT', 'endLine must be greater than or equal to startLine.');
+      const branch = await defaultBranch(args.repository, args.branch);
+      return ok(await retrieval(() => readRepositoryFileContent({ repository: args.repository, branch, ref: args.ref, path: args.path, startLine: args.startLine, endLine: args.endLine,
+        maxLines: args.maxLines, maxBytes: args.maxBytes, authToken: principal.user.accessToken || undefined })));
     } });
 }
