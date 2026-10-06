@@ -395,6 +395,30 @@ describe('processAgentRunJob', () => {
     assert.equal(h.cleanup.mock.callCount(), 1);
   });
 
+  test('a task stopped during the post-processing update cancels the run and publishes no report', async () => {
+    const h = harness();
+    const stateManager = h.deps.stateManager!;
+    h.deps.stateManager = () => {
+      const manager = stateManager();
+      return {
+        ...manager,
+        updateTaskState: async (taskId: string, state: string, ...rest: unknown[]) => {
+          // The Tasks UI stop lands while the post-processing update is awaited.
+          if (state === 'post_processing') await manager.markTaskCancelled(taskId, 'user');
+          return (manager.updateTaskState as (...args: unknown[]) => Promise<unknown>)(taskId, state, ...rest);
+        },
+      } as typeof manager;
+    };
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'cancelled');
+    assert.equal(h.run().state, 'cancelled');
+    assert.equal(h.run().report, null);
+    assert.ok(!h.transitions.some(t => t.to === 'report_ready' || t.to === 'completed'));
+    assert.equal(h.taskState(), 'cancelled');
+    assert.ok(!h.stateCalls.some(([name]) => name === 'completed'));
+    assert.equal(h.cleanup.mock.callCount(), 1);
+  });
+
   test('a task stopped directly during execution followed by an agent failure cancels the run instead of failing it', async () => {
     const h: Harness = harness({
       execute: async () => {
@@ -628,6 +652,33 @@ describe('processAgentRunJob', () => {
     const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;
     assert.equal(options.repositoryAccess, 'none');
     assert.equal(options.githubToken, '');
+  });
+
+  test('a repository-free run completes without GitHub access even when obtaining it would fail', async () => {
+    for (const snapshot of [definition({ capabilities: [], repositories: [] }), definition({ capabilities: [] }), definition({ repositories: [] })]) {
+      const h = harness({ run: storedRun({ definitionSnapshot: snapshot }) });
+      const getGitHubAccess = mock.fn(async () => { throw new Error('installation authentication unavailable'); });
+      h.deps.getGitHubAccess = getGitHubAccess;
+      const result = await createAgentRunProcessor(h.deps)(job);
+      assert.equal(result.status, 'complete');
+      assert.equal(h.run().state, 'completed');
+      assert.equal(getGitHubAccess.mock.callCount(), 0);
+      const input = h.prepareWorkspace.mock.calls[0].arguments[0] as { githubToken: string; octokit?: unknown };
+      assert.equal(input.githubToken, '');
+      assert.equal(input.octokit, undefined);
+      const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;
+      assert.equal(options.repositoryAccess, 'none');
+      assert.equal(options.githubToken, '');
+    }
+  });
+
+  test('a run reading repositories still fails when GitHub access cannot be obtained', async () => {
+    const h = harness();
+    h.deps.getGitHubAccess = async () => { throw new Error('installation authentication unavailable'); };
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'failed');
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.prepareWorkspace.mock.callCount(), 0);
   });
 
   test('repository_read without a readable workspace still launches without repository access', async () => {

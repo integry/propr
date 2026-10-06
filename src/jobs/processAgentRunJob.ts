@@ -1,6 +1,6 @@
 import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import type { AgentCapability, AgentRunState } from '@propr/shared';
+import type { AgentRunState } from '@propr/shared';
 import {
     AgentRegistry,
     getAgentRunById,
@@ -14,17 +14,17 @@ import {
     TaskStates,
     type Agent,
     type AgentRunJobData,
-    type AgentTaskOptions,
     type IssueRef,
     type JobResult,
     type StoredAgentDefinition,
     type StoredAgentRun,
     type WorkerStateManager,
 } from '@propr/core';
+import { agentTaskOptions } from './agentRuns/agentTaskOptions.js';
 import { advanceAfterReport } from './agentRuns/autonomy.js';
 import { buildAgentReportPrompt } from './agentRuns/reportPrompt.js';
 import { AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError, reportFromResult } from './agentRuns/runErrors.js';
-import { prepareAgentRunWorkspace, splitRepository, type AgentRunWorkspace, type PrepareAgentRunWorkspace } from './agentRuns/workspace.js';
+import { definitionReadsRepositories, prepareAgentRunWorkspace, splitRepository, type AgentRunWorkspace, type PrepareAgentRunWorkspace } from './agentRuns/workspace.js';
 import type { GitHubToken } from './githubTypes.js';
 import { compactNotificationRecap } from './notificationRecap.js';
 import { resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
@@ -40,19 +40,10 @@ import { defaultRunCostCapDeps, withRunCostCap, writeTimelineEvent } from './run
  */
 
 export { AgentRunPersistenceError, AgentRunSettlementError } from './agentRuns/runErrors.js';
+export type { AgentRunToolPolicy } from './agentRuns/agentTaskOptions.js';
 
 export const AGENT_RUN_USAGE_LIMIT_REASON = 'provider usage limit reached; trigger again later';
 export const AGENT_RUN_ABANDONED_REASON = 'The worker running this report stopped before it finished; trigger the agent again';
-
-/**
- * Capability-derived tool restrictions for the report run; enforced by agents once issue 8 lands.
- * Repository access is already enforced at launch through `repositoryAccess`.
- */
-export interface AgentRunToolPolicy {
-    capabilities: AgentCapability[];
-    /** The report run never writes to the repository or GitHub. */
-    readOnly: true;
-}
 
 export interface ResolvedAgentRunAgent {
     agent: Pick<Agent, 'executeTask'>;
@@ -431,6 +422,11 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         });
     }
 
+    /** Only a checkout needs installation credentials; a repository-free run must not depend on them. */
+    async function gitHubAccessFor(definition: StoredAgentDefinition): Promise<{ token: string; octokit: unknown }> {
+        return definitionReadsRepositories(definition) ? deps.getGitHubAccess() : { token: '', octokit: undefined };
+    }
+
     return async function processAgentRun(job: Job<AgentRunJobData>): Promise<JobResult> {
         const { runId, correlationId } = job.data;
         const log: Logger = logger.withCorrelation(correlationId);
@@ -464,7 +460,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         let reportStored = false;
         try {
             await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Preparing agent workspace' });
-            const { token, octokit } = await deps.getGitHubAccess();
+            const { token, octokit } = await gitHubAccessFor(definition);
 
             // 5. Sandboxed checkout, or an empty git directory without repository_read.
             workspace = await deps.prepareWorkspace({ runId, definition, githubToken: token, octokit, logger: log });
@@ -484,21 +480,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, { reason: `Running agent ${alias}` });
             const stopped = await stoppedBeforeLaunch({ runId, taskId, stateManager, log }, correlationId);
             if (stopped) return stopped;
-            const repositoryReadable = definition.capabilities.includes('repository_read') && workspace.promptWorkspace.repositoriesReadable;
-            const toolPolicy: AgentRunToolPolicy = { capabilities: [...definition.capabilities], readOnly: true };
-            const options: AgentTaskOptions & { toolPolicy: AgentRunToolPolicy } = {
-                worktreePath: workspace.worktreePath,
-                issueRef,
-                prompt,
-                model,
-                // Without repository_read the adapter mounts no clones and mints no repository token.
-                githubToken: repositoryReadable ? token : '',
-                ...(repositoryReadable ? {} : { repositoryAccess: 'none' as const }),
-                branchName: workspace.branchName,
-                taskId,
-                toolPolicy,
-                metadata: { agentRunId: runId, agentDefinitionId: definition.id },
-            };
+            const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace });
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },
                 () => agent.executeTask(options),
@@ -513,6 +495,10 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
 
             // 9. Store the report, then advance by autonomy mode.
             await stateManager.updateTaskState(taskId, TaskStates.POST_PROCESSING, { reason: 'Storing agent report' });
+            // A stop landing during that update keeps the task cancelled; the run must follow it
+            // before the report is stored, since a reported run can no longer be cancelled.
+            const stoppedBeforeReport = await followCancelledTask({ runId, taskId, stateManager, log }, correlationId, 'before its report was stored');
+            if (stoppedBeforeReport) return stoppedBeforeReport;
             const reported = await deps.transitionRun(runId, ['running'], 'report_ready', { report });
             if (!reported) {
                 return discardLateReport({ runId, taskId, stateManager, log }, correlationId);

@@ -236,12 +236,16 @@ async function prepareScratchWorkspace(input: PrepareAgentRunWorkspaceInput, log
     }
 }
 
+/** Whether a run of this definition checks out repositories (and so needs GitHub access). */
+export function definitionReadsRepositories(definition: StoredAgentDefinition): boolean {
+    return definition.capabilities.includes('repository_read') && definition.repositories.length > 0;
+}
+
 /**
  * Prepare the workspace for a report run. Cleans up after itself when
  * preparation fails part way; on success the caller owns `cleanup()`.
  */
 export const prepareAgentRunWorkspace: PrepareAgentRunWorkspace = async input => {
     const log = input.logger ?? (defaultLogger as unknown as Logger);
-    const readable = input.definition.capabilities.includes('repository_read') && input.definition.repositories.length > 0;
-    return readable ? prepareRepositoryWorkspace(input, log) : prepareScratchWorkspace(input, log);
+    return definitionReadsRepositories(input.definition) ? prepareRepositoryWorkspace(input, log) : prepareScratchWorkspace(input, log);
 };
