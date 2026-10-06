@@ -20,31 +20,232 @@
 #   PROPR_E2E_OPENCODE_MODELS comma-separated OpenCode models
 #   AGENT_TAG          unified agent image to verify (default: propr/agent:latest)
 #   PROPR_E2E_KEEP_STACK=1  leave containers/logs running after the script exits
-#   PROPR_E2E_REUSE_DATA=1  reuse /tmp/$STACK data from a previous run
+#   PROPR_E2E_REUSE_DATA=1  reuse the stack root kept by a previous
+#                           PROPR_E2E_KEEP_STACK=1 run
+#
+# Temporary data: everything this harness writes (the test .env derived from
+# the real dev .env, data, logs, repos, Vibe prompts) lives in a private root,
+# ${TMPDIR:-/tmp}/propr-itest-<uid>/<STACK>, created 0700 with 0600 files
+# regardless of umask. The GitHub App key is never copied: the launcher
+# bind-mounts it read-only via HOST_GH_PRIVATE_KEY. Existing roots are reused
+# or removed only when they carry this harness's ownership marker; symlinks,
+# foreign owners and wrong modes are refused, not repaired. Legacy /tmp/$STACK
+# data from older versions is no longer used or removed. Cleanup removes only
+# the validated root and containers proven to belong to it.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=lib/integration-test-root.sh
+source "$REPO_ROOT/scripts/lib/integration-test-root.sh"
 
 STACK="${STACK:-propr-itest}"
 API_PORT="${API_PORT:-14001}"
 TEST_REPO="${PROPR_E2E_REPO:-integry/propr-test}"
 LAUNCHER_TAG="${LAUNCHER_TAG:-propr/launcher:latest}"
 AGENT_TAG="${AGENT_TAG:-propr/agent:latest}"
+ITEST_LABEL="com.propr.itest.root"
+LAUNCHER_NAME="$STACK-launcher"
+NETWORK="${STACK}-net"
+SIBLING_SERVICES=(api daemon worker indexing-worker analysis-worker migrate ui docs tunnel redis)
+
+if ! itest_valid_stack_name "$STACK"; then
+  echo "✗ STACK must be 1-63 letters, digits, dots, underscores or hyphens, starting with a letter or digit" >&2
+  exit 1
+fi
 
 TOKEN="${PROPR_E2E_TOKEN:-}"
 if [ -z "$TOKEN" ] && command -v gh >/dev/null 2>&1; then
   TOKEN="$(gh auth token 2>/dev/null || true)"
 fi
 [ -z "$TOKEN" ] && { echo "✗ no GitHub token" >&2; exit 1; }
-
-DATA_DIR="/tmp/$STACK"
-VIBE_PROMPT_CACHE_DIR="${PROPR_E2E_VIBE_PROMPT_CACHE_DIR:-/tmp/${STACK}-vibe-prompts}"
-if [ "${PROPR_E2E_REUSE_DATA:-}" != "1" ]; then
-  rm -rf "$DATA_DIR" "$VIBE_PROMPT_CACHE_DIR"
+if [[ ! "$TOKEN" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+  echo "✗ GitHub token has an unexpected format" >&2
+  exit 1
 fi
-mkdir -p "$DATA_DIR"/{data,logs,repos} "$VIBE_PROMPT_CACHE_DIR" /tmp/git-processor /tmp/claude-logs /tmp/pr-worktrees
+
+# Supplies the bearer token through curl's stdin config so it never appears in
+# a process argument list.
+authorized_curl() {
+  printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" | curl -K - "$@"
+}
+
+# --- Container ownership ------------------------------------------------------
+# A matching name is not proof of ownership. The launcher carries this root's
+# token label and .env mount; launcher-started siblings must carry the stack
+# label and the exact mounts the launcher gives them for this root.
+ROOT=""
+ROOT_IDENTITY=""
+ROOT_TOKEN=""
+USER_BASE=""
+STACK_STARTED=0
+NETWORK_REMOVABLE=0
+
+# container_ownership NAME -> prints "root <id>", "owned <id>" or "unowned"
+container_ownership() {
+  local name="$1"
+  docker container inspect "$name" 2>/dev/null | node -e '
+    const fs = require("node:fs");
+    const [name, stack, root, token, label, launcher] = process.argv.slice(1);
+    let container;
+    try { [container] = JSON.parse(fs.readFileSync(0, "utf8")); } catch { container = undefined; }
+    const labels = container?.Config?.Labels ?? {};
+    const mounts = Array.isArray(container?.Mounts) ? container.Mounts : [];
+    const id = String(container?.Id ?? "");
+    const bind = (source, destination) => mounts.some((m) => m?.Type === "bind" && m.Source === source && m.Destination === destination);
+    let verdict = "unowned";
+    if (container && container.Name === `/${name}` && /^[a-f0-9]{12,64}$/.test(id) && token) {
+      const service = labels["propr.service"];
+      if (name === launcher) {
+        if (labels[label] === token && labels["com.propr.itest.stack"] === stack
+            && bind(`${root}/.env`, "/app/.env")) verdict = "root";
+      } else if (labels["propr.stack"] === stack && name === `${stack}-${service}`) {
+        if (["api", "daemon", "worker", "indexing-worker", "analysis-worker", "migrate"].includes(service)) {
+          if (bind(`${root}/data`, "/usr/src/app/data")) verdict = "root";
+        } else if (service === "redis") {
+          if (mounts.length === 1 && mounts[0]?.Type === "volume" && mounts[0].Name === `${stack}-redis-data`) verdict = "owned";
+        } else if (["ui", "docs", "tunnel"].includes(service) && mounts.length === 0) {
+          verdict = "owned";
+        }
+      }
+    }
+    console.log(verdict === "unowned" ? verdict : `${verdict} ${id}`);
+  ' "$name" "$STACK" "$ROOT" "$ROOT_TOKEN" "$ITEST_LABEL" "$LAUNCHER_NAME"
+}
+
+network_is_unused() {
+  docker network inspect "$NETWORK" 2>/dev/null | node -e '
+    const fs = require("node:fs");
+    let network;
+    try { [network] = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(1); }
+    const containers = network?.Containers ?? {};
+    process.exit(network?.Name === process.argv[1] && Object.keys(containers).length === 0 ? 0 : 1);
+  ' "$NETWORK"
+}
+
+# Removes the launcher and its siblings only after every present target was
+# proven to belong to this root. Refuses (removing nothing) otherwise. With
+# "reconcile", the stack network is removable only when such proof was found.
+remove_stack_resources() {
+  local mode="${1:-}" name verdict proven=0 failed=0 i
+  local -a ids=() names=()
+  for name in "$LAUNCHER_NAME" "${SIBLING_SERVICES[@]/#/$STACK-}"; do
+    docker container inspect "$name" >/dev/null 2>&1 || continue
+    verdict="$(container_ownership "$name")"
+    case "$verdict" in
+      "root "*) proven=1 ;;
+      "owned "*) ;;
+      *)
+        echo "✗ refusing to remove container $name: it does not belong to stack root $ROOT" >&2
+        return 1
+        ;;
+    esac
+    names+=("$name")
+    ids+=("${verdict#* }")
+  done
+  if [ "${#ids[@]}" -gt 0 ] && [ "$proven" != 1 ]; then
+    echo "✗ refusing to remove ${names[*]}: no container proves ownership of $ROOT" >&2
+    return 1
+  fi
+  if [ "$mode" = reconcile ]; then
+    NETWORK_REMOVABLE="$proven"
+  fi
+
+  # Stopping the launcher first lets it tear down its own siblings.
+  for i in "${!ids[@]}"; do
+    if [ "${names[$i]}" = "$LAUNCHER_NAME" ]; then
+      docker stop -t 30 "${ids[$i]}" >/dev/null 2>&1 || true
+    fi
+  done
+  for i in "${!ids[@]}"; do
+    if docker container inspect "${ids[$i]}" >/dev/null 2>&1; then
+      docker rm -f "${ids[$i]}" >/dev/null || { echo "✗ could not remove container ${names[$i]}" >&2; failed=1; }
+    fi
+  done
+  if docker network inspect "$NETWORK" >/dev/null 2>&1; then
+    if [ "$NETWORK_REMOVABLE" = 1 ] && network_is_unused; then
+      docker network rm "$NETWORK" >/dev/null || { echo "✗ could not remove network $NETWORK" >&2; failed=1; }
+    else
+      echo "  leaving network $NETWORK: it predates this run or still has containers attached" >&2
+    fi
+  fi
+  return "$failed"
+}
+
+cleanup() {
+  local status=$? failed=0
+  set +e
+  if [ "${PROPR_E2E_KEEP_STACK:-}" = "1" ]; then
+    echo ""
+    echo "▸ keeping stack for inspection (PROPR_E2E_KEEP_STACK=1)"
+    echo "  launcher: $LAUNCHER_NAME"
+    [ -z "$ROOT_IDENTITY" ] || echo "  data dir:  $ROOT"
+    exit "$status"
+  fi
+  echo ""
+  echo "▸ cleaning up"
+  if [ "$STACK_STARTED" = 1 ]; then
+    remove_stack_resources || failed=1
+  fi
+  if [ -n "$ROOT_IDENTITY" ]; then
+    itest_remove_root "$ROOT" "$USER_BASE" "$STACK" "$ROOT_IDENTITY" "$ROOT_TOKEN" "$LAUNCHER_TAG" || failed=1
+  fi
+  if [ "$failed" = 1 ]; then
+    echo "✗ integration cleanup did not remove every owned resource" >&2
+    [ "$status" != 0 ] || status=1
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+
+# --- Private stack root ------------------------------------------------------
+TMP_BASE="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+USER_BASE="$TMP_BASE/propr-itest-$(id -u)"
+ROOT="$USER_BASE/$STACK"
+if ! itest_mountable_path "$ROOT"; then
+  echo "✗ stack root $ROOT contains characters Docker bind mounts cannot address" >&2
+  exit 1
+fi
+itest_ensure_private_dir "$USER_BASE" "integration base directory" || exit 1
+
+if [ -e "$ROOT" ] || [ -L "$ROOT" ]; then
+  itest_root_validate "$ROOT" "$USER_BASE" "$STACK" || exit 1
+  ROOT_TOKEN="$ITEST_ROOT_TOKEN"
+  # Containers kept by an earlier run of this exact root are reconciled; any
+  # other same-named container is refused below.
+  remove_stack_resources reconcile || exit 1
+  if [ "${PROPR_E2E_REUSE_DATA:-}" = "1" ]; then
+    ROOT_IDENTITY="$ITEST_ROOT_IDENTITY"
+    echo "▸ reusing stack root $ROOT"
+  else
+    itest_remove_root "$ROOT" "$USER_BASE" "$STACK" "$ITEST_ROOT_IDENTITY" "$ROOT_TOKEN" "$LAUNCHER_TAG" || exit 1
+  fi
+fi
+if [ -z "$ROOT_IDENTITY" ]; then
+  itest_root_create "$ROOT" "$USER_BASE" "$STACK" || exit 1
+  ROOT_TOKEN="$ITEST_ROOT_TOKEN"
+  ROOT_IDENTITY="$ITEST_ROOT_IDENTITY"
+fi
+for dir in data logs repos vibe-prompts; do
+  itest_ensure_private_dir "$ROOT/$dir" "stack directory" || exit 1
+done
+
+for name in "$LAUNCHER_NAME" "${SIBLING_SERVICES[@]/#/$STACK-}"; do
+  if docker container inspect "$name" >/dev/null 2>&1; then
+    echo "✗ container $name already exists and does not belong to $ROOT; remove it or choose a different STACK" >&2
+    exit 1
+  fi
+done
+if docker network inspect "$NETWORK" >/dev/null 2>&1; then
+  NETWORK_REMOVABLE=0
+else
+  NETWORK_REMOVABLE=1
+fi
+
+VIBE_PROMPT_CACHE_DIR="$ROOT/vibe-prompts"
+# Fixed host paths the launcher mounts into app containers.
+mkdir -p /tmp/git-processor /tmp/claude-logs /tmp/pr-worktrees
 
 # Start from the developer's real .env so real GitHub App credentials, OAuth
 # client IDs, etc. are available. Then override test-specific values.
@@ -53,9 +254,9 @@ if [ ! -f "$REPO_ROOT/.env" ]; then
   exit 1
 fi
 
-# Copy the GH App private key into $DATA_DIR so it's reachable at a stable
-# path when mounted into the api/worker containers.
-HOST_PEM=$(grep '^GH_PRIVATE_KEY_PATH=' "$REPO_ROOT/.env" | cut -d= -f2-)
+# Resolve the GH App private key on the host. It is not copied: the launcher
+# bind-mounts it read-only into the app containers via HOST_GH_PRIVATE_KEY.
+HOST_PEM=$(grep '^GH_PRIVATE_KEY_PATH=' "$REPO_ROOT/.env" | cut -d= -f2- || true)
 HOST_PEM="${HOST_PEM#./}"
 if [[ "$HOST_PEM" = /usr/src/app/* ]]; then
   HOST_PEM_ABS="$REPO_ROOT/${HOST_PEM#/usr/src/app/}"
@@ -64,24 +265,27 @@ elif [[ "$HOST_PEM" = /* ]]; then
 else
   HOST_PEM_ABS="$REPO_ROOT/$HOST_PEM"
 fi
-if [ ! -f "$HOST_PEM_ABS" ]; then
-  echo "✗ private key not found at $HOST_PEM_ABS" >&2
+if [ -z "$HOST_PEM" ] || [ ! -f "$HOST_PEM_ABS" ]; then
+  echo "✗ private key not found at ${HOST_PEM_ABS}" >&2
   exit 1
 fi
-cp "$HOST_PEM_ABS" "$DATA_DIR/data/gh-app.pem"
-chmod 644 "$DATA_DIR/data/gh-app.pem"
+if ! itest_mountable_path "$HOST_PEM_ABS"; then
+  echo "✗ private key path $HOST_PEM_ABS contains characters Docker bind mounts cannot address" >&2
+  exit 1
+fi
 
 # Compose the test .env: base = dev .env with test-overrides appended. Bash
-# processes the file top-to-bottom, so later duplicates of a key win.
+# processes the file top-to-bottom, so later duplicates of a key win. It is
+# written 0600 from creation inside the private root.
 {
-  grep -v -E '^(CONFIG_REPO|DB_FILENAME|REDIS_HOST|REDIS_PORT|GITHUB_REPOS_TO_MONITOR|GH_PRIVATE_KEY_PATH|API_PUBLIC_URL|FRONTEND_URL|GH_OAUTH_CALLBACK_URL|ENABLE_GITHUB_WEBHOOKS|ENABLE_PR_COMMENT_POLLING|POLLING_INTERVAL_MS|AGENT_DOCKER_IMAGE|NODE_ENV|LOG_LEVEL|PROPR_ADMIN_USERS|PROPR_CONTAINERIZED|SESSION_SECRET)=' "$REPO_ROOT/.env"
+  grep -v -E '^(CONFIG_REPO|DB_FILENAME|REDIS_HOST|REDIS_PORT|GITHUB_REPOS_TO_MONITOR|GH_PRIVATE_KEY_PATH|HOST_GH_PRIVATE_KEY|API_PUBLIC_URL|FRONTEND_URL|GH_OAUTH_CALLBACK_URL|ENABLE_GITHUB_WEBHOOKS|ENABLE_PR_COMMENT_POLLING|POLLING_INTERVAL_MS|AGENT_DOCKER_IMAGE|NODE_ENV|LOG_LEVEL|PROPR_ADMIN_USERS|PROPR_CONTAINERIZED|SESSION_SECRET)=' "$REPO_ROOT/.env" || true
   cat <<EOF
 NODE_ENV=production
 LOG_LEVEL=warn
 DB_FILENAME=/usr/src/app/data/propr.sqlite
 REDIS_HOST=${STACK}-redis
 REDIS_PORT=6379
-GH_PRIVATE_KEY_PATH=/usr/src/app/data/gh-app.pem
+HOST_GH_PRIVATE_KEY=${HOST_PEM_ABS}
 GITHUB_REPOS_TO_MONITOR=${TEST_REPO}
 ENABLE_GITHUB_WEBHOOKS=false
 ENABLE_PR_COMMENT_POLLING=false
@@ -99,27 +303,7 @@ GH_OAUTH_CLIENT_ID=itest
 GH_OAUTH_CLIENT_SECRET=itest
 GITHUB_WEBHOOK_SECRET=itest
 EOF
-} > "$DATA_DIR/.env"
-
-cleanup() {
-  if [ "${PROPR_E2E_KEEP_STACK:-}" = "1" ]; then
-    echo ""
-    echo "▸ keeping stack for inspection (PROPR_E2E_KEEP_STACK=1)"
-    echo "  launcher: $STACK-launcher"
-    echo "  data dir:  $DATA_DIR"
-    return
-  fi
-  echo ""
-  echo "▸ cleaning up"
-  docker rm -f "$STACK-launcher" 2>/dev/null || true
-  # The launcher traps SIGTERM and tears down its siblings, but belt-and-braces:
-  for c in api daemon worker indexing-worker ui docs redis; do
-    docker rm -f "$STACK-$c" 2>/dev/null || true
-  done
-  docker network rm "${STACK}-net" 2>/dev/null || true
-  rm -rf "$DATA_DIR"
-}
-trap cleanup EXIT
+} | itest_write_private_file "$ROOT/.env"
 
 echo "▸ propr image integration test (via launcher)"
 echo "  stack:     $STACK"
@@ -137,20 +321,24 @@ docker image inspect "$LAUNCHER_TAG" >/dev/null || {
 # host so agent containers find their credentials.
 # Launcher only needs the docker socket; the paths it uses for spawning
 # sibling containers must be real HOST paths (docker socket = host docker).
+# The launcher and app containers read the 0600 .env and the read-only key as
+# container root; nothing here is widened for them.
 LAUNCHER_ARGS=(
   run -d
-  --name "$STACK-launcher"
+  --name "$LAUNCHER_NAME"
+  --label "$ITEST_LABEL=$ROOT_TOKEN"
+  --label "com.propr.itest.stack=$STACK"
   -v /var/run/docker.sock:/var/run/docker.sock
-  -v "$DATA_DIR/.env:/app/.env:ro"
+  -v "$ROOT/.env:/app/.env:ro"
   -v "$VIBE_PROMPT_CACHE_DIR:$VIBE_PROMPT_CACHE_DIR"
   -e "PROPR_STACK=$STACK"
   -e "API_PORT=$API_PORT"
   -e "UI_PORT=${UI_PORT:-15173}"
   -e "DOCS_ENABLED=false"
-  -e "PROPR_ENV_FILE=$DATA_DIR/.env"
-  -e "PROPR_DATA_DIR=$DATA_DIR/data"
-  -e "PROPR_LOGS_DIR=$DATA_DIR/logs"
-  -e "PROPR_REPOS_DIR=$DATA_DIR/repos"
+  -e "PROPR_ENV_FILE=$ROOT/.env"
+  -e "PROPR_DATA_DIR=$ROOT/data"
+  -e "PROPR_LOGS_DIR=$ROOT/logs"
+  -e "PROPR_REPOS_DIR=$ROOT/repos"
 )
 if [ "${PROPR_E2E_KEEP_STACK:-}" != "1" ]; then
   LAUNCHER_ARGS=(run --rm -d "${LAUNCHER_ARGS[@]:2}")
@@ -203,6 +391,7 @@ fi
 LAUNCHER_ARGS+=("$LAUNCHER_TAG")
 
 echo "▸ starting stack via launcher"
+STACK_STARTED=1
 docker "${LAUNCHER_ARGS[@]}" >/dev/null
 echo "✓ launcher started"
 
@@ -217,7 +406,7 @@ for i in $(seq 1 60); do
   sleep 1
   if [ "$i" = "60" ]; then
     echo "✗ api did not respond in 60s"
-    docker logs --tail 80 "$STACK-launcher" || true
+    docker logs --tail 80 "$LAUNCHER_NAME" || true
     docker logs --tail 40 "$STACK-api" 2>/dev/null || true
     exit 1
   fi
@@ -225,8 +414,7 @@ done
 
 echo ""
 echo "▸ auth probe"
-probe=$(curl -s -o /dev/null -w '%{http_code}' \
-  -H "Authorization: Bearer $TOKEN" \
+probe=$(authorized_curl -s -o /dev/null -w '%{http_code}' \
   "http://localhost:${API_PORT}/api/status")
 [ "$probe" = "200" ] || { echo "✗ /api/status returned HTTP $probe"; exit 1; }
 echo "✓ authenticated"
@@ -237,9 +425,9 @@ echo "✓ authenticated"
 #   - summarization enabled so indexing works
 api() {
   local method="$1" path="$2" body="${3:-}"
-  local args=(-s -X "$method" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
+  local args=(-s -X "$method" -H "Content-Type: application/json")
   [ -n "$body" ] && args+=(-d "$body")
-  curl "${args[@]}" "http://localhost:${API_PORT}${path}"
+  authorized_curl "${args[@]}" "http://localhost:${API_PORT}${path}"
 }
 
 echo ""
