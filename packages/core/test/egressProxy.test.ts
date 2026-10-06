@@ -167,6 +167,42 @@ test('plain HTTP requests in absolute form are forwarded only to allowed hosts',
     }
 });
 
+test('plain HTTP requests carry the target URL authority as Host, whatever Host the client sent', async () => {
+    // Routes by Host like a virtual-hosting upstream: any other site is unknown.
+    let expectedHost = '';
+    const server = http.createServer((request, response) => {
+        if (request.headers.host !== expectedHost) { response.writeHead(421).end(`unknown site ${request.headers.host}`); return; }
+        response.end(`site ${request.headers.host}${request.url}`);
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    const proxy = await startEgressProxy({
+        socketPath: await socketPath(),
+        allowlist: compileEgressAllowlist(['vhost.example.com', `vhost.example.com:${port}`]),
+        connect: () => net.connect({ port, host: '127.0.0.1' }),
+    });
+    const request = (url: string, host: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const outgoing = http.request({ socketPath: proxy.socketPath, path: url, headers: { Host: host } }, response => {
+            let body = '';
+            response.on('data', chunk => { body += chunk; });
+            response.on('end', () => resolve({ status: response.statusCode ?? 0, body }));
+        });
+        outgoing.on('error', reject);
+        outgoing.end();
+    });
+    try {
+        expectedHost = `vhost.example.com:${port}`;
+        const withPort = await request(`http://vhost.example.com:${port}/a?b=1`, 'proxy.invalid');
+        assert.deepEqual(withPort, { status: 200, body: `site vhost.example.com:${port}/a?b=1` }, 'a non-default port stays in the forwarded authority');
+        expectedHost = 'vhost.example.com';
+        const defaultPort = await request('http://vhost.example.com/index', 'other.example.org');
+        assert.deepEqual(defaultPort, { status: 200, body: 'site vhost.example.com/index' }, 'the default port is left out of the forwarded authority');
+    } finally {
+        await proxy.close();
+        await new Promise(resolve => server.close(resolve));
+    }
+});
+
 test('an unfinished plain HTTP response ends its upstream when the client leaves or the proxy closes', async () => {
     const upstreamClosed: Array<Promise<void>> = [];
     const server = http.createServer((_request, response) => {

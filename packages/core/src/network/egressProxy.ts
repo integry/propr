@@ -120,6 +120,8 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
             return;
         }
         const headers = Object.fromEntries(Object.entries(request.headers).filter(([name]) => !HOP_BY_HOP.has(name.toLowerCase())));
+        // The allowlisted URL, not the client's Host header, names the upstream site.
+        headers.host = url.host;
         const upstream = http.request({
             host, port, method: request.method, path: `${url.pathname}${url.search}`, headers,
             // Tracked like CONNECT upstreams so close() ends them too.
