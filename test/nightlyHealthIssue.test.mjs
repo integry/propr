@@ -193,10 +193,11 @@ describe("nightly health issue", () => {
       const messages = [];
       const failures = await collectFailures({
         github, owner: OWNER, repo: REPO, runId: 42, runAttempt: 2, diagnosticsDir: diagnostics,
-        suiteJobName: "Run E2E Test Suite", currentJobName: "Nightly test health", log: (message) => messages.push(message),
+        suiteJobName: "Run E2E Test Suite", suiteStepOutcomes: { full_tests: "failure", e2e_config: "skipped", e2e_tests: "skipped" },
+        currentJobName: "Nightly test health", log: (message) => messages.push(message),
       });
       assert.deepEqual(failures, [
-        { job: "Run E2E Test Suite", steps: ["Fail Job"], excerpt: "1/2 test runs failed after 1.0s:\n- test/x.test.ts: exit 1" },
+        { job: "Run E2E Test Suite", steps: ["Run Full Test Suite", "Fail Job"], excerpt: "1/2 test runs failed after 1.0s:\n- test/x.test.ts: exit 1" },
         { job: "Nightly Native Electron (hosted)", steps: [], excerpt: "boom\n##[error]exit 1" },
         { job: "Nightly desktop package / validate", steps: [], excerpt: "" },
       ]);
@@ -205,6 +206,80 @@ describe("nightly health issue", () => {
     } finally {
       rmSync(diagnostics, { recursive: true, force: true });
     }
+  });
+
+  const suiteFailure = async ({ outcomes, files, jobLog }) => {
+    const diagnostics = mkdtempSync(join(tmpdir(), "nightly-health-"));
+    try {
+      for (const [file, text] of Object.entries(files)) writeFileSync(join(diagnostics, file), text);
+      const github = fakeGitHub({
+        jobs: [{ id: 1, name: "Run E2E Test Suite", conclusion: "failure", steps: [{ name: "Fail Job", conclusion: "failure" }] }],
+        jobLogs: { 1: jobLog },
+      });
+      const [failure] = await collectFailures({
+        github, owner: OWNER, repo: REPO, runId: 42, runAttempt: 1, diagnosticsDir: diagnostics,
+        suiteJobName: "Run E2E Test Suite", suiteStepOutcomes: outcomes, currentJobName: "Nightly test health",
+      });
+      return { failure, downloaded: github.calls.some(({ name }) => name === "downloadJobLogs") };
+    } finally {
+      rmSync(diagnostics, { recursive: true, force: true });
+    }
+  };
+  const passingOutput = { "test_output.sanitized.txt": "Running full test suite\n12/12 test runs passed\n", "e2e_output.sanitized.txt": "Test output file not available." };
+  const configJobLog = [
+    "##[group]Run npm run test:full:prepared",
+    "##[endgroup]",
+    "12/12 test runs passed",
+    "##[group]Run missing=()",
+    "missing=()",
+    "##[endgroup]",
+    "Missing required nightly E2E configuration: PROPR_E2E_TOKEN",
+    "##[error]Process completed with exit code 1.",
+    "##[group]Run exit 1",
+    "##[endgroup]",
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+
+  it("reports the configuration error, not the passing suite output, when E2E configuration is missing", async () => {
+    const { failure, downloaded } = await suiteFailure({
+      outcomes: { full_tests: "success", e2e_config: "failure", e2e_tests: "skipped" },
+      files: passingOutput,
+      jobLog: configJobLog,
+    });
+    assert.ok(downloaded);
+    assert.deepEqual(failure.steps, ["Validate live E2E configuration", "Fail Job"]);
+    assert.equal(failure.excerpt, "Missing required nightly E2E configuration: PROPR_E2E_TOKEN\n##[error]Process completed with exit code 1.");
+    assert.doesNotMatch(failure.excerpt, /test runs passed/);
+  });
+
+  it("uses the job log for a suite failure after passing tests or without step outcomes", async () => {
+    const jobLog = "##[group]Run node scripts/sanitize-ci-output.mjs\n##[endgroup]\nsanitizer crashed\n##[error]Process completed with exit code 1.";
+    for (const outcomes of [{ full_tests: "success", e2e_config: "success", e2e_tests: "success" }, {}]) {
+      const { failure, downloaded } = await suiteFailure({ outcomes, files: passingOutput, jobLog });
+      assert.ok(downloaded);
+      assert.equal(failure.excerpt, "sanitizer crashed\n##[error]Process completed with exit code 1.");
+    }
+  });
+
+  it("uses only the E2E output when the E2E tests fail after a passing suite", async () => {
+    const { failure, downloaded } = await suiteFailure({
+      outcomes: { full_tests: "success", e2e_config: "success", e2e_tests: "failure" },
+      files: { ...passingOutput, "e2e_output.sanitized.txt": "e2e start\n1/3 test runs failed after 9.0s:\n- e2e/model.test.ts: exit 1\n" },
+      jobLog: configJobLog,
+    });
+    assert.ok(!downloaded);
+    assert.deepEqual(failure.steps, ["Run E2E Tests", "Fail Job"]);
+    assert.equal(failure.excerpt, "1/3 test runs failed after 9.0s:\n- e2e/model.test.ts: exit 1");
+  });
+
+  it("falls back to the job log when the failed test step's output is missing", async () => {
+    const { failure, downloaded } = await suiteFailure({
+      outcomes: { full_tests: "failure", e2e_config: "skipped", e2e_tests: "skipped" },
+      files: { "test_output.sanitized.txt": "Test output file not available." },
+      jobLog: "##[group]Run npm run test:full:prepared\n##[endgroup]\nnpm ERR! missing script\n##[error]Process completed with exit code 1.",
+    });
+    assert.ok(downloaded);
+    assert.equal(failure.excerpt, "npm ERR! missing script\n##[error]Process completed with exit code 1.");
   });
 
   it("redacts credentials and keeps the report within GitHub's body limit", () => {
@@ -252,7 +327,13 @@ describe("nightly health issue", () => {
     assert.match(job, /needs: \[e2e-tests, native-electron, desktop-package, desktop-connect\]/);
     assert.match(job, /if: \$\{\{ !cancelled\(\) \}\}/);
     assert.match(job, /permissions:\n\s+contents: read\n\s+actions: read\n\s+issues: write\n/);
+    assert.match(job, /NIGHTLY_SUITE_JOB_ID: e2e-tests\n/);
     assert.match(job, /NIGHTLY_SUITE_JOB_NAME: Run E2E Test Suite\n/);
+    const suiteJob = workflow.slice(workflow.indexOf("\n  e2e-tests:\n"), workflow.indexOf("\n  native-electron:\n"));
+    for (const id of ["full_tests", "e2e_config", "e2e_tests"]) {
+      assert.match(suiteJob, new RegExp(`\\n {6}${id}: \\$\\{\\{ steps\\.${id}\\.outcome \\}\\}\\n`), `the suite job exports the ${id} outcome`);
+      assert.match(suiteJob, new RegExp(`\\n {8}id: ${id}\\n`));
+    }
     assert.match(workflow, /\n {4}name: Run E2E Test Suite\n/, "the suite job name matches");
     assert.match(job, /NIGHTLY_HEALTH_JOB_NAME: Nightly test health\n/);
     assert.match(job, /\n {4}name: Nightly test health\n/);

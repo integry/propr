@@ -21,6 +21,12 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+    # The test steps continue on error, so the health job reads their outcomes
+    # here to tell which step failed and whether its output artifact applies.
+    outputs:
+      full_tests: ${{ steps.full_tests.outcome }}
+      e2e_config: ${{ steps.e2e_config.outcome }}
+      e2e_tests: ${{ steps.e2e_tests.outcome }}
 
     steps:
       - name: Checkout repository
@@ -259,6 +265,7 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
           NIGHTLY_DIAGNOSTICS_DIR: nightly-diagnostics
+          NIGHTLY_SUITE_JOB_ID: e2e-tests
           NIGHTLY_SUITE_JOB_NAME: Run E2E Test Suite
           NIGHTLY_HEALTH_JOB_NAME: Nightly test health
           GITHUB_TOKEN_TO_REDACT: ${{ github.token }}

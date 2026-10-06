@@ -204,12 +204,29 @@ const readText = (path) => {
 
 const responseText = (data) => (typeof data === "string" ? data : Buffer.from(data ?? "").toString("utf8"));
 
+// The suite job's test steps continue on error and report their outcomes as
+// job outputs; only a failed test step has an output artifact describing it.
+// A configuration failure, or any failure after passing tests, is read from
+// the job log instead.
+const SUITE_STEPS = [
+  { output: "full_tests", name: "Run Full Test Suite", artifact: "test_output.sanitized.txt" },
+  { output: "e2e_config", name: "Validate live E2E configuration", artifact: null },
+  { output: "e2e_tests", name: "Run E2E Tests", artifact: "e2e_output.sanitized.txt" },
+];
+
+function suiteArtifactExcerpt(diagnosticsDir, failedSteps) {
+  if (!diagnosticsDir || failedSteps.length === 0 || failedSteps.some((step) => !step.artifact)) return "";
+  const excerpts = failedSteps.map((step) => readText(join(diagnosticsDir, step.artifact)))
+    .map((text) => (text && text.trim() && !text.startsWith("Test output file not available.") ? summarizeLog(text) : ""));
+  return excerpts.every(Boolean) ? excerpts.join("\n\n") : "";
+}
+
 /**
  * Names the failed jobs and steps of this run attempt with a log excerpt each.
- * The suite job's excerpt comes from its sanitized output artifact; other jobs
- * use their GitHub job log.
+ * The suite job's excerpt comes from the sanitized output artifact of its
+ * failed test step; anything else uses the GitHub job log.
  */
-export async function collectFailures({ github, owner, repo, runId, runAttempt, diagnosticsDir, suiteJobName, currentJobName, log = () => {} }) {
+export async function collectFailures({ github, owner, repo, runId, runAttempt, diagnosticsDir, suiteJobName, suiteStepOutcomes = {}, currentJobName, log = () => {} }) {
   const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
     owner,
     repo,
@@ -222,12 +239,12 @@ export async function collectFailures({ github, owner, repo, runId, runAttempt, 
     if (job.name === currentJobName || !FAILED_CONCLUSIONS.has(job.conclusion)) continue;
     const steps = (job.steps ?? []).filter((step) => FAILED_CONCLUSIONS.has(step.conclusion)).map((step) => step.name);
     let excerpt = "";
-    if (diagnosticsDir && job.name === suiteJobName) {
-      excerpt = ["test_output.sanitized.txt", "e2e_output.sanitized.txt"]
-        .map((file) => readText(join(diagnosticsDir, file)))
-        .filter((text) => text && text.trim() && !text.startsWith("Test output file not available."))
-        .map((text) => summarizeLog(text))
-        .join("\n\n");
+    if (job.name === suiteJobName) {
+      const failedSteps = SUITE_STEPS.filter((step) => suiteStepOutcomes?.[step.output] === "failure");
+      for (const step of [...failedSteps].reverse()) {
+        if (!steps.includes(step.name)) steps.unshift(step.name);
+      }
+      excerpt = suiteArtifactExcerpt(diagnosticsDir, failedSteps);
     }
     if (!excerpt) {
       try {
@@ -251,7 +268,8 @@ export async function runNightlyHealth({ github, context, core, env = process.en
     log(`${context.ref} is not the default branch; leaving the health issue unchanged`);
     return { action: "none" };
   }
-  const outcome = nightlyOutcome(JSON.parse(env.NEEDS_JSON || "{}"));
+  const needs = JSON.parse(env.NEEDS_JSON || "{}");
+  const outcome = nightlyOutcome(needs);
   const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
   const failures = outcome === "failure"
     ? await collectFailures({
@@ -262,6 +280,7 @@ export async function runNightlyHealth({ github, context, core, env = process.en
       runAttempt: Number(env.GITHUB_RUN_ATTEMPT) || 1,
       diagnosticsDir: env.NIGHTLY_DIAGNOSTICS_DIR,
       suiteJobName: env.NIGHTLY_SUITE_JOB_NAME,
+      suiteStepOutcomes: needs[env.NIGHTLY_SUITE_JOB_ID]?.outputs ?? {},
       currentJobName: env.NIGHTLY_HEALTH_JOB_NAME,
       log,
     })
