@@ -1,5 +1,5 @@
 import React from 'react';
-import { TaskInfo, TokenUsage, UsageMetricRecord } from './types';
+import { TaskBudget, TaskInfo, TokenUsage, UsageMetricRecord } from './types';
 import { ExternalLink, GitPullRequest, GitCommit, Layers3 } from 'lucide-react';
 import { formatRelativeTime } from './utils';
 import { getDisplayTitle } from './taskHeaderText';
@@ -242,6 +242,37 @@ const UsageMetricsChip: React.FC<{ usageMetricRecords: UsageMetricRecord[] }> = 
   );
 };
 
+const BUDGET_SOURCE_LABELS: Record<NonNullable<TaskBudget['source']>, string> = {
+  override: 'task override',
+  workflow: '.propr/workflow.yml',
+  instance_default: 'instance default',
+};
+
+const formatUsd = (amount: number): string => `$${amount.toFixed(2)}`;
+
+/** Estimated spend beside the run's spend cap: `$1.20 / $5.00 (24%)`, or just the spend when uncapped. */
+export const BudgetChip: React.FC<{ budget: TaskBudget }> = ({ budget }) => {
+  if (budget.capUsd === null) {
+    if (budget.spentUsd <= 0) return null;
+    return <span className="font-mono text-xs text-slate-500" title="Estimated cost; this run has no spend cap">{formatUsd(budget.spentUsd)}</span>;
+  }
+  const percent = budget.percent ?? 0;
+  const tone = budget.exceeded || percent >= 100
+    ? 'border-red-200 bg-red-50 text-red-700'
+    : percent >= 80 ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600';
+  const source = budget.source ? ` from ${BUDGET_SOURCE_LABELS[budget.source]}` : '';
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-xs ${tone}`}
+      title={`Estimated spend ${formatUsd(budget.spentUsd)} of a ${formatUsd(budget.capUsd)} spend cap${source}${budget.exceeded ? '; the run was stopped at its cap' : ''}`}
+      aria-label={`Spend ${formatUsd(budget.spentUsd)} of ${formatUsd(budget.capUsd)} cap, ${percent}%${budget.exceeded ? ', stopped at cap' : ''}`}
+    >
+      {formatUsd(budget.spentUsd)} / {formatUsd(budget.capUsd)} ({percent}%)
+      {budget.exceeded && <span className="font-sans font-medium">capped</span>}
+    </span>
+  );
+};
+
 /** How the run went: what leads the line, then the model and runtime, then consumption. */
 const TelemetryGroups: React.FC<{
   modelName: string;
@@ -249,12 +280,14 @@ const TelemetryGroups: React.FC<{
   synthetic?: boolean;
   tokenUsage?: TokenUsage;
   usageMetricRecords?: UsageMetricRecord[];
+  budget?: TaskBudget | null;
   lead?: React.ReactNode;
   divided: boolean;
-}> = ({ modelName, duration, synthetic, tokenUsage, usageMetricRecords, lead, divided }) => {
+}> = ({ modelName, duration, synthetic, tokenUsage, usageMetricRecords, budget, lead, divided }) => {
   const hasTokens = tokenUsage && Object.values(tokenUsage).some(value => (value ?? 0) > 0);
   const hasQuota = usageMetricRecords?.some(record => record.metricValue > 0 &&
     ['session', 'Session', 'weeklyAll', 'weekly', 'Weekly'].includes(record.metricKey));
+  const hasBudget = Boolean(budget && (budget.capUsd !== null || budget.spentUsd > 0));
   return (
     <>
       {lead && (
@@ -265,10 +298,11 @@ const TelemetryGroups: React.FC<{
       <ContextGroup label="Execution runtime" divided={divided}>
         <ModelChip modelName={modelName} duration={duration} synthetic={synthetic} />
       </ContextGroup>
-      {(hasTokens || hasQuota) && (
+      {(hasTokens || hasQuota || hasBudget) && (
         <ContextGroup label="Consumption" divided>
           {hasTokens && <TokenUsageChip tokenUsage={tokenUsage} />}
           {hasQuota && <UsageMetricsChip usageMetricRecords={usageMetricRecords!} />}
+          {hasBudget && <BudgetChip budget={budget!} />}
         </ContextGroup>
       )}
     </>
@@ -323,6 +357,8 @@ interface ContextStripProps {
   duration?: number | null;
   tokenUsage?: TokenUsage;
   usageMetricRecords?: UsageMetricRecord[];
+  /** Estimated spend against the run's spend cap. */
+  budget?: TaskBudget | null;
   synthetic?: boolean;
   /** Mobile only: Show only the repository name link */
   mobileRepoOnly?: boolean;
@@ -347,6 +383,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   duration,
   tokenUsage,
   usageMetricRecords,
+  budget,
   synthetic,
   mobileRepoOnly,
   mobileMetadataOnly,
@@ -396,6 +433,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
           synthetic={synthetic}
           tokenUsage={tokenUsage}
           usageMetricRecords={usageMetricRecords}
+          budget={budget}
           lead={lead}
           divided={showGit || Boolean(lead)}
         />

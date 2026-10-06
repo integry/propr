@@ -38,7 +38,7 @@ test('a capped run never starts unenforced', () => {
     assert.throws(() => costCapExecutionOptions({ config: config('claude'), enforcesCostCap: true }, { costCapUsd: Number.NaN }), /no budget remains/);
 });
 
-test('a run stopped at its cost cap ends with the cost_cap terminal reason', () => {
+test('a run stopped at its cost cap ends with the cost_cap_exceeded terminal reason', () => {
     const stdout = [
         JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Implemented the parser.' }] } }),
         JSON.stringify({ type: 'result', subtype: 'error_max_budget_usd', is_error: true, total_cost_usd: 3.02 }),
@@ -48,5 +48,5 @@ test('a run stopped at its cost cap ends with the cost_cap terminal reason', () 
     assert.equal(response.terminationReason, 'cost_cap');
     assert.equal(resolveAgentTerminationReason({ subtype: 'error_max_budget_usd' }), 'cost_cap');
     // Recorded on the task, so the stop is excluded from automatic replacement (`cost_cap_stop`).
-    assert.equal(taskTerminalReasonForAgentTermination('cost_cap'), 'cost_cap');
+    assert.equal(taskTerminalReasonForAgentTermination('cost_cap'), 'cost_cap_exceeded');
 });

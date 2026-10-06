@@ -45,6 +45,22 @@ describe('Task details telemetry', () => {
       usageMetricRecords={[{ agent: 'codex', metricKey: 'Weekly', metricValue: 0 }]} />);
     expect(screen.queryByRole('group', { name: 'Consumption' })).not.toBeInTheDocument();
   });
+
+  it('shows the run spend beside its cap and marks a run stopped at the cap', () => {
+    const { rerender } = render(<ContextStrip {...props}
+      budget={{ spentUsd: 1.2, capUsd: 5, percent: 24, source: 'workflow', exceeded: false }} />);
+    const consumption = screen.getByRole('group', { name: 'Consumption' });
+    expect(consumption).toHaveTextContent('$1.20 / $5.00 (24%)');
+    expect(within(consumption).getByLabelText('Spend $1.20 of $5.00 cap, 24%')).toHaveAttribute('title', expect.stringContaining('.propr/workflow.yml'));
+
+    rerender(<ContextStrip {...props} budget={{ spentUsd: 5.3, capUsd: 5, percent: 106, source: 'override', exceeded: true }} />);
+    const capped = within(screen.getByRole('group', { name: 'Consumption' })).getByLabelText(/stopped at cap/);
+    expect(capped).toHaveTextContent('$5.30 / $5.00 (106%)capped');
+    expect(capped).toHaveClass('text-red-700');
+
+    rerender(<ContextStrip {...props} budget={{ spentUsd: 0.75, capUsd: null, percent: null, source: null, exceeded: false }} />);
+    expect(screen.getByRole('group', { name: 'Consumption' })).toHaveTextContent('$0.75');
+  });
 });
 
 describe('Task details attempt lineage', () => {

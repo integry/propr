@@ -1,5 +1,6 @@
 import type { Response } from 'express';
 import { redactVisualPreviewValue } from '@propr/core';
+import { loadTaskBudget } from './taskBudget.js';
 import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { Queue, Job } from 'bullmq';
@@ -37,7 +38,8 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
 
       const dbResult = await getHistoryFromDb(db, taskId, previewReader);
       if (dbResult) {
-        sendSafeJson(res, redactVisualPreviewValue({ taskId, ...dbResult }));
+        const budget = await loadTaskBudget(db, redisClient, taskId, dbResult.history);
+        sendSafeJson(res, redactVisualPreviewValue({ taskId, ...dbResult, ...(budget ? { budget } : {}) }));
         return;
       }
       let history: Array<Record<string, unknown>> = [];
@@ -48,7 +50,8 @@ export function createTaskHistoryRoutes(deps: TaskHistoryRoutesDeps) {
         const queueResult = await getHistoryFromQueue(taskQueue, taskId);
         if (queueResult) { if (!taskInfo) taskInfo = queueResult.taskInfo; history = queueResult.history; }
       }
-      sendSafeJson(res, redactVisualPreviewValue({ taskId, history, taskInfo }));
+      const budget = await loadTaskBudget(db, redisClient, taskId, history);
+      sendSafeJson(res, redactVisualPreviewValue({ taskId, history, taskInfo, ...(budget ? { budget } : {}) }));
     } catch (error) {
       console.error('Error in /api/task/:taskId/history:', error);
       res.status(500).json({ error: 'Internal server error' });

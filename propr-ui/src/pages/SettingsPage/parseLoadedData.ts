@@ -39,10 +39,16 @@ interface SettingsApiData {
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
+  default_max_cost_usd?: number;
   agent_stall_timeout_ms?: number | null;
   agent_tool_stall_timeout_ms?: number | null;
   agent_degenerate_output_limit?: number | null;
   agent_watchdog_defaults?: Settings['agent_watchdog_defaults'];
+}
+
+/** The spend cap as typed in Settings: empty for no cap (0 or unset). */
+function costCapInput(amount: number | undefined): string {
+  return amount ? String(amount) : '';
 }
 
 function watchdogOverride(value: unknown): number | null {
@@ -51,6 +57,24 @@ function watchdogOverride(value: unknown): number | null {
 
 function providerReplacements(settingsData: SettingsApiData): number {
   return settingsData.max_provider_replacements ?? DEFAULT_MAX_PROVIDER_REPLACEMENTS;
+}
+
+/** Sends the typed spend cap as a USD amount (empty = 0, no cap); a value that is not one is left unsaved. */
+export function costCapToSave(value: string): { default_max_cost_usd?: number } {
+  const trimmed = value.trim();
+  if (!trimmed) return { default_max_cost_usd: 0 };
+  const amount = Number(trimmed);
+  return Number.isFinite(amount) && amount >= 0 ? { default_max_cost_usd: amount } : {};
+}
+
+/** The spend cap and agent watchdog overrides as sent on save. */
+export function runLimitSettingsToSave(settings: Settings) {
+  return {
+    ...costCapToSave(settings.default_max_cost_usd),
+    agent_stall_timeout_ms: settings.agent_stall_timeout_ms,
+    agent_tool_stall_timeout_ms: settings.agent_tool_stall_timeout_ms,
+    agent_degenerate_output_limit: settings.agent_degenerate_output_limit
+  };
 }
 
 function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig[]): Settings {
@@ -80,6 +104,7 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     ultrafix_rating_goal: settingsData.ultrafix_rating_goal ?? 7,
     ultrafix_max_cycles: settingsData.ultrafix_max_cycles ?? 5,
     ultrafix_pause_seconds: settingsData.ultrafix_pause_seconds ?? 60,
+    default_max_cost_usd: costCapInput(settingsData.default_max_cost_usd),
     agent_stall_timeout_ms: watchdogOverride(settingsData.agent_stall_timeout_ms),
     agent_tool_stall_timeout_ms: watchdogOverride(settingsData.agent_tool_stall_timeout_ms),
     agent_degenerate_output_limit: watchdogOverride(settingsData.agent_degenerate_output_limit),

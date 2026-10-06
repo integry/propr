@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { redactDetails } from './errorEnvelope.js';
 import type { TaskSubmission } from '@propr/core';
+import { MAX_RUN_COST_CAP_USD } from '@propr/shared';
 import { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
 import { callWorkflow } from './adapter.js';
 import { McpError } from './config.js';
@@ -33,18 +34,20 @@ export function addTaskSubmissionTools(tools: McpTool[], deps: ToolDeps): void {
   const routes = createTaskSubmissionRoutes({ db: deps.db, services: deps.taskSubmissionServices });
   const shape = { repository: repositorySchema.toLowerCase(), submissionId: z.uuid() };
   const target = { table: 'task_submissions', column: 'id', arg: 'submissionId', owner: 'user_id' };
-  tools.push({ name: 'create_task', description: 'Create a GitHub issue and immediately START an ordinary one-off task, without a plan or goal. Uses configured agent/model defaults unless overridden. Set runUltrafix to run the review/fix loop on the resulting pull request as soon as it opens, and autoMerge to merge it once it is ready; ultrafixGoal and ultrafixMaxCycles apply only when runUltrafix is true and ultrafix is bounded to 10 cycles; an omitted ultrafixGoal defaults to the instance ultrafix rating goal. Keep the idempotencyKey stable. Follow progress with get_task_submission (task state and pull request) instead of polling list_tasks.', scope: 'execute',
+  tools.push({ name: 'create_task', description: 'Create a GitHub issue and immediately START an ordinary one-off task, without a plan or goal. Uses configured agent/model defaults unless overridden. Set maxCostUsd to cap what the run may spend. Set runUltrafix to run the review/fix loop on the resulting pull request as soon as it opens, and autoMerge to merge it once it is ready; ultrafixGoal and ultrafixMaxCycles apply only when runUltrafix is true and ultrafix is bounded to 10 cycles; an omitted ultrafixGoal defaults to the instance ultrafix rating goal. Keep the idempotencyKey stable. Follow progress with get_task_submission (task state and pull request) instead of polling list_tasks.', scope: 'execute',
     schema: z.object({ ...mutationShape, repository: shape.repository,
       instruction: z.string().min(1).max(50000).refine(value => !!value.trim(), 'Instruction must not be blank.'),
       agentAlias: idSchema.optional(), model: idSchema.optional(), autoMerge: z.boolean().default(false),
       runUltrafix: z.boolean().default(false), ultrafixGoal: ultrafixGoalSchema,
       ultrafixMaxCycles: z.number().int().min(1).max(10).default(3),
+      maxCostUsd: z.number().positive().max(MAX_RUN_COST_CAP_USD).optional().describe('Spend cap in USD for this task\'s run. When its estimated cost reaches the cap the run is stopped and its partial work published. Overrides the repository .propr/workflow.yml limits.max_cost_usd and the instance default_max_cost_usd.'),
     }).strict(), run: async ({ principal, args, operationId }) => {
       if (args.autoMerge) deps.policy.requireScope(principal, 'merge');
       if (args.runUltrafix) deps.policy.requireScope(principal, 'review');
       const response = await callWorkflow(routes.submit, principal, {
         body: { repository: args.repository, instruction: args.instruction, agentAlias: args.agentAlias, model: args.model,
           autoMerge: args.autoMerge, runUltrafix: args.runUltrafix,
+          ...(args.maxCostUsd !== undefined ? { maxCostUsd: args.maxCostUsd } : {}),
           // Bounds travel only with the opt-in, exactly as implement_plan records them.
           ...(args.runUltrafix ? { ultrafixGoal: await resolveUltrafixGoal(args.ultrafixGoal), ultrafixMaxCycles: args.ultrafixMaxCycles } : {}) },
         // The operation identity isolates submission keys across clients/grants and the UI.

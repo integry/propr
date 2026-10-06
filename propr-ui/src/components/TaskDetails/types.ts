@@ -7,6 +7,18 @@ export interface TokenUsage {
   cache_read_input_tokens?: number | null;
 }
 
+/** A task's estimated spend against its run spend cap, from the task history API. */
+export interface TaskBudget {
+  spentUsd: number;
+  /** null when the run is uncapped. */
+  capUsd: number | null;
+  /** Spend as a share of the cap; null when uncapped. */
+  percent: number | null;
+  source: 'override' | 'workflow' | 'instance_default' | null;
+  /** The run was stopped at its cap. */
+  exceeded: boolean;
+}
+
 export interface UsageMetricRecord {
   agent: string;
   metricKey: string;
@@ -54,6 +66,9 @@ export interface HistoryItemMetadata {
   /** ISO timestamp of the next admission attempt. */
   repositoryWorkflowRetryAt?: string;
   terminalReason?: string;
+  /** Timeline event that repeats the current state, e.g. `budget.exceeded` or `replacement.dispatched`. */
+  event?: 'budget.exceeded' | 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted' | string;
+  budget?: { capUsd: number; spentUsd: number; priorSpentUsd?: number; percent?: number; source?: 'override' | 'workflow' | 'instance_default' };
   pushFailure?: PushFailure;
   pushSalvage?: PushSalvageEvent;
   model?: string;
@@ -73,8 +88,6 @@ export interface HistoryItemMetadata {
   ultrafixNextAction?: string;
   ultrafixStopReason?: string;
   ultrafixOutcome?: 'goal_reached' | 'cycles_exhausted' | 'stopped' | 'failed';
-  /** Timeline event that repeats the current state, e.g. `replacement.dispatched`. */
-  event?: 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted' | string;
   replacementTaskId?: string;
   attemptNumber?: number;
   syntheticRouting?: {

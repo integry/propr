@@ -24,6 +24,8 @@ export interface Settings {
   ultrafix_rating_goal: number;
   ultrafix_max_cycles: number;
   ultrafix_pause_seconds: number;
+  /** Instance default per-run spend cap in USD as typed; empty or 0 = no cap. */
+  default_max_cost_usd: string;
   /** Watchdog overrides; null uses the environment default. */
   agent_stall_timeout_ms: number | null;
   agent_tool_stall_timeout_ms: number | null;

@@ -15,7 +15,7 @@ import { isDemoMode } from '../demoMode.js';
 import { getLlmLabel, enqueueIssueImplementationJob } from './planIssueHelpers.js';
 import { goalAttachmentUpload } from './plannerRoutes.js';
 import { goalUploadIdentity, removeTemporaryGoalUploads } from '../services/goalAttachmentService.js';
-import { githubInlineEligibility, VISUAL_PREVIEW_CONTENT_TYPES } from '@propr/shared';
+import { githubInlineEligibility, MAX_RUN_COST_CAP_USD, VISUAL_PREVIEW_CONTENT_TYPES } from '@propr/shared';
 import { uploadGitHubAttachment } from '../../../src/github/visualPreviewAttachments.js';
 
 export const taskSubmissionUpload: RequestHandler = (req, res, next) => {
@@ -218,6 +218,8 @@ interface SubmissionRequest {
   runUltrafix?: boolean;
   ultrafixGoal?: number;
   ultrafixMaxCycles?: number;
+  /** Per-task spend cap in USD; 0 or omitted uses the repository/instance cap. */
+  maxCostUsd?: number;
 }
 
 // Keep the bounds identical to the plan implementation contract.
@@ -225,6 +227,8 @@ const ULTRAFIX_GOAL_RANGE = [1, 10] as const;
 const ULTRAFIX_MAX_CYCLES_RANGE = [1, 10] as const;
 
 const invalidFlag = (value: unknown) => value !== undefined && typeof value !== 'boolean';
+const invalidCostCap = (value: unknown) => value !== undefined
+  && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > MAX_RUN_COST_CAP_USD);
 const invalidBound = (value: unknown, [min, max]: readonly [number, number]) =>
   value !== undefined && (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max);
 
@@ -234,6 +238,11 @@ function invalidSubmissionOptions(body: SubmissionRequest) {
     || (body.todoIds !== undefined && (!Array.isArray(body.todoIds) || body.todoIds.some((id: unknown) => typeof id !== 'string')))
     || invalidFlag(body.autoMerge) || invalidFlag(body.runUltrafix)
     || invalidBound(body.ultrafixGoal, ULTRAFIX_GOAL_RANGE) || invalidBound(body.ultrafixMaxCycles, ULTRAFIX_MAX_CYCLES_RANGE);
+}
+
+/** A spend cap is part of the submission identity only when one is set, so existing fingerprints are unchanged. */
+function submissionBudget(body: SubmissionRequest) {
+  return body.maxCostUsd ? { maxCostUsd: body.maxCostUsd } : {};
 }
 
 /**
@@ -256,6 +265,9 @@ function parseSubmissionRequest(req: Request): { body: SubmissionRequest; key: s
     || typeof body.instruction !== 'string' || !body.instruction.trim() || body.instruction.length > 50_000
     || invalidSubmissionOptions(body)) {
     throw Object.assign(new Error('A submission identity, repository and instruction (up to 50,000 characters) are required'), { status: 400 });
+  }
+  if (invalidCostCap(body.maxCostUsd)) {
+    throw Object.assign(new Error(`maxCostUsd must be a USD amount from 0 to ${MAX_RUN_COST_CAP_USD}`), { status: 400 });
   }
   if (body.runUltrafix !== true && (body.ultrafixGoal !== undefined || body.ultrafixMaxCycles !== undefined)) {
     throw Object.assign(new Error('runUltrafix must be true when ultrafixGoal or ultrafixMaxCycles is set'), { status: 400 });
@@ -288,7 +300,7 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
       const { body, key } = parseSubmissionRequest(req);
       const repository = body.repository.toLowerCase();
       const config = await checkAccess(req, repository);
-      const payloadHash = fingerprint({ repository, instruction: body.instruction, agentAlias: body.agentAlias || '', model: body.model || '', todoIds: body.todoIds || [], files: await goalUploadIdentity(files), ...submissionAutomation(body) });
+      const payloadHash = fingerprint({ repository, instruction: body.instruction, agentAlias: body.agentAlias || '', model: body.model || '', todoIds: body.todoIds || [], files: await goalUploadIdentity(files), ...submissionAutomation(body), ...submissionBudget(body) });
       let row = await db<TaskSubmission>('task_submissions').where({ user_id: String(req.user!.id), submission_key: key }).first();
       if (row && row.payload_hash !== payloadHash) { res.status(409).json({ error: 'Submission identity was already used with different content' }); return; }
       if (!row) {
@@ -298,7 +310,7 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
         await octokit.request('GET /repos/{owner}/{repo}', { owner, repo });
         const payload: SubmissionPayload = { instruction: body.instruction, ...selection, baseBranch: config.baseBranch,
           trigger: (await processingLabels())[0] || 'AI', username: req.user!.username, todoIds: body.todoIds,
-          ...submissionAutomation(body) };
+          ...submissionAutomation(body), ...submissionBudget(body) };
         let attachments: SubmissionAttachment[];
         try { attachments = await storeUploads(files); }
         catch (error) { res.status(400).json({ error: (error as Error).message }); return; }

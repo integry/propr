@@ -13,7 +13,7 @@ import {
 import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
 import { getAgentTankSettings } from '../../api/revertApi';
 import { Settings, type AgentWatchdogSettingName } from './types';
-import { parseLoadedData } from './parseLoadedData';
+import { parseLoadedData, runLimitSettingsToSave } from './parseLoadedData';
 import { useAgentTankSettings } from './useAgentTankSettings';
 import { useListManagement } from './useListManagement';
 import { isCommittedConfigWriteError } from '../../api/apiClient';
@@ -75,6 +75,7 @@ export function useSettingsState() {
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
     ultrafix_pause_seconds: 60,
+    default_max_cost_usd: '',
     agent_stall_timeout_ms: null,
     agent_tool_stall_timeout_ms: null,
     agent_degenerate_output_limit: null
@@ -177,9 +178,7 @@ export function useSettingsState() {
         ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
         ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds,
-        agent_stall_timeout_ms: settingsToSave.agent_stall_timeout_ms,
-        agent_tool_stall_timeout_ms: settingsToSave.agent_tool_stall_timeout_ms,
-        agent_degenerate_output_limit: settingsToSave.agent_degenerate_output_limit
+        ...runLimitSettingsToSave(settingsToSave)
       });
       completeSave(result.warnings);
     } catch (err) {

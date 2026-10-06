@@ -135,6 +135,11 @@ export interface SystemSettings {
   ultrafix_pause_seconds: number;
 
   /**
+   * Instance default per-run spend cap in USD (0 = no cap).
+   */
+  default_max_cost_usd?: number;
+
+  /**
    * Milliseconds an Ultrafix review may wait for blocking CI before the loop stops.
    */
   ultrafix_ci_wait_timeout_ms: number;
@@ -288,6 +293,11 @@ export interface UpdateSettingsOptions {
   ultrafix_pause_seconds?: number;
 
   /**
+   * Instance default per-run spend cap in USD (0 = no cap).
+   */
+  default_max_cost_usd?: number;
+
+  /**
    * Milliseconds an Ultrafix review may wait for blocking CI before the loop stops.
    */
   ultrafix_ci_wait_timeout_ms?: number;
@@ -352,6 +362,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "ultrafix_rating_goal",
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
+  "default_max_cost_usd",
   "ultrafix_ci_wait_timeout_ms",
   "agent_stall_timeout_ms",
   "agent_tool_stall_timeout_ms",
@@ -447,6 +458,14 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       const parsed = Number(value);
       if (parsed < 0 || !Number.isSafeInteger(parsed)) {
         throw new Error(`Invalid value for ${key}: must be a non-negative integer up to ${Number.MAX_SAFE_INTEGER}`);
+      }
+      return parsed;
+    }
+    case "default_max_cost_usd": {
+      const trimmed = value.trim().replace(/^\$/, "");
+      const parsed = /^\d+(?:\.\d+)?$/.test(trimmed) ? Number(trimmed) : Number.NaN;
+      if (!Number.isFinite(parsed) || parsed > 100000) {
+        throw new Error(`Invalid value for ${key}: must be a USD amount from 0 (no cap) to 100000`);
       }
       return parsed;
     }

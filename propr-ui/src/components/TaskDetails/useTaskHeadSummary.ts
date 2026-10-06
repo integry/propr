@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getTaskHistory } from '../../api/proprApi';
-import type { HistoryItem, TaskInfo, TokenUsage, UsageMetricRecord } from './types';
+import type { HistoryItem, TaskBudget, TaskInfo, TokenUsage, UsageMetricRecord } from './types';
 
 /**
  * What the pane's header says about a task: its newest run's status, title,
@@ -13,12 +13,15 @@ export interface TaskHeadSummary {
   taskInfo: TaskInfo | null;
   usageMetricRecords: UsageMetricRecord[];
   tokenUsage?: TokenUsage;
+  /** Spend against the run's spend cap, when it has a cap or recorded spend. */
+  budget?: TaskBudget | null;
 }
 
 interface TaskHistoryResponse {
   history?: HistoryItem[];
   taskInfo?: TaskInfo | null;
   usageMetricRecords?: UsageMetricRecord[];
+  budget?: TaskBudget;
 }
 
 /** How often the header re-reads a newest run that is still working. */
@@ -109,6 +112,7 @@ export function useTaskHeadSummary(headTaskId: string | undefined, listState?: s
           history,
           taskInfo: data.taskInfo ?? null,
           usageMetricRecords: data.usageMetricRecords ?? [],
+          budget: data.budget ?? null,
           // A live count seen earlier stands only until the history records a newer one.
           tokenUsage: reconcileTokenUsage(seenUsage.get(headTaskId), history),
         };

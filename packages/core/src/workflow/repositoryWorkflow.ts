@@ -2,6 +2,7 @@ import { isScalar, parseDocument } from 'yaml';
 import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE } from './workflowExecution.js';
 import { RepositoryWorkflowPolicyError } from './workflowPolicyError.js';
 import type { VisualPreviewSettings, VisualPreviewType } from '../config/configManager.js';
+import { parseCostCapUsd } from '../budget/runCostCap.js';
 
 export { RepositoryWorkflowPolicyError };
 
@@ -14,7 +15,8 @@ export interface RepositoryWorkflow {
     instructions?: string;
     validation?: string[];
     previews?: { types?: VisualPreviewType[]; instructions?: string };
-    limits?: { max_parallel_tasks?: number };
+    /** `max_cost_usd` is read leniently: a malformed value is logged and means no cap, never a $0 cap. */
+    limits?: { max_parallel_tasks?: number; max_cost_usd?: unknown };
 }
 export interface ResolvedRepositoryWorkflow {
     revision: string;
@@ -24,6 +26,8 @@ export interface ResolvedRepositoryWorkflow {
     instructionText?: string;
     timeoutMs: number;
     maxParallelTasks: number;
+    /** Per-run spend cap in USD from `limits.max_cost_usd`; absent when the file sets none (or an invalid one). */
+    maxCostUsd?: number;
 }
 
 function invalid(message: string): never {
@@ -86,10 +90,20 @@ export function parseRepositoryWorkflow(source: string): RepositoryWorkflow {
     }
     if (config.previews !== undefined) validatePreviews(config.previews);
     if (config.limits !== undefined) {
-        const limits = object(config.limits, ['max_parallel_tasks'], 'limits');
+        const limits = object(config.limits, ['max_parallel_tasks', 'max_cost_usd'], 'limits');
         if (limits.max_parallel_tasks !== undefined) positiveInteger(limits.max_parallel_tasks, 'limits.max_parallel_tasks');
     }
     return config as RepositoryWorkflow;
+}
+
+/**
+ * A spend cap is a safety limit, not a privilege: rejecting the whole policy
+ * over a typo would also drop its hooks and validation, and a malformed
+ * amount must never cap runs at $0. It is clamped like the other limits.
+ */
+function workflowCostCap(config: RepositoryWorkflow): { maxCostUsd?: number } {
+    const maxCostUsd = parseCostCapUsd(config.limits?.max_cost_usd, `${WORKFLOW_PATH} limits.max_cost_usd`);
+    return maxCostUsd === undefined ? {} : { maxCostUsd };
 }
 
 export interface WorkflowSource {
@@ -117,6 +131,7 @@ export async function loadRepositoryWorkflow(source: WorkflowSource, baseBranch:
         revision, baseBranch, fileRevision: file.sha, config, instructionText: instructions?.content,
         timeoutMs: Math.min(config.hooks?.timeout_ms ?? WORKFLOW_TIMEOUT_MS, defaults.timeoutMs ?? WORKFLOW_TIMEOUT_MS),
         maxParallelTasks: config.limits?.max_parallel_tasks === undefined ? 0 : Math.min(config.limits.max_parallel_tasks, defaults.maxParallelTasks),
+        ...workflowCostCap(config),
     };
     // Validate the actual quoted argv, including all hooks, validation and wrapper overhead.
     buildWorkflowWrapper(workflow, WORKFLOW_MARKER_TEMPLATE);

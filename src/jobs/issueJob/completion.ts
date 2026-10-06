@@ -12,12 +12,12 @@ import {
   ErrorCategories,
   formatPushFailureMessage
 } from '@propr/core';
+import { taskTerminalReasonForAgentTermination } from '@propr/shared';
 import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
 import type { TaskCompletionParams } from './types.js';
 import { buildWorkNotificationRecap } from '../notificationRecap.js';
 import { completeProviderReplacement } from '../providerReplacement.js';
-import { taskTerminalReasonForAgentTermination } from '../agentTerminalReason.js';
 
 export function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
   if (postProcessingResult?.pr && claudeResult && resolveAgentTerminationReason(claudeResult)) {

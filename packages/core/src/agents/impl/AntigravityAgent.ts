@@ -111,7 +111,7 @@ export class AntigravityAgent implements Agent {
                 'antigravity',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData: prompt,
-                    taskId, streamToRedis: true, preserveOutputOnTimeout: true
+                    taskId, streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel
                 }),
                 undefined,
                 this.config.alias
@@ -172,7 +172,7 @@ export class AntigravityAgent implements Agent {
     }
 
     private async processExecutionResult(opts: {
-        result: { stdout: string; stderr: string; exitCode: number | null; timedOut?: boolean; watchdogTrip?: AgentWatchdogTrip }; executionTime: number;
+        result: { stdout: string; stderr: string; exitCode: number | null; timedOut?: boolean; costCapExceeded?: boolean; watchdogTrip?: AgentWatchdogTrip }; executionTime: number;
         issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string | undefined; requestedCliModel?: string;
         prompt: string; worktreePath: string; worktreeGitContent: string | null;
         taskId?: string; prNumber?: number; isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null;
@@ -185,7 +185,7 @@ export class AntigravityAgent implements Agent {
 
         const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
         const modelIdentity = resolveAntigravityModelIdentity(response.reportedModel ?? response.modelUsed, effectiveModel, response.hasStreamEnvelopes, opts.requestedCliModel); const resolvedModel = modelIdentity.modelUsed;
-        const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, watchdogTrip: result.watchdogTrip, error: result.stderr });
+        const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: result.stderr });
         const executionError = resolveAntigravityExecutionError(response.terminalStatus, response.protocolError, response.hasStreamEnvelopes, modelIdentity.error);
         const success = result.exitCode === 0 && !terminationReason && !executionError;
         const agentResult: AgentExecutionResult = {
@@ -381,7 +381,7 @@ export class AntigravityAgent implements Agent {
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'antigravity',
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: effectiveTimeoutMs, stdinData: fullPrompt, taskId }),
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: effectiveTimeoutMs, stdinData: fullPrompt, taskId, model: effectiveModel }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS,
                 this.config.alias
             );

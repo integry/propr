@@ -54,6 +54,8 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData {
     replacementBranch?: string;
     /** Per-run cost cap in USD; a replacement receives the cap minus what earlier attempts spent. */
     costCapUsd?: number;
+    /** Per-task spend cap override in USD; beats `.propr/workflow.yml` and the instance default. */
+    maxCostUsd?: number;
 }
 
 export type SystemAction = 'auto_resolve_merge_conflicts';
@@ -69,6 +71,10 @@ export interface AutoResolveContext {
 export interface CommentJobData extends RepositoryWorkflowDeferralData {
     /** Stable GitHub user ID when a verified triggering recipient is known. */
     userId?: string;
+    /** Per-task spend cap override in USD; beats `.propr/workflow.yml` and the instance default. */
+    maxCostUsd?: number;
+    /** Task IDs of earlier attempts (usage-limit retries) whose spend counts toward this run's cap. */
+    costBudgetTaskIds?: string[];
     pullRequestNumber: number;
     commentId?: number;
     commentBody?: string;
@@ -232,7 +238,7 @@ export interface ClaudeResult {
     };
     rawOutput?: string;
     error?: string;
-    terminationReason?: 'timeout' | 'max_turns' | 'stalled' | 'degenerate_output' | 'cost_cap';
+    terminationReason?: 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output';
     tokenUsage?: TokenUsage;
     usageMetrics?: SubscriptionUsageMetrics | null;
 }

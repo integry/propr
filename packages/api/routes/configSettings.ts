@@ -1,4 +1,4 @@
-import { isUsageTipsCooldownDays } from '@propr/shared';
+import { isUsageTipsCooldownDays, MAX_RUN_COST_CAP_USD } from '@propr/shared';
 import { validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
 interface SettingFields {
@@ -16,6 +16,7 @@ interface SettingFields {
   ultrafix_rating_goal?: unknown;
   ultrafix_max_cycles?: unknown;
   ultrafix_pause_seconds?: unknown;
+  default_max_cost_usd?: unknown;
   ultrafix_ci_wait_timeout_ms?: unknown;
   agent_stall_timeout_ms?: unknown;
   agent_tool_stall_timeout_ms?: unknown;
@@ -37,6 +38,7 @@ export type SettingSaveName =
   | 'ultrafix_rating_goal'
   | 'ultrafix_max_cycles'
   | 'ultrafix_pause_seconds'
+  | 'default_max_cost_usd'
   | 'ultrafix_ci_wait_timeout_ms'
   | AgentWatchdogSettingName;
 
@@ -53,6 +55,13 @@ function validateStrictInt(raw: unknown, min: number, max: number): number | nul
   const value = Number(str);
   if (!Number.isSafeInteger(value)) return null;
   return value < min || value > max ? null : value;
+}
+
+/** A USD amount from 0 (no cap) up to the cap ceiling; an empty value or null clears the cap. */
+export function validateCostCapUsd(raw: unknown): number | null {
+  if (raw === null || raw === '') return 0;
+  const value = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\s*\d+(?:\.\d+)?\s*$/.test(raw) ? Number(raw) : Number.NaN;
+  return Number.isFinite(value) && value >= 0 && value <= MAX_RUN_COST_CAP_USD ? value : null;
 }
 
 async function validatePrReviewModel(raw: unknown): Promise<{ error?: string; value?: string }> {
@@ -149,14 +158,26 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
     saves.push({ name: 'ultrafix_pause_seconds' });
   }
 
+  const limitResult = extractRunLimitSettingSaves(fields, result);
+  if (limitResult.error) return limitResult;
+  return extractTrailingSettingSaves(fields, result);
+}
+
+function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
+  const { saves, normalized } = result;
+  if (fields.default_max_cost_usd !== undefined) {
+    const v = validateCostCapUsd(fields.default_max_cost_usd);
+    if (v === null) return { error: `default_max_cost_usd must be a number from 0 (no cap) to ${MAX_RUN_COST_CAP_USD}`, saves: [], normalized };
+    normalized.default_max_cost_usd = v;
+    saves.push({ name: 'default_max_cost_usd' });
+  }
   if (fields.ultrafix_ci_wait_timeout_ms !== undefined) {
     const v = validateStrictInt(fields.ultrafix_ci_wait_timeout_ms, 1, Infinity);
     if (v === null) return { error: 'ultrafix_ci_wait_timeout_ms must be a positive integer', saves: [], normalized };
     normalized.ultrafix_ci_wait_timeout_ms = v;
     saves.push({ name: 'ultrafix_ci_wait_timeout_ms' });
   }
-
-  return extractTrailingSettingSaves(fields, result);
+  return result;
 }
 
 async function extractTrailingSettingSaves(fields: SettingFields, result: SettingSavesResult): Promise<SettingSavesResult> {

@@ -16,6 +16,7 @@ import {
     TaskStates,
     VISUAL_PREVIEW_SLOT,
 } from '@propr/core';
+import { taskTerminalReasonForAgentTermination } from '@propr/shared';
 import type {
     ClaudeCodeResponse,
     CommentJobData,
@@ -39,7 +40,6 @@ import type { PullRequestPublication, PublicationSalvage } from './prPublication
 import { recordPushSalvageEvent } from './pushSalvageTimeline.js';
 import { savePublicationCheckpoint } from './prContinuation.js';
 import { buildWorkNotificationRecap } from './notificationRecap.js';
-import { taskTerminalReasonForAgentTermination } from './agentTerminalReason.js';
 
 interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
@@ -310,6 +310,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     requirePostExecutionState(state);
     const disposition = getPostExecutionDisposition(state.claudeResult);
     const terminationReason = resolveAgentTerminationReason(state.claudeResult);
+    const terminalReason = taskTerminalReasonForAgentTermination(terminationReason);
     const partial = disposition === 'partial';
     if (disposition === 'failed') {
         throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
@@ -359,7 +360,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
             reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
             commitHash: commitResult?.commitHash,
-            ...(taskTerminalReasonForAgentTermination(terminationReason) ? { terminalReason: taskTerminalReasonForAgentTermination(terminationReason)! } : {}),
+            ...(terminalReason ? { terminalReason } : {}),
             historyMetadata: {
                 commandMode: job.data.commandMode || 'default',
                 continuation: context.publication.continuation ? {

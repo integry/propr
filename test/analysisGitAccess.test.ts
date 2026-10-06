@@ -24,14 +24,14 @@ await mock.module('../packages/core/src/agents/agentGitAccess.js', {
         buildAgentGitMountArgs: () => { throw new Error('Analysis must use prepared mounts'); },
     },
 });
-let launches: Array<{ args: string[]; envFile: string }> = [];
+let launches: Array<{ args: string[]; envFile: string; model?: string }> = [];
 await mock.module('../packages/core/src/claude/worktreeOwnership.js', { namedExports: { setWorktreeOwnership: async () => {} } });
 const dockerExecutor = await import('../packages/core/src/claude/docker/dockerExecutor.js');
 await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
     namedExports: { ...dockerExecutor,
-        executeDockerCommand: async (_command: string, args: string[]) => {
+        executeDockerCommand: async (_command: string, args: string[], options: { model?: string } = {}) => {
         const envFileIndex = args.indexOf('--env-file');
-        launches.push({ args, envFile: envFileIndex < 0 ? '' : await fs.readFile(args[envFileIndex + 1], 'utf8') });
+        launches.push({ args, envFile: envFileIndex < 0 ? '' : await fs.readFile(args[envFileIndex + 1], 'utf8'), model: options.model });
         throw new Error('Stop after capturing launch');
     } },
 });
@@ -83,6 +83,7 @@ for (const [type, Adapter] of [['claude', ClaudeAgent], ['codex', CodexAgent], [
         assert.ok(args.includes(access.gitMountArgs[1]));
         assert.match(args.join('\n') + envFile, /GH_TOKEN=scoped-read-token/);
         assert.doesNotMatch(args.join('\n') + envFile, /worker-write-token|\/tmp\/git-processor:\/tmp\/git-processor/);
+        assert.equal(launches[0].model, model, 'the configured default model prices the spend cap of an analysis that names none');
         prepare = async () => { throw new Error('Scope unavailable'); };
         const failed = await agent.analyze('Analyze repository', options);
         assert.equal(failed.success, false);
@@ -107,6 +108,7 @@ for (const [type, Adapter] of [['claude', ClaudeAgent], ['codex', CodexAgent], [
             assert.ok(args.includes(access.gitMountArgs[1]));
             assert.ok((args.join('\n') + envFile).includes(`GH_TOKEN=fresh-task-${attempt}`));
             assert.doesNotMatch(args.join('\n') + envFile, /worker-write-token/);
+            assert.equal(launches[attempt - 1].model, model, 'a task without an explicit model registers the configured default for spend-cap pricing');
         }
         prepareTask = async () => { throw new Error('Scope unavailable'); };
         const failed = await agent.executeTask(task);

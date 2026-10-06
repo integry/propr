@@ -546,5 +546,5 @@ test('replacement configuration resolves the saved setting, then the environment
     assert.equal(infraLostReplacementEnabled({ INFRA_LOST_REPLACEMENT: 'false' }), false);
     assert.equal(stopReasonExclusion('cancelled_issue_closed'), 'user_cancelled');
     assert.equal(stopReasonExclusion('pr_merged'), null);
-    assert.equal(stopReasonExclusion('cost_cap'), 'cost_cap_stop', 'a run stopped at its cost cap is never replaced');
+    assert.equal(stopReasonExclusion('cost_cap_exceeded'), 'cost_cap_stop', 'a run stopped at its cost cap is never replaced');
 });

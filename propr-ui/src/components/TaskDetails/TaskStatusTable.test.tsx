@@ -87,6 +87,23 @@ describe('task terminal reasons', () => {
     expect(screen.getByText('Task Cancelled')).toBeInTheDocument();
     expect(screen.queryByTestId('task-terminal-reason')).not.toBeInTheDocument();
   });
+
+  it('shows a spend cap stop as its own event, not another implementation attempt', () => {
+    render(<TaskStatusTable history={[
+      { state: 'PROCESSING', timestamp: at(1) },
+      { state: 'CLAUDE_EXECUTION', timestamp: at(2) },
+      {
+        state: 'CLAUDE_EXECUTION', timestamp: at(20), reason: 'Spend cap reached',
+        metadata: { event: 'budget.exceeded', budget: { capUsd: 5, spentUsd: 5.12, percent: 102, source: 'workflow' } },
+      },
+      { state: 'COMPLETED', timestamp: at(30), metadata: { terminalReason: 'cost_cap_exceeded' } },
+    ]} />);
+    expect(screen.getByText('Implementing Changes')).toBeInTheDocument();
+    expect(screen.getByText('Spend Cap Reached')).toBeInTheDocument();
+    expect(screen.queryByText(/Retry Implementing Changes/)).not.toBeInTheDocument();
+    expect(screen.getByTestId('budget-exceeded')).toHaveTextContent('Estimated $5.12 of a $5.00 cap · .propr/workflow.yml');
+    expect(screen.getByTestId('task-terminal-reason')).toHaveTextContent('The run was stopped because it reached its spend cap.');
+  });
 });
 
 describe('TaskStatusTable replacement events', () => {
