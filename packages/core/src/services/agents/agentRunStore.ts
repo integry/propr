@@ -331,6 +331,19 @@ export async function getAgentRunByIdempotencyKey(
   return row ? rowToAgentRun(row) : undefined;
 }
 
+/** Whether the owner's definition has a run in any of `states`, e.g. to refuse deleting an active agent. */
+export async function hasAgentRunInStates(
+  definitionId: string,
+  ownerId: string,
+  states: readonly AgentRunState[],
+  { database = db }: AgentRunStoreDependencies = {},
+): Promise<boolean> {
+  if (states.length === 0) return false;
+  const row = await database(TABLE).where({ definition_id: definitionId, owner_id: ownerId })
+    .whereIn('state', [...states]).first('id');
+  return row !== undefined;
+}
+
 export interface AgentRunPage {
   limit?: number;
   offset?: number;

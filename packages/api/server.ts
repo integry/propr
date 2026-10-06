@@ -44,6 +44,8 @@ import {
   createAdminRoutes,
   createAdminMcpRoutes,
   createGoalRoutes,
+  createAgentDefinitionRoutes,
+  agentDefinitionAttachmentUpload,
   createVisualPreviewAuthRoutes,
   createVoiceRoutes,
   createInstanceCatalogRoutes,
@@ -390,6 +392,7 @@ function setupRoutes(): void {
   const activeWorkRoutes = createActiveWorkRoutes({ db, taskQueue });
   const taskSubmissionRoutes = createTaskSubmissionRoutes({ db });
   const goalRoutes = createGoalRoutes({ db, taskQueue, redisClient });
+  const agentDefinitionRoutes = createAgentDefinitionRoutes({ db, redisClient });
 
   app.use(['/api/task/:taskId', '/api/task/:taskId/*path', '/api/tasks/:taskId', '/api/execution/:sessionId', '/api/execution/:sessionId/*path', '/api/llm-metrics/:correlationId'], goalRoutes.requireGoalTaskOwnership);
 
@@ -398,6 +401,9 @@ function setupRoutes(): void {
     ['post', '/api/task-submissions', taskSubmissionUpload, taskSubmissionRoutes.submit], ['get', '/api/task-submissions/:key', taskSubmissionRoutes.get], ['post', '/api/task-submissions/:key/retry', taskSubmissionRoutes.retry],
     ['get', '/api/goals/capabilities', goalRoutes.capabilities], ['get', '/api/goals', goalRoutes.list], ['get', '/api/goals/attention', goalRoutes.attention], ['post', '/api/goals', goalAttachmentUpload, goalRoutes.create], ['get', '/api/goals/:goalId', goalRoutes.get], ['get', '/api/goals/:goalId/detail', goalRoutes.detail], ['get', '/api/goals/:goalId/inputs', goalRoutes.inputs], ['get', '/api/goals/:goalId/wait', goalRoutes.wait], ['get', '/api/goals/:goalId/previews', goalRoutes.previews], ['delete', '/api/goals/:goalId', goalRoutes.remove],
     ['post', '/api/goals/:goalId/pause', goalRoutes.pause], ['post', '/api/goals/:goalId/resume', goalRoutes.resume], ['post', '/api/goals/:goalId/cancel', goalRoutes.cancel], ['patch', '/api/goals/:goalId/model', goalRoutes.requestModel], ['post', '/api/goals/:goalId/input', goalAttachmentUpload, goalRoutes.input], ['get', '/api/goals/:goalId/attachments/:attachmentId', goalRoutes.attachment],
+    ['get', '/api/agent-definitions', agentDefinitionRoutes.list], ['get', '/api/agent-definitions/contract', agentDefinitionRoutes.contract], ['post', '/api/agent-definitions', agentDefinitionRoutes.create], ['get', '/api/agent-definitions/:id', agentDefinitionRoutes.get], ['patch', '/api/agent-definitions/:id', agentDefinitionRoutes.update], ['delete', '/api/agent-definitions/:id', agentDefinitionRoutes.remove],
+    ['post', '/api/agent-definitions/:id/attachments', agentDefinitionAttachmentUpload, agentDefinitionRoutes.uploadAttachments], ['delete', '/api/agent-definitions/:id/attachments/:attachmentId', agentDefinitionRoutes.deleteAttachment],
+    ['post', '/api/agent-definitions/:id/runs', agentDefinitionRoutes.triggerRun], ['get', '/api/agent-definitions/:id/runs', agentDefinitionRoutes.listRuns], ['get', '/api/agent-runs/:runId', agentDefinitionRoutes.getRun], ['post', '/api/agent-runs/:runId/cancel', agentDefinitionRoutes.cancelRun],
     ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],
     ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ...createTaskDeleteRouteEntries({ taskRoutes }), ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
     ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
