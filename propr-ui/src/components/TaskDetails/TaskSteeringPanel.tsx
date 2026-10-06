@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Loader2, Send } from 'lucide-react';
 import { TASK_STEER_MAX_LENGTH, TASK_STEER_SECTION_TITLE } from '@propr/shared';
 import { getTaskSteering, steerTask, type TaskSteer, type TaskSteeringState } from '../../api/taskSteeringApi';
@@ -19,23 +19,30 @@ function deliveryLabel(steer: TaskSteer): string {
   return 'Queued';
 }
 
+/** Returns the entry only when it was recorded for the task the panel currently shows. */
+function ownedBy<T extends { taskId: string }>(entry: T | null, taskId: string | undefined): T | null {
+  return entry && entry.taskId === taskId ? entry : null;
+}
+
 /**
- * Operator steering for a running ordinary task: a message box next to the
- * live log and the messages already sent. Agents that cannot receive input
- * during a task run show why instead of the box.
+ * Steering state for the shown task. Every piece of state records the task it
+ * belongs to, so a draft, history or error loaded for one task is never shown
+ * or sent under another, and late responses for a previous task are dropped.
  */
-const TaskSteeringPanel: React.FC<TaskSteeringPanelProps> = ({ taskId, isTaskActive, hidden = false }) => {
-  const [state, setState] = useState<TaskSteeringState | null>(null);
-  const [message, setMessage] = useState('');
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const inputId = useId();
-  const hintId = useId();
+function useTaskSteering(taskId: string | undefined, isTaskActive: boolean, hidden: boolean) {
+  const [loaded, setLoaded] = useState<{ taskId: string; state: TaskSteeringState } | null>(null);
+  const [draft, setDraft] = useState<{ taskId: string; text: string } | null>(null);
+  const [sendingTaskId, setSendingTaskId] = useState<string | null>(null);
+  const [failure, setFailure] = useState<{ taskId: string; message: string } | null>(null);
+  const currentTaskIdRef = useRef(taskId);
+  currentTaskIdRef.current = taskId;
 
   const refresh = useCallback(async () => {
     if (!taskId) return;
     try {
-      setState(await getTaskSteering(taskId));
+      const next = await getTaskSteering(taskId);
+      // A response for a task the panel no longer shows must not replace the current task's state.
+      if (currentTaskIdRef.current === taskId) setLoaded({ taskId, state: next });
     } catch {
       // The panel is optional; the live log keeps working without it.
     }
@@ -49,27 +56,55 @@ const TaskSteeringPanel: React.FC<TaskSteeringPanelProps> = ({ taskId, isTaskAct
     return () => clearInterval(timer);
   }, [refresh, isTaskActive, hidden]);
 
+  const message = ownedBy(draft, taskId)?.text ?? '';
+  const sending = Boolean(taskId) && sendingTaskId === taskId;
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const trimmed = message.trim();
+    if (!taskId || !trimmed || sending) return;
+    const submittedTaskId = taskId;
+    setSendingTaskId(submittedTaskId);
+    setFailure(null);
+    try {
+      await steerTask(submittedTaskId, trimmed);
+      setDraft(current => (current && current.taskId === submittedTaskId ? null : current));
+      if (currentTaskIdRef.current === submittedTaskId) await refresh();
+    } catch (submitError) {
+      if (currentTaskIdRef.current === submittedTaskId) {
+        setFailure({ taskId: submittedTaskId, message: (submitError as Error).message || 'Could not send the message' });
+      }
+    } finally {
+      setSendingTaskId(current => (current === submittedTaskId ? null : current));
+    }
+  };
+
+  return {
+    // Until the current task's steering state loads, nothing (in particular no send box) is shown.
+    state: ownedBy(loaded, taskId)?.state ?? null,
+    message,
+    setMessage: (text: string) => { if (taskId) setDraft({ taskId, text }); },
+    sending,
+    error: ownedBy(failure, taskId)?.message ?? null,
+    submit,
+  };
+}
+
+/**
+ * Operator steering for a running ordinary task: a message box next to the
+ * live log and the messages already sent. Agents that cannot receive input
+ * during a task run show why instead of the box.
+ */
+const TaskSteeringPanel: React.FC<TaskSteeringPanelProps> = ({ taskId, isTaskActive, hidden = false }) => {
+  const { state, message, setMessage, sending, error, submit } = useTaskSteering(taskId, isTaskActive, hidden);
+  const inputId = useId();
+  const hintId = useId();
+
   if (hidden || !taskId || !state || (!state.running && state.steers.length === 0)) return null;
 
   const maxLength = state.maxMessageLength || TASK_STEER_MAX_LENGTH;
   const canSteer = state.running && state.capability !== 'none';
   const trimmed = message.trim();
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!trimmed || sending) return;
-    setSending(true);
-    setError(null);
-    try {
-      await steerTask(taskId, trimmed);
-      setMessage('');
-      await refresh();
-    } catch (submitError) {
-      setError((submitError as Error).message || 'Could not send the message');
-    } finally {
-      setSending(false);
-    }
-  };
 
   return (
     <section

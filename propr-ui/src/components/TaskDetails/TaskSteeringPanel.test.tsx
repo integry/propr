@@ -66,4 +66,71 @@ describe('TaskSteeringPanel', () => {
     await waitFor(() => expect(api.getTaskSteering).toHaveBeenCalled());
     expect(container.innerHTML).toBe('');
   });
+
+  it('does not show or send a draft composed for one task after switching to another', async () => {
+    let resolveB!: (state: TaskSteeringState) => void;
+    api.getTaskSteering.mockImplementation((taskId: string) => (taskId === 'task-a'
+      ? Promise.resolve(steeringState({ steers: [{
+        id: 'steer-a', sequence: 1, taskId: 'task-a', author: 'octocat', authorSource: 'session',
+        message: 'History of task A', createdAt: '2026-10-06T12:00:00Z',
+        deliveredAt: null, delivery: null, acknowledgedAt: null,
+      }] }))
+      : new Promise<TaskSteeringState>(resolve => { resolveB = resolve; })));
+    api.steerTask.mockResolvedValue({});
+    const { rerender } = render(<TaskSteeringPanel taskId="task-a" isTaskActive={false} />);
+
+    fireEvent.change(await screen.findByLabelText('Steer the running agent'), { target: { value: 'Instructions for A' } });
+    expect(screen.getByText('History of task A')).toBeTruthy();
+
+    rerender(<TaskSteeringPanel taskId="task-b" isTaskActive={false} />);
+    await waitFor(() => expect(api.getTaskSteering).toHaveBeenCalledWith('task-b'));
+    // While B loads, neither A's history nor A's send box is available.
+    expect(screen.queryByText('History of task A')).toBeNull();
+    expect(screen.queryByLabelText('Steer the running agent')).toBeNull();
+
+    resolveB(steeringState());
+    const input = await screen.findByLabelText('Steer the running agent') as HTMLTextAreaElement;
+    expect(input.value).toBe('');
+    expect((screen.getByRole('button', { name: /send/i }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.submit(input.closest('form')!);
+    expect(api.steerTask).not.toHaveBeenCalled();
+  });
+
+  it('ignores a steering response for a task the panel no longer shows', async () => {
+    let resolveA!: (state: TaskSteeringState) => void;
+    api.getTaskSteering.mockImplementation((taskId: string) => (taskId === 'task-a'
+      ? new Promise<TaskSteeringState>(resolve => { resolveA = resolve; })
+      : Promise.resolve(steeringState({ capability: 'none', agentType: 'opencode' }))));
+    const { rerender } = render(<TaskSteeringPanel taskId="task-a" isTaskActive={false} />);
+    await waitFor(() => expect(api.getTaskSteering).toHaveBeenCalledWith('task-a'));
+
+    rerender(<TaskSteeringPanel taskId="task-b" isTaskActive={false} />);
+    expect(await screen.findByText(/opencode agent cannot receive input/)).toBeTruthy();
+
+    resolveA(steeringState());
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(screen.getByText(/opencode agent cannot receive input/)).toBeTruthy();
+    expect(screen.queryByLabelText('Steer the running agent')).toBeNull();
+  });
+
+  it('does not clear or report on the new task when a send for the previous task completes', async () => {
+    let rejectSend!: (error: Error) => void;
+    api.getTaskSteering.mockResolvedValue(steeringState());
+    api.steerTask.mockImplementation(() => new Promise((_, reject) => { rejectSend = reject; }));
+    const { rerender } = render(<TaskSteeringPanel taskId="task-a" isTaskActive={false} />);
+
+    fireEvent.change(await screen.findByLabelText('Steer the running agent'), { target: { value: 'For A' } });
+    fireEvent.click(screen.getByRole('button', { name: /send/i }));
+    await waitFor(() => expect(api.steerTask).toHaveBeenCalledWith('task-a', 'For A'));
+
+    rerender(<TaskSteeringPanel taskId="task-b" isTaskActive={false} />);
+    const input = await screen.findByLabelText('Steer the running agent') as HTMLTextAreaElement;
+    expect(input.disabled).toBe(false);
+    fireEvent.change(input, { target: { value: 'For B' } });
+
+    rejectSend(new Error('Task is not running'));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect((screen.getByLabelText('Steer the running agent') as HTMLTextAreaElement).value).toBe('For B');
+  });
 });
