@@ -3,9 +3,11 @@ import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { getDrafts, deleteDraft, abortGeneration, DraftListItem, getDraftRepositories } from '../api/proprApi';
-import { Filter, Search, X } from 'lucide-react';
+import { Filter } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../components/RepositorySelector';
 import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
+import { useIsMobile } from '../hooks/useIsMobile';
+import { ListSearchInput } from '../components/ListSearchInput';
 import { ListSkeleton } from '../components/ui/Skeleton';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
@@ -17,6 +19,7 @@ const DEFAULT_PAGE_SIZE = 50;
 const PlansPage: React.FC = () => {
   useDocumentTitle('Plans');
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [searchParams, setSearchParams] = useSearchParams();
   const { onDraftUpdate, isConnected } = useSocket();
 
@@ -285,31 +288,27 @@ const PlansPage: React.FC = () => {
   const visibleDrafts = hasCurrentScopeData ? drafts : [];
   const currentError = error?.scope === queryScope ? error.message : null;
 
-  if (!hasCurrentScopeData && !currentError) {
-    return (
-      <div className="flex h-full w-full min-w-0 flex-col bg-white">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Plans</h1>
-        </div>
+  // A scope still loading, or failing with nothing to show, replaces only the
+  // body. The header stays mounted so the search field being typed into (and
+  // its phone keyboard) survives each debounced reload.
+  const renderBlockingBody = () => {
+    if (!hasCurrentScopeData && !currentError) {
+      return (
         <div className="flex-1 overflow-auto px-4 sm:px-6 py-4 sm:py-6">
           <ListSkeleton rows={8} layout="table" columns={4} label="Loading plans…" data-testid="plans-skeleton" />
         </div>
-      </div>
-    );
-  }
-
-  if (currentError && visibleDrafts.length === 0) {
-    return (
-      <div className="flex h-full w-full min-w-0 flex-col bg-white">
-        <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Plans</h1>
-        </div>
+      );
+    }
+    if (currentError && visibleDrafts.length === 0) {
+      return (
         <div className="flex-1 overflow-auto px-4 sm:px-6 py-4 sm:py-6">
           <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{currentError}</div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
+    return null;
+  };
+  const blockingBody = renderBlockingBody();
 
   const renderContent = () => {
     if (visibleDrafts.length === 0
@@ -364,26 +363,16 @@ const PlansPage: React.FC = () => {
         <div className="flex items-center justify-between gap-2 sm:gap-4">
           <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Plans</h1>
           <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
-            {/* Search input - hidden on mobile, shown on desktop */}
-            <div className="relative hidden sm:block">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
+            {!isMobile && (
+              <ListSearchInput
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search plans..."
-                className="pl-9 pr-8 py-2 w-64 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                onChange={setSearchQuery}
+                onClear={handleSearchClear}
+                label="Search plans"
+                className="hidden sm:block"
+                inputClassName="w-64"
               />
-              {searchQuery && (
-                <button
-                  onClick={handleSearchClear}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  title="Clear search"
-                >
-                  <X size={16} />
-                </button>
-              )}
-            </div>
+            )}
             {/* Filters row - inline on all screen sizes */}
             <div className="flex items-center gap-2 min-w-0">
               <Filter size={16} className="text-gray-500 hidden sm:block" />
@@ -414,13 +403,26 @@ const PlansPage: React.FC = () => {
             </div>
           </div>
         </div>
+        {/* A phone has no room for search beside the filters, so it takes its own row. */}
+        {isMobile && (
+          <ListSearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            onClear={handleSearchClear}
+            label="Search plans"
+            className="mt-2 sm:hidden"
+            touch
+          />
+        )}
       </div>
 
       {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full">
-        {currentError && <div className="mx-4 mt-4 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">Couldn’t refresh plans: {currentError}</div>}
-        {renderContent()}
-      </div>
+      {blockingBody ?? (
+        <div className="flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full">
+          {currentError && <div className="mx-4 mt-4 border-l-2 border-red-500 bg-red-50 p-3 text-sm text-red-700 sm:mx-6">Couldn’t refresh plans: {currentError}</div>}
+          {renderContent()}
+        </div>
+      )}
 
       {/* Anchored Footer */}
       {visibleDrafts.length > 0 && totalPages > 1 && (

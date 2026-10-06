@@ -12,21 +12,24 @@ interface InstallationAuth {
     token: string;
 }
 
+// simple-git guards every GIT_* variable and these non-prefixed ones. Any of
+// them in an explicit `.env()` that is not allowed by createHooklessGit fails
+// the command, so none of them may be inherited from the worker process.
+const GUARDED_NON_GIT_ENVIRONMENT = new Set(['editor', 'pager', 'prefix', 'ssh_askpass', 'visual']);
+
+function isGuardedGitEnvironmentKey(key: string): boolean {
+    const normalized = key.toLowerCase().trim();
+    return normalized.startsWith('git_') || GUARDED_NON_GIT_ENVIRONMENT.has(normalized);
+}
+
 /** Keep worker write credentials out of every filesystem visible to agents. */
 export function configureGitAuthentication(git: SimpleGit, authToken: string): void {
-    const environment = { ...process.env };
-    // Worker git commands are non-interactive. Inherited pager/editor overrides
-    // are unnecessary and simple-git rejects them in an explicit environment.
+    // Worker git commands are non-interactive and must not inherit pager,
+    // editor, credential, config or SSH overrides from the worker environment.
     // In particular, npm scripts inject EDITOR even when the shell leaves it unset.
-    delete environment.GIT_PAGER;
-    delete environment.PAGER;
-    delete environment.EDITOR;
-    delete environment.GIT_EDITOR;
-    delete environment.GIT_SEQUENCE_EDITOR;
-    // Authentication comes only from the injected header. A host-exported askpass
-    // program would never be needed, and simple-git refuses to run with one.
-    delete environment.GIT_ASKPASS;
-    delete environment.SSH_ASKPASS;
+    const environment = Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !isGuardedGitEnvironmentKey(key)),
+    );
 
     git.env({
         ...environment,

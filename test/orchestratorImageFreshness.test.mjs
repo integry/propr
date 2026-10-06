@@ -18,9 +18,32 @@ function installFakeDocker() {
   const binDir = mkdtempSync(join(tmpdir(), 'propr-fake-docker-'));
   const dockerPath = join(binDir, 'docker');
   writeFileSync(dockerPath, `#!/bin/sh
+# Like the real daemon, the repository[:tag] filter never matches a combined
+# repo:tag@sha256:digest reference, even when that image has been pulled.
 if [ "$1" = "images" ]; then
   [ "$DOCKER_FAKE_PRESENT" = "0" ] && exit 0
+  case "$3" in *@*) exit 0 ;; esac
   echo "image-id"
+  exit 0
+fi
+
+# Exact-reference presence probe: docker image inspect --format {{.Id}} <ref>.
+if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$4" = "{{.Id}}" ]; then
+  [ -n "$DOCKER_FAKE_PRESENCE_LOG" ] && echo "$5" >> "$DOCKER_FAKE_PRESENCE_LOG"
+  case "$DOCKER_FAKE_PRESENCE" in
+    fail) echo "Cannot connect to the Docker daemon" >&2; exit 1 ;;
+    empty-id) exit 0 ;;
+    hang) exec sleep 5 ;;
+  esac
+  if [ "$DOCKER_FAKE_PRESENT" = "0" ]; then
+    echo "Error response from daemon: No such image: $5" >&2
+    exit 1
+  fi
+  if [ -n "$DOCKER_FAKE_MISSING_REF" ] && [ "$5" = "$DOCKER_FAKE_MISSING_REF" ]; then
+    echo "Error response from daemon: No such image: $5" >&2
+    exit 1
+  fi
+  echo "sha256:0123456789abcdef"
   exit 0
 fi
 
@@ -49,6 +72,11 @@ if [ "$1" = "buildx" ] && [ "$2" = "imagetools" ] && [ "$3" = "inspect" ]; then
   exit 0
 fi
 
+if [ "$1" = "tag" ]; then
+  [ -n "$DOCKER_FAKE_LOG" ] && echo "tag $2 $3" >> "$DOCKER_FAKE_LOG"
+  exit 0
+fi
+
 if [ "$1" = "pull" ]; then
   [ -n "$DOCKER_FAKE_LOG" ] && echo "pull $2" >> "$DOCKER_FAKE_LOG"
   exit 0
@@ -66,6 +94,9 @@ exit 1
     delete process.env.DOCKER_FAKE_INSPECT;
     delete process.env.DOCKER_FAKE_MANIFEST;
     delete process.env.DOCKER_FAKE_LOG;
+    delete process.env.DOCKER_FAKE_PRESENCE;
+    delete process.env.DOCKER_FAKE_PRESENCE_LOG;
+    delete process.env.DOCKER_FAKE_MISSING_REF;
   };
 }
 
@@ -369,5 +400,124 @@ test('ensureServiceImage caches freshness per image tag during a startup pass', 
   } finally {
     restore();
     delete process.env.DOCKER_FAKE_MANIFEST_LOG;
+  }
+});
+
+const PINNED_SHA = 'a'.repeat(40);
+const PINNED_DIGEST = `sha256:${'b'.repeat(64)}`;
+// The digest-pinned reference a staged unsigned Linux preview binds into images.*.
+const PINNED_AGENT = `propr/agent:${PINNED_SHA}@${PINNED_DIGEST}`;
+
+test('inspectImageFreshness resolves a pulled digest-pinned reference exactly, not by tag filter', async () => {
+  const restore = installFakeDocker();
+  try {
+    const logPath = join(mkdtempSync(join(tmpdir(), 'propr-fake-docker-presence-')), 'presence.log');
+    process.env.DOCKER_FAKE_PRESENCE_LOG = logPath;
+    const expected = {
+      status: 'unknown',
+      tag: PINNED_AGENT,
+      localDigests: ['sha256:remote'],
+      skipped: true,
+      error: 'remote image check skipped',
+    };
+    assert.deepEqual(inspectImageFreshness(PINNED_AGENT, { skipRemoteCheck: true }), expected);
+    assert.deepEqual(await inspectImageFreshnessAsync(PINNED_AGENT, { skipRemoteCheck: true }), expected);
+    // The full configured reference is inspected; the digest is never stripped.
+    assert.deepEqual(readFileSync(logPath, 'utf8').trim().split('\n'), [PINNED_AGENT, PINNED_AGENT]);
+  } finally {
+    restore();
+  }
+});
+
+test('inspectImageFreshness still reports ordinary tagged images through the exact-reference probe', async () => {
+  const restore = installFakeDocker();
+  try {
+    const expected = { status: 'current', tag: 'propr/app:1.0.0', localDigests: ['sha256:remote'], remoteDigest: 'sha256:remote' };
+    assert.deepEqual(inspectImageFreshness('propr/app:1.0.0'), expected);
+    assert.deepEqual(await inspectImageFreshnessAsync('propr/app:1.0.0'), expected);
+    process.env.DOCKER_FAKE_PRESENT = '0';
+    assert.deepEqual(inspectImageFreshness('propr/app:1.0.0'), { status: 'missing', tag: 'propr/app:1.0.0' });
+    assert.deepEqual(await inspectImageFreshnessAsync('propr/app:1.0.0'), { status: 'missing', tag: 'propr/app:1.0.0' });
+  } finally {
+    restore();
+  }
+});
+
+for (const [label, configure] of [
+  ['never pulled', () => { process.env.DOCKER_FAKE_PRESENT = '0'; }],
+  ['a different digest of the repository was pulled', () => { process.env.DOCKER_FAKE_MISSING_REF = PINNED_AGENT; }],
+  ['inspect fails', () => { process.env.DOCKER_FAKE_PRESENCE = 'fail'; }],
+  ['inspect reports no image ID', () => { process.env.DOCKER_FAKE_PRESENCE = 'empty-id'; }],
+]) {
+  test(`inspectImageFreshness reports a digest-pinned image as missing when ${label}`, async () => {
+    const restore = installFakeDocker();
+    try {
+      configure();
+      assert.deepEqual(inspectImageFreshness(PINNED_AGENT, { skipRemoteCheck: true }), { status: 'missing', tag: PINNED_AGENT });
+      assert.deepEqual(await inspectImageFreshnessAsync(PINNED_AGENT), { status: 'missing', tag: PINNED_AGENT });
+    } finally {
+      restore();
+    }
+  });
+}
+
+test('inspectImageFreshnessAsync cancels an in-flight exact-reference presence probe', async () => {
+  const restore = installFakeDocker();
+  try {
+    process.env.DOCKER_FAKE_PRESENCE = 'hang';
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = inspectImageFreshnessAsync(PINNED_AGENT, { signal: controller.signal });
+    setTimeout(() => controller.abort(new Error('setup cancelled')), 50);
+    await assert.rejects(pending, /setup cancelled/);
+    assert.ok(Date.now() - started < 4000, 'abort must not wait for the hung docker inspect');
+  } finally {
+    restore();
+  }
+});
+
+test('pullImages with PROPR_SKIP_AGENT_PULL accepts a pulled digest-pinned agent and retags latest', () => {
+  const restore = installFakeDocker();
+  try {
+    const logPath = join(mkdtempSync(join(tmpdir(), 'propr-fake-docker-log-')), 'commands.log');
+    writeFileSync(logPath, '');
+    process.env.DOCKER_FAKE_LOG = logPath;
+    const logs = [];
+
+    pullImages(
+      { images: { agent: PINNED_AGENT }, manifest: { registry: 'propr' } },
+      { onLog: (line) => logs.push(line), env: { ...process.env, PROPR_SKIP_AGENT_PULL: '1' } }
+    );
+
+    assert.ok(logs.includes(`  · ${PINNED_AGENT} (local, pull skipped via PROPR_SKIP_AGENT_PULL)`), logs.join('\n'));
+    assert.equal(readFileSync(logPath, 'utf8').trim(), `tag ${PINNED_AGENT} propr/agent:latest`);
+  } finally {
+    restore();
+  }
+});
+
+test('pullImages with PROPR_SKIP_AGENT_PULL neither retags nor accepts a missing or uninspectable pinned agent', () => {
+  for (const configure of [
+    () => { process.env.DOCKER_FAKE_PRESENT = '0'; },
+    () => { process.env.DOCKER_FAKE_PRESENCE = 'fail'; },
+  ]) {
+    const restore = installFakeDocker();
+    try {
+      const logPath = join(mkdtempSync(join(tmpdir(), 'propr-fake-docker-log-')), 'commands.log');
+      writeFileSync(logPath, '');
+      process.env.DOCKER_FAKE_LOG = logPath;
+      configure();
+      const logs = [];
+
+      pullImages(
+        { images: { agent: PINNED_AGENT }, manifest: { registry: 'propr' } },
+        { onLog: (line) => logs.push(line), env: { ...process.env, PROPR_SKIP_AGENT_PULL: '1' } }
+      );
+
+      assert.ok(logs.includes(`  · ${PINNED_AGENT} (not found locally, pull skipped via PROPR_SKIP_AGENT_PULL)`), logs.join('\n'));
+      assert.equal(readFileSync(logPath, 'utf8').trim(), '');
+    } finally {
+      restore();
+    }
   }
 });

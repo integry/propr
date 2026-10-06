@@ -25,6 +25,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   older than `PUSH_RESCUE_RETENTION_DAYS` (default 14), aging rescue refs from
   the creation time in their name; rescue refs are never
   treated as task branches.
+- **Managed agent in Linux desktop previews**: the Preview Runtime Images
+  workflow has separate `prepare-agent` and `publish-agent` operations. They
+  build the existing linux/amd64-only managed agent image from the exact `main`
+  commit, run a smoke test that is offline and uses no credentials, and record
+  immutable candidate evidence. They publish only `propr/agent:<full-SHA>`, and
+  only after the existing protected runtime-publication approval. Desktop Linux
+  Preview `stage-draft` now requires a digest-pinned `runtime_agent_image` from
+  the same commit. It checks that image's architecture and source labels before
+  packaging and embeds it in each package's launcher manifest, in
+  `linux-preview.json` (schema 2) and in the checksums. A preview no longer
+  ships the unpublished version-tagged agent. A digest-pinned agent now gets its
+  local `propr/agent:latest` tag correctly. arm64 packages remain available, but
+  the managed agent, and so agent tasks, are amd64 only.
+  Image archive checksums are computed in fixed 8 MiB chunks instead of reading
+  the whole archive into memory, which failed `prepare-agent` on the ~2.4 GB
+  agent `docker save` archive with `File size ... is greater than 2 GiB`.
+- **Complete bundled third-party notices**: `scripts/generate-notices.sh` now
+  refuses to run without the root dependency tree installed at the
+  `package-lock.json` pins, and refuses to replace `THIRD_PARTY_LICENSES.md`
+  unless the result has the full `@anthropic-ai/claude-code` and
+  `@anthropic-ai/sdk` license texts and a production inventory covering every
+  direct dependency. Previously a clean checkout silently baked a notice without
+  them into images. The preview app/UI and agent builds now run
+  `npm ci --ignore-scripts` before building images.
+
 - **Bounded goal waits**: MCP `wait_goal` and `propr goal wait <id>` wait, with
   a finite deadline, for a confirmed goal state (`completed`, `failed`,
   `cancelled`, `paused`, `terminal`) or a newly published `checkpoint` instead

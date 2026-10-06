@@ -65,9 +65,9 @@ export interface TaskRowView {
   /** The newest run's own summary, when it says more than the title. */
   detail: string | null;
   /**
-   * What the newest run came to, when it recorded no summary but the row has
-   * earlier runs: the line under the title is drawn for them anyway, and every
-   * such line reads `[runs] · [type] what the newest run did`.
+   * What the newest run came to, when it recorded no summary: every row has a
+   * line under its title, and every such line reads `[runs] · [type] what the
+   * newest run did` (a failed run's reason, the commit it pushed), never a bare type.
    */
   outcome: string | null;
   previewCount: number;
@@ -216,7 +216,7 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     fullTitle,
     type: newest.type,
     detail: newest.delta,
-    outcome: earlier.length > 0 && !newest.delta ? runOutcome(task) : null,
+    outcome: newest.delta ? null : runOutcome(task),
     previewCount: previewCount(task),
     earlierRuns: earlier.map(run => {
       const { type, delta } = runDelta(run, title);
@@ -230,13 +230,6 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     }),
   };
 }
-
-/**
- * Whether the row needs a line under its title. It does for earlier runs or
- * for a newest-run summary; a single run with neither carries its type in
- * front of the title instead, so it stays one line tall.
- */
-export const hasRollupLine = (row: TaskRowView): boolean => row.earlierRuns.length > 0 || Boolean(row.detail);
 
 /**
  * What came of a run, as the list's run track and the task pane's timeline

@@ -12,15 +12,14 @@ export const DashboardLoadingState: React.FC = () => (
   <ListSkeleton rows={4} layout="row" label="Loading tasks…" className="p-4" data-testid="tasks-skeleton" />
 );
 
-/** Renders the full-page first read as table columns under the real Tasks header */
+/**
+ * Renders a full-page read as table columns. It fills the body under the Tasks
+ * header, which stays mounted so a search or filter keeps its focus while the
+ * next scope loads.
+ */
 export const FullPageLoadingState: React.FC = () => (
-  <div className="flex flex-col h-full">
-    <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-      <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>
-    </div>
-    <div className="flex-1 overflow-auto px-6 py-6">
-      <ListSkeleton rows={8} layout="table" columns={4} label="Loading tasks…" data-testid="tasks-skeleton" />
-    </div>
+  <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
+    <ListSkeleton rows={8} layout="table" columns={4} label="Loading tasks…" data-testid="tasks-skeleton" />
   </div>
 );
 
@@ -29,15 +28,10 @@ export const DashboardErrorState: React.FC<{ error: string }> = ({ error }) => (
   <SystemAlert>Error loading tasks: {error}</SystemAlert>
 );
 
-/** Renders a full-page error state with header for the main Tasks page */
+/** Renders a full-page error state in the body under the Tasks header */
 export const FullPageErrorState: React.FC<{ error: string }> = ({ error }) => (
-  <div className="flex flex-col h-full">
-    <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-6 py-4">
-      <h1 className="text-2xl font-bold text-gray-800">Tasks</h1>
-    </div>
-    <div className="flex-1 overflow-auto px-6 py-6">
-      <SystemAlert>Error loading tasks: {error}</SystemAlert>
-    </div>
+  <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
+    <SystemAlert>Error loading tasks: {error}</SystemAlert>
   </div>
 );
 

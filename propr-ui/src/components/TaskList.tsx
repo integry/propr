@@ -321,16 +321,6 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
   const scopeState = resolveTaskScopeState(loadedScope, queryScope, tasks, groupedTasks, error);
 
-  // A scope that has not completed successfully is loading even during the
-  // render before its effect starts. This prevents old rows or an empty state
-  // from flashing when URL filters change. Errors remain distinct from empty results.
-  if (scopeState.kind !== 'ready') {
-    return <TaskBlockingState state={scopeState} dashboard={hideFilters} />;
-  }
-
-  const { tasks: visibleTasks, groups: visibleGroupedTasks, refreshError: currentError } = scopeState;
-
-
   // Shared filter props
   const filterProps = {
     hideFilters,
@@ -344,6 +334,30 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     searchQuery,
     setSearchQuery,
   };
+
+  // Anchored Header - compact on mobile. It leads both Tasks page returns
+  // below, so React keeps the same nodes (and the focused search field, with
+  // its phone keyboard) across each debounced reload.
+  const pageHeader = (
+    <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
+      <Filters {...filterProps} />
+    </div>
+  );
+
+  // A scope that has not completed successfully is loading even during the
+  // render before its effect starts. This prevents old rows or an empty state
+  // from flashing when URL filters change. Errors remain distinct from empty results.
+  if (scopeState.kind !== 'ready') {
+    if (hideFilters) return <TaskBlockingState state={scopeState} dashboard />;
+    return (
+      <>
+        {pageHeader}
+        <TaskBlockingState state={scopeState} dashboard={false} />
+      </>
+    );
+  }
+
+  const { tasks: visibleTasks, groups: visibleGroupedTasks, refreshError: currentError } = scopeState;
 
   // Shared table content props
   const tableContentProps = {
@@ -387,10 +401,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   // Main Tasks page: full-height flex layout with anchored header/footer
   return (
     <>
-      {/* Anchored Header - compact on mobile */}
-      <div className="flex-shrink-0 bg-slate-50 border-b border-gray-200 px-4 sm:px-6 py-2 sm:py-4">
-        <Filters {...filterProps} />
-      </div>
+      {pageHeader}
 
       {/*
         Scrollable Content Area, bounded by the header and footer. Its bottom

@@ -1,8 +1,9 @@
 import React, { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, X } from 'lucide-react';
 import { RepositorySelector, type RepoOption } from '../RepositorySelector';
 import { useDecoratedRepoOptions } from '../../hooks/useDecoratedRepoOptions';
+import { useIsMobile } from '../../hooks/useIsMobile';
+import { ListSearchInput } from '../ListSearchInput';
 
 interface FiltersProps {
   hideFilters?: boolean;
@@ -77,6 +78,8 @@ export const Filters: React.FC<FiltersProps> = ({
   searchQuery,
   setSearchQuery
 }) => {
+  const isMobile = useIsMobile();
+
   // Don't render anything if filters are hidden and no View All link
   if (hideFilters && !showViewAll) {
     return null;
@@ -92,33 +95,22 @@ export const Filters: React.FC<FiltersProps> = ({
   // A phone fits the title and both dropdowns on one line once the repository
   // picker drops its task count there (the open list still shows it). The
   // picker takes whatever the title and status filter leave.
-  return (
+  const header = (
     <div className="flex items-center justify-between gap-2 sm:gap-4">
       {!hideFilters && <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Tasks</h1>}
       <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
         {!hideFilters && (
           <>
-            {/* Search input - hidden on mobile, shown on desktop */}
             {/* Takes the room the filters leave, so it stays usable in a list pane beside an open task. */}
-            <div className="relative hidden sm:block min-w-[8rem] flex-1 max-w-xs">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
+            {!isMobile && (
+              <ListSearchInput
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search tasks..."
-                className="pl-9 pr-8 py-2 w-full border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                onChange={setSearchQuery}
+                onClear={() => setSearchQuery('')}
+                label="Search tasks"
+                className="hidden sm:block min-w-[8rem] flex-1 max-w-xs"
               />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  title="Clear search"
-                >
-                  <X size={16} />
-                </button>
-              )}
-            </div>
+            )}
             <div className="flex items-center gap-2 min-w-0 max-sm:flex-1">
               <div data-testid="task-status-filter" className="flex-none">
                 <select
@@ -149,6 +141,23 @@ export const Filters: React.FC<FiltersProps> = ({
           </Link>
         )}
       </div>
+    </div>
+  );
+
+  // A phone has no room for search beside the filters, so it takes its own
+  // full-width row under them.
+  if (hideFilters || !isMobile) return header;
+  return (
+    <div className="flex flex-col gap-2">
+      {header}
+      <ListSearchInput
+        value={searchQuery}
+        onChange={setSearchQuery}
+        onClear={() => setSearchQuery('')}
+        label="Search tasks"
+        className="sm:hidden"
+        touch
+      />
     </div>
   );
 };
