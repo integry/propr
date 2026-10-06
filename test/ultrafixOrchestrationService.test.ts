@@ -102,6 +102,11 @@ describe('createDefaultState', () => {
         assert.strictEqual(state.pauseSeconds, 30);
         assert.strictEqual(state.reviewModel, 'claude-opus-4-6');
     });
+
+    test('records the originating command comment only when provided', () => {
+        assert.strictEqual(createDefaultState({ owner: 'o', repo: 'r', pr: 5, sourceCommentId: 601 }).sourceCommentId, 601);
+        assert.strictEqual('sourceCommentId' in createDefaultState({ owner: 'o', repo: 'r', pr: 5 }), false);
+    });
 });
 
 // --- determineInitialAction ---

@@ -89,8 +89,8 @@ export const RepositoryLabel: React.FC<{ repository: string }> = ({ repository }
  * No border and no background: boxed next to the repository chip it was a
  * second identical brick, and the eye had nothing to tell the two apart by.
  * Monospace in the row's darkest metadata ink keeps it reading as an
- * identifier, and it underlines under the pointer like the link it sits in.
- * It is not an anchor of its own — the whole row already is one.
+ * identifier. It is not an anchor of its own — the whole row already is one —
+ * so it does not underline under the pointer.
  *
  * The entity type is always spelled out. A bare `#2479` leaves the reader
  * guessing whether it is an issue or a pull request, so the prefix is not
@@ -98,7 +98,7 @@ export const RepositoryLabel: React.FC<{ repository: string }> = ({ repository }
  */
 const WorkReferenceText: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
   <span
-    className="whitespace-nowrap font-mono text-[12px] leading-4 text-slate-800 hover:underline"
+    className="whitespace-nowrap font-mono text-[12px] leading-4 text-slate-800"
     title={title}
   >
     {children}

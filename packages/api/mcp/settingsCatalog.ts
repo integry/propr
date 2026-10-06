@@ -70,6 +70,8 @@ export const SETTINGS_CATALOG: SettingEntry[] = [
   execution('ultrafix.rating_goal', 'Ultrafix rating goal', 'Settings → Automation → General configuration', ['ultrafix_rating_goal']),
   execution('ultrafix.max_cycles', 'Ultrafix maximum cycles', 'Settings → Automation → General configuration', ['ultrafix_max_cycles']),
   execution('ultrafix.pause_seconds', 'Ultrafix pause', 'Settings → Automation → General configuration', ['ultrafix_pause_seconds']),
+  { ...execution('ultrafix.ci_wait_timeout_ms', 'Ultrafix CI wait timeout', '', ['ultrafix_ci_wait_timeout_ms'], ['ULTRAFIX_CI_WAIT_TIMEOUT_MS']), ui: undefined,
+    description: 'How long an Ultrafix review may wait for blocking CI checks before the loop stops with "CI did not settle". Default 2 hours.' },
   execution('execution.agent_stall_timeout_ms', 'Agent stall timeout', 'Settings → Automation → Agent watchdog', ['agent_stall_timeout_ms', 'stall watchdog', 'inactivity timeout'], ['AGENT_STALL_TIMEOUT_MS']),
   execution('execution.agent_tool_stall_timeout_ms', 'Agent tool stall timeout', 'Settings → Automation → Agent watchdog', ['agent_tool_stall_timeout_ms', 'tool inactivity timeout'], ['AGENT_TOOL_STALL_TIMEOUT_MS']),
   execution('execution.agent_degenerate_output_limit', 'Agent degenerate output limit', 'Settings → Automation → Agent watchdog', ['agent_degenerate_output_limit', 'whitespace output watchdog'], ['AGENT_DEGENERATE_OUTPUT_LIMIT']),

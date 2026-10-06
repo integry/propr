@@ -130,6 +130,11 @@ export interface SystemSettings {
   ultrafix_pause_seconds: number;
 
   /**
+   * Milliseconds an Ultrafix review may wait for blocking CI before the loop stops.
+   */
+  ultrafix_ci_wait_timeout_ms: number;
+
+  /**
    * Agent watchdog overrides (null = the environment default applies; 0 disables the rule).
    * Absent when the server predates the watchdog.
    */
@@ -272,6 +277,11 @@ export interface UpdateSettingsOptions {
    */
   ultrafix_pause_seconds?: number;
 
+  /**
+   * Milliseconds an Ultrafix review may wait for blocking CI before the loop stops.
+   */
+  ultrafix_ci_wait_timeout_ms?: number;
+
   /** Agent watchdog overrides; null restores the environment default. */
   agent_stall_timeout_ms?: number | null;
   agent_tool_stall_timeout_ms?: number | null;
@@ -331,6 +341,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "ultrafix_rating_goal",
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
+  "ultrafix_ci_wait_timeout_ms",
   "agent_stall_timeout_ms",
   "agent_tool_stall_timeout_ms",
   "agent_degenerate_output_limit",
@@ -399,6 +410,7 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       return parsed;
     }
     case "ultrafix_escalation_patience":
+    case "ultrafix_ci_wait_timeout_ms":
     case "ultrafix_max_cycles": {
       if (!/^\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be a positive integer`);

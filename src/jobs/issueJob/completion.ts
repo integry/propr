@@ -9,7 +9,8 @@ import {
   PlanIssueStatus,
   updatePlanIssueStatus,
   resolveAgentTerminationReason,
-  ErrorCategories
+  ErrorCategories,
+  formatPushFailureMessage
 } from '@propr/core';
 import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
@@ -50,7 +51,27 @@ function terminalReasonFields(claudeResult: ClaudeCodeResponse | null) {
   return terminalReason ? { terminalReason } : {};
 }
 
+/** A rejected push is a task failure even when the agent succeeded: the work only
+ * exists in the rescue location named by the recovery instruction. */
+async function markPushFailure(params: TerminalStateParams): Promise<boolean> {
+  const { stateManager, taskId, claudeResult, postProcessingResult, commitResult } = params;
+  const pushFailure = postProcessingResult?.pr ? undefined : postProcessingResult?.pushFailure;
+  if (!pushFailure) return false;
+  const commitResultData = commitResult ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage } : null;
+  await stateManager.markTaskFailed(taskId, new Error(formatPushFailureMessage(pushFailure)), {
+    errorCategory: ErrorCategories.GIT_OPERATION,
+    prResult: { status: 'push_failed', claudeSuccess: claudeResult?.success || false, prCreated: false, commitResult: commitResultData },
+    historyMetadata: { pushFailure, commitResult: commitResultData },
+  });
+  return true;
+}
+
 export async function markTaskTerminalState(params: TerminalStateParams): Promise<void> {
+  if (await markPushFailure(params)) return;
+  await markAgentTerminalState(params);
+}
+
+async function markAgentTerminalState(params: TerminalStateParams): Promise<void> {
   const { stateManager, taskId, claudeResult, postProcessingResult, commitResult } = params;
   const status = getTaskCompletionStatus(claudeResult, postProcessingResult);
   const commitResultData = commitResult

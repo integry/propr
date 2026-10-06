@@ -345,6 +345,8 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(loopOptions.pauseSeconds, 60); // DB default
         assert.strictEqual(loopOptions.reviewModel, ''); // DB default
         assert.strictEqual(loopOptions.workEpoch, 1);
+        // The loop records which command comment started it, so receipts bind to their own loop.
+        assert.strictEqual(loopOptions.sourceCommentId, event.comment.id);
 
         // Should add ultrafix label
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);

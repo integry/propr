@@ -95,6 +95,16 @@ export { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './git
 export { ensureRepoCloned, createWorktreeForIssue, getRepoUrl, fetchLatestChanges } from './git/repoManager.js';
 export type { WorktreeResult, WorktreeInfo, FetchLatestChangesOptions, FetchLatestChangesResult } from './git/repoManager.js';
 export { cleanupExistingBranch, createWorktreeFromExistingBranch } from './git/worktreeCreation.js';
+export { classifyPushError, classifyPushRejectionText, extractUnblockUrls, formatPushRejectionClass, type PushRejectionClass, type PushRejectionDiagnosis } from './git/pushRejection.js';
+export {
+    salvageFailedPush, createWorktreePushSalvageOperations, PushFailedError, getPushFailure, pushFailureHistoryMetadata,
+    formatPushFailureMessage, formatPushFailureMarkdown, buildRecoveryInstruction, writeSalvageRetentionMarker, isSalvageRetainedWorktree,
+    SALVAGE_RETENTION_REASON, type PushSalvageRung, type PushSalvageEvent, type PushFailureRecord, type PushSalvageOperations, type PushSalvageAttempt,
+} from './git/pushSalvage.js';
+export {
+    RESCUE_REF_PREFIX, rescueRefName, rescueRefCreatedAt, isRescueRef, sanitizeRescueId, getRescueRetentionDays, getRescueBundleDirectory, getSalvageRetentionRecordDirectory, rescueBundlePath,
+    pruneRescueRefs, pruneRescueBundles, createGitRescueRefPruneDependencies, type RescueRefPruneDependencies, type RemoteRescueRef,
+} from './git/rescueRefs.js';
 export { cleanupWorktree, cleanupExpiredWorktrees, safePruneWorktrees, setupWorktreePermissions, addToSafeDirectories, verifyWorktreeCreation, setupWorktreeRemote, getWorktreePath } from './git/worktreeOperations.js';
 export { isGitCorruptionError, GIT_CORRUPTION_PATTERNS, getCorruptionPatternStrings } from './git/gitCorruption.js';
 export { assertCommitIsAncestor, mergeBaseIntoBranch } from './git/mergeOperations.js';
@@ -130,7 +140,7 @@ export type {
     AutoResolveContext
 } from './queue/taskQueue.js';
 
-export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
+export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
 export * from './webhook/ciFailureFollowup.js';
 export * from './webhook/closedPullRequestCi.js';

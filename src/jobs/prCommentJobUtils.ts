@@ -8,7 +8,7 @@ import {
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
     resolveModelAlias, getPendingPrCommentsKey,
     buildVisualPreviewPrompt, describeAgentTermination, resolveAgentTerminationReason,
-    sanitizeAgentReport,
+    sanitizeAgentReport, getPushFailure, formatPushFailureMarkdown,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
     type CommentJobData, type UnprocessedComment, type WorkerStateManager, type VisualPreviewSettings,
 } from '@propr/core';
@@ -292,9 +292,12 @@ async function handleUserCancellation(job: Job<CommentJobData>, options: JobErro
 async function handleGenericError(error: Error, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
     const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId } = options;
     handleError(error, 'Failed to process PR comment job', { correlationId });
-    const sanitizedMessage = sanitizeErrorMessage(error.message);
-    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage },
-        historyMetadata: ultrafixTerminalMetadata(job, 'failed') });
+    const pushFailure = getPushFailure(error);
+    // The push failure summary leads with the classification, unblock URL and recovery,
+    // so it must not be cut at the generic 500-character limit.
+    const sanitizedMessage = sanitizeErrorMessage(error.message, pushFailure ? 4000 : undefined);
+    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: pushFailure ? `PR comment processing failed: ${sanitizedMessage}` : 'PR comment processing failed', error: { message: sanitizedMessage, ...(pushFailure ? { category: 'git_operation' } : {}) },
+        historyMetadata: { ...ultrafixTerminalMetadata(job, 'failed'), ...(pushFailure ? { pushFailure } : {}) } });
     if (claudeResult) {
         try {
             await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
@@ -308,7 +311,7 @@ async function handleGenericError(error: Error, job: Job<CommentJobData>, option
             const failedEvidence = buildWorkEvidenceMarker('failed', realCommentIds);
             await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id,
-                body: `${options.publicationStatus ? options.publicationStatus + '\n\n' : ''}❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\nAn error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\`\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.${failedEvidence ? `\n${failedEvidence}` : ''}`,
+                body: `${options.publicationStatus ? options.publicationStatus + '\n\n' : ''}❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\n${pushFailure ? formatPushFailureMarkdown(pushFailure) : `An error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\``}\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.${failedEvidence ? `\n${failedEvidence}` : ''}`,
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');

@@ -30,7 +30,7 @@ import { retainOriginalScope } from './ultrafixOrchestrationService.js';
 import {
     handleUltrafixContinuation, markSelectedUltrafixFindings, restorePendingCommentsIfUltrafixJobSuperseded,
 } from './ultrafixJobHelpers.js';
-import { shouldDeferUltrafixReview } from './ultrafixReviewExecutionGate.js';
+import { shouldDeferUltrafixReview, ultrafixReviewDeferralUpdate } from './ultrafixReviewExecutionGate.js';
 import { handleNoAuthorizedFindings } from './prCommentNoAuthorizedFindings.js';
 import { handlePostExecution } from './prCommentPostExecution.js';
 import {
@@ -48,7 +48,7 @@ import { PullRequestPublication } from './prPublication.js';
 import { recoverPendingPublication, type ProcessingState, type ExecuteProcessingParams } from './prPublicationRecovery.js';
 import { findPRContinuation, type Contribution } from './prContinuation.js';
 import { suspendObsoleteValidationForImplementation } from './followupCiSuspension.js';
-import { deferredUltrafixReviewRecap, stoppedReviewRecap } from './notificationRecap.js';
+import { stoppedReviewRecap } from './notificationRecap.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -427,12 +427,10 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
         // Branch early for review mode — read-only analysis, no commits or pushes
         if (job.data.commandMode === 'review') {
             // Recovery can advance the continuation HEAD; gate its checks only after publication completes.
-            if (await shouldDeferUltrafixReview(job, redisClient, correlatedLogger)) {
+            const ultrafixDeferral = await shouldDeferUltrafixReview(job, redisClient, correlatedLogger);
+            if (ultrafixDeferral) {
                 await restorePendingComments(context.pickedUpComments, { ...context, redisClient });
-                await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-                    reason: 'Ultrafix review deferred until exact-head checks pass',
-                    historyMetadata: { deferred: true, recoveryReason: 'ultrafix_waiting_for_exact_head_checks', ...deferredUltrafixReviewRecap },
-                });
+                await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, ultrafixReviewDeferralUpdate(ultrafixDeferral));
                 return { status: 'deferred', reason: 'ultrafix_waiting_for_exact_head_checks' };
             }
             return await runWithExecutionAbortSignal(executionController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments }), hashTaskAttemptToken(lockToken));

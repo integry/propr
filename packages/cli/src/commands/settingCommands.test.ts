@@ -30,6 +30,7 @@ const SETTINGS: SystemSettings = {
   ultrafix_rating_goal: 8,
   ultrafix_max_cycles: 3,
   ultrafix_pause_seconds: 5,
+  ultrafix_ci_wait_timeout_ms: 7_200_000,
   ultrafix_escalation_enabled: false,
   ultrafix_escalation_models: [],
   ultrafix_escalation_patience: 3,

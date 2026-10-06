@@ -216,6 +216,7 @@ async function saveNormalizedSettingsWithRollback({
     ultrafix_rating_goal,
     ultrafix_max_cycles,
     ultrafix_pause_seconds,
+    ultrafix_ci_wait_timeout_ms,
     agent_stall_timeout_ms,
     agent_tool_stall_timeout_ms,
     agent_degenerate_output_limit,
@@ -237,6 +238,7 @@ async function saveNormalizedSettingsWithRollback({
     ultrafix_rating_goal,
     ultrafix_max_cycles,
     ultrafix_pause_seconds,
+    ultrafix_ci_wait_timeout_ms,
     agent_stall_timeout_ms,
     agent_tool_stall_timeout_ms,
     agent_degenerate_output_limit
