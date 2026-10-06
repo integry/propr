@@ -2,6 +2,7 @@ import { isScalar, parseDocument } from 'yaml';
 import { buildWorkflowWrapper, WORKFLOW_MARKER_TEMPLATE } from './workflowExecution.js';
 import { RepositoryWorkflowPolicyError } from './workflowPolicyError.js';
 import type { VisualPreviewSettings, VisualPreviewType } from '../config/configManager.js';
+import { validateAutoMergeConfig, type AutoMergeConfig } from './autoMergePolicy.js';
 import { parseCostCapUsd } from '../budget/runCostCap.js';
 
 export { RepositoryWorkflowPolicyError };
@@ -17,6 +18,7 @@ export interface RepositoryWorkflow {
     previews?: { types?: VisualPreviewType[]; instructions?: string };
     /** `max_cost_usd` is read leniently: a malformed value is logged and means no cap, never a $0 cap. */
     limits?: { max_parallel_tasks?: number; max_cost_usd?: unknown };
+    auto_merge?: AutoMergeConfig;
 }
 export interface ResolvedRepositoryWorkflow {
     revision: string;
@@ -69,7 +71,7 @@ function parseWorkflowDocument(source: string): unknown {
 export function parseRepositoryWorkflow(source: string): RepositoryWorkflow {
     if (Buffer.byteLength(source) > WORKFLOW_MAX_BYTES) invalid('file exceeds 128 KiB');
     const value = parseWorkflowDocument(source);
-    const config = object(value, ['hooks', 'instructions', 'validation', 'previews', 'limits'], 'workflow');
+    const config = object(value, ['hooks', 'instructions', 'validation', 'previews', 'limits', 'auto_merge'], 'workflow');
     if (config.hooks !== undefined) {
         const hooks = object(config.hooks, ['after_create', 'before_run', 'after_run', 'before_remove', 'timeout_ms'], 'hooks');
         for (const [key, value] of Object.entries(hooks)) {
@@ -92,6 +94,10 @@ export function parseRepositoryWorkflow(source: string): RepositoryWorkflow {
     if (config.limits !== undefined) {
         const limits = object(config.limits, ['max_parallel_tasks', 'max_cost_usd'], 'limits');
         if (limits.max_parallel_tasks !== undefined) positiveInteger(limits.max_parallel_tasks, 'limits.max_parallel_tasks');
+    }
+    if (config.auto_merge !== undefined) {
+        const error = validateAutoMergeConfig(config.auto_merge);
+        if (error) invalid(error);
     }
     return config as RepositoryWorkflow;
 }
