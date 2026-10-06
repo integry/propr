@@ -86,8 +86,8 @@ const {
     resumeDeferredContinuation,
     setCheckRunDeps,
 } = await import('../src/jobs/ultrafixLoopContinuation.js');
+const { acquireResumeClaim } = await import('../src/jobs/ultrafixStrandedLoopRearm.js');
 const {
-    acquireResumeClaim,
     createDefaultState,
     getUltrafixAutomaticWorkEpoch,
     invalidateUltrafixAutomaticWork,
@@ -505,7 +505,7 @@ describe('stranded Ultrafix loop re-arming', () => {
 
     test('a concurrent trigger holding the claim prevents a double re-arm', async () => {
         const redis = await strandLoop(64);
-        await acquireResumeClaim(redis as never, 'acme', 'web', 64, 'other-trigger', 60_000);
+        await acquireResumeClaim(redis as never, { owner: 'acme', repo: 'web', pr: 64 }, 'other-trigger', 60_000);
 
         const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 64 }, redis as never, logger as never);
 

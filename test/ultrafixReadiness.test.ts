@@ -21,17 +21,19 @@ import {
     parseDeferredKey,
     createDefaultState,
     areChecksReadyForUltrafix,
-    acquireResumeClaim,
-    releaseResumeClaim,
-    getUltrafixResumeClaimKey,
-    evaluateStrandedLoopRearm,
     getActionCounts,
-    syncStateWorkEpoch,
     loadState,
     saveState,
     type UltrafixLoopState,
     type UltrafixDeferredContinuation,
 } from '../src/jobs/ultrafixOrchestrationService.js';
+import {
+    acquireResumeClaim,
+    releaseResumeClaim,
+    getUltrafixResumeClaimKey,
+    evaluateStrandedLoopRearm,
+    syncStateWorkEpoch,
+} from '../src/jobs/ultrafixStrandedLoopRearm.js';
 import { requiresPassingChecks } from '../src/jobs/ultrafixReadinessPolicy.js';
 
 // --- Mock Redis ---
@@ -647,8 +649,8 @@ describe('resume claim', () => {
 
     test('only one concurrent trigger acquires the claim', async () => {
         const results = await Promise.all([
-            acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-a', 60_000),
-            acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-b', 60_000),
+            acquireResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-a', 60_000),
+            acquireResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-b', 60_000),
         ]);
 
         assert.deepStrictEqual(results, [true, false]);
@@ -657,27 +659,27 @@ describe('resume claim', () => {
     });
 
     test('claims are scoped per pull request', async () => {
-        assert.strictEqual(await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-a', 60_000), true);
-        assert.strictEqual(await acquireResumeClaim(redis as any, 'acme', 'web', 43, 'token-b', 60_000), true);
+        assert.strictEqual(await acquireResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-a', 60_000), true);
+        assert.strictEqual(await acquireResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 43 }, 'token-b', 60_000), true);
     });
 
     test('release only removes a claim held by the same token', async () => {
-        await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-a', 60_000);
+        await acquireResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-a', 60_000);
 
-        assert.strictEqual(await releaseResumeClaim(redis as any, 'acme', 'web', 42, 'token-b'), false);
-        assert.strictEqual(await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-b', 60_000), false);
+        assert.strictEqual(await releaseResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-b'), false);
+        assert.strictEqual(await acquireResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-b', 60_000), false);
 
-        assert.strictEqual(await releaseResumeClaim(redis as any, 'acme', 'web', 42, 'token-a'), true);
-        assert.strictEqual(await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-b', 60_000), true);
+        assert.strictEqual(await releaseResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-a'), true);
+        assert.strictEqual(await acquireResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-b', 60_000), true);
     });
 
     test('an expired claim from a crashed holder can be re-acquired', async () => {
-        await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-a', 60_000);
+        await acquireResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-a', 60_000);
         redis.expiresAt.set(getUltrafixResumeClaimKey('acme', 'web', 42), Date.now() - 1);
 
-        assert.strictEqual(await acquireResumeClaim(redis as any, 'acme', 'web', 42, 'token-b', 60_000), true);
+        assert.strictEqual(await acquireResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-b', 60_000), true);
         // The crashed holder can no longer release the new owner's claim.
-        assert.strictEqual(await releaseResumeClaim(redis as any, 'acme', 'web', 42, 'token-a'), false);
+        assert.strictEqual(await releaseResumeClaim(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 'token-a'), false);
     });
 });
 

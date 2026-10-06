@@ -139,8 +139,6 @@ const KEY_PREFIX = 'ultrafix:state';
 const DEFAULT_GOAL = 7;
 const DEFAULT_MAX_CYCLES = 5;
 const DEFAULT_PAUSE_SECONDS = 60;
-const RESUME_CLAIM_KEY_PREFIX = 'ultrafix:resume-claim';
-const RELEASE_RESUME_CLAIM_SCRIPT = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end";
 
 // --- Key helper ---
 
@@ -564,95 +562,4 @@ export function checkReadiness(opts: {
  */
 export function areChecksReadyForUltrafix(status: UltrafixCheckStatus): boolean {
     return status.allPassing;
-}
-
-// --- Stranded loop re-arming ---
-
-export function getUltrafixResumeClaimKey(owner: string, repo: string, pr: number): string {
-    return `${RESUME_CLAIM_KEY_PREFIX}:${owner}:${repo}:${pr}`;
-}
-
-/**
- * Take the per-PR resume claim so concurrent check_run/status triggers cannot
- * re-arm the same loop twice. The TTL bounds the claim if its holder crashes.
- */
-export async function acquireResumeClaim(
-    redis: Redis,
-    owner: string,
-    repo: string,
-    pr: number,
-    token: string,
-    ttlMs: number,
-): Promise<boolean> {
-    const result = await redis.set(getUltrafixResumeClaimKey(owner, repo, pr), token, 'PX', ttlMs, 'NX');
-    return result === 'OK';
-}
-
-/** Release the resume claim only when it is still held by `token`. */
-export async function releaseResumeClaim(
-    redis: Redis,
-    owner: string,
-    repo: string,
-    pr: number,
-    token: string,
-): Promise<boolean> {
-    const released = await redis.eval(
-        RELEASE_RESUME_CLAIM_SCRIPT,
-        1,
-        getUltrafixResumeClaimKey(owner, repo, pr),
-        token,
-    );
-    return Number(released) === 1;
-}
-
-export type StrandedLoopRearmDecision =
-    | { action: 'skip'; reason: 'no_active_loop' }
-    | { action: 'complete'; completionStatus: 'succeeded' | 'failed'; reason: string }
-    | { action: 'rearm' };
-
-/**
- * Apply the Ultrafix circuit breakers to a loop that lost its deferred
- * continuation. Side-effect free; label presence and readiness are checked by
- * the caller because they require GitHub and queue access.
- */
-export function evaluateStrandedLoopRearm(state: UltrafixLoopState | null): StrandedLoopRearmDecision {
-    if (!state || !state.active) return { action: 'skip', reason: 'no_active_loop' };
-
-    if (state.finalScore !== null && state.finalScore !== undefined && state.finalScore >= state.goal) {
-        return {
-            action: 'complete',
-            completionStatus: 'succeeded',
-            reason: `Score ${state.finalScore}/10 already reaches goal ${state.goal}/10`,
-        };
-    }
-
-    const { reviewCount, fixCount } = getActionCounts(state);
-    if (reviewCount >= state.maxCycles || fixCount >= state.maxCycles) {
-        return {
-            action: 'complete',
-            completionStatus: 'failed',
-            reason: `Max cycles reached: ${reviewCount} review and ${fixCount} fix steps completed (limit ${state.maxCycles})`,
-        };
-    }
-
-    return { action: 'rearm' };
-}
-
-/**
- * Hand a stranded loop to the current automatic-work epoch. The write is
- * conditional on that epoch, so a takeover racing this call still wins.
- */
-export async function syncStateWorkEpoch(
-    redis: Redis,
-    state: UltrafixLoopState,
-    workEpoch: number,
-): Promise<UltrafixLoopState | null> {
-    const synced = { ...state, workEpoch };
-    const saved = await saveUltrafixStateIfCurrent(
-        redis,
-        { owner: state.owner, repo: state.repo, pr: state.pr },
-        workEpoch,
-        JSON.stringify(synced),
-    );
-    return saved ? synced : null;
 }
