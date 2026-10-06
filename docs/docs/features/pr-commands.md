@@ -372,6 +372,24 @@ When blocking CI defers a review, ProPR posts one comment on the PR naming the c
 
 The wait is bounded. If the review stays deferred for longer than the CI wait timeout — the `ultrafix_ci_wait_timeout_ms` instance setting (default 2 hours, settable through MCP `update_execution_settings`, `propr setting update ultrafix_ci_wait_timeout_ms <ms>`, or the `ULTRAFIX_CI_WAIT_TIMEOUT_MS` environment variable) — the loop stops with the usual "Ultrafix stopped before reaching its goal" comment and the reason "CI did not settle". Fix or re-run the blocking checks, then re-arm the loop with `/ultrafix`.
 
+#### Recovery From CI Failures
+
+A loop paused on red CI does not need to be restarted by hand once CI is fixed:
+
+1. **Pause.** An automatic fix lands, CI on its commit fails, and the next review is deferred, as described in [Waiting Rules](#waiting-rules). The loop stays active and keeps its `ultrafix` label.
+2. **Follow-up fix.** A [CI-failure follow-up](./pr-followup.md#automatic-follow-up-for-failed-ci), a `/fix`, or a developer push fixes the build. Each new piece of automatic work starts a new work epoch, which retires the old deferred step so a stale continuation cannot run against the new commit. The loop itself stays active and is not lost.
+3. **Green checks wake the loop.** When the checks on the current PR head pass, ProPR re-evaluates the loop. Three triggers can do this: `check_run` events (including runs GitHub delivers without a PR number, which are matched to open PRs by commit), successful `check_suite` events, and the polling cycle's reconciliation for PRs labelled `ultrafix`, which covers missed webhooks.
+4. **Resume.** If the loop is still active and the PR is idle, ProPR moves the loop to the current epoch and schedules the next review after the configured `pause`. From there the loop continues as normal.
+
+The usual protections still apply when the loop is woken:
+
+- **Max cycles.** If the cycle budget is already used up, the loop finishes as failed and posts the usual "stopped before reaching its goal" comment. No review is scheduled.
+- **Goal reached.** If the last score already meets the goal, the loop finishes as succeeded and no review is scheduled.
+- **Label removed.** If the `ultrafix` label was removed while the loop waited for CI, its state is cleared and nothing is scheduled.
+- **Work in flight.** Nothing is decided while an Ultrafix job is queued, running, or delayed, or while batched comments are pending. That work's own continuation owns the loop.
+
+Several triggers often fire for the same green commit at once: check runs, the check suite, and polling. Only one review is ever scheduled. Each wake-up first takes a short per-PR resume lock, so concurrent triggers back off instead of deciding twice. The review job is also enqueued under a deterministic BullMQ job ID derived from the PR, the work epoch, and the step number, so a step that is already pending is never inserted a second time.
+
 #### Stopping The Loop
 
 The loop is controlled by the visible `ultrafix` PR label, which acts as a circuit breaker. Remove the label to stop the loop after the current cycle finishes.
