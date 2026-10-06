@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ships the unpublished version-tagged agent. A digest-pinned agent now gets its
   local `propr/agent:latest` tag correctly. arm64 packages remain available, but
   the managed agent, and so agent tasks, are amd64 only.
+- **Complete bundled third-party notices**: `scripts/generate-notices.sh` now
+  refuses to run without the root dependency tree installed at the
+  `package-lock.json` pins, and refuses to replace `THIRD_PARTY_LICENSES.md`
+  unless the result has the full `@anthropic-ai/claude-code` and
+  `@anthropic-ai/sdk` license texts and a production inventory covering every
+  direct dependency. Previously a clean checkout silently baked a notice without
+  them into images. The preview app/UI and agent builds now run
+  `npm ci --ignore-scripts` before building images.
 
 - **Bounded goal waits**: MCP `wait_goal` and `propr goal wait <id>` wait, with
   a finite deadline, for a confirmed goal state (`completed`, `failed`,

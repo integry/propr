@@ -104,6 +104,12 @@ jobs:
           node -e 'const expected=process.env.EXPECTED_ARCHITECTURE; if(process.platform!=="linux"||process.arch!==(expected==="amd64"?"x64":"arm64")) throw new Error(`Expected native linux/${expected}, got ${process.platform}/${process.arch}`)'
           docker version
 
+      - name: Install the pinned root dependency tree for bundled notices
+        # build-images.sh regenerates THIRD_PARTY_LICENSES.md from root
+        # node_modules and bakes it into the app/UI image; the generator
+        # refuses an uninstalled or unpinned tree. No lifecycle scripts run.
+        run: node apps/desktop/scripts/retry-transient-download.mjs -- npm ci --ignore-scripts --no-audit --no-fund
+
       - name: Build only app and UI with exact local full-SHA tags
         env:
           BUILD_DATE: ${{ needs.identity.outputs.build_date }}
@@ -317,6 +323,12 @@ jobs:
         run: |
           node -e 'if(process.platform!=="linux"||process.arch!=="x64") throw new Error(`Expected native linux/amd64, got ${process.platform}/${process.arch}`)'
           docker version
+
+      - name: Install the pinned root dependency tree for bundled notices
+        # build-images.sh regenerates THIRD_PARTY_LICENSES.md from root
+        # node_modules and bakes it into the agent image; the generator
+        # refuses an uninstalled or unpinned tree. No lifecycle scripts run.
+        run: node apps/desktop/scripts/retry-transient-download.mjs -- npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build only the managed agent with an exact local full-SHA tag
         env:
