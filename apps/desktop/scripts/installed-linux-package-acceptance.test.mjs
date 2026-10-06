@@ -187,6 +187,52 @@ printf '%s\\n' "$@" > "$PROPR_XVFB_ARGUMENT_LOG"
     }
   });
 
+  test('removes only the application package without orphan-dependency cleanup', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const source = await readFile(new URL('./test-installed-linux-package.sh', import.meta.url), 'utf8');
+    const removal = source.match(/^package_present\(\) \{\n[\s\S]*?\n\}\n\nremove_package\(\) \{\n[\s\S]*?\n\}$/mu)?.[0];
+    assert.ok(removal, 'package removal functions must remain executable coverage');
+
+    const directory = await realpath(await mkdtemp(join(tmpdir(), 'propr-package-removal-')));
+    const argumentLog = join(directory, 'arguments');
+    try {
+      for (const tool of ['rpm', 'dpkg-query']) {
+        await writeFile(join(directory, tool), `#!/bin/sh
+[ "$1" = -W ] && printf 'installed'
+exit 0
+`);
+      }
+      for (const tool of ['dnf', 'apt-get']) {
+        await writeFile(join(directory, tool), `#!/bin/sh
+printf '%s\\n' ${tool} "$@" > "$PROPR_REMOVAL_ARGUMENT_LOG"
+`);
+      }
+      await Promise.all(['rpm', 'dpkg-query', 'dnf', 'apt-get'].map(tool => chmod(join(directory, tool), 0o755)));
+
+      for (const [family, expected] of [
+        ['rpm', ['dnf', 'remove', '-y', '--setopt=clean_requirements_on_remove=False', 'propr-desktop']],
+        ['deb', ['apt-get', 'remove', '-y', 'propr-desktop']],
+      ]) {
+        const result = spawnSync('bash', ['-euo', 'pipefail', '-c', `${removal}\nremove_package`], {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${directory}:${process.env.PATH ?? ''}`,
+            PROPR_REMOVAL_ARGUMENT_LOG: argumentLog,
+            family,
+            package_name: 'propr-desktop',
+          },
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual((await readFile(argumentLog, 'utf8')).trim().split('\n'), expected);
+      }
+      assert.doesNotMatch(source, /autoremove|protected_packages|--nodeps/);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test('preflights the synthetic keyring with bounded distro-daemon and Secret Service argv', {
     skip: process.platform === 'win32',
   }, async () => {

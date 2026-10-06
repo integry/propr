@@ -57,6 +57,33 @@ describe('New Task issue launcher', () => {
     expect(planner.createDraft).not.toHaveBeenCalled();
     expect(screen.queryByText(/What's done|Continue|Pause goal/)).not.toBeInTheDocument();
   });
+  it('reports a recovery storage failure without submitting or losing the request and files', async () => {
+    vi.mocked(submissions.taskSnapshotStorage).mockImplementation(async (_scope, _key, value) => {
+      if (value) throw new Error('Could not save task recovery data in this browser. Error preparing Blob/File data to be stored in object store');
+      return undefined;
+    });
+    renderPage();
+    const file = new File(['Invoice date: 09/22/2026'], 'invoice.txt', { type: 'text/plain' });
+    await act(async () => fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [file] } }));
+    const run = screen.getByRole('button', { name: 'Run task' });
+    await waitFor(() => expect(run).toBeEnabled());
+    fireEvent.click(run);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Task not submitted: this browser could not save it for safe retry.');
+    expect(alert).toHaveTextContent('Error preparing Blob/File data');
+    expect(submissions.submitTask).not.toHaveBeenCalled();
+    expect(submissions.getTaskSubmission).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(`task-active-submission:${API_BASE_URL}:alice`)).toBeNull();
+    expect(screen.getByLabelText('Prompt')).toBeEnabled();
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Fix invoice dates');
+    expect(screen.getByText('invoice.txt')).toBeInTheDocument();
+    expect(screen.queryByTestId('destination')).not.toBeInTheDocument();
+    vi.mocked(submissions.taskSnapshotStorage).mockResolvedValue(undefined);
+    vi.mocked(submissions.submitTask).mockResolvedValue(pending);
+    fireEvent.click(screen.getByRole('button', { name: 'Run task' }));
+    expect(await screen.findByText('Issue #42 created, but agent failed to queue')).toBeInTheDocument();
+    expect(vi.mocked(submissions.submitTask).mock.calls[0][2]).toEqual([file]);
+  });
   it('shows submission progress on the button and a partial failure as one warning', async () => {
     let resolve!: (value: submissions.TaskSubmission) => void;
     vi.mocked(submissions.submitTask).mockReturnValue(new Promise(done => { resolve = done; }));

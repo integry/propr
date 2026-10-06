@@ -125,12 +125,19 @@ export const createIsolatedSetupEnvironment = ({
   });
 };
 
-const dockerOperation = args => {
+// Serialized into the wrapper via toString(), so it must stay self-contained.
+export const dockerOperation = args => {
+  const exactReference = value => typeof value === 'string'
+    && value.length > 0 && value === value.trim() && !value.startsWith('-');
   if (args.length === 1 && args[0] === '--version') return 'version';
   if (args[0] === 'info') return 'info';
   if (args[0] === 'images' && args[1] === '-q' && args.length === 3) return 'images';
-  if (args.length === 3 && args[0] === 'image' && args[1] === 'inspect'
-    && args[2].length > 0 && args[2] === args[2].trim() && !args[2].startsWith('-')) {
+  if (args.length === 3 && args[0] === 'image' && args[1] === 'inspect' && exactReference(args[2])) {
+    return 'image-inspect';
+  }
+  // Read-only exact-reference presence check used by the CLI and launcher.
+  if (args.length === 5 && args[0] === 'image' && args[1] === 'inspect'
+    && args[2] === '--format' && args[3] === '{{.Id}}' && exactReference(args[4])) {
     return 'image-inspect';
   }
   if (args[0] === 'pull' && args.length === 2) return 'pull';

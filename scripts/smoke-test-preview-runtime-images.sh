@@ -5,6 +5,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# Bounded removal of the private root, shared with the desktop source smoke.
+# shellcheck source=apps/desktop/scripts/smoke-local-runtime-cleanup.sh disable=SC1091
+source "$REPO_ROOT/apps/desktop/scripts/smoke-local-runtime-cleanup.sh"
 
 SOURCE_REVISION="${SOURCE_REVISION:-$(git rev-parse HEAD)}"
 EXPECTED_VERSION="${EXPECTED_VERSION:-$(node -p "require('./package.json').version")}"
@@ -29,26 +32,36 @@ API_CONTAINER="$STACK-api"
 UI_CONTAINER="$STACK-ui"
 DAEMON_CONTAINER="$STACK-daemon"
 WORKER_CONTAINER="$STACK-worker"
-SMOKE_ROOT="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/propr-preview-runtime-smoke.XXXXXX")"
+SMOKE_TMP_BASE="$(cd "${RUNNER_TEMP:-${TMPDIR:-/tmp}}" && pwd -P)"
+SMOKE_ROOT="$(mktemp -d "$SMOKE_TMP_BASE/propr-preview-runtime-smoke.XXXXXX")"
+SMOKE_ROOT_IDENTITY="$(smoke_root_identity "$SMOKE_ROOT")"
 
 owned_container() {
   [[ "$(docker container inspect --format "{{ index .Config.Labels \"$LABEL\" }}" "$1" 2>/dev/null || true)" == "$STACK" ]]
 }
 
+# Containers running as root leave root-owned 0700 entries (e.g. data/web-push)
+# in the bind-mounted root, so removal goes through the bounded helper.  The
+# smoke's own exit status is preserved; a cleanup failure is reported and turns
+# an otherwise successful run into a failure.
 cleanup() {
-  local container owner
+  local status=$? failed=0 container owner
+  set +e
   for container in "$UI_CONTAINER" "$WORKER_CONTAINER" "$DAEMON_CONTAINER" "$API_CONTAINER" "$REDIS_CONTAINER"; do
     if docker container inspect "$container" >/dev/null 2>&1 && owned_container "$container"; then
-      docker rm -f "$container" >/dev/null
+      docker rm -f "$container" >/dev/null || failed=1
     fi
   done
   if docker network inspect "$NETWORK" >/dev/null 2>&1; then
     owner="$(docker network inspect --format "{{ index .Labels \"$LABEL\" }}" "$NETWORK")"
-    if [[ "$owner" == "$STACK" ]]; then docker network rm "$NETWORK" >/dev/null; fi
+    if [[ "$owner" == "$STACK" ]]; then docker network rm "$NETWORK" >/dev/null || failed=1; fi
   fi
-  if [[ "$SMOKE_ROOT" == "${RUNNER_TEMP:-${TMPDIR:-/tmp}}"/propr-preview-runtime-smoke.* ]]; then
-    rm -rf -- "$SMOKE_ROOT"
+  remove_smoke_root "$SMOKE_ROOT" "$SMOKE_TMP_BASE" "$SMOKE_ROOT_IDENTITY" "$APP_IMAGE" "$LABEL" "$STACK" || failed=1
+  if (( failed )); then
+    echo 'Preview runtime smoke cleanup did not remove every owned resource' >&2
+    (( status )) || status=1
   fi
+  exit "$status"
 }
 trap cleanup EXIT
 

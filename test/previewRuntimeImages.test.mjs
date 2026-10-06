@@ -210,7 +210,7 @@ describe('preview runtime artifact and immutable publication scope', () => {
   test('keeps source builds secretless and puts the only registry mutation behind protection', () => {
     const build = job('build-native', 'assemble');
     const assemble = job('assemble', 'publish');
-    const publish = job('publish');
+    const publish = job('publish', 'build-agent');
     assert.doesNotMatch(build, /secrets\.|environment:/);
     assert.doesNotMatch(assemble, /secrets\.|environment:|docker login|image copy/);
     assert.match(publish, /environment:\n\s+name: desktop-linux-preview-runtime-publication/);

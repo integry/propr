@@ -159,11 +159,11 @@ describe('task ledger rows', () => {
     expect(chip.getAttribute('title')).toMatch(/Run 3 waiting to start$/);
   });
 
-  it('keeps a single run without a summary on one line, its type in front of the title', () => {
+  it('gives a single run without a summary the same two lines as every row: title over type and outcome', () => {
     const single: TaskGroup = {
       key: 'integry/desktop-workspaces-issue-86', repoOwner: 'integry', repoName: 'desktop-workspaces', prNumber: null,
       tasks: [{
-        id: 'issue-86', title: 'New Issue: [86 by Claude] Support configuration paths', status: 'failed',
+        id: 'issue-86', title: 'New Issue: [86 by Claude] Support configuration paths', status: 'failed', failedReason: 'Typecheck failed during test execution\n  at tsc',
         createdAt: '2026-09-10T12:00:00Z', issueNumber: 86, previewMedia: [{ type: 'image', title: 'Desktop', url: 'https://github.com/user-attachments/assets/c' }],
       }],
     };
@@ -171,13 +171,17 @@ describe('task ledger rows', () => {
     const table = screen.getByRole('table', { name: 'Tasks' });
     const title = within(table).getByRole('link', { name: 'Support configuration paths' });
     const titleLine = title.parentElement!;
-    // Chip, type, title, previews: all on the title line, and nothing under it.
-    expect([...titleLine.children].map(child => child.textContent)).toEqual(['Issue #86', 'Implement', 'Support configuration paths', '1 preview']);
-    expect(titleLine.nextElementSibling).toBeNull();
+    // Line 1 is the chip and the title alone, held to one line; line 2 is the type, why the run failed, and its previews.
+    expect([...titleLine.children].map(child => child.textContent)).toEqual(['Issue #86', 'Support configuration paths']);
+    expect(title.firstElementChild).toHaveClass('truncate');
+    expect([...titleLine.nextElementSibling!.children].map(child => child.textContent)).toEqual(['Implement', 'Typecheck failed during test execution', '1 preview']);
     // The owner is the same on every row, so the repository cell shows the name; the tooltip keeps both.
-    const repo = within(table).getByTestId('repository-chip');
+    const repo = within(table).getByTestId('task-repository');
     expect(repo).toHaveTextContent(/^desktop-workspaces$/);
     expect(repo).toHaveAttribute('title', 'integry/desktop-workspaces');
+    // The column is the container: plain monospace text, no chip border or fill.
+    expect(repo).toHaveClass('font-mono');
+    expect(repo.className).not.toMatch(/\b(?:border|bg-|rounded)/);
   });
 
   it('ignores historical critique scores in rows and earlier runs', () => {
@@ -264,7 +268,7 @@ describe('task ledger rows', () => {
     expect(row()).toHaveAttribute('aria-selected', 'false');
   });
 
-  it('ends a legacy title that may be hard-cut at 100 characters with an ellipsis, keeping its last word, in rows, cards and earlier runs', () => {
+  it('ends a legacy title that may be hard-cut at 100 characters on a whole word with an ellipsis, in rows, cards and earlier runs', () => {
     const hardCut = 'New Issue: Expose task changes, logs and events through the MCP server so that an MCP client can act';
     expect(hardCut).toHaveLength(100);
     const runCut = 'Followup: Expose the implementation log and the terminal output through MCP so that a client can rea';
@@ -277,7 +281,7 @@ describe('task ledger rows', () => {
       ],
     };
     render(<Fixture groups={[cut]} />);
-    const shown = 'Expose task changes, logs and events through the MCP server so that an MCP client can act…';
+    const shown = 'Expose task changes, logs and events through the MCP server so that an MCP client can…';
     const table = screen.getByRole('table');
     const title = within(table).getByRole('link', { name: shown });
     expect(title).toHaveAttribute('title', 'Expose task changes, logs and events through the MCP server so that an MCP client can act');
@@ -285,6 +289,6 @@ describe('task ledger rows', () => {
     expect(within(cards[0]).getByRole('link', { name: shown })).toBeInTheDocument();
     fireEvent.click(within(table).getByRole('button', { name: '2 runs' }));
     const runs = within(table).getByRole('list', { name: 'Earlier runs' });
-    expect(runs).toHaveTextContent('Expose the implementation log and the terminal output through MCP so that a client can rea…');
+    expect(runs).toHaveTextContent('Expose the implementation log and the terminal output through MCP so that a client can…');
   });
 });

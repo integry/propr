@@ -179,6 +179,19 @@ const getEmptyTraceMessage = (isActive: boolean, status: string) => {
 /** Drops a desktop-only (`lg:`) class list when the details sit in a pane. */
 const wideOnly = (embedded: boolean, classes: string) => (embedded ? '' : ` ${classes}`);
 
+/** The timeline pane's title, counting the runs when there is more than one. */
+const TimelineHeading: React.FC<{ runCount: number }> = ({ runCount }) => (
+  <div className="py-2 text-xs font-bold uppercase tracking-widest text-slate-500">
+    TIMELINE
+    {runCount > 1 && (
+      <>
+        {' '}
+        <span data-testid="timeline-run-count" className="ml-1.5 font-mono font-normal normal-case tracking-normal">({runCount} runs)</span>
+      </>
+    )}
+  </div>
+);
+
 const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded = false, onDeleted, runs, onSelectRun, paneControls }) => {
   const params = useParams();
   const taskId = taskIdProp ?? params.taskId;
@@ -320,6 +333,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
           actionBarProps={actionBarProps}
           run={headerRun}
           paneControls={paneControls}
+          breadcrumb={!embedded}
         />
 
         <ProgressBar todos={taskData.liveDetails.todos} />
@@ -346,9 +360,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
             className={`w-full min-w-0 flex-shrink-0 border-b border-gray-200 scrollbar-stealth${wideOnly(embedded, 'lg:min-h-0 lg:w-[30%] lg:overflow-y-auto lg:overscroll-contain lg:border-b-0 lg:border-r')}`}
           >
             <div className={`z-[1] flex ${PANE_HEADER_HEIGHT} items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 sm:sticky sm:top-0`}>
-              <div className="py-2 text-xs font-bold uppercase tracking-widest text-slate-500">
-                TIMELINE
-              </div>
+              <TimelineHeading runCount={runs?.length ?? 0} />
               {/* The way back from an earlier run sits where the run was opened. */}
               {inspectionContext && <ReturnToRunButton {...inspectionContext} />}
             </div>

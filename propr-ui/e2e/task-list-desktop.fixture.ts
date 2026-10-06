@@ -72,7 +72,7 @@ export const tasks = [
   {
     id: 'long-title', repository: 'integry/desktop-workspaces', repositoryOwner: 'integry', repositoryName: 'desktop-workspaces', issueNumber: 86,
     title: `New Issue: ${tag(86)} Support configuration/desktop/workspaces/a-very-long-unbroken-configuration-filename.json in the task history`,
-    status: 'failed', createdAt: ago(300), processedAt: ago(300), completedAt: ago(262),
+    status: 'failed', failedReason: 'Typecheck failed during test execution', createdAt: ago(300), processedAt: ago(300), completedAt: ago(262),
     llmProvider: 'claude', model: 'a-long-model-identifier-for-desktop-layout-verification', critiqueScore: 4,
   },
 ];
@@ -106,6 +106,14 @@ export const historicalEvents = [
   { id: 'review-thought-1', type: 'thought', timestamp: ago(38), content: 'The label check also matches unrelated labels; flagging it as a finding.' },
   { id: 'review-tool-1', toolUseId: 'review-tool-1', type: 'tool_use', timestamp: ago(37.5), toolName: 'Bash', input: { command: 'grep -rn withdraw src/jobs' } },
   { id: 'review-result-1', toolUseId: 'review-tool-1', type: 'tool_result', timestamp: ago(37.4), result: 'src/jobs/withdrawalHandlers.ts:14: if (label.includes(\'withdraw\'))' },
+];
+
+// A fix of PR #2664 that pushed a commit (Run 2), for the open run's commit on a narrow pane.
+export const fixRun = 'pr-2664-run-6';
+export const fixHistory = [
+  { state: 'PENDING', timestamp: ago(48), metadata: { model: 'gpt-6-astra' } },
+  { state: 'CLAUDE_EXECUTION', timestamp: ago(47.8), metadata: { model: 'gpt-6-astra', description: 'Fix the seedCommit test' } },
+  { state: 'COMPLETED', timestamp: ago(46), metadata: { model: 'gpt-6-astra' } },
 ];
 
 export async function fixture(page: Page, platform?: 'macos' | 'linux') {
@@ -159,6 +167,14 @@ export async function fixture(page: Page, platform?: 'macos' | 'linux') {
         usageMetricRecords: [{ agent: 'codex', metricKey: 'weeklyAll', metricValue: 0.1 }],
       },
       [`/api/task/${historicalRun}/live-details`]: { events: historicalEvents, todos: [], currentTask: null },
+      [`/api/task/${fixRun}/history`]: {
+        history: fixHistory,
+        taskInfo: {
+          title: 'Followup: Update 2', subtitle: 'Fixed seedCommit test',
+          type: 'pr', number: 2664, issueNumber: 2664, repoOwner: 'integry', repoName: 'propr', modelName: 'gpt-6-astra',
+        },
+      },
+      [`/api/task/${fixRun}/live-details`]: { events: [], todos: [], currentTask: null },
       [`/api/task/${historicalRun}/file-changes`]: {
         taskId: historicalRun, lastUpdated: ago(36),
         files: [{ path: 'src/jobs/withdrawalHandlers.ts', linesAdded: 3, linesRemoved: 1, status: 'modified', diff: '@@ -14,1 +14,3 @@\n-if (label.includes(\'withdraw\'))\n+if (isWithdrawalLabel(label))' }],

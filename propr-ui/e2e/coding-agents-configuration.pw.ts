@@ -1,4 +1,4 @@
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { AGENT_DEFAULTS, AGENT_MODELS, type AgentType } from '@propr/shared';
 
 const agents = (['claude', 'codex', 'vibe', 'antigravity', 'opencode'] as const).map(type => ({
@@ -30,13 +30,62 @@ async function expectHeaderRails(configuration: Locator) {
   await expect(configuration.getByText('Inactive', { exact: true })).toBeVisible();
 }
 
+/**
+ * Adds a temporary, visually hidden textarea outside the app, runs `action` against it and always removes it,
+ * even when an assertion inside `action` fails.
+ */
+async function withClipboardProbe<T>(page: Page, action: (probe: Locator) => Promise<T>) {
+  await page.evaluate(() => {
+    const probe = document.createElement('textarea');
+    probe.id = 'clipboard-probe';
+    probe.setAttribute('aria-label', 'Clipboard probe');
+    probe.style.cssText = 'position:fixed;left:0;top:0;width:8px;height:8px;opacity:0';
+    document.body.append(probe);
+  });
+  const probe = page.locator('#clipboard-probe');
+  try {
+    return await action(probe);
+  } finally {
+    await page.evaluate(() => document.getElementById('clipboard-probe')?.remove());
+  }
+}
+
+/**
+ * Reads the native clipboard back with a real paste into a temporary field outside the app. WebKit
+ * rejects navigator.clipboard.readText() from automation, but a keyboard paste works in every engine.
+ */
+async function readClipboard(page: Page) {
+  return withClipboardProbe(page, async probe => {
+    await probe.focus();
+    await page.keyboard.press('ControlOrMeta+V');
+    return probe.inputValue();
+  });
+}
+
+/**
+ * Overwrites the native clipboard with `sentinel` through a real keyboard select-all and copy in a temporary
+ * field outside the app. A fresh browser context does not clear the OS clipboard, so this guarantees a stale
+ * value from an earlier test cannot satisfy the next copy assertion.
+ */
+async function seedClipboard(page: Page, sentinel: string) {
+  await withClipboardProbe(page, async probe => {
+    await probe.fill(sentinel);
+    await probe.focus();
+    await page.keyboard.press('ControlOrMeta+A');
+    await page.keyboard.press('ControlOrMeta+C');
+  });
+  expect(await readClipboard(page)).toBe(sentinel);
+}
+
 for (const viewport of [
   { name: 'desktop', width: 1440, height: 900 },
   { name: 'mobile', width: 320, height: 900 },
 ]) {
-  test(`${viewport.name} keeps model aliases compact and providers independently collapsible`, async ({ page, context }) => {
+  test(`${viewport.name} keeps model aliases compact and providers independently collapsible`, async ({ page, context, browserName }) => {
     await page.setViewportSize(viewport);
-    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    // Only Chromium gates the click-driven writeText behind a grant; WebKit rejects `clipboard-write` as an
+    // unknown permission and already allows writes from a user click.
+    if (browserName === 'chromium') await context.grantPermissions(['clipboard-write']);
     await page.route('**/api/**', async route => {
       const pathname = new URL(route.request().url()).pathname;
       const responses: Record<string, unknown> = {
@@ -80,9 +129,12 @@ for (const viewport of [
     await expect(opusAlias).toHaveCSS('background-color', 'rgb(241, 245, 249)');
     await expect(configuration.getByText('ID / Alias', { exact: true })).toHaveCount(0);
     await expect(configuration.getByText('claude', { exact: true })).toHaveCount(1);
+    const sentinel = `clipboard-sentinel-${browserName}-${viewport.name}-${Date.now()}`;
+    expect(sentinel).not.toBe('opus55');
+    await seedClipboard(page, sentinel);
     await opusAlias.click();
     await expect(opusAlias).toHaveText('Copied');
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('opus55');
+    expect(await readClipboard(page)).toBe('opus55');
     await expect(opusAlias).toHaveText('opus55');
 
     const overflow = await configuration.evaluate(element => ({ client: element.clientWidth, scroll: element.scrollWidth }));

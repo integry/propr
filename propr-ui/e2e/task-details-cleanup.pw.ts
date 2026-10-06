@@ -122,10 +122,10 @@ for (const width of [390, 1440]) {
       await expect(list.getByRole('button')).toHaveCount(32);
       await expect(list.getByText('packages/…/utils/', { exact: true })).toHaveCount(1);
       await expect(list.getByRole('button').first()).not.toContainText('packages/core/src/agents/impl/utils/');
+      // The list is never a scroll box of its own: all 32 files take their full height.
       const metrics = await list.evaluate(node => ({ height: node.clientHeight, scrollHeight: node.scrollHeight, overflow: getComputedStyle(node).overflowY }));
-      expect(metrics.height).toBeLessThanOrEqual(192);
-      expect(metrics.scrollHeight).toBeGreaterThan(metrics.height);
-      expect(metrics.overflow).toBe('auto');
+      expect(metrics.scrollHeight).toBeLessThanOrEqual(metrics.height);
+      expect(metrics.overflow).toBe('visible');
       await expect(list.getByRole('button').first()).toHaveAccessibleName(`View diff for ${files[31].path}`);
       const lastFile = list.getByRole('button', { name: `View diff for ${files[0].path}` });
       await lastFile.scrollIntoViewIfNeeded();

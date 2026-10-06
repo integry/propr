@@ -555,6 +555,7 @@ jobs:
               scripts/ci-runner-evidence.sh \
               scripts/ci-rootless-preflight.sh \
               scripts/smoke-test-images.sh \
+              scripts/smoke-test-preview-agent-image.sh \
               scripts/smoke-test-preview-runtime-images.sh \
               scripts/smoke-test-sqlite-startup.sh \
               scripts/verify-agent-tank-image.sh \

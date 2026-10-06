@@ -5,6 +5,12 @@ import type { CurrentUser, MonitoredRepo } from '../src/api/proprApi';
 
 const repositoryIconFixture = fileURLToPath(new URL('../public/logo.png', import.meta.url));
 
+async function capturePreview(page: Page, name: string, clip?: { x: number; y: number; width: number; height: number }) {
+  if (!process.env.PROPR_CAPTURE_PREVIEWS) return;
+  await mkdir('../.propr/previews', { recursive: true });
+  await page.screenshot({ animations: 'disabled', path: `../.propr/previews/${name}.png`, clip });
+}
+
 async function stubRepositoryApis(page: Page, canManage = true, initialRepos?: MonitoredRepo[]) {
   let repos: MonitoredRepo[] = initialRepos ?? [
     { id: 'propr', name: 'integry/propr', enabled: true, autoFollowupOnFailedCi: false, visualPreview: { enabled: true, types: ['image'] } },
@@ -88,10 +94,7 @@ test('shows and updates the follow-up CI cancellation option and its workflow se
   await expect(cancelCi).toBeChecked();
   await expect(workflows).toHaveValue('pr-build-check.yml');
   await expect(settings.getByText(/Cancels exactly this workflow: pr-build-check\.yml\./)).toBeVisible();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-cancel-ci-workflow-selection.png' });
-  }
+  await capturePreview(page, 'repository-cancel-ci-workflow-selection');
 
   // The selection is stored for every branch entry of the repository.
   await workflows.fill('pr-build-check.yml, .github/workflows/pr-test-on-label.yml');
@@ -105,9 +108,7 @@ test('shows and updates the follow-up CI cancellation option and its workflow se
   await workflows.blur();
   await expect(settings.getByText(/No workflows selected for this repository, so the instance-wide/)).toBeVisible();
   await expect(settings.getByText(/nothing is cancelled when your operator left it unset/)).toBeVisible();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-cancel-ci-empty-selection.png' });
-  }
+  await capturePreview(page, 'repository-cancel-ci-empty-selection');
 
   await settings.getByText('Cancel CI while follow-up implementation is in progress', { exact: true }).click();
   await expect(cancelCi).not.toBeChecked();
@@ -137,10 +138,7 @@ test('shows the whole repository-wide selection the worker may cancel', async ({
   const workflows = settings.getByRole('textbox', { name: 'Validation workflows to cancel for integry/propr', exact: true });
   await expect(workflows).toHaveValue('pr-build-check.yml, pr-test-on-label.yml');
   await expect(settings.getByText(/Cancels exactly these 2 workflows: pr-build-check\.yml, pr-test-on-label\.yml\./)).toBeVisible();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-cancel-ci-union-selection.png' });
-  }
+  await capturePreview(page, 'repository-cancel-ci-union-selection');
 });
 
 test('shows and updates shared settings while preserving the selected branch', async ({ page }) => {
@@ -162,10 +160,7 @@ test('shows and updates shared settings while preserving the selected branch', a
   await expect(settings.getByRole('button', { name: 'Images', exact: true })).toHaveAttribute('aria-pressed', 'false');
   await expect(settings.getByText('release', { exact: true })).toBeVisible();
   await expect(settings.getByRole('checkbox', { name: 'Monitor integry/propr', exact: true })).not.toBeChecked();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repositories-shared-branch-settings.png' });
-  }
+  await capturePreview(page, 'repositories-shared-branch-settings');
 
   await settings.getByText('Auto CI follow-up', { exact: true }).click();
   await expect(autoCi).not.toBeChecked();
@@ -207,10 +202,7 @@ test('silences notifications for every branch entry of the selected repository',
     ['propr-main', false], ['propr-release', false], ['sdk', true],
   ]);
   await expect(page.getByText('Saved', { exact: true }).filter({ visible: true })).toBeVisible();
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-notifications-disabled.png' });
-  }
+  await capturePreview(page, 'repository-notifications-disabled');
 
   await page.reload();
   await page.getByRole('button', { name: 'Select integry/propr', exact: true }).first().click();
@@ -229,10 +221,7 @@ test('keeps navigation compact and saves settings for the selected repository', 
     'src',
     /\/integry\/propr\/8a6fe50123456789\/public\/logo\.png$/,
   );
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-icons-desktop.png' });
-  }
+  await capturePreview(page, 'repository-icons-desktop');
   const originalHeight = (await propr.locator('../..').boundingBox())!.height;
   expect(originalHeight).toBe((await sdk.locator('../..').boundingBox())!.height);
   await expect(propr.locator('../..').getByText('8a6fe50', { exact: true })).toBeVisible();
@@ -273,10 +262,7 @@ test('keeps navigation compact and saves settings for the selected repository', 
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true })).toHaveValue('Capture separate desktop and mobile views.');
   await page.mouse.move(1400, 850);
-  if (process.env.PROPR_CAPTURE_PREVIEWS) {
-    await mkdir('../.propr/previews', { recursive: true });
-    await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repositories-desktop.png' });
-  }
+  await capturePreview(page, 'repositories-desktop');
 });
 
 for (const width of [320, 390]) {
@@ -285,22 +271,27 @@ for (const width of [320, 390]) {
     const api = await stubRepositoryApis(page);
     await page.goto('/repositories');
     await expect(page.getByRole('button', { name: 'Select integry/propr', exact: true }).locator('..').getByTestId('repository-icon-image')).toBeVisible();
-    if (width === 390 && process.env.PROPR_CAPTURE_PREVIEWS) {
-      await mkdir('../.propr/previews', { recursive: true });
-      await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repository-icons-mobile.png' });
-    }
+    if (width === 390) await capturePreview(page, 'repository-icons-mobile');
     await page.getByRole('button', { name: 'Select integry/propr', exact: true }).click();
     const settings = page.getByRole('region', { name: 'Settings for integry/propr', exact: true });
     await expect(settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true })).toBeVisible();
-    for (const name of ['Chat', 'Improve', 'Browse', 'To-Dos', 'Settings']) {
+    for (const name of ['Chat', 'Improve', 'Browse', 'To-Dos', 'Media', 'Settings']) {
       const tab = page.getByRole('button', { name, exact: true });
       await expect(tab).toBeInViewport({ ratio: 1 });
       const bounds = (await tab.boundingBox())!;
       expect(bounds.x).toBeGreaterThanOrEqual(0);
       expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+      expect(bounds.height).toBeGreaterThanOrEqual(40);
+      // The full label must fit inside the tab's padding, not merely its border box.
+      expect(await tab.evaluate(button => {
+        const style = getComputedStyle(button);
+        const contentWidth = button.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        return button.querySelector('span')!.getBoundingClientRect().width <= contentWidth;
+      })).toBe(true);
     }
     const tabStrip = page.getByRole('button', { name: 'Settings', exact: true }).locator('../..');
     expect(await tabStrip.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await capturePreview(page, `repository-tabs-${width}`, { x: 0, y: 0, width, height: 260 });
     await settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true }).fill('Capture the mobile navigation.');
     await settings.getByText('Auto CI follow-up', { exact: true }).click();
     await expect.poll(() => api.writes.at(-1)?.[0].autoFollowupOnFailedCi).toBe(true);
@@ -308,16 +299,12 @@ for (const width of [320, 390]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
     const box = (await settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true }).boundingBox())!;
     expect(box.x + box.width).toBeLessThanOrEqual(width);
-    if (width === 390 && process.env.PROPR_CAPTURE_PREVIEWS) {
-      await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repositories-mobile.png' });
-    }
+    if (width === 390) await capturePreview(page, 'repositories-mobile');
     await settings.getByRole('button', { name: 'Reindex repository', exact: true }).scrollIntoViewIfNeeded();
     await expect(settings.getByRole('button', { name: 'Reindex repository', exact: true })).toBeInViewport();
     await settings.getByRole('button', { name: 'Remove repository from ProPR', exact: true }).scrollIntoViewIfNeeded();
     await expect(settings.getByRole('button', { name: 'Remove repository from ProPR', exact: true })).toBeInViewport();
-    if (width === 390 && process.env.PROPR_CAPTURE_PREVIEWS) {
-      await page.screenshot({ animations: 'disabled', path: '../.propr/previews/repositories-mobile-indexing.png' });
-    }
+    if (width === 390) await capturePreview(page, 'repositories-mobile-indexing');
     await page.getByRole('button', { name: 'Back to repositories' }).click();
     await expect(page.getByRole('button', { name: 'Select integry/propr', exact: true })).toBeVisible();
   });

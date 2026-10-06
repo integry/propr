@@ -33,16 +33,27 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(page.getByRole('button', { name: /All Repos/ })).toContainText('14,769');
       await expect(page.getByRole('button', { name: /All Repos/ })).not.toContainText('14769');
 
-      // A single run with no summary is one line: the type leads the title and nothing hangs under it.
+      // Every row is the same two lines. A single run with no summary keeps line 1 to the chip and
+      // the title (cut with `…`, never wrapped), and line 2 to its type and why it failed.
       const singleRun = rows.filter({ hasText: 'a-very-long-unbroken' });
-      const titleLine = singleRun.getByRole('link', { name: /^Support configuration/ }).locator('xpath=..');
-      await expect(titleLine.getByTestId('work-type-badge')).toHaveText('Implement');
-      expect(await titleLine.evaluate(line => line.nextElementSibling)).toBeNull();
+      const singleTitle = singleRun.getByRole('link', { name: /^Support configuration/ });
+      const titleLine = singleTitle.locator('xpath=..');
+      await expect(titleLine.getByTestId('work-type-badge')).toHaveCount(0);
+      const detailLine = titleLine.locator('xpath=following-sibling::div[1]');
+      await expect(detailLine.getByTestId('work-type-badge')).toHaveText('Implement');
+      await expect(detailLine).toContainText('Typecheck failed during test execution');
+      expect(await singleTitle.locator('span').evaluate(node => Math.round(node.clientHeight))).toBe(20);
+      // Nothing comes between a row's chip and its title: every title starts one gap after its chip.
+      const titleGaps = await table.evaluate(element => [...element.querySelectorAll('[data-testid="task-row"] .task-title')]
+        .map(title => Math.round(title.getBoundingClientRect().left - title.previousElementSibling!.getBoundingClientRect().right)));
+      expect(new Set(titleGaps)).toEqual(new Set([8]));
+      const rowHeights = await table.evaluate(element => [...element.querySelectorAll('[data-testid="task-row"] > [role="row"]')].map(row => Math.round(row.getBoundingClientRect().height)));
+      expect(new Set(rowHeights).size).toBe(1);
       // The repository shows without its owner and fits whole; the tooltip keeps the full slug.
-      const repoChip = singleRun.getByTestId('repository-chip');
-      await expect(repoChip).toHaveText('desktop-workspaces');
-      await expect(repoChip).toHaveAttribute('title', 'integry/desktop-workspaces');
-      expect(await repoChip.locator('.truncate').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+      const repo = singleRun.getByTestId('task-repository');
+      await expect(repo).toHaveText('desktop-workspaces');
+      await expect(repo).toHaveAttribute('title', 'integry/desktop-workspaces');
+      expect(await repo.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
 
       const layout = await table.evaluate(element => ({
         fits: element.getBoundingClientRect().right <= window.innerWidth,
@@ -79,12 +90,12 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
         return Math.round(chip.left - element.getBoundingClientRect().left);
       });
       expect(inset).toBe(32);
-      // Titles wrap rather than being cut mid-word. The title column absorbs all the width the fixed
-      // metadata columns leave, so a laptop-width list clamps a long title at two lines (the full
-      // title stays in the tooltip); on a wide screen it fits on one line.
+      // Titles hold to one line. The title column absorbs all the width the fixed metadata columns
+      // leave, so a wide screen fits a long title whole; a laptop-width list ends it in `…` (the full
+      // title stays in the tooltip).
       const longTitle = table.getByRole('link', { name: 'Give implementation runs and direct goals a read-only GitHub token' });
-      const clamp = await longTitle.locator('span').evaluate(node => ({ clipped: node.scrollHeight > node.clientHeight + 1, lines: Math.round(node.clientHeight / 20) }));
-      expect(clamp.lines).toBe(width === 1920 ? 1 : 2);
+      const clamp = await longTitle.locator('span').evaluate(node => ({ clipped: node.scrollWidth > node.clientWidth + 1, lines: Math.round(node.clientHeight / 20) }));
+      expect(clamp.lines).toBe(1);
       if (width === 1920) expect(clamp.clipped).toBe(false);
       await expect(longTitle).toHaveAttribute('title', 'Give implementation runs and direct goals a read-only GitHub token');
       // The footer is pinned to the bottom of the list pane, like the other sections' footers.
@@ -207,7 +218,7 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(runRows.nth(0).getByRole('button')).toContainText(/Run 1.*Initial review/);
   // Only reviews are scored, though runs 6 and 7 carry the loop's score in the data; a fix shows its commit.
   expect(await timeline.getByTitle(/^(Review score|Commit)\b/).evaluateAll(nodes => nodes.map(node => node.getAttribute('title')))).toEqual(['Review score: 4/10', 'Commit a81d3f56e0c2', 'Review score: 6/10', 'Commit 4be17c09d2f3']);
-  await expect(runRows.nth(7).getByRole('button')).toContainText(/Run 8.*Ultrafix cycle 3 \(linting\).*Running….*Active/);
+  await expect(runRows.nth(7).getByRole('button')).toContainText(/Run 8.*Ultrafix cycle 3 \(linting\).*Active.*Running…/);
   await expect(timeline.getByRole('button', { expanded: true })).toHaveCount(1);
   await expect(runRows.nth(7).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
   await expect(runRows.nth(7).getByRole('list', { name: 'Run steps' }).getByRole('listitem').first()).toContainText('Task Queued');
@@ -231,7 +242,9 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(historical.nth(2).getByRole('list', { name: 'Run steps' })).toContainText('Review the withdrawal handlers');
   // Steps keep to their run's columns: times under `Run 3`, labels under its summary, durations ending on its duration.
   const stepColumns = await historical.nth(2).evaluate(run => {
-    const [, , tag, summary, , duration] = Array.from(run.querySelector('button')!.children) as HTMLElement[];
+    const cells = Array.from(run.querySelector('button')!.children) as HTMLElement[];
+    const [, , tag, summary] = cells;
+    const duration = cells[cells.length - 1];
     const step = run.querySelector('[aria-label="Run steps"] li')!;
     const [, time, label, stepDuration] = Array.from(step.children) as HTMLElement[];
     const box = (node: HTMLElement) => node.getBoundingClientRect();
@@ -272,7 +285,10 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(details.getByRole('heading', { name: 'REVIEW FINDINGS' }).filter({ visible: true })).toHaveCount(1);
   await expect(details.getByRole('region', { name: 'Task implementation log' })).not.toContainText(/"content"|local preview omitted|IMPLEMENTATION/);
   await expect(details.locator('#execution-event-log-section')).toContainText(/(EXECUTION LOG|TERMINAL OUTPUT) \(Run 3 · /);
-  const timelineHeader = details.getByText('TIMELINE', { exact: true }).filter({ visible: true }).locator('..');
+  // The label counts the task's runs: `TIMELINE (8 runs)`.
+  const timelineLabel = details.getByText(/^TIMELINE \(\d+ runs\)$/).filter({ visible: true });
+  await expect(timelineLabel).toHaveText('TIMELINE (8 runs)');
+  const timelineHeader = timelineLabel.locator('..');
   const backToNewest = timelineHeader.getByRole('button', { name: 'Return to live Run 8' });
   await expect(backToNewest).toBeVisible();
   const [headerBox, backBox] = [await timelineHeader.boundingBox(), await backToNewest.boundingBox()];

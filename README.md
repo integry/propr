@@ -23,24 +23,18 @@
   <a href="https://www.npmjs.com/package/propr-cli"><img src="https://img.shields.io/npm/v/propr-cli?label=propr-cli" alt="npm: propr-cli" /></a>
   <a href="https://github.com/integry/propr/releases"><img src="https://img.shields.io/github/v/release/integry/propr" alt="Latest release" /></a>
   <a href="https://github.com/integry/propr/commits/main"><img src="https://img.shields.io/github/commit-activity/m/integry/propr" alt="Commit activity" /></a>
+  <a href="https://github.com/integry/propr/actions/workflows/test-nightly.yml"><img src="https://img.shields.io/github/actions/workflow/status/integry/propr/test-nightly.yml?label=nightly%20tests" alt="Nightly tests" /></a>
   <a href="https://discord.gg/5FjuaQBud"><img src="https://img.shields.io/badge/discord-join-7289da" alt="Discord" /></a>
 </p>
 
 <br />
 
-<!--
-  Hero video. GitHub only renders an inline player for videos uploaded through its web editor.
-  Upload github-orchestration-loop.mp4, then replace the linked poster below with:
-  <div align="center"><video src="https://github.com/user-attachments/assets/..." width="720" controls></video></div>
--->
-<p align="center">
-  <a href="https://propr.dev/assets/videos/github-orchestration-loop.mp4">
-    <img src="media/readme-demo-poster.jpg" alt="Watch the 68-second demo: a GitHub issue gets the AI label, ProPR opens a pull request, a review comment becomes a follow-up commit, and a human merges." width="720" />
-  </a>
-</p>
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/c544edf0-bf9b-4479-9f75-9cad0c87a3be" width="720" controls></video>
+</div>
 
 <p align="center">
-  <em>▶ Watch the 68-second demo — from a labeled GitHub issue to a reviewed, merged pull request.</em>
+  <em>From a labeled GitHub issue to a reviewed, merged pull request in 68 seconds.</em>
 </p>
 
 <p align="center">
@@ -173,22 +167,26 @@ Epic mode runs a multi-issue plan in order. Each PR merges before the next imple
 Since May 2025, [2,100+ merged pull requests](https://propr.dev/proof/) across its author's products have shipped through ProPR — including [690+ merged pull requests in this repository](https://github.com/integry/propr/pulls?q=is%3Apr+is%3Amerged). Follow one from start to finish: [issue #1601](https://github.com/integry/propr/issues/1601) → [pull request #1613](https://github.com/integry/propr/pull/1613).
 
 <p align="center">
-  <img src="media/readme-real-pr.png" alt="A real pull request built by ProPR: the AI Implementation Summary posted on GitHub with status, execution time, token cost, and model." width="720" />
+  <a href="https://github.com/integry/propr/pulls?q=is%3Apr+is%3Amerged">
+    <img src="media/readme-real-pr.png" alt="A real pull request built by ProPR: the AI Implementation Summary posted on GitHub with status, execution time, token cost, and model." width="720" />
+  </a>
 </p>
 
 <p align="center"><em>Every run posts a summary to the pull request. The full prompts and logs stay in the ProPR Web UI.</em></p>
 
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/2fbe8f30-de69-45cc-a951-927289193f9f" width="720" controls></video>
+</div>
+
+<p align="center"><em>Planner Studio — shape the plan, create the issues, and follow them through to a merged PR (75 seconds).</em></p>
+
 <p align="center">
-  <img src="docs/static/img/screenshots/0.9.0/plan.png" alt="Planner Studio: review implementation tasks and refine the complete plan through chat." width="720" />
+  <a href="https://demo.propr.dev">
+    <img src="docs/static/img/screenshots/0.9.0/dashboard.png" alt="ProPR dashboard: activity summary, attention queue, running work, completed results and historical stats." width="720" />
+  </a>
 </p>
 
-<p align="center"><em>Planner Studio — shape the plan before any code is written.</em></p>
-
-<p align="center">
-  <img src="docs/static/img/screenshots/0.9.0/dashboard.png" alt="ProPR dashboard: activity summary, attention queue, running work, completed results and historical stats." width="720" />
-</p>
-
-<p align="center"><em>The dashboard — what is running, what needs attention, and what it cost.</em></p>
+<p align="center"><em>The dashboard — what is running, what needs attention, and what it cost. <a href="https://demo.propr.dev">Click through to the live demo</a> to explore it without installing anything.</em></p>
 
 <br />
 
@@ -203,17 +201,11 @@ propr setup
 
 `propr setup` verifies the host, authorizes your agents, connects GitHub and starts the stack. Then open **http://localhost:5173** and add a repository.
 
-<!--
-  CLI setup video. Upload propr-cli-setup.mp4 through the GitHub web editor, then replace the linked poster below with:
-  <div align="center"><video src="https://github.com/user-attachments/assets/..." width="720" controls></video></div>
--->
-<p align="center">
-  <a href="https://propr.dev/assets/videos/propr-cli-setup.mp4">
-    <img src="media/readme-cli-setup-poster.jpg" alt="Watch the setup walkthrough: installing propr-cli and running propr setup through to the Web UI." width="720" />
-  </a>
-</p>
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/524a728b-c6e3-4f25-b2cd-73323746c07a" width="720" controls></video>
+</div>
 
-<p align="center"><em>▶ Watch the setup walkthrough (69 seconds).</em></p>
+<p align="center"><em>The setup walkthrough, from install to the Web UI (69 seconds).</em></p>
 
 **You need:** a Linux `amd64` host with Docker, **Node.js 22 or 24**, GitHub access, and an account with at least one coding-agent provider. Allow 2 vCPU, 4 GB RAM and 20 GB of disk for a single-task evaluation; 8 GB RAM or more for regular use. See the full [system requirements](https://docs.propr.dev/docs/tutorials/setup#system-requirements).
 
@@ -366,6 +358,18 @@ Contributions are welcome — bug reports, documentation fixes, and code. Start 
 - [GitHub Issues](https://github.com/integry/propr/issues) — bugs and feature requests
 - [Roadmap](ROADMAP.md) — where ProPR is heading, with a public issue behind each item
 - [Changelog](CHANGELOG.md) — release history
+
+## Status
+
+The current release is **0.9.0** ([changelog](CHANGELOG.md)). ProPR is pre-1.0 and in daily use since May 2025 on its author's products, including this repository, where most pull requests are opened by ProPR itself. The test suite runs nightly on `main`.
+
+Current boundaries, so you can tell quickly whether it fits:
+
+- **GitHub only.** ProPR is built on GitHub issues, pull requests, review comments and checks. GitLab and Bitbucket are not supported.
+- **Self-hosted only.** There is no hosted ProPR. The optional [Connect](https://propr.dev/connect/) relay provides a shared GitHub App and forwards GitHub events to your instance; skip it by bringing your own GitHub App.
+- **Linux `amd64` hosts.** That is the native, recommended path. Apple Silicon macOS runs the published images under Docker Desktop emulation; native `arm64` images are not available yet.
+- **Desktop app is a release candidate.** Linux and macOS builds exist; Windows packaging is deferred.
+- **Pre-1.0.** Direction is cheapest to change now. The [roadmap](ROADMAP.md) lists what is planned and what is deliberately out of scope.
 
 ## License
 
