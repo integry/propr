@@ -13,7 +13,6 @@ import {
     validateAgentDefinitionRuntime,
     TaskStates,
     type Agent,
-    type AgentExecutionResult,
     type AgentRunJobData,
     type AgentTaskOptions,
     type IssueRef,
@@ -23,7 +22,8 @@ import {
     type WorkerStateManager,
 } from '@propr/core';
 import { advanceAfterReport } from './agentRuns/autonomy.js';
-import { buildAgentReportPrompt, extractAgentReport } from './agentRuns/reportPrompt.js';
+import { buildAgentReportPrompt } from './agentRuns/reportPrompt.js';
+import { AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError, reportFromResult } from './agentRuns/runErrors.js';
 import { prepareAgentRunWorkspace, splitRepository, type AgentRunWorkspace, type PrepareAgentRunWorkspace } from './agentRuns/workspace.js';
 import type { GitHubToken } from './githubTypes.js';
 import { compactNotificationRecap } from './notificationRecap.js';
@@ -38,6 +38,8 @@ import { defaultRunCostCapDeps, withRunCostCap, writeTimelineEvent } from './run
  * agent's free-form report. Nothing is committed or pushed: the worktree
  * branch exists only so the shared worktree helpers can be reused.
  */
+
+export { AgentRunPersistenceError, AgentRunSettlementError } from './agentRuns/runErrors.js';
 
 export const AGENT_RUN_USAGE_LIMIT_REASON = 'provider usage limit reached; trigger again later';
 export const AGENT_RUN_ABANDONED_REASON = 'The worker running this report stopped before it finished; trigger the agent again';
@@ -57,6 +59,9 @@ export interface ResolvedAgentRunAgent {
     alias: string;
     model: string | undefined;
 }
+
+/** The run and report task one delivery is working on. */
+interface RunContext { runId: string; taskId: string; stateManager: AgentRunStateManager; log: Logger }
 
 export type AgentRunStateManager = Pick<WorkerStateManager, 'createTaskStateIfAbsent' | 'getTaskState' | 'updateTaskState' | 'markTaskCompleted' | 'markTaskFailed' | 'markTaskCancelled'>;
 
@@ -140,43 +145,8 @@ export function agentReportRecap(report: string): string | undefined {
     return undefined;
 }
 
-function failureMessage(result: AgentExecutionResult): string {
-    const detail = result.error?.trim() || (result.exitCode != null ? `exit code ${result.exitCode}` : '');
-    return detail ? `Agent execution failed: ${detail}` : 'Agent execution failed';
-}
-
-class AgentRunReportError extends Error {}
-
-/**
- * A run's failure could not be persisted. Thrown out of the processor so the
- * delivery fails and BullMQ retries it, instead of resolving as if settled.
- */
-export class AgentRunPersistenceError extends Error {
-    constructor(runId: string, cause: unknown) {
-        super(`Could not mark agent run ${runId} failed: ${(cause as Error)?.message ?? String(cause)}`, { cause });
-        this.name = 'AgentRunPersistenceError';
-    }
-}
-
-/**
- * A run's end is stored but its task could not be ended to match. Thrown out
- * of the processor so BullMQ retries, and the redelivery ends the task.
- */
-export class AgentRunSettlementError extends Error {
-    constructor(runId: string, taskId: string, cause: unknown) {
-        super(`Could not end task ${taskId} of agent run ${runId}: ${(cause as Error)?.message ?? String(cause)}`, { cause });
-        this.name = 'AgentRunSettlementError';
-    }
-}
-
+const UNREADABLE_DEFINITION_REASON = 'The agent definition snapshot is unreadable';
 const TERMINAL_TASK_STATES = new Set<string>([TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED]);
-
-function reportFromResult(result: AgentExecutionResult): string {
-    if (!result.success) throw new AgentRunReportError(failureMessage(result));
-    const report = extractAgentReport(result);
-    if (!report.trim()) throw new AgentRunReportError('The agent finished without a report');
-    return report;
-}
 
 export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps> = {}) {
     const deps: AgentRunProcessorDeps = { ...defaultAgentRunProcessorDeps, ...overrides };
@@ -227,6 +197,12 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         }
     }
 
+    /** Ends the task with a run another writer cancelled or failed; reports the run's end. */
+    async function taskFollowsEndedRun(context: RunContext, correlationId: string): Promise<JobResult> {
+        const state = await settleTaskWithRun(context);
+        return { status: state === 'failed' ? 'failed' : 'cancelled', runId: context.runId, taskId: context.taskId, correlationId };
+    }
+
     /** Fails the task of a run already stored as failed; errors propagate so the delivery is retried. */
     async function markRunTaskFailed(
         { runId, taskId, stateManager, log }: { runId: string; taskId: string; stateManager: AgentRunStateManager; log: Logger },
@@ -257,6 +233,23 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         return reason;
     }
 
+    /**
+     * Settles a claimed run whose execution threw. A task stopped directly
+     * cancels the run instead of failing it. If the task cannot be read or the
+     * run cannot be cancelled, the failure is recorded so the run still ends.
+     */
+    async function settleExecutionError(context: RunContext, error: unknown, correlationId: string): Promise<JobResult> {
+        try {
+            const stopped = await followCancelledTask(context, correlationId, 'before its run failed');
+            if (stopped) return stopped;
+        } catch (checkError) {
+            if (checkError instanceof AgentRunSettlementError) throw checkError;
+            context.log.error({ runId: context.runId, taskId: context.taskId, err: checkError }, 'Could not check whether the agent run task was cancelled');
+        }
+        const reason = await failRunningRun(context, error);
+        return { status: 'failed', runId: context.runId, taskId: context.taskId, reason, correlationId };
+    }
+
     /** The run left `running` (cancelled, or failed as abandoned) while the agent was executing. */
     async function discardLateReport(
         context: { runId: string; taskId: string; stateManager: AgentRunStateManager; log: Logger },
@@ -265,8 +258,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         const { runId, taskId, log } = context;
         log.info({ runId, taskId }, 'Agent run left running before its report was stored');
         // The cancel endpoint may have failed to stop the task; end it with the run.
-        const state = await settleTaskWithRun(context);
-        return { status: state === 'failed' ? 'failed' : 'cancelled', runId, taskId, correlationId };
+        return taskFollowsEndedRun(context, correlationId);
     }
 
     /**
@@ -286,6 +278,9 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         }
         log.warn({ runId, taskId }, 'Agent run was left running by an interrupted worker; failing it');
         const stateManager = deps.stateManager();
+        // A task stopped directly before the worker stopped cancels the run instead.
+        const taskStopped = await followCancelledTask({ runId, taskId, stateManager, log }, correlationId, 'before its worker stopped');
+        if (taskStopped) return taskStopped;
         if (!await failRun(runId, ['running'], AGENT_RUN_ABANDONED_REASON, log)) {
             const state = await settleTaskWithRun({ runId, taskId, stateManager, log });
             return { status: state === 'cancelled' ? 'cancelled' : 'skipped', runId, taskId, correlationId };
@@ -379,29 +374,52 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
      * exists). Returns the settled result when execution must not start;
      * a cancel concurrent with the launch itself is left to the execution layer.
      */
-    async function stoppedBeforeLaunch(
-        context: { runId: string; taskId: string; stateManager: AgentRunStateManager; log: Logger },
-        correlationId: string,
-    ): Promise<JobResult | null> {
-        const { runId, taskId, stateManager, log } = context;
+    async function stoppedBeforeLaunch(context: RunContext, correlationId: string): Promise<JobResult | null> {
+        const { runId, taskId, log } = context;
         const current = await deps.getRun(runId);
         if (current?.state !== 'running') {
             log.info({ runId, taskId, state: current?.state ?? null }, 'Agent run left running before its agent started');
-            const state = await settleTaskWithRun(context);
-            return { status: state === 'failed' ? 'failed' : 'cancelled', runId, taskId, correlationId };
+            return taskFollowsEndedRun(context, correlationId);
         }
+        return followCancelledTask(context, correlationId, 'before its agent started');
+    }
+
+    /**
+     * The task was stopped directly (Tasks UI `stopTaskExecution`), which does
+     * not touch the run: the still-running run follows the task to `cancelled`
+     * and whatever the agent produced is discarded. Returns null while the
+     * task is not cancelled. The task store and the run store are separate,
+     * so a stop landing after this check is not seen by it.
+     */
+    async function followCancelledTask(context: RunContext, correlationId: string, when: string): Promise<JobResult | null> {
+        const { runId, taskId, stateManager, log } = context;
         const task = await stateManager.getTaskState(taskId);
-        if (task?.state === TaskStates.CANCELLED) {
-            // The task was stopped directly; the run follows it instead of starting.
-            log.info({ runId, taskId }, 'Agent run task was cancelled before its agent started');
-            const cancelled = await deps.transitionRun(runId, ['running'], 'cancelled');
-            if (!cancelled) {
-                const state = await settleTaskWithRun(context);
-                return { status: state === 'failed' ? 'failed' : 'cancelled', runId, taskId, correlationId };
-            }
-            return { status: 'cancelled', runId, taskId, correlationId };
+        if (task?.state !== TaskStates.CANCELLED) return null;
+        log.info({ runId, taskId }, `Agent run task was cancelled ${when}`);
+        const cancelled = await deps.transitionRun(runId, ['running'], 'cancelled');
+        if (!cancelled) return taskFollowsEndedRun(context, correlationId);
+        return { status: 'cancelled', runId, taskId, correlationId };
+    }
+
+    /**
+     * The `queued → running` claim lost to another writer. Only a run that
+     * actually ended (cancelled or failed) has its shared task ended to match;
+     * a run another delivery claimed (a stalled-job redelivery that read the
+     * run after this one) is left with its task to that claimant.
+     */
+    async function claimLost(context: RunContext, correlationId: string): Promise<JobResult> {
+        const { runId, taskId, log } = context;
+        const current = await deps.getRun(runId);
+        if (current?.state !== 'cancelled' && current?.state !== 'failed') {
+            log.warn({ runId, taskId, state: current?.state ?? null }, 'Agent run was claimed by another delivery; leaving it and its task alone');
+            return { status: 'skipped', runId, taskId, correlationId };
         }
-        return null;
+        log.info({ runId, taskId, state: current.state }, 'Agent run ended before it started');
+        return taskFollowsEndedRun(context, correlationId);
+    }
+
+    async function invalidDefinitionReason(definition: StoredAgentDefinition | null): Promise<string | null> {
+        return definition ? deps.validateDefinition(definition) : UNREADABLE_DEFINITION_REASON;
     }
 
     async function previousReportsFor(definition: StoredAgentDefinition, run: StoredAgentRun) {
@@ -425,9 +443,9 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
 
         // 2. Execute the definition as it was when the run was triggered.
         const definition = run.definitionSnapshot;
-        const invalid = definition ? await deps.validateDefinition(definition) : 'The agent definition snapshot is unreadable';
+        const invalid = await invalidDefinitionReason(definition);
         if (!definition || invalid) {
-            await failRun(runId, ['queued'], invalid ?? 'The agent definition snapshot is unreadable', log);
+            await failRun(runId, ['queued'], invalid ?? UNREADABLE_DEFINITION_REASON, log);
             return { status: 'failed', runId, reason: invalid, correlationId };
         }
 
@@ -437,13 +455,9 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         const stateManager = deps.stateManager();
         await stateManager.createTaskStateIfAbsent(taskId, issueRef, correlationId, job.id === undefined ? null : String(job.id));
 
-        // 4. Claim the run; null means it was cancelled in the meantime.
+        // 4. Claim the run; null means another writer moved it first.
         const running = await deps.transitionRun(runId, ['queued'], 'running', { reportTaskId: taskId });
-        if (!running) {
-            log.info({ runId, taskId }, 'Agent run was cancelled before it started');
-            await stateManager.markTaskCancelled(taskId, 'system', { reason: 'Agent run was cancelled before it started' });
-            return { status: 'cancelled', runId, taskId, correlationId };
-        }
+        if (!running) return claimLost({ runId, taskId, stateManager, log }, correlationId);
 
         activeRuns.add(runId);
         let workspace: AgentRunWorkspace | undefined;
@@ -490,7 +504,11 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
                 () => agent.executeTask(options),
             );
 
-            // 8. The report is the agent's final message.
+            // 8. A task stopped directly during execution discards the result.
+            const taskStopped = await followCancelledTask({ runId, taskId, stateManager, log }, correlationId, 'while its agent was executing');
+            if (taskStopped) return taskStopped;
+
+            // The report is the agent's final message.
             const report = reportFromResult(result);
 
             // 9. Store the report, then advance by autonomy mode.
@@ -509,8 +527,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             // The report is kept; the retried delivery finishes the run.
             // A task that could not follow its run is reconciled by the retry.
             if (reportStored || error instanceof AgentRunSettlementError) throw error;
-            const reason = await failRunningRun({ runId, taskId, stateManager, log }, error);
-            return { status: 'failed', runId, taskId, reason, correlationId };
+            return settleExecutionError({ runId, taskId, stateManager, log }, error, correlationId);
         } finally {
             // 11. Nothing was committed or pushed; just remove the workspace.
             activeRuns.delete(runId);

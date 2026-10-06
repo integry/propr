@@ -237,12 +237,74 @@ describe('processAgentRunJob', () => {
   test('a run cancelled between pickup and start cancels its task and never starts a container', async () => {
     const h = harness();
     // Cancel lands after the task exists but before queued → running.
-    h.deps.transitionRun = (async () => null) as unknown as AgentRunProcessorDeps['transitionRun'];
+    const createTask = h.deps.stateManager!;
+    h.deps.stateManager = () => {
+      const manager = createTask();
+      return {
+        ...manager,
+        createTaskStateIfAbsent: async (...args: Parameters<typeof manager.createTaskStateIfAbsent>) => {
+          const created = await manager.createTaskStateIfAbsent(...args);
+          await cancelRun(h);
+          return created;
+        },
+      } as typeof manager;
+    };
     const result = await createAgentRunProcessor(h.deps)(job);
     assert.equal(result.status, 'cancelled');
     assert.deepEqual(h.stateCalls.map(call => call[0]), ['create', 'cancelled']);
     assert.equal(h.prepareWorkspace.mock.callCount(), 0);
     assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('a run failed between pickup and start fails its task', async () => {
+    const h = harness();
+    h.deps.validateDefinition = async () => {
+      await h.deps.transitionRun!('run-1', ['queued'], 'failed', { failureReason: 'Recovered elsewhere' });
+      return null;
+    };
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'failed');
+    assert.equal(h.taskState(), 'failed');
+    assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('a stale delivery that loses the claim to a stalled-job redelivery leaves the claimant\'s task alone', async () => {
+    const h = harness();
+    let release!: () => void;
+    let started!: () => void;
+    const executing = new Promise<void>(resolve => { started = resolve; });
+    // Delivery B, in another worker process, claims the run and executes.
+    h.deps.resolveAgent = async () => ({
+      agent: {
+        executeTask: async () => {
+          started();
+          await new Promise<void>(resolve => { release = resolve; });
+          return { success: true, summary: 'Report', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 };
+        },
+      } as never,
+      alias: 'claude', model: 'opus',
+    });
+    const workerB = createAgentRunProcessor(h.deps);
+    let second: Promise<unknown> | undefined;
+    // Delivery A read the queued run and is interrupted before claiming it.
+    const workerA = createAgentRunProcessor({
+      ...h.deps,
+      validateDefinition: async () => {
+        second = workerB(job);
+        await executing;
+        return null;
+      },
+    });
+    const stale = await workerA(job);
+    assert.equal(stale.status, 'skipped');
+    assert.equal(h.run().state, 'running');
+    assert.equal(h.taskState(), 'claude_execution');
+    assert.ok(!h.stateCalls.some(call => call[0] === 'cancelled' || call[0] === 'failed'));
+
+    release();
+    assert.equal(((await second) as { status: string }).status, 'complete');
+    assert.equal(h.run().state, 'completed');
+    assert.equal(h.taskState(), 'completed');
   });
 
   test('a failed execution fails the run and task and still cleans up the workspace', async () => {
@@ -306,6 +368,80 @@ describe('processAgentRunJob', () => {
     assert.equal(h.stateCalls.at(-1)?.[0], 'cancelled');
     assert.ok(!h.stateCalls.some(call => call[0] === 'failed'));
     assert.equal(h.cleanup.mock.callCount(), 1);
+  });
+
+  test('a task stopped directly during execution discards a late report and cancels the run', async () => {
+    const h: Harness = harness({
+      execute: async () => {
+        await h.deps.stateManager!().markTaskCancelled(agentRunReportTaskId('run-1'), 'user');
+        return { success: true, summary: 'Report', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 };
+      },
+    });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'cancelled');
+    assert.equal(h.run().state, 'cancelled');
+    assert.equal(h.run().report, null);
+    assert.ok(!h.transitions.some(t => t.to === 'report_ready' || t.to === 'completed'));
+    assert.equal(h.taskState(), 'cancelled');
+    assert.equal(h.cleanup.mock.callCount(), 1);
+  });
+
+  test('a task stopped directly during execution followed by an agent failure cancels the run instead of failing it', async () => {
+    const h: Harness = harness({
+      execute: async () => {
+        await h.deps.stateManager!().markTaskCancelled(agentRunReportTaskId('run-1'), 'user');
+        return { success: false, error: 'container killed', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 };
+      },
+    });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'cancelled');
+    assert.equal(h.run().state, 'cancelled');
+    assert.equal(h.run().failureReason, null);
+    assert.ok(!h.transitions.some(t => t.to === 'failed'));
+    assert.equal(h.taskState(), 'cancelled');
+  });
+
+  test('a task stopped directly during execution followed by a thrown agent error cancels the run', async () => {
+    const h: Harness = harness({
+      execute: async () => {
+        await h.deps.stateManager!().markTaskCancelled(agentRunReportTaskId('run-1'), 'user');
+        throw new Error('container stopped');
+      },
+    });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'cancelled');
+    assert.equal(h.run().state, 'cancelled');
+    assert.ok(!h.transitions.some(t => t.to === 'failed'));
+  });
+
+  test('a failure whose task cannot be read is still recorded on the run', async () => {
+    const h = harness({
+      execute: async () => ({ success: false, error: 'container exited', logs: '', modifiedFiles: [], modelUsed: 'opus', executionTimeMs: 1 }),
+    });
+    const stateManager = h.deps.stateManager!;
+    let reads = 0;
+    h.deps.stateManager = () => ({
+      ...stateManager(),
+      // The launch check reads the task; later reads fail as a Redis outage would.
+      getTaskState: async (id: string) => {
+        if (reads++ > 0) throw new Error('redis unavailable');
+        return stateManager().getTaskState(id);
+      },
+    }) as ReturnType<AgentRunProcessorDeps['stateManager']>;
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'failed');
+    assert.equal(h.run().state, 'failed');
+    assert.equal(h.taskState(), 'failed');
+  });
+
+  test('a redelivered abandoned run whose task was stopped directly is cancelled, not failed', async () => {
+    const taskId = agentRunReportTaskId('run-1');
+    const h = harness({ run: storedRun({ state: 'running', reportTaskId: taskId, startedAt: NOW }), task: 'cancelled' });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'cancelled');
+    assert.equal(h.run().state, 'cancelled');
+    assert.ok(!h.transitions.some(t => t.to === 'failed'));
+    assert.equal(h.taskState(), 'cancelled');
   });
 
   test('a redelivery after the claiming worker was interrupted fails the abandoned run and task', async () => {
