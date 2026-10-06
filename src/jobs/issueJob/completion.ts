@@ -46,6 +46,11 @@ function buildTerminalNotificationRecap(params: TerminalStateParams, status: str
   );
 }
 
+function terminalReasonFields(claudeResult: ClaudeCodeResponse | null) {
+  const terminalReason = claudeResult ? taskTerminalReasonForAgentTermination(resolveAgentTerminationReason(claudeResult)) : undefined;
+  return terminalReason ? { terminalReason } : {};
+}
+
 /** A rejected push is a task failure even when the agent succeeded: the work only
  * exists in the rescue location named by the recovery instruction. */
 async function markPushFailure(params: TerminalStateParams): Promise<boolean> {
@@ -72,10 +77,9 @@ async function markAgentTerminalState(params: TerminalStateParams): Promise<void
   const commitResultData = commitResult
     ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage }
     : null;
-  const terminalReason = claudeResult ? taskTerminalReasonForAgentTermination(resolveAgentTerminationReason(claudeResult)) : undefined;
   const taskResult = {
     status,
-    ...(terminalReason ? { terminalReason } : {}),
+    ...terminalReasonFields(claudeResult),
     claudeSuccess: claudeResult?.success || false,
     prCreated: !!postProcessingResult?.pr,
     prNumber: postProcessingResult?.pr?.number ?? undefined,
@@ -90,7 +94,7 @@ async function markAgentTerminalState(params: TerminalStateParams): Promise<void
       new Error(claudeResult?.error || 'Agent processing failed'),
       {
         errorCategory: ErrorCategories.CLAUDE_EXECUTION,
-        ...(terminalReason ? { terminalReason } : {}),
+        ...terminalReasonFields(claudeResult),
         prResult: taskResult,
         historyMetadata: {
           pr: (taskResult.prUrl && taskResult.prNumber)

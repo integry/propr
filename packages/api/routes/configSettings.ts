@@ -18,6 +18,9 @@ interface SettingFields {
   ultrafix_pause_seconds?: unknown;
   default_max_cost_usd?: unknown;
   ultrafix_ci_wait_timeout_ms?: unknown;
+  agent_stall_timeout_ms?: unknown;
+  agent_tool_stall_timeout_ms?: unknown;
+  agent_degenerate_output_limit?: unknown;
 }
 
 export type SettingSaveName =
@@ -36,7 +39,11 @@ export type SettingSaveName =
   | 'ultrafix_max_cycles'
   | 'ultrafix_pause_seconds'
   | 'default_max_cost_usd'
-  | 'ultrafix_ci_wait_timeout_ms';
+  | 'ultrafix_ci_wait_timeout_ms'
+  | AgentWatchdogSettingName;
+
+export const AGENT_WATCHDOG_SETTING_NAMES = ['agent_stall_timeout_ms', 'agent_tool_stall_timeout_ms', 'agent_degenerate_output_limit'] as const;
+export type AgentWatchdogSettingName = typeof AGENT_WATCHDOG_SETTING_NAMES[number];
 
 export interface LabeledSaveDescriptor {
   name: SettingSaveName;
@@ -153,7 +160,7 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
 
   const limitResult = extractRunLimitSettingSaves(fields, result);
   if (limitResult.error) return limitResult;
-  return extractEscalationSettingSaves(fields, result);
+  return extractTrailingSettingSaves(fields, result);
 }
 
 function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
@@ -169,6 +176,26 @@ function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSaves
     if (v === null) return { error: 'ultrafix_ci_wait_timeout_ms must be a positive integer', saves: [], normalized };
     normalized.ultrafix_ci_wait_timeout_ms = v;
     saves.push({ name: 'ultrafix_ci_wait_timeout_ms' });
+  }
+  return result;
+}
+
+async function extractTrailingSettingSaves(fields: SettingFields, result: SettingSavesResult): Promise<SettingSavesResult> {
+  const watchdog = extractAgentWatchdogSettingSaves(fields, result);
+  if (watchdog.error) return watchdog;
+  return extractEscalationSettingSaves(fields, result);
+}
+
+/** Watchdog overrides: a non-negative integer (0 disables the rule) or null to use the environment default. */
+function extractAgentWatchdogSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
+  const { saves, normalized } = result;
+  for (const name of AGENT_WATCHDOG_SETTING_NAMES) {
+    const raw = fields[name];
+    if (raw === undefined) continue;
+    const value = raw === null ? null : validateStrictInt(raw, 0, Infinity);
+    if (value === null && raw !== null) return { error: `${name} must be a non-negative integer, or null to use the environment default`, saves: [], normalized };
+    normalized[name] = value;
+    saves.push({ name });
   }
   return result;
 }

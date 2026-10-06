@@ -152,6 +152,7 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         const terminationReason = resolveAgentTerminationReason({
             timedOut: result.timedOut,
             costCapExceeded: result.costCapExceeded,
+            watchdogTrip: result.watchdogTrip,
             subtype: claudeOutput.finalResult?.subtype,
             error: result.stderr
         });

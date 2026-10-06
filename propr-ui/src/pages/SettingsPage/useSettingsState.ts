@@ -14,8 +14,8 @@ import {
 } from '../../api/proprApi';
 import { DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
 import { getAgentTankSettings } from '../../api/revertApi';
-import { Settings } from './types';
-import { parseLoadedData } from './parseLoadedData';
+import { Settings, type AgentWatchdogSettingName } from './types';
+import { parseLoadedData, runLimitSettingsToSave } from './parseLoadedData';
 import { useAgentTankSettings } from './useAgentTankSettings';
 import { useListManagement } from './useListManagement';
 import type { TriggerReindexAllResponse } from '../../api/proprApi';
@@ -25,14 +25,6 @@ import { isCommittedConfigWriteError } from '../../api/apiClient';
 const PROMPT_DEBOUNCE_DELAY = 800;
 // Timeout for waiting on in-flight save operations (in milliseconds)
 const SAVE_WAIT_TIMEOUT = 5000;
-
-/** Sends the typed spend cap as a USD amount (empty = 0, no cap); a value that is not one is left unsaved. */
-export function costCapToSave(value: string): { default_max_cost_usd?: number } {
-  const trimmed = value.trim();
-  if (!trimmed) return { default_max_cost_usd: 0 };
-  const amount = Number(trimmed);
-  return Number.isFinite(amount) && amount >= 0 ? { default_max_cost_usd: amount } : {};
-}
 
 function buildReindexAllSkipMessage(result: TriggerReindexAllResponse): string {
   const skippedCooldown = result.repositoriesSkippedCooldown ?? 0;
@@ -85,7 +77,10 @@ export function useSettingsState() {
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
     ultrafix_pause_seconds: 60,
-    default_max_cost_usd: ''
+    default_max_cost_usd: '',
+    agent_stall_timeout_ms: null,
+    agent_tool_stall_timeout_ms: null,
+    agent_degenerate_output_limit: null
   });
   const [prLabel, setPrLabel] = useState('');
   const [agents, setAgents] = useState<AgentConfig[]>([]);
@@ -184,7 +179,7 @@ export function useSettingsState() {
         ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
         ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds,
-        ...costCapToSave(settingsToSave.default_max_cost_usd)
+        ...runLimitSettingsToSave(settingsToSave)
       });
       completeSave(result.warnings);
     } catch (err) {
@@ -322,6 +317,12 @@ export function useSettingsState() {
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
 
+  const handleAgentWatchdogChange = useCallback((name: AgentWatchdogSettingName, value: number | null) => {
+    const newSettings = { ...settings, [name]: value };
+    setSettings(newSettings);
+    saveSettingsOnly(newSettings);
+  }, [settings, saveSettingsOnly]);
+
   const handleReviewContextEnabledChange = useCallback((enabled: boolean) => {
     const newSettings = { ...settings, pr_review_context_enabled: enabled };
     setSettings(newSettings);
@@ -430,7 +431,7 @@ export function useSettingsState() {
     summarizationSettings, isReindexing, agentTankSettings,
     agentTankAvailable, agentTankCheckingStatus,
     setSettings, setPrLabel,
-    triggerSettingsSave, handleModelSelectionChange, handleEscalationModelsChange, handleReviewContextEnabledChange,
+    triggerSettingsSave, handleModelSelectionChange, handleEscalationModelsChange, handleAgentWatchdogChange, handleReviewContextEnabledChange,
     handleReviewContextBudgetPercentCommit, handleRemoveLegacyReviewCap,
     handleSummarizationChange, handleSummarizationModelChange,
     handleSummarizationFallbackModelChange,

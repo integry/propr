@@ -226,7 +226,7 @@ export interface ClaudeResult {
     };
     rawOutput?: string;
     error?: string;
-    terminationReason?: 'timeout' | 'max_turns' | 'cost_cap';
+    terminationReason?: 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output';
     tokenUsage?: TokenUsage;
     usageMetrics?: SubscriptionUsageMetrics | null;
 }

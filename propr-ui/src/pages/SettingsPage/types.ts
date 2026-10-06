@@ -25,8 +25,17 @@ export interface Settings {
   ultrafix_pause_seconds: number;
   /** Instance default per-run spend cap in USD as typed; empty or 0 = no cap. */
   default_max_cost_usd: string;
+  /** Watchdog overrides; null uses the environment default. */
+  agent_stall_timeout_ms: number | null;
+  agent_tool_stall_timeout_ms: number | null;
+  agent_degenerate_output_limit: number | null;
+  /** Environment defaults reported by the server (read-only). */
+  agent_watchdog_defaults?: Partial<Record<AgentWatchdogSettingName, number>>;
   // github_user_whitelist is now handled as string[] in main state
 }
+
+export type AgentWatchdogSettingName = 'agent_stall_timeout_ms' | 'agent_tool_stall_timeout_ms' | 'agent_degenerate_output_limit';
+export type AgentWatchdogValues = Record<AgentWatchdogSettingName, number | null>;
 
 export interface AlertProps {
   message: string;

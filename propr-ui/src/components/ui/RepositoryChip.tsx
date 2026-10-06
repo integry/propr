@@ -10,6 +10,8 @@ interface RepositoryChipProps {
   revision?: string | null;
   className?: string;
   title?: string;
+  /** Replaces the repository's own icon, e.g. the git-branch mark used by compact entity tokens. */
+  icon?: React.ReactNode;
 }
 
 /**
@@ -30,19 +32,22 @@ export const RepositoryChip: React.FC<RepositoryChipProps> = ({
   revision,
   className = '',
   title,
+  icon,
 }) => (
   <span
     data-testid="repository-chip"
     className={`inline-flex max-w-full items-baseline gap-1.5 align-middle rounded-sm border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] leading-4 text-slate-800 ${className}`.trim()}
     title={title ?? repository}
   >
-    <RepositoryIcon
-      repository={repository}
-      iconPath={iconPath}
-      revision={revision}
-      className="h-3.5 w-3.5 self-center"
-      fallback="none"
-    />
+    {icon ?? (
+      <RepositoryIcon
+        repository={repository}
+        iconPath={iconPath}
+        revision={revision}
+        className="h-3.5 w-3.5 self-center"
+        fallback="none"
+      />
+    )}
     <span className="truncate font-mono">{label ?? repository}</span>
   </span>
 );

@@ -123,7 +123,7 @@ export class VibeAgent implements Agent {
             const conversationLog = parseVibeConversationLog(result.stdout);
             const tokenUsage = parsedOutput.tokenUsage || readLatestVibeSessionTokenUsage(runtimeHomePath);
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
-            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, error: parsedOutput.error || result.stderr });
+            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: parsedOutput.error || result.stderr });
             const success = isSuccessfulVibeResult(result.exitCode, parsedOutput) && !terminationReason;
             const error = success ? undefined : buildVibeFailureMessage(result, parsedOutput);
             if (parsedOutput.sessionId && onSessionId) onSessionId(parsedOutput.sessionId);

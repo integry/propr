@@ -75,6 +75,7 @@ The API also aggregates run metrics in Redis, available at `GET /api/llm-metrics
 - Per-model breakdown: requests, success rate, total and average cost, turns, and execution time per model
 - Daily metrics for the last 7 days (successful/failed counts and cost per day)
 - The 10 most recent high-cost alerts
+- `watchdogTrips`: agent runs stopped by the stall/degenerate-output watchdog, per rule (`inactivity`, `tool_inactivity`, `degenerate_output`)
 
 `GET /api/llm-metrics/<correlationId>` returns the detailed metrics for a single run.
 

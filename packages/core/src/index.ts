@@ -7,7 +7,7 @@ export { clearUltrafixStateForLabelRemoval, withUltrafixLabelTransition } from '
 export type { UltrafixLabelRemovalResult } from './utils/ultrafixLabelTransition.js';
 export type { RetryConfig, RetryOptions } from './utils/retryHandler.js';
 export * from './utils/constants.js';
-export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId } from './utils/llmMetrics.js';
+export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId, recordAgentWatchdogTrip, agentWatchdogMetricKey, AGENT_WATCHDOG_METRIC_RULES } from './utils/llmMetrics.js';
 export { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, WORK_TYPES } from './utils/llmLogger.js';
 export type { LlmLogEntry, WorkReference, WorkType } from './utils/llmLogger.js';
 export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, HighCostAlert, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
@@ -364,6 +364,8 @@ export type { AgentImageBuildDiskSpace } from './agents/agentImageBuildCapacity.
 export * from './goalExports.js';
 export * from './agents/syntheticRouting.js';
 export { describeAgentTermination, isIncompleteAgentExecution, resolveAgentTerminationReason, taskTerminalReasonForAgentTermination } from './agents/termination.js';
+export { AgentActivityWatchdog, AGENT_WATCHDOG_MESSAGE_PREFIX, describeAgentWatchdogTrip } from './claude/docker/agentActivityWatchdog.js';
+export type { AgentWatchdogRule, AgentWatchdogSettings, AgentWatchdogTrip } from './claude/docker/agentActivityWatchdog.js';
 export {
     parseCostCapUsd, resolveRunCostCap, remainingRunBudget, formatUsd, runCostCapStopMessage,
     RUN_COST_CAP_SOURCE_LABELS, MAX_RUN_COST_CAP_USD, RUN_COST_CAP_STOP_PATTERN,

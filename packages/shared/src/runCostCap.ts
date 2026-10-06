@@ -18,9 +18,10 @@ export function formatUsd(amount: number): string {
   return `$${(Number.isFinite(amount) ? amount : 0).toFixed(2)}`;
 }
 
-/** The task terminal reason recorded for an agent that stopped before finishing (`timeout`, `cost_cap`), if it has one. */
-export function taskTerminalReasonForAgentTermination(reason: string | undefined): 'timed_out' | 'cost_cap_exceeded' | undefined {
+/** The task terminal reason recorded for an agent that stopped before finishing (`timeout`, `cost_cap`, `stalled`, `degenerate_output`), if it has one. */
+export function taskTerminalReasonForAgentTermination(reason: string | undefined): 'timed_out' | 'cost_cap_exceeded' | 'stalled' | 'degenerate_output' | undefined {
   if (reason === 'timeout') return 'timed_out';
   if (reason === 'cost_cap') return 'cost_cap_exceeded';
+  if (reason === 'stalled' || reason === 'degenerate_output') return reason;
   return undefined;
 }

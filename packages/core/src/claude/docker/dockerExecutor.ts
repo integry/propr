@@ -18,6 +18,9 @@ import { inspectSessionMessageLine, SessionLineInspectionContext } from './docke
 import { admitCostExecution, refuseCostExecution, registerCostExecution, settleCostCapStop } from './dockerCostCap.js';
 import { startLiveOutputStreaming } from './dockerLiveOutputStreaming.js';
 import { detectContainerId } from './dockerContainerDetection.js';
+import type { AgentWatchdogTrip } from './agentActivityWatchdog.js';
+import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
+import { settleTimeoutStop, settleWatchdogStop } from './dockerExecutionSettlement.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
@@ -47,6 +50,8 @@ export interface ExecutionResult {
     timeoutMs?: number;
     /** Set when ProPR stopped the process because its run reached its spend cap. */
     costCapExceeded?: boolean;
+    /** Set when the stall/degenerate-output watchdog stopped the process. */
+    watchdogTrip?: AgentWatchdogTrip;
 }
 export interface RunningTaskContainer { id: string; name: string; }
 export type TaskContainerLiveness = 'running' | 'stopped' | 'not_found' | 'unavailable';
@@ -56,7 +61,12 @@ export interface TaskContainerInspection {
 }
 export type LegacyTaskContainerLiveness = 'running' | 'not_found' | 'unavailable';
 
-export interface DockerCommandOptions {
+/**
+ * `watchdog` / `onWatchdogTrip` control the stall and degenerate-output
+ * watchdog (see {@link startExecutionWatchdog}); it is on by default for
+ * streamed agent runs that preserve partial output.
+ */
+export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'watchdog' | 'onWatchdogTrip'> {
     timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
     /** Resolve with buffered output on timeout or a spend-cap stop so implementation jobs can publish partial work. */
     preserveOutputOnTimeout?: boolean;
@@ -292,6 +302,15 @@ function startDockerCommand(
                 },
             );
         };
+        const watchdog = startExecutionWatchdog(options, () => {
+            // A run already being stopped (deadline, user, ownership) keeps that outcome.
+            if (state.aborted.value || state.timedOut) return false;
+            clearTimeout(timeoutHandle);
+            timeoutInitiatedAbort = true;
+            // Same subprocess-scoped stop path as the execution deadline.
+            abortExecution(true);
+            return true;
+        });
         const preserveOwnershipFailure = (error: unknown): void => {
             if (hasOwnershipFailure) return;
             hasOwnershipFailure = true;
@@ -328,6 +347,7 @@ function startDockerCommand(
             for (const line of lines) {
                 inspectSessionMessageLine(line, timestamp, sessionInspectionContext);
                 costExecution?.observeLine(line);
+                watchdog.observeLine(line);
             }
         };
         // The guard evaluates asynchronously, so no stop arrives before this is set.
@@ -344,6 +364,7 @@ function startDockerCommand(
         };
         executionSignal?.addEventListener('abort', abortForExecutionSignal, { once: true });
         const timeoutHandle = setTimeout(() => {
+            if (watchdog.trip) return;
             state.timedOut = true;
             timeoutInitiatedAbort = !state.aborted.value;
             abortExecution(true);
@@ -360,7 +381,9 @@ function startDockerCommand(
             })
             : null;
 
-        const liveOutput = startLiveOutputStreaming({ taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow: warnFromLiveOutput }, readStdout, () => stderrTail.value);
+        const recordWatchdogActivity = (): void => watchdog.recordActivity();
+
+        const liveOutput = startLiveOutputStreaming({ taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow: warnFromLiveOutput, onActivity: recordWatchdogActivity, onTranscriptRecord: watchdog.observeLine }, readStdout, () => stderrTail.value);
         if (command === 'docker' && args[0] === 'run' && worktreePath) {
             containerDetectionTimer = detectContainerId(
                 worktreePath,
@@ -372,12 +395,14 @@ function startDockerCommand(
 
         child.stdout?.on('data', (data: Buffer) => {
             const chunk = stdoutDecoder.write(data), ts = new Date().toISOString();
+            recordWatchdogActivity();
             stdoutBuffer.append(chunk);
             liveOutput?.stdout(chunk);
             inspectSessionLines(chunk, ts);
         });
         child.stderr?.on('data', (data: Buffer) => {
             const chunk = stderrDecoder.write(data);
+            recordWatchdogActivity();
             stderrTail.append(chunk);
             workflowMarkers?.append(chunk);
             liveOutput?.stderr(chunk);
@@ -385,6 +410,7 @@ function startDockerCommand(
 
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
+            watchdog.stop();
             const finalStdout = stdoutDecoder.end();
             if (finalStdout) stdoutBuffer.append(finalStdout);
             const finalStderr = stderrDecoder.end();
@@ -399,32 +425,25 @@ function startDockerCommand(
             if (abortChecker) await abortChecker.close();
             await Promise.allSettled([...pendingCallbacks]);
             if (state.teardownPromise) await state.teardownPromise;
+            await watchdog.settled();
             executionSignal?.removeEventListener('abort', abortForExecutionSignal);
             try { await liveOutput?.close(); }
             catch (error) { logger.warn({ error: (error as Error).message, taskId }, 'Failed to publish final live output'); }
             const executionAbortError = getExecutionAbortError(executionSignal);
             if (executionAbortError) preserveOwnershipFailure(executionAbortError);
-            if (hasOwnershipFailure) {
-                reject(ownershipFailure);
-                return;
-            }
+            if (hasOwnershipFailure) { reject(ownershipFailure); return; }
             if (processError) { reject(processError); return; }
             if (costCapStopMessage) {
                 settleCostCapStop(costCapStopMessage, { exitCode, stdout: readStdout(), stderr, messageTimestamps }, { preserveOutput: preserveOutputOnTimeout, resolve, reject });
                 return;
             }
-            if (state.aborted.value && !timeoutInitiatedAbort) {
-                reject(new ExecutionAbortedError());
+            if (state.aborted.value && !timeoutInitiatedAbort) { reject(new ExecutionAbortedError()); return; }
+            if (watchdog.trip) {
+                settleWatchdogStop(watchdog.trip, { exitCode, stdout: readStdout(), stderr, messageTimestamps }, preserveOutputOnTimeout, { resolve, reject });
                 return;
             }
             if (state.timedOut) {
-                const timeoutMessage = `Command timed out after ${timeout}ms`;
-                const timeoutStderr = stderr.trim() ? `${stderr.trimEnd()}\n${timeoutMessage}` : timeoutMessage;
-                if (preserveOutputOnTimeout) {
-                    resolve({ exitCode, stdout: readStdout(), stderr: timeoutStderr, messageTimestamps, timedOut: true, timeoutMs: timeout });
-                } else {
-                    reject(new Error(timeoutMessage));
-                }
+                settleTimeoutStop(timeout, { exitCode, stdout: readStdout(), stderr, messageTimestamps }, preserveOutputOnTimeout, { resolve, reject });
                 return;
             }
             resolve({ exitCode, stdout: readStdout(), stderr, messageTimestamps });
@@ -433,6 +452,7 @@ function startDockerCommand(
             // close may run during cleanup; capture the process result before awaiting.
             processError = error;
             clearTimeout(timeoutHandle);
+            watchdog.stop();
             inspectSessionLines('', new Date().toISOString(), true);
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
             await finishCostExecution();

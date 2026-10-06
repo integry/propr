@@ -19,23 +19,40 @@ export interface LiveOutputStreaming { stdout(chunk: string): void; stderr(chunk
  * messages) publish that snapshot in place of the previous one instead.
  */
 export function startLiveOutputStreaming(
-    options: Pick<DockerCommandOptions, 'taskId' | 'streamToRedis' | 'streamStderrToRedis' | 'streamExtraOutput' | 'stripAnsi'> & { onOverflow: (error: Error) => void },
+    options: Pick<DockerCommandOptions, 'taskId' | 'streamToRedis' | 'streamStderrToRedis' | 'streamExtraOutput' | 'stripAnsi'> & { onOverflow: (error: Error) => void; onActivity?: () => void; onTranscriptRecord?: (record: string) => void },
     readStdout: () => string,
     readStderr: () => string,
 ): LiveOutputStreaming | null {
-    const { taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow } = options;
+    const { taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow, onActivity, onTranscriptRecord } = options;
     if (!streamToRedis || !taskId) return null;
     const log = new LiveOutputLog(taskId, { reset: true, onOverflow, ...(stripAnsi ? { transformRecord: stripAnsiCodes } : {}) });
     if (!streamExtraOutput) {
         return { stdout: chunk => log.append(chunk, 'stdout'), stderr: chunk => { if (streamStderrToRedis) log.append(chunk, 'stderr'); }, close: () => log.close() };
     }
     let previous = '';
+    // Length of the transcript's complete records already handed to onTranscriptRecord.
+    let observedLength = 0;
+    const observeTranscript = (transcript: string) => {
+        // A shorter transcript is a new session file; its records are new.
+        if (transcript.length < observedLength) observedLength = 0;
+        const end = transcript.lastIndexOf('\n') + 1;
+        if (end <= observedLength) return;
+        const records = transcript.slice(observedLength, end).split('\n');
+        observedLength = end;
+        for (const record of records) if (record.trim()) onTranscriptRecord?.(record);
+    };
     const publish = () => {
         let extraOutput = '';
         try { extraOutput = streamExtraOutput(); }
         catch (err) { logger.debug({ error: (err as Error).message }, 'Failed to read extra streaming output'); }
+        observeTranscript(extraOutput);
         const snapshot = buildLiveOutputSnapshot(extraOutput, readStdout(), streamStderrToRedis ? readStderr() : '');
-        if (snapshot.text !== previous) log.replace(snapshot.text, { discarded: snapshot.discarded });
+        if (snapshot.text !== previous) {
+            log.replace(snapshot.text, { discarded: snapshot.discarded });
+            // Snapshot providers (Vibe) may say nothing on stdout; a changed transcript is activity,
+            // and its new records carry the tool calls the watchdog's thresholds depend on.
+            onActivity?.();
+        }
         previous = snapshot.text;
     };
     const interval = setInterval(publish, 2000);

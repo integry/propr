@@ -16,6 +16,15 @@ import {
 } from '../packages/api/routes/liveDetailsRoutes.ts';
 import { parseRedisOutput } from '../packages/api/services/redisOutputParser.ts';
 
+/** No stored watchdog overrides: the environment defaults (unset here) apply. */
+const DEFAULT_WATCHDOG_SETTINGS_RESPONSE = {
+    agent_stall_timeout_ms: null,
+    agent_tool_stall_timeout_ms: null,
+    agent_degenerate_output_limit: null,
+    agent_watchdog_defaults: { agent_stall_timeout_ms: 600_000, agent_tool_stall_timeout_ms: 1_800_000, agent_degenerate_output_limit: 50 },
+    agent_watchdog_effective: { agent_stall_timeout_ms: 600_000, agent_tool_stall_timeout_ms: 1_800_000, agent_degenerate_output_limit: 50 },
+};
+
 after(async () => {
     await configManager.closeConnection();
 });
@@ -1166,6 +1175,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
             ultrafix_escalation_max_reasoning_levels: 2,
+            ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1255,6 +1265,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
             ultrafix_escalation_max_reasoning_levels: 2,
+            ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1336,6 +1347,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_escalation_models: [],
             ultrafix_escalation_patience: 3,
             ultrafix_escalation_max_reasoning_levels: 2,
+            ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
             invalid_settings: {
                 auto_followup_score_threshold: 'invalid',
             },
@@ -3047,6 +3059,7 @@ describe('config route follow-up helpers', () => {
                 ultrafix_escalation_models: [],
                 ultrafix_escalation_patience: 3,
                 ultrafix_escalation_max_reasoning_levels: 2,
+                ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
             });
         } finally {
             if (previousPlannerContextModel === undefined) {

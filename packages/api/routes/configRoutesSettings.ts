@@ -1,6 +1,7 @@
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
+import { AGENT_WATCHDOG_SETTING_NAMES } from './configSettings.js';
 import type { Knex } from 'knex';
 import {
   REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS,
@@ -24,6 +25,25 @@ export function reviewContextBudgetSettingsResponse(settings: Record<string, unk
   return {
     pr_review_max_context_tokens: normalizeLegacyReviewMaxContextTokens(settings.pr_review_max_context_tokens),
     pr_review_context_budget_percent: normalizeReviewContextBudgetPercent(settings.pr_review_context_budget_percent),
+  };
+}
+
+/**
+ * Watchdog thresholds: the stored override (null when the environment default
+ * applies), the environment default and the value in force for the next run.
+ */
+export async function agentWatchdogSettingsResponse(configStore: typeof configManager): Promise<Record<string, unknown>> {
+  const stored = Object.fromEntries(await Promise.all(AGENT_WATCHDOG_SETTING_NAMES.map(async name => [name, await configStore.getConfig<unknown>(name, null)] as const)));
+  const effective = configManager.resolveAgentWatchdogSettings(stored);
+  const defaults = Object.fromEntries(configManager.AGENT_WATCHDOG_SETTING_DEFINITIONS.map(definition => [definition.key, configManager.resolveAgentWatchdogEnvDefault(definition)]));
+  return {
+    ...Object.fromEntries(AGENT_WATCHDOG_SETTING_NAMES.map(name => [name, stored[name] ?? null])),
+    agent_watchdog_defaults: defaults,
+    agent_watchdog_effective: {
+      agent_stall_timeout_ms: effective.stallTimeoutMs,
+      agent_tool_stall_timeout_ms: effective.toolStallTimeoutMs,
+      agent_degenerate_output_limit: effective.degenerateOutputLimit,
+    },
   };
 }
 
@@ -218,6 +238,9 @@ async function saveNormalizedSettingsWithRollback({
     ultrafix_pause_seconds,
     default_max_cost_usd,
     ultrafix_ci_wait_timeout_ms,
+    agent_stall_timeout_ms,
+    agent_tool_stall_timeout_ms,
+    agent_degenerate_output_limit,
     ...otherSettings
   } = settings;
 
@@ -237,7 +260,10 @@ async function saveNormalizedSettingsWithRollback({
     ultrafix_max_cycles,
     ultrafix_pause_seconds,
     default_max_cost_usd,
-    ultrafix_ci_wait_timeout_ms
+    ultrafix_ci_wait_timeout_ms,
+    agent_stall_timeout_ms,
+    agent_tool_stall_timeout_ms,
+    agent_degenerate_output_limit
   });
 
   if (extracted.error) {
