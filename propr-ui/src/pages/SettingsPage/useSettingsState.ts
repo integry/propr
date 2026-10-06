@@ -78,6 +78,7 @@ export function useSettingsState() {
     ultrafix_max_cycles: 5,
     ultrafix_pause_seconds: 60,
     default_max_cost_usd: '',
+    unattended_max_concurrent: 1, unattended_window: '', unattended_window_error: null,
     agent_stall_timeout_ms: null,
     agent_tool_stall_timeout_ms: null,
     agent_degenerate_output_limit: null

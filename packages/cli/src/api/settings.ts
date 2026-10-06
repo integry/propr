@@ -150,6 +150,12 @@ export interface SystemSettings {
   agent_watchdog_defaults?: Record<string, number>;
   /** Thresholds in force for the next agent run. */
   agent_watchdog_effective?: Record<string, number>;
+  /** How many unattended runs (scheduled tasks) may run at once; 0 pauses unattended work. */
+  unattended_max_concurrent?: number;
+  /** When unattended work may start, `HH:MM-HH:MM@Area/City`; empty = any time. */
+  unattended_window?: string;
+  /** Read-only: why the stored window is malformed (unattended work is blocked), or null. */
+  unattended_window_error?: string | null;
 }
 
 export const NAMED_CONFIG_ENDPOINTS = {
@@ -296,6 +302,10 @@ export interface UpdateSettingsOptions {
   agent_stall_timeout_ms?: number | null;
   agent_tool_stall_timeout_ms?: number | null;
   agent_degenerate_output_limit?: number | null;
+
+  /** Unattended-work admission; an empty window clears it. */
+  unattended_max_concurrent?: number;
+  unattended_window?: string;
 }
 
 /**
@@ -318,10 +328,15 @@ export interface UpdateSettingsResponse {
   warnings?: string[];
 }
 
+/** Mirrors the server's unattended-work cap; the server also validates. */
+export const MAX_UNATTENDED_MAX_CONCURRENT = 100;
+/** Shape check only; the server validates the times and the IANA time zone. */
+const UNATTENDED_WINDOW_SHAPE = /^\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\s*@\s*\S+$/;
+
 /**
  * Valid setting keys that can be updated.
  */
-export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings' | 'agent_watchdog_defaults' | 'agent_watchdog_effective'>;
+export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings' | 'agent_watchdog_defaults' | 'agent_watchdog_effective' | 'unattended_window_error'>;
 
 /**
  * List of valid setting keys for validation.
@@ -356,6 +371,8 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "agent_stall_timeout_ms",
   "agent_tool_stall_timeout_ms",
   "agent_degenerate_output_limit",
+  "unattended_max_concurrent",
+  "unattended_window",
 ];
 
 /**
@@ -450,6 +467,22 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
         throw new Error(`Invalid value for ${key}: must be a USD amount from 0 (no cap) to 100000`);
       }
       return parsed;
+    }
+    case "unattended_max_concurrent": {
+      const parsed = /^\d+$/.test(value.trim()) ? Number(value.trim()) : Number.NaN;
+      if (!Number.isSafeInteger(parsed) || parsed > MAX_UNATTENDED_MAX_CONCURRENT) {
+        throw new Error(`Invalid value for ${key}: must be an integer from 0 (pause unattended work) to ${MAX_UNATTENDED_MAX_CONCURRENT}`);
+      }
+      return parsed;
+    }
+    case "unattended_window": {
+      // An empty value (or "none") clears the window so unattended work may start at any time.
+      const trimmed = value.trim();
+      if (trimmed === "" || /^none$/i.test(trimmed)) return "";
+      if (!UNATTENDED_WINDOW_SHAPE.test(trimmed)) {
+        throw new Error(`Invalid value for ${key}: must look like 02:00-07:00@Europe/Riga, or be empty to clear`);
+      }
+      return trimmed;
     }
     case "pr_review_max_context_tokens": {
       const parsed = /^\d+$/.test(value) ? Number(value) : Number.NaN;

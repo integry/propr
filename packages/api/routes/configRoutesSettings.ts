@@ -47,6 +47,29 @@ export async function agentWatchdogSettingsResponse(configStore: typeof configMa
   };
 }
 
+/**
+ * Unattended-work admission settings. `unattended_window_error` is read-only:
+ * it is set when the stored window is malformed, which blocks unattended work.
+ */
+export async function unattendedAdmissionSettingsResponse(configStore: Pick<typeof configManager, 'getConfig'>): Promise<{
+  unattended_max_concurrent: number;
+  unattended_window: string;
+  unattended_window_error: string | null;
+}> {
+  const [storedMax, storedWindow] = await Promise.all([
+    configStore.getConfig<unknown>('unattended_max_concurrent', configManager.DEFAULT_UNATTENDED_MAX_CONCURRENT),
+    configStore.getConfig<unknown>('unattended_window', ''),
+  ]);
+  // Mirrors loadUnattendedWindow: a non-text value is reported as malformed, never ignored.
+  const window = typeof storedWindow === 'string' ? storedWindow : JSON.stringify(storedWindow);
+  const parsed = configManager.parseUnattendedWindow(window);
+  return {
+    unattended_max_concurrent: configManager.parseUnattendedMaxConcurrent(storedMax) ?? configManager.DEFAULT_UNATTENDED_MAX_CONCURRENT,
+    unattended_window: window,
+    unattended_window_error: parsed.ok ? null : parsed.error,
+  };
+}
+
 interface SettingsStore {
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
   loadSettings: typeof configManager.loadSettings;
@@ -241,6 +264,8 @@ async function saveNormalizedSettingsWithRollback({
     agent_stall_timeout_ms,
     agent_tool_stall_timeout_ms,
     agent_degenerate_output_limit,
+    unattended_max_concurrent,
+    unattended_window,
     ...otherSettings
   } = settings;
 
@@ -263,7 +288,9 @@ async function saveNormalizedSettingsWithRollback({
     ultrafix_ci_wait_timeout_ms,
     agent_stall_timeout_ms,
     agent_tool_stall_timeout_ms,
-    agent_degenerate_output_limit
+    agent_degenerate_output_limit,
+    unattended_max_concurrent,
+    unattended_window
   });
 
   if (extracted.error) {

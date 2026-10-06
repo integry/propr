@@ -3,7 +3,8 @@ import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } f
 import { PreviewCountBadge, RunCountChip, TaskAgent, TaskPrimaryChip, TaskTitleLink } from './TaskRows';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import type { Task } from './types';
-import { rowContainsTask, SELECTED_ROW_CLASSES, type TaskRowView } from './rowModel';
+import { rowContainsTask, rowSchedule, SELECTED_ROW_CLASSES, type TaskRowView } from './rowModel';
+import { ScheduledBadge } from '../ScheduledBadge';
 
 interface MobileTaskCardProps {
   row: TaskRowView;
@@ -62,6 +63,7 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, o
   const selected = rowContainsTask(row, selectedTaskId);
   const summary = row.detail ?? row.outcome;
   const hasAgent = Boolean(task.llmProvider || task.model || task.modelName);
+  const schedule = rowSchedule(row);
   return (
     <div
       data-testid="task-card"
@@ -89,6 +91,7 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, o
             {row.earlierRuns.length > 0 && <RunCountChip row={row} />}
             {hasAgent && <span className="flex min-w-0 max-w-[40%] flex-none"><TaskAgent task={task} /></span>}
             {row.type && <span className="flex-none"><WorkTypeBadge type={row.type} /></span>}
+            {schedule && <ScheduledBadge scheduleName={schedule.scheduleName} className="max-w-[45%]" />}
             {summary && <span data-testid="task-card-summary" className="min-w-[7rem] flex-1 truncate max-sm:hidden" title={summary}>{summary}</span>}
           </div>
         </div>

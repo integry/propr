@@ -3,6 +3,7 @@ import { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
 import { dashboardNarrativeModel } from './routes/dashboardNarrativeModel.js';
 import { getConfig } from '@propr/core';
 import { createTaskSubmissionRoutes, taskSubmissionUpload } from './routes/taskSubmissionRoutes.js';
+import { createScheduleRoutes } from './routes/scheduleRoutes.js';
 import { createRepositoryMediaRoutes } from './routes/repositoryMediaRoutes.js';
 import { createPreviewMediaRoutes } from './routes/previewMediaRoutes.js';
 import { ROUTING_STATUS_REDIS_KEY } from '@propr/shared';
@@ -391,6 +392,7 @@ function setupRoutes(): void {
   const agentVersionRoutes = createAgentVersionRoutes();
   const activeWorkRoutes = createActiveWorkRoutes({ db, taskQueue });
   const taskSubmissionRoutes = createTaskSubmissionRoutes({ db });
+  const scheduleRoutes = createScheduleRoutes({ db });
   const goalRoutes = createGoalRoutes({ db, taskQueue, redisClient });
 
   app.use(['/api/task/:taskId', '/api/task/:taskId/*path', '/api/tasks/:taskId', '/api/execution/:sessionId', '/api/execution/:sessionId/*path', '/api/llm-metrics/:correlationId'], goalRoutes.requireGoalTaskOwnership);
@@ -398,6 +400,7 @@ function setupRoutes(): void {
   const operationalRoutes: RouteEntry[] = [
     ['get', '/api/desktop/active-work', activeWorkRoutes.getActiveWork],
     ['post', '/api/task-submissions', taskSubmissionUpload, taskSubmissionRoutes.submit], ['get', '/api/task-submissions/:key', taskSubmissionRoutes.get], ['post', '/api/task-submissions/:key/retry', taskSubmissionRoutes.retry],
+    ['get', '/api/schedules', scheduleRoutes.list], ['post', '/api/schedules', scheduleRoutes.create], ['get', '/api/schedules/:id', scheduleRoutes.get], ['patch', '/api/schedules/:id', scheduleRoutes.update], ['delete', '/api/schedules/:id', scheduleRoutes.remove], ['post', '/api/schedules/:id/run-now', scheduleRoutes.runNow],
     ['get', '/api/goals/capabilities', goalRoutes.capabilities], ['get', '/api/goals', goalRoutes.list], ['get', '/api/goals/attention', goalRoutes.attention], ['post', '/api/goals', goalAttachmentUpload, goalRoutes.create], ['get', '/api/goals/:goalId', goalRoutes.get], ['get', '/api/goals/:goalId/detail', goalRoutes.detail], ['get', '/api/goals/:goalId/inputs', goalRoutes.inputs], ['get', '/api/goals/:goalId/wait', goalRoutes.wait], ['get', '/api/goals/:goalId/previews', goalRoutes.previews], ['delete', '/api/goals/:goalId', goalRoutes.remove],
     ['post', '/api/goals/:goalId/pause', goalRoutes.pause], ['post', '/api/goals/:goalId/resume', goalRoutes.resume], ['post', '/api/goals/:goalId/cancel', goalRoutes.cancel], ['patch', '/api/goals/:goalId/model', goalRoutes.requestModel], ['post', '/api/goals/:goalId/input', goalAttachmentUpload, goalRoutes.input], ['get', '/api/goals/:goalId/attachments/:attachmentId', goalRoutes.attachment],
     ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],

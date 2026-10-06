@@ -7,6 +7,7 @@ import { Queue, Job } from 'bullmq';
 import { Knex } from 'knex';
 import { sendSafeJson } from './jsonResponse.js';
 import { previewMediaReader, projectTaskPreviewMedia } from '../services/previewMediaProjection.js';
+import { loadScheduleProvenance } from '../services/scheduleProvenance.js';
 
 interface JobData {
     repoOwner?: string; repoName?: string; number?: number;
@@ -122,10 +123,10 @@ async function getHistoryFromDb(db: Knex, taskId: string, previewReader: typeof 
 
     const taskInfo = buildTaskInfoFromDb(taskId, task, parseJobData(task.initial_job_data));
 
-    const [llmExecutions, usage, previewMedia] = await Promise.all([
+    const [llmExecutions, usage, previewMedia, schedule] = await Promise.all([
       db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc'),
       fetchUsageMetrics(db, taskId),
-      projectTaskPreviewMedia(task, historyRecords, previewReader),
+      projectTaskPreviewMedia(task, historyRecords, previewReader), loadScheduleProvenance(db, task.schedule_id),
     ]);
 
     const executionsByHistoryId = new Map<number, Record<string, unknown>>();
@@ -140,7 +141,7 @@ async function getHistoryFromDb(db: Knex, taskId: string, previewReader: typeof 
 
     applyMetadataFlags(taskInfo, history);
 
-    return { history, taskInfo, ...usage, ...(previewMedia.length ? { previewMedia } : {}) };
+    return { history, taskInfo: { ...taskInfo, ...schedule }, ...usage, ...(previewMedia.length ? { previewMedia } : {}) };
   } catch (error) {
     console.error('Error fetching task history from SQLite:', error);
     return null;

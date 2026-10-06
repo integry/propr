@@ -293,3 +293,22 @@ export type {
   CreateGoalRequest,
   GoalApiOptions,
 } from "./goals.js";
+
+// Scheduled (recurring) tasks API
+export {
+  listSchedules,
+  getSchedule,
+  createSchedule,
+  deleteSchedule,
+  runScheduleNow,
+} from "./schedules.js";
+
+export type {
+  ScheduleInstruction,
+  TaskSchedule,
+  TaskScheduleRun,
+  ScheduleAdmission,
+  ListSchedulesResponse,
+  CreateScheduleRequest,
+  RunScheduleNowResponse,
+} from "./schedules.js";

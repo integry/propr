@@ -7,6 +7,8 @@ await mock.module('@propr/core', {
         db: {},
         toProprOpenCodeModelId: (model: string) => model,
         validateAgentType: () => ({ ok: false, error: 'not used by this test' }),
+        MAX_UNATTENDED_MAX_CONCURRENT: 100,
+        parseUnattendedWindow: () => ({ ok: true, window: null }),
         validateModelReasoningLevel: () => ({ valid: true, value: '' }),
         validatePrReviewModelValue: async (model: string) => model.includes(' ')
             ? { valid: false, error: 'pr_review_model contains invalid characters' }

@@ -25,6 +25,7 @@ import {
   createConfigCommand,
   createLogCommand,
   createTodoCommand,
+  createScheduleCommand,
   createRemoteStatusCommand,
   createQueueCommand,
   createBackendCommand,
@@ -249,6 +250,7 @@ Command Groups:
   Agents:         agent [list|add|enable|disable|delete|pool]
   Settings:       setting [get|update|reindex-summaries]
   To-Dos:         todo [list|get|add|complete|delete]
+  Schedules:      schedule [add|list|remove|run-now]
   Logs:           log [list]
   Backend:        backend [status|queue], remote-status, queue
   Agent Skills:   skill [install|status|remove]
@@ -437,6 +439,7 @@ program.addCommand(createAgentCommand());
 program.addCommand(createSettingCommand());
 program.addCommand(createLogCommand());
 program.addCommand(createTodoCommand());
+program.addCommand(createScheduleCommand());
 program.addCommand(createBackendCommand());
 program.addCommand(createRemoteStatusCommand());
 program.addCommand(createQueueCommand());

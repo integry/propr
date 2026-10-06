@@ -1,5 +1,5 @@
 import { isUsageTipsCooldownDays, MAX_RUN_COST_CAP_USD } from '@propr/shared';
-import { validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
+import { MAX_UNATTENDED_MAX_CONCURRENT, parseUnattendedWindow, validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
 interface SettingFields {
   usage_tips_enabled?: unknown;
@@ -21,6 +21,8 @@ interface SettingFields {
   agent_stall_timeout_ms?: unknown;
   agent_tool_stall_timeout_ms?: unknown;
   agent_degenerate_output_limit?: unknown;
+  unattended_max_concurrent?: unknown;
+  unattended_window?: unknown;
 }
 
 export type SettingSaveName =
@@ -40,6 +42,8 @@ export type SettingSaveName =
   | 'ultrafix_pause_seconds'
   | 'default_max_cost_usd'
   | 'ultrafix_ci_wait_timeout_ms'
+  | 'unattended_max_concurrent'
+  | 'unattended_window'
   | AgentWatchdogSettingName;
 
 export const AGENT_WATCHDOG_SETTING_NAMES = ['agent_stall_timeout_ms', 'agent_tool_stall_timeout_ms', 'agent_degenerate_output_limit'] as const;
@@ -176,6 +180,26 @@ function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSaves
     if (v === null) return { error: 'ultrafix_ci_wait_timeout_ms must be a positive integer', saves: [], normalized };
     normalized.ultrafix_ci_wait_timeout_ms = v;
     saves.push({ name: 'ultrafix_ci_wait_timeout_ms' });
+  }
+  return extractUnattendedAdmissionSettingSaves(fields, result);
+}
+
+/** Unattended-work admission: a concurrency cap and an optional `HH:MM-HH:MM@Area/City` window. */
+function extractUnattendedAdmissionSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
+  const { saves, normalized } = result;
+  if (fields.unattended_max_concurrent !== undefined) {
+    const v = validateStrictInt(fields.unattended_max_concurrent, 0, MAX_UNATTENDED_MAX_CONCURRENT);
+    if (v === null) return { error: `unattended_max_concurrent must be an integer from 0 to ${MAX_UNATTENDED_MAX_CONCURRENT}`, saves: [], normalized };
+    normalized.unattended_max_concurrent = v;
+    saves.push({ name: 'unattended_max_concurrent' });
+  }
+  if (fields.unattended_window !== undefined) {
+    const raw = fields.unattended_window === null ? '' : fields.unattended_window;
+    if (typeof raw !== 'string') return { error: 'unattended_window must be a string such as 02:00-07:00@Europe/Riga, or empty for no window', saves: [], normalized };
+    const parsed = parseUnattendedWindow(raw);
+    if (!parsed.ok) return { error: `unattended_window: ${parsed.error}`, saves: [], normalized };
+    normalized.unattended_window = raw.trim();
+    saves.push({ name: 'unattended_window' });
   }
   return result;
 }

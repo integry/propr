@@ -15,6 +15,7 @@ import { loadAgents, loadSyntheticAgents, loadMonitoredReposRaw, createEpicExecu
 import { createPlannerRoutes } from '../routes/plannerRoutes.js';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 import type { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
+import type { ScheduleRouteServices } from '../routes/scheduleRoutes.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
 import { createDockerRoutes, stopTaskExecution } from '../routes/dockerRoutes.js';
 import { createFileChangesRoutes } from '../routes/fileChangesRoutes.js';
@@ -29,6 +30,7 @@ import { McpOperations, type OperationResult, type Operation } from './operation
 import { syncLifecycle } from './operationLifecycle.js';
 import { callWorkflow, type WorkflowHandler } from './adapter.js';
 import { addTaskSubmissionTools, trackTaskSubmission } from './toolsTaskSubmissions.js';
+import { addScheduleTools } from './toolsSchedules.js';
 import { addPlanningTools, planEpicDispatch } from './toolsPlanning.js';
 import { addPullRequestTools } from './toolsPullRequests.js';
 import { addContextTools } from './toolsContext.js';
@@ -95,7 +97,7 @@ export interface McpTool {
   target?: { table: string; column: string; arg: string; owner?: string; optional?: boolean };
   run: (context: ToolContext) => Promise<OperationResult>;
 }
-export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices }
+export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; scheduleServices?: Partial<ScheduleRouteServices>; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices }
 export const ok = (data: unknown): OperationResult => ({ status: 200, data });
 
 export { markMergedPullRequests, markMergedListPullRequests };
@@ -174,6 +176,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   } });
 
   addTaskSubmissionTools(tools, deps);
+  addScheduleTools(tools, deps);
   addPlanningTools(tools, deps, planner);
   addAdministrationTools(tools, deps);
   addArtifactTools(tools, deps, planner, goals);

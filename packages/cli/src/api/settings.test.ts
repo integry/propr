@@ -44,3 +44,22 @@ test('legacy threshold and response deprecation metadata are not writable CLI se
   assert.equal(isValidSettingKey('auto_followup_score_threshold'), false);
   assert.equal(isValidSettingKey('deprecated_settings'), false);
 });
+
+test('unattended admission settings are writable CLI keys with client-side bounds', async () => {
+  const { parseSettingValue, isValidSettingKey } = await import('./settings.js');
+  assert.equal(isValidSettingKey('unattended_max_concurrent'), true);
+  assert.equal(isValidSettingKey('unattended_window'), true);
+  assert.equal(isValidSettingKey('unattended_window_error'), false);
+
+  assert.equal(parseSettingValue('unattended_max_concurrent', '2'), 2);
+  assert.equal(parseSettingValue('unattended_max_concurrent', '0'), 0);
+  assert.equal(parseSettingValue('unattended_max_concurrent', '100'), 100);
+  for (const value of ['101', '-1', '1.5', 'two', '']) {
+    assert.throws(() => parseSettingValue('unattended_max_concurrent', value), /0 \(pause unattended work\) to 100/);
+  }
+
+  assert.equal(parseSettingValue('unattended_window', ' 02:00-07:00@Europe/Riga '), '02:00-07:00@Europe/Riga');
+  assert.equal(parseSettingValue('unattended_window', ''), '');
+  assert.equal(parseSettingValue('unattended_window', 'none'), '');
+  assert.throws(() => parseSettingValue('unattended_window', '02:00-07:00'), /02:00-07:00@Europe\/Riga/);
+});

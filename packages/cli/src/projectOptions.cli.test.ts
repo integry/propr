@@ -11,6 +11,7 @@ import {
   createConfigCommand,
   createIssueCommand,
   createPlanCommand,
+  createScheduleCommand,
   createTaskCommand,
   createTodoCommand,
 } from "./commands/index.js";
@@ -57,12 +58,15 @@ test("every advertised nested project option remains in the command surface audi
   program.addCommand(createTaskCommand());
   program.addCommand(createIssueCommand());
   program.addCommand(createConfigCommand());
+  program.addCommand(createScheduleCommand());
 
   assert.deepEqual(projectOptionPaths(program).sort(), [
     "config profile set",
     "issue implement",
     "plan create",
     "plan list",
+    "schedule add",
+    "schedule list",
     "task import",
     "task inspect",
     "task list",

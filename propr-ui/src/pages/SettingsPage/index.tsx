@@ -22,6 +22,7 @@ import SettingsNavigation, { type SettingsNavigationSection } from './SettingsNa
 import McpServerSection from './McpServerSection';
 import { useSettingsCategoryRoute } from './useSettingsCategoryRoute';
 import SettingsSaveStatusBar from './SettingsSaveStatusBar';
+import ScheduledTasksSection, { SCHEDULED_TASKS_SEARCH_TEXT } from './scheduledTasks/ScheduledTasksSection';
 
 const AdminSettingsPage: React.FC = () => {
   const { isDemoMode } = useDemoMode();
@@ -82,7 +83,7 @@ const AdminSettingsPage: React.FC = () => {
   const handleGeneralSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const settingName = event.target.name;
     let value: string | number | boolean;
-    const numericFields = ['ultrafix_escalation_patience', 'ultrafix_escalation_max_reasoning_levels', 'usage_tips_dismissal_cooldown_days', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
+    const numericFields = ['ultrafix_escalation_patience', 'ultrafix_escalation_max_reasoning_levels', 'usage_tips_dismissal_cooldown_days', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds', 'unattended_max_concurrent'];
     if (numericFields.includes(settingName)) {
       const raw = event.target.value;
       // Only accept strings that are strictly integer digits (with optional leading minus)
@@ -188,6 +189,7 @@ const AdminSettingsPage: React.FC = () => {
         />
       )
     },
+    { id: 'scheduled-tasks', category: 'automation', searchText: SCHEDULED_TASKS_SEARCH_TEXT, content: <ScheduledTasksSection settings={settings} agents={catalogAgents ?? []} saveStatus={saveStatus} onChange={handleGeneralSettingChange} onBlur={triggerSettingsSave} /> },
     {
       id: 'agent-watchdog',
       category: 'automation',

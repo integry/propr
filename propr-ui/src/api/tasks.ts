@@ -74,6 +74,10 @@ export interface Task {
   commitHash?: string | null;
   /** Score the run recorded when it completed (a review's `6/10`); null when it was not scored */
   score?: number | null;
+  /** Set when a schedule created the task. */
+  scheduleId?: string | null;
+  /** The schedule's name; null once the schedule is deleted. */
+  scheduleName?: string | null;
   /** Progress percentage (0-100) */
   progress: number;
   /** Number of processing attempts */
@@ -156,6 +160,10 @@ export interface TaskInfo {
   issueNumber?: number;
   comments?: unknown[];
   commandMode?: 'default' | 'review' | 'fix';
+  /** Set when a schedule created the task. */
+  scheduleId?: string | null;
+  /** The schedule's name; null once the schedule is deleted. */
+  scheduleName?: string | null;
 }
 
 /**

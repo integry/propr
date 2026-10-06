@@ -25,6 +25,12 @@ export interface Settings {
   ultrafix_pause_seconds: number;
   /** Instance default per-run spend cap in USD as typed; empty or 0 = no cap. */
   default_max_cost_usd: string;
+  /** Unattended work (scheduled runs) admitted at once; 0 blocks it. */
+  unattended_max_concurrent: number;
+  /** `HH:MM-HH:MM@Area/City` window for unattended work; empty = any time. */
+  unattended_window: string;
+  /** Read-only: set by the server when the stored window is malformed. */
+  unattended_window_error?: string | null;
   /** Watchdog overrides; null uses the environment default. */
   agent_stall_timeout_ms: number | null;
   agent_tool_stall_timeout_ms: number | null;

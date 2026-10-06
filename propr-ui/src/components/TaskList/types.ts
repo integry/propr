@@ -22,6 +22,10 @@ export interface Task {
   commitHash?: string | null;
   /** The score the run recorded when it completed (a review's `6/10`), when it was scored. */
   score?: number | null;
+  /** Set when a schedule created the task. */
+  scheduleId?: string | null;
+  /** The schedule's name; null once the schedule is deleted. */
+  scheduleName?: string | null;
 }
 
 export interface TaskListProps {

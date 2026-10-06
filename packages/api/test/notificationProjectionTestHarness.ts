@@ -32,6 +32,11 @@ export async function createProjectionTables(database: Knex): Promise<void> {
     table.integer('pr_number').nullable();
     table.text('task_type').notNullable();
     table.text('initial_job_data').nullable();
+    table.string('schedule_id', 36).nullable();
+  });
+  await database.schema.createTable('task_schedules', table => {
+    table.uuid('id').primary();
+    table.string('name', 200).notNullable();
   });
   await database.schema.createTable('task_history', table => {
     table.increments('history_id').primary();

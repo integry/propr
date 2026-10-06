@@ -61,6 +61,7 @@ const sidebars: SidebarsConfig = {
       label: 'Core Workflow',
       items: [
         'features/launching-work',
+        'features/scheduled-tasks',
         'features/goals',
         'features/planning',
         'features/inbox',

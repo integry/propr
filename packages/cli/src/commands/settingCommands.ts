@@ -76,6 +76,8 @@ function getSettingDescription(key: SettingKey): string {
     agent_stall_timeout_ms: "Stop an agent run silent this long, in ms (0 disables; \"default\" = env AGENT_STALL_TIMEOUT_MS)",
     agent_tool_stall_timeout_ms: "Silence allowed while a tool call runs, in ms (0 disables; \"default\" = env AGENT_TOOL_STALL_TIMEOUT_MS)",
     agent_degenerate_output_limit: "Consecutive whitespace-only deltas that stop a run (0 disables; \"default\" = env AGENT_DEGENERATE_OUTPUT_LIMIT)",
+    unattended_max_concurrent: "Unattended runs (scheduled tasks) allowed at once (0-100, default 1; 0 pauses unattended work)",
+    unattended_window: "When unattended work may start, e.g. 02:00-07:00@Europe/Riga (empty or \"none\" = any time)",
   };
   return descriptions[key];
 }
@@ -321,6 +323,9 @@ Examples:
           for (const warning of warnings) {
             console.warn(`Warning: Could not fetch extra config setting ${warning}`);
           }
+          if (settings.unattended_window_error) {
+            console.warn(`Warning: unattended work is blocked because unattended_window is malformed: ${settings.unattended_window_error}`);
+          }
           console.log("");
           console.log(`Total: ${Object.keys(displaySettings).length} setting(s)`);
         } catch (error) {
@@ -349,6 +354,9 @@ Examples:
   $ propr setting update github_user_whitelist "user1,user2,user3"
   $ propr setting update followup-keywords "!propr,propr"
   $ propr setting update analysis_model_fast claude-3-5-sonnet-20241022
+  $ propr setting update unattended_max_concurrent 2
+  $ propr setting update unattended_window 02:00-07:00@Europe/Riga
+  $ propr setting update unattended_window ""          # Clear the window
 `
     )
     .action(async (key: string, value: string) => {

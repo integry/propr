@@ -125,6 +125,10 @@ export interface TaskInfo {
   /** Normalized by the API: `true` whenever any history entry belongs to an ultrafix cycle. */
   ultrafixCycle?: boolean;
   previewMedia?: PublishedVisualPreview[];
+  /** Set when a schedule created the task. */
+  scheduleId?: string | null;
+  /** The schedule's name; null once the schedule is deleted. */
+  scheduleName?: string | null;
 }
 
 export interface PromptData {

@@ -1,6 +1,8 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 await mock.module('@propr/core', { namedExports: {
+    MAX_UNATTENDED_MAX_CONCURRENT: 100,
+    parseUnattendedWindow: () => ({ ok: true, window: null }),
     validateModelReasoningLevel: () => ({ valid: true, value: '' }),
     validatePrReviewModelValue: async (model: string) => ({ valid: model !== 'missing', error: model === 'missing' ? 'pr_review_model is unavailable' : undefined }),
 } });

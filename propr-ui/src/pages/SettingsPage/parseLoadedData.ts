@@ -39,6 +39,9 @@ interface SettingsApiData {
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
   default_max_cost_usd?: number;
+  unattended_max_concurrent?: number;
+  unattended_window?: string;
+  unattended_window_error?: string | null;
   agent_stall_timeout_ms?: number | null;
   agent_tool_stall_timeout_ms?: number | null;
   agent_degenerate_output_limit?: number | null;
@@ -62,13 +65,24 @@ export function costCapToSave(value: string): { default_max_cost_usd?: number } 
   return Number.isFinite(amount) && amount >= 0 ? { default_max_cost_usd: amount } : {};
 }
 
-/** The spend cap and agent watchdog overrides as sent on save. */
+/** The spend cap, unattended-work admission and agent watchdog overrides as sent on save. */
 export function runLimitSettingsToSave(settings: Settings) {
   return {
     ...costCapToSave(settings.default_max_cost_usd),
+    unattended_max_concurrent: settings.unattended_max_concurrent,
+    unattended_window: settings.unattended_window.trim(),
     agent_stall_timeout_ms: settings.agent_stall_timeout_ms,
     agent_tool_stall_timeout_ms: settings.agent_tool_stall_timeout_ms,
     agent_degenerate_output_limit: settings.agent_degenerate_output_limit
+  };
+}
+
+/** Unattended-work admission settings; an older server omits them (limit 1, no window). */
+function unattendedAdmissionSettings(data: SettingsApiData): Pick<Settings, 'unattended_max_concurrent' | 'unattended_window' | 'unattended_window_error'> {
+  return {
+    unattended_max_concurrent: typeof data.unattended_max_concurrent === 'number' ? data.unattended_max_concurrent : 1,
+    unattended_window: typeof data.unattended_window === 'string' ? data.unattended_window : '',
+    unattended_window_error: data.unattended_window_error ?? null,
   };
 }
 
@@ -99,6 +113,7 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     ultrafix_max_cycles: settingsData.ultrafix_max_cycles ?? 5,
     ultrafix_pause_seconds: settingsData.ultrafix_pause_seconds ?? 60,
     default_max_cost_usd: costCapInput(settingsData.default_max_cost_usd),
+    ...unattendedAdmissionSettings(settingsData),
     agent_stall_timeout_ms: watchdogOverride(settingsData.agent_stall_timeout_ms),
     agent_tool_stall_timeout_ms: watchdogOverride(settingsData.agent_tool_stall_timeout_ms),
     agent_degenerate_output_limit: watchdogOverride(settingsData.agent_degenerate_output_limit),

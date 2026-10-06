@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Scheduled (recurring) tasks with an unattended-work admission policy**:
+  schedules run an instruction against a repository on a cron expression in an
+  IANA time zone (for example a nightly dependency patrol or flaky-test hunt).
+  Manage them in Settings → Automation → Scheduled tasks, with `propr schedule
+  add|list|remove|run-now`, through MCP (`create_schedule`, `list_schedules`,
+  `run_schedule_now`) or `/api/schedules`. A daemon tick holding a Redis lease
+  creates each due run through the same path as a REST task submission, keyed
+  `schedule:<id>:<slot>` so a slot cannot be dispatched twice. Slots missed
+  while the daemon was down are not replayed, and a new schedule never fires for
+  a past slot. Scheduled runs start only while fewer than
+  `unattended_max_concurrent` (default 1) unattended tasks are running and,
+  when `unattended_window` (for example `02:00-07:00@Europe/Riga`) is set, only
+  inside it; otherwise the slot is skipped with a timeline entry and an Inbox
+  notification. A malformed window blocks unattended work and shows a warning
+  in Settings. Manual runs, including "Run now", are exempt. Tasks record their
+  `schedule_id` and show "Scheduled: <name>" in task lists, task details, Inbox
+  notifications and the GitHub issue body. A schedule pauses itself after three
+  consecutive failed runs and notifies its owner; "Run now" re-enables it.
 - **Persisted review scores and per-model review quality**: every `/review`
   and Ultrafix review cycle that produces a parsed `Score: N/10` now writes a
   `review_scores` row with the reviewer and implementer agent and model, blocker

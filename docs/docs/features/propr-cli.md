@@ -457,6 +457,24 @@ propr todo category move <id> 1
 propr todo category delete <id>          # Its todos become uncategorized
 ```
 
+## Scheduled Tasks
+
+Run an instruction against a repository on a cron timetable. See [Scheduled Tasks](./scheduled-tasks.md) for timing rules and the unattended-work admission policy.
+
+```bash
+propr schedule add "Upgrade outdated dependencies" --repo acme/api \
+  --cron "0 2 * * *" --timezone Europe/Riga -n "Dependency patrol"
+  # Instruction from the argument, -f <file> or --stdin; --timezone defaults to the local zone
+  # Options: -a <agent> -m <model> --ultrafix [--ultrafix-goal N --ultrafix-max-cycles N]
+  #          --auto-merge --max-cost-usd <usd> --disabled -j
+propr schedule list                      # All repositories; -p/--repo to filter, -j for JSON
+propr schedule run-now <schedule-id>     # Manual run; re-enables a paused schedule
+propr schedule remove <schedule-id>      # -f skips the confirmation
+
+propr setting update unattended_max_concurrent 2
+propr setting update unattended_window 02:00-07:00@Europe/Riga
+```
+
 ## Settings, Logs, and System
 
 ```bash

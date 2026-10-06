@@ -404,6 +404,30 @@ propr todo category move <id> 1                   # Move to position
 
 ---
 
+### Scheduled Tasks
+
+A schedule starts an ordinary task (a GitHub issue implemented by an agent)
+every time its cron expression fires, on behalf of the user who created it.
+
+```bash
+# Create (instruction from an argument, --file or --stdin)
+propr schedule add -p owner/repo --cron "0 3 * * 1" "Update outdated dependencies"
+propr schedule add --repo owner/repo --cron "30 8 * * 1-5" --timezone Europe/Berlin --file triage.md
+propr schedule add --cron "0 0 1 * *" -a codex -m <model> --ultrafix --auto-merge --max-cost-usd 5 "Refresh the changelog"
+propr schedule add --cron "0 6 * * *" --disabled --name "Morning triage" "Triage new issues"
+
+# Inspect, run and remove
+propr schedule list                         # All schedules (-p/--repo to filter, --json)
+propr schedule run-now <schedule-id>        # Start one run now (re-enables a paused schedule)
+propr schedule remove <schedule-id>         # Delete (with confirmation; --force to skip)
+```
+
+`--timezone` defaults to this machine's IANA time zone. Ultrafix bounds
+(`--ultrafix-goal`, `--ultrafix-max-cycles`) require `--ultrafix` and otherwise
+come from instance settings at each run.
+
+---
+
 ### Settings
 
 ```bash

@@ -25,6 +25,13 @@ const DEFAULT_WATCHDOG_SETTINGS_RESPONSE = {
     agent_watchdog_effective: { agent_stall_timeout_ms: 600_000, agent_tool_stall_timeout_ms: 1_800_000, agent_degenerate_output_limit: 50 },
 };
 
+/** No stored unattended-admission settings: one at a time, no window. */
+const DEFAULT_UNATTENDED_SETTINGS_RESPONSE = {
+    unattended_max_concurrent: 1,
+    unattended_window: '',
+    unattended_window_error: null,
+};
+
 after(async () => {
     await configManager.closeConnection();
 });
@@ -1176,6 +1183,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_escalation_patience: 3,
             ultrafix_escalation_max_reasoning_levels: 2,
             ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
+            ...DEFAULT_UNATTENDED_SETTINGS_RESPONSE,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1266,6 +1274,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_escalation_patience: 3,
             ultrafix_escalation_max_reasoning_levels: 2,
             ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
+            ...DEFAULT_UNATTENDED_SETTINGS_RESPONSE,
         });
         assert.strictEqual(settingsMock.mock.calls.length, 1);
         assert.strictEqual(autoFollowupMock.mock.calls.length, 1);
@@ -1348,6 +1357,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_escalation_patience: 3,
             ultrafix_escalation_max_reasoning_levels: 2,
             ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
+            ...DEFAULT_UNATTENDED_SETTINGS_RESPONSE,
             invalid_settings: {
                 auto_followup_score_threshold: 'invalid',
             },
@@ -3060,6 +3070,8 @@ describe('config route follow-up helpers', () => {
                 ultrafix_escalation_patience: 3,
                 ultrafix_escalation_max_reasoning_levels: 2,
                 ...DEFAULT_WATCHDOG_SETTINGS_RESPONSE,
+                ...DEFAULT_UNATTENDED_SETTINGS_RESPONSE,
+            ...DEFAULT_UNATTENDED_SETTINGS_RESPONSE,
             });
         } finally {
             if (previousPlannerContextModel === undefined) {

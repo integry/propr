@@ -29,6 +29,8 @@ export interface TaskSubmission {
   retry_event_id: string | null;
   dispatch_complete: boolean;
   error: string | null;
+  /** Set when a schedule created this submission; copied onto every task it starts. */
+  schedule_id?: string | null;
 }
 export interface SubmissionPayload {
   instruction: string;
@@ -48,6 +50,9 @@ export interface SubmissionPayload {
   ultrafixMaxCycles?: number | null;
   /** Per-task spend cap in USD; beats `.propr/workflow.yml` and the instance default. */
   maxCostUsd?: number;
+  /** Provenance of a scheduled run, shown as "Scheduled: <name>" on the issue. */
+  scheduleId?: string;
+  scheduleName?: string;
 }
 export const submissionMarker = (id: string): string => `<!-- propr-task-submission:${id} -->`;
 export const submissionAssetPath = (file: SubmissionAttachment, issue: string | number): string =>
@@ -154,7 +159,7 @@ export async function resumeTaskSubmission(database: Knex, id: string, services:
   return read();
 }
 
-export async function insertTaskSubmission(database: Knex, input: Pick<TaskSubmission, 'user_id' | 'submission_key' | 'payload_hash' | 'repository' | 'payload' | 'attachments'>): Promise<TaskSubmission> {
+export async function insertTaskSubmission(database: Knex, input: Pick<TaskSubmission, 'user_id' | 'submission_key' | 'payload_hash' | 'repository' | 'payload' | 'attachments'> & Pick<Partial<TaskSubmission>, 'schedule_id'>): Promise<TaskSubmission> {
   await database('task_submissions').insert({ id: randomUUID(), ...input }).onConflict(['user_id', 'submission_key']).ignore();
   const row = (await database<TaskSubmission>('task_submissions').where({ user_id: input.user_id, submission_key: input.submission_key }).first())!;
   if (row.payload_hash !== input.payload_hash) throw Object.assign(new Error('Submission identity was already used with different content'), { status: 409 });
@@ -167,4 +172,6 @@ export async function associateSubmissionTask(database: Knex, id: string, taskId
     task_id: database.raw('coalesce(task_id, ?)', [taskId]),
     latest_task_id: taskId,
   });
+  const submission = await database<TaskSubmission>('task_submissions').where({ id }).first();
+  if (submission?.schedule_id) await database('tasks').where({ task_id: taskId }).update({ schedule_id: submission.schedule_id });
 }

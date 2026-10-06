@@ -18,6 +18,7 @@ import {
   type NotificationUpdatePayload,
   type TaskUpdatePayload,
 } from '@propr/shared';
+import { loadScheduleProvenance, scheduledLabel, type ScheduleProvenance } from './scheduleProvenance.js';
 
 function taskNotificationRecap(historyMetadata: Record<string, unknown>, payload: TaskUpdatePayload): string | undefined {
   const terminalReason = payload.metadata?.terminalReason;
@@ -113,6 +114,8 @@ interface TaskContext {
   followupEligible: boolean;
   reviewFollowupEligible: boolean;
   pullRequestFollowupEligible: boolean;
+  /** Set when a schedule created the task; its notifications say "Scheduled: <name>". */
+  schedule?: ScheduleProvenance;
 }
 
 interface TaskEventProjection {
@@ -323,6 +326,24 @@ function completedPullRequestTitle(context: TaskContext, prNumber: number): stri
     case 'switch': return `Model switch completed for PR #${prNumber}`;
     default: return context.description ?? `PR #${prNumber} ready for review`;
   }
+}
+
+/** A scheduled task's notification title leads with "Scheduled: <name>". */
+function scheduledTitle(context: TaskContext, title: string): string {
+  return context.schedule ? `${scheduledLabel(context.schedule.scheduleName)} · ${title}` : title;
+}
+
+/** The goal and schedule a task notification belongs to, so the Inbox can show and filter on them. */
+function taskEventMetadata(context: TaskContext): { metadata?: JsonObject } {
+  const { goalId, schedule } = context;
+  if (!goalId && !schedule) return {};
+  return {
+    metadata: {
+      ...(goalId ? { goalId } : {}),
+      ...(schedule ? { scheduleId: schedule.scheduleId } : {}),
+      ...(schedule?.scheduleName ? { scheduleName: schedule.scheduleName } : {}),
+    },
+  };
 }
 
 function stableKey(scope: string, ...parts: unknown[]): string {
@@ -956,11 +977,11 @@ export class NotificationProjectionService {
         ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
         ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
       },
-      title: context.subjectTitle ?? (context.prNumber !== undefined
+      title: scheduledTitle(context, context.subjectTitle ?? (context.prNumber !== undefined
         ? `Task ${payload.state} for PR #${context.prNumber}`
         : context.issueNumber !== undefined
           ? `Task ${payload.state} for issue #${context.issueNumber}`
-          : `Task ${payload.state}`),
+          : `Task ${payload.state}`)),
       body: terminalReason ? formatTaskTerminalReason(terminalReason) : (context.description
         ? `Could not complete ${quotedDescription(context.description)}.`
         : `Work for ${context.repository} did not complete.`),
@@ -969,7 +990,7 @@ export class NotificationProjectionService {
         hasPullRequest: pullRequestUrl !== undefined,
       }),
       ...pullRequestAction(pullRequestUrl),
-      ...(context.goalId ? { metadata: { goalId: context.goalId } } : {}),
+      ...taskEventMetadata(context),
       occurredAt,
     }, recipients, context.repository, context.prNumber);
   }
@@ -986,14 +1007,14 @@ export class NotificationProjectionService {
         type: 'review', repository: context.repository,
         prNumber, taskId: payload.taskId,
       },
-      title: context.subjectTitle ?? `Review completed for PR #${prNumber}`,
+      title: scheduledTitle(context, context.subjectTitle ?? `Review completed for PR #${prNumber}`),
       body: context.recap ?? `Review of PR #${prNumber} completed; open details for the full findings.`,
       actions: taskActions({
         followup: context.reviewFollowupEligible,
         hasPullRequest: pullRequestUrl !== undefined,
       }),
       ...pullRequestAction(pullRequestUrl),
-      ...(context.goalId ? { metadata: { goalId: context.goalId } } : {}),
+      ...taskEventMetadata(context),
       occurredAt,
     }, recipients, context.repository, prNumber);
   }
@@ -1011,9 +1032,9 @@ export class NotificationProjectionService {
         ...(context.issueNumber === undefined ? {} : { issueNumber: context.issueNumber }),
         ...(context.prNumber === undefined ? {} : { prNumber: context.prNumber }),
       },
-      title: context.subjectTitle ?? context.description ?? (context.issueNumber === undefined
+      title: scheduledTitle(context, context.subjectTitle ?? context.description ?? (context.issueNumber === undefined
         ? 'Implementation completed'
-        : `Issue #${context.issueNumber} implementation completed`),
+        : `Issue #${context.issueNumber} implementation completed`)),
       body: context.recap ?? distinctDescription(context) ?? (context.issueNumber === undefined
         ? 'Open task details to review the completed work.'
         : `Issue #${context.issueNumber} is complete. Open task details to review the result.`),
@@ -1022,7 +1043,7 @@ export class NotificationProjectionService {
         hasPullRequest: pullRequestUrl !== undefined,
       }),
       ...pullRequestAction(pullRequestUrl),
-      ...(context.goalId ? { metadata: { goalId: context.goalId } } : {}),
+      ...taskEventMetadata(context),
       occurredAt,
     }, recipients, context.repository, context.prNumber);
   }
@@ -1043,12 +1064,12 @@ export class NotificationProjectionService {
         target: {
           type: 'pull_request', repository: context.repository, prNumber,
         },
-        title: completedPullRequestTitle(context, prNumber),
+        title: scheduledTitle(context, completedPullRequestTitle(context, prNumber)),
         body: context.recap ?? `PR #${prNumber} is ready for review.`,
         // Persist only the completing implementation identity, never arbitrary task metadata.
         metadata: {
           completedImplementationTaskId: payload.taskId,
-          ...(context.goalId ? { goalId: context.goalId } : {}),
+          ...taskEventMetadata(context).metadata,
           completionType: context.commandMode ?? 'implementation',
         },
         actions: [
@@ -1074,10 +1095,11 @@ export class NotificationProjectionService {
 
   private async loadTaskContext(payload: TaskUpdatePayload): Promise<TaskContext | undefined> {
     const task = await this.database('tasks')
-      .select('repository', 'issue_number', 'pr_number', 'task_type', 'initial_job_data')
+      .select('repository', 'issue_number', 'pr_number', 'task_type', 'initial_job_data', 'schedule_id')
       .where({ task_id: payload.taskId })
       .first() as Record<string, unknown> | undefined;
     if (!task) return undefined;
+    const schedule = await loadScheduleProvenance(this.database, task.schedule_id);
     const initial = parseJsonObject(task.initial_job_data);
     const historyMetadata = await this.loadCompletedHistoryMetadata(payload);
     const repository = typeof task.repository === 'string'
@@ -1106,6 +1128,7 @@ export class NotificationProjectionService {
       followupEligible: supportsTaskFollowup(task, issueNumber),
       reviewFollowupEligible: supportsTaskFollowup(task, prNumber),
       pullRequestFollowupEligible: supportsPullRequestFollowup(task, prNumber),
+      ...(schedule ? { schedule } : {}),
     };
   }
 

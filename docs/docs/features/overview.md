@@ -57,6 +57,7 @@ Next: follow the [issue-to-PR walkthrough](../tutorials/end-to-end-workflow.md),
 ## Additional ways to work
 
 - [Launch a task](./launching-work.md) directly from an instruction or repository to-do.
+- [Schedule recurring tasks](./scheduled-tasks.md), such as a nightly dependency patrol, within an unattended-work window.
 - [Run a goal](./goals.md) and steer its native coding-agent session.
 - [Use Inbox and push](./inbox.md) to follow work across devices.
 - [Connect an MCP client](./mcp.md) with scoped repository consent.

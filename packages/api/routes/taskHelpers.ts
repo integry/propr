@@ -5,6 +5,7 @@ import { QUEUED_TASK_STATES, RUNNING_TASK_STATES } from './dashboardQueries.js';
 import { recordedRunScore } from './runScore.js';
 import { loadAttentionTaskIds } from './dashboardWorkQueries.js';
 import { narrowToTaskPage, type TaskSelection } from './taskGrouping.js';
+import { loadScheduleNames, scheduleProvenance } from '../services/scheduleProvenance.js';
 
 export interface TaskQuery {
   db: Knex;
@@ -228,6 +229,8 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
     'sql.tasks.enrichment',
     async () => enrichTaskPage(db, taskIds, Boolean(excludeMerged))
   );
+  // Schedule names are read for the page only, so the list and count queries stay untouched.
+  const scheduleNames = await loadScheduleNames(db, pageTasks.map((row: Record<string, unknown>) => row.schedule_id));
 
   // Completion comments stay with their run even when later entries (e.g. cleanup) carry no metadata.
   const media = await (query.previewReader ?? previewMediaReader).project(pageTasks.map((row: Record<string, unknown>) =>
@@ -239,6 +242,7 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
       plan_issue_status: planStatusByTask.get(String(row.task_id)) ?? null,
     }),
     score: scoreByTask.get(String(row.task_id)) ?? null,
+    ...scheduleProvenance(row.schedule_id, scheduleNames),
     ...(media[index].previews.length ? { previewMedia: media[index].previews } : {}),
   }));
   return { tasks, ...page };

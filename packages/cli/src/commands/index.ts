@@ -14,6 +14,7 @@ export { createSettingCommand } from "./settingCommands.js";
 export { createConfigCommand } from "./configCommands.js";
 export { createLogCommand } from "./logCommands.js";
 export { createTodoCommand } from "./todoCommands.js";
+export { createScheduleCommand } from "./scheduleCommands.js";
 export { createRemoteStatusCommand, createQueueCommand, createBackendCommand } from "./systemCommands.js";
 export { createStatsCommand } from "./statsCommands.js";
 export { createInitCommand } from "./initCommands.js";

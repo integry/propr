@@ -305,6 +305,15 @@ export function rowScore(row: TaskRowView): number | null {
   return null;
 }
 
+/**
+ * The schedule that created the task, when one did: a scheduled task's
+ * follow-up runs belong to the same task, so any run carrying it names it.
+ */
+export function rowSchedule(row: TaskRowView): { scheduleId: string; scheduleName: string | null } | null {
+  const task = [row.task, ...row.earlierRuns.map(run => run.task)].find(candidate => candidate.scheduleId);
+  return task?.scheduleId ? { scheduleId: task.scheduleId, scheduleName: task.scheduleName ?? null } : null;
+}
+
 /** The list card shows at most this many runs, the newest; a `+N` chip counts the rest. */
 export const RUN_TRACK_LIMIT = 4;
 

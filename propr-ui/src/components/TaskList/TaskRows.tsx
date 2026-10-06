@@ -9,8 +9,9 @@ import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
 import { RunTrack } from './RunTrack';
 import { ScoreBadge } from './ScoreBadge';
+import { ScheduledBadge } from '../ScheduledBadge';
 import {
-  buildTaskRuns, describeRun, pluralize, RUN_TRACK_LIMIT, rowContainsTask, rowScore, runScore, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
+  buildTaskRuns, describeRun, pluralize, RUN_TRACK_LIMIT, rowContainsTask, rowSchedule, rowScore, runScore, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
   type TaskRowView, type TaskRunView,
 } from './rowModel';
 
@@ -217,10 +218,12 @@ export const RollupLine: React.FC<{
 }> = ({ row, expanded, runsId, onToggle, selectsInPlace = false }) => {
   const hasRuns = row.earlierRuns.length > 0;
   const summary = row.detail ?? row.outcome;
+  const schedule = rowSchedule(row);
   return (
     <div className="mt-0.5 flex h-5 min-w-0 items-center gap-1.5 text-xs leading-5 text-slate-500">
       {hasRuns && <RunCountChip row={row} toggle={selectsInPlace ? undefined : { expanded, runsId, onToggle }} />}
       {row.type && <span className="flex-none"><WorkTypeBadge type={row.type} /></span>}
+      {schedule && <ScheduledBadge scheduleName={schedule.scheduleName} />}
       {summary && <span className="min-w-0 truncate" title={summary}>{summary}</span>}
       <PreviewCountBadge count={row.previewCount} />
     </div>
