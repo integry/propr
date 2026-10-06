@@ -206,3 +206,15 @@ test("repo list shows the override or the inherited instance default", async () 
   assert.match(text, /integry\/always.*\bOff\b/);
   assert.match(text, /integry\/inherit.*Inherit \(On\)/);
 });
+
+test("repo add sends an explicit inherit as null and omits the field when no flag is given", async () => {
+  const existing: MonitoredRepo = { id: "repo-1", name: "integry/propr", enabled: true, autoFollowupOnFailedCi: false, autoResolveMergeConflicts: true };
+
+  const inherited = await runRepoWrite(["add", "integry/other", "--auto-resolve-conflicts", "inherit"], [existing]);
+  assert.equal("autoResolveMergeConflicts" in (inherited[1] ?? {}), true);
+  assert.equal(inherited[1]?.autoResolveMergeConflicts, null);
+  assert.equal(inherited[0]?.autoResolveMergeConflicts, true);
+
+  const omitted = await runRepoWrite(["add", "integry/other"], [existing]);
+  assert.equal("autoResolveMergeConflicts" in (omitted[1] ?? {}), false);
+});

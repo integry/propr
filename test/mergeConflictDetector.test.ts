@@ -122,16 +122,36 @@ await mock.module('../packages/core/src/queue/taskQueue.js', {
 
 // Import the module under test
 const { handlePullRequestConflictDetection, handlePushConflictDetection, handleMergeCommand } = await import('../packages/core/src/webhook/mergeConflictDetector.js');
-const { sweepConflictedPullRequests, getMergeConflictSweepIntervalMs, classifyMergeability } = await import('../packages/core/src/webhook/mergeConflictAutoResolve.js');
+const { sweepConflictedPullRequests, getMergeConflictSweepIntervalMs, classifyMergeability, RESERVE_CONFLICT_ATTEMPT_SCRIPT, RELEASE_CONFLICT_ATTEMPT_SCRIPT } = await import('../packages/core/src/webhook/mergeConflictAutoResolve.js');
 
 const sleeps: number[] = [];
 const deps = { sleep: async (ms: number) => { sleeps.push(ms); } };
 
-// Mock Redis client factory supporting SET NX EX, INCR/DECR and EXPIRE
+// Mock Redis client factory supporting SET NX EX, INCR/DECR, EXPIRE and the
+// reservation scripts (each EVAL runs synchronously, i.e. atomically, like Redis).
 function createMockRedis() {
     const store = new Map<string, string>();
     const ttls = new Map<string, number>();
     return {
+        eval: mock.fn(async (script: string, _numKeys: number, dedupKey: string, attemptsKey: string, ...args: Array<string | number>) => {
+            const attempts = Number(store.get(attemptsKey) ?? 0);
+            if (script === RESERVE_CONFLICT_ATTEMPT_SCRIPT) {
+                const [value, dedupTtl, limit, window] = args;
+                if (store.has(dedupKey)) return 'already_queued';
+                if (attempts >= Number(limit)) return 'attempt_limit';
+                store.set(dedupKey, String(value));
+                ttls.set(dedupKey, Number(dedupTtl));
+                store.set(attemptsKey, String(attempts + 1));
+                if (!ttls.has(attemptsKey)) ttls.set(attemptsKey, Number(window));
+                return 'reserved';
+            }
+            if (script === RELEASE_CONFLICT_ATTEMPT_SCRIPT) {
+                store.delete(dedupKey);
+                if (attempts > 0) store.set(attemptsKey, String(attempts - 1));
+                return 1;
+            }
+            throw new Error('unexpected script');
+        }),
         get: mock.fn(async (key: string) => store.get(key) ?? null),
         set: mock.fn(async (key: string, value: string, _ex: 'EX', seconds: number, nx: 'NX') => {
             if (nx === 'NX' && store.has(key)) return null;
@@ -198,9 +218,11 @@ function pullRequest(options: PullRequestState = {}) {
  */
 function routeGitHub(reads: Record<number, PullRequestState[]>, list: number[] = Object.keys(reads).map(Number)) {
     const counters = new Map<number, number>();
-    mockOctokit.request.mock.mockImplementation(async (route: string, params: { pull_number?: number }) => {
+    mockOctokit.request.mock.mockImplementation(async (route: string, params: { pull_number?: number; page?: number; per_page?: number }) => {
         if (route === 'GET /repos/{owner}/{repo}/pulls') {
-            return { data: list.map(number => ({ number })) };
+            const perPage = params.per_page ?? 30;
+            const start = ((params.page ?? 1) - 1) * perPage;
+            return { data: list.slice(start, start + perPage).map(number => ({ number })) };
         }
         if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
             const number = params.pull_number as number;
@@ -381,6 +403,33 @@ describe('mergeConflictDetector - pull_request events', () => {
         assert.equal(mockQueueAdd.mock.callCount(), 3);
         assert.deepEqual(skipReasons('warn'), ['attempt_limit']);
     });
+
+    test('concurrent detectors for distinct conflict states cannot exceed the attempt limit', async () => {
+        const redis = createMockRedis();
+        redis._store.set('merge-conflict-attempts:test-owner/test-repo#42', '2');
+        routeGitHub({ 42: [{ baseSha: 'base-a' }, { baseSha: 'base-b' }] });
+        const results = await Promise.all([
+            handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps),
+            handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps),
+        ]);
+        assert.deepEqual(results.map(result => result?.reason ?? result?.outcome).sort(), ['attempt_limit', 'queued']);
+        assert.equal(mockQueueAdd.mock.callCount(), 1);
+        assert.equal(redis._store.get('merge-conflict-attempts:test-owner/test-repo#42'), '3');
+        const baseShas = mockQueueAdd.mock.calls.map(call => (call.arguments[1] as { baseSha: string }).baseSha);
+        assert.equal(redis._store.has(`merge-conflict-queued:test-owner/test-repo#42:head-sha-123:${baseShas[0]}`), true);
+        assert.equal([...redis._store.keys()].filter(key => key.startsWith('merge-conflict-queued:')).length, 1, 'the refused state leaves no dedup key');
+    });
+
+    test('an enqueue failure after the window expired does not leave a negative attempt counter', async () => {
+        routeGitHub({ 42: [{}] });
+        const redis = createMockRedis();
+        mockQueueAdd.mock.mockImplementationOnce(async () => {
+            redis._store.delete('merge-conflict-attempts:test-owner/test-repo#42');
+            throw new Error('redis down');
+        });
+        await assert.rejects(handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps), /redis down/);
+        assert.equal(redis._store.has('merge-conflict-attempts:test-owner/test-repo#42'), false);
+    });
 });
 
 describe('mergeConflictDetector - push events', () => {
@@ -410,8 +459,8 @@ describe('mergeConflictDetector - push events', () => {
 
         const listCall = mockOctokit.request.mock.calls.find(call => call.arguments[0] === 'GET /repos/{owner}/{repo}/pulls');
         assert.deepEqual(
-            { base: (listCall?.arguments[1] as Record<string, unknown>).base, per_page: (listCall?.arguments[1] as Record<string, unknown>).per_page },
-            { base: 'main', per_page: 30 }
+            { base: (listCall?.arguments[1] as Record<string, unknown>).base, per_page: (listCall?.arguments[1] as Record<string, unknown>).per_page, page: (listCall?.arguments[1] as Record<string, unknown>).page },
+            { base: 'main', per_page: 30, page: 1 }
         );
     });
 
@@ -441,6 +490,40 @@ describe('mergeConflictDetector - sweep', () => {
         const [, data] = mockQueueAdd.mock.calls[0].arguments as [string, Record<string, unknown>];
         assert.equal(data.triggerSource, 'sweep');
         assert.ok(mockOctokit.request.mock.calls.every(call => (call.arguments[1] as { repo: string }).repo === 'on'));
+    });
+
+    test('successive sweeps advance through pages so a PR beyond the first page is evaluated, then wrap', async () => {
+        storedConfig.set('repos_to_monitor', [{ id: '1', name: 'test-owner/test-repo', enabled: true }]);
+        const reads: Record<number, PullRequestState[]> = {};
+        for (let number = 1; number <= 30; number++) reads[number] = [{ mergeable: true, mergeableState: 'clean' }];
+        reads[31] = [{}];
+        routeGitHub(reads);
+        const redis = createMockRedis();
+        const sweep = () => sweepConflictedPullRequests({ repositories: ['test-owner/test-repo'], redisClient: redis, deps });
+        const listedPages = () => mockOctokit.request.mock.calls
+            .filter(call => call.arguments[0] === 'GET /repos/{owner}/{repo}/pulls')
+            .map(call => (call.arguments[1] as { page: number }).page);
+
+        const first = await sweep();
+        assert.equal(first.length, 30);
+        assert.ok(first.every(result => result.reason === 'not_conflicted'));
+
+        const second = await sweep();
+        assert.deepEqual(second.map(result => [result.prNumber, result.outcome]), [[31, 'queued']]);
+
+        const third = await sweep();
+        assert.equal(third[0]?.prNumber, 1, 'the cursor wraps to the first page after the last');
+        assert.deepEqual(listedPages(), [1, 2, 1]);
+    });
+
+    test('a cursor past the end (PRs closed since) wraps to the first page in the same sweep', async () => {
+        storedConfig.set('repos_to_monitor', [{ id: '1', name: 'test-owner/test-repo', enabled: true }]);
+        routeGitHub({ 42: [{}] });
+        const redis = createMockRedis();
+        redis._store.set('merge-conflict-fanout-cursor:test-owner/test-repo:*', '3');
+        const results = await sweepConflictedPullRequests({ repositories: ['test-owner/test-repo'], redisClient: redis, deps });
+        assert.deepEqual(results.map(result => [result.prNumber, result.outcome]), [[42, 'queued']]);
+        assert.equal(redis._store.get('merge-conflict-fanout-cursor:test-owner/test-repo:*'), '1');
     });
 
     test('runs every 5 minutes in polling mode and every 15 minutes otherwise', () => {

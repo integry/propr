@@ -65,11 +65,12 @@ export interface ConflictPullRequest {
 
 export interface MergeConflictRedis {
     get(key: string): Promise<string | null>;
-    set(key: string, value: string, secondsToken: 'EX', seconds: number, nx: 'NX'): Promise<unknown>;
+    set(key: string, value: string, secondsToken: 'EX', seconds: number, nx?: 'NX'): Promise<unknown>;
     del(key: string): Promise<unknown>;
     incr(key: string): Promise<number>;
     decr(key: string): Promise<number>;
     expire(key: string, seconds: number): Promise<unknown>;
+    eval(script: string, numKeys: number, ...args: Array<string | number>): Promise<unknown>;
 }
 
 /** Mergeability is re-read after each delay while GitHub reports `mergeable: null`. */
@@ -79,6 +80,8 @@ export const CONFLICT_ATTEMPT_WINDOW_SECONDS = 24 * 3600;
 export const MAX_CONFLICT_ATTEMPTS_PER_WINDOW = 3;
 /** Open PRs evaluated per base-branch push or sweep, per repository. */
 export const MAX_PULL_REQUESTS_PER_FANOUT = 30;
+/** How long a fan-out page cursor survives without being advanced. */
+export const FANOUT_CURSOR_TTL_SECONDS = 7 * 24 * 3600;
 
 export interface MergeConflictDetectionDeps {
     sleep?: (ms: number) => Promise<void>;
@@ -206,28 +209,49 @@ function skip(
 }
 
 /**
- * Reserves a resolution attempt for one conflict state. The dedup key is set
- * atomically (NX) so concurrent triggers cannot double-queue.
+ * KEYS[1] = dedup key, KEYS[2] = per-PR attempts key;
+ * ARGV = [dedup value, dedup TTL, attempt limit, attempt window].
+ * Checking the dedup key and the per-PR allowance, then recording both, happens
+ * in one script so concurrent detectors for different conflict states cannot
+ * each read a stale count and exceed the limit.
  */
+export const RESERVE_CONFLICT_ATTEMPT_SCRIPT = `
+if redis.call('EXISTS', KEYS[1]) == 1 then return 'already_queued' end
+local attempts = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+if attempts >= tonumber(ARGV[3]) then return 'attempt_limit' end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+local count = redis.call('INCR', KEYS[2])
+if count == 1 or redis.call('TTL', KEYS[2]) < 0 then redis.call('EXPIRE', KEYS[2], ARGV[4]) end
+return 'reserved'
+`;
+
+/**
+ * KEYS[1] = dedup key, KEYS[2] = per-PR attempts key. Returns the allowance only
+ * while the counter still exists, so a release after the window expired cannot
+ * leave a negative, TTL-less counter that grants extra attempts.
+ */
+export const RELEASE_CONFLICT_ATTEMPT_SCRIPT = `
+redis.call('DEL', KEYS[1])
+local attempts = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
+if attempts > 0 then redis.call('DECR', KEYS[2]) end
+return 1
+`;
+
+/** Reserves a resolution attempt for one conflict state, atomically enforcing the per-PR allowance. */
 async function reserveAttempt(
     redisClient: MergeConflictRedis,
     keys: { dedupKey: string; attemptsKey: string }
 ): Promise<'reserved' | 'already_queued' | 'attempt_limit'> {
-    const attempts = Number(await redisClient.get(keys.attemptsKey)) || 0;
-    const reserved = await redisClient.set(keys.dedupKey, Date.now().toString(), 'EX', CONFLICT_DEDUP_TTL_SECONDS, 'NX');
-    if (reserved !== 'OK') return 'already_queued';
-    if (attempts >= MAX_CONFLICT_ATTEMPTS_PER_WINDOW) {
-        await redisClient.del(keys.dedupKey);
-        return 'attempt_limit';
-    }
-    const count = await redisClient.incr(keys.attemptsKey);
-    if (count === 1) await redisClient.expire(keys.attemptsKey, CONFLICT_ATTEMPT_WINDOW_SECONDS);
-    return 'reserved';
+    const result = await redisClient.eval(
+        RESERVE_CONFLICT_ATTEMPT_SCRIPT, 2, keys.dedupKey, keys.attemptsKey,
+        Date.now().toString(), CONFLICT_DEDUP_TTL_SECONDS, MAX_CONFLICT_ATTEMPTS_PER_WINDOW, CONFLICT_ATTEMPT_WINDOW_SECONDS,
+    );
+    if (result === 'reserved' || result === 'already_queued' || result === 'attempt_limit') return result;
+    throw new Error(`Unexpected merge conflict reservation result: ${String(result)}`);
 }
 
 async function releaseAttempt(redisClient: MergeConflictRedis, keys: { dedupKey: string; attemptsKey: string }): Promise<void> {
-    await redisClient.del(keys.dedupKey);
-    await redisClient.decr(keys.attemptsKey);
+    await redisClient.eval(RELEASE_CONFLICT_ATTEMPT_SCRIPT, 2, keys.dedupKey, keys.attemptsKey);
 }
 
 /**
@@ -312,10 +336,61 @@ export async function maybeQueueConflictResolution(options: MaybeQueueConflictRe
     return { outcome: 'queued', prNumber, repository, jobId };
 }
 
+function fanoutCursorKey(owner: string, repoName: string, baseBranch?: string): string {
+    return `merge-conflict-fanout-cursor:${owner}/${repoName}:${baseBranch ?? '*'}`.toLowerCase();
+}
+
 /**
- * Evaluates open PRs targeting `baseBranch` (or every open PR when omitted).
- * Every PR is read once first so GitHub starts computing mergeability for all
- * of them before any one is polled.
+ * Lists one bounded page of open PRs. Successive fan-outs for the same
+ * repository and base advance a stored page cursor and wrap to the first page
+ * after the last, so every open PR is eventually evaluated even when there are
+ * more than one page of them. Oldest-first ordering keeps pages stable as new
+ * PRs are opened.
+ */
+async function listFanoutPage(
+    octokit: Octokit,
+    options: { owner: string; repoName: string; baseBranch?: string; redisClient: MergeConflictRedis },
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<Array<{ number: number }>> {
+    const { owner, repoName, baseBranch, redisClient } = options;
+    const cursorKey = fanoutCursorKey(owner, repoName, baseBranch);
+    let page = 1;
+    try {
+        const stored = Number.parseInt(await redisClient.get(cursorKey) ?? '', 10);
+        if (Number.isInteger(stored) && stored > 1) page = stored;
+    } catch (error) {
+        log.warn({ repository: `${owner}/${repoName}`, baseBranch, error: (error as Error).message }, 'Merge conflict auto-resolve: failed to read fan-out cursor; starting from the first page');
+    }
+
+    const listPage = async (pageNumber: number) => {
+        const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+            owner, repo: repoName, state: 'open', sort: 'created', direction: 'asc',
+            per_page: MAX_PULL_REQUESTS_PER_FANOUT, page: pageNumber,
+            ...(baseBranch ? { base: baseBranch } : {}),
+        });
+        return (data as Array<{ number: number }>).slice(0, MAX_PULL_REQUESTS_PER_FANOUT);
+    };
+
+    let prs = await listPage(page);
+    if (prs.length === 0 && page > 1) {
+        // The cursor ran past the end (PRs closed since); wrap within this fan-out.
+        page = 1;
+        prs = await listPage(page);
+    }
+    const nextPage = prs.length < MAX_PULL_REQUESTS_PER_FANOUT ? 1 : page + 1;
+    try {
+        await redisClient.set(cursorKey, String(nextPage), 'EX', FANOUT_CURSOR_TTL_SECONDS);
+    } catch (error) {
+        log.warn({ repository: `${owner}/${repoName}`, baseBranch, error: (error as Error).message }, 'Merge conflict auto-resolve: failed to advance fan-out cursor');
+    }
+    return prs;
+}
+
+/**
+ * Evaluates one bounded page of open PRs targeting `baseBranch` (or every open
+ * PR when omitted); repeated calls rotate through all pages. Every PR is read
+ * once first so GitHub starts computing mergeability for all of them before any
+ * one is polled.
  */
 export async function evaluateOpenPullRequests(options: {
     owner: string;
@@ -338,11 +413,7 @@ export async function evaluateOpenPullRequests(options: {
     }
 
     const octokit = await getAuthenticatedOctokit();
-    const { data: openPRs } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
-        owner, repo: repoName, state: 'open', per_page: MAX_PULL_REQUESTS_PER_FANOUT,
-        ...(baseBranch ? { base: baseBranch } : {}),
-    });
-    const candidates = (openPRs as Array<{ number: number }>).slice(0, MAX_PULL_REQUESTS_PER_FANOUT);
+    const candidates = await listFanoutPage(octokit, { owner, repoName, baseBranch, redisClient }, log);
     log.info({ repository, baseBranch, trigger, prCount: candidates.length }, 'Merge conflict auto-resolve: evaluating open pull requests');
 
     const primed = new Map<number, ConflictPullRequest>();

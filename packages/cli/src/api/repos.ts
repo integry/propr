@@ -255,8 +255,8 @@ export interface AddRepoOptions {
   notificationsEnabled?: boolean;
 
   /**
-   * Merge-conflict auto-resolve override. When omitted or null, the repository
-   * inherits the instance default.
+   * Merge-conflict auto-resolve override. Omitted keeps the repository's stored
+   * override; null clears it so the repository inherits the instance default.
    */
   autoResolveMergeConflicts?: boolean | null;
 
@@ -385,8 +385,8 @@ export async function addRepo(
     autoFollowupOnFailedCi: options.autoFollowupOnFailedCi ?? false,
     // Omitted so the server inherits the repository-wide value (enabled for new repositories).
     ...(options.notificationsEnabled !== undefined && { notificationsEnabled: options.notificationsEnabled }),
-    // Omitted so the repository inherits the instance merge-conflict default.
-    ...(typeof options.autoResolveMergeConflicts === 'boolean' && { autoResolveMergeConflicts: options.autoResolveMergeConflicts }),
+    // Omitted keeps the stored repository-wide override; explicit null clears it (inherit the instance default).
+    ...(options.autoResolveMergeConflicts !== undefined && { autoResolveMergeConflicts: options.autoResolveMergeConflicts }),
     visualPreview: options.visualPreview ?? { enabled: false, types: ['image'] },
     alias: options.alias?.trim() || undefined,
     baseBranch: options.baseBranch?.trim() || undefined,

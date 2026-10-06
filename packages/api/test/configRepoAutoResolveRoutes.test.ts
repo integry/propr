@@ -77,6 +77,17 @@ for (const { name, previousRepos, repos, expected } of [
     expected: [['repo-main', undefined], ['repo-release', undefined]]
   },
   {
+    name: 'clears the merge-conflict override when a new branch entry is added with explicit null',
+    previousRepos: [
+      { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', autoResolveMergeConflicts: true }
+    ],
+    repos: [
+      { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', autoResolveMergeConflicts: true },
+      { id: 'repo-next', name: 'integry/propr', enabled: true, baseBranch: 'next', autoResolveMergeConflicts: null }
+    ],
+    expected: [['repo-main', undefined], ['repo-next', undefined]]
+  },
+  {
     name: 'propagates a merge-conflict override change on one branch entry to the whole repository',
     previousRepos: [
       { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main' },
