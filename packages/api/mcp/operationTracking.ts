@@ -384,7 +384,9 @@ function parseJson(raw: unknown): Record<string, unknown> | null {
  * An ultrafix command whose first review was deferred for CI before any task
  * picked it up (or whose loop stopped waiting) is not a pickup failure: report
  * the deferral reason and blocking checks from the loop's Redis state instead
- * of COMMAND_NOT_PICKED_UP.
+ * of COMMAND_NOT_PICKED_UP. The loop must have been started by this
+ * operation's own comment; a loop another command started on the same PR
+ * (possibly a newer one) never describes this operation.
  */
 // eslint-disable-next-line complexity -- each Redis record is optional and independently validated
 async function trackUnpickedUltrafix(deps: ToolDeps, row: Operation, result: ExecutionResult, receipt: Record<string, unknown>): Promise<boolean> {
@@ -399,6 +401,7 @@ async function trackUnpickedUltrafix(deps: ToolDeps, row: Operation, result: Exe
     ]);
     const loop = parseJson(loopRaw);
     if (!loop || typeof loop.workEpoch !== 'number') return false;
+    if (typeof result.commentId !== 'number' || loop.sourceCommentId !== result.commentId) return false;
     const createdAt = Number(row.created_at);
     const base: UltrafixProgress = {
       kind: 'ultrafix', goal: Number(result.goal ?? loop.goal ?? 9), maxCycles: Number(result.maxCycles ?? loop.maxCycles ?? 3),

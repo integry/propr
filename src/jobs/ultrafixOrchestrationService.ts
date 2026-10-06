@@ -65,6 +65,8 @@ export interface UltrafixLoopState {
     active: boolean;
     /** Automatic-work epoch that owns this loop state. */
     workEpoch: number;
+    /** GitHub comment ID of the `/ultrafix` command that started this loop. */
+    sourceCommentId?: number;
     /** Terminal result once the loop has stopped. */
     completionStatus: 'succeeded' | 'failed' | null;
     /** Why the loop stopped. */
@@ -108,6 +110,8 @@ export interface StartLoopOptions {
     pauseSeconds?: number;
     reviewModel?: string;
     workEpoch?: number;
+    /** GitHub comment ID of the `/ultrafix` command starting this loop. */
+    sourceCommentId?: number;
 }
 
 export interface UltrafixReadinessResult {
@@ -159,7 +163,7 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         lastAction: null,
         lastActionTimestamp: null,
         active: true,
-        workEpoch: options.workEpoch ?? 0,
+        workEpoch: options.workEpoch ?? 0, ...(options.sourceCommentId !== undefined ? { sourceCommentId: options.sourceCommentId } : {}),
         completionStatus: null,
         completionReason: null,
         finalScore: null,
