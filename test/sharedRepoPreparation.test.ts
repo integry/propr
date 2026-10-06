@@ -1,7 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert';
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { access, chmod, lchown, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { constants, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -202,16 +202,76 @@ test('a held config lock ("File exists") is retried as contention', async () => 
     assert.strictEqual(calls, 3);
 });
 
-/** Make the clone's Git directory unwritable so Git cannot create `config.lock`. */
+// Root bypasses directory permission bits, so under root the owned fixture is
+// handed to this unprivileged account and real Git runs as it instead.
+const UNPRIVILEGED_ID = 65534;
+let unprivilegedGitDir: string | undefined;
+
+function shellQuote(value: string): string {
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** A `git` on PATH that runs the real Git binary as UNPRIVILEGED_ID. */
+async function createUnprivilegedGit(): Promise<string> {
+    if (unprivilegedGitDir) return unprivilegedGitDir;
+    let realGit: string | undefined;
+    for (const dir of (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
+        const candidate = path.join(dir, 'git');
+        if (await access(candidate, constants.X_OK).then(() => true, () => false)) { realGit = candidate; break; }
+    }
+    assert.ok(realGit, 'git must be on PATH');
+    const dir = path.join(rootDir, 'unprivileged-git');
+    await mkdir(dir, { recursive: true });
+    const runner = path.join(dir, 'run.mjs');
+    await writeFile(runner, [
+        "import { spawnSync } from 'node:child_process';",
+        `const result = spawnSync(${JSON.stringify(realGit)}, process.argv.slice(2), { stdio: 'inherit', uid: ${UNPRIVILEGED_ID}, gid: ${UNPRIVILEGED_ID} });`,
+        'if (result.error) { console.error(result.error.message); process.exit(127); }',
+        'process.exit(result.status ?? 1);',
+        '',
+    ].join('\n'));
+    await writeFile(path.join(dir, 'git'), `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(runner)} "$@"\n`, { mode: 0o755 });
+    unprivilegedGitDir = dir;
+    return dir;
+}
+
+async function chownTree(target: string, id: number): Promise<void> {
+    await lchown(target, id, id);
+    for (const entry of await readdir(target, { recursive: true })) await lchown(path.join(target, entry), id, id);
+}
+
+/**
+ * Make the clone's Git directory unwritable so Git cannot create `config.lock`.
+ * Under root, the clone is chowned to an unprivileged account and Git runs as
+ * that account, so the real permission error is produced on every Linux runner.
+ */
 async function denyGitDirWrites(clonePath: string): Promise<() => Promise<void>> {
     const gitDir = path.join(clonePath, '.git');
+    if (process.getuid?.() !== 0) {
+        await chmod(gitDir, 0o555);
+        return () => chmod(gitDir, 0o755);
+    }
+    const gitBin = await createUnprivilegedGit();
+    await chownTree(clonePath, UNPRIVILEGED_ID);
+    // Let the unprivileged Git traverse the private fixture root to the clone.
+    await chmod(rootDir, 0o711);
     await chmod(gitDir, 0o555);
-    return () => chmod(gitDir, 0o755);
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${gitBin}${path.delimiter}${previousPath ?? ''}`;
+    return async () => {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        await chmod(gitDir, 0o755);
+        await chmod(rootDir, 0o700);
+        await chownTree(clonePath, 0);
+    };
 }
 
 test('an unwritable shared config fails immediately with the original error, not as lock contention', async () => {
     const clonePath = await createSharedClone('denied', LEGACY_URL);
+    const configBefore = await readLocalConfig(clonePath);
     const restore = await denyGitDirWrites(clonePath);
+    const started = Date.now();
     try {
         await assert.rejects(
             repoBranching.setupAuthenticatedRemote(hooklessGit.createHooklessGit(clonePath), REPO_URL, TOKEN, { attempts: 3, initialDelayMs: 5000, maxDelayMs: 5000 }),
@@ -226,7 +286,9 @@ test('an unwritable shared config fails immediately with the original error, not
     } finally {
         await restore();
     }
+    assert.ok(Date.now() - started < 5000, 'a permanent failure must not wait for a contention retry');
     assert.ok(!existsSync(path.join(clonePath, '.git', 'config.lock')));
+    assert.strictEqual(await readLocalConfig(clonePath), configBefore, 'existing config must be preserved');
 });
 
 test('preparation of an unwritable shared clone is not reported as lock contention', async () => {
@@ -235,7 +297,9 @@ test('preparation of an unwritable shared clone is not reported as lock contenti
     const worktreePath = path.join(rootDir, 'readonly-worktree');
     await git(clonePath, ['worktree', 'add', '--no-track', '-b', 'task-ro', worktreePath, 'origin/main']);
     await writeFile(path.join(worktreePath, 'in-progress.txt'), 'uncommitted agent work\n');
+    const configBefore = await readLocalConfig(clonePath);
     const restore = await denyGitDirWrites(clonePath);
+    const started = Date.now();
     try {
         await assert.rejects(
             repoManager.ensureRepoCloned({
@@ -252,7 +316,10 @@ test('preparation of an unwritable shared clone is not reported as lock contenti
     } finally {
         await restore();
     }
+    assert.ok(Date.now() - started < 5000, 'a permanent failure must not wait for a contention retry');
     assert.strictEqual(await readFile(path.join(worktreePath, 'in-progress.txt'), 'utf8'), 'uncommitted agent work\n');
+    assert.strictEqual(await readLocalConfig(clonePath), configBefore, 'existing config must be preserved');
+    assert.ok(existsSync(path.join(clonePath, '.git', 'HEAD')), 'shared clone must not be removed');
 });
 
 test('parallel preparation of a shared clone with active worktrees survives transient config lock contention', async () => {
