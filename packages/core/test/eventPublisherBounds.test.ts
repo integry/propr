@@ -162,13 +162,18 @@ async function deliveryRedis(t: TestContext) {
     const address = server.address();
     assert.ok(address && typeof address === 'object');
     process.env.REDIS_PORT = String(address.port);
+    const closed = new Promise<void>(resolve => server.once('close', () => resolve()));
+    const goAway = async () => {
+        server.close();
+        for (const socket of sockets) socket.destroy();
+        await closed;
+    };
     t.after(async () => {
         for (const reply of replies.splice(0)) reply();
         await closeEventPublisher();
-        for (const socket of sockets) socket.destroy();
-        await new Promise<void>(resolve => server.close(() => resolve()));
+        await goAway();
     });
-    return { sockets, frames, paused, resume: () => {
+    return { sockets, frames, paused, goAway, resume: () => {
         paused.clear();
         for (const reply of replies.splice(0)) reply();
     } };
@@ -198,6 +203,33 @@ describe('existing event stream delivery', { concurrency: false, timeout: 10_000
         assert.equal(peer.frames[1].payload.state, 'completed');
         assert.equal(await publisher.publishTaskUpdate({ taskId: 'task-2', state: 'failed' }), true);
         assert.equal(peer.frames.at(-1)?.payload.state, 'failed');
+    });
+
+    test('shutdown does not wait on a lifecycle publish queued while Redis is gone', async t => {
+        // Lifecycle streams keep their offline queue and retry forever, so a
+        // `quit` sent while reconnecting lines up behind the queued publish and
+        // is never answered. A suite's `after` hook that closes the publisher
+        // must still return instead of holding its process open.
+        const peer = await deliveryRedis(t);
+        let client!: Redis;
+        const publish = Redis.prototype.publish;
+        t.mock.method(Redis.prototype, 'publish', function (this: Redis, ...args: Parameters<typeof publish>) {
+            client = this;
+            return publish.apply(this, args);
+        });
+        const publisher = getEventPublisher();
+        assert.equal(await publisher.publishTaskUpdate({ taskId: 'task-1', state: 'processing' }), true);
+        const reconnecting = once(client, 'reconnecting');
+        await peer.goAway();
+        await reconnecting;
+        const pending = publisher.publishTaskUpdate({ taskId: 'task-1', state: 'completed' });
+        // Let the publish reach the client's offline queue before shutting down.
+        await delay(20);
+
+        const duration = await elapsedMs(closeEventPublisher);
+
+        assert.ok(duration < 5_000, `closing the publisher took ${duration}ms`);
+        assert.equal(await pending, false, 'the queued publish is released by shutdown');
     });
 
     test('a failed initial lifecycle connection does not suppress the next task event', async t => {

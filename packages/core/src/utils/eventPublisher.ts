@@ -89,6 +89,17 @@ const PUBLISH_TIMEOUT_MS = 1_000;
  */
 const PUBLISH_FAILURE_COOLDOWN_MS = 5_000;
 
+/**
+ * How long shutdown waits for Redis to acknowledge `quit` before dropping the
+ * socket instead.
+ *
+ * The lifecycle connection keeps its offline queue and unlimited retries, so
+ * `quit` lines up behind any publish Redis has not answered. Against a Redis
+ * that stopped answering - or one that is reconnecting - it would never
+ * resolve, and the caller's shutdown would hang until something killed it.
+ */
+const CLOSE_TIMEOUT_MS = 1_000;
+
 /** Each delivery policy owns its connection, retries, and failure cooldown. */
 class EventPublisherConnection {
   constructor(private readonly bestEffort: boolean) {}
@@ -103,6 +114,14 @@ class EventPublisherConnection {
   private generation = 0;
   /** Publishes awaiting an answer. The socket is only ref'd while this is > 0. */
   private inFlight = 0;
+  /**
+   * Aborted by `close()` to release publishes still waiting on Redis.
+   *
+   * ioredis does not do this itself for a client that is between reconnect
+   * attempts: `disconnect()` then cancels the retry but leaves the offline
+   * queue, and every lifecycle publish in it, pending forever.
+   */
+  private shutdown = new AbortController();
 
   /**
    * Hold the event loop open for this connection only while a publish needs it.
@@ -252,7 +271,7 @@ class EventPublisherConnection {
       this.inFlight += 1;
       this.applySocketRef(client);
       try {
-        await client.publish(channel, message);
+        await this.untilShutdown(client.publish(channel, message));
       } catch (error) {
         // A failed freshness trigger pauses only the best-effort connection;
         // lifecycle events retain their existing retry behavior.
@@ -268,6 +287,20 @@ class EventPublisherConnection {
       logger.warn({ error: (error as Error).message, channel }, 'Failed to publish event');
       return false;
     }
+  }
+
+  /** Settle with `operation`, or reject as soon as `close()` runs. */
+  private untilShutdown<T>(operation: Promise<T>): Promise<T> {
+    const { signal } = this.shutdown;
+    if (signal.aborted) return Promise.reject(new Error('EventPublisher closed'));
+    let onAbort!: () => void;
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new Error('EventPublisher closed'));
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    return Promise.race([operation, aborted]).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+    });
   }
 
   /**
@@ -295,21 +328,39 @@ class EventPublisherConnection {
     this.connectRetryAfter = 0;
     this.publishRetryAfter = 0;
     this.generation += 1;
+    const shutdown = this.shutdown;
+    this.shutdown = new AbortController();
     const client = this.redis;
     if (client) {
       this.redis = null;
       this.isInitialized = false;
+      let expire: ReturnType<typeof setTimeout> | undefined;
       try {
-        await client.quit();
+        // Only a ready client can answer `quit`; anything else would queue it
+        // behind publishes that are waiting for a connection.
+        if (client.status !== 'ready') throw new Error(`Redis is ${client.status}`);
+        const deadline = new Promise<never>((_, reject) => {
+          expire = setTimeout(
+            () => reject(new Error(`quit not answered within ${CLOSE_TIMEOUT_MS}ms`)),
+            CLOSE_TIMEOUT_MS
+          );
+        });
+        await Promise.race([client.quit(), deadline]);
       } catch (error) {
         // With the offline queue disabled a disconnected client rejects `quit`
-        // instead of answering it. Dropping the socket is the same teardown,
-        // and shutdown must not wait on an unreachable Redis either.
+        // instead of answering it, and a silent or reconnecting Redis never
+        // answers it at all. Dropping the socket is the same teardown, and
+        // shutdown must not wait on an unreachable Redis either.
         client.disconnect();
         logger.debug(
           { error: (error as Error).message },
           'EventPublisher Redis connection dropped instead of closed'
         );
+      } finally {
+        clearTimeout(expire);
+        // A clean `quit` is answered after every earlier publish, so this only
+        // releases publishes the dropped connection will never answer.
+        shutdown.abort();
       }
       logger.debug('EventPublisher Redis connection closed');
     }

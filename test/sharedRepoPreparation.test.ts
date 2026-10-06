@@ -202,16 +202,33 @@ test('a held config lock ("File exists") is retried as contention', async () => 
     assert.strictEqual(calls, 3);
 });
 
-/** Make the clone's Git directory unwritable so Git cannot create `config.lock`. */
-async function denyGitDirWrites(clonePath: string): Promise<() => Promise<void>> {
+/**
+ * Make the clone's Git directory unwritable so Git cannot create `config.lock`.
+ * Returns undefined when permission bits are not enforced (root or
+ * CAP_DAC_OVERRIDE, as on the nightly runner), since Git can then still lock.
+ */
+async function denyGitDirWrites(clonePath: string): Promise<(() => Promise<void>) | undefined> {
     const gitDir = path.join(clonePath, '.git');
     await chmod(gitDir, 0o555);
-    return () => chmod(gitDir, 0o755);
+    const restore = () => chmod(gitDir, 0o755);
+    const probe = path.join(gitDir, 'write-probe');
+    try {
+        await writeFile(probe, '', { flag: 'wx' });
+    } catch {
+        return restore;
+    }
+    await rm(probe);
+    await restore();
+    return undefined;
 }
 
-test('an unwritable shared config fails immediately with the original error, not as lock contention', async () => {
+test('an unwritable shared config fails immediately with the original error, not as lock contention', async (t) => {
     const clonePath = await createSharedClone('denied', LEGACY_URL);
     const restore = await denyGitDirWrites(clonePath);
+    if (!restore) {
+        t.skip('directory permissions are not enforced for this user');
+        return;
+    }
     try {
         await assert.rejects(
             repoBranching.setupAuthenticatedRemote(hooklessGit.createHooklessGit(clonePath), REPO_URL, TOKEN, { attempts: 3, initialDelayMs: 5000, maxDelayMs: 5000 }),
@@ -229,13 +246,17 @@ test('an unwritable shared config fails immediately with the original error, not
     assert.ok(!existsSync(path.join(clonePath, '.git', 'config.lock')));
 });
 
-test('preparation of an unwritable shared clone is not reported as lock contention', async () => {
+test('preparation of an unwritable shared clone is not reported as lock contention', async (t) => {
     const owner = `${OWNER}-readonly`;
     const clonePath = await createSharedClone('readonly', LEGACY_URL);
     const worktreePath = path.join(rootDir, 'readonly-worktree');
     await git(clonePath, ['worktree', 'add', '--no-track', '-b', 'task-ro', worktreePath, 'origin/main']);
     await writeFile(path.join(worktreePath, 'in-progress.txt'), 'uncommitted agent work\n');
     const restore = await denyGitDirWrites(clonePath);
+    if (!restore) {
+        t.skip('directory permissions are not enforced for this user');
+        return;
+    }
     try {
         await assert.rejects(
             repoManager.ensureRepoCloned({
