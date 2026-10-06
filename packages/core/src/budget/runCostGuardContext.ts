@@ -7,8 +7,12 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 export interface RunCostExecution {
     observeLine(line: string): void;
-    /** The execution ended; its consumption keeps counting toward the run. */
-    finish(): void;
+    /**
+     * The execution ended; its consumption keeps counting toward the run.
+     * Resolves after its final usage was evaluated against the cap, with the
+     * stop message when the run reached its cap and null otherwise.
+     */
+    finish(): Promise<string | null>;
 }
 
 /** What agent executions and task-state transitions need from the active run's spend cap. */

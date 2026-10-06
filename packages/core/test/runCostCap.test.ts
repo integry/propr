@@ -104,6 +104,57 @@ test('crossing the cap stops every live execution once and reports the observed 
     guard.close();
 });
 
+test('an execution finishing while its usage is being priced is counted once', async () => {
+    const exceeded: unknown[] = [];
+    let releasePricing: () => void = () => undefined;
+    let pricingStarted: () => void = () => undefined;
+    const started = new Promise<void>(resolve => { pricingStarted = resolve; });
+    let gate: Promise<void> | null = null;
+    const guard = new RunCostGuard({
+        taskId: 'task-1', inputs: { override: 10 }, defaultModel: 'test-model',
+        readRecordedSpend: async () => 0,
+        priceUsage: async (_model, totals) => {
+            if (gate) { pricingStarted(); await gate; }
+            return totals.outputTokens / 1000;
+        },
+        onExceeded: snapshot => exceeded.push(snapshot),
+        checkIntervalMs: 60_000,
+    });
+    await guard.start();
+    const execution = guard.beginExecution(() => assert.fail('$6 of $10 must not stop the run'))!;
+    await guard.check();
+    execution.observeLine(JSON.stringify({ type: 'assistant', message: { id: 'a', usage: { output_tokens: 6000 } } }));
+    gate = new Promise<void>(resolve => { releasePricing = resolve; });
+    const pending = guard.check();
+    await started;
+    // The container exits while the live tally is still being priced.
+    const finished = execution.finish();
+    gate = null;
+    releasePricing();
+    assert.equal(await pending, null);
+    assert.equal(await finished, null);
+    assert.equal(exceeded.length, 0);
+    assert.equal(guard.exceeded, false);
+    guard.close();
+});
+
+test('usage that crosses the cap just before the execution exits still ends it at the cap', async () => {
+    const exceeded: Array<{ spentUsd: number }> = [];
+    const guard = guardFor(() => 0, { override: 2 }, snapshot => exceeded.push(snapshot as { spentUsd: number }));
+    await guard.start();
+    const execution = guard.beginExecution(() => assert.fail('a finished execution is not stopped again'))!;
+    assert.equal(await guard.check(), null);
+    // No periodic check runs between this usage and the exit.
+    execution.observeLine(JSON.stringify({ type: 'assistant', message: { id: 'a', usage: { output_tokens: 2500 } } }));
+    const message = await execution.finish();
+    assert.equal(message, runCostCapStopMessage({ capUsd: 2, source: 'override' }, 2.5));
+    assert.equal(await execution.finish(), message, 'finishing twice reports the same outcome');
+    assert.equal(guard.exceeded, true);
+    assert.equal(exceeded.length, 1);
+    assert.equal(exceeded[0].spentUsd, 2.5);
+    guard.close();
+});
+
 test('a retry whose earlier attempts used the whole budget stops as soon as it starts', async () => {
     const stops: string[] = [];
     const guard = guardFor(() => 5, { override: 5 });

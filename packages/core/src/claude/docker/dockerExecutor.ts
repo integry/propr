@@ -309,7 +309,12 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 abortExecution(true);
             }) ?? null
             : null;
-        const finishCostExecution = (): void => costExecution?.finish();
+        // Awaits the final evaluation, so usage streamed after the last periodic
+        // check still ends the execution with the spend-cap outcome.
+        const finishCostExecution = async (): Promise<void> => {
+            const message = await costExecution?.finish().catch(() => null);
+            if (message && !costCapStopMessage && !state.aborted.value) costCapStopMessage = message;
+        };
         executionSignal?.addEventListener('abort', abortForExecutionSignal, { once: true });
         const timeoutHandle = setTimeout(() => {
             state.timedOut = true;
@@ -353,7 +358,6 @@ export function executeDockerCommand(command: string, args: string[], options: D
 
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
-            finishCostExecution();
             const finalStdout = stdoutDecoder.end();
             if (finalStdout) stdoutBuffer.append(finalStdout);
             const finalStderr = stderrDecoder.end();
@@ -364,6 +368,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             liveOutput?.stderr(finalStderr);
             inspectSessionLines(finalStdout, new Date().toISOString(), true);
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
+            await finishCostExecution();
             if (abortChecker) await abortChecker.close();
             await Promise.allSettled([...pendingCallbacks]);
             if (state.teardownPromise) await state.teardownPromise;
@@ -401,9 +406,9 @@ export function executeDockerCommand(command: string, args: string[], options: D
             // close may run during cleanup; capture the process result before awaiting.
             processError = error;
             clearTimeout(timeoutHandle);
-            finishCostExecution();
             inspectSessionLines('', new Date().toISOString(), true);
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
+            await finishCostExecution();
             executionSignal?.removeEventListener('abort', abortForExecutionSignal);
             if (abortChecker) await abortChecker.close();
             await Promise.allSettled([...pendingCallbacks]);

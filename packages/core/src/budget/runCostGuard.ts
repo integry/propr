@@ -76,6 +76,7 @@ export class RunCostGuard implements ActiveRunCostCap {
     private timer: ReturnType<typeof setInterval> | null = null;
     private checking: Promise<RunCostSnapshot | null> | null = null;
     private exceededSnapshot: RunCostSnapshot | null = null;
+    private stopMessage: string | null = null;
     private publishedCap = false;
 
     constructor(options: RunCostGuardOptions) {
@@ -118,14 +119,29 @@ export class RunCostGuard implements ActiveRunCostCap {
         this.ensureTimer();
         // A retry whose earlier attempts used the whole budget stops right away.
         void this.check();
+        let finishing: Promise<string | null> | null = null;
         return {
             observeLine: line => execution.tally.observeLine(line),
             finish: () => {
-                if (!this.live.delete(execution)) return;
-                this.finished.push(execution.tally);
-                if (this.live.size === 0) this.stopTimer();
+                finishing ??= this.finishExecution(execution);
+                return finishing;
             },
         };
+    }
+
+    /**
+     * Usage streamed after the last periodic check still counts: an execution
+     * that crossed the cap and exited before the next interval ends with the
+     * spend-cap outcome instead of completing normally.
+     */
+    private async finishExecution(execution: LiveExecution): Promise<string | null> {
+        if (this.live.delete(execution)) this.finished.push(execution.tally);
+        if (this.live.size === 0) this.stopTimer();
+        // A check already in flight may have priced the execution before its
+        // final usage arrived; only one that starts after the move sees it all.
+        if (this.checking) await this.checking.catch(() => null);
+        await this.check().catch(() => null);
+        return this.triggered ? this.stopMessage : null;
     }
 
     /** Re-evaluates spend; stops the live executions once when it reaches the cap. */
@@ -148,6 +164,7 @@ export class RunCostGuard implements ActiveRunCostCap {
         this.exceededSnapshot = snapshot;
         this.stopTimer();
         const message = runCostCapStopMessage(cap, snapshot.spentUsd);
+        this.stopMessage = message;
         logger.warn({ taskId: this.taskId, capUsd: cap.capUsd, source: cap.source, spentUsd: snapshot.spentUsd, liveExecutions: this.live.size },
             'Run spend cap exceeded; stopping the agent');
         for (const execution of this.live) {
@@ -162,9 +179,16 @@ export class RunCostGuard implements ActiveRunCostCap {
     }
 
     private async snapshot(cap: RunCostCap): Promise<RunCostSnapshot> {
+        // Recorded rows are written only after an execution finished, so
+        // reading them before capturing the live set cannot count a live
+        // execution twice. Both collections are captured together, before
+        // pricing awaits: an execution finishing meanwhile moves its tally
+        // from live to finished and would otherwise be priced in both.
         const recorded = await this.readRecorded(this.priorSpentUsd);
-        const liveUsd = await this.cost([...this.live].map(execution => execution.tally));
-        const finishedUsd = await this.cost(this.finished);
+        const live = [...this.live].map(execution => execution.tally);
+        const finished = [...this.finished];
+        const liveUsd = await this.cost(live);
+        const finishedUsd = await this.cost(finished);
         // Recorded rows lag behind finished executions; observed usage misses
         // calls made outside Docker. Both are lower bounds; use the larger.
         const spentUsd = Math.max(recorded + liveUsd, this.priorSpentUsd + finishedUsd + liveUsd);

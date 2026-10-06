@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const writes: string[] = [];
 let failing = false;
@@ -17,6 +20,7 @@ class FakeRedis {
 }
 mock.module('ioredis', { namedExports: { Redis: FakeRedis, default: FakeRedis } });
 const { executeDockerCommand } = await import('../packages/core/src/claude/docker/dockerExecutor.js');
+const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.js');
 
 test('a streamed execution publishes stderr diagnostics without splitting an unfinished stdout record', async () => {
     const record = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Reading the code' }] } });
@@ -63,5 +67,41 @@ test('a Redis backlog overflow leaves the running execution successful', async (
         assert.match(result.stdout, /finished/);
     } finally {
         failing = false;
+    }
+});
+
+test('an agent that crosses its spend cap and exits before the next check ends with the spend-cap outcome', async () => {
+    const usage = JSON.stringify({ type: 'assistant', message: { id: 'a', usage: { output_tokens: 5000 } } });
+    // A stand-in `docker` that streams its last usage without a trailing newline and exits.
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fake-docker-'));
+    fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\nprintf '%s' '${usage}'\n`, { mode: 0o755 });
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`;
+    const observed: string[] = [];
+    const events: string[] = [];
+    const guard = {
+        taskId: 'docker-cost-cap', exceeded: false,
+        beginExecution: () => ({
+            observeLine: (line: string) => { observed.push(line); },
+            finish: async () => {
+                events.push(`finish after ${observed.length} line(s)`);
+                await new Promise(done => setTimeout(done, 20));
+                return 'run spend cap of $1.00 exceeded';
+            },
+        }),
+    };
+    try {
+        const run = (preserveOutputOnTimeout: boolean) => runWithActiveRunCostCap(guard, () =>
+            executeDockerCommand('docker', ['run', '--rm', 'agent-image'], { timeout: 10_000, preserveOutputOnTimeout }));
+        const result = await run(true);
+        assert.deepEqual(events, ['finish after 1 line(s)'], 'the final, unterminated record is observed before the final evaluation');
+        assert.deepEqual(observed, [usage]);
+        assert.equal(result.costCapExceeded, true);
+        assert.match(result.stderr, /run spend cap of \$1\.00 exceeded/);
+        assert.equal(result.stdout, usage);
+        await assert.rejects(run(false), { name: 'RunCostCapExceededError' });
+    } finally {
+        process.env.PATH = originalPath;
+        fs.rmSync(bin, { recursive: true, force: true });
     }
 });
