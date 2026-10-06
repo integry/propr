@@ -22,7 +22,7 @@ import {
   RepositoryRetrievalError,
   type ReadRepositoryFileOptions,
   type ReadRepositoryFileResult,
-  type RepositoryIndexingStatus,
+  type RepositoryIndexingState,
   type RepositoryLineMatch,
   type RepositoryMatchReason,
   type RepositorySearchMatch,
@@ -131,7 +131,7 @@ async function resolveTarget(options: RepositoryTargetOptions): Promise<Resolved
 // --- Semantic search ---
 
 interface IndexRow {
-  indexing_status: RepositoryIndexingStatus | null;
+  indexing_status: RepositoryIndexingState | null;
   last_indexed_at: Date | string | null;
   last_indexed_hash: string | null;
 }

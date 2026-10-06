@@ -4,7 +4,7 @@
 
 export type RepositorySearchMode = 'semantic' | 'literal';
 export type RepositoryMatchReason = 'semantic' | 'path-match' | 'git-history';
-export type RepositoryIndexingStatus = 'idle' | 'indexing' | 'completed' | 'failed';
+export type RepositoryIndexingState = 'idle' | 'indexing' | 'completed' | 'failed';
 
 /** Error carrying an HTTP-style status so API/MCP layers can map it directly. */
 export class RepositoryRetrievalError extends Error {
@@ -64,7 +64,7 @@ export interface RepositorySearchMatch {
 export interface RepositorySearchFreshness {
   /** Branch whose index was consulted. */
   indexBranch: string;
-  indexingStatus: RepositoryIndexingStatus | null;
+  indexingStatus: RepositoryIndexingState | null;
   lastIndexedAt: string | null;
   lastIndexedHash: string | null;
   /** True when file summaries contributed to the ranking. */

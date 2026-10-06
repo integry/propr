@@ -184,7 +184,7 @@ export {
 export type {
   RepositorySearchMode,
   RepositoryMatchReason,
-  RepositoryIndexingStatus,
+  RepositoryIndexingState,
   SearchRepositoryFilesOptions,
   SearchRepositoryFilesResult,
   RepositorySearchMatch,
