@@ -19,7 +19,11 @@ export interface RunCostExecution {
 export interface ActiveRunCostCap {
     readonly taskId: string;
     readonly exceeded: boolean;
-    /** Registers an agent container; `stop` runs once if the run reaches its cap. Null when nothing is enforced. */
+    /**
+     * Registers an agent container; `stop` runs once if the run reaches its cap.
+     * Null when nothing is enforced. Throws `RunCostCapExceededError` once the
+     * run was stopped at its cap: the container must not start.
+     */
     beginExecution(stop: (message: string) => void, model?: string): RunCostExecution | null;
 }
 

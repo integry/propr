@@ -17,7 +17,7 @@ import { BoundedDiagnosticTail, BoundedProviderRecordBuffer, boundedProviderOutp
 import { LiveOutputLog } from '../../agents/impl/utils/liveOutputLog.js';
 import { buildLiveOutputSnapshot } from './dockerLiveOutputSnapshot.js';
 import { inspectSessionMessageLine, SessionLineInspectionContext } from './dockerSessionOutput.js';
-import { getActiveRunCostCap } from '../../budget/runCostGuardContext.js';
+import { getActiveRunCostCap, type RunCostExecution } from '../../budget/runCostGuardContext.js';
 import { RunCostCapExceededError } from '../../budget/runCostCap.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
@@ -67,6 +67,8 @@ export interface DockerCommandOptions {
     signal?: AbortSignal;
     /** Resolved model the agent runs, used to price streamed usage that does not name its model. */
     model?: string;
+    /** A container that runs no agent and spends nothing (e.g. a usage probe): not counted toward, or refused by, the run's spend cap. */
+    costCapExempt?: boolean;
 }
 
 // ANSI escape code regex for stripping terminal formatting (constructed dynamically to avoid control char lint errors)
@@ -224,11 +226,28 @@ export function executeDockerCommand(command: string, args: string[], options: D
     const initialAbortError = getExecutionAbortError(executionSignal);
     if (initialAbortError) return Promise.reject(initialAbortError);
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, model } = options;
+        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, model, costCapExempt } = options;
         const executionArgs = resolveExecutionArgs(command, withWorkflowExecutionDeadline(command, args, timeout), taskId, ownershipContext?.attemptGeneration);
         const executablePath = resolveDockerPath(command);
         const namedContainer = command === 'docker' ? getDockerRunContainerName(executionArgs) : null;
-        const child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData);
+        // Agent containers count toward their run's spend cap; reaching it stops
+        // them like a timeout, so their partial work can still be published. Once
+        // the run was stopped at its cap, a new agent container is refused before
+        // it starts.
+        let stopForCostCap: (message: string) => void = () => undefined;
+        const costCap = registerCostExecution(command, args, { model, costCapExempt }, message => stopForCostCap(message));
+        if ('refusal' in costCap) {
+            settleCostCapStop(costCap.refusal, { exitCode: null, stdout: '', stderr: '', messageTimestamps: new Map() },
+                { preserveOutput: preserveOutputOnTimeout, resolve, reject });
+            return;
+        }
+        const costExecution = costCap.execution;
+        let child: ReturnType<typeof spawnCommandProcess>;
+        try { child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData); } catch (error) {
+            // A container that never started must not stay registered with the guard.
+            void costExecution?.finish().catch(() => null);
+            throw error;
+        }
 
         let sessionLineBuffer = '';
         const stderrTail = new BoundedDiagnosticTail(), workflowMarkers = captureWorkflowMarkers(args);
@@ -302,15 +321,12 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 costExecution?.observeLine(line);
             }
         };
-        // Agent containers count toward their run's spend cap; reaching it stops
-        // them like a timeout, so their partial work can still be published.
-        const costExecution = command === 'docker' && args[0] === 'run'
-            ? getActiveRunCostCap()?.beginExecution(message => {
-                if (state.aborted.value) return;
-                costCapStopMessage = message;
-                abortExecution(true);
-            }, model) ?? null
-            : null;
+        // The guard evaluates asynchronously, so no stop arrives before this is set.
+        stopForCostCap = message => {
+            if (state.aborted.value) return;
+            costCapStopMessage = message;
+            abortExecution(true);
+        };
         // Awaits the final evaluation, so usage streamed after the last periodic
         // check still ends the execution with the spend-cap outcome.
         const finishCostExecution = async (): Promise<void> => {
@@ -419,6 +435,22 @@ export function executeDockerCommand(command: string, args: string[], options: D
             reject(hasOwnershipFailure ? ownershipFailure : error);
         });
     });
+}
+
+/** Registers an agent container with its run's spend cap; refused once the run was stopped at its cap. */
+function registerCostExecution(
+    command: string,
+    args: string[],
+    options: Pick<DockerCommandOptions, 'model' | 'costCapExempt'>,
+    stop: (message: string) => void,
+): { execution: RunCostExecution | null } | { refusal: string } {
+    if (command !== 'docker' || args[0] !== 'run' || options.costCapExempt) return { execution: null };
+    try {
+        return { execution: getActiveRunCostCap()?.beginExecution(stop, options.model) ?? null };
+    } catch (error) {
+        if (error instanceof RunCostCapExceededError) return { refusal: error.message };
+        throw error;
+    }
 }
 
 /** A run stopped at its spend cap ends like a timeout: partial output when the caller can publish it. */

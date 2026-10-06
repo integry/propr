@@ -3,7 +3,7 @@ import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from '../utils/tokenCalculation.js';
 import {
-    remainingRunBudget, resolveRunCostCap, runCostCapStopMessage,
+    remainingRunBudget, resolveRunCostCap, RunCostCapExceededError, runCostCapStopMessage,
     type RunCostCap, type RunCostCapInputs,
 } from './runCostCap.js';
 import { RunUsageTally, type RunTokenTotals } from './runUsageTally.js';
@@ -84,8 +84,9 @@ const defaultPricer: RunUsagePricer = async (model, totals) => {
  * Enforces one run's spend cap while its agent containers execute. Spend is
  * the recorded cost of the task (including earlier attempts) plus what the
  * live executions have streamed so far. When it reaches the cap, each live
- * execution is stopped once, and `onExceeded` records why. Later executions in
- * the same run (publishing the partial work) are not stopped again.
+ * execution is stopped once, and `onExceeded` records why. Later agent
+ * executions in the same run are refused; publishing the partial work runs no
+ * agent container.
  */
 export class RunCostGuard implements ActiveRunCostCap {
     readonly taskId: string;
@@ -137,7 +138,9 @@ export class RunCostGuard implements ActiveRunCostCap {
     }
 
     beginExecution(stop: (message: string) => void, model?: string): RunCostExecution | null {
-        if (this.triggered || !this.resolvedCap) return null;
+        // Once the run is stopped at its cap, no further agent work may spend.
+        if (this.triggered) throw new RunCostCapExceededError(this.stopMessage ?? 'Run spend cap exceeded');
+        if (!this.resolvedCap) return null;
         const execution: LiveExecution = { tally: new RunUsageTally(model), stop };
         this.live.add(execution);
         this.ensureTimer();

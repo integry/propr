@@ -99,8 +99,9 @@ test('crossing the cap stops every live execution once and reports the observed 
     assert.equal(stops.length, 1, 'the stop path runs once');
     assert.equal(exceeded.length, 1);
     assert.equal(guard.exceeded, true);
-    // Executions that publish partial work afterwards are not stopped again.
-    assert.equal(guard.beginExecution(() => assert.fail('must not stop publication')), null);
+    // Further agent work in the stopped run is refused, not run uncapped.
+    assert.throws(() => guard.beginExecution(() => assert.fail('a refused execution is never stopped')),
+        { name: 'RunCostCapExceededError', message: stops[0] });
     guard.close();
 });
 

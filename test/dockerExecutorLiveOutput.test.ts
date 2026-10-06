@@ -139,3 +139,45 @@ test('an agent on its default model is priced with the model it was started with
         fs.rmSync(bin, { recursive: true, force: true });
     }
 });
+
+test('a run stopped at its spend cap refuses later implementation and analysis containers before they start', async () => {
+    const usage = JSON.stringify({ type: 'assistant', message: { id: 'a', usage: { output_tokens: 3000 } } });
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fake-docker-'));
+    const launches = path.join(bin, 'launches');
+    // Records every container it starts, then streams usage worth $3.
+    fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\nfor arg; do image="$arg"; done\necho "$image" >> '${launches}'\nprintf '%s\\n' '${usage}'\n`, { mode: 0o755 });
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ''}`;
+    const guard = new RunCostGuard({
+        taskId: 'docker-refused-after-cap', inputs: { override: 2 }, defaultModel: 'claude-sonnet-4',
+        readRecordedSpend: async () => 0,
+        priceUsage: async (_model, totals) => totals.outputTokens / 1000,
+        checkIntervalMs: 60_000,
+    });
+    const run = (image: string, preserveOutputOnTimeout: boolean, costCapExempt?: boolean) => runWithActiveRunCostCap(guard, () =>
+        executeDockerCommand('docker', ['run', '--rm', image], { timeout: 10_000, preserveOutputOnTimeout, ...(costCapExempt ? { costCapExempt } : {}) }));
+    const launched = () => fs.existsSync(launches) ? fs.readFileSync(launches, 'utf8').split('\n').filter(Boolean) : [];
+    try {
+        await guard.start();
+        const first = await run('implementation', true);
+        assert.equal(first.costCapExceeded, true);
+        assert.equal(guard.exceeded, true);
+
+        const implementation = await run('implementation-again', true);
+        assert.equal(implementation.costCapExceeded, true, 'a later implementation ends with the spend-cap outcome');
+        assert.equal(implementation.stdout, '');
+        assert.match(implementation.stderr, /run spend cap of \$2\.00 exceeded/);
+        await assert.rejects(run('analysis', false), { name: 'RunCostCapExceededError' });
+        assert.deepEqual(launched(), ['implementation'], 'no agent container starts after the cap stop');
+
+        // A container that runs no agent (a usage probe) is not refused.
+        const probe = await run('usage-probe', false, true);
+        assert.equal(probe.exitCode, 0);
+        assert.deepEqual(launched(), ['implementation', 'usage-probe']);
+        assert.equal(guard.exceededWith?.spentUsd, 3, 'the exempt probe is not counted toward the run');
+    } finally {
+        guard.close();
+        process.env.PATH = originalPath;
+        fs.rmSync(bin, { recursive: true, force: true });
+    }
+});
