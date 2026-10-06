@@ -65,7 +65,7 @@ export async function withRunCostCap<T>(target: RunCostCapTarget, operation: (gu
         defaultModel: target.modelName,
         readRecordedSpend: () => deps.readRecordedSpend([target.taskId, ...budgetTaskIds]),
         onCapResolved: cap => deps.storeCap(target.taskId, cap, budgetTaskIds),
-        onExceeded: snapshot => deps.recordExceeded(target, snapshot),
+        onExceeded: snapshot => deps.recordExceeded({ ...target, budgetTaskIds }, snapshot),
         ...(deps.priceUsage ? { priceUsage: deps.priceUsage } : {}),
         ...(deps.checkIntervalMs ? { checkIntervalMs: deps.checkIntervalMs } : {}),
     });
@@ -102,8 +102,13 @@ function describeTarget(target: Pick<RunCostCapTarget, 'kind' | 'number'>): stri
     return target.kind === 'pull_request' ? `PR #${target.number}` : `issue #${target.number}`;
 }
 
-/** The `budget.exceeded` timeline event: what the cap was, what was spent, and where the cap came from. */
-export function budgetExceededEvent(snapshot: RunCostSnapshot) {
+/**
+ * The `budget.exceeded` timeline event: what the cap was, what was spent, and
+ * where the cap came from. It also keeps the earlier attempts whose spend the
+ * run continued, so task history can still add them up after the resolved cap
+ * expires from Redis.
+ */
+export function budgetExceededEvent(snapshot: RunCostSnapshot, budgetTaskIds: readonly string[] = []) {
     const source = RUN_COST_CAP_SOURCE_LABELS[snapshot.cap.source];
     return {
         reason: `Spend cap reached: estimated ${formatUsd(snapshot.spentUsd)} of ${formatUsd(snapshot.cap.capUsd)} (cap from ${source}); stopping the agent`,
@@ -115,6 +120,7 @@ export function budgetExceededEvent(snapshot: RunCostSnapshot) {
                 priorSpentUsd: Number(snapshot.priorSpentUsd.toFixed(6)),
                 percent: Math.round(snapshot.percent),
                 source: snapshot.cap.source,
+                ...(budgetTaskIds.length ? { budgetTaskIds: [...budgetTaskIds] } : {}),
             },
         },
     };
@@ -124,7 +130,7 @@ async function writeTimelineEvent(target: RunCostCapTarget, snapshot: RunCostSna
     const task = await db('tasks').where({ task_id: target.taskId }).first('task_id');
     if (!task) return;
     const current = await getStateManager().getTaskState(target.taskId);
-    const event = budgetExceededEvent(snapshot);
+    const event = budgetExceededEvent(snapshot, target.budgetTaskIds);
     await db('task_history').insert({
         task_id: target.taskId,
         // The run is still executing; the event must not read as a lifecycle change.

@@ -33,6 +33,10 @@ function latestBudgetEvent(history: Array<Record<string, unknown>>): StoredCap |
   return null;
 }
 
+function taskIdList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string' && id.length > 0) : [];
+}
+
 const CAP_SOURCES: readonly RunCostCapSource[] = ['override', 'workflow', 'instance_default'];
 
 export async function loadTaskBudget(
@@ -48,8 +52,9 @@ export async function loadTaskBudget(
     const cap = stored ?? exceededEvent;
     const capUsd = typeof cap?.capUsd === 'number' && Number.isFinite(cap.capUsd) && cap.capUsd > 0 ? cap.capUsd : null;
     const source = CAP_SOURCES.find(candidate => candidate === cap?.source) ?? null;
-    const budgetTaskIds = Array.isArray(stored?.budgetTaskIds) ? stored.budgetTaskIds.filter((id): id is string => typeof id === 'string') : [];
-    const row = await db('llm_executions').whereIn('task_id', [taskId, ...budgetTaskIds]).sum({ total: 'cost_usd' }).first() as { total?: number | string | null } | undefined;
+    // The timeline event keeps the earlier attempts once the Redis record expires.
+    const budgetTaskIds = [...new Set([taskId, ...taskIdList(stored?.budgetTaskIds), ...taskIdList(exceededEvent?.budgetTaskIds)])];
+    const row = await db('llm_executions').whereIn('task_id', budgetTaskIds).sum({ total: 'cost_usd' }).first() as { total?: number | string | null } | undefined;
     const spentUsd = Number(row?.total ?? 0) || 0;
     if (capUsd === null && spentUsd <= 0) return null;
     return {

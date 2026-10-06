@@ -16,7 +16,7 @@ function harness(options: { recorded?: number; instanceDefault?: unknown } = {})
         loadInstanceDefault: async () => options.instanceDefault ?? 2,
         readRecordedSpend: async taskIds => { assert.ok(taskIds.includes('task-cap')); return options.recorded ?? 0; },
         storeCap: async (_taskId, cap) => { stored.push(cap); },
-        recordExceeded: async (_target, snapshot) => { timeline.push(budgetExceededEvent(snapshot)); },
+        recordExceeded: async (exceededTarget, snapshot) => { timeline.push(budgetExceededEvent(snapshot, exceededTarget.budgetTaskIds)); },
         // $1 per 1000 output tokens.
         priceUsage: async (_model, totals) => totals.outputTokens / 1000,
         checkIntervalMs: 60_000,
@@ -72,6 +72,17 @@ test('a PR job on the configured default model is priced with the model its agen
     assert.ok(priced.length > 0 && priced.every(model => model === 'gpt-5-codex'));
     assert.equal(timeline.length, 1);
     assert.equal(timeline[0].metadata.budget.spentUsd, 3);
+});
+
+test('the budget.exceeded event keeps the earlier attempts whose spend the run continues', async () => {
+    const { deps, timeline } = harness({ recorded: 1.5 });
+    await withRunCostCap({ ...target, budgetTaskIds: ['attempt-1', 'task-cap', 'attempt-1', ''] }, async () => {
+        const execution = getActiveRunCostGuard()!.beginExecution(() => undefined)!;
+        execution.observeLine(usageLine('m1', 1000));
+        await execution.finish();
+    }, deps);
+    assert.equal(timeline.length, 1);
+    assert.deepEqual(timeline[0].metadata.budget.budgetTaskIds, ['attempt-1']);
 });
 
 test('the per-task override wins over the workflow and instance caps', async () => {
