@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, ChevronUp, CheckCircle, AlertCircle } from 'lucide-react';
-import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
+import { AgentModelPair, PlanIssue, STATUS_CONFIG } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
 import { ListSkeleton } from '../ui/Skeleton';
@@ -10,6 +10,7 @@ import { usePlanIssuesManager } from './usePlanIssuesManager';
 import { IssueCreationProgressIndicator } from './IssueCreationProgressIndicator';
 import { ExecutionOptionsToolbar, TasksBeingCreated } from './PlanIssuesManagerToolbar';
 import PlanIntentConfirmationDialog from './PlanIntentConfirmationDialog';
+import ExecuteAllBar from './ExecuteAllBar';
 import {
   describePlanPrBehavior,
   type PlanNotificationIntent,
@@ -174,21 +175,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     }
   }, [loading, issues.length, activeIssues.length, mergedIssues.length]);
 
-  const firstVisiblePendingIssueNumber = useMemo(
-    () => activeIssues.find(issue => issue.status === 'pending')?.issue_number ?? null,
-    [activeIssues]
-  );
-
-  const firstEpicIssueNumber = useMemo(
-    () => issues.reduce<number | null>(
-      (firstIssueNumber, issue) => firstIssueNumber === null
-        ? issue.issue_number
-        : Math.min(firstIssueNumber, issue.issue_number),
-      null
-    ),
-    [issues]
-  );
-
   const intentIssue = useMemo(
     () => activeIssues.find(issue => issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber) ?? null,
     [activeIssues, firstPendingIssueNumber],
@@ -206,6 +192,16 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     setShowExecutionIntentDialog(true);
     onNotificationIntentConsumed?.();
   }, [loading, notificationIntent, onNotificationIntentConsumed]);
+
+  const hasRunningIssues = useMemo(
+    () => issues.some(issue => STATUS_CONFIG[issue.status]?.isActive),
+    [issues]
+  );
+
+  const handleExecuteAll = useCallback(() => {
+    if (!executionIntent.canExecute || !executionIntent.issue) return;
+    void handleImplementIssue(executionIntent.issue.issue_number, executionIntent.models);
+  }, [executionIntent, handleImplementIssue]);
 
   const handleConfirmExecutionIntent = useCallback(() => {
     if (!executionIntent.canExecute || !executionIntent.issue) return;
@@ -305,39 +301,51 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           disableImplementation={isSavingExecutionSettings || isReadOnly}
         />
       )}
-      <div className="space-y-1.5">
-        {activeIssues.map(issue => (
-          <PlanIssueRow
-            key={issue.id}
-            issue={issue}
-            issueTitle={issueTitles[issue.issue_number]}
-            agents={agents}
-            onImplement={handleImplementIssue}
-            onAgentChange={handleAgentChange}
-            onModelChange={handleModelChange}
-            implementing={implementingIssue === issue.issue_number}
-            disableImplementation={isSavingExecutionSettings || isReadOnly}
-            isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
-            showImplementButton={!useEpic || issue.issue_number === firstVisiblePendingIssueNumber}
-            implementButtonLabel={useEpic && issue.issue_number === firstEpicIssueNumber ? 'Implement Epic' : 'Implement'}
-            onImplementWithWarning={handleImplementWithWarning}
-            inheritedIsMulti={issueMultiModeMap[issue.issue_number]}
-            inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
-            onMultiToggle={(isMulti) => handleIssueMultiToggle(issue.issue_number, isMulti)}
-            onMultiModelChange={(models) => handleIssueMultiModelChange(issue.issue_number, models)}
-            task={issueTaskMap[issue.issue_number]}
-            draftId={draftId}
-          />
-        ))}
-      </div>
+      {activeIssues.length > 0 && (
+        <div className="divide-y divide-slate-100 rounded-md border border-slate-200" data-testid="plan-execution-matrix">
+          {activeIssues.map(issue => (
+            <PlanIssueRow
+              key={issue.id}
+              issue={issue}
+              issueTitle={issueTitles[issue.issue_number]}
+              agents={agents}
+              onImplement={handleImplementIssue}
+              onAgentChange={handleAgentChange}
+              onModelChange={handleModelChange}
+              implementing={implementingIssue === issue.issue_number}
+              disableImplementation={isSavingExecutionSettings || isReadOnly}
+              isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
+              showImplementButton={!useEpic}
+              onImplementWithWarning={handleImplementWithWarning}
+              inheritedIsMulti={issueMultiModeMap[issue.issue_number]}
+              inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
+              onMultiToggle={(isMulti) => handleIssueMultiToggle(issue.issue_number, isMulti)}
+              onMultiModelChange={(models) => handleIssueMultiModelChange(issue.issue_number, models)}
+              task={issueTaskMap[issue.issue_number]}
+              draftId={draftId}
+            />
+          ))}
+        </div>
+      )}
+      <ExecuteAllBar
+        remainingCount={pendingCount}
+        taskCount={tasks.length}
+        useEpic={useEpic}
+        autoMerge={autoMerge}
+        hasRunningIssues={hasRunningIssues}
+        canExecute={executionIntent.canExecute}
+        unavailableReason={executionIntent.unavailableReason}
+        executing={implementingIssue !== null}
+        onExecuteAll={handleExecuteAll}
+      />
       {mergedIssues.length > 0 && (
         <div className="border-t border-gray-200 pt-4 mt-4">
           <button
             onClick={() => setShowMerged(!showMerged)}
             className="flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-800 transition-colors"
           >
-            <CheckCircle size={16} className="text-green-600" />
-            <span>Merged Issues ({mergedIssues.length})</span>
+            <CheckCircle size={16} className="text-slate-400" />
+            <span>Completed Issues ({mergedIssues.length})</span>
             {showMerged ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
           </button>
 
@@ -348,7 +356,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ duration: 0.2 }}
-                className="mt-3 space-y-2"
+                className="mt-3 divide-y divide-slate-100 rounded-md border border-slate-200 overflow-hidden"
               >
                 {mergedIssues.map(issue => (
                   <PlanIssueRow

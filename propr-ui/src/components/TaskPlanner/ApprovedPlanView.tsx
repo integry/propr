@@ -76,13 +76,13 @@ const PlanFooterStats: React.FC<{ stats: FooterStats; onRefresh: () => void }> =
       {stats.merged > 0 && (
         <>
           <span className="text-gray-400">·</span>
-          <span className="text-purple-600">{stats.merged} Merged</span>
+          <span className="text-slate-500">{stats.merged} Merged</span>
         </>
       )}
       {stats.processing > 0 && (
         <>
           <span className="text-gray-400">·</span>
-          <span className="text-amber-600">{stats.processing} Processing</span>
+          <span className="text-teal-700">{stats.processing} Running</span>
         </>
       )}
       {stats.pending > 0 && (
@@ -214,7 +214,7 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
       {planName}
     </h1>
     {draftStatus === 'merged' && (
-      <span className="px-2 py-1 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1 flex-shrink-0">
+      <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-600 flex items-center gap-1 flex-shrink-0">
         <GitMerge size={12} /><span className="hidden sm:inline">Merged</span>
       </span>
     )}

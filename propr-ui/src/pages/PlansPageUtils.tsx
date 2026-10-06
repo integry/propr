@@ -31,29 +31,20 @@ export const formatRelativeTime = (dateString: string): string => {
   return date.toLocaleDateString();
 };
 
+// "Success is Quiet": standard progression states share one neutral slate treatment.
+// Color is reserved for active work (teal) and states needing attention (amber).
 export const getStatusBadge = (status: string): string => {
   switch (status) {
     case 'merged':
-      // Quiet Success: Medium gray text, recedes into background
       return 'text-slate-500';
-    case 'executed':
-      // Active Teal: Brand color for "Issues Created" - should be the "light" on the row
-      return 'bg-teal-100 text-teal-700';
     case 'executing':
-      // Creating issues in progress
-      return 'bg-yellow-100 text-yellow-800';
-    case 'pr_created':
-      return 'bg-cyan-100 text-cyan-800';
-    case 'review':
-      return 'bg-blue-100 text-blue-800';
     case 'generating':
     case 'refining':
-      return 'bg-yellow-100 text-yellow-800';
+      return 'bg-teal-50 text-teal-700';
     case 'draft':
-      // Draft status: amber outline
       return 'bg-transparent border border-amber-400 text-amber-600';
     default:
-      return 'bg-gray-100 text-gray-800';
+      return 'bg-slate-100 text-slate-600';
   }
 };
 
@@ -86,24 +77,35 @@ export const getStatusIcon = (status: string): React.ReactNode => {
       // Quiet Success: no icon, checkmark is in the label
       return null;
     case 'executed':
-      // Active Teal icon to match the badge
-      return <CheckCircle size={12} className="text-teal-600" />;
-    case 'executing':
-      return <Loader2 size={12} className="text-yellow-600 animate-spin" />;
+      return <CheckCircle size={12} className="text-slate-500" />;
     case 'pr_created':
-      return <GitPullRequestArrow size={12} className="text-cyan-600" />;
+      return <GitPullRequestArrow size={12} className="text-slate-500" />;
     case 'review':
-      return <Settings2 size={12} className="text-blue-600" />;
+      return <Settings2 size={12} className="text-slate-500" />;
+    case 'executing':
     case 'generating':
     case 'refining':
-      return <Loader2 size={12} className="text-yellow-600 animate-spin" />;
+      return <Loader2 size={12} className="text-teal-600 animate-spin" />;
     case 'draft':
-      // Draft status: amber
       return <Clock size={12} className="text-amber-500" />;
     default:
-      return <Clock size={12} className="text-gray-500" />;
+      return <Clock size={12} className="text-slate-500" />;
   }
 };
+
+/**
+ * Collapses a plan title (which may fall back to a raw markdown prompt) into a
+ * single plain-text line so table rows never render headings or line breaks.
+ */
+export const toSingleLinePlainText = (value: string): string => value
+  .replace(/```[\s\S]*?```/g, ' ')
+  .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+  .replace(/\s#{1,6}\s+/g, ' ')
+  .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+  .replace(/(\*\*|__|`)/g, '')
+  .replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, '')
+  .replace(/\s+/g, ' ')
+  .trim();
 
 export const renderIssueSummary = (summary: IssueSummary | null | undefined): React.ReactNode => {
   if (!summary || summary.total === 0) {

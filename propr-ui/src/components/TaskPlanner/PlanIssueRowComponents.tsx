@@ -12,7 +12,7 @@ import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
 import { getModelName, getImplementButtonClassName, getImplementButtonTitle } from './planIssueRowUtils';
 import { AuthenticatedAttachmentImage } from './AuthenticatedAttachmentImage';
 
-interface UltrafixSettingsControlsProps { enabled: boolean; goal: number | null | undefined; maxCycles: number | null | undefined; onGoalChange: (value: number | null) => void; onMaxCyclesChange: (value: number | null) => void; goalPlaceholder: string; maxPlaceholder: string; inputClassName: string; goalInputWidthClassName: string; maxInputWidthClassName: string; containerClassName?: string; errorClassName?: string; }
+interface UltrafixSettingsControlsProps { enabled: boolean; goal: number | null | undefined; maxCycles: number | null | undefined; onGoalChange: (value: number | null) => void; onMaxCyclesChange: (value: number | null) => void; goalPlaceholder: string; maxPlaceholder: string; inputClassName: string; goalInputWidthClassName: string; maxInputWidthClassName: string; containerClassName?: string; errorClassName?: string; goalLabel?: string; maxLabel?: string; }
 
 const ULTRAFIX_GOAL_OPTIONS = [5, 6, 7, 8, 9, 10];
 
@@ -44,6 +44,8 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
   maxInputWidthClassName,
   containerClassName = 'flex flex-col gap-1',
   errorClassName = 'text-[11px] text-amber-700',
+  goalLabel = 'Target Rating',
+  maxLabel = 'Max Iterations',
 }) => {
   const [maxCyclesInput, setMaxCyclesInput] = useState(maxCycles?.toString() ?? '');
   const [maxCyclesError, setMaxCyclesError] = useState<string | null>(null);
@@ -51,44 +53,48 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
   useEffect(() => { if (!enabled) setMaxCyclesError(null); }, [enabled]);
 
   const commitMaxCycles = () => {
-    const result = parseUltrafixIntegerInput(maxCyclesInput, { minimum: 1, label: 'Max turns' });
+    const result = parseUltrafixIntegerInput(maxCyclesInput, { minimum: 1, label: maxLabel });
     if (result.error) { setMaxCyclesError(result.error); return; }
     setMaxCyclesError(null); if (result.value !== maxCycles) onMaxCyclesChange(result.value);
   };
 
   return (
     <div className={containerClassName}>
-      <div className="flex items-center gap-1.5">
-        <select
-          value={ULTRAFIX_GOAL_OPTIONS.includes(goal ?? 0) ? goal?.toString() : ''}
-          disabled={!enabled}
-          onChange={(e) => {
-            const value = Number(e.target.value);
-            if (Number.isInteger(value)) onGoalChange(value);
-          }}
-          className={`${goalInputWidthClassName} ${inputClassName}`}
-          aria-label={goalPlaceholder}
-        >
-          {!ULTRAFIX_GOAL_OPTIONS.includes(goal ?? 0) && <option value="" disabled>{goalPlaceholder}</option>}
-          {ULTRAFIX_GOAL_OPTIONS.map((option) => (
-            <option key={option} value={option}>{option}</option>
-          ))}
-        </select>
-        <input
-          type="number"
-          min={1}
-          value={maxCyclesInput}
-          disabled={!enabled}
-          onChange={(e) => {
-            setMaxCyclesInput(e.target.value);
-            if (maxCyclesError) setMaxCyclesError(null);
-          }}
-          onBlur={commitMaxCycles}
-          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-          placeholder={maxPlaceholder}
-          aria-label={maxPlaceholder}
-          className={`${maxInputWidthClassName} ${inputClassName}`}
-        />
+      <div className="flex items-center gap-3">
+        <label className="flex items-center gap-1.5">
+          <span className="text-xs text-slate-500 whitespace-nowrap">{goalLabel}</span>
+          <select
+            value={ULTRAFIX_GOAL_OPTIONS.includes(goal ?? 0) ? goal?.toString() : ''}
+            disabled={!enabled}
+            onChange={(e) => {
+              const value = Number(e.target.value);
+              if (Number.isInteger(value)) onGoalChange(value);
+            }}
+            className={`${goalInputWidthClassName} ${inputClassName}`}
+          >
+            {!ULTRAFIX_GOAL_OPTIONS.includes(goal ?? 0) && <option value="" disabled>{goalPlaceholder}</option>}
+            {ULTRAFIX_GOAL_OPTIONS.map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5">
+          <span className="text-xs text-slate-500 whitespace-nowrap">{maxLabel}</span>
+          <input
+            type="number"
+            min={1}
+            value={maxCyclesInput}
+            disabled={!enabled}
+            onChange={(e) => {
+              setMaxCyclesInput(e.target.value);
+              if (maxCyclesError) setMaxCyclesError(null);
+            }}
+            onBlur={commitMaxCycles}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+            placeholder={maxPlaceholder}
+            className={`${maxInputWidthClassName} ${inputClassName}`}
+          />
+        </label>
       </div>
       {maxCyclesError && <p className={errorClassName}>{maxCyclesError}</p>}
     </div>
@@ -99,16 +105,11 @@ export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) =
   const config = STATUS_CONFIG[status];
 
   return (
-    <span
-      className={`
-        inline-flex items-center gap-1.5
-        px-2 py-0.5
-        text-xs font-medium
-        rounded-full border
-        ${config.color} ${config.bgColor} ${config.borderColor}
-      `}
-    >
-      {config.isActive && <span className="relative flex h-2 w-2"><span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${config.bgColor} opacity-75`}></span><span className={`relative inline-flex rounded-full h-2 w-2 ${config.bgColor.replace('100', '500')}`}></span></span>}
+    <span className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 text-xs font-medium rounded border ${config.color} ${config.bgColor} ${config.borderColor}`}>
+      <span className="relative flex h-1.5 w-1.5">
+        {config.isActive && <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${config.dotColor} opacity-60`} />}
+        <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${config.dotColor}`} />
+      </span>
       {config.label}
     </span>
   );
@@ -157,7 +158,7 @@ export const AgentModelInfo: React.FC<AgentModelInfoProps> = ({ agentAlias, mode
 );
 
 export interface PrLinkProps { prUrl: string; prNumber: number; }
-export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (<a href={prUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-purple-50 border border-purple-200 rounded-sm text-purple-700 hover:bg-purple-100 hover:border-purple-300 transition-colors" onClick={(e) => e.stopPropagation()}><GitPullRequest size={12} /><span>PR #{prNumber}</span><ExternalLink size={10} className="opacity-50" /></a>);
+export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (<a href={prUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-mono text-xs text-slate-600 hover:text-slate-900 hover:underline transition-colors" onClick={(e) => e.stopPropagation()}><GitPullRequest size={12} /><span>PR #{prNumber}</span><ExternalLink size={10} className="opacity-50" /></a>);
 
 export interface FollowupCountProps { count: number; }
 export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
@@ -168,7 +169,7 @@ export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
 );
 
 export interface ViewProgressLinkProps { taskId: string; }
-export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (<Link to={`/tasks/${encodeURIComponent(taskId)}`} className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-blue-50 border border-blue-200 rounded-sm text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors" onClick={(e) => e.stopPropagation()}><Eye size={12} />View Progress</Link>);
+export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (<Link to={`/tasks/${encodeURIComponent(taskId)}`} className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800 hover:underline transition-colors" onClick={(e) => e.stopPropagation()}><Eye size={12} />View Progress</Link>);
 
 export interface RowActionsProps {
   isPending: boolean;

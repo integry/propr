@@ -6,7 +6,8 @@ import { getDraftDisplayName } from '../components/TaskPlanner/planDisplayName';
 import {
   getEffectiveStatus,
   renderStatusStrip,
-  formatRelativeTime
+  formatRelativeTime,
+  toSingleLinePlainText
 } from './PlansPageUtils';
 
 interface EmptyStateProps {
@@ -94,31 +95,26 @@ export const PlansListItem: React.FC<PlansListItemProps> = ({
   onAbort
 }) => {
   const effectiveStatus = getEffectiveStatus(draft.status, draft.issue_summary);
+  const title = toSingleLinePlainText(getDraftDisplayName(draft, draft.initial_prompt)) || 'Untitled Plan';
 
   return (
     <div className="hover:bg-gray-50 group border-b border-slate-100 flex items-center px-2 sm:px-4 py-3 gap-2 sm:gap-4">
       {/* Repository column - hidden on mobile, fixed width on desktop */}
       <div className="hidden sm:block flex-shrink-0 w-[140px]">
-        <Link to={`/studio/${draft.draft_id}`} className="block">
-          <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
-            {draft.repository}
-          </span>
+        <Link to={`/studio/${draft.draft_id}`} className="block truncate text-xs font-mono text-slate-600" title={draft.repository}>
+          {draft.repository}
         </Link>
       </div>
       {/* Plan title and status - takes all remaining space */}
       <div className="flex-1 min-w-0">
         <Link to={`/studio/${draft.draft_id}`} className="block">
-          {/* Repository badge - shown inline on mobile only */}
-          <div className="sm:hidden mb-1">
-            <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
-              {draft.repository}
-            </span>
+          {/* Repository - shown inline on mobile only */}
+          <div className="sm:hidden mb-1 truncate text-xs font-mono text-slate-600">
+            {draft.repository}
           </div>
-          {/* Plan Title */}
-          <div className="mb-1">
-            <span className="text-sm font-medium text-gray-900 break-words">
-              {getDraftDisplayName(draft, draft.initial_prompt)}
-            </span>
+          {/* Plan Title - always a single plain-text line */}
+          <div className="mb-1 truncate max-w-2xl text-sm font-medium text-gray-900" title={title}>
+            {title}
           </div>
           {/* Bottom line: Unified Status Strip */}
           <div className="flex flex-wrap items-center text-xs gap-1">

@@ -7,10 +7,10 @@ export const getModelName = (modelId: string | null): string => {
 };
 
 export const getContainerClassName = (isMerged: boolean): string =>
-  isMerged ? 'bg-gray-50 border-gray-200' : 'bg-white border-gray-200';
+  isMerged ? 'bg-slate-50/60' : 'bg-white hover:bg-slate-50/60 transition-colors';
 
 export const getTitleClassName = (isMerged: boolean): string =>
-  isMerged ? 'text-gray-500' : 'text-gray-600';
+  isMerged ? 'text-slate-500' : 'text-slate-800';
 
 export const getImplementButtonClassName = (implementing: boolean, hasAgent: boolean, isFirstPending: boolean): string => {
   if (implementing || !hasAgent) {
