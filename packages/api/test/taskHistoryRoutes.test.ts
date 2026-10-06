@@ -8,6 +8,7 @@ import knex, { type Knex } from 'knex';
 import type { RedisClientType } from 'redis';
 import type { FlatRequest } from '../requestTypes.js';
 import { createTaskHistoryRoutes } from '../routes/taskHistoryRoutes.js';
+import { up as addReplacementLineage } from '../../core/src/db/migrations/20261006000000_add_task_replacement_lineage.js';
 
 after(async () => {
   const { closeConnection } = await import('@propr/core');
@@ -267,6 +268,47 @@ test('task history returns run-scoped preview media and omits it for runs withou
     const review = responseRecorder();
     await routes.getTaskHistory({ params: { taskId: 'review-run' } } as unknown as FlatRequest, review.response);
     assert.equal('previewMedia' in (review.body() as object), false);
+  } finally {
+    await database.destroy();
+  }
+});
+
+test('task detail reports the automatic-replacement attempt lineage', async () => {
+  const database = await createHistoryDatabase();
+  try {
+    await database.schema.alterTable('tasks', table => { table.text('created_at'); });
+    await addReplacementLineage(database);
+    await database('tasks').insert([
+      { task_id: 'attempt-1', repository: 'acme/repo', task_type: 'issue', issue_number: 7, created_at: '2026-10-06T08:00:00.000Z', replaced_by_task_id: 'attempt-2', lineage_root_task_id: 'attempt-1' },
+      { task_id: 'attempt-2', repository: 'acme/repo', task_type: 'issue', issue_number: 7, created_at: '2026-10-06T09:00:00.000Z', replaces_task_id: 'attempt-1', attempt_number: 2, lineage_root_task_id: 'attempt-1', replacement_cause: 'infra_lost' },
+      { task_id: 'unrelated', repository: 'acme/repo', task_type: 'issue', issue_number: 8 },
+    ]);
+    await database('task_history').insert([
+      { task_id: 'attempt-1', state: 'failed', timestamp: '2026-10-06T08:30:00.000Z', reason: 'orphaned' },
+      { task_id: 'attempt-2', state: 'processing', timestamp: '2026-10-06T09:01:00.000Z', reason: 'started' },
+      { task_id: 'unrelated', state: 'completed', timestamp: '2026-10-06T09:01:00.000Z', reason: 'done' },
+    ]);
+    const routes = createTaskHistoryRoutes({ db: database, redisClient: { get: async () => null } as unknown as RedisClientType, taskQueue: {} as never });
+    const detail = async (taskId: string) => {
+      const recorder = responseRecorder();
+      await routes.getTaskHistory({ params: { taskId } } as unknown as FlatRequest, recorder.response);
+      return (recorder.body() as { taskInfo: Record<string, unknown> }).taskInfo;
+    };
+
+    const replacement = await detail('attempt-2');
+    assert.equal(replacement.attemptNumber, 2);
+    assert.equal(replacement.replacesTaskId, 'attempt-1');
+    assert.equal(replacement.replacedByTaskId, null);
+    assert.deepEqual((replacement.attemptLineage as Array<Record<string, unknown>>).map(({ taskId, attemptNumber, state, replacementCause }) => ({ taskId, attemptNumber, state, replacementCause })), [
+      { taskId: 'attempt-1', attemptNumber: 1, state: 'failed', replacementCause: null },
+      { taskId: 'attempt-2', attemptNumber: 2, state: 'processing', replacementCause: 'infra_lost' },
+    ]);
+    const original = await detail('attempt-1');
+    assert.equal(original.attemptNumber, 1);
+    assert.equal(original.replacedByTaskId, 'attempt-2');
+    const unrelated = await detail('unrelated');
+    assert.equal(unrelated.attemptNumber, 1);
+    assert.equal('attemptLineage' in unrelated, false);
   } finally {
     await database.destroy();
   }

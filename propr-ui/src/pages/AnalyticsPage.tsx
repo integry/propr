@@ -11,7 +11,8 @@
  *
  * The page is one console on a white canvas, not a grid of cards: a totals
  * band across the top, then a split pane — activity and repositories on the
- * left 60%; models, task status and token consumption on the right 40% —
+ * left 60% (with review quality by model under them); models, task status
+ * and token consumption on the right 40% —
  * divided by the same 1px rules the dashboard uses. Each pane is as tall as
  * its content, and the column rule runs to the bottom of the canvas, so there
  * is no card padded out to match its neighbour and no grey floor under the
@@ -33,6 +34,7 @@ import ActivitySparkline from '../components/ActivitySparkline';
 import RepositoryBreakdown from '../components/RepositoryBreakdown';
 import TopModels from '../components/TopModels';
 import TokenConsumption from '../components/Analytics/TokenConsumption';
+import ReviewQualityByModel from '../components/Analytics/ReviewQualityByModel';
 import AnalyticsTimeframeSelector from '../components/Analytics/AnalyticsTimeframeSelector';
 import { AnalyticsMetricStrip, UNAVAILABLE, type AnalyticsMetric } from '../components/Analytics/AnalyticsMetricStrip';
 import { LockedRepositoryScope } from '../components/Analytics/LockedRepositoryScope';
@@ -42,6 +44,7 @@ import { SectionHeading } from '../components/Dashboard/sectionPrimitives';
 import { useHeaderScopeSlot } from '../components/headerScopeSlot';
 import {
   getRepositoryStats,
+  getReviewScoreSummary,
   getStatsOverview,
   getTaskStats,
   type StatsOverviewResponse,
@@ -115,6 +118,7 @@ const AnalyticsPage: React.FC = () => {
   const tasks = useTimeframeRead(getTaskStats, timeframe, 'Failed to load task stats');
   const repositories = useTimeframeRead(getRepositoryStats, timeframe, 'Failed to load repository stats');
   const overview = useTimeframeRead(getStatsOverview, timeframe, 'Failed to load model stats');
+  const reviewScores = useTimeframeRead(getReviewScoreSummary, timeframe, 'Failed to load review quality');
   const timeframeLabel = ANALYTICS_TIMEFRAME_LABELS[timeframe];
 
   const sparklineData = (tasks.data?.dailyCounts ?? []).map(item => ({
@@ -166,6 +170,13 @@ const AnalyticsPage: React.FC = () => {
                 loading={repositories.loading}
                 error={repositories.error}
               />
+            </Pane>
+            <Pane
+              id="analytics-review-quality-heading"
+              title="Review quality by model"
+              count={reviewScores.data ? reviewScores.data.models.length : null}
+            >
+              <ReviewQualityByModel summary={reviewScores.data} loading={reviewScores.loading} error={reviewScores.error} />
             </Pane>
           </div>
 

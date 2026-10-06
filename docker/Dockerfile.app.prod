@@ -53,6 +53,14 @@ RUN cd packages/shared && npm run build \
 # during prune succeed.
 RUN npm prune --omit=dev
 
+# npm keeps a workspace's dependency nested (packages/<name>/node_modules) when
+# its range conflicts with the hoisted root tree — e.g. sharp for core and api.
+# Stage those pruned trees, checked against package-lock.json, so the runtime
+# stage receives the complete production closure for every shipped workspace.
+# Workspaces without nested dependencies simply contribute nothing.
+RUN node scripts/stage-app-runtime-dependencies.mjs --root /build --out /runtime-deps \
+    shared local-setup core api
+
 
 # --- Stage 2: runtime ---------------------------------------------------------
 FROM node:22-alpine AS runtime
@@ -95,6 +103,9 @@ COPY --from=builder /build/packages/local-setup/dist ./packages/local-setup/dist
 COPY --from=builder /build/packages/core/package.json ./packages/core/
 COPY --from=builder /build/packages/core/dist ./packages/core/dist
 COPY --from=builder /build/packages/api/package.json ./packages/api/
+# Nested workspace production dependencies, plus dist/packages/<name>/node_modules
+# symlinks so the root build output resolves the same trees.
+COPY --from=builder /runtime-deps/ ./
 
 # MCP-readable documentation. Keep this deliberately limited to Markdown and
 # its manifest so the app image does not inherit the docs site's dependencies,

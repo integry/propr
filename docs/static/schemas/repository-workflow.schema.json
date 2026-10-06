@@ -96,6 +96,36 @@
           "description": "Per-run spend cap in USD. A run whose estimated cost reaches it is stopped and its partial work published. 0 means no cap from this file; a per-task maxCostUsd override takes precedence, and the instance default_max_cost_usd applies when unset. A malformed value is ignored with a warning."
         }
       }
+    },
+    "auto_merge": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Policy for when ProPR may arm GitHub auto-merge. Read from the PR's base branch; .propr/** is always protected.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "false never arms auto-merge, even when the auto-merge label is present."
+        },
+        "method": {
+          "enum": [
+            "merge",
+            "squash",
+            "rebase"
+          ],
+          "description": "Merge method; defaults to the repository default (squash unless the repository disallows it)."
+        },
+        "protected_paths": {
+          "type": "array",
+          "maxItems": 200,
+          "description": "Repository-root-anchored globs (*, ?, **, [...]); any changed path that matches keeps auto-merge disarmed. Case-insensitive; a matching directory protects its contents.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)(?![\\s\\S]*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$"
+          }
+        }
+      }
     }
   }
 }

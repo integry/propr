@@ -27,6 +27,7 @@ await mock.module('@propr/core', {
         findPlanIssueByRepoAndNumber: mock.fn(async () => ({ draft_id: 'draft', issue_number: 10, status: 'processing' })),
         // Mirrors the real renderer: observed repository validation follows the summary.
         generateCompletionComment: mock.fn(async (result: { repositoryValidation?: string }) => ['Completed.', result?.repositoryValidation].filter(Boolean).join('\n\n')),
+        gateAutoMergeArming: mock.fn(),
         getAuthenticatedOctokit: mock.fn(async () => octokit),
         getPrimaryProcessingLabels: mock.fn(() => ['AI']),
         linkPRToPlanIssue: mock.fn(async () => undefined),

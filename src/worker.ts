@@ -38,6 +38,7 @@ import {
     type PRCommentTaskStateFinalizers,
 } from './jobs/prCommentTaskStateFinalizers.js';
 import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
+import { getTaskReplacementService } from './taskReplacement/index.js';
 import { recoverNonterminalGoals } from './goalRecovery.js';
 import { reconcileFollowupCiSuspensions } from './jobs/followupCiSuspension.js';
 import { cancelClosedPullRequestValidation } from './jobs/closedPullRequestCiCancellation.js';
@@ -399,7 +400,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     if (!taskStateFinalizers) throw new Error('PR comment task state finalizers were not attached');
     const attachedTaskStateFinalizers = taskStateFinalizers;
     const taskStateRecovery = await startWorkerTaskStateRecovery({
-        stateManager,
+        stateManager, replacement: getTaskReplacementService(),
         recoverGoals: () => recoverNonterminalGoals(),
         reconcileCiSuspensions: async () => ({
             ...await reconcileFollowupCiSuspensions(),

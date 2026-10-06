@@ -252,6 +252,10 @@ export type {
   QueueStats,
 } from "./system.js";
 
+// Stats API
+export { getReviewScoreSummary } from "./stats.js";
+export type { ReviewScoreSummary, ReviewScoreModelSummary, ReviewScoreQuery, MeanFigure } from "./stats.js";
+
 // Goals API
 export {
   GOAL_LAUNCH_STRATEGIES,

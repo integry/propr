@@ -71,6 +71,29 @@ export function resolveRepositoryNotificationsEnabled(
   return entries.length === 0 || entries.some(repo => repo.notificationsEnabled !== false);
 }
 
+/**
+ * Repository-wide merge-conflict auto-resolve override, mirroring the server:
+ * the first explicit entry wins; `null` means the repository inherits the
+ * instance default.
+ */
+export function resolveRepositoryAutoResolveMergeConflicts(
+  repos: readonly ManagedRepo[],
+  repositoryKey: string
+): boolean | null {
+  const explicit = repos.find(repo => getRepositoryConfigKey(repo.name) === repositoryKey && typeof repo.autoResolveMergeConflicts === 'boolean');
+  return typeof explicit?.autoResolveMergeConflicts === 'boolean' ? explicit.autoResolveMergeConflicts : null;
+}
+
+/** Every branch entry of a repository shares the override; `null` returns it to the instance default. */
+export function updateRepositoryAutoResolveMergeConflicts(repos: ManagedRepo[], repoId: string, value: boolean | null): ManagedRepo[] {
+  const targetRepo = repos.find(repo => repo.id === repoId);
+  if (!targetRepo) return repos;
+  const repositoryKey = getRepositoryConfigKey(targetRepo.name);
+  return repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
+    ? { ...repo, autoResolveMergeConflicts: value }
+    : repo);
+}
+
 /** Every branch entry of a repository shares one list of non-blocking checks. */
 export function updateRepositoryNonBlockingChecks(repos: ManagedRepo[], repoId: string, checks: string[]): ManagedRepo[] {
   const targetRepo = repos.find(repo => repo.id === repoId);
@@ -152,6 +175,7 @@ export function buildRepositoriesForDisplay(repos: ManagedRepo[]): ManagedRepo[]
     cancelCiDuringFollowupWorkflows: cancelCiWorkflowsByRepository.get(getRepositoryConfigKey(repo.name)) ?? [],
     nonBlockingChecks: nonBlockingChecksByRepository.get(getRepositoryConfigKey(repo.name)) ?? [],
     notificationsEnabled: resolveRepositoryNotificationsEnabled(repos, getRepositoryConfigKey(repo.name)),
+    autoResolveMergeConflicts: resolveRepositoryAutoResolveMergeConflicts(repos, getRepositoryConfigKey(repo.name)),
     visualPreview: visualPreviewByRepository.get(getRepositoryConfigKey(repo.name)) || defaultVisualPreview()
   }));
 }

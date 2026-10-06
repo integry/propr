@@ -3,12 +3,13 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { HeaderScopeSlotContext } from '../components/headerScopeSlot';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import AnalyticsPage from './AnalyticsPage';
-import { getRepositoryStats, getStatsOverview, getTaskStats } from '../api/taskStatsApi';
+import { getRepositoryStats, getReviewScoreSummary, getStatsOverview, getTaskStats } from '../api/taskStatsApi';
 
 vi.mock('../api/taskStatsApi', () => ({
   getTaskStats: vi.fn(),
   getRepositoryStats: vi.fn(),
   getStatsOverview: vi.fn(),
+  getReviewScoreSummary: vi.fn(),
 }));
 vi.mock('../contexts/useSocket', () => ({
   useSocket: () => ({ isConnected: false, onTaskUpdate: () => () => {} }),
@@ -17,6 +18,9 @@ vi.mock('../contexts/useSocket', () => ({
 type TaskStats = Awaited<ReturnType<typeof getTaskStats>>;
 type RepositoryStats = Awaited<ReturnType<typeof getRepositoryStats>>;
 type Overview = Awaited<ReturnType<typeof getStatsOverview>>;
+type ReviewScores = Awaited<ReturnType<typeof getReviewScoreSummary>>;
+
+const emptyReviewScores: ReviewScores = { period: '30d', repository: 'all', prs_scored: 0, scores_recorded: 0, models: [] };
 
 const overview = {
   tasks: { completed: 7, planned: 0, pr_iterations_avg: 1, merged_prs: 7, total_followups: 1 },
@@ -55,6 +59,7 @@ describe('AnalyticsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getStatsOverview).mockReturnValue(new Promise(() => {}));
+    vi.mocked(getReviewScoreSummary).mockResolvedValue(emptyReviewScores);
   });
 
   it('announces the widgets waiting once for the page, not once per widget', async () => {
@@ -108,6 +113,7 @@ describe('AnalyticsPage', () => {
     const secondary = screen.getByTestId('analytics-secondary-pane');
     expect(within(primary).getByRole('heading', { name: /Activity · Last 30 days/ })).toBeInTheDocument();
     expect(within(primary).getByRole('heading', { name: /Repository performance/ })).toBeInTheDocument();
+    expect(within(primary).getByRole('heading', { name: /Review quality by model/ })).toBeInTheDocument();
     expect(within(secondary).getByRole('heading', { name: 'Models' })).toBeInTheDocument();
     expect(within(secondary).getByRole('heading', { name: 'Task status' })).toBeInTheDocument();
     expect(within(secondary).getByRole('heading', { name: 'Token consumption' })).toBeInTheDocument();
@@ -236,6 +242,8 @@ describe('AnalyticsPage', () => {
     expect(getRepositoryStats).toHaveBeenCalledTimes(2);
     expect(getStatsOverview).toHaveBeenLastCalledWith('7d');
     expect(getStatsOverview).toHaveBeenCalledTimes(2);
+    expect(getReviewScoreSummary).toHaveBeenLastCalledWith('7d');
+    expect(getReviewScoreSummary).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId('location')).toHaveTextContent('/analytics?period=7d');
     expect(screen.getByRole('button', { name: 'Last 7 days' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('heading', { name: /Activity · Last 7 days/ })).toBeInTheDocument();
@@ -292,5 +300,40 @@ describe('AnalyticsPage', () => {
     await act(async () => { pendingRepositories['24h'](repositoryStats('acme/one-day')); });
     expect(screen.queryByText('one-day')).not.toBeInTheDocument();
     expect(screen.getByText('seven-days')).toBeInTheDocument();
+  });
+  it('shows review quality by implementer model with each figure\'s denominator and unknowns as a dash', async () => {
+    vi.mocked(getTaskStats).mockResolvedValue(taskStats);
+    vi.mocked(getRepositoryStats).mockResolvedValue({ repositories: [] });
+    vi.mocked(getReviewScoreSummary).mockResolvedValue({
+      period: '30d', repository: 'all', prs_scored: 4, scores_recorded: 6,
+      models: [
+        {
+          implementer_model: 'claude-opus-5-5', implementer_agent: 'claude', prs_scored: 3,
+          first_score: { mean: 5.33, median: 5, n: 3 }, final_score: { mean: 8.25, n: 3 },
+          cycles_to_goal: { mean: 2, n: 1, attempted: 2 }, merge_rate: { value: 0.5, merged: 1, n: 2 },
+          cost_per_merged_pr: { usd: 3, n: 1 },
+        },
+        {
+          implementer_model: null, implementer_agent: null, prs_scored: 1,
+          first_score: { mean: 3, median: 3, n: 1 }, final_score: { mean: 3, n: 1 },
+          cycles_to_goal: { mean: null, n: 0, attempted: 0 }, merge_rate: { value: null, merged: 0, n: 0 },
+          cost_per_merged_pr: { usd: null, n: 0 },
+        },
+      ],
+    });
+
+    renderPage();
+
+    const table = await screen.findByTestId('review-quality-table');
+    const rows = within(table).getAllByTestId('review-quality-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('Claude Opus 5.5');
+    expect(rows[0]).toHaveTextContent('5.3 (5.0)');
+    expect(within(rows[0]).getByTestId('review-quality-final')).toHaveTextContent('8.3n=3');
+    expect(rows[0]).toHaveTextContent('50%');
+    expect(rows[0]).toHaveTextContent('$3.00');
+    expect(rows[1]).toHaveTextContent('Unknown model');
+    expect(within(rows[1]).getAllByText('—')).toHaveLength(3);
+    expect(getReviewScoreSummary).toHaveBeenCalledWith('30d');
   });
 });
