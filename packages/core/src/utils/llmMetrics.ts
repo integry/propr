@@ -346,6 +346,26 @@ async function getHighCostAlerts(metricsRedis: InstanceType<typeof Redis>): Prom
         .filter((a): a is HighCostAlert => a !== null);
 }
 
+export const AGENT_WATCHDOG_METRIC_RULES = ['inactivity', 'tool_inactivity', 'degenerate_output'] as const;
+export const agentWatchdogMetricKey = (rule: string): string => `llm:metrics:watchdog:${rule}`;
+
+/** Counts one watchdog trip per rule; never throws, metrics must not affect the run. */
+export async function recordAgentWatchdogTrip(rule: typeof AGENT_WATCHDOG_METRIC_RULES[number], redis?: Pick<InstanceType<typeof Redis>, 'incr'>): Promise<void> {
+    const metricsRedis = redis ?? new Redis(connectionOptions);
+    try {
+        await metricsRedis.incr(agentWatchdogMetricKey(rule));
+    } catch (error) {
+        logger.warn({ error: (error as Error).message, rule }, 'Failed to record agent watchdog trip metric');
+    } finally {
+        if (!redis) await (metricsRedis as InstanceType<typeof Redis>).quit().catch(() => undefined);
+    }
+}
+
+async function getWatchdogTrips(metricsRedis: InstanceType<typeof Redis>): Promise<Record<string, number>> {
+    const counts = await Promise.all(AGENT_WATCHDOG_METRIC_RULES.map(rule => metricsRedis.get(agentWatchdogMetricKey(rule)).then(v => parseInt(v ?? '0'))));
+    return Object.fromEntries(AGENT_WATCHDOG_METRIC_RULES.map((rule, index) => [rule, counts[index]]));
+}
+
 export async function getLLMMetricsSummary(): Promise<LLMMetricsSummaryResult> {
     const metricsRedis = new Redis(connectionOptions);
     try {
@@ -353,7 +373,8 @@ export async function getLLMMetricsSummary(): Promise<LLMMetricsSummaryResult> {
         const modelBreakdown = await getModelMetrics(metricsRedis);
         const dailyMetrics = await getDailyMetrics(metricsRedis);
         const recentHighCostAlerts = await getHighCostAlerts(metricsRedis);
-        return { summary, modelBreakdown, dailyMetrics, recentHighCostAlerts, lastUpdated: new Date().toISOString() };
+        const watchdogTrips = await getWatchdogTrips(metricsRedis);
+        return { summary, modelBreakdown, dailyMetrics, recentHighCostAlerts, watchdogTrips, lastUpdated: new Date().toISOString() };
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack }, 'Failed to retrieve LLM metrics summary');
         throw error;

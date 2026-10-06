@@ -141,6 +141,8 @@ timeline, Inbox, and MCP `get_task`:
 | Reason | Meaning |
 | --- | --- |
 | `timed_out` | Execution reached the overall timeout (partial work may have been saved). |
+| `stalled` | The activity watchdog stopped an agent that produced no output past its stall threshold (partial work may have been saved). |
+| `degenerate_output` | The activity watchdog stopped an agent that emitted only whitespace text (partial work may have been saved). |
 | `cancelled_issue_closed` | The source issue was closed. |
 | `cancelled_label_removed` | A processing trigger was removed. |
 | `cancelled_pr_closed` | The target PR was closed without merging. |
@@ -148,6 +150,47 @@ timeline, Inbox, and MCP `get_task`:
 
 Cancellation reasons remain stable if the worker later reports its container's
 exit. Timeout failures remain distinct from cancellations and use the existing
-failure retry policy. No inactivity timeout is introduced.
+failure retry policy.
+
+### Stall and degenerate-output watchdog
+
+The per-agent timeout (`*_TIMEOUT_MS`, 24 hours by default) is the outer
+backstop. Inside it, an activity watchdog watches every live implementation
+run — Claude, Codex, Antigravity, OpenCode and Vibe alike — at the point where
+the Docker executor publishes the run's live output, not inside any one
+agent's parser:
+
+- **Inactivity.** Any output counts as activity: a stdout record or partial
+  record, a stderr log line, or a changed transcript snapshot (Vibe). With no
+  activity for `AGENT_STALL_TIMEOUT_MS` (10 minutes by default) the run stops.
+- **Silent tool calls.** When a provider reports that a tool call started
+  (Claude `tool_use`, Codex `item.started`/`*_begin`, OpenCode running tool
+  parts, Antigravity `tool_use`) without streaming its output, the longer
+  `AGENT_TOOL_STALL_TIMEOUT_MS` (30 minutes) applies from the tool start until
+  the tool ends or the model speaks again. A tool that keeps printing never
+  trips the watchdog; only true silence counts.
+- **Degenerate output.** `AGENT_DEGENERATE_OUTPUT_LIMIT` (50) consecutive
+  whitespace-only text deltas stop the run. Empty deltas are normal and never
+  count; any real text resets the count.
+
+`0` disables a rule. The thresholds are instance settings (Settings →
+Automation → Agent watchdog, `propr setting update agent_stall_timeout_ms …`)
+read at the start of every run, so a change applies to the next run without a
+restart; the environment variables are their defaults.
+
+A tripped watchdog stops the container through the same subprocess-scoped path
+as the execution deadline, so the run ends like a timed-out run: partial work
+is committed and published, the completion comment on the issue or PR explains
+the stop, and the task finishes with `terminalReason` `stalled` or
+`degenerate_output`, which the Inbox notification shows. The trip itself is
+recorded as a task timeline entry (rule, threshold, seconds silent or
+whitespace delta count) and counted per rule in `GET /api/llm-metrics`
+(`watchdogTrips`).
+
+The repository capacity lease covers only the container's execution, so it is
+released as soon as the stopped container exits. A watchdog-stopped task is
+terminal: the task-state reconciler replays its terminal state and reason
+rather than treating it as orphaned. Tasks parked for a provider usage limit
+(the AI-waiting label) have no running container and are never watched.
 
 See [Observability And Control](../features/observability.md) for the product-facing view and [Worker Runtime Reference](./worker-runtime.md) for operational details.

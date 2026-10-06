@@ -4,7 +4,7 @@ import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 import {
     TaskStates, isBookkeepingCancellation, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
-    type TaskResult, type ResumableTaskInfo, type TaskStateExpectation,
+    type TaskResult, type TaskTerminalReason, type ResumableTaskInfo, type TaskStateExpectation,
     type NonTerminalTaskScanResult, type TaskStateUpdateResult, type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
@@ -449,7 +449,7 @@ export class WorkerStateManager {
     async markTaskCompleted(taskId: string, result: TaskResult = {}): Promise<TaskStateData> {
         const metadata: UpdateMetadata = {
             prResult: result, reason: 'Task completed successfully',
-            ...(result.terminalReason === 'timed_out' ? { terminalReason: 'timed_out' } : {}),
+            ...(result.terminalReason === 'timed_out' || result.terminalReason === 'stalled' || result.terminalReason === 'degenerate_output' ? { terminalReason: result.terminalReason as TaskTerminalReason } : {}),
             historyMetadata: {
                 pr: (result.prUrl && result.prNumber) ? { number: result.prNumber, url: result.prUrl } : null,
                 commitResult: result.commitResult ?? null

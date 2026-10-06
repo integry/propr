@@ -38,6 +38,14 @@ interface SettingsApiData {
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
+  agent_stall_timeout_ms?: number | null;
+  agent_tool_stall_timeout_ms?: number | null;
+  agent_degenerate_output_limit?: number | null;
+  agent_watchdog_defaults?: Settings['agent_watchdog_defaults'];
+}
+
+function watchdogOverride(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig[]): Settings {
@@ -66,6 +74,10 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     ultrafix_rating_goal: settingsData.ultrafix_rating_goal ?? 7,
     ultrafix_max_cycles: settingsData.ultrafix_max_cycles ?? 5,
     ultrafix_pause_seconds: settingsData.ultrafix_pause_seconds ?? 60,
+    agent_stall_timeout_ms: watchdogOverride(settingsData.agent_stall_timeout_ms),
+    agent_tool_stall_timeout_ms: watchdogOverride(settingsData.agent_tool_stall_timeout_ms),
+    agent_degenerate_output_limit: watchdogOverride(settingsData.agent_degenerate_output_limit),
+    agent_watchdog_defaults: settingsData.agent_watchdog_defaults,
   };
 }
 

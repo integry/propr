@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   placeholders. A template that cannot be read or rendered never fails a run:
   ProPR logs it, records it on the task timeline and uses the default
   description, which is unchanged when no template exists.
+- **Agent stall and degenerate-output watchdog**: a running implementation agent
+  (Claude, Codex, Antigravity, OpenCode or Vibe) that produces no output for
+  `AGENT_STALL_TIMEOUT_MS` (10 minutes), or emits
+  `AGENT_DEGENERATE_OUTPUT_LIMIT` (50) consecutive whitespace-only text deltas,
+  is now stopped instead of holding its worker slot and repository capacity
+  until the 24-hour execution timeout. A tool call that starts without
+  streaming output gets the longer `AGENT_TOOL_STALL_TIMEOUT_MS` (30 minutes);
+  tools that keep printing never trip it. Partial work is published like a
+  timed-out run's, the task ends with the new `terminalReason` `stalled` or
+  `degenerate_output`, the trip is written to the task timeline, the Inbox and
+  the issue/PR comment explain the stop, and `GET /api/llm-metrics` counts
+  trips per rule (`watchdogTrips`). The thresholds are instance settings
+  (Settings → Automation → Agent watchdog, `propr setting update
+  agent_stall_timeout_ms <ms>`, MCP `update_execution_settings`) that apply to
+  the next run without a restart; `0` disables a rule and the environment
+  variables are the defaults.
 - **Push salvage and rejection diagnosis**: when the final push of an
   implementation run, PR follow-up, `/fix`, ultrafix cycle or merge-conflict
   job fails, ProPR no longer loses the agent's commits with the worktree. It
@@ -67,7 +83,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direct dependency. Previously a clean checkout silently baked a notice without
   them into images. The preview app/UI and agent builds now run
   `npm ci --ignore-scripts` before building images.
-
 - **Bounded goal waits**: MCP `wait_goal` and `propr goal wait <id>` wait, with
   a finite deadline, for a confirmed goal state (`completed`, `failed`,
   `cancelled`, `paused`, `terminal`) or a newly published `checkpoint` instead

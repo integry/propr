@@ -46,13 +46,9 @@ const mocks = vi.hoisted(() => ({
     clearDismissedTasks: vi.fn(),
     refresh: vi.fn(async () => undefined),
   },
-}));
-
-vi.mock('../hooks/useHeaderStats', () => ({
-  useHeaderStats: () => mocks.headerStats,
-}));
-vi.mock('../hooks/useGlobalSearch', () => ({
-  useGlobalSearch: () => ({
+  // GlobalSearch resets its scope when the results object changes, so the mock
+  // must hand back the same object on every render, like the real hook does.
+  globalSearch: {
     query: '',
     results: { plans: [], tasks: [], repositories: [] },
     isLoading: false,
@@ -61,7 +57,14 @@ vi.mock('../hooks/useGlobalSearch', () => ({
     setQuery: vi.fn(),
     clearSearch: vi.fn(),
     setIsOpen: vi.fn(),
-  }),
+  },
+}));
+
+vi.mock('../hooks/useHeaderStats', () => ({
+  useHeaderStats: () => mocks.headerStats,
+}));
+vi.mock('../hooks/useGlobalSearch', () => ({
+  useGlobalSearch: () => mocks.globalSearch,
 }));
 vi.mock('./MobileBottomNavigation', () => ({ default: () => null }));
 vi.mock('react-router-dom', async () => {
@@ -151,6 +154,18 @@ describe('GlobalHeader desktop toolbar', () => {
     expectActions('New Goal', ['New Task', 'New Plan']);
   });
 
+  it('re-renders the header search without looping on its result set', () => {
+    const header = (onLogout: () => void) => (
+      <MemoryRouter>
+        <GlobalHeader user={user} onLogout={onLogout} onMenuToggle={vi.fn()} MenuIcon={() => null} />
+      </MemoryRouter>
+    );
+    const { rerender } = render(header(vi.fn()));
+    rerender(header(vi.fn()));
+    rerender(header(vi.fn()));
+    expect(within(screen.getByTestId('header-search')).getByRole('combobox')).toBeInTheDocument();
+  });
+
   it('leads with search, puts the page scope control beside it, and keeps app actions right', () => {
     const { toolbar, left, right } = renderToolbar();
 
@@ -164,7 +179,7 @@ describe('GlobalHeader desktop toolbar', () => {
     expect(within(toolbar).queryByRole('button', { name: '1 Task' })).not.toBeInTheDocument();
 
     // Search is the primary input, so it leads the bar from the left.
-    expect(within(left).getByRole('textbox', { name: 'Search' })).toHaveClass('border-0', 'bg-slate-100');
+    expect(within(left).getByRole('combobox', { name: 'Search' })).toHaveClass('border-0', 'bg-slate-100');
     expect(within(left).getByText('\u2318K')).toBeInTheDocument();
 
     // The menu toggle stays available as the drawer trigger below `lg`.

@@ -495,6 +495,9 @@ Settings keys:
 | `ultrafix_rating_goal` | Target quality rating for ultrafix cycles |
 | `ultrafix_max_cycles` | Maximum number of ultrafix cycles |
 | `ultrafix_pause_seconds` | Pause duration between ultrafix cycles |
+| `agent_stall_timeout_ms` | Stop an agent run silent this long, in ms (0 disables; `default` restores `AGENT_STALL_TIMEOUT_MS`) |
+| `agent_tool_stall_timeout_ms` | Silence allowed while a tool call runs, in ms (0 disables; `default` restores `AGENT_TOOL_STALL_TIMEOUT_MS`) |
+| `agent_degenerate_output_limit` | Consecutive whitespace-only deltas that stop a run (0 disables; `default` restores `AGENT_DEGENERATE_OUTPUT_LIMIT`) |
 
 `propr setting update` also accepts `pr-label`, `ai-primary-tag`, `primary-processing-labels`, and `followup-keywords` (comma-separated for the list keys).
 

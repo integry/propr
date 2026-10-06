@@ -16,6 +16,7 @@ import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
 import type { TaskCompletionParams } from './types.js';
 import { buildWorkNotificationRecap } from '../notificationRecap.js';
+import { taskTerminalReasonForAgentTermination } from '../agentTerminalReason.js';
 
 export function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
   if (postProcessingResult?.pr && claudeResult && resolveAgentTerminationReason(claudeResult)) {
@@ -43,6 +44,11 @@ function buildTerminalNotificationRecap(params: TerminalStateParams, status: str
       partial: status === 'partial_with_pr'
     }
   );
+}
+
+function terminalReasonFields(claudeResult: ClaudeCodeResponse | null) {
+  const terminalReason = claudeResult ? taskTerminalReasonForAgentTermination(resolveAgentTerminationReason(claudeResult)) : undefined;
+  return terminalReason ? { terminalReason } : {};
 }
 
 /** A rejected push is a task failure even when the agent succeeded: the work only
@@ -73,7 +79,7 @@ async function markAgentTerminalState(params: TerminalStateParams): Promise<void
     : null;
   const taskResult = {
     status,
-    ...(claudeResult && resolveAgentTerminationReason(claudeResult) === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
+    ...terminalReasonFields(claudeResult),
     claudeSuccess: claudeResult?.success || false,
     prCreated: !!postProcessingResult?.pr,
     prNumber: postProcessingResult?.pr?.number ?? undefined,
@@ -88,7 +94,7 @@ async function markAgentTerminalState(params: TerminalStateParams): Promise<void
       new Error(claudeResult?.error || 'Agent processing failed'),
       {
         errorCategory: ErrorCategories.CLAUDE_EXECUTION,
-        ...(claudeResult && resolveAgentTerminationReason(claudeResult) === 'timeout' ? { terminalReason: 'timed_out' as const } : {}),
+        ...terminalReasonFields(claudeResult),
         prResult: taskResult,
         historyMetadata: {
           pr: (taskResult.prUrl && taskResult.prNumber)
