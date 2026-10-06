@@ -70,6 +70,11 @@ export function validateAutoMergeConfig(value: unknown): string | null {
             if (normalizePath(pattern).split('/').some(part => part === '..')) {
                 return `auto_merge.protected_paths[${index}] must not contain '..' segments`;
             }
+            try {
+                compileProtectedPathGlob(pattern);
+            } catch {
+                return `auto_merge.protected_paths[${index}] is not a valid glob`;
+            }
         }
     }
     return null;
@@ -95,7 +100,9 @@ function escapeRegExp(text: string): string {
  * `*` and `?` stay within one path segment, `**` spans any number of segments,
  * and `[...]` is a character class. `*` matches dotfiles. A pattern that matches a
  * directory protects everything below it, so `docs` and `docs/` equal `docs/**`.
- * Matching is case-insensitive so a differently cased path cannot slip through.
+ * Matching is case-insensitive so a differently cased path cannot slip through, and
+ * wildcards match line terminators, which Git allows in filenames. Throws on a glob
+ * that does not compile (such as a reversed `[z-a]` range); validation rejects those.
  */
 export function compileProtectedPathGlob(pattern: string): RegExp {
     const glob = trimTrailingSlashes(normalizePath(pattern));
@@ -126,7 +133,7 @@ export function compileProtectedPathGlob(pattern: string): RegExp {
         }
     }
     // Matching a directory protects its descendants.
-    return new RegExp(`^${source}(?:/.*)?$`, 'i');
+    return new RegExp(`^${source}(?:/.*)?$`, 'is');
 }
 
 /** Changed paths matched by any protected pattern, including the always-protected ones. */

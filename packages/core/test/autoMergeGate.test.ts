@@ -31,7 +31,9 @@ interface FakeRepo {
     headSha: string;
     baseRef: string;
     headRef: string;
-    autoMerge?: { enabled_by: { type: string } } | null;
+    autoMerge?: { enabled_by: { login: string; type: string } } | null;
+    /** Runs while the files list is being fetched, to simulate concurrent PR changes. */
+    onListFiles?: () => void;
     failFiles?: boolean;
     changedFiles?: number;
     repo?: Record<string, boolean>;
@@ -54,6 +56,7 @@ function fakeGitHub(state: FakeRepo) {
             }
             if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/files') {
                 if (state.failFiles) throw Object.assign(new Error('Server Error'), { status: 502 });
+                state.onListFiles?.();
                 const page = params.page as number; const perPage = params.per_page as number;
                 return { data: state.files.slice((page - 1) * perPage, page * perPage) };
             }
@@ -72,6 +75,8 @@ function fakeGitHub(state: FakeRepo) {
 
 const PROTECTING_POLICY = 'auto_merge:\n  method: rebase\n  protected_paths:\n    - "migrations/**"\n';
 const PERMISSIVE_POLICY = 'auto_merge:\n  enabled: true\n';
+const PROPR_ARMED = { enabled_by: { login: 'propr-dev[bot]', type: 'Bot' } };
+const botLogin = async () => 'propr-dev[bot]';
 
 beforeEach(async () => {
     await database('tasks').delete();
@@ -172,9 +177,9 @@ test('a new head touching a protected path disarms ProPR-armed auto-merge and co
     planIssue = { draft_id: 'draft', issue_number: 7 };
     const github = fakeGitHub({
         workflowByRef: { main: PROTECTING_POLICY }, files: [{ filename: 'src/app.ts' }, { filename: 'migrations/002.sql' }],
-        headSha: 'abcdef123', baseRef: 'main', headRef: 'f', autoMerge: { enabled_by: { type: 'Bot' } },
+        headSha: 'abcdef123', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED,
     });
-    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database });
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
     assert.equal(result.disarmed, true);
     assert.equal(github.graphqlCalls.length, 1);
     assert.match(github.graphqlCalls[0].query, /disablePullRequestAutoMerge/);
@@ -188,8 +193,8 @@ test('a new head touching a protected path disarms ProPR-armed auto-merge and co
 });
 
 test('a new head that still satisfies the policy keeps auto-merge armed', async () => {
-    const github = fakeGitHub({ workflowByRef: { main: PROTECTING_POLICY }, files: [{ filename: 'src/app.ts' }], headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: { enabled_by: { type: 'Bot' } } });
-    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database });
+    const github = fakeGitHub({ workflowByRef: { main: PROTECTING_POLICY }, files: [{ filename: 'src/app.ts' }], headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED });
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
     assert.equal(result.disarmed, false);
     assert.equal(github.graphqlCalls.length, 0);
     assert.equal(github.comments().length, 0);
@@ -197,19 +202,19 @@ test('a new head that still satisfies the policy keeps auto-merge armed', async 
 });
 
 test('auto-merge a person armed manually is left alone', async () => {
-    const github = fakeGitHub({ workflowByRef: {}, files: [{ filename: '.propr/workflow.yml' }], headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: { enabled_by: { type: 'User' } } });
-    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database });
+    const github = fakeGitHub({ workflowByRef: {}, files: [{ filename: '.propr/workflow.yml' }], headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: { enabled_by: { login: 'maintainer', type: 'User' } } });
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
     assert.equal(result.disarmed, false);
     assert.equal(github.graphqlCalls.length, 0);
 });
 
 test('the webhook hook only re-evaluates armed open PRs on a new head or base', async () => {
-    const github = fakeGitHub({ workflowByRef: {}, files: [{ filename: '.propr/x' }], headSha: 'h', baseRef: 'main', headRef: 'f', autoMerge: { enabled_by: { type: 'Bot' } } });
+    const github = fakeGitHub({ workflowByRef: {}, files: [{ filename: '.propr/x' }], headSha: 'h', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED });
     const event = (action: string, extra: Record<string, unknown> = {}, pr: Record<string, unknown> = {}) => ({
         action, repository: { full_name: 'acme/repo' }, ...extra,
-        pull_request: { number: 70, state: 'open', auto_merge: { enabled_by: { type: 'Bot' } }, ...pr },
+        pull_request: { number: 70, state: 'open', auto_merge: PROPR_ARMED, ...pr },
     }) as never;
-    const deps = { octokit: github.octokit, database };
+    const deps = { octokit: github.octokit, database, botLogin };
     await handleAutoMergePolicyPullRequestEvent(event('labeled'), log, deps);
     await handleAutoMergePolicyPullRequestEvent(event('synchronize', {}, { auto_merge: null }), log, deps);
     await handleAutoMergePolicyPullRequestEvent(event('synchronize', {}, { state: 'closed' }), log, deps);
@@ -218,4 +223,77 @@ test('the webhook hook only re-evaluates armed open PRs on a new head or base', 
     await handleAutoMergePolicyPullRequestEvent(event('synchronize'), log, deps);
     await handleAutoMergePolicyPullRequestEvent(event('edited', { changes: { base: { ref: { from: 'dev' } } } }), log, deps);
     assert.equal(github.graphqlCalls.length, 2);
+});
+
+test('a PR retargeted while its files are listed is not armed with the old base policy', async () => {
+    // main permits src/**; release protects it. The head and file count stay the same.
+    const state: FakeRepo = {
+        workflowByRef: { main: PERMISSIVE_POLICY, release: 'auto_merge:\n  protected_paths: ["src/**"]\n' },
+        files: [{ filename: 'src/app.ts' }], headSha: 'h', baseRef: 'main', headRef: 'f',
+    };
+    state.onListFiles = () => { state.baseRef = 'release'; };
+    const github = fakeGitHub(state);
+    const result = await gateAutoMergeArming({ owner: 'acme', repo: 'repo', prNumber: 70, opportunity: 'initial_pr', taskId: 'task-1', log }, { octokit: github.octokit, database });
+    assert.equal(result.arm, false);
+    assert.equal(result.reason, 'skipped_diff_unavailable');
+    assert.equal(github.comments().length, 1);
+});
+
+test('a retarget during re-evaluation withdraws ProPR-armed auto-merge', async () => {
+    const state: FakeRepo = {
+        workflowByRef: { main: PERMISSIVE_POLICY, release: 'auto_merge:\n  protected_paths: ["src/**"]\n' },
+        files: [{ filename: 'src/app.ts' }], headSha: 'h', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED,
+    };
+    state.onListFiles = () => { state.baseRef = 'release'; };
+    const github = fakeGitHub(state);
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
+    assert.equal(result.decision?.arm, false);
+    assert.equal(result.disarmed, true);
+});
+
+test('an uncompilable protected glob on the base is a commented policy_invalid skip', async () => {
+    const github = fakeGitHub({ workflowByRef: { main: 'auto_merge:\n  protected_paths: ["[z-a]"]\n' }, files: [{ filename: 'src/app.ts' }], headSha: 'h', baseRef: 'main', headRef: 'f' });
+    const result = await gateAutoMergeArming({ owner: 'acme', repo: 'repo', prNumber: 70, opportunity: 'initial_pr', taskId: 'task-1', log }, { octokit: github.octokit, database });
+    assert.equal(result.arm, false);
+    assert.equal(result.reason, 'skipped_policy_invalid');
+    assert.equal(github.comments().length, 1);
+    assert.match(github.comments()[0], /skipped_policy_invalid/);
+    assert.equal((await decisionEvents()).length, 1);
+});
+
+test('an uncompilable protected glob disarms ProPR-armed auto-merge on a new head', async () => {
+    const github = fakeGitHub({
+        workflowByRef: { main: 'auto_merge:\n  protected_paths: ["[z-a]"]\n' }, files: [{ filename: 'src/app.ts' }],
+        headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED,
+    });
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
+    assert.equal(result.disarmed, true);
+    assert.equal(result.decision?.reason, 'skipped_policy_invalid');
+    assert.equal(github.graphqlCalls.length, 1);
+    assert.equal(github.comments().length, 1);
+});
+
+test('auto-merge another GitHub App enabled is left alone', async () => {
+    const github = fakeGitHub({
+        workflowByRef: {}, files: [{ filename: '.propr/workflow.yml' }], headSha: 'h2', baseRef: 'main', headRef: 'f',
+        autoMerge: { enabled_by: { login: 'other-automation[bot]', type: 'Bot' } },
+    });
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
+    assert.equal(result.disarmed, false);
+    assert.equal(github.graphqlCalls.length, 0);
+    assert.equal(github.comments().length, 0);
+});
+
+test('auto-merge is left alone when ProPR cannot resolve its own identity', async () => {
+    const github = fakeGitHub({ workflowByRef: {}, files: [{ filename: '.propr/workflow.yml' }], headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED });
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log },
+        { octokit: github.octokit, database, botLogin: async () => { throw new Error('installation lookup failed'); } });
+    assert.equal(result.disarmed, false);
+    assert.equal(github.graphqlCalls.length, 0);
+});
+
+test('ProPR identity matching ignores login case', async () => {
+    const github = fakeGitHub({ workflowByRef: {}, files: [{ filename: '.propr/workflow.yml' }], headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED });
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin: async () => 'ProPR-Dev[bot]' });
+    assert.equal(result.disarmed, true);
 });

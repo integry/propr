@@ -38,6 +38,11 @@ const cases: Array<{ name: string; policy: AutoMergePolicyInput; files: string[]
     { name: '.propr/** is protected even with an explicit empty list', policy: valid({ protected_paths: [] }), files: ['src/a.ts', '.propr/nested/setup.sh'], reason: 'skipped_protected_path', matched: ['.propr/nested/setup.sh'] },
     { name: '.propr/** is protected regardless of case', policy: valid(), files: ['.PROPR/Workflow.yml'], reason: 'skipped_protected_path', matched: ['.PROPR/Workflow.yml'] },
     { name: 'a .propr-like sibling is not protected', policy: valid(), files: ['.proprc'], reason: 'armed' },
+    { name: '.propr/** matches a filename with an embedded newline', policy: valid(), files: ['.propr/a\nb.txt'], reason: 'skipped_protected_path', matched: ['.propr/a\nb.txt'] },
+    { name: '.propr/** matches a newline in a nested directory name', policy: valid(), files: ['.propr/x\r\ny/setup.sh'], reason: 'skipped_protected_path', matched: ['.propr/x\r\ny/setup.sh'] },
+    { name: 'a trailing /** pattern matches embedded line terminators', policy: valid({ protected_paths: ['secrets/**'] }), files: ['secrets/a\u2028b.pem'], reason: 'skipped_protected_path', matched: ['secrets/a\u2028b.pem'] },
+    { name: 'a directory pattern protects descendants with newlines', policy: valid({ protected_paths: ['infra'] }), files: ['infra/a\nb/main.tf'], reason: 'skipped_protected_path', matched: ['infra/a\nb/main.tf'] },
+    { name: 'an uncompilable glob is an invalid policy', policy: valid({ protected_paths: ['[z-a]'] }), files: ['src/a.ts'], reason: 'skipped_policy_invalid' },
     { name: 'disabled wins over a missing diff', policy: valid({ enabled: false }), files: null, reason: 'skipped_disabled' },
 ];
 
@@ -67,9 +72,11 @@ test('workflow parser accepts the auto_merge block and rejects invalid values', 
     for (const source of [
         'auto_merge: true', 'auto_merge:\n  enabled: "yes"', 'auto_merge:\n  method: fast', 'auto_merge:\n  protected_paths: "*.ts"',
         'auto_merge:\n  protected_paths: ["../x"]', 'auto_merge:\n  protected_paths: [""]', 'auto_merge:\n  extra: 1',
+        'auto_merge:\n  protected_paths: ["src/[z-a].ts"]',
     ]) {
         assert.throws(() => parseRepositoryWorkflow(source), RepositoryWorkflowPolicyError, source);
     }
+    assert.match(validateAutoMergeConfig({ protected_paths: ['ok/**', '[z-a]'] }) ?? '', /protected_paths\[1\] is not a valid glob/);
     assert.equal(validateAutoMergeConfig({ protected_paths: Array.from({ length: 201 }, (_, i) => `p${i}`) })?.includes('at most 200'), true);
 });
 

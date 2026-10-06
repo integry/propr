@@ -27,6 +27,8 @@ export interface AutoMergeGateDependencies {
     octokit?: AutoMergeGateOctokit;
     database?: Knex;
     now?: () => number;
+    /** ProPR's own GitHub login (`<app-slug>[bot]`); defaults to the detected bot username. */
+    botLogin?: () => Promise<string>;
     /** Epic queue hook; defaults to the real queue. */
     markEpicQueueAwaitingHumanMerge?: (input: { draftId: string; issueNumber: number; prNumber: number; reason: string }) => Promise<boolean>;
 }
@@ -38,8 +40,8 @@ export interface PullRequestSnapshot {
     headSha: string;
     changedFiles: number;
     autoMergeArmed: boolean;
-    /** True when an App/bot (ProPR) armed auto-merge rather than a person. */
-    autoMergeArmedByBot: boolean;
+    /** Login of the actor that enabled auto-merge, when GitHub reports one. */
+    autoMergeEnabledBy: string | null;
 }
 
 export interface AutoMergeEvaluation {
@@ -66,11 +68,11 @@ async function gateOctokit(deps: AutoMergeGateDependencies): Promise<AutoMergeGa
 export async function fetchPullRequestSnapshot(octokit: AutoMergeGateOctokit, owner: string, repo: string, prNumber: number): Promise<PullRequestSnapshot> {
     const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber });
     const pr = data as { number: number; node_id: string; base: { ref: string }; head: { sha: string }; changed_files?: number;
-        auto_merge?: { enabled_by?: { type?: string } | null } | null };
+        auto_merge?: { enabled_by?: { login?: string } | null } | null };
     return {
         number: pr.number, nodeId: pr.node_id, baseRef: pr.base.ref, headSha: pr.head.sha,
         changedFiles: typeof pr.changed_files === 'number' ? pr.changed_files : -1, autoMergeArmed: Boolean(pr.auto_merge),
-        autoMergeArmedByBot: pr.auto_merge?.enabled_by?.type === 'Bot',
+        autoMergeEnabledBy: typeof pr.auto_merge?.enabled_by?.login === 'string' ? pr.auto_merge.enabled_by.login : null,
     };
 }
 
@@ -101,7 +103,8 @@ export async function loadBaseAutoMergePolicy(octokit: AutoMergeGateOctokit, own
 
 /**
  * Freshly list the PR's changed files from GitHub (renames contribute both paths).
- * Returns null when the list is incomplete or the head moved while listing.
+ * Returns null when the list is incomplete, or when the head moved or the PR was
+ * retargeted while listing (the policy read for the old base no longer applies).
  */
 export async function fetchPullRequestChangedFiles(octokit: AutoMergeGateOctokit, owner: string, repo: string, pr: PullRequestSnapshot): Promise<string[] | null> {
     const paths = new Set<string>();
@@ -122,7 +125,7 @@ export async function fetchPullRequestChangedFiles(octokit: AutoMergeGateOctokit
     // A truncated or unknown file count could hide a protected path.
     if (pr.changedFiles < 0 || listed !== pr.changedFiles) return null;
     const current = await fetchPullRequestSnapshot(octokit, owner, repo, pr.number);
-    if (current.headSha !== pr.headSha) return null;
+    if (current.headSha !== pr.headSha || current.baseRef !== pr.baseRef) return null;
     return [...paths];
 }
 
@@ -277,6 +280,24 @@ export async function gateAutoMergeArming(input: {
     return { ...decision, ...(mergeMethod ? { mergeMethod } : {}), pullRequest };
 }
 
+async function resolveBotLogin(deps: AutoMergeGateDependencies): Promise<string> {
+    if (deps.botLogin) return deps.botLogin();
+    const { detectBotUsername } = await import('../daemon/configLoader.js');
+    return detectBotUsername();
+}
+
+/** True only when ProPR's own identity enabled the PR's auto-merge request. */
+async function isArmedByProPR(pullRequest: PullRequestSnapshot, deps: AutoMergeGateDependencies, log: Log): Promise<boolean> {
+    if (!pullRequest.autoMergeArmed || !pullRequest.autoMergeEnabledBy) return false;
+    try {
+        const botLogin = (await resolveBotLogin(deps)).trim().toLowerCase();
+        return botLogin.length > 0 && pullRequest.autoMergeEnabledBy.toLowerCase() === botLogin;
+    } catch (error) {
+        log.warn({ prNumber: pullRequest.number, error: (error as Error).message }, 'Could not resolve ProPR bot login; leaving auto-merge untouched');
+        return false;
+    }
+}
+
 async function disablePullRequestAutoMerge(octokit: AutoMergeGateOctokit, pullRequestId: string): Promise<void> {
     if (!octokit.graphql) throw new Error('GraphQL client unavailable');
     await octokit.graphql(`
@@ -299,9 +320,9 @@ export async function reevaluateArmedAutoMergeOnNewHead(input: {
     const log = input.log ?? logger;
     const { decision, pullRequest } = await evaluatePullRequestAutoMerge({ owner, repo, prNumber, opportunity: 'new_head' }, deps);
     // Only ProPR's own armed request is withdrawn: a person who armed it manually after a
-    // skipped decision has already reviewed the protected change. When the PR cannot be
-    // read, GitHub cannot be told either.
-    if (decision.arm || !pullRequest?.autoMergeArmed || !pullRequest.autoMergeArmedByBot) return { disarmed: false, decision };
+    // skipped decision has already reviewed the protected change, and another App's request
+    // is not ProPR's to cancel. When the PR cannot be read, GitHub cannot be told either.
+    if (decision.arm || !pullRequest || !(await isArmedByProPR(pullRequest, deps, log))) return { disarmed: false, decision };
     const octokit = await gateOctokit(deps);
     try {
         await disablePullRequestAutoMerge(octokit, pullRequest.nodeId);

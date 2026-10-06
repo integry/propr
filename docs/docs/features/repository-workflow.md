@@ -92,7 +92,7 @@ The decision fails closed. Each time ProPR would arm auto-merge (after the PR is
 
 A missing `.propr/workflow.yml` is not an error: the defaults apply and only `.propr/**` is protected. When auto-merge is not armed, ProPR posts a one-line PR comment with the reason and leaves the `auto-merge` label in place, so a maintainer can review the PR and merge it or enable auto-merge manually. ProPR's own fallback merge for labelled PRs (when checks pass) applies the same policy.
 
-**New commits.** When an armed PR receives a new head (or is retargeted to another base), ProPR evaluates the policy again. If it no longer allows auto-merge, for example because a follow-up commit touched a protected path, ProPR disables auto-merge on the PR, records a timeline event and comments. Auto-merge that a person enabled manually is left alone.
+**New commits.** When an armed PR receives a new head (or is retargeted to another base), ProPR evaluates the policy again. If it no longer allows auto-merge, for example because a follow-up commit touched a protected path, ProPR disables auto-merge on the PR, records a timeline event and comments. Only auto-merge that ProPR itself enabled is withdrawn; auto-merge a person or another GitHub App enabled is left alone.
 
 **Epic queues.** An Epic queue advances when the head's PR is merged, not when auto-merge is armed. If auto-merge is skipped for the head's PR, the queue stays active and shows *Waiting for human merge* with the reason; it resumes as soon as a person merges the PR.
 
