@@ -128,7 +128,7 @@ const {
     saveState,
     startLoop,
 } = await import('../src/jobs/ultrafixOrchestrationService.js');
-const { getUltrafixStepJobId } = await import('../src/jobs/ultrafixLoopContinuationHelpers.js');
+const { enqueueNextStep, getUltrafixStepJobId } = await import('../src/jobs/ultrafixLoopContinuationHelpers.js');
 const { getUltrafixCiWaitKey, ULTRAFIX_CI_TIMEOUT_REASON } = await import('../src/jobs/ultrafixCiWait.js');
 const { getUltrafixResumeClaimKey } = await import('../src/jobs/ultrafixResumeClaim.js');
 const { IN_FLIGHT_STEP_RETRY_DELAY_MS } = await import('../src/jobs/ultrafixStrandedLoopRearm.js');
@@ -257,6 +257,32 @@ async function strandLoopAfterCiFailure(
     assert.equal(await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, pr), epochBefore + 1);
     assert.equal(await loadDeferredContinuation(redis as never, OWNER, REPO, pr), null, 'deferred record removed');
     assert.equal((await loadState(redis as never, OWNER, REPO, pr))?.active, true, 'loop is still active');
+    return redis;
+}
+
+/**
+ * Capture the Redis contents right after the re-arm reserves its epoch: what a
+ * process terminated before handing the loop to the queue or a deferred record
+ * would leave behind.
+ */
+function captureAfterOwnership(redis: FakeRedis): () => Map<string, string> | undefined {
+    let captured: Map<string, string> | undefined;
+    const evaluate = redis.eval.bind(redis);
+    redis.eval = async (script: string, keyCount: number, ...args: string[]) => {
+        const result = await evaluate(script, keyCount, ...args);
+        if (script.includes('-- reserve epoch and replace state') && result) captured ??= new Map(redis.store);
+        return result;
+    };
+    return () => captured;
+}
+
+/** A fresh process over the captured Redis contents; the dead holder's claim has expired. */
+function restartFrom(captured: Map<string, string>, pr: number): FakeRedis {
+    const redis = createRedis();
+    for (const [key, value] of captured) {
+        if (key !== getUltrafixResumeClaimKey(OWNER, REPO, pr)) redis.store.set(key, value);
+    }
+    queuedJobs.clear();
     return redis;
 }
 
@@ -726,6 +752,72 @@ describe('Ultrafix recovery after a CI failure', () => {
         await sweepUltrafixResumeCandidates(redis as never, () => logger as never);
         assert.equal(reviewJobs(122).length, 1);
         assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 122), null);
+    });
+
+    test('a process lost after a ready re-arm takes ownership leaves a retry the sweep honours', async () => {
+        const redis = await strandLoopAfterCiFailure(124);
+        const captured = captureAfterOwnership(redis);
+
+        await checksTurnGreen(redis, 124);
+        const atHandoff = captured();
+        assert.ok(atHandoff, 'the re-arm took ownership');
+
+        // The process dies before the review reaches the queue.
+        const restarted = restartFrom(atHandoff, 124);
+        assert.equal((await loadState(restarted as never, OWNER, REPO, 124))?.active, true);
+        assert.equal(await loadDeferredContinuation(restarted as never, OWNER, REPO, 124), null);
+        assert.ok(await loadRearmRetry(restarted as never, OWNER, REPO, 124), 'the obligation was persisted before ownership moved');
+
+        const outcomes = await sweepUltrafixResumeCandidates(restarted as never, () => logger as never);
+
+        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        assert.equal(reviewJobs(124).length, 1);
+        assert.equal(await loadRearmRetry(restarted as never, OWNER, REPO, 124), null, 'released once the review is queued');
+    });
+
+    test('a process lost after a CI-deferred re-arm takes ownership leaves a retry the sweep honours', async () => {
+        const redis = await strandLoopAfterCiFailure(125);
+        const captured = captureAfterOwnership(redis);
+
+        // CI on the follow-up head is still red: the re-arm turns into a deferral.
+        await resumeDeferredContinuation({ owner: OWNER, repo: REPO, pr: 125 }, redis as never, logger as never);
+        const atHandoff = captured();
+        assert.ok(atHandoff, 'the re-arm took ownership');
+
+        // The process dies before the deferred record is saved.
+        const restarted = restartFrom(atHandoff, 125);
+        assert.equal(await loadDeferredContinuation(restarted as never, OWNER, REPO, 125), null);
+        assert.ok(await loadRearmRetry(restarted as never, OWNER, REPO, 125), 'the obligation was persisted before ownership moved');
+
+        const outcomes = await sweepUltrafixResumeCandidates(restarted as never, () => logger as never);
+
+        assert.match(outcomes[0]?.result.reason ?? '', /^rearm_deferred: checks_not_passing/);
+        const epoch = await getUltrafixAutomaticWorkEpoch(restarted as never, OWNER, REPO, 125);
+        assert.equal((await loadDeferredContinuation(restarted as never, OWNER, REPO, 125))?.workEpoch, epoch);
+        assert.equal(await loadRearmRetry(restarted as never, OWNER, REPO, 125), null, 'released once the deferral is durable');
+    });
+
+    test('repositories whose names join to the same text keep separate step jobs', async () => {
+        const step = { action: 'review' as const, workEpoch: 2, stepNumber: 2 };
+        assert.notEqual(
+            getUltrafixStepJobId('acme-tools', 'web', 42, step),
+            getUltrafixStepJobId('acme', 'tools-web', 42, step),
+        );
+
+        const redis = createRedis();
+        const enqueue = (owner: string, repo: string) => enqueueNextStep({
+            owner, repo, pullRequestNumber: 42, completedAction: 'fix',
+            ultrafixMeta: { mode: 'ultrafix', goal: 8, maxCycles: 5, pauseSeconds: 30, instructions: '', workEpoch: 2 },
+            redisClient: redis as never, correlatedLogger: logger as never, correlationId: 'collision',
+        }, 'review', 30_000, 2);
+
+        assert.equal(await enqueue('acme-tools', 'web'), true);
+        assert.equal(await enqueue('acme', 'tools-web'), true, 'the other repository is not reported as a duplicate');
+        assert.deepEqual(
+            [...queuedJobs.values()].map(job => `${job.data.repoOwner}/${job.data.repoName}`).sort(),
+            ['acme-tools/web', 'acme/tools-web'],
+        );
+        assert.equal(await enqueue('acme', 'tools-web'), false, 'the same step of the same PR is still deduplicated');
     });
 
     test('a claim taken over by another trigger leaves the retry to that trigger', async () => {

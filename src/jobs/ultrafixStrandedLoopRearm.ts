@@ -13,7 +13,7 @@ import {
     clearUltrafixStateIfUnchanged,
     getUltrafixAutomaticWorkEpoch,
 } from './ultrafixAutomaticWorkEpoch.js';
-import { saveDeferredContinuation, type UltrafixReadinessResult } from './ultrafixOrchestrationService.js';
+import { saveDeferredContinuation, saveRearmRetry, type UltrafixReadinessResult } from './ultrafixOrchestrationService.js';
 import { applyUltrafixCiDeferral } from './ultrafixCiWait.js';
 import {
     enqueueNextStep,
@@ -120,17 +120,34 @@ async function rearmFromSnapshot(prId: UltrafixPrId, ctx: StrandedLoopRearmConte
     return enqueueRearmReview(attempt);
 }
 
+/** Reason recorded on the retry obligation that covers an ownership handoff. */
+export const REARM_HANDOFF_RETRY_REASON = 'rearm_handoff_pending';
+
 /**
  * Hand the snapshot's loop to a freshly reserved epoch (the returned state
  * carries it), so the re-armed step is fenced like any other automatic step.
  * Startup reserves its epoch and commits its state under the label transition
  * lease, so taking ownership under it never lands in between.
+ *
+ * A retry obligation is persisted first: once the epoch moves, nothing else
+ * durable names this loop until its review is queued, deferred or finished,
+ * so a process lost in between leaves the sweep something to resume. The
+ * resume caller releases it once the attempt settles.
  */
 function takeOwnership({ prId, ctx, snapshot, currentEpoch }: RearmAttempt) {
     return withUltrafixLabelTransition(
         ctx.redisClient,
         prId,
-        async () => (await ctx.claim.confirm() ? reserveStateWorkEpoch(ctx.redisClient, snapshot, currentEpoch) : CLAIM_LOST),
+        async () => {
+            if (!await ctx.claim.confirm()) return CLAIM_LOST;
+            await saveRearmRetry(ctx.redisClient, {
+                ...prId,
+                workEpoch: currentEpoch,
+                reason: REARM_HANDOFF_RETRY_REASON,
+                savedAt: new Date().toISOString(),
+            });
+            return reserveStateWorkEpoch(ctx.redisClient, snapshot, currentEpoch);
+        },
     );
 }
 

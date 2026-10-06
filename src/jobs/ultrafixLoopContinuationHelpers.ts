@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Logger } from 'pino';
 import {
     findPlanIssueByRepoAndPR,
@@ -221,6 +222,10 @@ export async function finishUltrafixLoop(input: {
  * Deterministic queue identity for one Ultrafix step. The epoch scopes it to the
  * owning automatic work and the step number separates later cycles in that epoch,
  * so concurrent resume triggers for the same step collapse into one job.
+ *
+ * The readable prefix is joined with `-`, which owner and repository names may
+ * also contain (`acme-tools/web` vs `acme/tools-web`), so the suffix hashes the
+ * structured tuple to keep one PR's step from matching another repository's.
  */
 export function getUltrafixStepJobId(
     owner: string,
@@ -228,7 +233,11 @@ export function getUltrafixStepJobId(
     pullRequestNumber: number,
     step: { action: UltrafixAction; workEpoch: number; stepNumber: number },
 ): string {
-    return `pr-comments-batch-${owner}-${repo}-${pullRequestNumber}-ultrafix-${step.action}-${step.workEpoch}-${step.stepNumber}`;
+    const identity = createHash('sha256')
+        .update(JSON.stringify([owner, repo, pullRequestNumber, step.action, step.workEpoch, step.stepNumber]))
+        .digest('hex')
+        .slice(0, 32);
+    return `pr-comments-batch-${owner}-${repo}-${pullRequestNumber}-ultrafix-${step.action}-${step.workEpoch}-${step.stepNumber}-${identity}`;
 }
 
 function isDuplicateJobError(err: unknown): boolean {

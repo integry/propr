@@ -87,6 +87,7 @@ const {
     setCheckRunDeps,
 } = await import('../src/jobs/ultrafixLoopContinuation.js');
 const { acquireResumeClaim } = await import('../src/jobs/ultrafixResumeClaim.js');
+const { getUltrafixStepJobId } = await import('../src/jobs/ultrafixLoopContinuationHelpers.js');
 const {
     createDefaultState,
     getUltrafixAutomaticWorkEpoch,
@@ -483,7 +484,8 @@ describe('stranded Ultrafix loop re-arming', () => {
         assert.equal(data.commandMode, 'review');
         // The fenced epoch was 1; the re-arm reserves its own so later fences supersede it.
         assert.equal(data.ultrafixMeta.workEpoch, 2);
-        assert.equal(options.jobId, 'pr-comments-batch-acme-web-60-ultrafix-review-2-2');
+        assert.equal(options.jobId, getUltrafixStepJobId('acme', 'web', 60, { action: 'review', workEpoch: 2, stepNumber: 2 }));
+        assert.match(options.jobId, /^pr-comments-batch-acme-web-60-ultrafix-review-2-2-[0-9a-f]{32}$/);
         assert.equal(options.delay, 30_000);
         assert.equal((await loadState(redis as never, 'acme', 'web', 60))?.workEpoch, 2);
         assert.equal(await getUltrafixAutomaticWorkEpoch(redis as never, 'acme', 'web', 60), 2);
