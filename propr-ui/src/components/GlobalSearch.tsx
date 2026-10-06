@@ -13,6 +13,7 @@ import {
   getItemPath,
   getPlansAction,
   getScopeAction,
+  getShortcutModifierLabel,
   searchOptionId,
 } from './globalSearchModel';
 import { SearchPreview, SearchResultList } from './GlobalSearchResults';
@@ -106,6 +107,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
   const counts = useMemo(() => getCategoryCounts(results), [results]);
   const items = useMemo(() => buildSearchItems(results, category), [results, category]);
   const activeItem: SearchItem | undefined = items[activeIndex];
+  const modifierKey = useMemo(() => getShortcutModifierLabel(), []);
 
   // A new result set starts from the top of the full list. Reset while rendering,
   // not in an effect, so a pending reset can't undo a Tab pressed right after
@@ -331,7 +333,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
                 </div>
                 {activeItem && (
                   <div className="hidden min-w-0 basis-2/5 border-l border-slate-200 bg-slate-50 md:block">
-                    <SearchPreview item={activeItem} onOpen={openItem} shortcutKey="⌘" />
+                    <SearchPreview item={activeItem} onOpen={openItem} shortcutKey={modifierKey} />
                   </div>
                 )}
               </div>
@@ -340,7 +342,7 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
                 <span><Kbd>↑</Kbd> <Kbd>↓</Kbd> navigate</span>
                 <span><Kbd>Tab</Kbd> filter</span>
                 <span><Kbd>↵</Kbd> open</span>
-                <span><Kbd>⌘↵</Kbd> GitHub</span>
+                <span><Kbd>{modifierKey}↵</Kbd> GitHub</span>
                 <span><Kbd>Esc</Kbd> close</span>
                 <span className="ml-auto flex min-w-0 items-center gap-3">
                   {plansAction && (

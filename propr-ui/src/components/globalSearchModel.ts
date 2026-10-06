@@ -144,6 +144,20 @@ export const formatTimeAgo = (dateString: string): string => {
   return `${Math.floor(diffHours / 24)}d`;
 };
 
+/** The full relative-time phrase for prose: "5m ago", but never "just now ago". */
+export const formatTimeAgoPhrase = (dateString: string): string => {
+  const age = formatTimeAgo(dateString);
+  return age === 'just now' ? age : `${age} ago`;
+};
+
+/**
+ * The modifier label to advertise for Ctrl/Cmd shortcuts. Both keys work
+ * everywhere; Apple platforms show ⌘, everything else shows Ctrl.
+ */
+export const getShortcutModifierLabel = (
+  platform: string = typeof navigator === 'undefined' ? '' : navigator.platform || navigator.userAgent,
+): string => (/mac|iphone|ipad|ipod/i.test(platform) ? '⌘' : 'Ctrl+');
+
 export const getRepoName = (repository: string): string => {
   const parts = repository.split('/');
   return parts.length > 1 ? parts[1] : repository;

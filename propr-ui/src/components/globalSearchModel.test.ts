@@ -1,12 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import type { DraftListItem } from '../api/plannerApi';
 import type { TaskSearchResult } from '../hooks/useGlobalSearch';
-import { getItemDescription, getPlansAction, getScopeAction, getSearchStatus, splitFailureReason } from './globalSearchModel';
+import { formatTimeAgoPhrase, getItemDescription, getPlansAction, getScopeAction, getSearchStatus, getShortcutModifierLabel, splitFailureReason } from './globalSearchModel';
 
 const plan = (name: string, initial_prompt: string) =>
   ({ kind: 'plan' as const, key: 'plan:1', plan: { draft_id: '1', repository: 'a/b', name, initial_prompt } as DraftListItem });
 
 describe('globalSearchModel', () => {
+  it('formats a complete relative-time phrase without "just now ago"', () => {
+    const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+    expect(formatTimeAgoPhrase(ago(10_000))).toBe('just now');
+    expect(formatTimeAgoPhrase(ago(5 * 60_000))).toBe('5m ago');
+    expect(formatTimeAgoPhrase(ago(3 * 3_600_000))).toBe('3h ago');
+    expect(formatTimeAgoPhrase(ago(2 * 86_400_000))).toBe('2d ago');
+  });
+
+  it('labels the shortcut modifier for the platform', () => {
+    expect(getShortcutModifierLabel('MacIntel')).toBe('⌘');
+    expect(getShortcutModifierLabel('iPad')).toBe('⌘');
+    expect(getShortcutModifierLabel('Win32')).toBe('Ctrl+');
+    expect(getShortcutModifierLabel('Linux x86_64')).toBe('Ctrl+');
+    expect(getShortcutModifierLabel('')).toBe('Ctrl+');
+  });
+
   it('labels the All scope\'s full search as the task search it opens', () => {
     expect(getScopeAction('all', ' mcp ')).toEqual({ label: 'Search all tasks for "mcp"', path: '/tasks?search=mcp' });
     expect(getScopeAction('all', 'mcp')).toEqual(getScopeAction('tasks', 'mcp'));

@@ -14,6 +14,7 @@ import {
   SECTION_LABELS,
   SearchStatusTone,
   formatTimeAgo,
+  formatTimeAgoPhrase,
   getItemDescription,
   getItemGithubUrl,
   getItemTitle,
@@ -166,7 +167,7 @@ const PlanDetails: React.FC<{ plan: DraftListItem }> = ({ plan }) => {
           {issues.total} total · {issues.merged} merged · {issues.processing} running · {issues.pending} pending
         </PreviewRow>
       )}
-      <PreviewRow label="Updated">{formatTimeAgo(plan.updated_at || plan.created_at)} ago</PreviewRow>
+      <PreviewRow label="Updated">{formatTimeAgoPhrase(plan.updated_at || plan.created_at)}</PreviewRow>
     </>
   );
 };
@@ -188,7 +189,7 @@ const TaskDetails: React.FC<{ task: TaskSearchResult }> = ({ task }) => {
         </PreviewRow>
       )}
       {task.score != null && <PreviewRow label="Score"><ScoreBadge score={task.score} bracketed /></PreviewRow>}
-      <PreviewRow label="Created">{formatTimeAgo(task.createdAt)} ago</PreviewRow>
+      <PreviewRow label="Created">{formatTimeAgoPhrase(task.createdAt)}</PreviewRow>
     </>
   );
 };

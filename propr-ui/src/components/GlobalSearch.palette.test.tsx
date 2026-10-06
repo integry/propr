@@ -77,6 +77,31 @@ describe('GlobalSearch palette', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/tasks/task-1');
   });
 
+  it('shows fresh plan and task timestamps as "just now", never "just now ago"', async () => {
+    const input = await renderWithResults();
+    const preview = () => screen.getByTestId('global-search-preview');
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(within(preview()).getByText('Updated').nextSibling).toHaveTextContent(/^just now$/);
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(within(preview()).getByText('Created').nextSibling).toHaveTextContent(/^just now$/);
+  });
+
+  it.each([
+    ['MacIntel', '⌘↵'],
+    ['Win32', 'Ctrl+↵'],
+    ['Linux x86_64', 'Ctrl+↵'],
+  ])('advertises the GitHub shortcut with the %s modifier', async (platform, label) => {
+    const spy = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue(platform);
+    try {
+      await renderWithResults();
+      const palette = screen.getByTestId('global-search-palette');
+      expect(within(palette).getAllByText(label).length).toBeGreaterThanOrEqual(2);
+      expect(within(palette).queryByText(label === '⌘↵' ? 'Ctrl+↵' : '⌘↵')).not.toBeInTheDocument();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('cycles category scopes with Tab and filters the list', async () => {
     const input = await renderWithResults();
     expect(screen.getByRole('tab', { name: /All \(3\)/ })).toHaveAttribute('aria-selected', 'true');
