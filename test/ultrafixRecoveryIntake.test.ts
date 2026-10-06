@@ -209,6 +209,27 @@ function createRedis() {
             return value;
         },
         async eval(script: string, _keyCount: number, ...args: string[]) {
+            if (script.includes('-- clear rearm retry if claim held')) {
+                const [claimKey, retryKey, token] = args;
+                if (store.get(claimKey) !== token) return 0;
+                store.delete(retryKey);
+                return 1;
+            }
+            if (script.includes('-- save rearm retry unless claim taken')) {
+                const [claimKey, retryKey, token, value] = args;
+                const holder = store.get(claimKey);
+                if (holder !== undefined && holder !== token) return 0;
+                store.set(retryKey, value);
+                return 1;
+            }
+            if (script.includes('-- restore deferred if loop unchanged')) {
+                const [epochKey, stateKey, deferredKey, expectedEpoch, expectedState, value] = args;
+                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
+                if (store.get(stateKey) !== expectedState) return 0;
+                if (store.has(deferredKey)) return 0;
+                store.set(deferredKey, value);
+                return 1;
+            }
             if (script.includes("redis.call('PEXPIRE'")) return store.get(args[0]) === args[1] ? 1 : 0;
             if (script.includes("redis.call('DEL', KEYS[1])")) {
                 return store.get(args[0]) === args[1] && store.delete(args[0]) ? 1 : 0;

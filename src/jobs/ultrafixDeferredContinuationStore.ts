@@ -110,6 +110,68 @@ export async function clearRearmRetry(redis: Redis, owner: string, repo: string,
     await redis.del(getUltrafixRearmRetryKey(owner, repo, pr));
 }
 
+// Marked so test doubles can tell them apart from the resume-claim scripts.
+const CLEAR_REARM_RETRY_IF_CLAIM_HELD_SCRIPT = `
+-- clear rearm retry if claim held
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+    return 0
+end
+redis.call('DEL', KEYS[2])
+return 1
+`;
+
+const SAVE_REARM_RETRY_UNLESS_CLAIM_TAKEN_SCRIPT = `
+-- save rearm retry unless claim taken
+local holder = redis.call('GET', KEYS[1])
+if holder and holder ~= ARGV[1] then
+    return 0
+end
+redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+return 1
+`;
+
+/**
+ * Release the retry obligation only while `claimToken` still holds the resume
+ * claim at `claimKey`. A holder whose claim expired (and may have been taken
+ * over) acts on stale evidence and must not erase its successor's obligation.
+ */
+export async function clearRearmRetryIfClaimHeld(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    claim: { key: string; token: string },
+): Promise<boolean> {
+    const cleared = await redis.eval(
+        CLEAR_REARM_RETRY_IF_CLAIM_HELD_SCRIPT,
+        2,
+        claim.key,
+        getUltrafixRearmRetryKey(identity.owner, identity.repo, identity.pr),
+        claim.token,
+    );
+    return Number(cleared) === 1;
+}
+
+/**
+ * Record the retry obligation unless another trigger holds the resume claim
+ * at `claimKey`; that holder owns the obligation and may already have
+ * recorded or released it.
+ */
+export async function saveRearmRetryUnlessClaimTaken(
+    redis: Redis,
+    retry: UltrafixRearmRetry,
+    claim: { key: string; token: string },
+): Promise<boolean> {
+    const saved = await redis.eval(
+        SAVE_REARM_RETRY_UNLESS_CLAIM_TAKEN_SCRIPT,
+        2,
+        claim.key,
+        getUltrafixRearmRetryKey(retry.owner, retry.repo, retry.pr),
+        claim.token,
+        JSON.stringify(retry),
+        String(REARM_RETRY_TTL_SECONDS),
+    );
+    return Number(saved) === 1;
+}
+
 async function scanKeys(redis: Redis, pattern: string): Promise<string[]> {
     const keys: string[] = [];
     let cursor = '0';

@@ -26,6 +26,7 @@ export {
     claimDeferredContinuation,
     clearDeferredContinuation,
     clearRearmRetry,
+    clearRearmRetryIfClaimHeld,
     getUltrafixRearmRetryKey,
     listDeferredContinuationKeys,
     listRearmRetryKeys,
@@ -35,6 +36,7 @@ export {
     parseRearmRetryKey,
     saveDeferredContinuation,
     saveRearmRetry,
+    saveRearmRetryUnlessClaimTaken,
 } from './ultrafixDeferredContinuationStore.js';
 export type { UltrafixDeferredContinuation, UltrafixRearmRetry } from './ultrafixDeferredContinuationStore.js';
 

@@ -10,8 +10,16 @@ import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import { reserveEpochAndReplaceStateIfUnchanged } from './ultrafixAutomaticWorkEpoch.js';
-import { clearRearmRetry, getActionCounts, getUltrafixStateKey, loadDeferredContinuation, loadState } from './ultrafixOrchestrationService.js';
-import type { UltrafixAction, UltrafixLoopState } from './ultrafixOrchestrationService.js';
+import {
+    clearRearmRetry,
+    clearRearmRetryIfClaimHeld,
+    getActionCounts,
+    getUltrafixStateKey,
+    loadDeferredContinuation,
+    loadState,
+    saveRearmRetryUnlessClaimTaken,
+} from './ultrafixOrchestrationService.js';
+import type { UltrafixAction, UltrafixLoopState, UltrafixRearmRetry } from './ultrafixOrchestrationService.js';
 import type { ContinuationResult } from './ultrafixLoopContinuation.js';
 
 export type UltrafixPrId = { owner: string; repo: string; pr: number };
@@ -91,10 +99,18 @@ export async function renewResumeClaim(
 export interface ResumeClaim {
     confirm(): Promise<boolean>;
     /**
-     * Whether another trigger holds the per-PR claim now. A claim lost to a
-     * renewal fault or plain expiry has no new holder to take over its work.
+     * Release the PR's retry obligation, atomically conditional on this claim
+     * still being held in Redis. Evidence gathered by a holder whose claim
+     * expired (e.g. a late enqueue acknowledgment) cannot release an
+     * obligation a successor may have recorded since.
      */
-    heldByAnother(): Promise<boolean>;
+    clearRetry(): Promise<boolean>;
+    /**
+     * Record the PR's retry obligation unless another trigger holds the claim
+     * now; that holder owns the obligation. A claim lost to a renewal fault or
+     * plain expiry has no new holder, so the obligation is still recorded.
+     */
+    saveRetry(retry: UltrafixRearmRetry): Promise<boolean>;
 }
 
 export const RESUME_CLAIM_LOST_REASON = 'resume_claim_lost';
@@ -212,6 +228,7 @@ async function runWithHeldClaim(
 ): Promise<ContinuationResult> {
     const { redisClient, correlatedLogger } = ctx;
     let lost = false;
+    const claimKey = getUltrafixResumeClaimKey(prId.owner, prId.repo, prId.pr);
     const claim: ResumeClaim = {
         async confirm() {
             if (lost) return false;
@@ -225,9 +242,11 @@ async function runWithHeldClaim(
             if (lost) correlatedLogger.warn({ pr: prId.pr }, 'Ultrafix resume: resume claim lost, aborting');
             return !lost;
         },
-        async heldByAnother() {
-            const holder = await redisClient.get(getUltrafixResumeClaimKey(prId.owner, prId.repo, prId.pr));
-            return holder !== null && holder !== token;
+        clearRetry() {
+            return clearRearmRetryIfClaimHeld(redisClient, prId, { key: claimKey, token });
+        },
+        saveRetry(retry) {
+            return saveRearmRetryUnlessClaimTaken(redisClient, retry, { key: claimKey, token });
         },
     };
     // Keep the claim alive across slow awaits (GitHub, queue scans) between confirmations.

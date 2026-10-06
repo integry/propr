@@ -98,6 +98,23 @@ redis.call('SET', KEYS[2], ARGV[3])
 return epoch
 `;
 
+// Marked so test doubles can tell it apart from the plain conditional save.
+const RESTORE_DEFERRED_IF_UNCHANGED_SCRIPT = `
+-- restore deferred if loop unchanged
+local current_epoch = redis.call('GET', KEYS[1]) or '0'
+if current_epoch ~= ARGV[1] then
+    return 0
+end
+if redis.call('GET', KEYS[2]) ~= ARGV[2] then
+    return 0
+end
+if redis.call('EXISTS', KEYS[3]) == 1 then
+    return 0
+end
+redis.call('SET', KEYS[3], ARGV[3])
+return 1
+`;
+
 const INVALIDATE_AUTOMATIC_WORK_SCRIPT = `
 local epoch = redis.call('INCR', KEYS[1])
 redis.call('DEL', KEYS[2])
@@ -347,6 +364,33 @@ export async function reserveEpochAndReplaceStateIfUnchanged(
         serializeState(reservedEpoch),
     );
     return Number(epoch) === reservedEpoch ? reservedEpoch : null;
+}
+
+/**
+ * Put a claimed deferred record back only while `expected.workEpoch` is
+ * current, the loop state is still exactly `expected.rawState` and no other
+ * deferred record has been published since. A step that reached the queue
+ * despite a failed enqueue may already have run and recorded its progress
+ * (or deferred its successor); restoring the claimed step over that would
+ * schedule it a second time.
+ */
+export async function restoreDeferredContinuationIfUnchanged(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    expected: { workEpoch: number; rawState: string },
+    serializedDeferred: string,
+): Promise<boolean> {
+    const restored = await redis.eval(
+        RESTORE_DEFERRED_IF_UNCHANGED_SCRIPT,
+        3,
+        getUltrafixAutomaticWorkEpochKey(identity.owner, identity.repo, identity.pr),
+        `${ULTRAFIX_STATE_KEY_PREFIX}:${identity.owner}:${identity.repo}:${identity.pr}`,
+        getUltrafixDeferredKey(identity.owner, identity.repo, identity.pr),
+        String(expected.workEpoch),
+        expected.rawState,
+        serializedDeferred,
+    );
+    return Number(restored) === 1;
 }
 
 /** Clear the loop state only while `expected.workEpoch` is current and the state is still `expected.rawState`. */
