@@ -3,7 +3,12 @@
 // container-created private subtree the host user cannot remove; stopping it
 // emulates the launcher's SIGTERM teardown (entrypoint.mjs -> stopStack with
 // removeNetwork), which removes every propr.stack-labelled container and the
-// stack network; `rm -f` kills the launcher without that teardown. The cleanup container emulates root's
+// stack network; `rm -f` kills the launcher without that teardown. Like the
+// launcher's ensureNetwork, starting it reuses an existing stack network and
+// creates one only when absent. FAKE_DOCKER_NETWORK_RACE=1 lets a foreign
+// creator take the stack network name just before `network create`;
+// FAKE_DOCKER_REPLACE_NETWORK=1 swaps in a same-named foreign network (copying
+// its labels) after the launcher starts. The cleanup container emulates root's
 // DAC override within its single bind mount. Every invocation is appended to
 // FAKE_DOCKER_STATE/calls.jsonl and the private-root modes seen at launch are
 // recorded in FAKE_DOCKER_STATE/observed.json. Only synthetic data is handled.
@@ -40,6 +45,10 @@ function keyValues(name) {
 
 function findContainer(reference) {
   return Object.entries(state.containers).find(([name, container]) => name === reference || container.Id === reference);
+}
+
+function findNetwork(reference) {
+  return Object.entries(state.networks).find(([name, network]) => name === reference || network.Id === reference);
 }
 
 function addContainer(name, container) {
@@ -103,6 +112,9 @@ function startLauncher() {
   });
   addContainer(`${stack}-ui`, { Config: { Labels: { 'propr.stack': stack, 'propr.service': 'ui' } }, Mounts: [], network });
   state.networks[network] ??= { Id: newId(), launcherCreated: true };
+  if (process.env.FAKE_DOCKER_REPLACE_NETWORK === '1') {
+    state.networks[network] = { Id: 'e'.repeat(64), Labels: { ...state.networks[network].Labels }, foreign: true };
+  }
 
   // A rootful app container creates root:root 0700 entries in the data root.
   const webPush = join(env.PROPR_DATA_DIR, 'web-push');
@@ -130,15 +142,27 @@ if (command === 'container' && subcommand === 'inspect') {
   const [, container] = found;
   process.stdout.write(`${JSON.stringify([{ Id: container.Id, Name: container.Name, Config: container.Config, Mounts: container.Mounts }])}\n`);
 } else if (command === 'network' && subcommand === 'inspect') {
-  const name = args.at(-1);
-  const network = state.networks[name];
-  if (!network) fail(`Error: No such network: ${name}`);
+  const found = findNetwork(args.at(-1));
+  if (!found) fail(`Error: No such network: ${args.at(-1)}`);
+  const [name, network] = found;
   const attached = Object.fromEntries(Object.values(state.containers)
     .filter((container) => container.network === name).map((container) => [container.Id, { Name: container.Name.slice(1) }]));
-  process.stdout.write(`${JSON.stringify([{ Id: network.Id, Name: name, Containers: attached }])}\n`);
+  process.stdout.write(`${JSON.stringify([{ Id: network.Id, Name: name, Labels: network.Labels ?? {}, Containers: attached }])}\n`);
+} else if (command === 'network' && subcommand === 'create') {
+  const name = args.at(-1);
+  if (process.env.FAKE_DOCKER_NETWORK_RACE === '1') {
+    state.networks[name] ??= { Id: 'e'.repeat(64), foreign: true };
+    save();
+  }
+  if (state.networks[name]) fail(`Error response from daemon: network with name ${name} already exists`);
+  const id = newId();
+  state.networks[name] = { Id: id, Labels: keyValues('--label') };
+  save();
+  process.stdout.write(`${id}\n`);
 } else if (command === 'network' && subcommand === 'rm') {
-  if (!state.networks[args.at(-1)]) fail('Error: No such network');
-  delete state.networks[args.at(-1)];
+  const found = findNetwork(args.at(-1));
+  if (!found) fail('Error: No such network');
+  delete state.networks[found[0]];
   save();
 } else if (command === 'stop') {
   const found = findContainer(args.at(-1));

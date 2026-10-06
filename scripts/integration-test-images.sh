@@ -32,9 +32,12 @@
 # foreign owners and wrong modes are refused, not repaired. Legacy /tmp/$STACK
 # data from older versions is no longer used or removed. Cleanup removes only
 # the validated root and containers proven to belong to it, by ID; the launcher
-# is killed, not stopped, so its own label-wide teardown never runs. The stack
-# network is removed only when this run saw it created, or its ID matches the
-# one recorded in the validated root by the kept run that created it.
+# is killed, not stopped, so its own label-wide teardown never runs. When the
+# stack network is absent the harness creates it itself, labelled with this
+# root's token, and records the exact ID Docker returned. Only that network is
+# removed, by ID, and only while the stack name still resolves to it; a
+# network that already existed, or that another creator won the race for, is
+# used or refused but never claimed.
 
 set -euo pipefail
 
@@ -83,11 +86,9 @@ ROOT_IDENTITY=""
 ROOT_TOKEN=""
 USER_BASE=""
 STACK_STARTED=0
-# The stack network is removable only when this run saw it absent before the
-# launcher started, or when its current ID equals the ID recorded in the
-# validated root by the run that saw it created. Container ownership alone says
-# nothing about the network.
-NETWORK_REMOVABLE=0
+# The ID of the stack network this harness created itself (in this run, or in
+# the kept run that recorded it in the validated root). Absence of the network
+# and container ownership say nothing about who owns a same-named network.
 NETWORK_OWNED_ID=""
 NETWORK_RECORD_NAME=".propr-itest-network"
 
@@ -134,6 +135,42 @@ network_id() {
   ' "$NETWORK"
 }
 
+# network_is_ours ID: the network with exactly this ID carries the stack name
+# and this root's ownership labels, and the stack name currently resolves to it.
+network_is_ours() {
+  local id="$1"
+  [[ "$id" =~ ^[a-f0-9]{12,64}$ ]] || return 1
+  [ "$(network_id || true)" = "$id" ] || return 1
+  docker network inspect "$id" 2>/dev/null | node -e '
+    const fs = require("node:fs");
+    const [id, name, label, token, stack] = process.argv.slice(1);
+    let network;
+    try { [network] = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(1); }
+    const labels = network?.Labels ?? {};
+    process.exit(network?.Id === id && network?.Name === name && token
+      && labels[label] === token && labels["com.propr.itest.stack"] === stack ? 0 : 1);
+  ' "$id" "$NETWORK" "$ITEST_LABEL" "$ROOT_TOKEN" "$STACK"
+}
+
+# Creates the absent stack network with this root's labels and records the ID
+# Docker returned. Docker refuses a duplicate name, so a creator that wins the
+# race leaves this run without ownership, and the run is refused.
+create_owned_network() {
+  local id
+  id="$(docker network create --label "$ITEST_LABEL=$ROOT_TOKEN" --label "com.propr.itest.stack=$STACK" "$NETWORK" 2>/dev/null)" || id=""
+  id="${id//[[:space:]]/}"
+  if [[ ! "$id" =~ ^[a-f0-9]{64}$ ]]; then
+    echo "✗ could not create network $NETWORK; another creator may own it. Remove it or choose a different STACK" >&2
+    return 1
+  fi
+  if network_is_ours "$id"; then
+    NETWORK_OWNED_ID="$id"
+    return 0
+  fi
+  echo "✗ network $NETWORK does not resolve to the network this run created; refusing to use it" >&2
+  return 1
+}
+
 # Loads the network ID recorded in the validated root, if any.
 load_network_record() {
   local record="$ROOT/$NETWORK_RECORD_NAME" id
@@ -144,44 +181,50 @@ load_network_record() {
   return 0
 }
 
-# Records, for a kept stack, the ID of the network this run proved it created;
-# otherwise drops any stale record so a later run never inherits ownership.
+# Records, for a kept stack, the ID of the network this harness created while
+# the stack name still resolves to it; otherwise drops any stale record so a
+# later run never inherits ownership.
 save_network_record() {
-  local id
-  id="$(network_id || true)"
-  if [ -n "$id" ] && { [ "$NETWORK_REMOVABLE" = 1 ] || [ "$id" = "$NETWORK_OWNED_ID" ]; }; then
-    printf '%s' "$id" | itest_write_private_file "$ROOT/$NETWORK_RECORD_NAME"
+  if [ -n "$NETWORK_OWNED_ID" ] && network_is_ours "$NETWORK_OWNED_ID"; then
+    printf '%s' "$NETWORK_OWNED_ID" | itest_write_private_file "$ROOT/$NETWORK_RECORD_NAME"
   else
     rm -f -- "$ROOT/$NETWORK_RECORD_NAME"
   fi
 }
 
-network_is_owned() {
-  local id
-  id="$(network_id || true)"
-  [ -n "$id" ] || return 1
-  if [ -n "$NETWORK_OWNED_ID" ]; then
-    [ "$id" = "$NETWORK_OWNED_ID" ]
-  else
-    [ "$NETWORK_REMOVABLE" = 1 ]
-  fi
-}
-
 network_is_unused() {
-  docker network inspect "$NETWORK" 2>/dev/null | node -e '
+  docker network inspect "$1" 2>/dev/null | node -e '
     const fs = require("node:fs");
     let network;
     try { [network] = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(1); }
     const containers = network?.Containers ?? {};
-    process.exit(network?.Name === process.argv[1] && Object.keys(containers).length === 0 ? 0 : 1);
-  ' "$NETWORK"
+    process.exit(network?.Id === process.argv[1] && network?.Name === process.argv[2]
+      && Object.keys(containers).length === 0 ? 0 : 1);
+  ' "$1" "$NETWORK"
+}
+
+# Removes, by ID, only the network this harness created, and only while the
+# stack name still resolves to it. Any other same-named network is left.
+remove_owned_network() {
+  local id="$NETWORK_OWNED_ID"
+  NETWORK_OWNED_ID=""
+  if [ -n "$id" ] && network_is_ours "$id"; then
+    if network_is_unused "$id"; then
+      docker network rm "$id" >/dev/null || { echo "✗ could not remove network $NETWORK" >&2; return 1; }
+    else
+      echo "  leaving network $NETWORK: it still has containers attached" >&2
+    fi
+  elif docker network inspect "$NETWORK" >/dev/null 2>&1; then
+    echo "  leaving network $NETWORK: it is not the network this harness created" >&2
+  fi
+  return 0
 }
 
 # Removes the launcher and its siblings only after every present target was
 # proven to belong to this root. Refuses (removing nothing) otherwise. The
 # launcher is killed rather than stopped: its own shutdown removes every
 # propr.stack-labelled container and the stack network, which this harness has
-# not verified. The network is removed only under network_is_owned.
+# not verified. The network is removed only by remove_owned_network.
 remove_stack_resources() {
   local name verdict proven=0 failed=0 i
   local -a ids=() names=()
@@ -211,13 +254,7 @@ remove_stack_resources() {
       docker rm -f "${ids[$i]}" >/dev/null || { echo "✗ could not remove container ${names[$i]}" >&2; failed=1; }
     fi
   done
-  if docker network inspect "$NETWORK" >/dev/null 2>&1; then
-    if network_is_owned && network_is_unused; then
-      docker network rm "$NETWORK" >/dev/null || { echo "✗ could not remove network $NETWORK" >&2; failed=1; }
-    else
-      echo "  leaving network $NETWORK: this harness did not create it or it still has containers attached" >&2
-    fi
-  fi
+  remove_owned_network || failed=1
   return "$failed"
 }
 
@@ -227,7 +264,7 @@ cleanup() {
   if [ "${PROPR_E2E_KEEP_STACK:-}" = "1" ]; then
     echo ""
     echo "▸ keeping stack for inspection (PROPR_E2E_KEEP_STACK=1)"
-    if [ "$STACK_STARTED" = 1 ] && [ -n "$ROOT_IDENTITY" ]; then
+    if [ -n "$ROOT_IDENTITY" ]; then
       save_network_record || echo "✗ could not record network ownership; a later run will leave $NETWORK in place" >&2
     fi
     echo "  launcher: $LAUNCHER_NAME"
@@ -238,6 +275,8 @@ cleanup() {
   echo "▸ cleaning up"
   if [ "$STACK_STARTED" = 1 ]; then
     remove_stack_resources || failed=1
+  elif [ -n "$NETWORK_OWNED_ID" ]; then
+    remove_owned_network || failed=1
   fi
   if [ -n "$ROOT_IDENTITY" ]; then
     itest_remove_root "$ROOT" "$USER_BASE" "$STACK" "$ROOT_IDENTITY" "$ROOT_TOKEN" "$LAUNCHER_TAG" || failed=1
@@ -289,14 +328,6 @@ for name in "$LAUNCHER_NAME" "${SIBLING_SERVICES[@]/#/$STACK-}"; do
     exit 1
   fi
 done
-if docker network inspect "$NETWORK" >/dev/null 2>&1; then
-  NETWORK_REMOVABLE=0
-  [ "$(network_id || true)" = "$NETWORK_OWNED_ID" ] || NETWORK_OWNED_ID=""
-else
-  NETWORK_REMOVABLE=1
-  NETWORK_OWNED_ID=""
-fi
-
 VIBE_PROMPT_CACHE_DIR="$ROOT/vibe-prompts"
 # Fixed host paths the launcher mounts into app containers.
 mkdir -p /tmp/git-processor /tmp/claude-logs /tmp/pr-worktrees
@@ -443,6 +474,20 @@ if [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
 fi
 
 LAUNCHER_ARGS+=("$LAUNCHER_TAG")
+
+# A recorded network is kept only while it is still the one this root created.
+# Otherwise the stack network is either pre-existing (used, never claimed) or
+# absent, in which case this harness creates it before the launcher can.
+if [ -n "$NETWORK_OWNED_ID" ] && ! network_is_ours "$NETWORK_OWNED_ID"; then
+  NETWORK_OWNED_ID=""
+fi
+if [ -z "$NETWORK_OWNED_ID" ]; then
+  if docker network inspect "$NETWORK" >/dev/null 2>&1; then
+    echo "  using existing network $NETWORK; this harness will not remove it"
+  else
+    create_owned_network || exit 1
+  fi
+fi
 
 echo "▸ starting stack via launcher"
 STACK_STARTED=1
