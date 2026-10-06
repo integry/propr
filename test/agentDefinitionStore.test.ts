@@ -65,7 +65,7 @@ describe('agentDefinitionStore', () => {
 
     assert.deepEqual(await getAgentDefinition(created.id, 'alice', deps()), created);
     assert.equal(await getAgentDefinition(created.id, 'bob', deps()), undefined);
-    assert.equal(await updateAgentDefinition(created.id, 'bob', { name: 'Stolen' }, undefined, deps()), undefined);
+    assert.equal(await updateAgentDefinition(created.id, 'bob', { name: 'Stolen' }, deps()), undefined);
     assert.equal(await deleteAgentDefinition(created.id, 'bob', deps()), false);
     assert.equal(await setAgentDefinitionAttachments(created.id, 'bob', [], deps()), undefined);
     assert.equal((await getAgentDefinition(created.id, 'alice', deps()))?.name, 'Triage');
@@ -115,23 +115,23 @@ describe('agentDefinitionStore', () => {
     const created = await createAgentDefinition({ ownerId: 'alice', name: 'Cron', prompt: 'p', scheduleCron: '*/15 * * * *' }, deps());
     assert.equal(created.nextRunAt, null);
 
-    const enabled = await updateAgentDefinition(created.id, 'alice', { scheduleEnabled: true }, 0, deps());
+    const enabled = await updateAgentDefinition(created.id, 'alice', { scheduleEnabled: true }, { ...deps(), expectedRevision: 0 });
     assert.equal(enabled?.nextRunAt, Date.UTC(2026, 9, 6, 10, 15));
     assert.equal(enabled?.revision, 1);
 
-    const recron = await updateAgentDefinition(created.id, 'alice', { scheduleCron: '@daily' }, 1, deps());
+    const recron = await updateAgentDefinition(created.id, 'alice', { scheduleCron: '@daily' }, { ...deps(), expectedRevision: 1 });
     assert.equal(recron?.nextRunAt, Date.UTC(2026, 9, 7));
 
-    const paused = await updateAgentDefinition(created.id, 'alice', { enabled: false }, undefined, deps());
+    const paused = await updateAgentDefinition(created.id, 'alice', { enabled: false }, deps());
     assert.equal(paused?.nextRunAt, null);
-    const resumed = await updateAgentDefinition(created.id, 'alice', { enabled: true }, undefined, deps());
+    const resumed = await updateAgentDefinition(created.id, 'alice', { enabled: true }, deps());
     assert.equal(resumed?.nextRunAt, Date.UTC(2026, 9, 7));
 
-    const disabled = await updateAgentDefinition(created.id, 'alice', { scheduleEnabled: false }, undefined, deps());
+    const disabled = await updateAgentDefinition(created.id, 'alice', { scheduleEnabled: false }, deps());
     assert.equal(disabled?.nextRunAt, null);
     assert.equal(disabled?.scheduleCron, '@daily');
 
-    const cleared = await updateAgentDefinition(created.id, 'alice', { scheduleEnabled: true, scheduleCron: null }, undefined, deps());
+    const cleared = await updateAgentDefinition(created.id, 'alice', { scheduleEnabled: true, scheduleCron: null }, deps());
     assert.equal(cleared?.nextRunAt, null);
 
     const row = await database('agent_definitions').where({ id: created.id }).first();
@@ -149,12 +149,12 @@ describe('agentDefinitionStore', () => {
 
   test('a stale expectedRevision throws 409 and leaves the definition unchanged', async () => {
     const created = await createAgentDefinition({ ownerId: 'alice', name: 'Rev', prompt: 'p' }, deps());
-    const updated = await updateAgentDefinition(created.id, 'alice', { name: 'Rev 2', capabilities: ['web'] }, 0, deps());
+    const updated = await updateAgentDefinition(created.id, 'alice', { name: 'Rev 2', capabilities: ['web'] }, { ...deps(), expectedRevision: 0 });
     assert.equal(updated?.revision, 1);
     assert.deepEqual(updated?.capabilities, ['web']);
 
     await assert.rejects(
-      updateAgentDefinition(created.id, 'alice', { name: 'Lost' }, 0, deps()),
+      updateAgentDefinition(created.id, 'alice', { name: 'Lost' }, { ...deps(), expectedRevision: 0 }),
       (error: Error & { status?: number }) => error.status === 409,
     );
     assert.equal((await getAgentDefinition(created.id, 'alice', deps()))?.name, 'Rev 2');

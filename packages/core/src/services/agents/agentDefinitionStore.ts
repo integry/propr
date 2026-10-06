@@ -216,28 +216,13 @@ export async function listAgentDefinitions(
   return { definitions: rows.map(rowToAgentDefinition), total: Number(countRow?.count ?? 0), limit, offset };
 }
 
-/**
- * Apply a partial update. With `expectedRevision`, a stale revision throws a
- * 409; the write itself is also conditional on the revision read, so two
- * concurrent updates cannot both succeed. `next_run_at` is recomputed whenever
- * the schedule or enablement changes. Returns undefined when the definition
- * does not exist for this owner.
- */
-export async function updateAgentDefinition(
-  id: string,
-  ownerId: string,
-  patch: AgentDefinitionPatch,
-  expectedRevision?: number,
-  { database = db, now = Date.now }: AgentDefinitionStoreDependencies = {},
-): Promise<StoredAgentDefinition | undefined> {
-  const row = await database(TABLE).where({ id, owner_id: ownerId }).first<AgentDefinitionRow | undefined>();
-  if (!row) return undefined;
-  const current = rowToAgentDefinition(row);
-  if (expectedRevision !== undefined && expectedRevision !== current.revision) {
-    throw statusError(`Agent definition was changed (revision ${current.revision}, expected ${expectedRevision}); reload and retry`, 409);
-  }
+export interface UpdateAgentDefinitionOptions extends AgentDefinitionStoreDependencies {
+  /** When set, the update fails with a 409 unless the stored revision matches. */
+  expectedRevision?: number;
+}
 
-  const timestamp = now();
+/** Row columns for the non-schedule fields present in a patch. */
+function patchToRowChanges(patch: AgentDefinitionPatch): Partial<AgentDefinitionRow> {
   const changes: Partial<AgentDefinitionRow> = {};
   if (patch.name !== undefined) changes.name = patch.name;
   if (patch.description !== undefined) changes.description = patch.description;
@@ -249,21 +234,55 @@ export async function updateAgentDefinition(
   if (patch.includePreviousReports !== undefined) changes.include_previous_reports = patch.includePreviousReports;
   if (patch.previousReportsLimit !== undefined) changes.previous_reports_limit = patch.previousReportsLimit;
   if (patch.autonomyMode !== undefined) changes.autonomy_mode = patch.autonomyMode;
+  return changes;
+}
 
+/** Schedule columns to write when the patch changes the schedule or enablement; empty otherwise. */
+function patchToScheduleChanges(
+  patch: AgentDefinitionPatch,
+  current: StoredAgentDefinition,
+  timestamp: number,
+): Partial<AgentDefinitionRow> {
   const schedule = {
     scheduleCron: patch.scheduleCron !== undefined ? patch.scheduleCron : current.scheduleCron,
     scheduleEnabled: patch.scheduleEnabled ?? current.scheduleEnabled,
     enabled: patch.enabled ?? current.enabled,
   };
-  if (schedule.scheduleCron !== current.scheduleCron
-    || schedule.scheduleEnabled !== current.scheduleEnabled
-    || schedule.enabled !== current.enabled) {
-    changes.schedule_cron = schedule.scheduleCron;
-    changes.schedule_enabled = schedule.scheduleEnabled;
-    changes.enabled = schedule.enabled;
-    changes.next_run_at = computeAgentDefinitionNextRunAt(schedule, timestamp);
+  if (schedule.scheduleCron === current.scheduleCron
+    && schedule.scheduleEnabled === current.scheduleEnabled
+    && schedule.enabled === current.enabled) {
+    return {};
+  }
+  return {
+    schedule_cron: schedule.scheduleCron,
+    schedule_enabled: schedule.scheduleEnabled,
+    enabled: schedule.enabled,
+    next_run_at: computeAgentDefinitionNextRunAt(schedule, timestamp),
+  };
+}
+
+/**
+ * Apply a partial update. With `expectedRevision`, a stale revision throws a
+ * 409; the write itself is also conditional on the revision read, so two
+ * concurrent updates cannot both succeed. `next_run_at` is recomputed whenever
+ * the schedule or enablement changes. Returns undefined when the definition
+ * does not exist for this owner.
+ */
+export async function updateAgentDefinition(
+  id: string,
+  ownerId: string,
+  patch: AgentDefinitionPatch,
+  { expectedRevision, database = db, now = Date.now }: UpdateAgentDefinitionOptions = {},
+): Promise<StoredAgentDefinition | undefined> {
+  const row = await database(TABLE).where({ id, owner_id: ownerId }).first<AgentDefinitionRow | undefined>();
+  if (!row) return undefined;
+  const current = rowToAgentDefinition(row);
+  if (expectedRevision !== undefined && expectedRevision !== current.revision) {
+    throw statusError(`Agent definition was changed (revision ${current.revision}, expected ${expectedRevision}); reload and retry`, 409);
   }
 
+  const timestamp = now();
+  const changes = { ...patchToRowChanges(patch), ...patchToScheduleChanges(patch, current, timestamp) };
   const updated = await database(TABLE).where({ id, owner_id: ownerId, revision: current.revision })
     .update({ ...changes, revision: current.revision + 1, updated_at: timestamp });
   if (updated === 0) throw statusError('Agent definition was changed concurrently; reload and retry', 409);
