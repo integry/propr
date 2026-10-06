@@ -1,4 +1,4 @@
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { AGENT_DEFAULTS, AGENT_MODELS, type AgentType } from '@propr/shared';
 
 const agents = (['claude', 'codex', 'vibe', 'antigravity', 'opencode'] as const).map(type => ({
@@ -30,13 +30,35 @@ async function expectHeaderRails(configuration: Locator) {
   await expect(configuration.getByText('Inactive', { exact: true })).toBeVisible();
 }
 
+/**
+ * Reads the native clipboard back with a real paste into a temporary field outside the app. WebKit
+ * rejects navigator.clipboard.readText() from automation, but a keyboard paste works in every engine.
+ */
+async function readClipboard(page: Page) {
+  await page.evaluate(() => {
+    const probe = document.createElement('textarea');
+    probe.id = 'clipboard-probe';
+    probe.setAttribute('aria-label', 'Clipboard probe');
+    probe.style.cssText = 'position:fixed;left:0;top:0;width:8px;height:8px;opacity:0';
+    document.body.append(probe);
+  });
+  const probe = page.locator('#clipboard-probe');
+  await probe.focus();
+  await page.keyboard.press('ControlOrMeta+V');
+  const text = await probe.inputValue();
+  await probe.evaluate(element => element.remove());
+  return text;
+}
+
 for (const viewport of [
   { name: 'desktop', width: 1440, height: 900 },
   { name: 'mobile', width: 320, height: 900 },
 ]) {
-  test(`${viewport.name} keeps model aliases compact and providers independently collapsible`, async ({ page, context }) => {
+  test(`${viewport.name} keeps model aliases compact and providers independently collapsible`, async ({ page, context, browserName }) => {
     await page.setViewportSize(viewport);
-    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    // Only Chromium gates the click-driven writeText behind a grant; WebKit rejects `clipboard-write` as an
+    // unknown permission and already allows writes from a user click.
+    if (browserName === 'chromium') await context.grantPermissions(['clipboard-write']);
     await page.route('**/api/**', async route => {
       const pathname = new URL(route.request().url()).pathname;
       const responses: Record<string, unknown> = {
@@ -82,7 +104,7 @@ for (const viewport of [
     await expect(configuration.getByText('claude', { exact: true })).toHaveCount(1);
     await opusAlias.click();
     await expect(opusAlias).toHaveText('Copied');
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('opus55');
+    expect(await readClipboard(page)).toBe('opus55');
     await expect(opusAlias).toHaveText('opus55');
 
     const overflow = await configuration.evaluate(element => ({ client: element.clientWidth, scroll: element.scrollWidth }));
