@@ -22,6 +22,7 @@ const renderList = (count: number) => render(
 describe('TaskCardList adaptive navigation', () => {
   beforeAll(() => {
     Element.prototype.scrollIntoView = vi.fn();
+    Element.prototype.scrollTo = vi.fn();
   });
 
   it('uses a tab bar instead of the outline rail for plans with fewer than 5 steps', () => {
@@ -33,6 +34,20 @@ describe('TaskCardList adaptive navigation', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Step title 3/ }));
     expect(screen.getByRole('button', { name: /Step title 3/ })).toHaveAttribute('aria-current', 'step');
+  });
+
+  it('keeps the tab bar outside the scroll container and scrolls only the specification', () => {
+    renderList(3);
+    const tabs = screen.getByRole('navigation', { name: 'Plan steps' });
+    const list = document.querySelector('[data-task-list]') as HTMLElement;
+    expect(list.contains(tabs)).toBe(false);
+    expect(tabs.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    vi.mocked(Element.prototype.scrollIntoView).mockClear();
+    vi.mocked(Element.prototype.scrollTo).mockClear();
+    fireEvent.click(screen.getByRole('button', { name: /Step title 2/ }));
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+    expect(vi.mocked(Element.prototype.scrollTo).mock.contexts).toEqual([list]);
   });
 
   it('shows no navigation for a single-step plan', () => {

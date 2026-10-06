@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import TaskCard from './TaskCard';
 import TaskTimeline from './TaskTimeline';
@@ -28,6 +28,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
   const isMobile = useIsMobile();
   const [activeTaskIndex, setActiveTaskIndex] = useState<number>(0);
   const [isOutlineCollapsed, setIsOutlineCollapsed] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
 
   // Handle scroll-based timeline highlighting
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
@@ -51,22 +52,29 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
     setActiveTaskIndex(closestIndex);
   }, []);
 
+  // Scroll only the specification container. scrollIntoView would also scroll every
+  // ancestor (including overflow-hidden ones), shifting the tab bar out of place.
+  const scrollTaskIntoView = (card: Element | null | undefined) => {
+    const container = listRef.current;
+    if (!container || !card) return;
+    const top = container.scrollTop + card.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    container.scrollTo({ top, behavior: 'smooth' });
+  };
+
   const handleTimelineClick = (index: number) => {
-    const container = document.querySelector('[data-task-list]');
-    const card = container?.querySelector(`[data-task-index="${index}"]`);
-    card?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    scrollTaskIntoView(listRef.current?.querySelector(`[data-task-index="${index}"]`));
     setActiveTaskIndex(index);
   };
 
-  const handleScrollToTask = useCallback((taskId: string, index: number) => {
+  const handleScrollToTask = (taskId: string, index: number) => {
     const taskCard = document.getElementById(`task-card-${taskId}`);
     if (taskCard) {
-      taskCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      scrollTaskIntoView(taskCard);
       setActiveTaskIndex(index);
     } else {
       handleTimelineClick(index);
     }
-  }, []);
+  };
 
   if (tasks.length === 0) {
     return (
@@ -88,7 +96,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
   const taskIds = tasks.map(t => t.id);
 
   return (
-    <div className="flex h-full min-h-full">
+    <div className="flex h-full min-h-0 overflow-hidden">
       {showOutlineRail && !isOutlineCollapsed && (
         <TaskTimeline
           taskCount={tasks.length}
@@ -109,7 +117,8 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
         />
       )}
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/* The tab bar sits above the scroll container, never inside it, so content cannot scroll above it. */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {showTabBar && (
           <TaskTabBar
             taskTitles={taskTitles}
@@ -121,7 +130,8 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
 
         {/* Main Task List */}
         <div
-          className={`task-list-scroll relative isolate flex-1 overflow-y-auto [scrollbar-gutter:stable] ${isMobile ? 'p-3' : 'p-4'} ${!showOutlineRail && !isMobile ? 'px-6' : ''}`}
+          className={`task-list-scroll relative isolate min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable] ${isMobile ? 'p-3' : 'p-4'} ${!showOutlineRail && !isMobile ? 'px-6' : ''}`}
+          ref={listRef}
           data-task-list
           onScroll={handleScroll}
           style={{

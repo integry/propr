@@ -36,12 +36,14 @@ const agentTitles = [
   'Web UI: run history, run detail, report view and approvals',
   'Documentation: feature guide, API/MCP/CLI reference',
 ];
-const agentPlan = agentTitles.map((title, index) => ({
+// Step counters follow the plan they belong to: (n/17) in the full plan, (n/3) in the short one.
+const agentTasks = (titles: string[]) => titles.map((title, index) => ({
   id: `agent-task-${index + 1}`,
-  title: `Agents v1 (${index + 1}/${agentTitles.length}): ${title}`,
+  title: `Agents v1 (${index + 1}/${titles.length}): ${title}`,
   body: '## Context\nProPR is getting an **Agents** feature: a saved, reusable definition that runs on demand or on a schedule and produces a free-form report.\n\n## Requirements\n1. Add `packages/shared/src/agentDefinitions.ts` exporting the shared contracts.\n2. Unit tests in `test/agentDefinitionsContract.test.ts`.',
   implementation: '',
 }));
+const agentPlan = agentTasks(agentTitles);
 
 const executionTitles = [
   'Implement Core Repository Retrieval Engine for Semantic and Literal File Matching',
@@ -69,7 +71,7 @@ const studioDrafts: Record<string, Record<string, unknown>> = {
   },
   'plan-short': {
     draft_id: 'plan-short', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
-    status: 'review', plan_json: agentPlan.slice(0, 3), chat_history: [], context_config: { baseBranch: 'main' }, created_at: ago(5), updated_at: ago(1),
+    status: 'review', plan_json: agentTasks(agentTitles.slice(0, 3)), chat_history: [], context_config: { baseBranch: 'main' }, created_at: ago(5), updated_at: ago(1),
   },
   'plan-mcp-exec': {
     draft_id: 'plan-mcp-exec', repository, name: 'Repository Search and Read MCP Tools Implementation', initial_prompt: longPrompt,
@@ -180,6 +182,14 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
   expect((await page.locator('[data-task-list]').boundingBox())!.width).toBeGreaterThan(700);
   await expect(tabs).toHaveCSS('background-color', 'rgb(255, 255, 255)');
   await expect(tabs).toHaveCSS('z-index', '10');
+  // The tab bar is a fixed row above the scroll container, not sticky inside it.
+  await expect(tabs).not.toHaveCSS('position', 'sticky');
+  expect(await page.locator('[data-task-list]').evaluate(list => list.contains(document.querySelector('nav[aria-label="Plan steps"]')))).toBe(false);
+  // Titles wrap onto a second line instead of being cut off after a few words.
+  expect(await tabs.getByRole('listitem').first().locator('span').last().evaluate(element => element.clientHeight > parseFloat(getComputedStyle(element).lineHeight) * 1.5)).toBe(true);
+  // Step counters match the 3-step plan.
+  await expect(page.getByText('Agents v1 (1/3): Shared contracts for agent definitions')).toBeVisible();
+  await expect(page.getByText(/\(\d+\/17\)/)).toHaveCount(0);
   // Phases sit on the title row and the primary action sits in the header: no stepper band, no footer bar.
   const header = page.getByRole('heading', { level: 1 }).locator('xpath=ancestor::div[contains(@class, "justify-between")][1]');
   await expect(header.getByRole('navigation', { name: 'Plan phase' })).toContainText('Review(3)');
@@ -198,6 +208,16 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
     const hit = await page.evaluate(([px, py]) => !!document.elementFromPoint(px, py)?.closest('nav[aria-label="Plan steps"]'), [tabBox.x + tabBox.width * x, tabBox.y + tabBox.height - 2]);
     expect(hit).toBe(true);
   }
+  // Wheel-scrolling and tab clicks move only the specification: nothing renders above the tabs.
+  const tabTop = tabBox.y;
+  await page.mouse.move(tabBox.x + 200, tabBox.y + 300);
+  await page.mouse.wheel(0, 600);
+  await tabs.getByRole('button').nth(2).click();
+  await expect(tabs.getByRole('button').nth(2)).toHaveAttribute('aria-current', 'step');
+  await page.waitForTimeout(800);
+  expect((await tabs.boundingBox())!.y).toBe(tabTop);
+  const listTop = (await page.locator('[data-task-list]').boundingBox())!.y;
+  expect(listTop).toBeGreaterThanOrEqual(tabTop + tabBox.height - 1);
   await capture(page, 'review-plan-tabs-scrolled');
   await page.locator('[data-task-list]').evaluate(element => { element.scrollTop = 0; });
   await notes.scrollIntoViewIfNeeded();

@@ -18,8 +18,9 @@ interface TaskTabBarProps {
  * the specification keeps the full reading width.
  */
 export const TaskTabBar: React.FC<TaskTabBarProps> = ({ taskTitles, taskIds, activeIndex, onSelect }) => (
-  // Opaque and above the specification, so scrolled content never shows through the tabs.
-  <nav aria-label="Plan steps" className="sticky top-0 z-10 flex-shrink-0 border-b border-slate-200 bg-white px-6">
+  // A fixed row above the specification's scroll container (not sticky inside it), so
+  // specification content can never render above or through the tabs.
+  <nav aria-label="Plan steps" className="relative z-10 flex-shrink-0 border-b border-slate-200 bg-white px-6">
     <ol className="flex min-w-0 gap-1 overflow-x-auto scrollbar-thin">
       {taskIds.map((id, index) => {
         const isActive = index === activeIndex;
@@ -31,14 +32,15 @@ export const TaskTabBar: React.FC<TaskTabBarProps> = ({ taskTitles, taskIds, act
               onClick={() => onSelect(id, index)}
               aria-current={isActive ? 'step' : undefined}
               title={title}
-              className={`-mb-px flex w-full min-w-0 items-baseline gap-1.5 border-b-2 px-3 py-2.5 text-[13px] transition-colors ${
+              className={`-mb-px flex h-full w-full min-w-0 items-baseline gap-1.5 border-b-2 px-3 py-2 text-left text-[13px] leading-snug transition-colors ${
                 isActive
                   ? 'border-teal-600 font-medium text-slate-900'
                   : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
               }`}
             >
               <span className={`flex-shrink-0 font-mono text-xs tabular-nums ${isActive ? 'text-teal-700' : 'text-slate-400'}`}>{index + 1}.</span>
-              <span className="truncate">{title}</span>
+              {/* Wraps to a second line instead of cutting the title off after a few words. */}
+              <span className="line-clamp-2 break-words">{title}</span>
             </button>
           </li>
         );
