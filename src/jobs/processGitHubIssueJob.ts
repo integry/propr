@@ -8,10 +8,10 @@ import { Job } from 'bullmq';
 import { postCancellationNotice } from './errorHandlers.js';
 import {
   isBookkeepingCancellation, taskIntentIssueRef, isIssueClosureProtected, withdrawnIntentReason, updateWithdrawnIssueLabels, excludeWithdrawnIssue, retainClosureCleanup, releaseWithdrawalCleanup, db, associateSubmissionTask, findIssueSubmission, logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
-  UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId, readIssueCostCapOverride
+  UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
-import type { TaskStateData, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult, SubmissionPayload } from '@propr/core';
-import { withRunCostCap, type CommentOctokit, type RunCostCapTarget } from './runCostCap.js';
+import type { TaskStateData, IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult, RunCostGuard } from '@propr/core';
+import { issueRunCostCapTarget, withRunCostCap, type CommentOctokit } from './runCostCap.js';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
@@ -244,7 +244,7 @@ async function processIssueWithAdmission(
   return withRepositoryWorkflowAdmission({
     workflow: context.repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
     redisClient, taskId, stateManager, correlatedLogger, job,
-  }, async (): Promise<JobResult> => withRunCostCap(await issueRunCostCapTarget(job, context, octokit), async (costGuard): Promise<JobResult> => {
+  }, async (): Promise<JobResult> => withIssueRunCostCap(job, context, octokit, async (costGuard): Promise<JobResult> => {
     // Successful admission ends this capacity wait; subsequent execution failures
     // retain the existing ordinary retry behavior and reload the base policy.
     const refreshWorkflow = !!job.data.repositoryWorkflowDeferred && reusedWorkflowSnapshot;
@@ -335,26 +335,25 @@ async function processIssueWithAdmission(
   }));
 }
 
-/** The issue run's spend cap inputs: the task override (job, submission or `propr issue implement --max-cost`) and the workflow file. */
-async function issueRunCostCapTarget(
+/**
+ * Runs the issue under its spend cap. A cap that cannot be resolved fails the
+ * attempt through the issue's error handling before any agent starts.
+ */
+async function withIssueRunCostCap(
   job: Job<IssueJobData>, context: JobContext, octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>,
-): Promise<RunCostCapTarget> {
-  const { issueRef, taskId, modelName, correlatedLogger } = context;
-  let override: unknown = job.data.maxCostUsd;
+  operation: (guard: RunCostGuard) => Promise<JobResult>,
+): Promise<JobResult> {
+  let started = false;
   try {
-    if (override === undefined) {
-      const submission = await findIssueSubmission(issueRef);
-      override = submission ? (JSON.parse(submission.payload) as SubmissionPayload).maxCostUsd : undefined;
-    }
-    override ??= await readIssueCostCapOverride(`${issueRef.repoOwner}/${issueRef.repoName}`, issueRef.number);
+    return await withRunCostCap(await issueRunCostCapTarget(job.data, context, () => octokit as unknown as CommentOctokit), guard => {
+      started = true;
+      return operation(guard);
+    });
   } catch (error) {
-    correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Could not read the task spend cap override');
+    // The run's own failures are already handled inside it.
+    if (started) throw error;
+    return handleIssueProcessingError(error, { job, context, octokit, claudeResult: null });
   }
-  return {
-    taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, number: issueRef.number, kind: 'issue',
-    modelName, override, workflowCap: context.repositoryWorkflow?.config.limits?.max_cost_usd,
-    getOctokit: () => octokit as unknown as CommentOctokit, logger: correlatedLogger,
-  };
 }
 
 export { processGitHubIssueJob as default };

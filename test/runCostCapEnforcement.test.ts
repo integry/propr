@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { after, test } from 'node:test';
-import { closeConnection, getActiveRunCostGuard, runCostCapTerminalReason } from '@propr/core';
+import { after, describe, test } from 'node:test';
+import { closeConnection, getActiveRunCostGuard, RepositoryWorkflowPolicyError, runCostCapTerminalReason } from '@propr/core';
 import type { RunCostSnapshot } from '@propr/core';
-import { budgetExceededEvent, postCostCapNotice, pullRequestRunCostCapTarget, withRunCostCap, type RunCostCapDeps, type RunCostCapTarget } from '../src/jobs/runCostCap.js';
-import type { CommentJobData } from '@propr/core';
+import { budgetExceededEvent, issueRunCostCapTarget, postCostCapNotice, pullRequestRunCostCapTarget, withRunCostCap, type RunCostCapDeps, type RunCostCapTarget } from '../src/jobs/runCostCap.js';
+import { applyReviewWorkflowCostCap } from '../src/jobs/prCommentReviewJob.js';
+import type { CommentJobData, IssueJobData } from '@propr/core';
 
 after(async () => { await closeConnection(); });
 
@@ -121,6 +122,96 @@ test('an uncapped retry clears the cap its earlier attempt stored under the same
         await guard.setWorkflowCap(undefined);
     }, store(harness({ instanceDefault: 'none' }).deps));
     assert.equal(records.has(target.taskId), false);
+});
+
+test('a default cap that cannot be read fails the run before any agent starts', async () => {
+    const { deps, stored } = harness();
+    deps.loadInstanceDefault = async () => { throw new Error('settings database unavailable'); };
+    let ran = false;
+    await assert.rejects(withRunCostCap(target, async () => { ran = true; }, deps), /settings database unavailable/);
+    assert.equal(ran, false, 'no chargeable work runs without the configured default');
+    assert.deepEqual(stored, []);
+});
+
+test('a task override that sets the cap lets the run proceed when the default cannot be read', async () => {
+    const { deps } = harness();
+    deps.loadInstanceDefault = async () => { throw new Error('settings database unavailable'); };
+    await withRunCostCap({ ...target, override: 3 }, async guard => {
+        assert.deepEqual(guard.cap, { capUsd: 3, source: 'override' });
+    }, deps);
+    // A malformed override sets no cap, so the unread default still matters.
+    await assert.rejects(withRunCostCap({ ...target, override: 'lots' }, async () => assert.fail('must not run'), deps), /settings database unavailable/);
+});
+
+describe('review workflow spend cap', () => {
+    const prData = { data: { base: { ref: 'main' } } };
+    const reviewContext = { repoOwner: 'acme', repoName: 'app', correlationId: 'corr', correlatedLogger: { warn: () => undefined } as never };
+    const noOctokit = {} as Parameters<typeof applyReviewWorkflowCostCap>[0];
+    const none = harness({ instanceDefault: 'none' }).deps;
+
+    test('a workflow that cannot be read fails the review instead of running it uncapped', async () => {
+        await withRunCostCap(target, async guard => {
+            await assert.rejects(applyReviewWorkflowCostCap(noOctokit, prData, reviewContext, async () => { throw Object.assign(new Error('GitHub 502'), { status: 502 }); }), /GitHub 502/);
+            assert.equal(guard.cap, null);
+        }, none);
+    });
+
+    test('the workflow cap applies when the workflow is read', async () => {
+        await withRunCostCap(target, async guard => {
+            await applyReviewWorkflowCostCap(noOctokit, prData, reviewContext, async () => ({ config: { limits: { max_cost_usd: 5 } } }) as never);
+            assert.deepEqual(guard.cap, { capUsd: 5, source: 'workflow' });
+        }, none);
+    });
+
+    test('an invalid workflow file leaves the other caps in force', async () => {
+        await withRunCostCap(target, async guard => {
+            await applyReviewWorkflowCostCap(noOctokit, prData, reviewContext, async () => { throw new RepositoryWorkflowPolicyError('Invalid .propr/workflow.yml: bad'); });
+            assert.equal(guard.cap, null);
+        }, none);
+    });
+
+    test('a task override skips the workflow read it outranks', async () => {
+        await withRunCostCap({ ...target, override: 2 }, async guard => {
+            await applyReviewWorkflowCostCap(noOctokit, prData, reviewContext, async () => assert.fail('the workflow is not read'));
+            assert.deepEqual(guard.cap, { capUsd: 2, source: 'override' });
+        }, none);
+    });
+});
+
+describe('issue spend cap override lookup', () => {
+    const issueRef = { repoOwner: 'acme', repoName: 'app', number: 7 } as IssueJobData;
+    const issueContext = { taskId: 'task-cap', modelName: 'test-model', correlatedLogger: { warn: () => undefined } as never };
+    const job = (data: Partial<IssueJobData> = {}) => ({ ...issueRef, ...data }) as IssueJobData;
+
+    test('a failed submission lookup fails the attempt', async () => {
+        await assert.rejects(issueRunCostCapTarget(job(), issueContext, undefined, {
+            findSubmission: async () => { throw new Error('database unavailable'); },
+            readOverride: async () => assert.fail('not reached'),
+        }), /database unavailable/);
+    });
+
+    test('a failed label-start override lookup fails the attempt', async () => {
+        await assert.rejects(issueRunCostCapTarget(job(), issueContext, undefined, {
+            findSubmission: async () => undefined,
+            readOverride: async () => { throw new Error('redis unavailable'); },
+        }), /redis unavailable/);
+    });
+
+    test('the job override needs no lookup', async () => {
+        const resolved = await issueRunCostCapTarget(job({ maxCostUsd: 4 }), issueContext, undefined, {
+            findSubmission: async () => assert.fail('not read'),
+            readOverride: async () => assert.fail('not read'),
+        });
+        assert.equal(resolved.override, 4);
+    });
+
+    test('a malformed submission payload is treated as setting no override', async () => {
+        const resolved = await issueRunCostCapTarget(job(), issueContext, undefined, {
+            findSubmission: async () => ({ payload: '{not json' }) as never,
+            readOverride: async () => '6',
+        });
+        assert.equal(resolved.override, '6');
+    });
 });
 
 test('the GitHub notice names the cap, the spend and where the cap came from', async () => {

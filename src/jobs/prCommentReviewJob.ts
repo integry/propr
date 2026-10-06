@@ -1,7 +1,7 @@
 import { formatTaskTerminalReason } from '@propr/shared';
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { AgentRegistry, getActiveRunCostGuard, getAuthenticatedOctokit, loadPrReviewModel, resolveLlmLabel, retryConfigs, TaskStates, withRetry } from '@propr/core';
+import { AgentRegistry, getActiveRunCostGuard, getAuthenticatedOctokit, loadPrReviewModel, RepositoryWorkflowPolicyError, resolveLlmLabel, retryConfigs, TaskStates, withRetry } from '@propr/core';
 import { prepareRepositoryWorkflow } from './repositoryWorkflow.js';
 import { applyWorkflowCostCap } from './runCostCap.js';
 import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
@@ -236,21 +236,28 @@ async function handleSkippedPRValidation(
 
 /**
  * Reviews do not run the repository workflow, but its spend cap still applies.
- * A missing or unreadable workflow leaves the task and instance caps in force.
+ * A missing or invalid workflow leaves the task and instance caps in force; a
+ * workflow that cannot be read fails the review before any agent starts, unless
+ * the task override (which outranks it) already sets the cap.
  */
-async function applyReviewWorkflowCostCap(
+export async function applyReviewWorkflowCostCap(
     octokit: Parameters<typeof prepareRepositoryWorkflow>[0]['octokit'],
     prData: { data: object },
     context: Pick<PRJobContext, 'repoOwner' | 'repoName' | 'correlationId' | 'correlatedLogger'>,
+    loadWorkflow: typeof prepareRepositoryWorkflow = prepareRepositoryWorkflow,
 ): Promise<void> {
-    if (!getActiveRunCostGuard()) return;
+    const guard = getActiveRunCostGuard();
+    if (!guard || guard.cap?.source === 'override') return;
     const baseBranch = (prData.data as { base?: { ref?: string } }).base?.ref ?? null;
+    let workflow: Awaited<ReturnType<typeof prepareRepositoryWorkflow>>;
     try {
-        const workflow = await prepareRepositoryWorkflow({ octokit, repoOwner: context.repoOwner, repoName: context.repoName, baseBranch, correlationId: context.correlationId });
-        await applyWorkflowCostCap(workflow);
+        workflow = await loadWorkflow({ octokit, repoOwner: context.repoOwner, repoName: context.repoName, baseBranch, correlationId: context.correlationId });
     } catch (error) {
-        context.correlatedLogger.warn({ error: (error as Error).message }, 'Could not read the repository workflow spend cap for this review');
+        if (!(error instanceof RepositoryWorkflowPolicyError)) throw error;
+        context.correlatedLogger.warn({ error: error.message }, 'Ignoring the invalid repository workflow spend cap for this review');
+        return;
     }
+    await applyWorkflowCostCap(workflow);
 }
 
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {

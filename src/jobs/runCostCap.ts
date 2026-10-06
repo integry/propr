@@ -1,10 +1,10 @@
 import type { Logger } from 'pino';
 import {
-    createNotificationEvent, db, getActiveRunCostGuard, getAuthenticatedOctokit, getStateManager, loadDefaultMaxCostUsd, loadMonitoredReposRaw, logger,
-    readRecordedTaskSpend, RunCostGuard, runWithRunCostGuard, storeResolvedRunCostCap,
+    createNotificationEvent, db, findIssueSubmission, getActiveRunCostGuard, getAuthenticatedOctokit, getStateManager, loadDefaultMaxCostUsd, loadMonitoredReposRaw, logger,
+    readIssueCostCapOverride, readRecordedTaskSpend, resolveRunCostCap, RunCostGuard, runWithRunCostGuard, storeResolvedRunCostCap,
 } from '@propr/core';
 import { formatUsd, RUN_COST_CAP_SOURCE_LABELS } from '@propr/shared';
-import type { CommentJobData, RecordedSpend, RunCostCap, RunCostSnapshot, RunUsagePricer } from '@propr/core';
+import type { CommentJobData, IssueJobData, RecordedSpend, SubmissionPayload, RunCostCap, RunCostSnapshot, RunUsagePricer } from '@propr/core';
 import type { Job } from 'bullmq';
 
 export type CommentOctokit = {
@@ -51,12 +51,17 @@ export const defaultRunCostCapDeps: RunCostCapDeps = {
  * spend cap enforced on every agent container it starts. The cap comes from
  * the task override, then `.propr/workflow.yml`, then the instance default;
  * spend recorded by earlier attempts of the same task counts toward it.
+ * A default that cannot be read fails the attempt (before any agent starts)
+ * unless the task override already sets the cap.
  */
 export async function withRunCostCap<T>(target: RunCostCapTarget, operation: (guard: RunCostGuard) => Promise<T>, deps: RunCostCapDeps = defaultRunCostCapDeps): Promise<T> {
     const log = target.logger ?? logger;
     let instanceDefault: unknown;
     try { instanceDefault = await deps.loadInstanceDefault(); } catch (error) {
-        log.warn({ taskId: target.taskId, error: (error as Error).message }, 'Could not load the default spend cap; runs are uncapped by default');
+        // An unreadable default may be a configured cap; only a task override,
+        // which outranks it, lets the run start without it.
+        if (resolveRunCostCap({ override: target.override })?.source !== 'override') throw error;
+        log.warn({ taskId: target.taskId, error: (error as Error).message }, 'Could not load the default spend cap; the task override applies');
     }
     const budgetTaskIds = [...new Set((target.budgetTaskIds ?? []).filter(id => id && id !== target.taskId))];
     const guard = new RunCostGuard({
@@ -95,6 +100,36 @@ export function pullRequestRunCostCapTarget(job: Pick<Job<CommentJobData>, 'id' 
         ...(data.llm ? { modelName: data.llm } : {}),
         override: data.maxCostUsd, budgetTaskIds: data.costBudgetTaskIds,
         getOctokit: async () => await getAuthenticatedOctokit() as unknown as CommentOctokit,
+    };
+}
+
+/**
+ * An issue implementation: its spend cap inputs are the task override (job,
+ * submission or `propr issue implement --max-cost`) and the workflow file. A
+ * failed override lookup is thrown: the override may be the cap, so the run
+ * must not start without it.
+ */
+export async function issueRunCostCapTarget(
+    data: IssueJobData,
+    context: { taskId: string; modelName?: string; correlatedLogger: Logger; repositoryWorkflow?: { config: { limits?: { max_cost_usd?: unknown } } } },
+    getOctokit: RunCostCapTarget['getOctokit'],
+    lookups: { findSubmission: typeof findIssueSubmission; readOverride: typeof readIssueCostCapOverride } = { findSubmission: findIssueSubmission, readOverride: readIssueCostCapOverride },
+): Promise<RunCostCapTarget> {
+    const { taskId, modelName, correlatedLogger } = context;
+    let override: unknown = data.maxCostUsd;
+    if (override === undefined) {
+        const submission = await lookups.findSubmission(data);
+        try {
+            override = submission ? (JSON.parse(submission.payload) as SubmissionPayload).maxCostUsd : undefined;
+        } catch (error) {
+            correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Ignoring the malformed submission spend cap override');
+        }
+    }
+    override ??= await lookups.readOverride(`${data.repoOwner}/${data.repoName}`, data.number);
+    return {
+        taskId, repoOwner: data.repoOwner, repoName: data.repoName, number: data.number, kind: 'issue',
+        modelName, override, workflowCap: context.repositoryWorkflow?.config.limits?.max_cost_usd,
+        getOctokit, logger: correlatedLogger,
     };
 }
 
