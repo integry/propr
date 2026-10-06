@@ -6,7 +6,7 @@ import { getInstanceCatalog } from '../api/proprApi';
 import type { InstanceCatalogResponse } from '../api/proprTypes';
 import { createDraft, uploadAttachment } from '../api/plannerApi';
 import { API_BASE_URL } from '../api/apiClient';
-import { getTaskSubmission, retryTaskSubmission, submitTask, taskSnapshotStorage, listTaskSnapshots, type TaskSnapshot, type TaskSubmission } from '../api/taskSubmissions';
+import { getTaskSubmission, retryTaskSubmission, submitTask, taskSnapshotStorage, listTaskSnapshots, type TaskRequest, type TaskSnapshot, type TaskSubmission } from '../api/taskSubmissions';
 import { CreationDialog } from '../components/CreationDialog';
 import { RepositorySelector } from '../components/RepositorySelector';
 import { clipboardImageFiles } from '../components/Goals/goalAttachmentUtils';
@@ -19,9 +19,18 @@ import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
 
 const button = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm font-medium disabled:opacity-50';
 interface Prefill { initialRepository?: string; initialPrompt?: string; todoIds?: string[] }
+const errorMessage = (error: unknown) => (error instanceof Error && error.message) || String(error ?? 'Unknown error');
 // Last used repository and routing, preselected for the next task.
 function savedRouting(scope: string): { repository?: string; agentAlias?: string; model?: string } {
   try { return JSON.parse(localStorage.getItem(`task-routing:${scope}`) || '{}'); } catch { return {}; }
+}
+function rememberRouting(scope: string, { repository, agentAlias, model }: TaskRequest) {
+  try { localStorage.setItem(`task-routing:${scope}`, JSON.stringify({ repository, agentAlias: agentAlias || '', model: model || '' })); } catch { /* Routing preferences are optional. */ }
+}
+/** Saves the exact request before any network mutation; resolves to user-facing feedback when that is not possible. */
+async function persistForRetry(scope: string, snapshot: TaskSnapshot): Promise<string | null> {
+  try { await taskSnapshotStorage(scope, snapshot.key, snapshot); return null; }
+  catch (error) { return `Task not submitted: this browser could not save it for safe retry. ${errorMessage(error)} Check that site storage is allowed and not full, then run the task again.`; }
 }
 
 export default function NewTaskPage() {
@@ -65,8 +74,8 @@ function useNewTaskLauncher(scope: string) {
       setCatalog(value);
       // Drop a remembered repository that is no longer available on this instance.
       if (saved.repository) setRepository(current => current === saved.repository && !value.repositories.some(repo => repo.name === current && repo.enabled) ? '' : current);
-    }).catch(error => { if (active) setError(error.message); });
-    void listTaskSnapshots(scope).then(values => { if (active) setRecoverable(values); }).catch(error => { if (active) setError(error.message); });
+    }).catch(error => { if (active) setError(errorMessage(error)); });
+    void listTaskSnapshots(scope).then(values => { if (active) setRecoverable(values); }).catch(error => { if (active) setError(errorMessage(error)); });
     const key = sessionStorage.getItem(activeStorageKey);
     void taskSnapshotStorage(scope, key || undefined).then(value => {
       if (!active || !value) return;
@@ -91,7 +100,7 @@ function useNewTaskLauncher(scope: string) {
     if (result.state !== 'queued' && result.state !== 'issue_created' && result.state !== 'creating') return;
     let active = true;
     const timer = setInterval(() => {
-      void getTaskSubmission(snapshot.key).then(value => { if (active) setResult(value); }).catch(error => { if (active) setError(error.message); });
+      void getTaskSubmission(snapshot.key).then(value => { if (active) setResult(value); }).catch(error => { if (active) setError(errorMessage(error)); });
     }, 2000);
     return () => { active = false; clearInterval(timer); };
   }, [snapshot, result, navigate, scope, activeStorageKey]);
@@ -102,19 +111,20 @@ function useNewTaskLauncher(scope: string) {
     const current = snapshot || { key: crypto.randomUUID(), payload: { repository, instruction, ...(agentAlias ? { agentAlias } : {}), ...(model ? { model } : {}), todoIds }, files };
     try {
       // Persist before the network mutation. A reload can safely repeat this exact request.
-      await taskSnapshotStorage(scope, current.key, current);
+      const storageError = await persistForRetry(scope, current);
+      // Nothing was sent; the request and its files stay in the form for another attempt.
+      if (storageError) { setError(storageError); return; }
       sessionStorage.setItem(activeStorageKey, current.key);
       setSnapshot(current);
       const next = result ? await retryTaskSubmission(current.key) : await submitTask(current.key, current.payload, current.files);
       setResult(next);
-      if (next.state !== 'prepared' && next.state !== 'failed') {
-        try { localStorage.setItem(`task-routing:${scope}`, JSON.stringify({ repository: current.payload.repository, agentAlias: current.payload.agentAlias || '', model: current.payload.model || '' })); } catch { /* Routing preferences are optional. */ }
-      }
+      if (next.state !== 'prepared' && next.state !== 'failed') rememberRouting(scope, current.payload);
     } catch (error) {
-      setError((error as Error).message);
-      const status = (error as { status?: number }).status;
+      setError(errorMessage(error));
+      const status = (error as { status?: number } | null)?.status;
       if (!snapshot && status && [400, 401, 403, 404].includes(status)) {
-        await taskSnapshotStorage(scope, current.key, null); sessionStorage.removeItem(activeStorageKey); setSnapshot(undefined);
+        try { await taskSnapshotStorage(scope, current.key, null); } catch { /* The rejected request is discarded either way. */ }
+        sessionStorage.removeItem(activeStorageKey); setSnapshot(undefined);
         return;
       }
       // A lost response is resolved via the same key, never a new submission.
@@ -136,7 +146,7 @@ function useNewTaskLauncher(scope: string) {
       sessionStorage.removeItem(activeStorageKey);
       if (result?.state !== 'prepared') { setInstruction(''); setFiles([]); setTodoIds(undefined); }
       setSnapshot(undefined); setResult(undefined); setError(null);
-    } catch (error) { setError((error as Error).message); }
+    } catch (error) { setError(errorMessage(error)); }
     finally { submitting.current = false; setBusy(false); }
   };
   const reopen = async (key: string) => {
@@ -151,7 +161,7 @@ function useNewTaskLauncher(scope: string) {
       setTodoIds(value.payload.todoIds); setFiles(value.files);
       setAgent(value.payload.agentAlias || ''); setModel(value.payload.model || '');
       try { setResult(await getTaskSubmission(value.key)); } catch { /* Retry the saved request with its original key. */ }
-    } catch (error) { setError((error as Error).message); }
+    } catch (error) { setError(errorMessage(error)); }
     finally { submitting.current = false; setBusy(false); }
   };
   const planFirst = async () => {
@@ -166,7 +176,7 @@ function useNewTaskLauncher(scope: string) {
         transferredFiles.current++;
       }
       navigate(`/studio/${id}`);
-    } catch (error) { setError(`Plan handoff did not finish. Your files are kept here; retry Plan first. ${(error as Error).message}`); }
+    } catch (error) { setError(`Plan handoff did not finish. Your files are kept here; retry Plan first. ${errorMessage(error)}`); }
     finally { submitting.current = false; setBusy(false); }
   };
   // The issue of a confirmed dispatch failure stays on GitHub; closing only

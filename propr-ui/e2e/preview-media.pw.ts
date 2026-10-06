@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { chromium, expect, test, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 
 const timestamp = '2026-09-13T12:00:00.000Z';
@@ -74,13 +74,12 @@ async function fixture(page: Page) {
 
 const videoUrl = 'https://github.com/user-attachments/assets/walkthrough';
 
-/**
- * A short WebM recorded from a screenshot of the running app, encoded by Chromium itself so the
- * fixture is real, playable media rather than invented artwork or a checked-in binary.
- */
-async function recordClip(page: Page) {
-  const frame = `data:image/png;base64,${(await page.screenshot()).toString('base64')}`;
-  const bytes = await page.evaluate(async source => {
+/** Codecs both bundled engines decode, most portable first: H.264 MP4 matches the published previews. */
+const clipTypes = ['video/mp4;codecs=avc1.42E01E', 'video/webm;codecs=vp8'];
+
+/** Draws a screenshot of the running app onto a canvas and records it with MediaRecorder. */
+async function encodeClip(producer: Page, source: string, mimeType: string) {
+  return Buffer.from(await producer.evaluate(async ({ source, mimeType }) => {
     const poster = new Image();
     poster.src = source;
     await poster.decode();
@@ -99,7 +98,7 @@ async function recordClip(page: Page) {
       context.fillRect(0, canvas.height - 10, canvas.width * progress, 10);
     };
     draw(0);
-    const recorder = new MediaRecorder(canvas.captureStream(25), { mimeType: 'video/webm' });
+    const recorder = new MediaRecorder(canvas.captureStream(25), { mimeType });
     const chunks: Blob[] = [];
     recorder.ondataavailable = event => chunks.push(event.data);
     recorder.start();
@@ -109,8 +108,31 @@ async function recordClip(page: Page) {
     }
     await new Promise(resolve => { recorder.onstop = () => resolve(null); recorder.stop(); });
     return [...new Uint8Array(await new Blob(chunks).arrayBuffer())];
-  }, frame);
-  return Buffer.from(bytes);
+  }, { source, mimeType }));
+}
+
+/**
+ * A short clip recorded from a screenshot of the running app, so the fixture is real, decodable media
+ * rather than invented artwork or a checked-in binary. Recording is only test-data generation: when the
+ * engine under test has no MediaRecorder (WebKit), a headless Chromium encodes the clip instead, and the
+ * engine under test still has to decode and play it in the lightbox.
+ */
+async function recordClip(page: Page) {
+  const source = `data:image/png;base64,${(await page.screenshot()).toString('base64')}`;
+  const playable = await page.evaluate(types => types.filter(type => document.createElement('video').canPlayType(type) === 'probably'), clipTypes);
+  const recordable = (producer: Page) => producer.evaluate(types => types.find(type => typeof MediaRecorder !== 'undefined'
+    && MediaRecorder.isTypeSupported(type)), playable);
+  const local = await recordable(page);
+  if (local) return { contentType: local.split(';')[0], body: await encodeClip(page, source, local) };
+  const browser = await chromium.launch();
+  try {
+    const producer = await browser.newPage();
+    const type = await recordable(producer);
+    if (!type) throw new Error(`No recordable clip type is playable by the engine under test: ${playable.join(', ') || 'none'}`);
+    return { contentType: type.split(';')[0], body: await encodeClip(producer, source, type) };
+  } finally {
+    await browser.close();
+  }
 }
 
 async function capture(page: Page, name: string) {
@@ -186,7 +208,7 @@ for (const width of [390, 1440]) {
     // Record the walkthrough clip from the running app itself, so the video fixture is real media.
     const clip = await recordClip(page);
     const previews = [...media, { title: 'Walkthrough', description: 'Recorded run of the completed implementation.', type: 'video', url: videoUrl }];
-    await page.route(videoUrl, route => route.fulfill({ contentType: 'video/webm', body: clip }));
+    await page.route(videoUrl, route => route.fulfill(clip));
     await page.route('**/api/repos/media*', route => route.fulfill({ json: { previews, nextOffset: null } }));
 
     await page.goto('/repositories');
@@ -231,6 +253,7 @@ for (const width of [390, 1440]) {
     await expect(page.getByRole('button', { name: 'Close preview', exact: true })).toBeFocused();
     await player.evaluate((video: HTMLVideoElement) => video.play());
     await expect.poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThan(0);
+    expect(await player.evaluate((video: HTMLVideoElement) => [video.videoWidth, video.videoHeight])).toEqual([960, 540]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await capture(page, `media-lightbox-video-${width}`);
 

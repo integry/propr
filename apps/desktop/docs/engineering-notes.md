@@ -263,14 +263,49 @@ fallback, and any enabled direct agent still requires its execution image as bef
    `org.opencontainers.image.revision` and the `integry/propr` source label; any conflicting tag fails closed. Missing
    images are copied from the verified OCI candidates directly to `propr/app:<full-SHA>` and
    `propr/ui:<full-SHA>`. The job summary emits both `propr/<image>:<full-SHA>@sha256:<manifest-digest>` references.
-3. From the `main` branch version of **Desktop Linux Preview Release**, choose `stage-draft`, enter that same SHA, and
-   paste the two digest-pinned references into `runtime_app_image` and `runtime_ui_image`. This workflow independently
-   resolves each tag and requires both architectures before building only x64/arm64 DEB and RPM assets and creating a
-   private draft with `linux-preview.json`, `INSTALL.md`, and `SHA256SUMS`. Missing or unaligned runtime images fail
-   preflight instead of silently packaging the older checked-in runtime manifest.
+3. Dispatch **Preview Runtime Images** for the same SHA with `operation: prepare-agent`. This credential-free operation
+   builds only the managed agent with `scripts/build-images.sh --sha-only --only agent --platform linux/amd64` on a
+   native `ubuntu-24.04` (amd64) runner. `scripts/smoke-test-preview-agent-image.sh` then runs every container with
+   `--network none`, no mounts, and no provider/GitHub/registry credential. It checks that every bundled CLI is present
+   and reports its labelled version, that Agent Tank runs through the shared entrypoint, that `gh` works through every
+   provider entrypoint wrapper, that no credential file is baked in, and that the default user is unprivileged. It
+   writes JSON smoke evidence bound to the image config digest. `package-agent` saves the image and binds the archive
+   SHA-256, config digest, source labels, architecture, and smoke evidence. `assemble-agent` wraps it in an OCI index
+   that contains only `linux/amd64` and records the manifest digest. No registry tag is created.
+4. Review that run, then dispatch again with `operation: publish-agent`. Its protected job uses the existing
+   `desktop-linux-preview-runtime-publication` environment and the same authorization variable. After protected
+   import, it verifies that the candidate's manifest and config digests and smoke evidence are unchanged. It then
+   preflights the single consumer tag `propr/agent:<full-SHA>` and copies the candidate only when that tag is missing.
+   An existing tag is reused, never overwritten, if it resolves to exactly `linux/amd64` and carries the requested
+   revision, source, and unified-bundle labels. Otherwise publication fails before any mutation. The job emits
+   `runtime_agent_image=propr/agent:<full-SHA>@sha256:<manifest-digest>`. It never creates version, bundle, or `latest`
+   tags, npm packages, GitHub releases, or macOS artifacts, and it never touches app/UI tags. The app/UI `prepare` and
+   `publish` operations do not build or publish the agent.
+5. From the `main` branch version of **Desktop Linux Preview Release**, choose `stage-draft`, enter that same SHA, and
+   paste the three digest-pinned references into `runtime_app_image`, `runtime_ui_image`, and `runtime_agent_image`.
+   This workflow independently resolves each tag. It requires both architectures for app/UI. For the agent it requires
+   exactly `linux/amd64` plus the source-revision and unified-bundle labels. Only then does it build the x64/arm64 DEB
+   and RPM assets. Each package's launcher manifest sets `images.agent` and `desktopRuntime.managedAgent` to the exact
+   agent reference, and the package job re-reads the packaged `resources/manifest.json` to confirm the binding. The
+   private draft's `linux-preview.json` (schema 2) records the agent reference and its `linux/amd64` platform, and
+   `SHA256SUMS` covers that manifest. A missing, mutable, other-source, other-repository, or unavailable agent reference
+   fails preflight instead of silently packaging the checked-in `propr/agent:<version>` reference.
+6. An authorized reviewer runs `publish-draft` as described below.
+
+On install, the launcher pulls the digest-pinned agent and tags it locally as `propr/agent:latest`, which is the image
+workers start. The managed agent is `linux/amd64` only (`Dockerfile.agent` pins amd64 Debian packages). Users of the
+`arm64` packages get a native app/UI runtime, but the agent pull fails and agent tasks cannot run. This limit is
+documented in `INSTALL.md` and is not hidden by building an amd64 image under an arm64 label. A bundle staged before
+this binding (schema 1, app/UI only) does not prove the expanded contract: `publish-draft` refuses it, and staging
+never replaces an existing draft's assets at the same identity.
+
+Still unproven: the credential-free smoke does not show that provider sign-in through the packaged agent works, or that
+a real first-user task completes on an installed preview. Both stay unproven until someone performs them on a staged,
+agent-bound preview. macOS manual validation remains deferred.
 
 The preview runtime workflow never uses the stable `docker-images.yml` release path. It cannot create version or
-`latest` tags, npm packages, stable releases, desktop releases, docs/agent/launcher images, or release assets. Its
+`latest` tags, npm packages, stable releases, desktop releases, docs/launcher images, or release assets. Its only agent
+side effect is the explicitly approved full-SHA `propr/agent:<SHA>` tag from `publish-agent`. Its
 source checkout jobs have read-only repository access and no publication credentials; only the reviewed helper and
 checksum-bound OCI artifacts reach the publication job.
 
@@ -278,7 +313,8 @@ Before runtime publication is enabled, administrators must create the protected
 `desktop-linux-preview-runtime-publication` environment, require reviewers, define the environment variable
 `PROPR_DESKTOP_LINUX_PREVIEW_RUNTIME_PUBLICATION_AUTHORIZED=1`, and scope `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
 secrets to that environment. The Docker Hub principal needs write access only to the `propr/app` and `propr/ui`
-repositories. Protect operationally against moving or deleting full-SHA tags; the workflow will never overwrite a
+repositories, plus `propr/agent` for `publish-agent`. This change does not alter environment policies, secrets, or
+access; confirm that scope with an administrator before the first agent publication. Protect operationally against moving or deleting full-SHA tags; the workflow will never overwrite a
 conflicting one. Configure native `ubuntu-24.04` and `ubuntu-24.04-arm` runners with Docker, and allow the pinned
 `regctl` installer action. Do not place Docker Hub credentials in repository-level variables or source-build runner
 configuration.
@@ -288,7 +324,7 @@ Draft staging never publishes a release or creates a tag. Public preview publica
 `PROPR_DESKTOP_LINUX_PREVIEW_PUBLICATION_AUTHORIZED=1` environment variable, and a non-movable
 `desktop-linux-preview-v*` tag ruleset. The publication job downloads, hashes, and architecture-inspects the staged
 bytes again and publishes them only as a prerelease, never as the latest release. This preview environment contains no
-production signing credential. GitHub Actions release write permission, the two native Linux runner labels, the two
+production signing credential. GitHub Actions release write permission, the two native Linux runner labels, the three
 published runtime image manifests, environment reviewers, and preview tag protection are the remaining desktop-draft
 setup; Apple credentials and macOS/Windows jobs are not involved.
 

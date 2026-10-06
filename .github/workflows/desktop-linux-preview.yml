@@ -23,6 +23,10 @@ on:
         description: Stage only - propr/ui:<source SHA>@sha256:<digest> published multi-arch image
         required: false
         type: string
+      runtime_agent_image:
+        description: Stage only - propr/agent:<source SHA>@sha256:<digest> published linux/amd64 managed-agent image
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -43,6 +47,7 @@ jobs:
       source_date_epoch: ${{ steps.identity.outputs.source_date_epoch }}
       runtime_app_image: ${{ steps.identity.outputs.runtime_app_image }}
       runtime_ui_image: ${{ steps.identity.outputs.runtime_ui_image }}
+      runtime_agent_image: ${{ steps.identity.outputs.runtime_agent_image }}
     steps:
       - name: Require dispatch of the reviewed workflow from main
         env:
@@ -69,6 +74,7 @@ jobs:
           WORKFLOW_SHA: ${{ github.sha }}
           RUNTIME_APP_IMAGE: ${{ inputs.runtime_app_image }}
           RUNTIME_UI_IMAGE: ${{ inputs.runtime_ui_image }}
+          RUNTIME_AGENT_IMAGE: ${{ inputs.runtime_agent_image }}
         run: |
           set -euo pipefail
           [[ "$REQUESTED_SHA" =~ ^[a-f0-9]{40}$ ]] || {
@@ -97,8 +103,15 @@ jobs:
               echo "runtime_ui_image must be a published, digest-pinned propr/ui image tagged with $REQUESTED_SHA." >&2
               exit 1
             }
+            # First-user task setup pulls the managed agent from the packaged
+            # launcher manifest; never fall back to its unpublished version tag.
+            agent_pattern="propr/agent:${REQUESTED_SHA}@sha256:"
+            [[ "$RUNTIME_AGENT_IMAGE" =~ ^${agent_pattern}[a-f0-9]{64}$ ]] || {
+              echo "runtime_agent_image must be a published, digest-pinned linux/amd64 propr/agent image tagged with $REQUESTED_SHA (Preview Runtime Images publish-agent)." >&2
+              exit 1
+            }
           elif [ "$OPERATION" = publish-draft ]; then
-            test -z "$RUNTIME_APP_IMAGE" && test -z "$RUNTIME_UI_IMAGE" || {
+            test -z "$RUNTIME_APP_IMAGE" && test -z "$RUNTIME_UI_IMAGE" && test -z "$RUNTIME_AGENT_IMAGE" || {
               echo 'runtime image inputs belong only to stage-draft; omit them when publishing an existing draft.' >&2
               exit 1
             }
@@ -113,6 +126,7 @@ jobs:
             echo "source_date_epoch=$(git show -s --format=%ct HEAD)"
             echo "runtime_app_image=$RUNTIME_APP_IMAGE"
             echo "runtime_ui_image=$RUNTIME_UI_IMAGE"
+            echo "runtime_agent_image=$RUNTIME_AGENT_IMAGE"
           } >> "$GITHUB_OUTPUT"
 
   runtime-preflight:
@@ -130,16 +144,18 @@ jobs:
           ref: ${{ needs.identity.outputs.release_sha }}
           persist-credentials: false
 
-      - name: Verify both digest-pinned runtime images contain x64 and arm64
+      - name: Verify app/UI contain x64 and arm64 and the managed agent is source-bound linux/amd64
         env:
           RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
           RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
           RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+          RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
         run: |
           node apps/desktop/scripts/desktop-runtime-manifest.mjs verify-release \
             --source-revision "$RELEASE_SHA" \
             --app-image "$RUNTIME_APP_IMAGE" \
-            --ui-image "$RUNTIME_UI_IMAGE"
+            --ui-image "$RUNTIME_UI_IMAGE" \
+            --agent-image "$RUNTIME_AGENT_IMAGE"
 
   package:
     name: Build unsigned Linux preview ${{ matrix.arch }} DEB/RPM
@@ -162,6 +178,8 @@ jobs:
       PROPR_DESKTOP_RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
       RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
       RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+      RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
+      PROPR_DESKTOP_RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
     steps:
       - name: Prove preview packaging has no signing or update credentials
         shell: bash
@@ -212,6 +230,7 @@ jobs:
             --source-revision "$PROPR_DESKTOP_RELEASE_SHA" \
             --app-image "$RUNTIME_APP_IMAGE" \
             --ui-image "$RUNTIME_UI_IMAGE" \
+            --agent-image "$RUNTIME_AGENT_IMAGE" \
             --api-compatibility 2026-06-27 \
             --output "$runtime_manifest"
           echo "PROPR_DESKTOP_RUNTIME_MANIFEST=$runtime_manifest" >> "$GITHUB_ENV"
@@ -231,6 +250,16 @@ jobs:
           rpm -qip "$rpm_package" >/dev/null
           test "$(dpkg-deb --field "$deb" Version)" = "$PROPR_DESKTOP_VERSION"
           test "$(rpm -qp --qf '%{VERSION}' "$rpm_package")" = "$PROPR_DESKTOP_VERSION"
+          packaged_manifest="apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/resources/manifest.json"
+          node --input-type=module -e '
+            import { readDesktopRuntimeManifest } from "./apps/desktop/scripts/desktop-runtime-manifest.mjs";
+            const manifest = readDesktopRuntimeManifest(process.argv[1], {
+              sourceRevision: process.env.PROPR_DESKTOP_RELEASE_SHA,
+              distribution: "published",
+              agentImage: process.env.RUNTIME_AGENT_IMAGE,
+            });
+            if (manifest.images.agent !== process.env.RUNTIME_AGENT_IMAGE) throw new Error("Packaged launcher manifest does not bind the managed agent image");
+          ' "$packaged_manifest"
 
       - name: Launch the packaged application without enabling self-update
         run: |
@@ -295,6 +324,7 @@ jobs:
           RELEASE_SHA: ${{ needs.identity.outputs.release_sha }}
           RUNTIME_APP_IMAGE: ${{ needs.identity.outputs.runtime_app_image }}
           RUNTIME_UI_IMAGE: ${{ needs.identity.outputs.runtime_ui_image }}
+          RUNTIME_AGENT_IMAGE: ${{ needs.identity.outputs.runtime_agent_image }}
           SOURCE_DATE_EPOCH: ${{ needs.identity.outputs.source_date_epoch }}
         run: |
           node apps/desktop/scripts/release-artifacts.mjs finalize \
@@ -307,6 +337,7 @@ jobs:
             --source-revision "$RELEASE_SHA" \
             --runtime-app-image "$RUNTIME_APP_IMAGE" \
             --runtime-ui-image "$RUNTIME_UI_IMAGE" \
+            --runtime-agent-image "$RUNTIME_AGENT_IMAGE" \
             --repository "${{ github.repository }}" \
             --workflow-run-id "${{ github.run_id }}" \
             --input desktop-linux-preview-validated \

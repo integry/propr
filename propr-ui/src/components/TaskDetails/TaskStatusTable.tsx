@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { formatTaskTerminalReason } from '@propr/shared';
 import { HistoryItem } from './types';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
-import { RUN_DURATION_COLUMN, RUN_LEAD_INSET, RUN_RESULT_COLUMN, RUN_TAG_COLUMN } from './runTimelineColumns';
+import { RUN_DURATION_COLUMN, RUN_LEAD_INSET, RUN_TAG_COLUMN } from './runTimelineColumns';
 import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban } from 'lucide-react';
 
 interface TaskStatusTableProps {
@@ -291,7 +291,7 @@ const coalescePipelineHistory = (history: HistoryItem[]): HistoryItem[] => {
  * One run's steps hanging off the run rail (2px at 7px in): each step branches
  * off it with a tic under the run's caret, and keeps to the run row's columns:
  * its time in the tag column, its label under the run's summary, its duration
- * under the run's, with the result slot left empty.
+ * under the run's.
  */
 const BranchSteps: React.FC<{
   items: Array<HistoryItem & { duration: number | null }>;
@@ -323,7 +323,6 @@ const BranchSteps: React.FC<{
           <span className={`${RUN_DURATION_COLUMN} flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${isRunning ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
             {isRunning ? 'Running…' : item.duration !== null ? formatRelativeTime(item.duration) : ''}
           </span>
-          <span aria-hidden="true" className={`${RUN_RESULT_COLUMN} flex-none`} />
         </li>
       );
     })}

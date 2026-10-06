@@ -42,6 +42,26 @@ describe('desktop Linux preview workflow', () => {
     assert.doesNotMatch(packageJob, /test-native-artifact-lifecycle|installed-app|acceptance/);
   });
 
+  test('requires, verifies, and embeds an explicit same-source linux/amd64 managed agent for new previews', () => {
+    const identity = job('identity', 'runtime-preflight');
+    const preflight = job('runtime-preflight', 'package');
+    const packageJob = job('package', 'finalize');
+    const finalize = job('finalize', 'stage-draft');
+    assert.match(workflow, /runtime_agent_image:\n\s+description: Stage only - propr\/agent:<source SHA>@sha256:<digest> published linux\/amd64/);
+    assert.match(identity, /agent_pattern="propr\/agent:\$\{REQUESTED_SHA\}@sha256:"/);
+    assert.match(identity, /\[\[ "\$RUNTIME_AGENT_IMAGE" =~ \^\$\{agent_pattern\}\[a-f0-9\]\{64\}\$ \]\] \|\| \{/);
+    assert.match(identity, /test -z "\$RUNTIME_APP_IMAGE" && test -z "\$RUNTIME_UI_IMAGE" && test -z "\$RUNTIME_AGENT_IMAGE"/);
+    assert.match(identity, /echo "runtime_agent_image=\$RUNTIME_AGENT_IMAGE"/);
+    assert.match(preflight, /--agent-image "\$RUNTIME_AGENT_IMAGE"/);
+    assert.match(packageJob, /desktop-runtime-manifest\.mjs release[\s\S]+--agent-image "\$RUNTIME_AGENT_IMAGE"/);
+    assert.match(packageJob, /PROPR_DESKTOP_RUNTIME_AGENT_IMAGE: \$\{\{ needs\.identity\.outputs\.runtime_agent_image \}\}/);
+    assert.match(packageJob, /resources\/manifest\.json"[\s\S]+agentImage: process\.env\.RUNTIME_AGENT_IMAGE/);
+    assert.match(finalize, /--runtime-agent-image "\$RUNTIME_AGENT_IMAGE"/);
+    // The packages stay x64/arm64; the agent image's architecture limit is not
+    // satisfied by narrowing or widening the desktop package matrix.
+    assert.match(packageJob, /- arch: x64\n[\s\S]+- arch: arm64\n/);
+  });
+
   test('stages a private draft and requires a separately authorized operation to publish a prerelease', () => {
     const stage = job('stage-draft', 'publish-draft');
     const publish = job('publish-draft');
