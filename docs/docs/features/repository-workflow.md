@@ -76,7 +76,7 @@ Results are authoritative only when the container wrapper runs as root and drops
 | `method` | repository default | `merge`, `squash` or `rebase`. Without it ProPR uses squash, as before, unless the repository disallows squash merges. |
 | `protected_paths` | none | Globs. If any changed file matches one, auto-merge is not armed. |
 
-`.propr/**` is always protected, whatever the configuration says, so an agent cannot change repository policy and merge it unattended.
+`.propr` and everything below it (`.propr/**`) are always protected, whatever the configuration says, including a `.propr` file or symlink added by the PR, so an agent cannot change repository policy and merge it unattended.
 
 Globs are anchored at the repository root. `*` and `?` match within one path segment (including dotfiles), `**` matches any number of directories, and `[...]` is a character class. A pattern that matches a directory protects everything below it, so `infra`, `infra/` and `infra/**` are equivalent. `package.json` matches only the root file; use `**/package.json` to match it at any depth. Matching is case-insensitive. For renames, both the old and the new path are checked.
 
@@ -93,7 +93,7 @@ The decision fails closed. Each time ProPR would arm auto-merge (after the PR is
 | `skipped_policy_invalid` | no | The base branch workflow file cannot be read or is invalid (any invalid field, not just `auto_merge`, or an unknown merge method). |
 | `skipped_diff_unavailable` | no | GitHub returned an error, an incomplete file list, or the head moved while it was listed. |
 
-A missing `.propr/workflow.yml` is not an error: the defaults apply and only `.propr/**` is protected. When auto-merge is not armed, ProPR posts a one-line PR comment with the reason and leaves the `auto-merge` label in place, so a maintainer can review the PR and merge it or enable auto-merge manually. ProPR's own fallback merge for labelled PRs (when checks pass) applies the same policy.
+A missing `.propr/workflow.yml` is not an error: the defaults apply and only `.propr` and `.propr/**` are protected. When auto-merge is not armed, ProPR posts a one-line PR comment with the reason and leaves the `auto-merge` label in place, so a maintainer can review the PR and merge it or enable auto-merge manually. ProPR's own fallback merge for labelled PRs (when checks pass) applies the same policy.
 
 **New commits.** When an armed PR receives a new head (or is retargeted to another base), ProPR evaluates the policy again. If it no longer allows auto-merge, for example because a follow-up commit touched a protected path, ProPR disables auto-merge on the PR, records a timeline event and comments. Only auto-merge that ProPR itself enabled is withdrawn; auto-merge a person or another GitHub App enabled is left alone.
 

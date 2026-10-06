@@ -6,8 +6,12 @@
 export type AutoMergePolicyMethod = 'merge' | 'squash' | 'rebase';
 export const AUTO_MERGE_METHODS: readonly AutoMergePolicyMethod[] = ['merge', 'squash', 'rebase'];
 export const AUTO_MERGE_MAX_PROTECTED_PATHS = 200;
-/** Repository policy itself always needs a human, whatever the configuration says. */
-export const ALWAYS_PROTECTED_PATHS: readonly string[] = ['.propr/**'];
+/**
+ * Repository policy itself always needs a human, whatever the configuration says.
+ * A directory pattern protects `.propr` itself as well as its descendants, so a
+ * symlink or file named `.propr` cannot install repository configuration unattended.
+ */
+export const ALWAYS_PROTECTED_PATHS: readonly string[] = ['.propr'];
 
 export interface AutoMergeConfig {
     enabled?: boolean;
