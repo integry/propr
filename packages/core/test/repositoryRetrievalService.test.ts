@@ -597,6 +597,41 @@ test('reads origin/<branch> shorthand freshly from a shallow managed clone', asy
   }
 });
 
+test('resolves a short name shared by a branch and a tag to the tag whether or not the tag is cached', async () => {
+  // Branch `release` and tag `release` point at different commits.
+  git('branch', 'release', 'feature');
+  git('tag', 'release', firstCommit);
+  const managedPath = path.join(clonesBasePath, 'owner', 'managed-ambiguous');
+  execFileSync('git', ['clone', '-q', '--depth=1', '--single-branch', '--branch', 'main', `file://${repoPath}`, managedPath]);
+  const managedGit = (...args: string[]) => execFileSync('git', args, { cwd: managedPath, encoding: 'utf8' }).trim();
+  ensureRepoCloned.mock.mockImplementation(async () => {
+    managedGit('fetch', '-q', 'origin', '--prune');
+    return managedPath;
+  });
+  const managed = { repository: 'owner/managed-ambiguous', path: 'src/util.ts' };
+  try {
+    assert.throws(() => managedGit('rev-parse', '--verify', '--quiet', 'refs/tags/release'));
+    assert.throws(() => managedGit('rev-parse', '--verify', '--quiet', 'refs/remotes/origin/release'));
+
+    // Neither ref is cached: the explicit fetch picks the tag, as git would.
+    const uncached = await readRepositoryFileContent({ ...managed, ref: 'release' });
+    assert.equal(uncached.commit, firstCommit);
+
+    // Explicitly requesting the tag and the branch does not change the answer.
+    const tagged = await readRepositoryFileContent({ ...managed, ref: 'refs/tags/release' });
+    assert.equal(tagged.commit, firstCommit);
+    const branched = await readRepositoryFileContent({ ...managed, ref: 'refs/heads/release' });
+    assert.equal(branched.commit, featureCommit);
+    const cached = await readRepositoryFileContent({ ...managed, ref: 'release' });
+    assert.equal(cached.commit, firstCommit);
+  } finally {
+    ensureRepoCloned.mock.restore();
+    ensureRepoCloned.mock.resetCalls();
+    git('tag', '-d', 'release');
+    git('branch', '-D', 'release');
+  }
+});
+
 test('clones without the index branch when an explicit ref is given and no managed clone exists', async () => {
   const managedPath = path.join(clonesBasePath, 'owner', 'managed-fresh');
   assert.equal(fs.existsSync(managedPath), false);
