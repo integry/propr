@@ -30,6 +30,7 @@ import { processTaskImportJob } from './jobs/processTaskImportJob.js';
 import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
 import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
 import { processGoalJob } from './jobs/processGoalJob.js';
+import { processAgentActionJob, processAgentRunJob } from './jobs/processAgentRunJob.js';
 import { createConfiguredMainWorker } from './workerFactory.js';
 import type { MainWorker } from './workerFactory.js';
 import {
@@ -385,7 +386,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             processTaskImportJob,
             processSystemTaskJob,
             processMergeConflictJob,
-            processGoalJob,
+            processGoalJob, processAgentRunJob, processAgentActionJob,
         },
         beforeProcess: async job => {
             const reason = await preventWithdrawnJob(job);

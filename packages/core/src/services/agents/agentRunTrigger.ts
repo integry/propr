@@ -1,0 +1,247 @@
+import { randomUUID } from 'node:crypto';
+import type { JobsOptions } from 'bullmq';
+import type { Knex } from 'knex';
+import { agentTypeSupportsProprMcp, type AgentRunTrigger, type SyntheticAgentConfig } from '@propr/shared';
+import { loadMonitoredReposRaw, type RepoToMonitor } from '../../config/configManager.js';
+import { loadAgents, type AgentConfig } from '../../config/configManagerAgents.js';
+import { loadSyntheticAgents } from '../../config/configManagerSyntheticAgents.js';
+import { getIssueQueue } from '../../queue/taskQueue.js';
+import type { AgentRunJobData, AgentRunPhase } from '../../queue/taskQueue.types.js';
+import logger from '../../utils/logger.js';
+import type { StoredAgentDefinition } from './agentDefinitionStore.js';
+import {
+  createAgentRun,
+  getAgentRunByIdempotencyKey,
+  transitionAgentRun,
+  type StoredAgentRun,
+} from './agentRunStore.js';
+
+/**
+ * The single trigger primitive for agent runs. UI "Run now", the schedule and
+ * the API/MCP/CLI all call `triggerAgentRun`, so validation, idempotency, the
+ * repository/model checks and the cost gate live in one place.
+ *
+ * GitHub repository access is not checked here: core has no request context.
+ * The API and MCP layers check it before calling, and the scheduler re-checks
+ * enablement when the run fires.
+ */
+
+export const AGENT_RUN_JOB_NAMES: Readonly<Record<AgentRunPhase, string>> = {
+  report: 'processAgentRun',
+  action: 'processAgentAction',
+};
+
+/**
+ * Not retried by BullMQ: a failure after the agent ran would spend tokens
+ * again. Recovery is an explicit new trigger.
+ */
+export const AGENT_RUN_JOB_OPTIONS: Readonly<JobsOptions> = { attempts: 1 };
+
+export type AgentRunTriggerErrorCode = 'AGENT_DISABLED' | 'AGENT_INVALID';
+
+export class AgentRunTriggerError extends Error {
+  readonly status: number;
+  readonly code: AgentRunTriggerErrorCode;
+
+  constructor(message: string, status: number, code: AgentRunTriggerErrorCode) {
+    super(message);
+    this.name = 'AgentRunTriggerError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export type AgentRunEnqueue = (name: string, data: AgentRunJobData, options: JobsOptions) => Promise<unknown>;
+
+export interface AgentRunTriggerDependencies {
+  database?: Knex;
+  now?: () => number;
+  enqueue?: AgentRunEnqueue;
+  loadAgents?: () => Promise<AgentConfig[]>;
+  loadSyntheticAgents?: () => Promise<SyntheticAgentConfig[]>;
+  loadRepos?: () => Promise<RepoToMonitor[]>;
+}
+
+export type AgentRunGateDecision =
+  | { action: 'proceed' }
+  | { action: 'skip'; reason: string }
+  | { action: 'defer'; until: number; reason: string };
+
+export interface AgentRunGateContext {
+  definition: StoredAgentDefinition;
+  trigger: AgentRunTrigger;
+  triggerSource: string | null;
+}
+
+/** Pre-run admission check (the cost gate); returning nothing proceeds. */
+export type AgentRunGate = (context: AgentRunGateContext) => Promise<AgentRunGateDecision | null | undefined>
+  | AgentRunGateDecision | null | undefined;
+
+export interface TriggerAgentRunInput {
+  definition: StoredAgentDefinition;
+  trigger: AgentRunTrigger;
+  /** Who or what fired the run, e.g. a user id or the schedule slot. */
+  triggerSource?: string | null;
+  /** Replays with the same key return the existing run without enqueueing again. */
+  idempotencyKey?: string | null;
+  gate?: AgentRunGate;
+}
+
+export interface TriggerAgentRunResult {
+  run: StoredAgentRun;
+  /** False when an existing run with the same idempotency key was returned. */
+  created: boolean;
+  /** True only when this call enqueued the report phase. */
+  enqueued: boolean;
+}
+
+async function defaultEnqueue(name: string, data: AgentRunJobData, options: JobsOptions): Promise<unknown> {
+  const queue = await getIssueQueue();
+  // The issue queue is typed for its original payloads; agent runs share it.
+  return (queue as unknown as { add: AgentRunEnqueue }).add(name, data, options);
+}
+
+export function agentRunJobId(runId: string, phase: AgentRunPhase): string {
+  return `agent-run-${runId}-${phase}`;
+}
+
+/**
+ * Enqueue one phase of a run. The job id is deterministic, so a double
+ * enqueue of the same phase is deduplicated by BullMQ.
+ */
+export async function enqueueAgentRunPhase(
+  run: Pick<StoredAgentRun, 'id' | 'definitionId' | 'ownerId'>,
+  phase: AgentRunPhase,
+  { enqueue = defaultEnqueue }: Pick<AgentRunTriggerDependencies, 'enqueue'> = {},
+): Promise<string> {
+  const jobId = agentRunJobId(run.id, phase);
+  const data: AgentRunJobData = {
+    runId: run.id,
+    definitionId: run.definitionId,
+    ownerId: run.ownerId,
+    phase,
+    correlationId: randomUUID(),
+  };
+  await enqueue(AGENT_RUN_JOB_NAMES[phase], data, { ...AGENT_RUN_JOB_OPTIONS, jobId });
+  return jobId;
+}
+
+function directAgentSupportsModel(agent: AgentConfig, modelName: string | null): boolean {
+  return agent.enabled && (modelName === null || agent.supportedModels.includes(modelName));
+}
+
+function syntheticAgentSupportsModel(agent: SyntheticAgentConfig, modelName: string | null): boolean {
+  return agent.enabled && agent.models.some(model => model.enabled && model.id === (modelName ?? agent.defaultModel));
+}
+
+/** A synthetic model can route to any enabled member, so every one must support propr_mcp. */
+function syntheticAgentSupportsProprMcp(agent: SyntheticAgentConfig, modelName: string | null, agents: AgentConfig[]): boolean {
+  const model = agent.models.find(choice => choice.enabled && choice.id === (modelName ?? agent.defaultModel));
+  const members = model?.members.filter(member => member.enabled) ?? [];
+  return members.length > 0 && members.every(member => {
+    const direct = agents.find(candidate => candidate.alias === member.directAgentAlias);
+    return direct !== undefined && agentTypeSupportsProprMcp(direct.type);
+  });
+}
+
+/**
+ * Check a definition against the live configuration. Returns a user-facing
+ * error, or null when the definition can run.
+ *
+ * - every repository is an enabled monitored repository;
+ * - the agent alias is enabled and supports the model (same rule as
+ *   `implement_plan`); without an alias the worker uses the default agent;
+ * - propr_mcp, requested by the capability or by the acting step of preview
+ *   and auto runs, is only used with agent types that support it.
+ */
+export async function validateAgentDefinitionRuntime(
+  definition: StoredAgentDefinition,
+  deps: AgentRunTriggerDependencies = {},
+): Promise<string | null> {
+  const {
+    loadRepos = loadMonitoredReposRaw,
+    loadAgents: loadDirectAgents = loadAgents,
+    loadSyntheticAgents: loadSynthetic = () => loadSyntheticAgents(),
+  } = deps;
+
+  if (definition.repositories.length > 0) {
+    const enabled = new Set((await loadRepos()).filter(repo => repo.enabled).map(repo => repo.name.trim().toLowerCase()));
+    const unavailable = definition.repositories.filter(repository => !enabled.has(repository.toLowerCase()));
+    if (unavailable.length > 0) return `Repositories are not enabled: ${unavailable.join(', ')}`;
+  }
+
+  const alias = definition.agentAlias;
+  const modelName = definition.modelName;
+  if (alias === null) {
+    return modelName === null ? null : 'A model requires an agent';
+  }
+
+  const [agents, synthetic] = await Promise.all([loadDirectAgents(), loadSynthetic()]);
+  const direct = agents.find(agent => agent.alias === alias && directAgentSupportsModel(agent, modelName));
+  const syntheticAgent = direct ? undefined
+    : synthetic.find(agent => agent.alias === alias && syntheticAgentSupportsModel(agent, modelName));
+  if (!direct && !syntheticAgent) return 'Choose an enabled agent and a model it supports';
+
+  const needsProprMcp = definition.capabilities.includes('propr_mcp') || definition.autonomyMode !== 'dry_run';
+  if (needsProprMcp) {
+    const supported = direct ? agentTypeSupportsProprMcp(direct.type)
+      : syntheticAgentSupportsProprMcp(syntheticAgent!, modelName, agents);
+    if (!supported) return `Agent ${alias} does not support propr_mcp, which the propr_mcp capability and the preview and auto acting steps require`;
+  }
+  return null;
+}
+
+/**
+ * Create the run receipt and enqueue its report phase.
+ *
+ * Throws `AgentRunTriggerError` 409 `AGENT_DISABLED` for a disabled definition
+ * and 400 `AGENT_INVALID` when the definition cannot run with the current
+ * configuration; no run is created in either case. A gate may create the run
+ * as `skipped` or `deferred` instead, without enqueueing. If enqueueing fails
+ * after the run exists, the run is marked `failed` and the error is rethrown.
+ */
+export async function triggerAgentRun(
+  { definition, trigger, triggerSource = null, idempotencyKey = null, gate }: TriggerAgentRunInput,
+  deps: AgentRunTriggerDependencies = {},
+): Promise<TriggerAgentRunResult> {
+  const storeDeps = { database: deps.database, now: deps.now };
+
+  // A replay sees the original receipt even if the definition changed since.
+  if (idempotencyKey !== null) {
+    const existing = await getAgentRunByIdempotencyKey(definition.id, idempotencyKey, storeDeps);
+    if (existing) return { run: existing, created: false, enqueued: false };
+  }
+
+  if (!definition.enabled) throw new AgentRunTriggerError('Agent is disabled', 409, 'AGENT_DISABLED');
+  const invalid = await validateAgentDefinitionRuntime(definition, deps);
+  if (invalid) throw new AgentRunTriggerError(invalid, 400, 'AGENT_INVALID');
+
+  const decision = (await gate?.({ definition, trigger, triggerSource })) ?? { action: 'proceed' as const };
+  const base = { definition, trigger, triggerSource, idempotencyKey };
+  const { run, created } = decision.action === 'skip'
+    ? await createAgentRun({ ...base, initialState: 'skipped', skipReason: decision.reason }, storeDeps)
+    : decision.action === 'defer'
+      ? await createAgentRun({ ...base, initialState: 'deferred', deferredUntil: decision.until }, storeDeps)
+      : await createAgentRun(base, storeDeps);
+
+  if (decision.action !== 'proceed') {
+    logger.info({ runId: run.id, definitionId: definition.id, action: decision.action, reason: decision.reason },
+      'Agent run held by the trigger gate');
+  }
+  // A concurrent replay won the insert; that caller owns the enqueue.
+  if (!created || run.state !== 'queued') return { run, created, enqueued: false };
+
+  try {
+    await enqueueAgentRunPhase(run, 'report', deps);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failureReason = `Failed to enqueue the agent run on the job queue: ${message}`;
+    try {
+      await transitionAgentRun(run.id, ['queued'], 'failed', { failureReason }, storeDeps);
+    } catch (transitionError) {
+      logger.error({ runId: run.id, err: transitionError }, 'Could not mark agent run failed after an enqueue failure');
+    }
+    throw error;
+  }
+  return { run, created, enqueued: true };
+}

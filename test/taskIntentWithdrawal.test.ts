@@ -236,6 +236,7 @@ test('worker admission returns cancellation without invoking an implementation o
         processGitHubIssueJob: process, processPullRequestCommentJob: process,
         processMergeConflictJob: process, processTaskImportJob: process,
         processGoalJob: process, processSystemTaskJob: process,
+        processAgentRunJob: process, processAgentActionJob: process,
     }, async job => {
         const reason = await preventWithdrawnJob(job);
         return reason ? { status: 'cancelled', reason } : null;
