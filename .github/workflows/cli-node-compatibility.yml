@@ -120,8 +120,22 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      # A hosted leg once finished `npm ci` output in under two minutes and
+      # then never exited, burning the whole job timeout. Bound each attempt
+      # and retry only a timed-out one; any other failure exits immediately.
       - name: Install dependencies
-        run: npm ci
+        run: |
+          set -uo pipefail
+          for attempt in 1 2; do
+            timeout --kill-after=30s 10m npm ci
+            status=$?
+            if [ "$status" -ne 124 ] && [ "$status" -ne 137 ]; then
+              exit "$status"
+            fi
+            echo "::warning::npm ci attempt $attempt timed out (exit $status)."
+          done
+          echo "::error::npm ci timed out on every attempt."
+          exit 1
 
       - name: Build workspace dependencies
         run: |
