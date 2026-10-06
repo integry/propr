@@ -5,12 +5,10 @@ import {
   getFollowupIgnoreKeywords, updateFollowupIgnoreKeywords,
   getPrLabel, updatePrLabel,
   getPrimaryProcessingLabels, updatePrimaryProcessingLabels,
-  getAgents,
-  getInstanceCatalog,
+  getAgents, getInstanceCatalog,
   getSummarizationSettings, updateSummarizationSettings,
   triggerReindexAll,
-  AgentConfig,
-  SummarizationSettings
+  AgentConfig, SummarizationSettings, type TriggerReindexAllResponse
 } from '../../api/proprApi';
 import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
 import { getAgentTankSettings } from '../../api/revertApi';
@@ -18,7 +16,6 @@ import { Settings, type AgentWatchdogSettingName } from './types';
 import { parseLoadedData } from './parseLoadedData';
 import { useAgentTankSettings } from './useAgentTankSettings';
 import { useListManagement } from './useListManagement';
-import type { TriggerReindexAllResponse } from '../../api/proprApi';
 import { isCommittedConfigWriteError } from '../../api/apiClient';
 
 // Debounce delay for prompt changes (in milliseconds)
