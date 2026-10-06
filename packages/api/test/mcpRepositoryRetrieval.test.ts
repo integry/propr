@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
-import { mock, test } from 'node:test';
+import { after, mock, test } from 'node:test';
+import { closeConnection } from '@propr/core';
 import type { McpPrincipal } from '../mcp/policy.js';
 import type { ReadRepositoryFileOptions, SearchRepositoryFilesOptions } from '@propr/core';
+
+after(async () => closeConnection());
 
 const repository = 'acme/repo';
 
