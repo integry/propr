@@ -213,6 +213,73 @@ test('auto-merge a person armed manually is left alone', async () => {
     assert.equal(github.graphqlCalls.length, 0);
 });
 
+test('a maintainer taking over auto-merge while files are listed is left alone', async () => {
+    const state: FakeRepo = {
+        workflowByRef: { main: PROTECTING_POLICY }, files: [{ filename: 'migrations/002.sql' }],
+        headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED,
+    };
+    // Same head and base: only the request's owner changes.
+    state.onListFiles = () => { state.autoMerge = { enabled_by: { login: 'maintainer', type: 'User' } }; };
+    const github = fakeGitHub(state);
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
+    assert.equal(result.decision?.reason, 'skipped_protected_path');
+    assert.equal(result.disarmed, false);
+    assert.equal(github.graphqlCalls.length, 0);
+    assert.equal(github.comments().length, 0);
+    assert.equal((await decisionEvents()).length, 0);
+});
+
+test('a maintainer taking over auto-merge is left alone when an invalid policy skips file listing', async () => {
+    const state: FakeRepo = {
+        workflowByRef: { main: 'auto_merge:\n  protected_paths: ["[z-a]"]\n' }, files: [{ filename: 'src/app.ts' }],
+        headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED,
+    };
+    const github = fakeGitHub(state);
+    const request = github.octokit.request.bind(github.octokit);
+    github.octokit.request = async (route, params) => {
+        const response = await request(route, params);
+        // The takeover lands after the policy read, before the disarm decision is acted on.
+        if (route === 'GET /repos/{owner}/{repo}/contents/{path}') state.autoMerge = { enabled_by: { login: 'maintainer', type: 'User' } };
+        return response;
+    };
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
+    assert.equal(result.decision?.reason, 'skipped_policy_invalid');
+    assert.equal(github.calls.some(call => call.route.endsWith('/files')), false);
+    assert.equal(result.disarmed, false);
+    assert.equal(github.graphqlCalls.length, 0);
+});
+
+test('auto-merge withdrawn before the disarm is not disabled again', async () => {
+    const state: FakeRepo = {
+        workflowByRef: { main: PROTECTING_POLICY }, files: [{ filename: 'migrations/002.sql' }],
+        headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED,
+    };
+    state.onListFiles = () => { state.autoMerge = null; };
+    const github = fakeGitHub(state);
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
+    assert.equal(result.disarmed, false);
+    assert.equal(github.graphqlCalls.length, 0);
+});
+
+test('a failed ownership re-read still disarms the request ProPR was seen to own', async () => {
+    const state: FakeRepo = {
+        workflowByRef: { main: PROTECTING_POLICY }, files: [{ filename: 'migrations/002.sql' }],
+        headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED,
+    };
+    const github = fakeGitHub(state);
+    const request = github.octokit.request.bind(github.octokit);
+    let prReads = 0;
+    github.octokit.request = async (route, params) => {
+        // Initial snapshot, post-listing snapshot, then the pre-disarm re-read fails.
+        if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}' && ++prReads === 3) throw Object.assign(new Error('Server Error'), { status: 502 });
+        return request(route, params);
+    };
+    const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin });
+    assert.equal(prReads, 3);
+    assert.equal(result.disarmed, true);
+    assert.equal(github.graphqlCalls.length, 1);
+});
+
 test('the webhook hook only re-evaluates armed open PRs on a new head or base', async () => {
     const github = fakeGitHub({ workflowByRef: {}, files: [{ filename: '.propr/x' }], headSha: 'h', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED });
     const event = (action: string, extra: Record<string, unknown> = {}, pr: Record<string, unknown> = {}) => ({

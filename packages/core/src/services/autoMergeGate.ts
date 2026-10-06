@@ -331,8 +331,18 @@ export async function reevaluateArmedAutoMergeOnNewHead(input: {
     // is not ProPR's to cancel. When the PR cannot be read, GitHub cannot be told either.
     if (decision.arm || !pullRequest || !(await isArmedByProPR(pullRequest, deps, log))) return { disarmed: false, decision };
     const octokit = await gateOctokit(deps);
+    // Evaluation awaited several GitHub reads; a maintainer may have taken the request over
+    // meanwhile. Recheck ownership from a fresh read right before withdrawing it. If that read
+    // fails, the earlier ProPR-owned snapshot is the latest evidence and the gate stays closed.
+    let current = pullRequest;
     try {
-        await disablePullRequestAutoMerge(octokit, pullRequest.nodeId);
+        current = await fetchPullRequestSnapshot(octokit, owner, repo, prNumber);
+    } catch (error) {
+        log.warn({ owner, repo, prNumber, error: (error as Error).message }, 'Could not re-read auto-merge ownership before disarming; using the evaluated snapshot');
+    }
+    if (current !== pullRequest && !(await isArmedByProPR(current, deps, log))) return { disarmed: false, decision };
+    try {
+        await disablePullRequestAutoMerge(octokit, current.nodeId);
     } catch (error) {
         log.warn({ owner, repo, prNumber, error: (error as Error).message }, 'Failed to disarm auto-merge after a new head');
         return { disarmed: false, decision };
