@@ -5,9 +5,10 @@
  * agent's declared steering capability; the API accepts steers only for an
  * announced run. Steers that a previous run accepted but never delivered are
  * claimed into this run's prompt, so each steer reaches an agent at most once.
- * The claim is recorded as delivered only once the agent process was started
- * with that prompt; a run that ends before then returns the steers to the
- * pending queue for the next run.
+ * The claim is stored as being prepared and recorded as delivered only once
+ * the agent process was started with that prompt; a run that ends before then
+ * returns the steers to the pending queue, and a preparation claim left by a
+ * worker that died is reclaimed by the next run.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -18,6 +19,7 @@ import {
   db as defaultDb,
   formatReplacementRunSteers,
   logger,
+  markTaskSteersHandedOff,
   recordTaskSteerTimeline,
   releaseTaskSteers,
 } from '@propr/core';
@@ -38,7 +40,7 @@ export interface TaskSteeringRun {
   steering?: LiveInputSource;
   /** Prompt context carrying steers a previous run never delivered ('' when none). */
   promptContext: string;
-  /** Pass to the agent as `onPromptHandoff`: the prompt carrying the steers was handed to an agent process. */
+  /** Pass to the agent as `onPromptHandoff`: an agent process was started with the prompt carrying the steers. */
   onPromptHandoff(): void;
   /**
    * Withdraw the announcement once the agent stopped. Carried steers whose
@@ -69,12 +71,18 @@ export async function startTaskSteeringRun(params: {
   }
 
   // Once an agent process was started with the prompt, its delivery is
-  // settled (or uncertain): the steers are never replayed after that.
+  // settled (or uncertain): the steers are never replayed after that. A
+  // worker that dies before the handoff is recorded leaves the claim being
+  // prepared, so the next run reclaims it.
   let handedOff = false;
   const timelineWrites: Promise<unknown>[] = [];
   const onPromptHandoff = (): void => {
     if (handedOff) return;
     handedOff = true;
+    if (!carried.length) return;
+    timelineWrites.push(markTaskSteersHandedOff(database, carried.map(steer => steer.id)).catch(error => {
+      logger.warn({ taskId, error: (error as Error).message }, 'Could not record that carried operator input reached the agent');
+    }));
     for (const steer of carried) {
       timelineWrites.push(recordTaskSteerTimeline(database, steer, 'replacement_prompt').catch(error => {
         logger.warn({ taskId, steerId: steer.id, error: (error as Error).message }, 'Could not record carried operator input in the timeline');

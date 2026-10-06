@@ -185,3 +185,60 @@ test('a replacement run that fails before its prompt reaches an agent returns th
         await database.destroy();
     }
 });
+
+test('carried steers survive a worker that died, or an agent process that failed to start, before the handoff', async () => {
+    const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+    try {
+        await database.schema.createTable('tasks', table => { table.string('task_id', 255).primary(); });
+        await database.schema.createTable('task_history', table => {
+            table.increments('history_id').primary();
+            table.string('task_id', 255).notNullable();
+            table.string('state', 50).notNullable();
+            table.timestamp('timestamp').notNullable();
+            table.text('reason');
+            table.json('metadata');
+        });
+        await createTaskSteers(database);
+        await database('tasks').insert({ task_id: 'task-crash' });
+        const redisClient = { async set() { return 'OK'; }, async del() { return 1; } };
+        const claude = { steeringCapability: 'live' as const, config: { alias: 'claude-default', type: 'claude' as const } };
+        await createTaskSteer(database, {
+            taskId: 'task-crash', runKey: 'run:earlier', author: 'octocat', authorSource: 'session',
+            message: 'Keep the public API unchanged',
+        });
+
+        // The worker claims the steer for its prompt, then dies: finish() never runs.
+        const crashed = await startTaskSteeringRun({ taskId: 'task-crash', agent: claude, redisClient, db: database });
+        assert.match(crashed.promptContext, /Keep the public API unchanged/);
+        const [abandoned] = await listTaskSteers(database, 'task-crash');
+        assert.equal(abandoned!.delivery, null, 'a claim being prepared is not reported as delivered');
+
+        // The next worker reclaims it, but spawn() returns a child that then fails to start.
+        const spawnFailed = await startTaskSteeringRun({ taskId: 'task-crash', agent: claude, redisClient, db: database });
+        assert.match(spawnFailed.promptContext, /Keep the public API unchanged/);
+        await assert.rejects(executeDockerCommand('/nonexistent/propr-agent-binary', [], {
+            timeout: 10_000, stdinData: spawnFailed.promptContext, onPromptHandoff: spawnFailed.onPromptHandoff,
+        }), /ENOENT/);
+        await spawnFailed.finish();
+        const [released] = await listTaskSteers(database, 'task-crash');
+        assert.equal(released!.deliveredAt, null);
+        assert.equal(released!.delivery, null);
+        assert.equal((await database('task_history')).length, 0, 'no delivery is reported');
+
+        // A run whose agent process started records the delivery; it is never replayed afterwards.
+        const started = await startTaskSteeringRun({ taskId: 'task-crash', agent: claude, redisClient, db: database });
+        assert.match(started.promptContext, /Keep the public API unchanged/);
+        const result = await executeDockerCommand(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0));'], {
+            timeout: 10_000, stdinData: started.promptContext, onPromptHandoff: started.onPromptHandoff,
+        });
+        assert.equal(result.exitCode, 0);
+        await started.finish();
+        const [delivered] = await listTaskSteers(database, 'task-crash');
+        assert.equal(delivered!.delivery, 'replacement_prompt');
+        const after = await startTaskSteeringRun({ taskId: 'task-crash', agent: claude, redisClient, db: database });
+        assert.equal(after.promptContext, '');
+        await after.finish();
+    } finally {
+        await database.destroy();
+    }
+});

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { TASK_STEER_MAX_PER_RUN, TASK_STEER_SECTION_TITLE } from '@propr/shared';
+import { redactSecrets } from '../utils/secretRedaction.js';
 import type { LiveInputMessage, LiveInputSource } from '../claude/docker/dockerLiveInput.js';
 
 /**
@@ -10,6 +11,12 @@ import type { LiveInputMessage, LiveInputSource } from '../claude/docker/dockerL
  * checks it is still pending, before anything is written to the agent, so
  * each steer reaches an agent at most once: live into the running session,
  * or, when the run ended first, in the prompt of the replacement run.
+ *
+ * A replacement-run claim is first recorded as being prepared
+ * (`prompt_preparing`) and only becomes `replacement_prompt` once an
+ * agent process was started with that prompt. A preparation claim abandoned
+ * by a worker that died stays recoverable: the next replacement run of the
+ * task reclaims it.
  */
 
 export type TaskSteerAuthorSource = 'session' | 'token' | 'mcp';
@@ -52,12 +59,17 @@ export class TaskSteerLimitError extends Error {
 
 type Db = Knex | Knex.Transaction;
 
+/** Stored `delivery` of a replacement claim whose prompt has not reached an agent process yet. */
+const REPLACEMENT_PREPARING = 'prompt_preparing';
+
 function timestamp(value: string | Date | null): string | null {
     if (value === null || value === undefined) return null;
     return value instanceof Date ? value.toISOString() : String(value);
 }
 
 function toSteer(row: TaskSteerRow): TaskSteer {
+    // A claim still being prepared has reached no agent: it is reported as pending.
+    const preparing = row.delivery === REPLACEMENT_PREPARING;
     return {
         id: row.steer_id,
         sequence: Number(row.sequence),
@@ -67,8 +79,8 @@ function toSteer(row: TaskSteerRow): TaskSteer {
         authorSource: row.author_source as TaskSteerAuthorSource,
         message: row.message,
         createdAt: timestamp(row.created_at)!,
-        deliveredAt: timestamp(row.delivered_at),
-        delivery: row.delivery as TaskSteerDelivery | null,
+        deliveredAt: preparing ? null : timestamp(row.delivered_at),
+        delivery: preparing ? null : row.delivery as TaskSteerDelivery | null,
         acknowledgedAt: timestamp(row.acknowledged_at),
     };
 }
@@ -114,25 +126,46 @@ export async function listTaskSteers(db: Db, taskId: string): Promise<TaskSteer[
 /**
  * Claim every pending steer of a task for one delivery. A steer is returned
  * by exactly one claim: the update only matches rows that are still pending.
+ *
+ * A `replacement_prompt` claim is stored as being prepared until
+ * {@link markTaskSteersHandedOff} records that an agent process received the
+ * prompt. It also reclaims preparation claims an earlier run abandoned (its
+ * worker exited before any agent process started), since a replacement run
+ * only starts once the task's previous run ended.
  */
 export async function claimTaskSteers(db: Knex, taskId: string, delivery: TaskSteerDelivery): Promise<TaskSteer[]> {
-    return db.transaction(async trx => {
-        const pending = await trx<TaskSteerRow>('task_steers')
-            .where('task_id', taskId)
+    const claimable = (query: Knex.QueryBuilder): Knex.QueryBuilder => delivery === 'replacement_prompt'
+        ? query.where(pending => pending
             .whereNull('delivered_at')
+            .orWhere(abandoned => abandoned.where('delivery', REPLACEMENT_PREPARING).whereNull('acknowledged_at')))
+        : query.whereNull('delivered_at');
+    const stored = delivery === 'replacement_prompt' ? REPLACEMENT_PREPARING : delivery;
+    return db.transaction(async trx => {
+        const pending: TaskSteerRow[] = await claimable(trx('task_steers').where('task_id', taskId))
             .orderBy('sequence', 'asc');
         const claimed: TaskSteer[] = [];
         for (const row of pending) {
-            const updated = await trx('task_steers')
-                .where('steer_id', row.steer_id)
-                .whereNull('delivered_at')
-                .update({ delivered_at: trx.fn.now(), delivery });
+            const updated = await claimable(trx('task_steers').where('steer_id', row.steer_id))
+                .update({ delivered_at: trx.fn.now(), delivery: stored });
             if (updated !== 1) continue;
             const current = await trx<TaskSteerRow>('task_steers').where('steer_id', row.steer_id).first();
             claimed.push(toSteer(current!));
         }
         return claimed;
     });
+}
+
+/**
+ * Record that an agent process was started with the prompt carrying these
+ * replacement claims: from now on they may have reached the agent, so they
+ * are never reclaimed or released again.
+ */
+export async function markTaskSteersHandedOff(db: Db, steerIds: string[]): Promise<void> {
+    if (!steerIds.length) return;
+    await db('task_steers')
+        .whereIn('steer_id', steerIds)
+        .where('delivery', REPLACEMENT_PREPARING)
+        .update({ delivered_at: db.fn.now(), delivery: 'replacement_prompt' });
 }
 
 export async function acknowledgeTaskSteer(db: Db, steerId: string): Promise<void> {
@@ -182,16 +215,61 @@ function quote(text: string): string {
     return text.split('\n').map(line => `> ${line}`).join('\n');
 }
 
-/** Markdown section for a task's completion comment, or '' when nobody steered the run. */
-export function formatTaskSteersForComment(steers: TaskSteer[]): string {
+/**
+ * Budget of the steering section in a completion comment. Accepted steering
+ * alone can exceed GitHub's 65,536-character comment limit (20 messages of
+ * 4,000 characters per run, and a task can have several runs), so the section
+ * is bounded and leaves the rest of the report its room.
+ */
+export const TASK_STEER_COMMENT_MAX_LENGTH = 12_000;
+/** Longest excerpt of one message, so later messages are not crowded out by one long one. */
+const TASK_STEER_COMMENT_MESSAGE_MAX_LENGTH = 1_500;
+
+/**
+ * Markdown section for a task's completion comment, or '' when nobody steered
+ * the run. Messages are redacted, and the section never exceeds `maxLength`:
+ * long messages are shortened and messages past the budget are omitted, with
+ * a pointer to the task history (`taskUrl`) that keeps the full text.
+ */
+export function formatTaskSteersForComment(steers: TaskSteer[], options: { taskUrl?: string; maxLength?: number } = {}): string {
     if (!steers.length) return '';
-    const lines = steers.map(steer => {
+    const maxLength = options.maxLength ?? TASK_STEER_COMMENT_MAX_LENGTH;
+    const history = options.taskUrl ? `the [task history](${options.taskUrl})` : 'the task history';
+    const heading = `### ${TASK_STEER_SECTION_TITLE}`;
+    const entries = steers.map(steer => {
         const state = steer.delivery === 'live'
             ? (steer.acknowledgedAt ? 'delivered live' : 'claimed, not confirmed')
             : steer.delivery === 'replacement_prompt' ? 'delivered in the replacement run prompt' : 'not delivered';
-        return `- **${steer.author}** (${state}):\n${quote(steer.message)}`;
+        const message = redactSecrets(steer.message);
+        const shortened = message.length > TASK_STEER_COMMENT_MESSAGE_MAX_LENGTH;
+        const excerpt = shortened ? `${message.slice(0, TASK_STEER_COMMENT_MESSAGE_MAX_LENGTH)}…` : message;
+        return { text: `- **${steer.author}** (${state}):\n${quote(excerpt)}`, shortened };
     });
-    return [`### ${TASK_STEER_SECTION_TITLE}`, '', ...lines].join('\n');
+    const notice = (omitted: number, shortened: boolean): string => {
+        if (!omitted && !shortened) return '';
+        const parts = [
+            ...(omitted ? [`${omitted} more message${omitted === 1 ? ' was' : 's were'} omitted`] : []),
+            ...(shortened ? ['long messages were shortened'] : []),
+        ];
+        return `_${parts.join('; ')} to keep this report within GitHub's size limit. See ${history} for the full operator input._`;
+    };
+    const render = (count: number): string => {
+        const included = entries.slice(0, count);
+        const footer = notice(entries.length - count, included.some(entry => entry.shortened));
+        return [heading, '', ...included.map(entry => entry.text), ...(footer ? ['', footer] : [])].join('\n');
+    };
+    const complete = render(entries.length);
+    if (complete.length <= maxLength) return complete;
+    // Keep the leading messages that fit next to the longest possible notice.
+    const reserved = notice(entries.length, true).length + 2;
+    let length = heading.length + 1;
+    let count = 0;
+    while (count < entries.length && length + 1 + entries[count]!.text.length + reserved <= maxLength) {
+        length += 1 + entries[count]!.text.length;
+        count += 1;
+    }
+    const section = render(count);
+    return section.length <= maxLength ? section : '';
 }
 
 /**

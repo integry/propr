@@ -224,7 +224,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
     });
 }
 
-/** The process was spawned with its input: from now on it may have reached the agent. */
+/** The process was created with its input: from now on it may have reached the agent. */
 function notifyPromptHandoff(callback: (() => void) | undefined, taskId: string | undefined): void {
     try { callback?.(); } catch (error) {
         logger.warn({ taskId, error: (error as Error).message }, 'Prompt handoff callback failed');
@@ -259,7 +259,9 @@ function startDockerCommand(
             void costExecution?.finish().catch(() => null);
             throw error;
         }
-        notifyPromptHandoff(options.onPromptHandoff, taskId);
+        // spawn() can return a child that then fails to start ('error' without 'spawn'):
+        // the input only may have reached an agent once the process was created.
+        child.once('spawn', () => notifyPromptHandoff(options.onPromptHandoff, taskId));
 
         let sessionLineBuffer = '';
         const stderrTail = new BoundedDiagnosticTail(), workflowMarkers = captureWorkflowMarkers(args);

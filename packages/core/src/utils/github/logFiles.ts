@@ -373,8 +373,10 @@ async function buildOperatorInputSection(taskId: string | undefined, issueRef: I
             import('../../db/connection.js'),
             import('../../services/taskSteeringStore.js'),
         ]);
-        const section = formatTaskSteersForComment(await listTaskSteers(db, taskId));
-        return section ? `${redactSecrets(section)}\n\n` : '';
+        // Bounded so a heavily steered task cannot push the report past GitHub's comment limit.
+        const taskUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/tasks/${encodeURIComponent(taskId)}`;
+        const section = formatTaskSteersForComment(await listTaskSteers(db, taskId), { taskUrl });
+        return section ? `${section}\n\n` : '';
     } catch (error) {
         logger.warn({ issueNumber: issueRef.number, taskId, error: (error as Error).message }, 'Failed to load operator input for the completion report');
         return '';

@@ -174,10 +174,10 @@ interface CompletionCommentPublicationOptions {
 }
 
 /** "Operator input during the run" section for a PR follow-up task; '' when nobody steered it. */
-async function loadOperatorInputSection(taskId: string | undefined, logger: Logger): Promise<string> {
+async function loadOperatorInputSection(taskId: string | undefined, taskUrl: string, logger: Logger): Promise<string> {
     if (!taskId) return '';
     try {
-        return formatTaskSteersForComment(await listTaskSteers(db, taskId));
+        return formatTaskSteersForComment(await listTaskSteers(db, taskId), { taskUrl });
     } catch (error) {
         logger.warn({ taskId, error: (error as Error).message }, 'Failed to load operator input for the completion comment');
         return '';
@@ -230,7 +230,7 @@ async function publishCompletionComment(options: CompletionCommentPublicationOpt
         consumedReviewCommentIds,
         addressedFeedback,
         visualPreviewSection: hasVisualPreviewContent ? VISUAL_PREVIEW_SLOT : undefined,
-        operatorInputSection: await loadOperatorInputSection(options.taskId, correlatedLogger),
+        operatorInputSection: await loadOperatorInputSection(options.taskId, taskUrl, correlatedLogger),
     }, state.claudeResult);
     const prCommentTemplate = [context.publication.status, completionBody].filter(Boolean).join('\n\n');
     const prCommentBody = appendVisualPreviewSection(prCommentTemplate, visualPreviewSection);

@@ -6,6 +6,9 @@
  * `delivery` records how it reached the agent: `live` (written into the
  * running session) or `replacement_prompt` (carried into the prompt of a
  * replacement run because the previous run ended before delivering it).
+ * A replacement claim is stored as `prompt_preparing` until an agent process
+ * was started with that prompt, so a claim abandoned during preparation can
+ * be reclaimed by the next run.
  * `acknowledged_at` is set once a live write was fully flushed to the agent.
  * `run_key` identifies the run that accepted the steer, for the per-run limit.
  */

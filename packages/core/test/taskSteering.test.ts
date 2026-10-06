@@ -14,7 +14,9 @@ import {
     createTaskSteeringSource,
     formatReplacementRunSteers,
     formatTaskSteersForComment,
+    TASK_STEER_COMMENT_MAX_LENGTH,
     listTaskSteers,
+    markTaskSteersHandedOff,
 } from '../src/services/taskSteeringStore.js';
 
 let db: Knex;
@@ -77,7 +79,8 @@ describe('task steer persistence', () => {
         const replacement = await claimTaskSteers(db, 'task-1', 'replacement_prompt');
         assert.deepEqual(replacement.map(item => item.message), ['claimed but never written', 'arrived as the container died']);
         assert.match(formatReplacementRunSteers(replacement), /arrived as the container died/);
-        // A second restart delivers nothing again.
+        // Its agent process started with that prompt: a second restart delivers nothing again.
+        await markTaskSteersHandedOff(db, replacement.map(item => item.id));
         assert.deepEqual(await claimTaskSteers(db, 'task-1', 'replacement_prompt'), []);
 
         const timeline = await db('task_history').orderBy('history_id');
@@ -93,6 +96,28 @@ describe('task steer persistence', () => {
         assert.match(comment, /delivered in the replacement run prompt/);
     });
 
+    test('a replacement claim abandoned before its prompt reached an agent is reclaimed by the next run', async () => {
+        await steer('keep the public API unchanged');
+        // The claiming worker dies during preparation: nothing releases the claim.
+        const [abandoned] = await claimTaskSteers(db, 'task-1', 'replacement_prompt');
+        assert.equal(abandoned!.message, 'keep the public API unchanged');
+        // It is still pending to every reader, but no live claim can take it twice.
+        const [listed] = await listTaskSteers(db, 'task-1');
+        assert.equal(listed!.deliveredAt, null);
+        assert.equal(listed!.delivery, null);
+        assert.match(formatTaskSteersForComment([listed!]), /not delivered/);
+        assert.deepEqual(await claimTaskSteers(db, 'task-1', 'live'), []);
+
+        const [recovered] = await claimTaskSteers(db, 'task-1', 'replacement_prompt');
+        assert.equal(recovered!.id, abandoned!.id);
+        await markTaskSteersHandedOff(db, [recovered!.id]);
+        const [handedOff] = await listTaskSteers(db, 'task-1');
+        assert.equal(handedOff!.delivery, 'replacement_prompt');
+        assert.ok(handedOff!.deliveredAt);
+        // Once an agent process may have received it, it is never replayed.
+        assert.deepEqual(await claimTaskSteers(db, 'task-1', 'replacement_prompt'), []);
+    });
+
     test('released steers that were acknowledged stay delivered', async () => {
         await steer('written');
         const source = createTaskSteeringSource(db, 'task-1');
@@ -100,6 +125,37 @@ describe('task steer persistence', () => {
         await source.acknowledge(written!.id);
         await source.release([written!.id]);
         assert.deepEqual(await claimTaskSteers(db, 'task-1', 'replacement_prompt'), []);
+    });
+});
+
+describe('task steering in completion comments', () => {
+    function steerRecord(index: number, message: string) {
+        return {
+            id: `steer-${index}`, sequence: index, taskId: 'task-1', runKey: 'run-1', author: 'octocat',
+            authorSource: 'session' as const, message, createdAt: '2026-10-06T00:00:00.000Z',
+            deliveredAt: '2026-10-06T00:00:01.000Z', delivery: 'live' as const, acknowledgedAt: '2026-10-06T00:00:01.000Z',
+        };
+    }
+
+    test('bounds the section even when every message is at the accepted limits', () => {
+        // Two full runs: 40 messages of 4,000 characters, far over GitHub's 65,536-character comment limit.
+        const steers = Array.from({ length: 40 }, (_, index) => steerRecord(index, `${index}:${'x'.repeat(3_996)}`));
+        const section = formatTaskSteersForComment(steers, { taskUrl: 'https://propr.example/tasks/task-1' });
+        assert.ok(section.length <= TASK_STEER_COMMENT_MAX_LENGTH, `section is ${section.length} characters`);
+        assert.match(section, /^### Operator input during the run/);
+        assert.match(section, /- \*\*octocat\*\* \(delivered live\):\n> 0:x/);
+        assert.match(section, /more messages were omitted; long messages were shortened/);
+        assert.match(section, /\[task history\]\(https:\/\/propr\.example\/tasks\/task-1\)/);
+    });
+
+    test('respects a caller budget and keeps short sections intact', () => {
+        const steers = Array.from({ length: 5 }, (_, index) => steerRecord(index, `message ${index}`));
+        assert.doesNotMatch(formatTaskSteersForComment(steers), /omitted|shortened/);
+        const bounded = formatTaskSteersForComment(steers, { maxLength: 250 });
+        assert.ok(bounded.length <= 250);
+        assert.match(bounded, /message 0/);
+        assert.match(bounded, /more messages? (was|were) omitted/);
+        assert.match(bounded, /See the task history/);
     });
 });
 
@@ -236,5 +292,15 @@ readline.createInterface({ input: process.stdin }).on('line', () => {
         });
         assert.equal(result.exitCode, 0);
         assert.equal(handoffs, 1);
+    });
+
+    test('does not report a prompt handoff when the agent process fails to start', async () => {
+        let handoffs = 0;
+        await assert.rejects(executeDockerCommand('/nonexistent/propr-agent-binary', [], {
+            timeout: 10_000,
+            stdinData: 'Implement the issue.',
+            onPromptHandoff: () => { handoffs += 1; },
+        }), /ENOENT/);
+        assert.equal(handoffs, 0);
     });
 });
