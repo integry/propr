@@ -75,11 +75,15 @@ export function useInboxRefreshTriggers({
   }, [canReconcile, reconcile]);
 
   useEffect(() => {
-    // One reconcile for everything that changed while the tab was away.
+    // One reconcile for everything that changed while the tab was away or the
+    // browser was offline. Reconnecting is also what loads an Inbox first
+    // opened offline, since every read is skipped until then.
     window.addEventListener('focus', reconcileWhenWorthwhile);
+    window.addEventListener('online', reconcileWhenWorthwhile);
     document.addEventListener('visibilitychange', reconcileWhenWorthwhile);
     return () => {
       window.removeEventListener('focus', reconcileWhenWorthwhile);
+      window.removeEventListener('online', reconcileWhenWorthwhile);
       document.removeEventListener('visibilitychange', reconcileWhenWorthwhile);
     };
   }, [reconcileWhenWorthwhile]);
