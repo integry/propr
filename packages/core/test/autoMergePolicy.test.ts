@@ -30,6 +30,7 @@ const cases: Array<{ name: string; policy: AutoMergePolicyInput; files: string[]
     { name: '* matches dotfiles', policy: valid({ protected_paths: ['config/*'] }), files: ['config/.env'], reason: 'skipped_protected_path', matched: ['config/.env'] },
     { name: '* stays within a segment', policy: valid({ protected_paths: ['config/*.yml'] }), files: ['config/nested/a.yml'], reason: 'armed' },
     { name: 'directory pattern protects descendants', policy: valid({ protected_paths: ['infra/'] }), files: ['infra/terraform/main.tf'], reason: 'skipped_protected_path', matched: ['infra/terraform/main.tf'] },
+    { name: 'repeated trailing slashes act as a directory pattern', policy: valid({ protected_paths: ['infra' + '/'.repeat(50_000)] }), files: ['infra/main.tf'], reason: 'skipped_protected_path', matched: ['infra/main.tf'] },
     { name: 'leading ./ in a pattern is ignored', policy: valid({ protected_paths: ['./secrets/**'] }), files: ['secrets/key.pem'], reason: 'skipped_protected_path', matched: ['secrets/key.pem'] },
     { name: 'prefix of a file name is not a directory match', policy: valid({ protected_paths: ['infra'] }), files: ['infrastructure.md'], reason: 'armed' },
     { name: 'character classes and ? match', policy: valid({ protected_paths: ['scripts/deploy-?.[sb]h'] }), files: ['scripts/deploy-1.sh'], reason: 'skipped_protected_path', matched: ['scripts/deploy-1.sh'] },

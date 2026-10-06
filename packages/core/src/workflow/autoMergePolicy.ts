@@ -79,6 +79,13 @@ function normalizePath(path: string): string {
     return path.trim().replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+/, '').replace(/\/{2,}/g, '/');
 }
 
+/** Strip trailing slashes with a linear scan (a `/\/+$/` regex backtracks quadratically). */
+function trimTrailingSlashes(path: string): string {
+    let end = path.length;
+    while (end > 0 && path[end - 1] === '/') end--;
+    return path.slice(0, end);
+}
+
 function escapeRegExp(text: string): string {
     return text.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 }
@@ -91,7 +98,7 @@ function escapeRegExp(text: string): string {
  * Matching is case-insensitive so a differently cased path cannot slip through.
  */
 export function compileProtectedPathGlob(pattern: string): RegExp {
-    const glob = normalizePath(pattern).replace(/\/+$/, '');
+    const glob = trimTrailingSlashes(normalizePath(pattern));
     let source = '';
     for (let index = 0; index < glob.length; index++) {
         const char = glob[index];
