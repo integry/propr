@@ -8,6 +8,20 @@ export interface ReplacementRequestRecord {
     cause: ReplacementCause;
     terminalReason?: string | null;
     requestedAt: string;
+    /** Set with the claim; kept until queue delivery of the replacement is confirmed. */
+    dispatch?: ReplacementDispatchRecord;
+}
+
+/** What redelivering a claimed replacement needs, persisted in the claim's transaction. */
+export interface ReplacementDispatchRecord {
+    replacementTaskId: string;
+    jobId: string;
+    jobData: IssueJobData;
+    attemptNumber: number;
+    maxReplacements: number;
+    remainingBudgetUsd?: number;
+    failure?: string;
+    claimedAt: string;
 }
 
 export interface ReplaceableTask {
@@ -48,6 +62,9 @@ export interface CreateReplacementInput {
     /** What a later replacement of this attempt re-runs; keeps the lineage's original cost cap. */
     replayData: IssueJobData;
     timestamp: string;
+    maxReplacements: number;
+    remainingBudgetUsd?: number;
+    failure?: string;
 }
 
 /** A timeline event recorded on a task without changing its state. */
@@ -63,6 +80,8 @@ export interface PendingReplacementRequest {
     taskId: string;
     request: ReplacementRequestRecord;
     latestState: string | null;
+    /** The claimed replacement awaiting confirmed queue delivery, if any. */
+    replacedByTaskId: string | null;
 }
 
 export interface TaskReplacementStore {
@@ -70,7 +89,10 @@ export interface TaskReplacementStore {
     loadLineage(rootTaskId: string): Promise<LineageAttempt[]>;
     markRequested(taskId: string, request: ReplacementRequestRecord): Promise<boolean>;
     setState(taskId: string, state: ReplacementState | null): Promise<void>;
-    /** Claims the original's single replacement slot and persists the new attempt. */
+    /**
+     * Claims the original's single replacement slot and persists the new attempt
+     * together with its dispatch record; the original stays `pending` until delivery is confirmed.
+     */
     createReplacement(input: CreateReplacementInput): Promise<boolean>;
     /** Undoes `createReplacement` when the replacement could not be queued. */
     revertReplacement(originalTaskId: string, replacementTaskId: string): Promise<void>;
@@ -215,11 +237,26 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
 
         async createReplacement(input) {
             const { original, replacementTaskId, jobId, correlationId, attemptNumber, cause, jobData, replayData, timestamp } = input;
+            const dispatch: ReplacementDispatchRecord = {
+                replacementTaskId, jobId, jobData, attemptNumber, maxReplacements: input.maxReplacements,
+                ...(input.remainingBudgetUsd === undefined ? {} : { remainingBudgetUsd: input.remainingBudgetUsd }),
+                ...(input.failure ? { failure: input.failure } : {}),
+                claimedAt: timestamp,
+            };
+            const request: ReplacementRequestRecord = {
+                ...(original.replacementRequest ?? { requestedAt: timestamp }),
+                cause,
+                dispatch,
+            };
             return database.transaction(async trx => {
                 const claimed = await trx('tasks')
                     .where({ task_id: original.taskId })
                     .whereNull('replaced_by_task_id')
-                    .update({ replaced_by_task_id: replacementTaskId });
+                    .update({
+                        replaced_by_task_id: replacementTaskId,
+                        replacement_state: 'pending',
+                        replacement_request: JSON.stringify(request),
+                    });
                 if (claimed === 0) return false;
                 await trx('tasks').where({ job_id: jobId }).whereNot({ task_id: replacementTaskId }).update({ job_id: null });
                 await trx('tasks').insert({
@@ -256,8 +293,13 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
             await database.transaction(async trx => {
                 await trx('task_history').where({ task_id: replacementTaskId }).delete();
                 await trx('tasks').where({ task_id: replacementTaskId }).delete();
+                const row = await trx('tasks').where({ task_id: originalTaskId, replaced_by_task_id: replacementTaskId })
+                    .first('replacement_request') as { replacement_request?: unknown } | undefined;
+                if (!row) return;
+                const request = parseJson<ReplacementRequestRecord>(row.replacement_request);
+                if (request) delete request.dispatch;
                 await trx('tasks').where({ task_id: originalTaskId, replaced_by_task_id: replacementTaskId })
-                    .update({ replaced_by_task_id: null });
+                    .update({ replaced_by_task_id: null, replacement_request: request ? JSON.stringify(request) : null });
             });
         },
 
@@ -279,14 +321,17 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
         async listPendingRequests(requestedBefore, limit) {
             const rows = await database('tasks as t')
                 .where('t.replacement_state', 'pending')
-                .whereNull('t.replaced_by_task_id')
-                .select('t.task_id', 't.replacement_request', latestHistorySubquery(database, 'state', 'latest_state'))
+                .select('t.task_id', 't.replaced_by_task_id', 't.replacement_request', latestHistorySubquery(database, 'state', 'latest_state'))
                 .orderBy('t.task_id')
                 .limit(limit) as Array<Record<string, unknown>>;
             return rows.flatMap(row => {
                 const request = parseJson<ReplacementRequestRecord>(row.replacement_request);
-                if (!request || typeof request.requestedAt !== 'string' || request.requestedAt > requestedBefore) return [];
-                return [{ taskId: String(row.task_id), request, latestState: text(row.latest_state) }];
+                if (!request || typeof request.requestedAt !== 'string') return [];
+                const replacedByTaskId = text(row.replaced_by_task_id);
+                // A claim is listed only with the dispatch record that can redeliver it.
+                if (replacedByTaskId && request.dispatch?.replacementTaskId !== replacedByTaskId) return [];
+                if ((replacedByTaskId ? request.dispatch!.claimedAt : request.requestedAt) > requestedBefore) return [];
+                return [{ taskId: String(row.task_id), request, latestState: text(row.latest_state), replacedByTaskId }];
             });
         },
     };

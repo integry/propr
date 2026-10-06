@@ -270,6 +270,7 @@ test('a replacement that cannot be queued is undone and the held-back failure is
     assert.equal(original.replaced_by_task_id, null);
     assert.equal(original.replacement_state, 'skipped');
     assert.equal((await database('tasks').count({ count: '*' }).first())?.count, 1, 'the replacement row is removed');
+    assert.equal(JSON.parse(String(original.replacement_request)).dispatch, undefined, 'the reverted claim leaves nothing to redeliver');
     assert.deepEqual(published.map(({ taskId, state }) => ({ taskId, state })), [{ taskId: 'task-1', state: 'failed' }]);
 });
 
@@ -289,6 +290,88 @@ test('a decision interrupted by a restart is completed by the recovery sweep', a
     assert.equal(later.enqueued[0].data.replacesTaskId, 'failed-task');
     assert.equal((await task(database, 'completed-task')).replacement_state, null);
     assert.deepEqual(await later.service.resumePending(), { resumed: 0, cleared: 0 });
+});
+
+test('a replacement claimed before a restart is redelivered once under its persisted identity', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1', { branch: '2739/claude-opus-5-5-replacement-runs' });
+    const claimedAt = new Date('2026-10-06T08:00:00.000Z');
+    const store = createTaskReplacementStore(database);
+    const crashing = createTaskReplacementService({
+        store: {
+            ...store,
+            async createReplacement(input) {
+                assert.equal(await store.createReplacement(input), true);
+                throw new Error('worker lost after the claim committed');
+            },
+        },
+        enqueue: async () => { assert.fail('the crashed worker never reaches the queue'); },
+        loadMaxProviderReplacements: async () => 2,
+        infraLostEnabled: () => true,
+        randomId: () => `replacement-correlation-${++ids}`,
+        now: () => claimedAt,
+    });
+    await crashing.prepare({ taskId: 'task-1', cause: 'infra_lost', error: 'orphaned' });
+    await markState(database, 'task-1', 'failed');
+    await assert.rejects(crashing.complete({ taskId: 'task-1', cause: 'infra_lost', error: 'orphaned' }), /worker lost/);
+    const claimed = await task(database, 'task-1');
+    const replacementTaskId = String(claimed.replaced_by_task_id);
+    const replacementRow = await task(database, replacementTaskId);
+    assert.equal(claimed.replacement_state, 'pending', 'the claim alone does not release the decision');
+
+    const early = harness(database, { now: new Date(claimedAt.getTime() + PENDING_REPLACEMENT_RECOVERY_MS - 1) });
+    assert.deepEqual(await early.service.resumePending(), { resumed: 0, cleared: 0 }, 'a dispatch still in flight is left alone');
+
+    let failDelivery = true;
+    const later = harness(database, {
+        now: new Date(claimedAt.getTime() + PENDING_REPLACEMENT_RECOVERY_MS + 1),
+        enqueue: async () => { if (failDelivery) throw new Error('Redis unavailable'); },
+    });
+    assert.deepEqual(await later.service.resumePending(), { resumed: 0, cleared: 0 });
+    assert.equal((await task(database, 'task-1')).replacement_state, 'pending', 'a failed redelivery stays recoverable');
+    assert.equal((await task(database, 'task-1')).replaced_by_task_id, replacementTaskId);
+
+    failDelivery = false;
+    assert.deepEqual(await later.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.equal(later.enqueued.length, 1);
+    assert.equal(later.enqueued[0].jobName, REPLACEMENT_JOB_NAME);
+    assert.equal(later.enqueued[0].jobId, replacementRow.job_id, 'the persisted job ID is reused');
+    assert.equal(later.enqueued[0].data.correlationId, replacementRow.correlation_id);
+    assert.equal(later.enqueued[0].data.replacesTaskId, 'task-1');
+    assert.equal(later.enqueued[0].data.replacementBranch, '2739/claude-opus-5-5-replacement-runs');
+    assert.equal((await task(database, 'task-1')).replacement_state, 'dispatched');
+    assert.equal((await database('tasks').count({ count: '*' }).first())?.count, 2, 'no second replacement is created');
+    assert.deepEqual((await events(database, 'task-1')).map(entry => [entry.event, entry.replacementTaskId]),
+        [['replacement.dispatched', replacementTaskId]]);
+    assert.deepEqual(later.published.map(({ taskId, state }) => ({ taskId, state })), [{ taskId: replacementTaskId, state: 'pending' }]);
+
+    assert.deepEqual(await later.service.resumePending(), { resumed: 0, cleared: 0 });
+    assert.equal(later.enqueued.length, 1, 'delivered exactly once');
+});
+
+test('a claimed replacement that already started is confirmed without queueing it again', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1');
+    const store = createTaskReplacementStore(database);
+    const claimedAt = new Date('2026-10-06T08:00:00.000Z');
+    const crashing = createTaskReplacementService({
+        store: { ...store, async createReplacement(input) { await store.createReplacement(input); throw new Error('crash'); } },
+        enqueue: async () => {},
+        loadMaxProviderReplacements: async () => 2,
+        infraLostEnabled: () => true,
+        randomId: () => `replacement-correlation-${++ids}`,
+        now: () => claimedAt,
+    });
+    await markState(database, 'task-1', 'failed');
+    await assert.rejects(crashing.complete({ taskId: 'task-1', cause: 'provider_transient' }), /crash/);
+    const replacementTaskId = String((await task(database, 'task-1')).replaced_by_task_id);
+    await markState(database, replacementTaskId, 'claude_execution');
+
+    const later = harness(database, { now: new Date(claimedAt.getTime() + PENDING_REPLACEMENT_RECOVERY_MS + 1) });
+    assert.deepEqual(await later.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.equal(later.enqueued.length, 0);
+    assert.equal((await task(database, 'task-1')).replacement_state, 'dispatched');
+    assert.deepEqual(later.published, [], 'a running replacement is not announced as pending again');
 });
 
 test('provider classification follows withRetry, excluding 429, usage limits, credentials and run timeouts', () => {
