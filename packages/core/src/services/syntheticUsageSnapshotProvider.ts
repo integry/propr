@@ -23,6 +23,15 @@ function nestedPercent(usage: Record<string, unknown>, names: string[]): number 
   return undefined;
 }
 
+function sessionResetsAt(usage: Record<string, unknown>, capturedAt: Date): Date | undefined {
+  const session = usage.session;
+  if (!session || typeof session !== 'object' || Array.isArray(session)) return undefined;
+  const seconds = (session as Record<string, unknown>).resetsInSeconds;
+  return typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0
+    ? new Date(capturedAt.getTime() + seconds * 1000)
+    : undefined;
+}
+
 /**
  * Provides fresh usage data only when Agent Tank names the requested direct alias
  * exactly. `getStatusForAlias` is what makes that name trustworthy in bundled
@@ -59,6 +68,7 @@ export class AliasSpecificAgentTankSnapshotProvider implements SyntheticUsageSna
       capturedAt,
       sessionPercent: nestedPercent(status.usage, ['session']),
       weeklyPercent: nestedPercent(status.usage, ['weekly', 'weeklyAll', 'week']),
+      sessionResetsAt: sessionResetsAt(status.usage, capturedAt),
     };
   }
 }

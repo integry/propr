@@ -549,3 +549,4 @@ export * from './services/taskPlanning/epicExecutionQueue.js';
 export * from './services/agents/agentDefinitionStore.js';
 export * from './services/agents/agentRunStore.js';
 export * from './services/agents/agentRunTrigger.js';
+export * from './services/agents/agentRunCostGate.js';

@@ -170,7 +170,7 @@ export interface CreateAgentRunInput {
   initialState?: AgentRunInitialState;
   /** Required when `initialState` is `deferred`. */
   deferredUntil?: number | null;
-  /** Recorded when `initialState` is `skipped`. */
+  /** Why the run was held; recorded when `initialState` is `skipped` or `deferred`. */
   skipReason?: string | null;
 }
 
@@ -209,7 +209,7 @@ export async function createAgentRun(
     report: null,
     report_truncated: false,
     action_summary: null,
-    skip_reason: state === 'skipped' ? input.skipReason ?? null : null,
+    skip_reason: state === 'skipped' || state === 'deferred' ? input.skipReason ?? null : null,
     failure_reason: null,
     approved_by: null,
     operator_note: null,

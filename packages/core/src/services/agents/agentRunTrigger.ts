@@ -77,6 +77,12 @@ export interface AgentRunGateContext {
   definition: StoredAgentDefinition;
   trigger: AgentRunTrigger;
   triggerSource: string | null;
+  /**
+   * The existing run when one is re-evaluated: a deferred run being retried,
+   * or an `auto` run about to start its acting step. Its `deferrals` count is
+   * what bounds repeated deferrals.
+   */
+  run?: StoredAgentRun | null;
 }
 
 /** Pre-run admission check (the cost gate); returning nothing proceeds. */
@@ -189,7 +195,8 @@ function syntheticAgentSupportsProprMcp(agent: SyntheticAgentConfig, modelName: 
   return selectable.length > 0 && selectable.every(direct => agentTypeSupportsProprMcp(direct.type));
 }
 
-async function loadConfiguredDefaultAgentAlias(): Promise<string | null> {
+/** The configured default agent alias (settings.default_agent_alias), or null. */
+export async function loadConfiguredDefaultAgentAlias(): Promise<string | null> {
   const alias = (await loadSettings() as Record<string, unknown>).default_agent_alias;
   return typeof alias === 'string' && alias.trim() ? alias.trim() : null;
 }
@@ -296,7 +303,7 @@ export async function triggerAgentRun(
   const { run, created } = decision.action === 'skip'
     ? await createAgentRun({ ...base, initialState: 'skipped', skipReason: decision.reason }, storeDeps)
     : decision.action === 'defer'
-      ? await createAgentRun({ ...base, initialState: 'deferred', deferredUntil: decision.until }, storeDeps)
+      ? await createAgentRun({ ...base, initialState: 'deferred', deferredUntil: decision.until, skipReason: decision.reason }, storeDeps)
       : await createAgentRun(base, storeDeps);
 
   if (decision.action !== 'proceed') {
