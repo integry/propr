@@ -4,6 +4,8 @@ title: Repository workflow file
 
 Version repository policy in the optional `.propr/workflow.yml`. ProPR reads it for each issue implementation and PR follow-up (including fixes), without restarting workers. `propr init` and `propr init repo` scaffold a commented example without overwriting existing files.
 
+To shape the titles and descriptions of the pull requests ProPR opens, use [`.propr/pr-template.md`](./pr-templates.md), which is read from the same base-branch commit.
+
 ```yaml
 # yaml-language-server: $schema=https://docs.propr.dev/schemas/repository-workflow.schema.json
 hooks:

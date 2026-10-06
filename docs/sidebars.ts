@@ -88,6 +88,7 @@ const sidebars: SidebarsConfig = {
         'features/repository-knowledge',
         'features/branch-config',
         'features/repository-workflow',
+        'features/pr-templates',
       ],
     },
     {

@@ -3,10 +3,11 @@ import { describeGitHubAttachmentCapacity, resolveGitHubAttachmentCapacity, type
  * Repository Management Commands
  *
  * CLI commands for managing monitored repositories using the ProPR backend.
- * Provides the `repo` command group with `list`, `add`, `remove`, `toggle`, `index`, and `status` subcommands.
+ * Provides the `repo` command group with `list`, `add`, `remove`, `toggle`, `index`, `status`, and `validate` subcommands.
  */
 
 import { Command } from "commander";
+import { createRepoValidateCommand } from "./repoValidate.js";
 import {
   getRepos,
   addRepo,
@@ -232,7 +233,9 @@ Examples:
   $ propr repo toggle myorg/myrepo --enable      # Enable monitoring
   $ propr repo index myorg/myrepo                # Trigger indexing
   $ propr repo status                            # View indexing status
+  $ propr repo validate                          # Check .propr/pr-template.md in this checkout
 `);
+  repo.addCommand(createRepoValidateCommand());
 
   // repo list
   repo
@@ -474,13 +477,15 @@ Example:
   // repo toggle
   repo
     .command("toggle <fullName>")
-    .description("Update monitoring, automatic CI follow-up, notifications, or visual previews for a repository")
+    .description("Update monitoring, automatic CI follow-up, notifications, GitHub PR template fallback, or visual previews for a repository")
     .option("--enable", "Enable monitoring for the repository")
     .option("--disable", "Disable monitoring for the repository")
     .option("--auto-ci-followup", "Enable automatic follow-up when CI fails")
     .option("--no-auto-ci-followup", "Disable automatic follow-up when CI fails")
     .option("--notifications", "Generate Inbox and push notifications for the repository")
     .option("--no-notifications", "Stop generating Inbox and push notifications for the repository")
+    .option("--github-pr-template", "Append the repository's GitHub pull request template when it has no .propr/pr-template.md (default)")
+    .option("--no-github-pr-template", "Never append the repository's GitHub pull request template to PR descriptions")
     .option("--visual-previews", "Enable visual previews")
     .option("--no-visual-previews", "Disable visual previews")
     .option("--github-attachment-plan <plan>", "GitHub attachment capacity: auto, free, paid (default: auto)")
@@ -491,7 +496,7 @@ Argument:
   fullName    Repository in owner/repo format
 
 Note:
-  Specify at least one monitoring, automatic CI follow-up, notification, or visual preview option.
+  Specify at least one monitoring, automatic CI follow-up, notification, GitHub PR template, or visual preview option.
 
 Examples:
   $ propr repo toggle myorg/myrepo --enable
@@ -499,12 +504,13 @@ Examples:
   $ propr repo toggle myorg/myrepo --auto-ci-followup
   $ propr repo toggle myorg/myrepo --no-auto-ci-followup
   $ propr repo toggle myorg/myrepo --no-notifications
+  $ propr repo toggle myorg/myrepo --no-github-pr-template
   $ propr repo toggle myorg/myrepo --visual-previews --preview-types image,video
 `)
     .action(
       async (
         fullName: string,
-        options: { enable?: boolean; disable?: boolean; autoCiFollowup?: boolean; notifications?: boolean; visualPreviews?: boolean; previewTypes?: string; previewInstructions?: string; githubAttachmentPlan?: string }
+        options: { enable?: boolean; disable?: boolean; autoCiFollowup?: boolean; notifications?: boolean; githubPrTemplate?: boolean; visualPreviews?: boolean; previewTypes?: string; previewInstructions?: string; githubAttachmentPlan?: string }
       ) => {
         try {
           if (options.enable && options.disable) {
@@ -514,9 +520,9 @@ Examples:
             process.exit(1);
           }
 
-          if (!options.enable && !options.disable && options.autoCiFollowup === undefined && options.notifications === undefined && options.visualPreviews === undefined && options.previewTypes === undefined && options.previewInstructions === undefined && options.githubAttachmentPlan === undefined) {
+          if (!options.enable && !options.disable && options.autoCiFollowup === undefined && options.notifications === undefined && options.githubPrTemplate === undefined && options.visualPreviews === undefined && options.previewTypes === undefined && options.previewInstructions === undefined && options.githubAttachmentPlan === undefined) {
             console.error(
-              "Error: Must specify a monitoring, automatic CI follow-up, notification, or visual preview option."
+              "Error: Must specify a monitoring, automatic CI follow-up, notification, GitHub PR template, or visual preview option."
             );
             console.log("");
             console.log("Usage:");
@@ -555,6 +561,7 @@ Examples:
               autoFollowupOnFailedCi: options.autoCiFollowup,
             }),
             ...(options.notifications !== undefined && { notificationsEnabled: options.notifications }),
+            ...(options.githubPrTemplate !== undefined && { githubPrTemplateFallback: options.githubPrTemplate }),
             ...(visualPreviewUpdate && { visualPreview: visualPreviewUpdate }),
           });
 
@@ -571,6 +578,9 @@ Examples:
             }
             if (options.notifications !== undefined) {
               console.log(`  Notifications: ${formatEnabled(options.notifications)}`);
+            }
+            if (options.githubPrTemplate !== undefined) {
+              console.log(`  GitHub PR template fallback: ${formatEnabled(options.githubPrTemplate)}`);
             }
             if (visualPreviewUpdate) {
               const previewState = options.visualPreviews === false

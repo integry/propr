@@ -42,6 +42,9 @@ export interface RepoToMonitor {
     nonBlockingChecks?: string[];
     notificationsEnabled?: boolean; // Defaults to true; undefined (legacy configurations) reads as enabled
     visualPreview?: VisualPreviewSettings; // Defaults to disabled for legacy configurations
+    // Without .propr/pr-template.md, append the repository's GitHub pull request
+    // template to ProPR's summary and run block. Defaults to true; undefined reads as enabled.
+    githubPrTemplateFallback?: boolean;
     alias?: string;          // Optional display name
     baseBranch?: string;     // Optional specific branch to monitor
     defaultBranch?: string;  // Optional repository default branch for demo metadata
@@ -216,6 +219,24 @@ export async function loadRepositoryVisualPreviewSettings(repository: string): P
     } catch (error) {
         logger.warn({ repository, error: (error as Error).message }, 'Failed to load visual-preview settings; treating previews as disabled');
         return { enabled: false, types: ['image'] };
+    }
+}
+
+/**
+ * The GitHub pull request template fallback is a repository-wide option: it is
+ * off only when an entry for the repository explicitly disables it.
+ */
+export function resolveRepositoryGitHubPrTemplateFallback(repos: readonly RepoToMonitor[], repository: string): boolean {
+    const normalizedRepository = repository.trim().toLowerCase();
+    return !repos.some(repo => repo.name.trim().toLowerCase() === normalizedRepository && repo.githubPrTemplateFallback === false);
+}
+
+export async function loadRepositoryGitHubPrTemplateFallback(repository: string): Promise<boolean> {
+    try {
+        return resolveRepositoryGitHubPrTemplateFallback(await loadMonitoredReposRaw(), repository);
+    } catch (error) {
+        logger.warn({ repository, error: (error as Error).message }, 'Failed to load the GitHub pull request template fallback setting; using the default');
+        return true;
     }
 }
 
