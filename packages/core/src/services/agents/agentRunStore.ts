@@ -217,14 +217,18 @@ export async function createAgentRun(
     finished_at: isTerminalAgentRunState(state) ? timestamp : null,
     updated_at: timestamp,
   };
-  await database(TABLE).insert(row).onConflict(['definition_id', 'idempotency_key']).ignore();
-  if (idempotencyKey === null) return { run: rowToAgentRun(row), created: true };
+  // RETURNING binds the receipt to this insert: a run transitioned by another
+  // process right after creation is still reported as it was created.
+  const [inserted] = await database(TABLE).insert(row).onConflict(['definition_id', 'idempotency_key']).ignore()
+    .returning('*') as AgentRunRow[];
+  if (inserted) return { run: rowToAgentRun(inserted), created: true };
+  if (idempotencyKey === null) throw new Error('createAgentRun: insert without an idempotency key was ignored');
 
   const stored = await database(TABLE)
     .where({ definition_id: input.definition.id, idempotency_key: idempotencyKey })
     .first<AgentRunRow | undefined>();
   if (!stored) throw new Error(`createAgentRun: run for idempotency key ${idempotencyKey} disappeared after insert`);
-  return { run: rowToAgentRun(stored), created: stored.id === row.id };
+  return { run: rowToAgentRun(stored), created: false };
 }
 
 export interface AgentRunTransitionPatch {
@@ -289,9 +293,11 @@ export async function transitionAgentRun(
   if (to === 'deferred') changes.deferrals = database.raw('deferrals + 1');
   if (isTerminalAgentRunState(to)) changes.finished_at = timestamp;
 
-  const updated = await database(TABLE).where({ id }).whereIn('state', [...from]).update(changes);
-  if (updated === 0) return null;
-  return (await getAgentRunById(id, { database })) ?? null;
+  // RETURNING yields the row this update produced; a separate read could see a
+  // competing transition that landed after it.
+  const [updated] = await database(TABLE).where({ id }).whereIn('state', [...from]).update(changes)
+    .returning('*') as AgentRunRow[];
+  return updated ? rowToAgentRun(updated) : null;
 }
 
 /** Owner-scoped read; another owner's run is indistinguishable from a missing one. */

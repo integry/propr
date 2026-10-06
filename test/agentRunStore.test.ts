@@ -138,6 +138,64 @@ describe('agentRunStore', () => {
     assert.equal(await transitionAgentRun('missing', ['running'], 'failed', {}, deps()), null);
   });
 
+  /**
+   * Wraps the database so the first `method` (update/insert) on agent_runs
+   * resolves only after `compete` has run against the real database, i.e. a
+   * competing writer lands between the write completing and its result being
+   * delivered.
+   */
+  function competeAfter(method: 'update' | 'insert', compete: () => Promise<unknown>): Knex {
+    let armed = true;
+    return new Proxy(database, {
+      apply(target, thisArg, args: unknown[]) {
+        const builder = Reflect.apply(target, thisArg, args) as Knex.QueryBuilder;
+        if (args[0] !== 'agent_runs') return builder;
+        const original = builder[method].bind(builder) as (...a: unknown[]) => Knex.QueryBuilder;
+        (builder as unknown as Record<string, unknown>)[method] = (...methodArgs: unknown[]) => {
+          const query = original(...methodArgs);
+          if (!armed) return query;
+          armed = false;
+          const settle = query.then.bind(query);
+          (query as unknown as Record<string, unknown>).then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+            settle(async (result: unknown) => { await compete(); return result; }).then(resolve, reject);
+          return query;
+        };
+        return builder;
+      },
+    });
+  }
+
+  test('a transition returns the row it wrote even if a competing transition lands before its result', async () => {
+    const { run } = await createAgentRun({ definition, trigger: 'manual' }, deps());
+    const racing = competeAfter('update', async () => {
+      clock += 5000;
+      const cancelled = await transitionAgentRun(run.id, ['running'], 'cancelled', {}, deps());
+      assert.equal(cancelled?.state, 'cancelled');
+    });
+    const running = await transitionAgentRun(run.id, ['queued'], 'running', { reportTaskId: 'task-1' }, { database: racing, now: () => clock });
+    assert.equal(running?.state, 'running');
+    assert.equal(running?.startedAt, NOW);
+    assert.equal(running?.finishedAt, null);
+    assert.equal(running?.reportTaskId, 'task-1');
+    assert.equal((await getAgentRunById(run.id, deps()))?.state, 'cancelled');
+  });
+
+  test('a created run is returned as inserted even if a competing transition lands before its result', async () => {
+    let createdId: string | undefined;
+    const racing = competeAfter('insert', async () => {
+      const [row] = await database('agent_runs').select('id');
+      createdId = row.id;
+      clock += 5000;
+      assert.ok(await transitionAgentRun(row.id, ['queued'], 'cancelled', {}, deps()));
+    });
+    const created = await createAgentRun({ definition, trigger: 'schedule', idempotencyKey: 'slot-1' }, { database: racing, now: () => clock });
+    assert.equal(created.created, true);
+    assert.equal(created.run.id, createdId);
+    assert.equal(created.run.state, 'queued');
+    assert.equal(created.run.finishedAt, null);
+    assert.equal((await getAgentRunById(created.run.id, deps()))?.state, 'cancelled');
+  });
+
   test('rejects illegal transition pairs as programming errors', async () => {
     const { run } = await createAgentRun({ definition, trigger: 'manual' }, deps());
     await assert.rejects(transitionAgentRun(run.id, ['cancelled'], 'report_ready', {}, deps()), /illegal agent run transition cancelled → report_ready/);
