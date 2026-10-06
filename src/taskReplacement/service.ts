@@ -55,13 +55,18 @@ export type ReplacementEvaluation =
         task: ReplaceableTask;
         lineage: LineageAttempt[];
         maxReplacements: number;
+        /** The pending decision `prepare` recorded, so the skip stays owed until it is recorded. */
+        request?: ReplacementRequestRecord;
     }
     /** Nothing to decide: unknown task, or the attempt already has its replacement. */
     | { eligible: false; reason: null };
 
 export type ReplacementOutcome =
     | { action: 'dispatched'; replacementTaskId: string; attemptNumber: number; lineage: LineageAttempt[] }
-    /** Claimed, but the queue did not confirm delivery; recovery redelivers the same job ID. */
+    /**
+     * Claimed, but the queue did not confirm delivery or the replacement was not announced;
+     * recovery redelivers the same job ID and repeats the announcement.
+     */
     | { action: 'delivery_pending'; replacementTaskId: string; attemptNumber: number }
     | { action: 'skipped'; reason: ReplacementSkipReason; exhausted: boolean; lineage: LineageAttempt[] }
     | { action: 'none' };
@@ -81,6 +86,7 @@ export interface TaskReplacementDependencies {
     loadMaxProviderReplacements(): Promise<number>;
     infraLostEnabled(): boolean;
     readIssueState?: IssueStateReader;
+    /** Resolves whether the update was published; `false` leaves the obligation owing it in place. */
     publishTaskUpdate?(payload: {
         taskId: string;
         state: string;
@@ -88,7 +94,7 @@ export interface TaskReplacementDependencies {
         issueNumber?: number;
         timestamp?: string;
         metadata?: Record<string, unknown>;
-    }): Promise<unknown>;
+    }): Promise<boolean>;
     postIssueComment?(repoOwner: string, repoName: string, issueNumber: number, body: string): Promise<void>;
     /** Whether a comment containing `marker` is on the issue. */
     findIssueComment?(repoOwner: string, repoName: string, issueNumber: number, marker: string): Promise<boolean>;
@@ -261,14 +267,21 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
             commentPending = !await deliverExhaustedComment(deps, task, notice, { count: lineage.length, formatted: formatAttempts(lineage) });
         }
         // A withdrawn decision awaited a failure that may never have been written.
-        if (notice.publish && (reason || task.latestState === 'failed')) await deps.publishTaskUpdate?.({
-            taskId: task.taskId,
-            state: 'failed',
-            repository: task.repository,
-            ...(task.issueNumber ? { issueNumber: task.issueNumber } : {}),
-            timestamp: now().toISOString(),
-            ...(reason ? { metadata: { reason: `No replacement attempt: ${describeReplacementSkip(reason)}`, replacementSkipped: reason } } : {}),
-        });
+        if (notice.publish && (reason || task.latestState === 'failed') && deps.publishTaskUpdate) {
+            const published = await deps.publishTaskUpdate({
+                taskId: task.taskId,
+                state: 'failed',
+                repository: task.repository,
+                ...(task.issueNumber ? { issueNumber: task.issueNumber } : {}),
+                timestamp: now().toISOString(),
+                ...(reason ? { metadata: { reason: `No replacement attempt: ${describeReplacementSkip(reason)}`, replacementSkipped: reason } } : {}),
+            });
+            if (published !== true) {
+                // The alert is still owed (and so is the comment, if pending); recovery publishes it.
+                deps.logger?.warn({ taskId: task.taskId, noticeId: notice.id }, 'Failure alert was not published; recovery will retry it');
+                return;
+            }
+        }
         if (commentPending) {
             // Recovery retries the comment; the alert is already out.
             if (notice.publish) await deps.store.updateFailureNotice(task.taskId, notice.id, { publish: false });
@@ -345,6 +358,12 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
             ...(failure ? { failure } : {}),
         });
         if (!claimed) return { action: 'none' };
+        const dispatchRecord = {
+            replacementTaskId, jobId, jobData, attemptNumber, maxReplacements: evaluation.maxReplacements,
+            ...(remainingBudgetUsd === undefined ? {} : { remainingBudgetUsd }),
+            ...(failure ? { failure } : {}),
+            claimedAt: timestamp,
+        };
         try {
             await deps.enqueue(REPLACEMENT_JOB_NAME, jobData, jobId);
         } catch (error) {
@@ -354,12 +373,9 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
                 'Queue delivery of replacement attempt is unconfirmed; recovery will redeliver it');
             return { action: 'delivery_pending', replacementTaskId, attemptNumber };
         }
-        await delivery.confirmDispatched(task, request.cause, {
-            replacementTaskId, jobId, jobData, attemptNumber, maxReplacements: evaluation.maxReplacements,
-            ...(remainingBudgetUsd === undefined ? {} : { remainingBudgetUsd }),
-            ...(failure ? { failure } : {}),
-            claimedAt: timestamp,
-        }, { timestamp, announceState: 'pending' });
+        if (!await delivery.confirmDispatched(task, request.cause, dispatchRecord, { timestamp, announceState: 'pending' })) {
+            return { action: 'delivery_pending', replacementTaskId, attemptNumber };
+        }
         const lineage = [...evaluation.lineage, {
             taskId: replacementTaskId, attemptNumber, replacementCause: request.cause, state: 'pending', costUsd: 0,
         }];
@@ -402,7 +418,9 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
     return {
         async prepare(request) {
             const evaluation = await evaluate(request);
-            if (evaluation.eligible) {
+            // An ineligible decision is persisted too: its skip, timeline events and final
+            // comment stay owed across a restart between the failure and `complete`.
+            if (evaluation.eligible || evaluation.reason !== null) {
                 const record: ReplacementRequestRecord = {
                     cause: request.cause,
                     ...(request.terminalReason ? { terminalReason: request.terminalReason } : {}),

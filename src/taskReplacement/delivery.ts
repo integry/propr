@@ -15,7 +15,7 @@ export interface ReplacementDelivery {
         cause: ReplacementCause,
         dispatch: ReplacementDispatchRecord,
         options: { timestamp: string; announceState: string | null },
-    ): Promise<void>;
+    ): Promise<boolean>;
     /** Redelivers (or resolves) a claim an interrupted dispatch left pending. */
     resumeClaimed(originalTaskId: string, cause: ReplacementCause, dispatch: ReplacementDispatchRecord): Promise<boolean>;
     awaitingDelivery(taskId: string): Promise<boolean>;
@@ -43,13 +43,14 @@ export function createReplacementDelivery(
      * Records a replacement whose queue delivery is confirmed, announces it, and only
      * then releases the original's pending decision: until then recovery repeats these
      * steps, so the timeline event is recorded once and the announcement is idempotent.
+     * Returns false, keeping the decision pending, when the announcement was not published.
      */
     async function confirmDispatched(
         task: ReplaceableTask,
         cause: ReplacementCause,
         dispatch: ReplacementDispatchRecord,
         { timestamp, announceState }: { timestamp: string; announceState: string | null },
-    ): Promise<void> {
+    ): Promise<boolean> {
         const { replacementTaskId, attemptNumber, remainingBudgetUsd, failure } = dispatch;
         await deps.store.appendEvent({
             taskId: task.taskId, event: 'replacement.dispatched', reason: `Replacement attempt ${attemptNumber} dispatched`, timestamp,
@@ -65,16 +66,21 @@ export function createReplacementDelivery(
             },
         });
         // The "replacement started" card supersedes the original's held-back failure.
-        if (announceState) await deps.publishTaskUpdate?.({
+        const announced = !announceState || !deps.publishTaskUpdate || await deps.publishTaskUpdate({
             taskId: replacementTaskId,
             state: announceState,
             repository: task.repository,
             ...(task.issueNumber ? { issueNumber: task.issueNumber } : {}),
             timestamp,
             metadata: { replacesTaskId: task.taskId, attemptNumber, replacementCause: cause, replacementStarted: true },
-        });
+        }) === true;
+        if (!announced) {
+            deps.logger?.warn({ taskId: task.taskId, replacementTaskId }, 'Replacement attempt was not announced; recovery will retry it');
+            return false;
+        }
         await deps.store.setState(task.taskId, 'dispatched');
         deps.logger?.info({ taskId: task.taskId, replacementTaskId, attemptNumber, cause }, 'Dispatched task replacement attempt');
+        return true;
     }
 
     /**
@@ -117,8 +123,7 @@ export function createReplacementDelivery(
         }
         // A replacement that progressed past its queued state was delivered; announce it unless it already ended.
         const announceState = state && !TERMINAL_STATES.has(state) ? state : null;
-        await confirmDispatched(task, cause, dispatch, { timestamp: now().toISOString(), announceState });
-        return true;
+        return confirmDispatched(task, cause, dispatch, { timestamp: now().toISOString(), announceState });
     }
 
     return {

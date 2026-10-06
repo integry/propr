@@ -279,7 +279,7 @@ function createReplacement(eligible: boolean, awaitingDelivery = false) {
                 calls.push(`prepare:${request.taskId}:${request.cause}`);
                 return eligible
                     ? { eligible: true, request: { cause: request.cause, requestedAt: 'prepared', finalizedBy: request.finalizedBy } }
-                    : { eligible: false, reason: 'cap_reached' };
+                    : { eligible: false, reason: 'cap_reached', request: { cause: request.cause, requestedAt: 'prepared', finalizedBy: request.finalizedBy } };
             }),
             withdraw: mock.fn(async (taskId: string, request: { finalizedBy?: string }) => {
                 calls.push(`withdraw:${taskId}:${request.finalizedBy}`);
@@ -354,6 +354,25 @@ test('the replacement decision is withdrawn when another writer finalized the or
     assert.deepEqual(replacement.calls, ['awaitingDelivery:orphan-raced', 'prepare:orphan-raced:infra_lost', 'withdraw:orphan-raced:orphan_reconciliation']);
     assert.equal(replacement.handler.prepare.mock.calls[0].arguments[0].finalizedBy, 'orphan_reconciliation',
         'the decision is bound to the orphan failure');
+});
+
+test('an ineligible decision is withdrawn too when another writer finalized the orphan first', async () => {
+    const { store } = orphanedTwice('orphan-final-raced');
+    (store as { finalizeIfCurrent: unknown }).finalizeIfCurrent = mock.fn(async () => ({ stateChanged: false, eventPublished: false }));
+    const replacement = createReplacement(false);
+    await reconcileStaleTaskStates({
+        queue: { getJob: async () => null },
+        stateManager: createStateManager(),
+        store,
+        inspectContainer: async () => 'not_found',
+        now: NOW,
+        orphanGraceMs: 60_000,
+        replacement: replacement.handler as never,
+    });
+
+    assert.deepEqual(replacement.calls, [
+        'awaitingDelivery:orphan-final-raced', 'prepare:orphan-final-raced:infra_lost', 'withdraw:orphan-final-raced:orphan_reconciliation',
+    ]);
 });
 
 test('a failed replacement dispatch is reported without undoing the orphan failure', async () => {

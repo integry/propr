@@ -24,9 +24,10 @@ export interface OrphanFinalization {
 
 /**
  * Fails an orphaned task and dispatches its single infrastructure-lost
- * replacement. The decision is made (and durably marked pending) before the
- * failure is published, so the Inbox holds back the failure alert; a decision
- * interrupted after the failure is completed by the replacement recovery sweep.
+ * replacement. The decision is made (and durably marked pending, even when no
+ * replacement is possible) before the failure is published, so the Inbox holds
+ * back the failure alert; a decision interrupted after the failure is completed
+ * by the replacement recovery sweep, which records the skip and its notices.
  *
  * A replacement whose queue delivery is unconfirmed may never have reached the
  * queue: it is left to replacement recovery, which owns its delivery obligation.
@@ -51,8 +52,8 @@ export async function finalizeOrphan(input: OrphanFinalization): Promise<void> {
     const transition = failedTaskTransition(ORPHANED_TASK_MESSAGE, ORPHAN_FINALIZER);
     if (plan?.eligible) transition.metadata.replacement = 'pending';
     const finalized = await input.finalize(transition);
-    // Another writer's failure pre-empted this one: withdraw its decision (recovery does if this fails).
-    const pending = !finalized && plan?.eligible ? plan.request : undefined;
+    // Another writer's failure pre-empted this one: withdraw its decision, eligible or not (recovery does if this fails).
+    const pending = !finalized && plan && (plan.eligible || plan.reason !== null) ? plan.request : undefined;
     if (!replacement || (!finalized && !pending)) return;
     try {
         if (pending) {

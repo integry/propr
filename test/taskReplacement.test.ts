@@ -560,7 +560,7 @@ test('replacement configuration resolves the saved setting, then the environment
 });
 
 /** Captures the original's replacement state at the moment each failure alert is published. */
-function projectingHarness(database: Knex, options: { now: Date; failPublish?: () => boolean }) {
+function projectingHarness(database: Knex, options: { now: Date; failPublish?: () => boolean; unpublished?: () => boolean }) {
     const seen: Array<{ taskId: string; replacementState: unknown; notice: unknown }> = [];
     const comments: string[] = [];
     const service = createTaskReplacementService({
@@ -578,7 +578,7 @@ function projectingHarness(database: Knex, options: { now: Date; failPublish?: (
                 notice: JSON.parse(String(row.replacement_request ?? '{}')).failureNotice,
             });
             if (options.failPublish?.()) throw new Error('worker lost while publishing the failure');
-            return true;
+            return !options.unpublished?.();
         },
         postIssueComment: async (_owner, _repo, _number, body) => { comments.push(body); },
         randomId: () => `replacement-correlation-${++ids}`,
@@ -691,7 +691,7 @@ async function seedExhaustingLineage(database: Knex): Promise<void> {
 
 /** A GitHub issue whose comment requests can fail before or after the comment is created. */
 function commentingHarness(database: Knex, issue: string[], options: {
-    now: Date; post?: 'reject' | 'lose_response'; crashAfterExhaustedEvent?: boolean;
+    now: Date; post?: 'reject' | 'lose_response'; crashAfterExhaustedEvent?: boolean; unpublished?: boolean;
 }) {
     const published: string[] = [];
     let posts = 0;
@@ -709,7 +709,11 @@ function commentingHarness(database: Knex, issue: string[], options: {
         loadMaxProviderReplacements: async () => 2,
         infraLostEnabled: () => true,
         readIssueState: async () => ({ state: 'open' }),
-        publishTaskUpdate: async payload => { if (payload.state === 'failed') published.push(payload.taskId); return true; },
+        async publishTaskUpdate(payload) {
+            if (options.unpublished) return false;
+            if (payload.state === 'failed') published.push(payload.taskId);
+            return true;
+        },
         async postIssueComment(_owner, _repo, _number, body) {
             posts++;
             if (options.post === 'reject') throw new Error('GitHub 502');
@@ -797,4 +801,140 @@ test('recovery gives up on a final comment GitHub keeps rejecting', async () => 
     await recovery.service.resumePending();
     assert.equal(await failureNotice(database, 'task-1'), undefined, 'a permanently rejected comment does not block recovery forever');
     assert.equal(recovery.posts(), MAX_EXHAUSTED_COMMENT_ATTEMPTS - 1);
+});
+
+/** Links task-1 to a lost task-0, so its own loss exhausts the infra-lost allowance. */
+async function linkLostPredecessor(database: Knex): Promise<void> {
+    await database('tasks').insert({
+        task_id: 'task-0', repository: 'integry/propr', issue_number: 2739, task_type: 'issue', replaced_by_task_id: 'task-1',
+    });
+    await database('tasks').where({ task_id: 'task-1' }).update({ replaces_task_id: 'task-0', lineage_root_task_id: 'task-0', attempt_number: 2, replacement_cause: 'infra_lost' });
+}
+
+test('an exhausted orphan decision interrupted between the failure and completion is finished by recovery', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1');
+    await linkLostPredecessor(database);
+    const issue: string[] = [];
+    const live = commentingHarness(database, issue, { now: decidedAt });
+    const plan = await live.service.prepare({ taskId: 'task-1', cause: 'infra_lost', finalizedBy: 'orphan_reconciliation' });
+    assert.equal(!plan.eligible && plan.reason, 'cap_reached');
+    assert.equal((await task(database, 'task-1')).replacement_state, 'pending', 'the ineligible decision is persisted before the failure');
+    // The orphan failure is written; the worker stops before `complete`.
+    await markFinalizedBy(database, 'task-1', 'orphan_reconciliation');
+
+    const recovery = commentingHarness(database, issue, { now: recoveredAt });
+    assert.deepEqual(await recovery.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.equal((await task(database, 'task-1')).replacement_state, 'exhausted');
+    assert.deepEqual((await events(database, 'task-1')).map(entry => [entry.event, entry.reason]),
+        [['replacement.skipped', 'cap_reached'], ['replacement.exhausted', 'cap_reached']]);
+    assert.equal(issue.length, 1, 'the final comment linking the attempts is posted');
+    assert.match(issue[0], /\[task-0\][\s\S]*\[task-1\]/);
+    assert.deepEqual(recovery.published, ['task-1'], 'the held-back failure alert is published');
+    assert.equal(await failureNotice(database, 'task-1'), undefined);
+    assert.deepEqual(await recovery.service.resumePending(), { resumed: 0, cleared: 0 });
+});
+
+test('an exhausted budget decision interrupted before completion keeps its skip recoverable', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1', { job: { maxCostUsd: 1 } });
+    await recordLineageCostCap(database, 'task-1', 1);
+    await database('llm_executions').insert({ task_id: 'task-1', cost_usd: 2 });
+    const live = projectingHarness(database, { now: decidedAt });
+    const plan = await live.service.prepare({ taskId: 'task-1', cause: 'provider_transient' });
+    assert.equal(!plan.eligible && plan.reason, 'budget_exhausted');
+    await markState(database, 'task-1', 'failed');
+
+    const recovery = projectingHarness(database, { now: recoveredAt });
+    assert.deepEqual(await recovery.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.deepEqual((await events(database, 'task-1')).map(entry => [entry.event, entry.reason]),
+        [['replacement.skipped', 'budget_exhausted'], ['replacement.exhausted', 'budget_exhausted']]);
+    assert.deepEqual(recovery.seen.map(({ taskId, replacementState }) => [taskId, replacementState]), [['task-1', 'exhausted']]);
+});
+
+test('an ineligible decision pre-empted by another writer\'s failure is withdrawn without a skip', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1');
+    await linkLostPredecessor(database);
+    const live = projectingHarness(database, { now: decidedAt });
+    const plan = await live.service.prepare({ taskId: 'task-1', cause: 'infra_lost', finalizedBy: 'orphan_reconciliation' });
+    assert.ok(!plan.eligible && plan.reason !== null && plan.request);
+    await markState(database, 'task-1', 'failed');
+    assert.equal(await live.service.withdraw('task-1', plan.request), true);
+    assert.equal((await task(database, 'task-1')).replacement_state, null);
+    assert.deepEqual(await events(database, 'task-1'), []);
+    assert.deepEqual(live.seen.map(({ taskId, replacementState }) => [taskId, replacementState]), [['task-1', null]]);
+});
+
+test('a replacement announcement the publisher reports undelivered keeps the decision pending until recovery announces it', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1', { state: 'failed' });
+    const claimedAt = new Date('2026-10-06T08:00:00.000Z');
+    const enqueued: string[] = [];
+    const unpublished = createTaskReplacementService({
+        store: createTaskReplacementStore(database),
+        enqueue: async (_name, _data, jobId) => { enqueued.push(jobId); },
+        loadMaxProviderReplacements: async () => 2,
+        infraLostEnabled: () => true,
+        randomId: () => `replacement-correlation-${++ids}`,
+        now: () => claimedAt,
+        publishTaskUpdate: async () => false,
+    });
+    const outcome = await unpublished.complete({ taskId: 'task-1', cause: 'provider_transient' });
+    assert.equal(outcome.action, 'delivery_pending');
+    const replacementTaskId = String((await task(database, 'task-1')).replaced_by_task_id);
+    assert.equal((await task(database, 'task-1')).replacement_state, 'pending', 'an unpublished announcement does not release the decision');
+
+    const stillDown = createTaskReplacementService({
+        store: createTaskReplacementStore(database),
+        enqueue: async () => {},
+        loadMaxProviderReplacements: async () => 2,
+        infraLostEnabled: () => true,
+        now: () => new Date(claimedAt.getTime() + PENDING_REPLACEMENT_RECOVERY_MS + 1),
+        publishTaskUpdate: async () => false,
+    });
+    assert.deepEqual(await stillDown.resumePending(), { resumed: 0, cleared: 0 });
+    assert.equal((await task(database, 'task-1')).replacement_state, 'pending');
+
+    const later = harness(database, { now: new Date(claimedAt.getTime() + PENDING_REPLACEMENT_RECOVERY_MS + 1) });
+    assert.deepEqual(await later.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.deepEqual(later.published.map(({ taskId, state, metadata }) => [taskId, state, metadata?.replacesTaskId]),
+        [[replacementTaskId, 'pending', 'task-1']]);
+    assert.equal((await task(database, 'task-1')).replacement_state, 'dispatched');
+    assert.deepEqual((await events(database, 'task-1')).map(entry => entry.event), ['replacement.dispatched'], 'the timeline event is recorded once');
+});
+
+test('a failure alert the publisher reports undelivered keeps its obligation until recovery publishes it', async () => {
+    const database = await createDatabase();
+    await seedTask(database, 'task-1');
+    const live = projectingHarness(database, { now: decidedAt, unpublished: () => true });
+    await live.service.prepare({ taskId: 'task-1', cause: 'provider_transient' });
+    await database('tasks').where({ task_id: 'task-1' }).update({ replay_job_data: null });
+    await markState(database, 'task-1', 'failed');
+    await live.service.complete({ taskId: 'task-1', cause: 'provider_transient' });
+    assert.equal(live.seen.length, 1);
+    assert.equal((await failureNotice(database, 'task-1'))?.publish, true, 'the alert is still owed');
+
+    const recovery = projectingHarness(database, { now: recoveredAt });
+    assert.deepEqual(await recovery.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.deepEqual(recovery.seen.map(({ taskId, replacementState }) => [taskId, replacementState]), [['task-1', 'skipped']]);
+    assert.equal(await failureNotice(database, 'task-1'), undefined);
+    assert.deepEqual((await events(database, 'task-1')).map(entry => entry.event), ['replacement.skipped'], 'the timeline event is recorded once');
+});
+
+test('an undelivered failure alert is not dropped while the final comment is pending', async () => {
+    const database = await createDatabase();
+    await seedExhaustingLineage(database);
+    const issue: string[] = [];
+    const live = commentingHarness(database, issue, { now: decidedAt, post: 'reject', unpublished: true });
+    await markState(database, 'task-1', 'failed');
+    await live.service.complete({ taskId: 'task-1', cause: 'infra_lost' });
+    const notice = await failureNotice(database, 'task-1');
+    assert.deepEqual([notice?.commentAttempts, notice?.publish], [1, true], 'both the comment and the alert are still owed');
+
+    const recovery = commentingHarness(database, issue, { now: recoveredAt });
+    await recovery.service.resumePending();
+    assert.equal(issue.length, 1);
+    assert.deepEqual(recovery.published, ['task-1']);
+    assert.equal(await failureNotice(database, 'task-1'), undefined);
 });
