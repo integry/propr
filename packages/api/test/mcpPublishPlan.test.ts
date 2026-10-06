@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PUBLICATION_LEASE_MS, PUBLICATION_TAKEOVER_GRACE_MS, publicationLeaseLapsed, publicationOwner, publicationOwnerStopped } from '../mcp/planPublication.js';
@@ -784,10 +784,13 @@ for (const resume of [false, true]) {
       }) });
       await db('plan_issues').insert({ draft_id: id, repository, issue_number: 301 });
     }
-    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
-      import knex from 'knex';
-      import { createToolCatalog } from './packages/api/mcp/tools.ts';
-      import { McpOperations } from './packages/api/mcp/operations.ts';
+    // Run the owner from a file: an --input-type flag would be inherited by pino's
+    // transport worker, which Node then refuses to start, killing the child.
+    const script = path.join(root, 'owner.mjs');
+    await writeFile(script, `
+      import knex from ${JSON.stringify(import.meta.resolve('knex'))};
+      import { createToolCatalog } from ${JSON.stringify(new URL('../mcp/tools.ts', import.meta.url).href)};
+      import { McpOperations } from ${JSON.stringify(new URL('../mcp/operations.ts', import.meta.url).href)};
       const db = knex({ client: 'better-sqlite3', connection: { filename: process.env.PUBLICATION_DB }, useNullAsDefault: true });
       const draft = await db('task_drafts').first();
       const principal = { user: { id: '123' }, grant: { id: 'grant-1' }, github: { request: async (route, args) => {
@@ -803,10 +806,14 @@ for (const resume of [false, true]) {
         resume: process.env.PUBLICATION_RESUME === 'true', idempotencyKey: 'dead-process-attempt' });
       await new McpOperations(db).run(principal, { tool: tool.name, args, repository: 'acme/repo' },
         operationId => tool.run({ principal, operationId, args }));
-    `], { cwd: fileURLToPath(new URL('../../../', import.meta.url)),
+    `);
+    const child = spawn(process.execPath, ['--import', 'tsx', script], { cwd: fileURLToPath(new URL('../../../', import.meta.url)),
       env: { ...process.env, PUBLICATION_DB: filename, PUBLICATION_RESUME: String(resume) }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
     t.after(() => { child.kill('SIGKILL'); });
-    const [remote] = await once(child, 'message');
+    const remote = await new Promise((resolve, reject) => {
+      child.once('message', resolve);
+      child.once('exit', (code, signal) => reject(new Error(`publication owner exited early (code ${code}, signal ${signal})`)));
+    });
     const active = await db('task_drafts').where({ draft_id: id }).first();
     const marker = JSON.parse(active.context_config).publication;
     assert.equal(marker.owner.pid, child.pid);

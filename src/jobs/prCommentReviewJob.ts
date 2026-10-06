@@ -1,7 +1,7 @@
 import { formatTaskTerminalReason } from '@propr/shared';
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { AgentRegistry, getActiveRunCostGuard, getAuthenticatedOctokit, loadPrReviewModel, RepositoryWorkflowPolicyError, resolveLlmLabel, retryConfigs, TaskStates, withRetry } from '@propr/core';
+import { AgentRegistry, getActiveRunCostGuard, getAuthenticatedOctokit, getModelName, loadPrReviewModel, RepositoryWorkflowPolicyError, resolveLlmLabel, retryConfigs, TaskStates, withRetry } from '@propr/core';
 import { prepareRepositoryWorkflow } from './repositoryWorkflow.js';
 import { applyWorkflowCostCap } from './runCostCap.js';
 import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
@@ -163,7 +163,7 @@ async function updateReviewCompletionComment(
     const failCount = reviewResults.filter(r => !r.analysisResult.success).length;
 
     try {
-        const reviewLinks = reviewResults.filter(r => r.commentUrl).map(r => `- [${r.assignment.label}](${r.commentUrl})`).join('\n');
+        const reviewLinks = reviewResults.filter(r => r.commentUrl).map(r => `- [${getModelName(r.assignment.model)}](${r.commentUrl})`).join('\n');
         const statusEmoji = failCount === 0 ? '✅' : '⚠️';
         const statusText = failCount === 0
             ? `Posted ${successCount} review${successCount > 1 ? 's' : ''}`
@@ -317,7 +317,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const commentIdsSuffix = realComments.length > 0
         ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id)).join(', ')}_`
         : '';
-    const modelList = assignments.map(a => `\`${a.label}\``).join(', ');
+    const modelList = assignments.map(a => `\`${getModelName(a.model)}\``).join(', ');
     const startedEvidence = buildWorkEvidenceMarker('started', realComments.map(comment => comment.id));
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${startedEvidence ? `\n${startedEvidence}` : ''}` });
 
