@@ -88,6 +88,12 @@
           "minimum": 1,
           "maximum": 9007199254740991,
           "description": "Repository-wide execution cap, bounded by instance worker_concurrency."
+        },
+        "max_cost_usd": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "Per-run spend cap in USD. A run whose estimated cost reaches it is stopped and its partial work published. 0 means no cap from this file; a per-task maxCostUsd override takes precedence, and the instance default_max_cost_usd applies when unset. A malformed value is ignored with a warning."
         }
       }
     },

@@ -25,6 +25,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and auto-merge is disabled with a comment if the head now violates the policy.
   A skipped Epic queue head shows "Waiting for human merge" and resumes once a
   person merges the PR.
+- **Per-run spend caps**: a run whose estimated cost reaches its cap is now
+  stopped while it executes, and its partial work is published like a
+  timed-out run's. The cap comes from a per-task `maxCostUsd` (task
+  submissions, MCP `create_task`, `propr issue implement --max-cost`), then
+  `limits.max_cost_usd` in `.propr/workflow.yml`, then the new instance setting
+  `default_max_cost_usd` (Settings, `propr setting update`, MCP
+  `update_execution_settings`; empty or 0 = no cap). It covers implementations,
+  PR follow-ups, `/fix`, ultrafix cycles and reviews. A malformed or negative
+  value is ignored with a warning instead of capping runs at $0. Retries share
+  the task's budget. A capped run ends with the new terminal reason
+  `cost_cap_exceeded`, records a `budget.exceeded` timeline event, sends an
+  Inbox notification and comments on the issue or PR. Task details, the task
+  history API and `propr task get --json` show the cap, the spend and the
+  percentage used. `LLM_COST_THRESHOLD_USD` still only raises high-cost alerts.
+  The unused `AgentTankConfig` type was removed from `@propr/shared`.
 - **Pull request templates**: an optional `.propr/pr-template.md`, read from
   the base-branch commit like `.propr/workflow.yml`, shapes the title and
   description of the pull requests ProPR opens. Its sections are `title`,

@@ -49,6 +49,11 @@ export interface ImplementIssueOptions {
    * Whether to auto-merge individual PRs into the Epic PR.
    */
   autoMerge?: boolean;
+
+  /**
+   * Per-task spend cap in USD. Overrides `.propr/workflow.yml` and the instance default.
+   */
+  max_cost_usd?: number;
 }
 
 /**
@@ -256,6 +261,27 @@ export interface TaskStatusResponse {
    * Information about the task.
    */
   taskInfo: TaskInfo | null;
+
+  /**
+   * Spend against the run's spend cap, when the task has a cap or recorded spend.
+   */
+  budget?: TaskBudget;
+}
+
+/**
+ * A task's estimated spend against its run spend cap.
+ */
+export interface TaskBudget {
+  /** Estimated USD spent by the task (and earlier attempts it continues). */
+  spentUsd: number;
+  /** The run's spend cap in USD; null when the run is uncapped. */
+  capUsd: number | null;
+  /** Spend as a percentage of the cap; null when uncapped. */
+  percent: number | null;
+  /** Where the cap came from: override, workflow or instance_default. */
+  source: "override" | "workflow" | "instance_default" | null;
+  /** Whether the run was stopped at its cap. */
+  exceeded: boolean;
 }
 
 /**
@@ -316,6 +342,11 @@ export interface TaskStatus {
    * PR URL if one was created.
    */
   prUrl?: string;
+
+  /**
+   * Spend against the run's spend cap, when the task has a cap or recorded spend.
+   */
+  budget?: TaskBudget;
 }
 
 /**
@@ -382,6 +413,9 @@ export async function implementIssue(
   if (options.autoMerge !== undefined) {
     body.autoMerge = options.autoMerge;
   }
+  if (options.max_cost_usd !== undefined) {
+    body.max_cost_usd = options.max_cost_usd;
+  }
 
   const endpoint = `/api/planner/drafts/${encodeURIComponent(draftId)}/issues/${encodeURIComponent(String(issueNumber))}/implement`;
 
@@ -440,7 +474,7 @@ export async function getTaskStatus(
  * @returns A parsed TaskStatus with convenience fields.
  */
 function parseTaskStatus(response: TaskStatusResponse): TaskStatus {
-  const { taskId, history, taskInfo } = response;
+  const { taskId, history, taskInfo, budget } = response;
 
   // Get the latest state from history
   const latestEntry = history.length > 0 ? history[history.length - 1] : null;
@@ -486,5 +520,6 @@ function parseTaskStatus(response: TaskStatusResponse): TaskStatus {
     taskInfo,
     prNumber,
     prUrl,
+    ...(budget ? { budget } : {}),
   };
 }

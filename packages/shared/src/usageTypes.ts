@@ -1,40 +1,12 @@
 /**
  * Usage configuration and metrics types for agent resource management.
  *
- * AgentTankConfig defines the allowance/quota settings for an agent,
- * supporting subscription billing models where each agent has a "tank"
- * of available usage.
- *
  * UsageMetrics captures pre-call, post-call, and delta values to track
  * how much allowance each LLM call consumed. Supports nested generic
  * properties since providers have varying usage structures.
  */
 
 import type { AgentType } from './modelDefinitions.js';
-
-/** Configuration for an agent's usage allowance ("tank"). */
-export interface AgentTankConfig {
-  /** Agent type this config applies to */
-  agentType: AgentType;
-  /** Maximum allowed spend in USD per billing period */
-  maxBudgetUsd: number;
-  /** Billing period duration (e.g., 'daily', 'weekly', 'monthly') */
-  billingPeriod: 'daily' | 'weekly' | 'monthly';
-  /** Soft limit percentage (0-1) at which to trigger warnings */
-  warningThreshold: number;
-  /** Hard limit percentage (0-1) at which to block new requests */
-  hardLimitThreshold: number;
-  /** Whether this tank is currently active */
-  enabled: boolean;
-  /** Optional per-model budget overrides (model ID -> max USD) */
-  modelBudgets?: Record<string, number>;
-  /** Optional maximum number of requests per billing period */
-  maxRequests?: number;
-  /** Optional maximum number of tokens per billing period */
-  maxTokens?: number;
-  /** Additional provider-specific configuration */
-  providerConfig?: Record<string, unknown>;
-}
 
 /**
  * Snapshot of usage values at a point in time.

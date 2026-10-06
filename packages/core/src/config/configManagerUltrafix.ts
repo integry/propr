@@ -1,6 +1,7 @@
 import logger from '../utils/logger.js';
 import { getConfig, saveConfig } from './configManager.js';
 import { validatePrReviewModelValue } from './prReviewModelValidator.js';
+import { MAX_RUN_COST_CAP_USD, parseCostCapUsd } from '../budget/runCostCap.js';
 
 // --- PR Review Model ---
 
@@ -102,6 +103,29 @@ export async function saveUltrafixPauseSeconds(seconds: number): Promise<boolean
     logger.info({ ultrafix_pause_seconds: seconds }, 'Successfully saved ultrafix pause seconds');
     return true;
 }
+
+// --- Spend cap ---
+
+/**
+ * Instance-wide per-run spend cap in USD, used when neither the task nor the
+ * repository's workflow file sets one. 0 (the default) means no cap; a
+ * malformed stored value is logged and also means no cap.
+ */
+export async function loadDefaultMaxCostUsd(): Promise<number> {
+    const stored = await getConfig<unknown>('default_max_cost_usd', 0);
+    return parseCostCapUsd(stored, 'default_max_cost_usd') ?? 0;
+}
+
+export async function saveDefaultMaxCostUsd(amount: number): Promise<boolean> {
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0 || amount > MAX_RUN_COST_CAP_USD) {
+        throw new Error(`default_max_cost_usd must be a number from 0 (no cap) to ${MAX_RUN_COST_CAP_USD}`);
+    }
+    await saveConfig('default_max_cost_usd', amount);
+    logger.info({ default_max_cost_usd: amount }, 'Successfully saved default per-run spend cap');
+    return true;
+}
+
+// --- CI wait timeout ---
 
 /**
  * How long an Ultrafix review may stay deferred waiting for CI before the loop

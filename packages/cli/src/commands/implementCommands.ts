@@ -101,6 +101,17 @@ async function pollTaskStatus(taskId: string): Promise<TaskStatus> {
   return finalStatus;
 }
 
+/** Parses `--max-cost`: a USD amount such as `5` or `$2.50`. */
+export function parseMaxCostOption(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim().replace(/^\$/, "");
+  const amount = /^\d+(?:\.\d+)?$/.test(trimmed) ? Number(trimmed) : Number.NaN;
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) {
+    throw new Error("--max-cost must be a USD amount greater than 0 and at most 100000");
+  }
+  return amount;
+}
+
 /**
  * Creates the `issue` command group.
  */
@@ -123,6 +134,7 @@ Examples:
     .option("-m, --model <model>", "Model name to use for implementation")
     .option("--epic", "Create an Epic PR to collect all related PRs")
     .option("--auto-merge", "Enable auto-merge for the created PR")
+    .option("--max-cost <usd>", "Spend cap in USD for this run; it is stopped and its partial work published when the cap is reached")
     .addHelpText("after", `
 Argument:
   issue-id    Format: <draft-id>/<issue-number> or <draft-id>:<issue-number>
@@ -132,6 +144,7 @@ Examples:
   $ propr issue implement abc123:42 --wait
   $ propr issue implement abc123/1 -a claude -m claude-sonnet-4-20250514 --wait
   $ propr issue implement abc123/1 --epic --auto-merge
+  $ propr issue implement abc123/1 --max-cost 5
 `)
     .action(
       async (
@@ -143,9 +156,11 @@ Examples:
           model?: string;
           epic?: boolean;
           autoMerge?: boolean;
+          maxCost?: string;
         }
       ) => {
         try {
+          const maxCostUsd = parseMaxCostOption(options.maxCost);
           const parsed = parseIssueId(issueId);
           if (!parsed) {
             console.error(
@@ -169,6 +184,7 @@ Examples:
             model_name: options.model,
             useEpic: options.epic,
             autoMerge: options.autoMerge,
+            ...(maxCostUsd !== undefined ? { max_cost_usd: maxCostUsd } : {}),
           });
 
           if (!result.success) {

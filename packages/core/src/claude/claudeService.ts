@@ -140,7 +140,8 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
                 onContainerId,
                 worktreePath,
                 stdinData: prompt, // Always pass prompt via stdin
-                preserveOutputOnTimeout: true
+                preserveOutputOnTimeout: true,
+                model: modelName
             })
         );
 
@@ -150,6 +151,7 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         const claudeOutput = parseStreamJsonOutput(result);
         const terminationReason = resolveAgentTerminationReason({
             timedOut: result.timedOut,
+            costCapExceeded: result.costCapExceeded,
             watchdogTrip: result.watchdogTrip,
             subtype: claudeOutput.finalResult?.subtype,
             error: result.stderr

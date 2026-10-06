@@ -4,7 +4,7 @@ import { HistoryItem } from './types';
 import PushFailureDetails from './PushFailureDetails';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
 import { RUN_DURATION_COLUMN, RUN_LEAD_INSET, RUN_TAG_COLUMN } from './runTimelineColumns';
-import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban } from 'lucide-react';
+import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban, CircleDollarSign } from 'lucide-react';
 
 interface TaskStatusTableProps {
   history: HistoryItem[];
@@ -17,12 +17,29 @@ interface TaskStatusTableProps {
   variant?: 'rail' | 'branch';
 }
 
+const isBudgetExceeded = (item: HistoryItem): boolean => item.metadata?.event === 'budget.exceeded';
+
+const BUDGET_SOURCE_LABELS = { override: 'task override', workflow: '.propr/workflow.yml', instance_default: 'instance default' } as const;
+
+/** What the run had spent when it was stopped, against which cap and from where. */
+const BudgetExceededDetail: React.FC<{ metadata?: HistoryItem['metadata'] }> = ({ metadata }) => {
+  const budget = metadata?.event === 'budget.exceeded' ? metadata.budget : undefined;
+  if (!budget) return null;
+  const source = budget.source ? ` · ${BUDGET_SOURCE_LABELS[budget.source]}` : '';
+  return (
+    <div className="mt-1 break-words text-xs text-red-700" data-testid="budget-exceeded">
+      {`Estimated $${budget.spentUsd.toFixed(2)} of a $${budget.capUsd.toFixed(2)} cap${source}`}
+    </div>
+  );
+};
+
 const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[], commandMode?: string): string => {
   const stateUpper = item.state?.toUpperCase();
   const isReview = commandMode === 'review';
   const isFix = commandMode === 'fix';
 
   if (item.metadata?.repositoryWorkflowDeferrals) return 'Waiting for Repository Capacity';
+  if (isBudgetExceeded(item)) return 'Spend Cap Reached';
   if (stateUpper === 'PENDING') return 'Task Queued';
   if (stateUpper === 'PROCESSING') return isReview ? 'Preparing Review' : 'Analyzing Request';
   if (stateUpper === 'CLAUDE_EXECUTION' || stateUpper === 'CLAUDE_EXECUTION_STARTED') {
@@ -49,7 +66,7 @@ const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: Hist
   const isFix = commandMode === 'fix';
   const claudeCount = history.slice(0, index + 1).filter(h => {
     const s = h.state?.toUpperCase();
-    return s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED';
+    return (s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED') && !isBudgetExceeded(h);
   }).length;
 
   const actionLabel = isReview ? 'Reviewing' : isFix ? 'Applying Fix' : 'Implementing Changes';
@@ -63,13 +80,18 @@ const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: Hist
   return claudeCount === 1 ? actionLabel : `Retry ${actionLabel} ${claudeCount}`;
 };
 
-const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boolean; isCancelled: boolean }> = ({
+const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boolean; isCancelled: boolean; isBudgetStop?: boolean }> = ({
   state,
   isRunning,
   isFailure,
-  isCancelled
+  isCancelled,
+  isBudgetStop
 }) => {
   const stateUpper = state?.toUpperCase() || '';
+
+  if (isBudgetStop) {
+    return <CircleDollarSign className="h-5 w-5 text-red-500" />;
+  }
 
   if (isRunning) {
     return (
@@ -178,6 +200,7 @@ const TimelineContent: React.FC<{
             </div>
           )}
           <RepositoryWorkflowDeferral metadata={item.metadata} isRunning={isRunning} />
+          <BudgetExceededDetail metadata={item.metadata} />
           {item.metadata?.terminalReason && (
             <div className="mt-1 break-words text-xs text-slate-500" data-testid="task-terminal-reason">
               {formatTaskTerminalReason(item.metadata.terminalReason)}
@@ -246,7 +269,7 @@ const TaskTimelineItem: React.FC<{
 
           {/* Icon/Dot - intersects the rail */}
           <div className="relative z-10 bg-white p-0.5">
-            <TimelineIcon state={stateUpper} isRunning={isRunning} isFailure={isFailure} isCancelled={isCancelled} />
+            <TimelineIcon state={stateUpper} isRunning={isRunning && !isBudgetExceeded(item)} isFailure={isFailure} isCancelled={isCancelled} isBudgetStop={isBudgetExceeded(item)} />
           </div>
         </div>
 

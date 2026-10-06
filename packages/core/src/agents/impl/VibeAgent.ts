@@ -113,6 +113,7 @@ export class VibeAgent implements Agent {
                     streamToRedis: true,
                     streamStderrToRedis: true,
                     preserveOutputOnTimeout: true,
+                    model: effectiveModel,
                     streamExtraOutput: () => readLatestVibeSessionMessages(runtimeHomePath)
                 })
             );
@@ -122,7 +123,7 @@ export class VibeAgent implements Agent {
             const conversationLog = parseVibeConversationLog(result.stdout);
             const tokenUsage = parsedOutput.tokenUsage || readLatestVibeSessionTokenUsage(runtimeHomePath);
             const modelUsed = parsedOutput.model || effectiveModel || 'unknown';
-            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, watchdogTrip: result.watchdogTrip, error: parsedOutput.error || result.stderr });
+            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: parsedOutput.error || result.stderr });
             const success = isSuccessfulVibeResult(result.exitCode, parsedOutput) && !terminationReason;
             const error = success ? undefined : buildVibeFailureMessage(result, parsedOutput);
             if (parsedOutput.sessionId && onSessionId) onSessionId(parsedOutput.sessionId);
@@ -228,7 +229,8 @@ export class VibeAgent implements Agent {
                 'vibe',
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: timeoutMs ?? parseInt(process.env.VIBE_ANALYSIS_TIMEOUT_MS || '1800000', 10),
-                    taskId
+                    taskId,
+                    model: effectiveModel
                 })
             );
             const executionTimeMs = Date.now() - startTime;

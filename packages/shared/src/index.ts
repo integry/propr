@@ -96,7 +96,6 @@ export {
 
 // Export usage configuration and metrics types
 export {
-  type AgentTankConfig,
   type UsageSnapshot,
   type UsageMetricRecord,
   type UsageMetrics,
@@ -321,6 +320,13 @@ export {
   formatTaskTerminalReason,
   type TaskLifecycleState,
 } from './taskLifecycle.js';
+export {
+  RUN_COST_CAP_SOURCE_LABELS,
+  MAX_RUN_COST_CAP_USD,
+  formatUsd,
+  taskTerminalReasonForAgentTermination,
+  type RunCostCapSource,
+} from './runCostCap.js';
 
 export {
   buildIssueTaskId,

@@ -148,7 +148,7 @@ export class ClaudeAgent implements Agent {
                 async () => executeDockerCommand('docker', dockerArgs, {
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId,
                     worktreePath, stdinData: prompt, taskId,
-                    streamToRedis: true, preserveOutputOnTimeout: true
+                    streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel
                 }),
                 undefined,
                 this.config.alias
@@ -285,7 +285,7 @@ export class ClaudeAgent implements Agent {
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'claude',
                 async () => executeDockerCommand('docker', dockerArgs, {
-                    timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId
+                    timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId, model: effectiveModel
                 }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS,
                 this.config.alias

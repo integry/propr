@@ -13,6 +13,7 @@ interface GeneralSettings {
   ultrafix_rating_goal: number;
   ultrafix_max_cycles: number;
   ultrafix_pause_seconds: number;
+  default_max_cost_usd: string;
 }
 
 interface GeneralSettingsSectionProps {
@@ -63,6 +64,25 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
           onChange={onSettingChange}
           onBlur={onBlur}
         />
+
+        <SettingsField
+          label="Default Spend Cap per Run (USD)"
+          htmlFor="default_max_cost_usd"
+          helperText="Stops an implementation, follow-up, /fix, ultrafix cycle or review once its estimated cost reaches this amount and publishes its partial work. Leave empty or 0 for no cap. A task's own cap and the repository's .propr/workflow.yml limits.max_cost_usd take precedence."
+        >
+          <input
+            type="number"
+            id="default_max_cost_usd"
+            name="default_max_cost_usd"
+            value={settings.default_max_cost_usd}
+            onChange={onSettingChange}
+            onBlur={onBlur}
+            min={0}
+            step="0.01"
+            placeholder="No cap"
+            className={SETTINGS_CONTROL}
+          />
+        </SettingsField>
       </SettingsSection>
 
       <SettingsSection

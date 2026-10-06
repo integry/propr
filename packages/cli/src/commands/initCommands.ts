@@ -111,6 +111,7 @@ hooks:
 #   instructions: "Capture the settings page at 1280px"
 # limits:
 #   max_parallel_tasks: 3
+#   max_cost_usd: 5.00
 # auto_merge:
 #   enabled: true
 #   method: squash

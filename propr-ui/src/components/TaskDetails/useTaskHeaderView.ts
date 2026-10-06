@@ -14,13 +14,14 @@ interface TaskHeaderView {
     duration: number | null;
     tokenUsage?: TaskHeadSummary['tokenUsage'];
     usageMetricRecords: TaskHeadSummary['usageMetricRecords'];
+    budget?: TaskHeadSummary['budget'];
     synthetic: boolean;
   };
   /**
    * How the run on screen went: its own model, runtime and consumption, so an
    * earlier run opened from the timeline shows what it cost, not the newest's.
    */
-  runStripProps: Pick<TaskHeaderView['contextStripProps'], 'taskInfo' | 'modelName' | 'duration' | 'tokenUsage' | 'usageMetricRecords' | 'synthetic'>;
+  runStripProps: Pick<TaskHeaderView['contextStripProps'], 'taskInfo' | 'modelName' | 'duration' | 'tokenUsage' | 'usageMetricRecords' | 'budget' | 'synthetic'>;
   /** The run on screen: how it ended, and when it last did anything. */
   runState: { status: string; isActive: boolean; lastActivity?: string };
   /**
@@ -41,6 +42,7 @@ function describeRunOnScreen(own: TaskHeadSummary, derived: ReturnType<typeof ge
       duration,
       tokenUsage: pickTokenUsage(own.tokenUsage, own.history),
       usageMetricRecords: own.usageMetricRecords,
+      budget: own.budget,
       synthetic: own.history.some(item => item.metadata?.syntheticRouting !== undefined),
     },
     runState: {
@@ -97,6 +99,7 @@ export function useTaskHeaderView(taskId: string | undefined, runs: TaskRunEntry
       duration,
       tokenUsage: pickTokenUsage(source.tokenUsage, source.history),
       usageMetricRecords: source.usageMetricRecords,
+      budget: source.budget,
       synthetic: source.history.some(item => item.metadata?.syntheticRouting !== undefined),
     },
     ...describeRunOnScreen(own, runDerived, runDuration),

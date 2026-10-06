@@ -3,7 +3,7 @@ import {
   getTaskHistory, getTaskLiveDetails,
   stopTaskExecution, StopExecutionResponse, deleteTask
 } from '../../api/proprApi';
-import { HistoryItem, TaskInfo, LiveDetails, LiveEvent, TodoItem, UsageMetricRecord } from './types';
+import { HistoryItem, TaskInfo, LiveDetails, LiveEvent, TodoItem, UsageMetricRecord, TaskBudget } from './types';
 import { useToast } from '../ui/useToast';
 import { useSocket } from '../../contexts/useSocket';
 import { trustedPreviewMedia, type PublishedVisualPreview, type TaskUpdatePayload, type TaskLiveUpdatePayload } from '@propr/shared';
@@ -20,6 +20,7 @@ interface TaskHistoryData {
   taskInfo?: TaskInfo | null;
   usageMetricRecords?: UsageMetricRecord[];
   previewMedia?: PublishedVisualPreview[];
+  budget?: TaskBudget;
 }
 
 const normalizeTodoStatus = (status: string): TodoItem['status'] => {
@@ -175,6 +176,7 @@ export const useTaskData = (taskId: string | undefined) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [taskInfo, setTaskInfo] = useState<TaskInfo | null>(null);
   const [usageMetricRecords, setUsageMetricRecords] = useState<UsageMetricRecord[]>([]);
+  const [budget, setBudget] = useState<TaskBudget | null>(null);
   const [previewMedia, setPreviewMedia] = useState<PublishedVisualPreview[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -218,6 +220,7 @@ export const useTaskData = (taskId: string | undefined) => {
       setHistory(nextHistory);
       setTaskInfo(data.taskInfo || null);
       setUsageMetricRecords(data.usageMetricRecords || []);
+      setBudget(data.budget ?? null);
       // Only trusted GitHub attachment URLs may become media sources.
       setPreviewMedia(trustedPreviewMedia(data.previewMedia || data.taskInfo?.previewMedia, 8));
       return data;
@@ -450,6 +453,7 @@ export const useTaskData = (taskId: string | undefined) => {
     history,
     taskInfo,
     usageMetricRecords,
+    budget,
     previewMedia,
     loading,
     error,
