@@ -324,6 +324,24 @@ export async function claimAgentRunAction(
   return updated ? rowToAgentRun(updated) : null;
 }
 
+/**
+ * Fails an `acting` run whose acting step could not be dispatched, but only
+ * while no action job has claimed it. A claimed run is executing (or already
+ * finished), so a redundant dispatch error must not overwrite it. Returns the
+ * failed run, or null when the run was claimed or left `acting` first.
+ */
+export async function failUnclaimedAgentRunAction(
+  id: string,
+  failureReason: string,
+  { database = db, now = Date.now }: AgentRunStoreDependencies = {},
+): Promise<StoredAgentRun | null> {
+  const timestamp = now();
+  const [updated] = await database(TABLE).where({ id, state: 'acting' }).whereNull('action_task_id')
+    .update({ state: 'failed', failure_reason: failureReason, updated_at: timestamp, finished_at: timestamp })
+    .returning('*') as AgentRunRow[];
+  return updated ? rowToAgentRun(updated) : null;
+}
+
 /** Owner-scoped read; another owner's run is indistinguishable from a missing one. */
 export async function getAgentRun(
   id: string,

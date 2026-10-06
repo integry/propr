@@ -11,6 +11,7 @@ import logger from '../../utils/logger.js';
 import type { StoredAgentDefinition } from './agentDefinitionStore.js';
 import {
   createAgentRun,
+  failUnclaimedAgentRunAction,
   getAgentRunById,
   getAgentRunByIdempotencyKey,
   transitionAgentRun,
@@ -134,7 +135,8 @@ export async function enqueueAgentRunPhase(
 }
 
 export interface EnqueueAgentRunActionDependencies extends Pick<AgentRunTriggerDependencies, 'database' | 'now' | 'enqueue'> {
-  transitionRun?: typeof transitionAgentRun;
+  /** Fails the run only while its acting step is still unclaimed. */
+  failUnclaimedAction?: typeof failUnclaimedAgentRunAction;
   /** Guidance from the approver, passed to the acting prompt; defaults to the note stored with the approval. */
   operatorNote?: string | null;
 }
@@ -149,7 +151,7 @@ export interface EnqueueAgentRunActionDependencies extends Pick<AgentRunTriggerD
  */
 export async function enqueueAgentRunActionOrFail(
   run: StoredAgentRun,
-  { database, now, enqueue, transitionRun = transitionAgentRun, operatorNote = run.operatorNote }: EnqueueAgentRunActionDependencies = {},
+  { database, now, enqueue, failUnclaimedAction = failUnclaimedAgentRunAction, operatorNote = run.operatorNote }: EnqueueAgentRunActionDependencies = {},
 ): Promise<StoredAgentRun> {
   try {
     await enqueueAgentRunPhase(run, 'action', { enqueue }, { operatorNote });
@@ -157,8 +159,9 @@ export async function enqueueAgentRunActionOrFail(
   } catch (error) {
     const reason = `Could not start the acting step: ${error instanceof Error ? error.message : String(error)}`;
     logger.error({ runId: run.id, err: error }, 'Failed to enqueue agent run acting step');
-    const failed = await transitionRun(run.id, ['acting'], 'failed', { failureReason: reason }, { database, now });
-    // Another writer moved the run first (for example a cancel); report what it stored.
+    // A concurrent dispatch may have succeeded and the worker claimed the run;
+    // only an unclaimed run is failed. Otherwise report what is stored.
+    const failed = await failUnclaimedAction(run.id, reason, { database, now });
     return failed ?? await getAgentRunById(run.id, { database }) ?? run;
   }
 }

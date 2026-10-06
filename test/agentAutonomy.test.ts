@@ -5,9 +5,11 @@ import type { Request, RequestHandler, Response } from 'express';
 import knex, { type Knex } from 'knex';
 import type { AgentRunState } from '@propr/shared';
 import {
+  claimAgentRunAction,
   createAgentDefinition,
   createAgentRun,
   enqueueAgentRunActionOrFail,
+  failUnclaimedAgentRunAction,
   getAgentRunById,
   transitionAgentRun,
   type AgentRunJobData,
@@ -59,7 +61,14 @@ function store(initial: StoredAgentRun) {
     current = { ...current, ...patch, state: to } as StoredAgentRun;
     return current;
   }) as typeof transitionAgentRun;
-  return { transitionRun, transitions, run: () => current };
+  /** Mirrors the store guard: fails only an `acting` run no action job has claimed. */
+  const failUnclaimedAction = (async (_id: string, failureReason: string) => {
+    transitions.push([['acting'], 'failed']);
+    if (current.state !== 'acting' || current.actionTaskId !== null) return null;
+    current = { ...current, failureReason, state: 'failed' };
+    return current;
+  }) as typeof failUnclaimedAgentRunAction;
+  return { transitionRun, failUnclaimedAction, transitions, run: () => current };
 }
 
 describe('advanceAfterReport', () => {
@@ -108,7 +117,7 @@ describe('advanceAfterReport', () => {
     const result = await advanceAfterReport(s.run(), {
       transitionRun: s.transitionRun,
       startActing: run => enqueueAgentRunActionOrFail(run, {
-        transitionRun: s.transitionRun,
+        failUnclaimedAction: s.failUnclaimedAction,
         enqueue: async (name, data, options) => { jobs.push([name, data, options]); },
       }),
     });
@@ -125,7 +134,7 @@ describe('advanceAfterReport', () => {
     const result = await advanceAfterReport(s.run(), {
       transitionRun: s.transitionRun,
       startActing: run => enqueueAgentRunActionOrFail(run, {
-        transitionRun: s.transitionRun,
+        failUnclaimedAction: s.failUnclaimedAction,
         enqueue: async () => { throw new Error('Redis unavailable'); },
       }),
     });
@@ -276,6 +285,75 @@ describe('approve and reject routes', () => {
     assert.equal(retried.body.run?.state, 'acting');
     assert.equal(retried.body.run?.approvedBy, 'alice');
     assert.deepEqual(enqueued.map(data => [data.runId, data.phase, data.operatorNote]), [[run.id, 'action', 'Only file TODOs.']]);
+  });
+
+  test('a failed redundant dispatch does not fail an approval the worker already claimed', async () => {
+    const run = await runIn('awaiting_approval');
+    let dispatches = 0;
+    routes = createAgentDefinitionRoutes({
+      db: database,
+      services: {
+        now: () => NOW,
+        startActing: (acting, note) => enqueueAgentRunActionOrFail(acting, {
+          database, now: () => NOW, operatorNote: note,
+          enqueue: async () => {
+            dispatches += 1;
+            if (dispatches === 1) return;
+            // The first dispatch reached the worker, which claimed the run before this one failed.
+            assert.ok(await claimAgentRunAction(run.id, 'action-task-1', { database, now: () => NOW }));
+            throw new Error('Redis unavailable');
+          },
+        }),
+      },
+    });
+    await transitionAgentRun(run.id, ['awaiting_approval'], 'acting', { approvedBy: 'alice' }, { database, now: () => NOW });
+    assert.equal((await call(routes.approveRun, 'alice', run.id)).status, 200);
+
+    const retried = await call(routes.approveRun, 'alice', run.id);
+    assert.equal(retried.status, 200);
+    assert.equal(retried.body.run?.state, 'acting');
+    assert.equal(retried.body.run?.actionTaskId, 'action-task-1');
+    assert.equal(retried.body.run?.failureReason, null);
+    const completed = await transitionAgentRun(run.id, ['acting'], 'completed', { actionSummary: 'Filed 2 issues.' }, { database, now: () => NOW });
+    assert.equal(completed?.actionSummary, 'Filed 2 issues.');
+  });
+
+  test('a failed dispatch still fails an acting run that no worker claimed', async () => {
+    const run = await runIn('acting');
+    const result = await enqueueAgentRunActionOrFail(run, {
+      database, now: () => NOW, enqueue: async () => { throw new Error('Redis unavailable'); },
+    });
+    assert.equal(result.state, 'failed');
+    assert.match(result.failureReason ?? '', /Redis unavailable/);
+    assert.equal(result.finishedAt, NOW);
+  });
+
+  test('a failed report-phase redispatch leaves a claimed acting run untouched', async () => {
+    const run = await runIn('acting');
+    await claimAgentRunAction(run.id, 'action-task-1', { database, now: () => NOW });
+    // processAgentRunJob resumes an acting run it read as unclaimed; the claim landed after that read.
+    const result = await enqueueAgentRunActionOrFail(run, {
+      database, now: () => NOW, enqueue: async () => { throw new Error('Redis unavailable'); },
+    });
+    assert.equal(result.state, 'acting');
+    assert.equal(result.actionTaskId, 'action-task-1');
+    assert.equal(result.failureReason, null);
+  });
+
+  test('a database upgraded from the original agent tables gains operator_note and approves with it', async () => {
+    const name = '20261006010000_add_agent_run_operator_note.js';
+    // Return to the schema an installation had after the original agent-tables migration.
+    await database.migrate.down({ directory: migrations, name });
+    assert.equal(await database.schema.hasColumn('agent_runs', 'operator_note'), false);
+    assert.ok(await database.schema.hasTable('agent_runs'));
+
+    await database.migrate.latest({ directory: migrations });
+    assert.ok(await database.schema.hasColumn('agent_runs', 'operator_note'));
+    const run = await runIn('awaiting_approval');
+    const approved = await call(routes.approveRun, 'alice', run.id, { note: 'Only file TODOs.' });
+    assert.equal(approved.status, 200);
+    assert.equal(approved.body.run?.state, 'acting');
+    assert.equal((await getAgentRunById(run.id, { database }))?.operatorNote, 'Only file TODOs.');
   });
 
   test('approve answers 409 once the acting step of an approval was claimed', async () => {

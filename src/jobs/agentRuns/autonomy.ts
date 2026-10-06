@@ -56,7 +56,7 @@ export async function advanceAfterReport(
     run: StoredAgentRun,
     {
         transitionRun = transitionAgentRun,
-        startActing = acting => enqueueAgentRunActionOrFail(acting, { transitionRun }),
+        startActing = acting => enqueueAgentRunActionOrFail(acting),
         notifyAwaitingApproval = notifyAgentReportAwaitingApproval,
     }: AdvanceAfterReportDeps = {},
 ): Promise<StoredAgentRun | null> {
