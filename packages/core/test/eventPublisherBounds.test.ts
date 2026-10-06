@@ -120,6 +120,27 @@ const lifecyclePublishes: Array<[string, (publisher: EventPublisher) => Promise<
     })],
 ];
 
+/**
+ * Await a transition the fixture itself is waiting for, within a deadline.
+ *
+ * The publisher unrefs its idle socket by design, so once the peer is gone
+ * nothing the fixture owns holds the event loop open until the client has
+ * observed the loss: in a busy batch the loop can drain first and the runner
+ * cancels the test. The deadline timer is ref'd, so it keeps the process alive
+ * for exactly this wait, and fails it instead of letting it hang.
+ */
+async function within<T>(transition: Promise<T>, what: string, timeoutMs = 5_000): Promise<T> {
+    let expire: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+        expire = setTimeout(() => reject(new Error(`${what} did not happen within ${timeoutMs}ms`)), timeoutMs);
+    });
+    try {
+        return await Promise.race([transition, deadline]);
+    } finally {
+        clearTimeout(expire);
+    }
+}
+
 /** A real TCP/RESP peer with controllable acknowledgements and socket loss. */
 async function deliveryRedis(t: TestContext) {
     const sockets = new Set<Socket>();
@@ -200,7 +221,7 @@ describe('existing event stream delivery', { concurrency: false, timeout: 10_000
         assert.equal(await publisher.publishTaskUpdate({ taskId: 'task-1', state: 'processing' }), true);
         const reconnecting = once(client, 'reconnecting');
         for (const socket of peer.sockets) socket.destroy();
-        await reconnecting;
+        await within(reconnecting, 'the client reconnecting after its socket was dropped');
         const results = await Promise.all(lifecyclePublishes.map(([, send]) => send(publisher)));
         assert.equal(results[0], true, 'the terminal task publish is acknowledged after reconnect');
         assert.equal(results[1], true, 'the draft publish is acknowledged after reconnect');
@@ -227,7 +248,9 @@ describe('existing event stream delivery', { concurrency: false, timeout: 10_000
         assert.equal(await publisher.publishTaskUpdate({ taskId: 'task-1', state: 'processing' }), true);
         const reconnecting = once(client, 'reconnecting');
         await peer.goAway();
-        await reconnecting;
+        // Nothing but the deadline holds the loop open until the client sees
+        // the closed socket: the server is gone and the idle socket is unref'd.
+        await within(reconnecting, 'the client reconnecting after Redis went away');
         const pending = publisher.publishTaskUpdate({ taskId: 'task-1', state: 'completed' });
         // Let the publish reach the client's offline queue before shutting down.
         await delay(20);
