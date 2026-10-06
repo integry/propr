@@ -217,13 +217,15 @@ interface GitSemanticMiningParams {
   semanticMiningOptions: SemanticMiningOptions;
   finalScores: Record<string, AggregatedFileScore>;
   correlationId?: string;
+  /** Commit whose history is mined; the checkout's HEAD when absent. */
+  commit?: string;
 }
 
 /**
  * Phase 1: Git History Semantic Mining (via commit analysis)
  */
 async function performGitSemanticMining(params: GitSemanticMiningParams): Promise<boolean> {
-  const { repoPath, prompt, semanticMiningOptions, finalScores, correlationId } = params;
+  const { repoPath, prompt, semanticMiningOptions, finalScores, correlationId, commit } = params;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   try {
@@ -234,7 +236,8 @@ async function performGitSemanticMining(params: GitSemanticMiningParams): Promis
     const semanticPromise = mineGitHistoryWithLLM(
       repoPath,
       prompt,
-      { ...semanticMiningOptions, correlationId }
+      { ...semanticMiningOptions, correlationId },
+      commit
     );
 
     const semanticScores = await Promise.race([semanticPromise, semanticTimeoutPromise]);
@@ -409,7 +412,7 @@ export async function findRelevantFiles(
   // --- Phase 1: Git History Semantic Mining (via commit analysis) ---
   if (useSemanticMining && semanticMiningOptions) {
     usedSemanticMining = await performGitSemanticMining({
-      repoPath, prompt, semanticMiningOptions, finalScores, correlationId
+      repoPath, prompt, semanticMiningOptions, finalScores, correlationId, commit
     });
   }
 

@@ -260,6 +260,20 @@ test('literal search greps case-insensitively by default and returns counts and 
   assert.equal(result.pagination.totalMatches, 5);
 });
 
+test('literal search ignores a configured grep.column', async () => {
+  const query = { ...base, query: 'validateToken', mode: 'literal' as const };
+  const expected = await searchRepositoryFiles(query);
+  git('config', 'grep.column', 'true');
+  try {
+    const withColumn = await searchRepositoryFiles(query);
+    assert.deepEqual(withColumn.matches, expected.matches);
+    const login = withColumn.matches.find(m => m.path === 'src/auth/login.ts');
+    assert.deepEqual(login?.lineMatches[0], { lineNumber: 2, text: '  return validateToken();' });
+  } finally {
+    git('config', '--unset', 'grep.column');
+  }
+});
+
 test('literal search honours caseSensitive', async () => {
   const result = await searchRepositoryFiles({ ...base, query: 'validateToken', mode: 'literal', caseSensitive: true });
   assert.ok(!result.matches.some(m => m.path === 'src/util.ts'));

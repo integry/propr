@@ -315,7 +315,9 @@ async function searchLiteral({ options, query, pathPrefix, offset, limit }: Sear
     fallback: DEFAULT_LINE_MATCHES_PER_FILE, min: 0, max: MAX_LINE_MATCHES_PER_FILE,
   });
 
-  const args = ['grep', '-n', '-I', '-z', '--no-color', '-F'];
+  // --no-column keeps a configured grep.column from adding a third metadata
+  // field that parseGitGrepOutput would read as line text.
+  const args = ['grep', '-n', '-I', '-z', '--no-color', '--no-column', '-F'];
   if (!options.caseSensitive) args.push('-i');
   args.push('-e', query, target.commit, '--');
   if (pathPrefix) {

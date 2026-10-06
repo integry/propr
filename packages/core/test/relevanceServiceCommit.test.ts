@@ -12,7 +12,18 @@ const scoreSemanticRelevance = mock.fn(async () => {
   return summaryScores;
 });
 
+// The semantic miner's LLM scores the shared file only when it is shown the
+// main-only commit, so a score proves which history was mined.
+const minerPrompts: string[] = [];
+const runLightweightLLMAnalysis = mock.fn(async ({ prompt }: { prompt: string }) => {
+  minerPrompts.push(prompt);
+  const files = prompt.includes('tune widget on main') ? [{ path: 'src/widget/main.ts', score: 95, reason: 'main' }] : [];
+  return JSON.stringify({ files });
+});
+
 await mock.module('../src/services/relevance/semanticScorer.js', { namedExports: { scoreSemanticRelevance } });
+await mock.module('../src/claude/claudeService.js', { namedExports: { runLightweightLLMAnalysis } });
+await mock.module('../src/config/configuredModel.js', { namedExports: { resolveConfiguredModel: async () => 'test-model' } });
 await mock.module('../src/db/connection.js', {
   namedExports: { db: () => { throw new Error('db should not be used'); }, closeConnection: async () => {} },
 });
@@ -48,12 +59,15 @@ git('checkout', '-q', 'main');
 write('src/widget/mainOnly.ts', 'export {};\n');
 git('add', '-A');
 git('commit', '-q', '-m', 'add widget main');
+write('src/widget/main.ts', 'export const tuned = true;\n');
+git('commit', '-q', '-am', 'tune widget on main');
 
 after(() => fs.rmSync(repoPath, { recursive: true, force: true }));
 
 beforeEach(() => {
   summaryScores = [];
   summaryError = null;
+  minerPrompts.length = 0;
 });
 
 const agent = { config: { alias: 'claude' } } as never;
@@ -103,4 +117,23 @@ test('maxResults of Infinity returns every file above the threshold', async () =
 
   const all = await findRelevantFiles(repoPath, 'widget', { useSummaryScoring: true, agent, maxResults: Number.POSITIVE_INFINITY });
   assert.equal(all.files.filter(file => file.path.startsWith('generated/')).length, 600);
+});
+
+test('commit-scoped semantic history mining reads the commit history, not the checkout', async () => {
+  const semanticMiningOptions = {
+    worktreePath: repoPath, githubToken: 'token', issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo' },
+  };
+
+  const scoped = await findRelevantFiles(repoPath, 'widget', { commit: featureCommit, useSemanticMining: true, semanticMiningOptions });
+  assert.equal(minerPrompts.length, 1);
+  assert.ok(minerPrompts[0].includes('add widget feature'));
+  assert.ok(!minerPrompts[0].includes('tune widget on main'));
+  const shared = scoped.files.find(file => file.path === 'src/widget/main.ts');
+  assert.ok(shared, 'shared file is still found through path matching');
+  assert.ok(!shared.signals?.includes('llm-semantic'));
+
+  // Without a commit, semantic mining still reads the checkout's history.
+  const unscoped = await findRelevantFiles(repoPath, 'widget', { useSemanticMining: true, semanticMiningOptions });
+  assert.ok(minerPrompts[1].includes('tune widget on main'));
+  assert.ok(unscoped.files.find(file => file.path === 'src/widget/main.ts')?.signals?.includes('llm-semantic'));
 });
