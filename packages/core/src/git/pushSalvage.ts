@@ -7,7 +7,7 @@ import { createHooklessGit } from './hooklessGit.js';
 import { configureGitAuthentication } from './repoBranching.js';
 import { redactAuthenticatedGitUrl } from './redactGitUrl.js';
 import { classifyPushError, formatPushRejectionClass, type PushRejectionDiagnosis } from './pushRejection.js';
-import { getRescueRetentionDays, rescueBundlePath, rescueRefName } from './rescueRefs.js';
+import { getRescueRetentionDays, getSalvageRetentionRecordDirectory, rescueBundlePath, rescueRefName } from './rescueRefs.js';
 
 /**
  * The salvage ladder, tried in order once the final push from a worktree fails:
@@ -298,9 +298,39 @@ export interface SalvageRetentionInfo {
     branchName: string;
 }
 
-/** Writes `.retention-info.json` so cleanupWorktree keeps this worktree regardless of
- * WORKTREE_RETENTION_STRATEGY, and cleanupExpiredWorktrees removes it after retention.
- * A retention of 0 days writes no cleanup deadline, so the worktree is never expired. */
+/** The authoritative retention decision, stored outside the checkout and keyed by the
+ * resolved worktree path. */
+export interface SalvageRetentionRecord extends SalvageRetentionInfo {
+    worktreePath: string;
+}
+
+async function resolveWorktreePath(worktreePath: string): Promise<string> {
+    return fs.realpath(path.resolve(worktreePath));
+}
+
+function salvageRetentionRecordPath(resolvedWorktreePath: string, directory = getSalvageRetentionRecordDirectory()): string {
+    const key = crypto.createHash('sha256').update(resolvedWorktreePath).digest('hex');
+    return path.join(directory, `${key}.json`);
+}
+
+async function writeFileAtomically(filePath: string, content: string): Promise<void> {
+    // O_EXCL never follows a symlink, and the rename replaces the directory entry rather
+    // than the target of a symlink already at filePath.
+    const tempPath = path.join(path.dirname(filePath), `${path.basename(filePath)}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+    try {
+        await fs.writeFile(tempPath, content, { flag: 'wx', mode: 0o644 });
+        await fs.rename(tempPath, filePath);
+    } catch (error) {
+        await fs.remove(tempPath).catch(() => undefined);
+        throw error;
+    }
+}
+
+/** Records in worker-controlled storage that the salvage ladder kept this worktree, so
+ * cleanupWorktree keeps it regardless of WORKTREE_RETENTION_STRATEGY and
+ * cleanupExpiredWorktrees removes it after retention. A retention of 0 days writes no
+ * cleanup deadline, so the worktree is never expired. `.retention-info.json` in the
+ * worktree is informational only: repository contents can forge it. */
 export async function writeSalvageRetentionMarker(worktreePath: string, details: { taskId: string; branchName: string; retentionHours?: number | null }): Promise<void> {
     const retentionDays = getRescueRetentionDays();
     const retentionHours = details.retentionHours !== undefined ? details.retentionHours : (retentionDays === 0 ? null : retentionDays * 24);
@@ -314,22 +344,23 @@ export async function writeSalvageRetentionMarker(worktreePath: string, details:
         taskId: details.taskId,
         branchName: details.branchName,
     };
+    const resolvedPath = await resolveWorktreePath(worktreePath);
+    const record: SalvageRetentionRecord = { ...info, worktreePath: resolvedPath };
+    const recordPath = salvageRetentionRecordPath(resolvedPath);
+    await fs.ensureDir(path.dirname(recordPath));
+    await writeFileAtomically(recordPath, JSON.stringify(record));
+
     // The worktree is repository-controlled: `.retention-info.json` may be a symlink to a
-    // host file. Write a freshly created temp file (O_EXCL never follows a symlink) and
-    // rename it over the directory entry, which replaces a symlink rather than its target.
-    const markerPath = path.join(worktreePath, '.retention-info.json');
-    const tempPath = path.join(worktreePath, `.retention-info.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+    // host file, which the atomic write replaces instead of writing through.
     try {
-        await fs.writeFile(tempPath, JSON.stringify(info), { flag: 'wx', mode: 0o644 });
-        await fs.rename(tempPath, markerPath);
+        await writeFileAtomically(path.join(worktreePath, '.retention-info.json'), JSON.stringify(info));
     } catch (error) {
-        await fs.remove(tempPath).catch(() => undefined);
-        throw error;
+        logger.warn({ worktreePath, error: errorMessage(error) }, 'Could not write informational salvage marker into the retained worktree');
     }
 }
 
-/** True while a salvage marker protects its worktree: indefinitely without a deadline,
- * otherwise until the scheduled cleanup. */
+/** True while a salvage retention record protects its worktree: indefinitely without a
+ * deadline, otherwise until the scheduled cleanup. */
 export function isActiveSalvageRetention(info: unknown): boolean {
     if (!info || typeof info !== 'object') return false;
     const { reason, scheduledCleanup } = info as Partial<SalvageRetentionInfo>;
@@ -337,12 +368,60 @@ export function isActiveSalvageRetention(info: unknown): boolean {
     return scheduledCleanup === null || Date.parse(scheduledCleanup ?? '') > Date.now();
 }
 
-export async function isSalvageRetainedWorktree(worktreePath: string): Promise<boolean> {
+/** The worker-written retention record for this worktree, if any. */
+export async function readSalvageRetentionRecord(worktreePath: string): Promise<{ record: SalvageRetentionRecord; recordPath: string } | undefined> {
+    let resolvedPath: string;
     try {
-        return isActiveSalvageRetention(await fs.readJson(path.join(worktreePath, '.retention-info.json')));
+        resolvedPath = await resolveWorktreePath(worktreePath);
     } catch {
-        return false;
+        return undefined;
     }
+    const recordPath = salvageRetentionRecordPath(resolvedPath);
+    let record: Partial<SalvageRetentionRecord>;
+    try {
+        record = await fs.readJson(recordPath);
+    } catch {
+        return undefined;
+    }
+    if (record?.worktreePath !== resolvedPath) return undefined;
+    return { record: record as SalvageRetentionRecord, recordPath };
+}
+
+export async function isSalvageRetainedWorktree(worktreePath: string): Promise<boolean> {
+    return isActiveSalvageRetention((await readSalvageRetentionRecord(worktreePath))?.record);
+}
+
+/** Drops the record once its worktree is gone, so the path can be reused. */
+export async function removeSalvageRetentionRecord(recordPath: string): Promise<void> {
+    await fs.remove(recordPath).catch(error => {
+        logger.warn({ recordPath, error: errorMessage(error) }, 'Could not remove salvage retention record');
+    });
+}
+
+/** Removes records whose worktree an operator (or anything else) already deleted. A
+ * record is only written for an existing worktree, so a missing path is final. */
+export async function pruneOrphanSalvageRetentionRecords(directory = getSalvageRetentionRecordDirectory()): Promise<number> {
+    let entries: string[];
+    try {
+        entries = await fs.readdir(directory);
+    } catch {
+        return 0;
+    }
+    let removed = 0;
+    for (const entry of entries.filter(name => name.endsWith('.json'))) {
+        const recordPath = path.join(directory, entry);
+        let worktreePath: unknown;
+        try {
+            ({ worktreePath } = await fs.readJson(recordPath));
+        } catch {
+            continue;
+        }
+        if (typeof worktreePath === 'string' && !await fs.pathExists(worktreePath)) {
+            await removeSalvageRetentionRecord(recordPath);
+            removed++;
+        }
+    }
+    return removed;
 }
 
 export interface WorktreePushSalvageOptions<T> {

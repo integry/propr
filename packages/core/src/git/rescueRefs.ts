@@ -61,12 +61,22 @@ export function getRescueRetentionDays(): number {
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_RESCUE_RETENTION_DAYS;
 }
 
+function getDataDirectory(): string {
+    return process.env.DATA_DIR
+        ?? (process.env.DB_FILENAME ? path.dirname(path.resolve(process.env.DB_FILENAME)) : path.join(process.cwd(), 'data'));
+}
+
 /** Durable location next to the SQLite database unless PUSH_RESCUE_BUNDLE_DIR overrides it. */
 export function getRescueBundleDirectory(): string {
     if (process.env.PUSH_RESCUE_BUNDLE_DIR) return path.resolve(process.env.PUSH_RESCUE_BUNDLE_DIR);
-    const dataDir = process.env.DATA_DIR
-        ?? (process.env.DB_FILENAME ? path.dirname(path.resolve(process.env.DB_FILENAME)) : path.join(process.cwd(), 'data'));
-    return path.join(dataDir, 'rescue');
+    return path.join(getDataDirectory(), 'rescue');
+}
+
+/** Worker-controlled records of worktrees kept by the last salvage rung. Kept outside every
+ * checkout, so repository contents cannot claim salvage retention. */
+export function getSalvageRetentionRecordDirectory(): string {
+    if (process.env.PUSH_RESCUE_WORKTREE_RECORD_DIR) return path.resolve(process.env.PUSH_RESCUE_WORKTREE_RECORD_DIR);
+    return path.join(getDataDirectory(), 'rescue-worktrees');
 }
 
 export function rescueBundlePath(repoOwner: string, repoName: string, taskId: string, directory = getRescueBundleDirectory()): string {

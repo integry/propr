@@ -102,7 +102,7 @@ export {
     SALVAGE_RETENTION_REASON, type PushSalvageRung, type PushSalvageEvent, type PushFailureRecord, type PushSalvageOperations, type PushSalvageAttempt,
 } from './git/pushSalvage.js';
 export {
-    RESCUE_REF_PREFIX, rescueRefName, rescueRefCreatedAt, isRescueRef, sanitizeRescueId, getRescueRetentionDays, getRescueBundleDirectory, rescueBundlePath,
+    RESCUE_REF_PREFIX, rescueRefName, rescueRefCreatedAt, isRescueRef, sanitizeRescueId, getRescueRetentionDays, getRescueBundleDirectory, getSalvageRetentionRecordDirectory, rescueBundlePath,
     pruneRescueRefs, pruneRescueBundles, createGitRescueRefPruneDependencies, type RescueRefPruneDependencies, type RemoteRescueRef,
 } from './git/rescueRefs.js';
 export { cleanupWorktree, cleanupExpiredWorktrees, safePruneWorktrees, setupWorktreePermissions, addToSafeDirectories, verifyWorktreeCreation, setupWorktreeRemote, getWorktreePath } from './git/worktreeOperations.js';

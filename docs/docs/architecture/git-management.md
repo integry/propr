@@ -88,7 +88,7 @@ Every job that pushes from a worktree (implementation, PR follow-up, `/fix`, ult
 1. Retry the push once with a refreshed installation token.
 2. Push the same `HEAD` to `refs/propr/rescue/<taskId>--<timestamp>` on the same remote; the UTC creation time in the name is what retention is measured from.
 3. Write a `git bundle` of `HEAD` (only commits the remote-tracking refs lack, or the full history when there is no usable boundary) to `<DATA_DIR>/rescue/<owner>/<repo>/<taskId>.bundle`.
-4. Keep the worktree: write `.retention-info.json` with `"reason": "push_salvage"` (which `cleanupWorktree` honours regardless of `WORKTREE_RETENTION_STRATEGY`) and detach its `HEAD` so the branch can be checked out by the next job.
+4. Keep the worktree: record the retention in `PUSH_RESCUE_WORKTREE_RECORD_DIR`, outside the checkout (which `cleanupWorktree` and `cleanupExpiredWorktrees` honour regardless of `WORKTREE_RETENTION_STRATEGY`; the informational `.retention-info.json` written into the worktree is never trusted, since repository contents could forge it) and detach its `HEAD` so the branch can be checked out by the next job.
 
 The original git error is classified as `push_protection` (with GitHub's unblock URL), `ruleset_or_branch_protection`, `non_fast_forward`, `auth`, `network` or `unknown`. The rung and diagnosis are written to the task timeline and to the `pushFailure` metadata of the task's `failed` history entry, which the task detail view, `propr task get` and the GitHub failure comment render together with the recovery command.
 

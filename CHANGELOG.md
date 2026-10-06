@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retries once with a refreshed installation token, then pushes the commits to
   `refs/propr/rescue/<taskId>--<timestamp>` on the same remote, then writes a git bundle to
   `<DATA_DIR>/rescue/` (`PUSH_RESCUE_BUNDLE_DIR`), and finally keeps the
-  worktree with a `.retention-info.json` marker. The rejection is classified as
+  worktree, recorded in `<DATA_DIR>/rescue-worktrees/` (`PUSH_RESCUE_WORKTREE_RECORD_DIR`)
+  outside the checkout. The rejection is classified as
   `push_protection` (with GitHub's unblock URL verbatim),
   `ruleset_or_branch_protection`, `non_fast_forward`, `auth`, `network` or
   `unknown`, and the class, the salvage rung and the exact recovery command are
