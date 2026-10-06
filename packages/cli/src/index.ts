@@ -28,6 +28,7 @@ import {
   createRemoteStatusCommand,
   createQueueCommand,
   createBackendCommand,
+  createStatsCommand,
   createInitCommand,
   createSetupCommand,
   createAgentSkillCommand,
@@ -439,6 +440,7 @@ program.addCommand(createTodoCommand());
 program.addCommand(createBackendCommand());
 program.addCommand(createRemoteStatusCommand());
 program.addCommand(createQueueCommand());
+program.addCommand(createStatsCommand());
 
 function isCliEntryPoint(): boolean {
   const invocation = process.argv[1];

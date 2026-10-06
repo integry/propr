@@ -13,7 +13,10 @@
 import { getModelName, type AnalysisResult } from '@propr/core';
 import { formatFixCommand } from '@propr/shared';
 import type { ReviewAssignment } from './prReviewRunner.js';
-import { FIX_COMMAND_COPY_LABEL, highestReviewRecordNumber, parseStructuredReview, renderPublicReview } from './reviewOutputParser.js';
+import {
+    FIX_COMMAND_COPY_LABEL, highestReviewRecordNumber, parsePublishableReview, parseStructuredReview,
+    publishedReviewScore, renderPublicReview,
+} from './reviewOutputParser.js';
 
 /** HTML comment marker prefix used to identify AI review comments. */
 export const REVIEW_COMMENT_MARKER_PREFIX = '<!-- propr:ai-review';
@@ -126,6 +129,35 @@ function buildFixCommandCopyBlock(publicResponse: string | null): string {
     return fixCommand ? `\n${FIX_COMMAND_COPY_LABEL}\n\n\`\`\`text\n${fixCommand}\n\`\`\`` : '';
 }
 
+const currentCheckScoreCap = (hasCurrentCheckFailure?: boolean) => hasCurrentCheckFailure
+    ? { maximum: 7, reason: 'Score capped at 7 because a current-head check is failing.' }
+    : undefined;
+
+export interface EffectiveReviewScore {
+    score: number;
+    blockerCount: number;
+    suggestionCount: number;
+}
+
+/**
+ * The effective score `buildReviewComment` publishes for a review response,
+ * including the blocker and current-head check caps; null when the comment
+ * would not show a valid scored review.
+ */
+export function effectiveReviewScore(
+    response: string,
+    options: { hasCurrentCheckFailure?: boolean; changedFilePaths?: readonly string[] } = {},
+): EffectiveReviewScore | null {
+    const publishable = parsePublishableReview(normalizeSuggestionMetadata(response), { changedFilePaths: options.changedFilePaths });
+    const parsed = publishable?.parsed;
+    if (!parsed || parsed.score === null) return null;
+    return {
+        score: publishedReviewScore(parsed.score, currentCheckScoreCap(options.hasCurrentCheckFailure)),
+        blockerCount: parsed.actionableFindings.length,
+        suggestionCount: parsed.suggestions.length,
+    };
+}
+
 /**
  * Build the GitHub comment body for a successful review.
  *
@@ -168,10 +200,7 @@ export function buildReviewComment(
     const modelDisplayName = getModelName(effectiveModel);
 
     const sanitizedResponse = normalizeSuggestionMetadata(response);
-    const currentCheckScoreCap = options.hasCurrentCheckFailure
-        ? { maximum: 7, reason: 'Score capped at 7 because a current-head check is failing.' }
-        : undefined;
-    const publicResponse = renderPublicReview(sanitizedResponse, currentCheckScoreCap, {
+    const publicResponse = renderPublicReview(sanitizedResponse, currentCheckScoreCap(options.hasCurrentCheckFailure), {
         firstFindingNumber: options.firstFindingNumber,
         firstSuggestionNumber: options.firstSuggestionNumber,
         changedFilePaths: options.changedFilePaths,
