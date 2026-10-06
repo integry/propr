@@ -8,11 +8,70 @@ import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import {
     salvageFailedPush, createWorktreePushSalvageOperations, PushFailedError, getPushFailure, writeSalvageRetentionMarker,
-    formatPushFailureMarkdown, isSalvageRetainedWorktree, type PushSalvageEvent, type PushSalvageOperations,
+    formatPushFailureMarkdown, isSalvageRetainedWorktree, buildRecoveryInstruction, quoteShellArgument, type PushSalvageEvent, type PushSalvageOperations,
 } from '../packages/core/src/git/pushSalvage.js';
 import { extractUnblockUrls } from '../packages/core/src/git/pushRejection.js';
 import { cleanupExpiredWorktrees, cleanupWorktree } from '../packages/core/src/git/worktreeOperations.js';
 import { pushBranch } from '../packages/core/src/git/repoBranching.js';
+
+test('recovery commands quote branch names with shell metacharacters and paths with spaces', () => {
+    const branchName = "fix;id>pwned;#it's";
+    const quotedBranch = `'fix;id>pwned;#it'\\''s'`;
+    const base = { branchName, repository: 'integry/propr' };
+    const command = (instruction: string) => instruction.match(/with: `([^`]+)`/)![1];
+
+    assert.equal(quoteShellArgument(branchName), quotedBranch);
+    assert.equal(quoteShellArgument('2736/salvage'), '2736/salvage');
+    assert.equal(quoteShellArgument(''), "''");
+    assert.equal(
+        command(buildRecoveryInstruction({ ...base, rung: 'rescue_ref', rescueRef: 'refs/propr/rescue/task-1' })),
+        `git fetch origin refs/propr/rescue/task-1 && git checkout -B ${quotedBranch} FETCH_HEAD`,
+    );
+    assert.equal(
+        command(buildRecoveryInstruction({ ...base, rung: 'bundle', bundlePath: '/data/my rescue/$HOME/task-1.bundle' })),
+        `git fetch '/data/my rescue/$HOME/task-1.bundle' HEAD && git checkout -B ${quotedBranch} FETCH_HEAD`,
+    );
+    assert.equal(
+        command(buildRecoveryInstruction({ ...base, rung: 'worktree', worktreePath: '/work trees/a;b' })),
+        `git -C '/work trees/a;b' push origin 'HEAD:refs/heads/fix;id>pwned;#it'\\''s'`,
+    );
+});
+
+test('generated bundle and worktree recovery commands run literally in a POSIX shell', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr rescue quoting-'));
+    const branchName = 'fix;id>pwned;#';
+    const command = (instruction: string) => instruction.match(/with: `([^`]+)`/)![1];
+    try {
+        const worktreePath = path.join(tempDir, "work tree;it's");
+        await mkdir(worktreePath);
+        await git(worktreePath, ['init', '-q']);
+        await git(worktreePath, ['config', 'user.email', 'test@example.com']);
+        await git(worktreePath, ['config', 'user.name', 'Test']);
+        await writeFile(path.join(worktreePath, 'agent.txt'), 'agent work\n');
+        await git(worktreePath, ['add', '.']);
+        await git(worktreePath, ['commit', '-q', '-m', 'agent work']);
+        const head = await git(worktreePath, ['rev-parse', 'HEAD']);
+        const bundlePath = path.join(tempDir, 'my bundles', 'task-1.bundle');
+        await mkdir(path.dirname(bundlePath));
+        await git(worktreePath, ['bundle', 'create', bundlePath, 'HEAD']);
+
+        const restored = path.join(tempDir, 'restored');
+        await mkdir(restored);
+        await git(restored, ['init', '-q']);
+        await execGit('sh', ['-c', command(buildRecoveryInstruction({ rung: 'bundle', bundlePath, branchName, repository: 'integry/propr' }))], { cwd: restored });
+        assert.equal(await git(restored, ['rev-parse', `refs/heads/${branchName}`]), head);
+        assert.equal(existsSync(path.join(restored, 'pwned')), false);
+
+        await git(worktreePath, ['remote', 'add', 'origin', restored]);
+        await git(restored, ['checkout', '-q', '--detach']);
+        await git(restored, ['branch', '-q', '-D', branchName]);
+        await execGit('sh', ['-c', command(buildRecoveryInstruction({ rung: 'worktree', worktreePath, branchName, repository: 'integry/propr' }))], { cwd: tempDir });
+        assert.equal(await git(restored, ['rev-parse', `refs/heads/${branchName}`]), head);
+        assert.equal(existsSync(path.join(tempDir, 'pwned')), false);
+    } finally {
+        await rm(tempDir, { recursive: true, force: true });
+    }
+});
 
 const execGit = promisify(execFile);
 const UNBLOCK_URL = 'https://github.com/integry/propr/security/secret-scanning/unblock-secret/2Mf8bjCnMb7BJFkLxmEB';

@@ -94,15 +94,23 @@ function errorMessage(error: unknown): string {
     return redactAuthenticatedGitUrl(error instanceof Error ? error.message : String(error));
 }
 
+/** Quotes one argument for a POSIX shell so branch names and paths stay literal when the
+ * recovery command is copied into a terminal. Plain arguments are left bare for readability. */
+export function quoteShellArgument(value: string): string {
+    if (value !== '' && /^[A-Za-z0-9_\/.:@%+=,-]+$/.test(value)) return value;
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 export function buildRecoveryInstruction(record: Pick<PushFailureRecord, 'rung' | 'rescueRef' | 'bundlePath' | 'worktreePath' | 'branchName' | 'repository'>): string {
-    const branch = record.branchName;
+    const q = quoteShellArgument;
+    const branch = q(record.branchName);
     switch (record.rung) {
         case 'rescue_ref':
-            return `The commits were pushed to \`${record.rescueRef}\` on ${record.repository}. Recover them with: \`git fetch origin ${record.rescueRef} && git checkout -B ${branch} FETCH_HEAD\`, then push the branch.`;
+            return `The commits were pushed to \`${record.rescueRef}\` on ${record.repository}. Recover them with: \`git fetch origin ${q(record.rescueRef ?? '')} && git checkout -B ${branch} FETCH_HEAD\`, then push the branch.`;
         case 'bundle':
-            return `The commits were saved to the git bundle \`${record.bundlePath}\` on the ProPR host. Recover them with: \`git fetch ${record.bundlePath} HEAD && git checkout -B ${branch} FETCH_HEAD\`, then push the branch.`;
+            return `The commits were saved to the git bundle \`${record.bundlePath}\` on the ProPR host. Recover them with: \`git fetch ${q(record.bundlePath ?? '')} HEAD && git checkout -B ${branch} FETCH_HEAD\`, then push the branch.`;
         case 'worktree':
-            return `The worktree was kept at \`${record.worktreePath}\` on the ProPR host (marked with .retention-info.json). Recover the commits with: \`git -C ${record.worktreePath} push origin HEAD:refs/heads/${branch}\`, or copy them out before the retention period ends.`;
+            return `The worktree was kept at \`${record.worktreePath}\` on the ProPR host (marked with .retention-info.json). Recover the commits with: \`git -C ${q(record.worktreePath ?? '')} push origin ${q(`HEAD:refs/heads/${record.branchName}`)}\`, or copy them out before the retention period ends.`;
         default:
             return 'ProPR could not preserve the commits: the rescue ref push, bundle and worktree retention all failed. See the worker logs.';
     }
