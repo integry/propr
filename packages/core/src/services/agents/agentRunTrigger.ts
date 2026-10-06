@@ -9,6 +9,7 @@ import { getIssueQueue } from '../../queue/taskQueue.js';
 import type { AgentRunJobData, AgentRunPhase } from '../../queue/taskQueue.types.js';
 import logger from '../../utils/logger.js';
 import type { StoredAgentDefinition } from './agentDefinitionStore.js';
+import { createAgentRunCostGate, type AgentRunCostGateOptions } from './agentRunCostGate.js';
 import {
   createAgentRun,
   failUnclaimedAgentRunAction,
@@ -66,6 +67,11 @@ export interface AgentRunTriggerDependencies {
   loadRepos?: () => Promise<RepoToMonitor[]>;
   /** The configured default agent alias (settings.default_agent_alias), if any. */
   loadDefaultAgentAlias?: () => Promise<string | null>;
+  /**
+   * Options for the default cost gate `triggerAgentRun` uses when the input
+   * names no gate (e.g. the usage source); without them a shared gate is used.
+   */
+  costGate?: AgentRunCostGateOptions;
 }
 
 export type AgentRunGateDecision =
@@ -105,6 +111,17 @@ export interface TriggerAgentRunResult {
   created: boolean;
   /** True only when this call enqueued the report phase. */
   enqueued: boolean;
+}
+
+let sharedCostGate: AgentRunGate | null = null;
+
+/**
+ * The gate an unattended run is admitted through unless the caller supplies
+ * one. Shared, so its "usage unknown" log stays once per provider.
+ */
+function defaultCostGate({ now, costGate }: AgentRunTriggerDependencies): AgentRunGate {
+  if (costGate) return createAgentRunCostGate({ now, ...costGate });
+  return sharedCostGate ??= createAgentRunCostGate();
 }
 
 async function defaultEnqueue(name: string, data: AgentRunJobData, options: JobsOptions): Promise<unknown> {
@@ -279,7 +296,9 @@ export async function validateAgentDefinitionRuntime(
  * Throws `AgentRunTriggerError` 409 `AGENT_DISABLED` for a disabled definition
  * and 400 `AGENT_INVALID` when the definition cannot run with the current
  * configuration; no run is created in either case. A gate may create the run
- * as `skipped` or `deferred` instead, without enqueueing. If enqueueing fails
+ * as `skipped` or `deferred` instead, without enqueueing. Without a `gate`
+ * input the Agent Tank cost gate is used, so every caller of this primitive
+ * checks usage before an unattended run is queued. If enqueueing fails
  * after the run exists, the run is marked `failed` and the error is rethrown.
  */
 export async function triggerAgentRun(
@@ -298,7 +317,8 @@ export async function triggerAgentRun(
   const invalid = await validateAgentDefinitionRuntime(definition, deps);
   if (invalid) throw new AgentRunTriggerError(invalid, 400, 'AGENT_INVALID');
 
-  const decision = (await gate?.({ definition, trigger, triggerSource })) ?? { action: 'proceed' as const };
+  const admit = gate ?? defaultCostGate(deps);
+  const decision = (await admit({ definition, trigger, triggerSource })) ?? { action: 'proceed' as const };
   const base = { definition, trigger, triggerSource, idempotencyKey };
   const { run, created } = decision.action === 'skip'
     ? await createAgentRun({ ...base, initialState: 'skipped', skipReason: decision.reason }, storeDeps)

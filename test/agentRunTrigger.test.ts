@@ -65,6 +65,8 @@ describe('triggerAgentRun', () => {
   const deps = (overrides: Partial<AgentRunTriggerDependencies> = {}): AgentRunTriggerDependencies => ({
     database, now: () => NOW, enqueue: queue.enqueue,
     loadRepos: async () => repos, loadAgents: async () => agents, loadSyntheticAgents: async () => synthetic,
+    // The default cost gate sees no usage, so unattended runs proceed.
+    costGate: { loadThreshold: async () => 90, evaluateCapacity: async () => ({ status: 'unknown', provider: 'claude' }) },
     ...overrides,
   });
   const define = (overrides: Partial<CreateAgentDefinitionInput> = {}): Promise<StoredAgentDefinition> =>
@@ -115,6 +117,22 @@ describe('triggerAgentRun', () => {
     await triggerAgentRun({ definition, trigger: 'schedule', idempotencyKey: 'slot', gate }, deps());
     await triggerAgentRun({ definition, trigger: 'schedule', idempotencyKey: 'slot', gate }, deps());
     assert.equal(gateCalls, 1);
+  });
+
+  test('without a gate input, an unattended run is admitted through the cost gate', async () => {
+    const definition = await define();
+    const weekly = { costGate: { loadThreshold: async () => 90,
+      evaluateCapacity: async () => ({ status: 'near_limit' as const, provider: 'claude', weeklyPercent: 95 }) } };
+    const result = await triggerAgentRun({ definition, trigger: 'api' }, deps(weekly));
+    assert.equal(result.run.state, 'skipped');
+    assert.match(result.run.skipReason ?? '', /^Weekly subscription usage for claude is at 95% \(pause threshold 90%\)/);
+    assert.equal(result.enqueued, false);
+    assert.equal(queue.calls.length, 0);
+
+    // A manual run is attended and still proceeds through the same default gate.
+    const manual = await triggerAgentRun({ definition, trigger: 'manual' }, deps(weekly));
+    assert.equal(manual.run.state, 'queued');
+    assert.equal(queue.calls.length, 1);
   });
 
   test('a disabled definition is rejected with AGENT_DISABLED and creates no run', async () => {

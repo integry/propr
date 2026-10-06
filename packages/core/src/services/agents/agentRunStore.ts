@@ -444,6 +444,39 @@ export async function listDueDeferredRuns(
 }
 
 /**
+ * Queued runs a deferred retry admitted whose report phase may not have been
+ * enqueued yet. Moving a deferred run to `queued` keeps its `deferred_until`
+ * as the dispatch obligation; `markRetriedAgentRunDispatched` clears it once
+ * the job is enqueued. A retry interrupted in between (e.g. the daemon exited)
+ * leaves the run here for the consumer to dispatch again.
+ */
+export async function listUndispatchedRetriedRuns(
+  limit: number,
+  { database = db }: AgentRunStoreDependencies = {},
+): Promise<StoredAgentRun[]> {
+  const rows = await database(TABLE).where({ state: 'queued' }).whereNotNull('deferred_until')
+    .orderBy([{ column: 'deferred_until', order: 'asc' }, { column: 'id', order: 'asc' }])
+    .limit(Math.max(Math.trunc(limit), 1)).select<AgentRunRow[]>();
+  return rows.map(rowToAgentRun);
+}
+
+/**
+ * Releases the dispatch obligation of a retried run after its report phase was
+ * enqueued. Guarded by the retry time the run was admitted with, so it never
+ * clears a later deferral; it applies in any later state because the worker
+ * may already have claimed the run.
+ */
+export async function markRetriedAgentRunDispatched(
+  id: string,
+  admittedDeferredUntil: number,
+  { database = db, now = Date.now }: AgentRunStoreDependencies = {},
+): Promise<boolean> {
+  const updated = await database(TABLE).where({ id, deferred_until: admittedDeferredUntil }).whereNot('state', 'deferred')
+    .update({ deferred_until: null, updated_at: now() });
+  return Number(updated) > 0;
+}
+
+/**
  * Defers a due deferred run again, counting the deferral. Guarded by the
  * `deferred_until` the caller evaluated, so two retries of the same due run
  * cannot both count a deferral. Returns null when the run left `deferred` or

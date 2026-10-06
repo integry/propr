@@ -1,7 +1,15 @@
 import logger from '../../utils/logger.js';
 import { getAgentDefinition, type StoredAgentDefinition } from './agentDefinitionStore.js';
 import { createAgentRunCostGate } from './agentRunCostGate.js';
-import { listDueDeferredRuns, redeferAgentRun, transitionAgentRun, transitionDeferredAgentRun, type StoredAgentRun } from './agentRunStore.js';
+import {
+  listDueDeferredRuns,
+  listUndispatchedRetriedRuns,
+  markRetriedAgentRunDispatched,
+  redeferAgentRun,
+  transitionAgentRun,
+  transitionDeferredAgentRun,
+  type StoredAgentRun,
+} from './agentRunStore.js';
 import { enqueueAgentRunPhase, type AgentRunGate, type AgentRunTriggerDependencies } from './agentRunTrigger.js';
 
 /**
@@ -18,6 +26,12 @@ import { enqueueAgentRunPhase, type AgentRunGate, type AgentRunTriggerDependenci
  * was evaluated at, so a run cancelled while it is evaluated stays cancelled,
  * overlapping retries never enqueue or count a deferral twice, and an older
  * evaluation never queues or skips a run another retry has re-deferred.
+ *
+ * A run moved to `queued` keeps its `deferred_until` until its report phase is
+ * enqueued. Each call first re-enqueues queued runs still carrying it, so a
+ * retry interrupted between the two (the daemon exited) is still dispatched.
+ * The job id is deterministic and the worker skips a run that is no longer
+ * `queued`, so dispatching again is safe.
  */
 
 export const DEFAULT_DEFERRED_AGENT_RUN_BATCH_SIZE = 50;
@@ -32,6 +46,8 @@ export interface DeferredAgentRunRetryDependencies extends Pick<AgentRunTriggerD
 
 export interface DeferredAgentRunRetryResult {
   queued: number;
+  /** Admitted runs whose interrupted dispatch was completed. */
+  redispatched: number;
   deferred: number;
   skipped: number;
   failed: number;
@@ -75,12 +91,23 @@ async function retryDeferredRun(
     await transitionAgentRun(run.id, ['queued'], 'failed', { failureReason: `Failed to enqueue the agent run on the job queue: ${message}` }, storeDeps);
     return 'failed';
   }
+  await markRetriedAgentRunDispatched(run.id, evaluatedDeferredUntil, storeDeps);
   return 'queued';
 }
 
 /**
- * Re-evaluates the deferred runs that are due. A run whose evaluation throws
- * stays deferred and is retried on the next call.
+ * Completes the dispatch of an admitted run whose retry was interrupted after
+ * it was queued. An enqueue failure leaves the obligation for the next call.
+ */
+async function redispatchRetriedRun(run: StoredAgentRun, deps: DeferredAgentRunRetryDependencies): Promise<void> {
+  await enqueueAgentRunPhase(run, 'report', deps);
+  await markRetriedAgentRunDispatched(run.id, run.deferredUntil!, { database: deps.database, now: deps.now });
+}
+
+/**
+ * Dispatches admitted runs left undispatched, then re-evaluates the deferred
+ * runs that are due. A run whose evaluation throws stays deferred and is
+ * retried on the next call.
  */
 export async function retryDueDeferredAgentRuns(deps: DeferredAgentRunRetryDependencies = {}): Promise<DeferredAgentRunRetryResult> {
   const {
@@ -89,7 +116,16 @@ export async function retryDueDeferredAgentRuns(deps: DeferredAgentRunRetryDepen
     gate = createAgentRunCostGate({ now }),
     loadDefinition = run => getAgentDefinition(run.definitionId, run.ownerId, { database: deps.database }),
   } = deps;
-  const result: DeferredAgentRunRetryResult = { queued: 0, deferred: 0, skipped: 0, failed: 0 };
+  const result: DeferredAgentRunRetryResult = { queued: 0, redispatched: 0, deferred: 0, skipped: 0, failed: 0 };
+  const undispatched = await listUndispatchedRetriedRuns(batchSize, { database: deps.database });
+  for (const run of undispatched) {
+    try {
+      await redispatchRetriedRun(run, { ...deps, now });
+      result.redispatched += 1;
+    } catch (error) {
+      logger.error({ runId: run.id, err: error }, 'Could not dispatch an admitted deferred agent run; retrying on the next pass');
+    }
+  }
   const due = await listDueDeferredRuns(now(), batchSize, { database: deps.database });
   for (const run of due) {
     try {
@@ -99,7 +135,7 @@ export async function retryDueDeferredAgentRuns(deps: DeferredAgentRunRetryDepen
       logger.error({ runId: run.id, err: error }, 'Could not retry a deferred agent run; it stays deferred');
     }
   }
-  if (due.length > 0) logger.info({ due: due.length, ...result }, 'Retried due deferred agent runs');
+  if (due.length > 0 || undispatched.length > 0) logger.info({ due: due.length, ...result }, 'Retried due deferred agent runs');
   return result;
 }
 

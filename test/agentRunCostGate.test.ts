@@ -7,7 +7,7 @@ import type { AgentConfig } from '../packages/core/src/config/configManagerAgent
 import type { RepoToMonitor } from '../packages/core/src/config/configManager.ts';
 import type { SyntheticUsageSnapshot, SyntheticUsageSnapshotProvider } from '../packages/core/src/services/syntheticRoutingTypes.ts';
 import { createAgentDefinition, type StoredAgentDefinition } from '../packages/core/src/services/agents/agentDefinitionStore.ts';
-import { getAgentRunById, transitionAgentRun, type StoredAgentRun } from '../packages/core/src/services/agents/agentRunStore.ts';
+import { getAgentRunById, transitionAgentRun, transitionDeferredAgentRun, type StoredAgentRun } from '../packages/core/src/services/agents/agentRunStore.ts';
 import { retryDueDeferredAgentRuns } from '../packages/core/src/services/agents/agentRunDeferredRetry.ts';
 import { triggerAgentRun, type AgentRunGate } from '../packages/core/src/services/agents/agentRunTrigger.ts';
 import {
@@ -340,7 +340,7 @@ describe('deferred run retry consumer', () => {
     const run = await deferredRun();
     clock = run.deferredUntil! - 1;
     usage = { claude: { sessionPercent: 10 } };
-    assert.deepEqual(await retry(), { queued: 0, deferred: 0, skipped: 0, failed: 0 });
+    assert.deepEqual(await retry(), { queued: 0, redispatched: 0, deferred: 0, skipped: 0, failed: 0 });
     assert.equal((await getAgentRunById(run.id, { database }))?.state, 'deferred');
     assert.deepEqual(enqueued, []);
   });
@@ -349,11 +349,14 @@ describe('deferred run retry consumer', () => {
     const run = await deferredRun();
     clock = run.deferredUntil!;
     usage = { claude: { sessionPercent: 10 } };
-    assert.deepEqual(await retry(), { queued: 1, deferred: 0, skipped: 0, failed: 0 });
-    assert.equal((await getAgentRunById(run.id, { database }))?.state, 'queued');
+    assert.deepEqual(await retry(), { queued: 1, redispatched: 0, deferred: 0, skipped: 0, failed: 0 });
+    const queued = await getAgentRunById(run.id, { database });
+    assert.equal(queued?.state, 'queued');
+    // Enqueued, so the run no longer carries a dispatch obligation.
+    assert.equal(queued?.deferredUntil, null);
     assert.deepEqual(enqueued, [run.id]);
     // A second pass finds nothing due.
-    assert.deepEqual(await retry(), { queued: 0, deferred: 0, skipped: 0, failed: 0 });
+    assert.deepEqual(await retry(), { queued: 0, redispatched: 0, deferred: 0, skipped: 0, failed: 0 });
     assert.deepEqual(enqueued, [run.id]);
   });
 
@@ -401,7 +404,7 @@ describe('deferred run retry consumer', () => {
     for (const decision of [{ action: 'proceed' as const }, weeklySkip]) {
       const before = (await getAgentRunById(run.id, { database }))!;
       clock = before.deferredUntil!;
-      assert.deepEqual(await retry({ gate: redeferFirst(decision) }), { queued: 0, deferred: 0, skipped: 0, failed: 0 });
+      assert.deepEqual(await retry({ gate: redeferFirst(decision) }), { queued: 0, redispatched: 0, deferred: 0, skipped: 0, failed: 0 });
       const after = (await getAgentRunById(run.id, { database }))!;
       assert.equal(after.state, 'deferred');
       assert.equal(after.deferrals, before.deferrals + 1);
@@ -417,7 +420,7 @@ describe('deferred run retry consumer', () => {
       assert.equal((await retry()).deferred, 1);
       return undefined;
     };
-    assert.deepEqual(await retry({ loadDefinition }), { queued: 0, deferred: 0, skipped: 0, failed: 0 });
+    assert.deepEqual(await retry({ loadDefinition }), { queued: 0, redispatched: 0, deferred: 0, skipped: 0, failed: 0 });
     const current = await getAgentRunById(run.id, { database });
     assert.equal(current?.state, 'deferred');
     assert.equal(current?.deferrals, 2);
@@ -440,7 +443,7 @@ describe('deferred run retry consumer', () => {
       await transitionAgentRun(run.id, ['deferred'], 'cancelled', {}, { database, now });
       return { action: 'proceed' };
     };
-    assert.deepEqual(await retry({ gate: cancelling }), { queued: 0, deferred: 0, skipped: 0, failed: 0 });
+    assert.deepEqual(await retry({ gate: cancelling }), { queued: 0, redispatched: 0, deferred: 0, skipped: 0, failed: 0 });
     assert.equal((await getAgentRunById(run.id, { database }))?.state, 'cancelled');
     assert.deepEqual(enqueued, []);
   });
@@ -454,6 +457,41 @@ describe('deferred run retry consumer', () => {
     const skipped = await getAgentRunById(run.id, { database });
     assert.equal(skipped?.state, 'skipped');
     assert.match(skipped?.skipReason ?? '', /disabled or deleted while this run was deferred/);
+    assert.deepEqual(enqueued, []);
+  });
+
+  test('a run queued by a retry interrupted before its enqueue is dispatched on the next pass', async () => {
+    const run = await deferredRun();
+    clock = run.deferredUntil!;
+    // The retry's transition persisted, then the daemon exited before enqueueing.
+    assert.ok(await transitionDeferredAgentRun(run.id, run.deferredUntil!, 'queued', {}, { database, now }));
+    assert.deepEqual(await retry(), { queued: 0, redispatched: 1, deferred: 0, skipped: 0, failed: 0 });
+    assert.deepEqual(enqueued, [run.id]);
+    const dispatched = await getAgentRunById(run.id, { database });
+    assert.equal(dispatched?.state, 'queued');
+    assert.equal(dispatched?.deferredUntil, null);
+    assert.deepEqual(await retry(), { queued: 0, redispatched: 0, deferred: 0, skipped: 0, failed: 0 });
+    assert.deepEqual(enqueued, [run.id]);
+  });
+
+  test('an admitted run whose redispatch fails keeps its obligation until an enqueue succeeds', async () => {
+    const run = await deferredRun();
+    clock = run.deferredUntil!;
+    assert.ok(await transitionDeferredAgentRun(run.id, run.deferredUntil!, 'queued', {}, { database, now }));
+    assert.equal((await retry({ enqueue: async () => { throw new Error('redis down'); } })).redispatched, 0);
+    const pending = await getAgentRunById(run.id, { database });
+    assert.equal(pending?.state, 'queued');
+    assert.equal(pending?.deferredUntil, run.deferredUntil);
+    assert.equal((await retry()).redispatched, 1);
+    assert.deepEqual(enqueued, [run.id]);
+  });
+
+  test('a run claimed by the worker before its dispatch was recorded is not dispatched again', async () => {
+    const run = await deferredRun();
+    clock = run.deferredUntil!;
+    assert.ok(await transitionDeferredAgentRun(run.id, run.deferredUntil!, 'queued', {}, { database, now }));
+    assert.ok(await transitionAgentRun(run.id, ['queued'], 'running', {}, { database, now }));
+    assert.equal((await retry()).redispatched, 0);
     assert.deepEqual(enqueued, []);
   });
 
