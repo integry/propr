@@ -414,6 +414,26 @@ export async function listDueDeferredRuns(
   return rows.map(rowToAgentRun);
 }
 
+/**
+ * Defers a due deferred run again, counting the deferral. Guarded by the
+ * `deferred_until` the caller evaluated, so two retries of the same due run
+ * cannot both count a deferral. Returns null when the run left `deferred` or
+ * was already re-deferred.
+ */
+// eslint-disable-next-line max-params -- the run, the evaluated retry time and the new deferral, plus the shared store dependencies
+export async function redeferAgentRun(
+  id: string,
+  evaluatedDeferredUntil: number,
+  deferredUntil: number,
+  skipReason: string,
+  { database = db, now = Date.now }: AgentRunStoreDependencies = {},
+): Promise<StoredAgentRun | null> {
+  const [updated] = await database(TABLE).where({ id, state: 'deferred', deferred_until: evaluatedDeferredUntil })
+    .update({ deferred_until: deferredUntil, skip_reason: skipReason, deferrals: database.raw('deferrals + 1'), updated_at: now() })
+    .returning('*') as AgentRunRow[];
+  return updated ? rowToAgentRun(updated) : null;
+}
+
 export interface PreviousAgentReport {
   runId: string;
   reportedAt: number;

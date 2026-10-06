@@ -7,8 +7,9 @@ import type { AgentConfig } from '../packages/core/src/config/configManagerAgent
 import type { RepoToMonitor } from '../packages/core/src/config/configManager.ts';
 import type { SyntheticUsageSnapshot, SyntheticUsageSnapshotProvider } from '../packages/core/src/services/syntheticRoutingTypes.ts';
 import { createAgentDefinition, type StoredAgentDefinition } from '../packages/core/src/services/agents/agentDefinitionStore.ts';
-import { transitionAgentRun, type StoredAgentRun } from '../packages/core/src/services/agents/agentRunStore.ts';
-import { triggerAgentRun } from '../packages/core/src/services/agents/agentRunTrigger.ts';
+import { getAgentRunById, transitionAgentRun, type StoredAgentRun } from '../packages/core/src/services/agents/agentRunStore.ts';
+import { retryDueDeferredAgentRuns } from '../packages/core/src/services/agents/agentRunDeferredRetry.ts';
+import { triggerAgentRun, type AgentRunGate } from '../packages/core/src/services/agents/agentRunTrigger.ts';
 import {
   createAgentRunCostGate,
   DEFAULT_AGENT_RUN_USAGE_PAUSE_PERCENT,
@@ -285,22 +286,6 @@ describe('triggerAgentRun with the cost gate', () => {
     assert.deepEqual(enqueued, []);
   });
 
-  test('a retried deferred run is skipped once it has been deferred 6 times', async () => {
-    const gate = gateFor({ claude: { sessionPercent: 95 } });
-    let current = (await triggerAgentRun({ definition: stored, trigger: 'schedule', gate }, deps())).run;
-    while (true) {
-      const decision = await gate({ definition: stored, trigger: current.trigger, triggerSource: null, run: current });
-      if (decision?.action !== 'defer') {
-        assert.equal(decision?.action, 'skip');
-        break;
-      }
-      const queued = await transitionAgentRun(current.id, ['deferred'], 'queued', {}, { database, now: () => NOW });
-      current = (await transitionAgentRun(queued!.id, ['queued'], 'deferred', { deferredUntil: decision.until, skipReason: decision.reason },
-        { database, now: () => NOW }))!;
-    }
-    assert.equal(current.deferrals, 6);
-  });
-
   test('a manual run at 99% is queued and enqueued', async () => {
     const result = await triggerAgentRun({ definition: stored, trigger: 'manual', gate: gateFor({ claude: { sessionPercent: 99, weeklyPercent: 99 } }) }, deps());
     assert.equal(result.run.state, 'queued');
@@ -311,6 +296,142 @@ describe('triggerAgentRun with the cost gate', () => {
     const result = await triggerAgentRun({ definition: stored, trigger: 'schedule', gate: gateFor({}) }, deps());
     assert.equal(result.run.state, 'queued');
     assert.deepEqual(enqueued, [result.run.id]);
+  });
+});
+
+describe('deferred run retry consumer', () => {
+  let database: Knex;
+  let enqueued: string[];
+  let stored: StoredAgentDefinition;
+  let clock: number;
+  let usage: Record<string, Usage>;
+  const now = () => clock;
+  const gate = () => createAgentRunCostGate({
+    now, loadThreshold: async () => 90,
+    evaluateCapacity: (alias, limit, modelName) => evaluateProviderCapacity(alias, limit, { ...capacityDeps(usage), now, modelName }),
+  });
+  const enqueue = async (_name: string, data: { runId: string }) => { enqueued.push(data.runId); };
+  const triggerDeps = () => ({ database, now, enqueue, loadRepos: async () => [] as RepoToMonitor[], loadAgents: async () => agents, loadSyntheticAgents: async () => [] });
+  const retry = (overrides: Parameters<typeof retryDueDeferredAgentRuns>[0] = {}) =>
+    retryDueDeferredAgentRuns({ database, now, enqueue, gate: gate(), ...overrides });
+
+  async function deferredRun(): Promise<StoredAgentRun> {
+    const { run } = await triggerAgentRun({ definition: stored, trigger: 'schedule', gate: gate() }, triggerDeps());
+    assert.equal(run.state, 'deferred');
+    return run;
+  }
+
+  beforeEach(async () => {
+    database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+    await database.raw('PRAGMA foreign_keys = ON');
+    await database.migrate.latest({ directory: migrations });
+    enqueued = [];
+    clock = NOW;
+    usage = { claude: { sessionPercent: 95, sessionResetsAt: new Date(NOW + 10 * MINUTE) } };
+    stored = await createAgentDefinition({ ownerId: 'alice', name: 'Triage', prompt: 'Summarize', repositories: [],
+      agentAlias: 'claude', modelName: 'opus' }, { database, now });
+  });
+
+  afterEach(async () => {
+    await database.destroy();
+  });
+
+  test('a run that is not due yet is left deferred', async () => {
+    const run = await deferredRun();
+    clock = run.deferredUntil! - 1;
+    usage = { claude: { sessionPercent: 10 } };
+    assert.deepEqual(await retry(), { queued: 0, deferred: 0, skipped: 0, failed: 0 });
+    assert.equal((await getAgentRunById(run.id, { database }))?.state, 'deferred');
+    assert.deepEqual(enqueued, []);
+  });
+
+  test('once the session recovers, the due run is queued and its report phase enqueued', async () => {
+    const run = await deferredRun();
+    clock = run.deferredUntil!;
+    usage = { claude: { sessionPercent: 10 } };
+    assert.deepEqual(await retry(), { queued: 1, deferred: 0, skipped: 0, failed: 0 });
+    assert.equal((await getAgentRunById(run.id, { database }))?.state, 'queued');
+    assert.deepEqual(enqueued, [run.id]);
+    // A second pass finds nothing due.
+    assert.deepEqual(await retry(), { queued: 0, deferred: 0, skipped: 0, failed: 0 });
+    assert.deepEqual(enqueued, [run.id]);
+  });
+
+  test('a still-limited run is deferred again until its sixth deferral, then persisted as skipped', async () => {
+    const run = await deferredRun();
+    let current = run;
+    for (let deferrals = 2; deferrals <= 6; deferrals += 1) {
+      clock = current.deferredUntil!;
+      usage = { claude: { sessionPercent: 95, sessionResetsAt: new Date(clock + 40 * MINUTE) } };
+      assert.equal((await retry()).deferred, 1);
+      current = (await getAgentRunById(run.id, { database }))!;
+      assert.equal(current.state, 'deferred');
+      assert.equal(current.deferrals, deferrals);
+      assert.equal(current.deferredUntil, clock + 30 * MINUTE);
+    }
+    clock = current.deferredUntil!;
+    assert.equal((await retry()).skipped, 1);
+    const skipped = await getAgentRunById(run.id, { database });
+    assert.equal(skipped?.state, 'skipped');
+    assert.match(skipped?.skipReason ?? '', /already deferred 6 times, so it was skipped\.$/);
+    assert.deepEqual(enqueued, []);
+  });
+
+  test('overlapping retries of the same due run count one deferral and enqueue once', async () => {
+    const run = await deferredRun();
+    clock = run.deferredUntil!;
+    await Promise.all([retry(), retry()]);
+    assert.equal((await getAgentRunById(run.id, { database }))?.deferrals, 2);
+    clock += 30 * MINUTE;
+    usage = { claude: { sessionPercent: 10 } };
+    await Promise.all([retry(), retry()]);
+    assert.equal((await getAgentRunById(run.id, { database }))?.state, 'queued');
+    assert.deepEqual(enqueued, [run.id]);
+  });
+
+  test('weekly usage reaching the threshold while deferred skips the run', async () => {
+    const run = await deferredRun();
+    clock = run.deferredUntil!;
+    usage = { claude: { sessionPercent: 95, weeklyPercent: 92 } };
+    assert.equal((await retry()).skipped, 1);
+    const skipped = await getAgentRunById(run.id, { database });
+    assert.equal(skipped?.state, 'skipped');
+    assert.match(skipped?.skipReason ?? '', /^Weekly subscription usage for claude is at 92%/);
+  });
+
+  test('a run cancelled while it is evaluated stays cancelled and is not enqueued', async () => {
+    const run = await deferredRun();
+    clock = run.deferredUntil!;
+    const cancelling: AgentRunGate = async () => {
+      await transitionAgentRun(run.id, ['deferred'], 'cancelled', {}, { database, now });
+      return { action: 'proceed' };
+    };
+    assert.deepEqual(await retry({ gate: cancelling }), { queued: 0, deferred: 0, skipped: 0, failed: 0 });
+    assert.equal((await getAgentRunById(run.id, { database }))?.state, 'cancelled');
+    assert.deepEqual(enqueued, []);
+  });
+
+  test('a run whose agent was disabled while deferred is skipped', async () => {
+    const run = await deferredRun();
+    await database('agent_definitions').where({ id: stored.id }).update({ enabled: false });
+    clock = run.deferredUntil!;
+    usage = { claude: { sessionPercent: 10 } };
+    assert.equal((await retry()).skipped, 1);
+    const skipped = await getAgentRunById(run.id, { database });
+    assert.equal(skipped?.state, 'skipped');
+    assert.match(skipped?.skipReason ?? '', /disabled or deleted while this run was deferred/);
+    assert.deepEqual(enqueued, []);
+  });
+
+  test('a run that cannot be enqueued after recovery is failed with the reason', async () => {
+    const run = await deferredRun();
+    clock = run.deferredUntil!;
+    usage = { claude: { sessionPercent: 10 } };
+    const result = await retry({ enqueue: async () => { throw new Error('redis down'); } });
+    assert.equal(result.failed, 1);
+    const failed = await getAgentRunById(run.id, { database });
+    assert.equal(failed?.state, 'failed');
+    assert.match(failed?.failureReason ?? '', /redis down/);
   });
 });
 

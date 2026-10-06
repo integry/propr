@@ -550,3 +550,4 @@ export * from './services/agents/agentDefinitionStore.js';
 export * from './services/agents/agentRunStore.js';
 export * from './services/agents/agentRunTrigger.js';
 export * from './services/agents/agentRunCostGate.js';
+export * from './services/agents/agentRunDeferredRetry.js';

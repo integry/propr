@@ -28,7 +28,8 @@ import {
     loadUltrafixPauseSeconds,
     loadPrReviewModel,
     AgentRegistry,
-    runMigrations
+    runMigrations,
+    startDeferredAgentRunRetry
 } from '@propr/core';
 import type { CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { logger } from '@propr/core';
@@ -255,6 +256,8 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
 
     const draftContextSweepInterval = await scheduleDraftContextSweep();
     const pushRescueSweepInterval = schedulePushRescueSweep();
+    // Re-evaluates agent runs the cost gate deferred once their retry time passes.
+    const stopDeferredAgentRunRetry = startDeferredAgentRunRetry();
 
     let intervalId: NodeJS.Timeout | null = null;
     let routingService: RoutingWebSocketIntakeService | null = null;
@@ -424,6 +427,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
         clearInterval(pushRescueSweepInterval);
+        await stopDeferredAgentRunRetry();
         // Stop the routing service first so it can drain in-flight deliveries and
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the
