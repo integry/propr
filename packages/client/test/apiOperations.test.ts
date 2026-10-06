@@ -148,7 +148,7 @@ describe('Typed dashboard API operations', () => {
   it('refuses submissions without a usable idempotency key before any request', async () => {
     const { client, requests } = recordingClient(submission);
     const request = { repository: 'acme/app', instruction: 'Fix it' };
-    for (const idempotencyKey of ['', '  ', 'a\nb', 'k'.repeat(256)]) {
+    for (const idempotencyKey of ['', '  ', 'a\nb', 'k'.repeat(256), '.', '..', ' .. ']) {
       await assert.rejects(client.createTaskSubmission(request, { idempotencyKey }), (error: unknown) =>
         error instanceof ProprClientError && error.kind === 'configuration');
     }
@@ -162,6 +162,17 @@ describe('Typed dashboard API operations', () => {
     assert.equal(requests[0].url, 'https://propr.example.com/api/task-submissions/key%201');
     assert.equal(requests[1].url, 'https://propr.example.com/api/task-submissions/key%201/retry');
     assert.equal(requests[1].init?.method, 'POST');
+  });
+
+  it('refuses to read or retry a submission by a key the path cannot address', async () => {
+    const { client, requests } = recordingClient(submission);
+    for (const key of ['', '.', '..', 'a\nb']) {
+      await assert.rejects(client.getTaskSubmission(key), (error: unknown) =>
+        error instanceof ProprClientError && error.kind === 'configuration');
+      await assert.rejects(client.retryTaskSubmission(key), (error: unknown) =>
+        error instanceof ProprClientError && error.kind === 'configuration');
+    }
+    assert.equal(requests.length, 0);
   });
 
   it('surfaces the legacy error body and code of a failed request', async () => {

@@ -64,14 +64,27 @@ export interface ProprCompatibilityOptions {
 
 export interface ProprTaskSubmissionOptions extends ProprFetchOptions {
   /**
-   * Client-chosen identity of the submission (up to 255 characters), for
-   * example a UUID. Repeating a request with the same key and content returns
+   * Client-chosen identity of the submission (up to 255 characters on one
+   * line), for example a UUID. `.` and `..` are refused because they cannot
+   * address the submission in a URL path. Repeating a request with the same key and content returns
    * the existing submission instead of opening a second issue.
    */
   idempotencyKey: string;
 }
 
 const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
+
+/** The trimmed key, or a configuration error when it cannot create and later address a submission. */
+const submissionKey = (value: string | undefined): string => {
+  const key = value?.trim();
+  if (!key || key.length > MAX_IDEMPOTENCY_KEY_LENGTH || /\r|\n/.test(key) || key === '.' || key === '..') {
+    throw new ProprClientError(
+      `Task submissions need an idempotency key of 1 to ${MAX_IDEMPOTENCY_KEY_LENGTH} characters on one line, other than "." or "..".`,
+      { kind: 'configuration' },
+    );
+  }
+  return key;
+};
 
 const responseErrorBody = async (response: Response): Promise<unknown> => {
   const contentType = response.headers.get('content-type') ?? '';
@@ -584,13 +597,7 @@ export class ProprClient {
     submission: ProprApi.TaskSubmissionRequest,
     { idempotencyKey, ...options }: ProprTaskSubmissionOptions,
   ): Promise<ProprApi.TaskSubmission> {
-    const key = idempotencyKey?.trim();
-    if (!key || key.length > MAX_IDEMPOTENCY_KEY_LENGTH || /\r|\n/.test(key)) {
-      throw new ProprClientError(
-        `Task submissions need an idempotency key of 1 to ${MAX_IDEMPOTENCY_KEY_LENGTH} characters on one line.`,
-        { kind: 'configuration' },
-      );
-    }
+    const key = submissionKey(idempotencyKey);
     return this.request<ProprApi.TaskSubmission>(operationPath('createTaskSubmission'), {
       method: operationMethod('createTaskSubmission'),
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
@@ -600,7 +607,7 @@ export class ProprClient {
 
   /** Get a task submission by its idempotency key (`GET /api/task-submissions/{key}`). */
   async getTaskSubmission(key: string, options: ProprFetchOptions = {}): Promise<ProprApi.TaskSubmission> {
-    return this.request<ProprApi.TaskSubmission>(operationPath('getTaskSubmission', { key }), {
+    return this.request<ProprApi.TaskSubmission>(operationPath('getTaskSubmission', { key: submissionKey(key) }), {
       method: operationMethod('getTaskSubmission'),
     }, options);
   }
@@ -608,7 +615,7 @@ export class ProprClient {
   /** Resume a task submission that stopped part way (`POST /api/task-submissions/{key}/retry`). */
   async retryTaskSubmission(key: string, options: ProprFetchOptions = {}): Promise<ProprApi.TaskSubmission> {
     return this.request<ProprApi.TaskSubmission>(
-      operationPath('retryTaskSubmission', { key }),
+      operationPath('retryTaskSubmission', { key: submissionKey(key) }),
       { method: operationMethod('retryTaskSubmission') },
       options,
     );

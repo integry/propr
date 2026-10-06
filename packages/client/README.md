@@ -81,7 +81,7 @@ for (const event of history) {
 
 ### Create a task submission with an idempotency key
 
-A submission opens a GitHub issue with the instruction and starts an implementation run for it. The idempotency key makes retries safe. Sending the same key and content again returns the existing submission, and resumes it if it stopped part way, instead of opening a second issue.
+A submission opens a GitHub issue with the instruction and starts an implementation run for it. The idempotency key makes retries safe. Sending the same key and content again returns the existing submission, and resumes it if it stopped part way, instead of opening a second issue. A key is 1 to 255 characters on one line; `.` and `..` are refused before any request because they cannot address the submission in a URL path.
 
 ```ts
 import { randomUUID } from 'node:crypto';
