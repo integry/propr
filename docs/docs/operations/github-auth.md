@@ -174,6 +174,7 @@ permissions. `propr check --verify` warns when it is absent.
 | `pull_request` | PR lifecycle and follow-ups |
 | `pull_request_review_comment` | Inline review follow-ups |
 | `check_run` | Check completion and failed-CI follow-ups |
+| `check_suite` | Check suite completion (auto-merge and `/ultrafix` wake-ups) |
 | `push` | Branch changes |
 | `status` | Commit status updates |
 

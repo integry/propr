@@ -3,7 +3,7 @@ import { resolveIssueTriggerLabels } from './issueTriggerRestoration.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import logger from '../utils/logger.js';
 import { handlePlanIssueStatusUpdate, handlePlanPRUpdate, handlePlanPRCommentTracking, type CommentEventType } from './planIssueTracking.js';
-import { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
+import { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
 import { clearUltrafixLoopState, getUltrafixStateRedis } from './checkRunHelpers.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { retryConfigs, withRetry } from '../utils/retryHandler.js';
@@ -17,7 +17,7 @@ import type {
     PullRequestReviewCommentEvent, PullRequestReviewCommentCreatedEvent,
     PullRequestReviewCommentDeletedEvent, PullRequestReviewCommentEditedEvent,
     PullRequestEvent,
-    CheckRunEvent, PushEvent
+    CheckRunEvent, CheckSuiteEvent, PushEvent
 } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
 import { ACCEPTED_NO_SEAT_DISPOSITION, normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
@@ -142,6 +142,10 @@ function isPullRequestEvent(payload: unknown): payload is PullRequestEvent {
 
 function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
     return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
+}
+
+function isCheckSuiteEvent(payload: unknown): payload is CheckSuiteEvent {
+    return typeof payload === 'object' && payload !== null && 'check_suite' in payload && 'action' in payload && !('check_run' in payload);
 }
 
 function isPushEvent(payload: unknown): payload is PushEvent {
@@ -369,6 +373,9 @@ async function processStandardWebhookEvent(
                 return ACCEPTED_NO_SEAT_DISPOSITION;
             }
             break;
+        case 'check_suite':
+            if (isCheckSuiteEvent(payload)) return ACCEPTED_NO_SEAT_DISPOSITION;
+            break;
         case 'push':
             if (isPushEvent(payload)) return ACCEPTED_NO_SEAT_DISPOSITION;
             break;
@@ -442,6 +449,15 @@ export async function processWebhookEvent(
             await handleCheckRunEvent(payload, correlationId);
         } catch (checkRunError) {
             correlatedLogger.warn({ error: checkRunError }, 'Check run handler failed, continuing');
+        }
+    }
+
+    // 5a. Completed check suites wake auto-merge and Ultrafix like check runs
+    if (eventType === 'check_suite' && isCheckSuiteEvent(payload)) {
+        try {
+            await handleCheckSuiteEvent(payload, correlationId);
+        } catch (checkSuiteError) {
+            correlatedLogger.warn({ error: checkSuiteError }, 'Check suite handler failed, continuing');
         }
     }
 
