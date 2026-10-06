@@ -47,6 +47,7 @@ configuration. Live provider and chat-host acceptance are separate from this cat
 | Bundled product documentation | `list_docs`, `search_docs`, `get_doc`; stable paths, bounded section/chunk reads, normalized redacted content and `docs/{path}` resource. The MCP guide is `mcp/guide` |
 | Configuration discovery | `find_setting`; structured UI/MCP/CLI/environment reachability, permissions, restart requirements and browser/environment-only boundaries |
 | Indexed overview/tree/path/search/freshness | `get_repository_context` |
+| Repository file search and reading (search-then-read) | `search_repository_files`, `read_repository_file`; read scope, `readOnly`. Search returns paths only: `mode: "semantic"` (default) ranks files with the planner relevance engine (indexed file summaries plus path and git-history signals) and reports `freshness` (`indexingStatus`, `lastIndexedHash`, `usedIndex`, `stale`, `caveat`); an unindexed, in-progress, failed or stale index degrades to heuristics with a caveat instead of failing. `mode: "literal"` runs an exact, non-regex `git grep` at the resolved commit, case-insensitive unless `caseSensitive: true`, and returns per-file `matchCount` and `lineMatches`; no match is an empty `matches` array with `totalMatches: 0`. Both modes take an optional `branch`/`ref`, a repository-relative `path` prefix and `offset`/`limit` pagination with `nextOffset`. Reads come straight from the git object database at the exact `commit`, bounded by `startLine`/`endLine`, `maxLines` (default 800, max 1000) and `maxBytes` (default 120000, max 500000); a capped read sets `truncated: true` and `nextStartLine`. Failures map to `INVALID_PATH` (traversal, absolute or backslash paths, directories), `FILE_NOT_FOUND`, `REF_NOT_FOUND`, `BINARY_FILE`, `FILE_TOO_LARGE` and `REPOSITORY_FORBIDDEN` |
 | Indexing launch/cancellation | `index_repository`, `stop_repository_indexing`; explicit repository/branch |
 | Repository TODO CRUD/category CRUD | `list_todos`, `get_todo`, `create_todo`, `update_todo`, `delete_todo`, `list_todo_categories`, `create_todo_category`, `update_todo_category`, `delete_todo_category` |
 | TODO category movement/order | `move_todo`; order fields on TODO/category update |
@@ -130,6 +131,14 @@ settings that are intentionally browser-only or environment-only.
   recorded every invocation, including a scope denial and a forbidden-repository
   denial, and reads that session back through the admin log API
   (`packages/api/test/mcpOperatorSurface.test.ts`, wired into `test:mcp`).
+- [x] Repository retrieval runs `search_repository_files` and
+  `read_repository_file` through the catalog, the real executor and an MCP
+  client against a real git clone and the SQLite index state: indexed, stale
+  and unindexed semantic search, literal grep with case sensitivity, empty
+  results, pagination and path prefixes, whole/ranged/bounded reads, and the
+  `FILE_NOT_FOUND`, `BINARY_FILE`, `INVALID_PATH` and `REPOSITORY_FORBIDDEN`
+  envelopes. Only the summary-ranking LLM is faked
+  (`packages/api/test/mcpRepositoryRetrieval.test.ts`, wired into `test:mcp`).
 - [x] Browser consent/revocation test, CSRF denial and mobile overflow check.
 - [ ] A live end-to-end agent run through generation → publication →
   implementation → followup → review/fix → guarded merge. Local tests do not
