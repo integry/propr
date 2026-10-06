@@ -335,6 +335,16 @@ describe('mergeConflictDetector - pull_request events', () => {
         assert.equal(mockQueueAdd.mock.callCount(), 0);
     });
 
+    test('a PR converted to draft while mergeability is polled is skipped without reserving an attempt', async () => {
+        routeGitHub({ 42: [{ mergeable: null }, { mergeable: false, draft: true }] });
+        const redis = createMockRedis();
+        const result = await handlePullRequestConflictDetection(createMockPREvent(), redis, 'cid', deps);
+        assert.equal(result?.reason, 'draft_pull_request');
+        assert.deepEqual(sleeps, [2000]);
+        assert.equal(redis.eval.mock.callCount(), 0);
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
+    });
+
     test('a clean PR is skipped with not_conflicted', async () => {
         routeGitHub({ 42: [{ mergeable: true, mergeableState: 'clean' }] });
         const result = await handlePullRequestConflictDetection(createMockPREvent(), createMockRedis(), 'cid', deps);
@@ -500,6 +510,15 @@ describe('mergeConflictDetector - push events', () => {
             { base: (listCall?.arguments[1] as Record<string, unknown>).base, per_page: (listCall?.arguments[1] as Record<string, unknown>).per_page, page: (listCall?.arguments[1] as Record<string, unknown>).page },
             { base: 'main', per_page: 30, page: 1 }
         );
+    });
+
+    test('push fan-out skips a PR that became a draft during mergeability polling', async () => {
+        routeGitHub({ 42: [{ mergeable: null }, { mergeable: false, draft: true }] });
+        const redis = createMockRedis();
+        const results = await handlePushConflictDetection(createMockPushEvent(), redis, 'cid', deps);
+        assert.deepEqual(results.map(result => result.reason ?? result.outcome), ['draft_pull_request']);
+        assert.equal(redis.eval.mock.callCount(), 0);
+        assert.equal(mockQueueAdd.mock.callCount(), 0);
     });
 
     test('every open PR is primed before any is polled, then each is evaluated', async () => {

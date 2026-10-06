@@ -282,6 +282,8 @@ export async function maybeQueueConflictResolution(options: MaybeQueueConflictRe
 
     const { pr, mergeability } = await pollMergeability(read, deps, first);
     if (pr.state !== 'open') return skip(log, context, 'pull_request_closed');
+    // Polling may return a newer read; the PR can be converted to draft meanwhile.
+    if (pr.draft) return skip(log, context, 'draft_pull_request');
     if (mergeability === 'unknown') {
         return skip(log, context, 'mergeability_unknown', { mergeableState: pr.mergeable_state ?? null, headSha: pr.head.sha, baseSha: pr.base.sha });
     }
