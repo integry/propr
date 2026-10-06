@@ -702,6 +702,50 @@ describe('processAgentRunJob', () => {
     assert.equal(h.stateCalls.length, 0);
   });
 
+  test('with propr_mcp a report-phase grant is mounted for the agent and revoked when the run ends', async () => {
+    const h = harness({ run: storedRun({ definitionSnapshot: definition({ capabilities: ['repository_read', 'propr_mcp'] }) }) });
+    const grant = { grantId: 'grant-1', phase: 'report' as const, url: 'http://api:4000/api/mcp', token: 'propr_mcp_fixture', expiresAt: NOW + 7_200_000 };
+    const requestMcpGrant = mock.fn(async () => grant);
+    const revokeMcpGrant = mock.fn(async () => undefined);
+    const result = await createAgentRunProcessor({ ...h.deps, mcpGrants: { request: requestMcpGrant, revoke: revokeMcpGrant } })(job);
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(requestMcpGrant.mock.calls[0].arguments, ['run-1', 'report']);
+    const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;
+    assert.deepEqual(options.toolPolicy?.mcpServers?.map(server => [server.url, server.bearerToken]), [[grant.url, grant.token]]);
+    assert.deepEqual(revokeMcpGrant.mock.calls.map(call => call.arguments), [['run-1', grant]]);
+  });
+
+  test('a failed run still revokes its grant, and a failed revoke does not change the outcome', async () => {
+    const h = harness({
+      run: storedRun({ definitionSnapshot: definition({ capabilities: ['propr_mcp'] }) }),
+      execute: async () => { throw new Error('container crashed'); },
+    });
+    const grant = { grantId: 'grant-1', phase: 'report' as const, url: 'http://api:4000/api/mcp', token: 'propr_mcp_fixture', expiresAt: NOW };
+    const revokeMcpGrant = mock.fn(async () => { throw new Error('api down'); });
+    const result = await createAgentRunProcessor({ ...h.deps, mcpGrants: { request: async () => grant, revoke: revokeMcpGrant } })(job);
+    assert.equal(result.status, 'failed');
+    assert.equal(h.run().state, 'failed');
+    assert.equal(revokeMcpGrant.mock.callCount(), 1);
+    assert.equal(h.cleanup.mock.callCount(), 1);
+  });
+
+  test('without propr_mcp no grant is requested and no MCP server is mounted', async () => {
+    const h = harness();
+    const requestMcpGrant = mock.fn(async () => { throw new Error('must not be called'); });
+    await createAgentRunProcessor({ ...h.deps, mcpGrants: { request: requestMcpGrant, revoke: async () => undefined } })(job);
+    assert.equal(requestMcpGrant.mock.callCount(), 0);
+    const options = h.executeTask.mock.calls[0].arguments[0] as AgentTaskOptions;
+    assert.equal(options.toolPolicy?.mcpServers, undefined);
+  });
+
+  test('a grant that cannot be issued fails the run before its agent starts', async () => {
+    const h = harness({ run: storedRun({ definitionSnapshot: definition({ capabilities: ['propr_mcp'] }) }) });
+    const result = await createAgentRunProcessor({ ...h.deps, mcpGrants: { request: async () => { throw new Error('MCP_DISABLED'); }, revoke: async () => undefined } })(job);
+    assert.equal(result.status, 'failed');
+    assert.equal(h.executeTask.mock.callCount(), 0);
+    assert.equal(h.run().state, 'failed');
+  });
+
   test('without repository_read the agent launches with no repository mounts or credentials', async () => {
     const h = harness({ run: storedRun({ definitionSnapshot: definition({ capabilities: [] }) }) });
     await createAgentRunProcessor(h.deps)(job);
