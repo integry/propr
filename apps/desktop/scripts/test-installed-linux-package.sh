@@ -104,7 +104,11 @@ remove_package() {
   if [ "$family" = deb ]; then
     DEBIAN_FRONTEND=noninteractive apt-get remove -y "$package_name" >/dev/null
   else
-    dnf remove -y "$package_name" >/dev/null
+    # DNF's default clean_requirements_on_remove also tries to remove orphaned
+    # dependencies pulled in by the install, including protected packages such
+    # as systemd-udev on minimal images, and then rejects the whole transaction.
+    # Remove only the application; distribution dependencies stay installed.
+    dnf remove -y --setopt=clean_requirements_on_remove=False "$package_name" >/dev/null
   fi
 }
 
