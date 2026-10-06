@@ -62,6 +62,8 @@ export const MAX_AGENT_ATTACHMENTS = 10;
 export const MAX_AGENT_PREVIOUS_REPORTS = 5;
 export const DEFAULT_AGENT_PREVIOUS_REPORTS = 0;
 export const AGENT_PREVIOUS_REPORTS_MAX_CHARACTERS = 50_000;
+/** Stored report size; longer output is truncated and stays available in the task logs. */
+export const AGENT_REPORT_MAX_CHARS = 100_000;
 
 export interface AgentDefinitionInput {
   name: string;
