@@ -361,7 +361,7 @@ export {
 } from './budget/runCostCap.js';
 export {
     RunCostGuard, runWithRunCostGuard, getActiveRunCostGuard, runCostCapTerminalReason, RunCostCapExceededError,
-    type RunCostGuardOptions, type RunCostSnapshot, type RunCostExecution, type RunUsagePricer,
+    type RunCostGuardOptions, type RunCostSnapshot, type RunCostExecution, type RunUsagePricer, type RecordedSpend,
 } from './budget/runCostGuard.js';
 export { RunUsageTally, type RunTokenTotals } from './budget/runUsageTally.js';
 export {

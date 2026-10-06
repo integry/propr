@@ -1,6 +1,7 @@
 import { Redis } from 'ioredis';
 import { db } from '../db/connection.js';
 import type { RunCostCap } from './runCostCap.js';
+import type { RecordedSpend } from './runCostGuard.js';
 
 /** Long enough to outlive any run and its retries, short enough to clean itself up. */
 const OVERRIDE_TTL_SECONDS = 30 * 24 * 3600;
@@ -64,11 +65,19 @@ export async function storeResolvedRunCostCap(taskId: string, cap: StoredRunCost
     });
 }
 
-/** Sum of the recorded execution costs of the given tasks. */
-export async function readRecordedTaskSpend(taskIds: readonly string[]): Promise<number> {
+/** Recorded execution costs of the given tasks, in total and per session. */
+export async function readRecordedTaskSpend(taskIds: readonly string[]): Promise<RecordedSpend> {
     const ids = [...new Set(taskIds.filter(Boolean))];
-    if (ids.length === 0) return 0;
-    const row = await db('llm_executions').whereIn('task_id', ids).sum({ total: 'cost_usd' }).first() as { total?: number | string | null } | undefined;
-    const total = Number(row?.total ?? 0);
-    return Number.isFinite(total) ? total : 0;
+    if (ids.length === 0) return { totalUsd: 0, bySessionUsd: {} };
+    const rows = await db('llm_executions').whereIn('task_id', ids).groupBy('session_id')
+        .select('session_id').sum({ total: 'cost_usd' }) as Array<{ session_id?: string | null; total?: number | string | null }>;
+    let totalUsd = 0;
+    const bySessionUsd: Record<string, number> = {};
+    for (const row of rows) {
+        const cost = Number(row.total ?? 0);
+        if (!Number.isFinite(cost)) continue;
+        totalUsd += cost;
+        if (row.session_id) bySessionUsd[row.session_id] = cost;
+    }
+    return { totalUsd, bySessionUsd };
 }

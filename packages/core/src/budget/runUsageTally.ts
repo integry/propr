@@ -49,6 +49,18 @@ function max(a: RunTokenTotals, b: RunTokenTotals): RunTokenTotals {
     };
 }
 
+const RELEVANT_KEYS = ['usage', 'cost', 'session_id', 'thread_id', 'conversation_id'];
+
+/** Mirrors how the session ID of a recorded execution is detected from its output. */
+function sessionIdOf(event: Record<string, unknown>): string | undefined {
+    for (const value of [event.session_id, event.thread_id]) {
+        if (typeof value === 'string' && value) return value;
+    }
+    if (event.event !== 'init') return undefined;
+    const conversationId = event.conversation_id ?? record(event.init)?.conversation_id;
+    return typeof conversationId === 'string' && conversationId ? conversationId : undefined;
+}
+
 /**
  * Accumulates what one agent execution has consumed so far from its streamed
  * JSON lines, so a run can be stopped while it is still executing rather than
@@ -56,6 +68,8 @@ function max(a: RunTokenTotals, b: RunTokenTotals): RunTokenTotals {
  */
 export class RunUsageTally {
     model?: string;
+    /** The provider session the execution's recorded row is stored under (last one seen, as when it is recorded). */
+    sessionId?: string;
     /** The largest cost the provider itself reported (e.g. Claude's `total_cost_usd`). */
     reportedCostUsd = 0;
     private readonly messages = new Map<string, RunTokenTotals>();
@@ -66,12 +80,14 @@ export class RunUsageTally {
     }
 
     observeLine(line: string): void {
-        // Most lines (tool output, text deltas) carry neither; skip their parse.
-        if (!line.includes('usage') && !line.includes('cost')) return;
+        // Most lines (tool output, text deltas) carry none of these; skip their parse.
+        if (!RELEVANT_KEYS.some(key => line.includes(key))) return;
         let parsed: unknown;
         try { parsed = JSON.parse(line); } catch { return; }
         const event = record(parsed);
         if (!event) return;
+        const sessionId = sessionIdOf(event);
+        if (sessionId) this.sessionId = sessionId;
         const message = record(event.message);
         const model = message?.model ?? event.model;
         if (typeof model === 'string' && model && !this.model) this.model = model;

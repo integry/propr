@@ -4,7 +4,7 @@ import {
     readRecordedTaskSpend, RunCostGuard, runWithRunCostGuard, storeResolvedRunCostCap,
 } from '@propr/core';
 import { formatUsd, RUN_COST_CAP_SOURCE_LABELS } from '@propr/shared';
-import type { CommentJobData, RunCostCap, RunCostSnapshot, RunUsagePricer } from '@propr/core';
+import type { CommentJobData, RecordedSpend, RunCostCap, RunCostSnapshot, RunUsagePricer } from '@propr/core';
 import type { Job } from 'bullmq';
 
 export type CommentOctokit = {
@@ -32,7 +32,7 @@ export interface RunCostCapTarget {
 
 export interface RunCostCapDeps {
     loadInstanceDefault(): Promise<unknown>;
-    readRecordedSpend(taskIds: string[]): Promise<number>;
+    readRecordedSpend(taskIds: string[]): Promise<number | RecordedSpend>;
     storeCap(taskId: string, cap: RunCostCap | null, budgetTaskIds: string[]): Promise<void>;
     recordExceeded(target: RunCostCapTarget, snapshot: RunCostSnapshot): Promise<void>;
     priceUsage?: RunUsagePricer;

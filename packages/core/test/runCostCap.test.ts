@@ -256,3 +256,74 @@ test('agents report a spend-cap stop as a partial cost_cap termination', () => {
     assert.equal(taskTerminalReasonForAgentTermination('timeout'), 'timed_out');
     assert.equal(taskTerminalReasonForAgentTermination('max_turns'), undefined);
 });
+
+test('a recorded row retires only one finished execution, so a failed insert still counts', async () => {
+    let recorded = 0;
+    const exceeded: Array<{ spentUsd: number }> = [];
+    const guard = guardFor(() => recorded, { override: 2.5 }, snapshot => exceeded.push(snapshot as { spentUsd: number }));
+    await guard.start();
+    const usage = (id: string, outputTokens: number) => JSON.stringify({ type: 'assistant', message: { id, usage: { output_tokens: outputTokens } } });
+    const a = guard.beginExecution(() => undefined)!;
+    const b = guard.beginExecution(() => undefined)!;
+    a.observeLine(usage('a', 1000));
+    b.observeLine(usage('b', 1000));
+    // Both finish before either row is written; A's insert then fails.
+    assert.equal(await a.finish(), null);
+    assert.equal(await b.finish(), null, '$2 observed is under the $2.50 cap');
+    recorded = 1;
+    const afterInsert = await guard.check();
+    assert.equal(afterInsert, null);
+    const c = guard.beginExecution(() => undefined)!;
+    c.observeLine(usage('c', 750));
+    const message = await c.finish();
+    assert.equal(message, runCostCapStopMessage({ capUsd: 2.5, source: 'override' }, 2.75));
+    assert.equal(exceeded.length, 1);
+    assert.equal(exceeded[0].spentUsd, 2.75);
+    guard.close();
+});
+
+test('finished executions are matched to their own recorded session rows', async () => {
+    let recorded: { totalUsd: number; bySessionUsd: Record<string, number> } = { totalUsd: 0, bySessionUsd: {} };
+    const exceeded: Array<{ spentUsd: number }> = [];
+    const guard = new RunCostGuard({
+        taskId: 'task-1', inputs: { override: 2.5 }, defaultModel: 'test-model',
+        readRecordedSpend: async () => recorded,
+        priceUsage: async (_model, totals) => totals.outputTokens / 1000,
+        onExceeded: snapshot => exceeded.push(snapshot as { spentUsd: number }),
+        checkIntervalMs: 60_000,
+    });
+    await guard.start();
+    const usage = (session: string, id: string, outputTokens: number) =>
+        JSON.stringify({ type: 'assistant', session_id: session, message: { id, usage: { output_tokens: outputTokens } } });
+    const a = guard.beginExecution(() => undefined)!;
+    const b = guard.beginExecution(() => undefined)!;
+    a.observeLine(usage('session-a', 'a', 1000));
+    b.observeLine(usage('session-b', 'b', 1000));
+    assert.equal(await a.finish(), null);
+    assert.equal(await b.finish(), null);
+    // A's insert failed and B's succeeded; B's row must not cover A.
+    recorded = { totalUsd: 1, bySessionUsd: { 'session-b': 1 } };
+    assert.equal(await guard.check(), null);
+    // An analysis call without a session does not cover A either, since it follows B's row.
+    recorded = { totalUsd: 1.2, bySessionUsd: { 'session-b': 1 } };
+    const c = guard.beginExecution(() => undefined)!;
+    c.observeLine(usage('session-c', 'c', 500));
+    const message = await c.finish();
+    assert.ok(message, '$1.20 recorded + $1 unrecorded A + $0.50 C reaches the $2.50 cap');
+    assert.equal(exceeded.length, 1);
+    assert.ok(Math.abs(exceeded[0].spentUsd - 2.7) < 1e-9, String(exceeded[0].spentUsd));
+    guard.close();
+});
+
+test('usage tally keeps the session its execution is recorded under', () => {
+    const claude = new RunUsageTally();
+    claude.observeLine(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-session' }));
+    assert.equal(claude.sessionId, 'claude-session');
+    const codex = new RunUsageTally();
+    codex.observeLine(JSON.stringify({ type: 'thread.started', thread_id: 'codex-thread' }));
+    codex.observeLine(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }));
+    assert.equal(codex.sessionId, 'codex-thread');
+    const gemini = new RunUsageTally();
+    gemini.observeLine(JSON.stringify({ event: 'init', conversation_id: 'gemini-conversation' }));
+    assert.equal(gemini.sessionId, 'gemini-conversation');
+});

@@ -23,6 +23,12 @@ export interface RunCostSnapshot {
     percent: number;
 }
 
+/** Recorded `llm_executions` cost, with the per-session split that matches a finished execution to its own row. */
+export interface RecordedSpend {
+    totalUsd: number;
+    bySessionUsd?: Readonly<Record<string, number>>;
+}
+
 export type RunUsagePricer = (model: string, totals: RunTokenTotals) => Promise<number>;
 
 export interface RunCostGuardOptions {
@@ -31,7 +37,7 @@ export interface RunCostGuardOptions {
     /** Model used to price streamed usage that does not name its model. */
     defaultModel?: string;
     /** Sum of recorded `llm_executions` costs for this task and the attempts it continues. */
-    readRecordedSpend: () => Promise<number>;
+    readRecordedSpend: () => Promise<number | RecordedSpend>;
     priceUsage?: RunUsagePricer;
     /** Runs once, after every live execution was told to stop. */
     onExceeded?: (snapshot: RunCostSnapshot) => Promise<void> | void;
@@ -48,7 +54,18 @@ interface LiveExecution {
 interface FinishedExecution {
     tally: RunUsageTally;
     /** Recorded spend read once the execution ended, before its own row could be written. */
-    recordedAtFinish: number;
+    recordedAtFinish: RecordedSpend;
+}
+
+const NO_RECORDED_SPEND: RecordedSpend = { totalUsd: 0 };
+
+function normalizeRecordedSpend(value: number | RecordedSpend): RecordedSpend {
+    const usd = (amount: unknown) => typeof amount === 'number' && Number.isFinite(amount) && amount > 0 ? amount : 0;
+    if (typeof value === 'number') return { totalUsd: usd(value) };
+    if (!value || typeof value !== 'object') return NO_RECORDED_SPEND;
+    const bySessionUsd: Record<string, number> = {};
+    for (const [session, amount] of Object.entries(value.bySessionUsd ?? {})) bySessionUsd[session] = usd(amount);
+    return { totalUsd: usd(value.totalUsd), ...(value.bySessionUsd ? { bySessionUsd } : {}) };
 }
 
 const DEFAULT_CHECK_INTERVAL_MS = 10_000;
@@ -78,7 +95,7 @@ export class RunCostGuard implements ActiveRunCostCap {
     private readonly live = new Set<LiveExecution>();
     private readonly finished: FinishedExecution[] = [];
     private priorSpentUsd = 0;
-    private lastRecordedUsd = 0;
+    private lastRecorded: RecordedSpend = NO_RECORDED_SPEND;
     private triggered = false;
     private timer: ReturnType<typeof setInterval> | null = null;
     private checking: Promise<RunCostSnapshot | null> | null = null;
@@ -99,8 +116,7 @@ export class RunCostGuard implements ActiveRunCostCap {
 
     /** Reads what earlier attempts spent; the cap for this attempt is what remains. */
     async start(): Promise<{ cap: RunCostCap | null; priorSpentUsd: number; remainingUsd: number | null }> {
-        this.priorSpentUsd = await this.readRecorded(0);
-        this.lastRecordedUsd = this.priorSpentUsd;
+        this.priorSpentUsd = (await this.readRecorded(NO_RECORDED_SPEND)).totalUsd;
         await this.publishCap();
         const remainingUsd = this.resolvedCap ? remainingRunBudget(this.resolvedCap.capUsd, this.priorSpentUsd) : null;
         if (this.resolvedCap) {
@@ -145,7 +161,7 @@ export class RunCostGuard implements ActiveRunCostCap {
     private async finishExecution(execution: LiveExecution): Promise<string | null> {
         // The execution's row is written only after it returns, so whatever is
         // recorded now belongs to other calls; growth beyond this may be its own.
-        const recordedAtFinish = await this.readRecorded(this.lastRecordedUsd);
+        const recordedAtFinish = await this.readRecorded(this.lastRecorded);
         if (this.live.delete(execution)) this.finished.push({ tally: execution.tally, recordedAtFinish });
         if (this.live.size === 0) this.stopTimer();
         // A check already in flight may have priced the execution before its
@@ -195,21 +211,14 @@ export class RunCostGuard implements ActiveRunCostCap {
         // execution twice. Both collections are captured together, before
         // pricing awaits: an execution finishing meanwhile moves its tally
         // from live to finished and would otherwise be priced in both.
-        const recorded = await this.readRecorded(this.lastRecordedUsd);
+        const recorded = await this.readRecorded(this.lastRecorded);
         const live = [...this.live].map(execution => execution.tally);
         const finished = [...this.finished];
         let liveUsd = 0;
         for (const tally of live) liveUsd += await this.cost(tally);
-        // A finished execution's row may not be written yet. Recorded growth
-        // since it ended is taken as its row, so only the observed usage not yet
-        // covered by that growth is added; other recorded calls (analysis
-        // before it ended) still count beside it.
-        let unrecordedUsd = 0;
-        for (const execution of finished) {
-            const persistedSinceFinish = Math.max(0, recorded - execution.recordedAtFinish);
-            unrecordedUsd += Math.max(0, await this.cost(execution.tally) - persistedSinceFinish);
-        }
-        const spentUsd = recorded + liveUsd + unrecordedUsd;
+        const finishedUsd: number[] = [];
+        for (const execution of finished) finishedUsd.push(await this.cost(execution.tally));
+        const spentUsd = recorded.totalUsd + liveUsd + unrecordedUsd(recorded, finished, finishedUsd);
         return {
             taskId: this.taskId, cap, spentUsd, priorSpentUsd: this.priorSpentUsd,
             remainingUsd: remainingRunBudget(cap.capUsd, spentUsd),
@@ -228,11 +237,10 @@ export class RunCostGuard implements ActiveRunCostCap {
         return Math.max(priced, tally.reportedCostUsd);
     }
 
-    private async readRecorded(fallback: number): Promise<number> {
+    private async readRecorded(fallback: RecordedSpend): Promise<RecordedSpend> {
         try {
-            const value = await this.options.readRecordedSpend();
-            const recorded = Number.isFinite(value) && value > 0 ? value : 0;
-            this.lastRecordedUsd = recorded;
+            const recorded = normalizeRecordedSpend(await this.options.readRecordedSpend());
+            this.lastRecorded = recorded;
             return recorded;
         } catch (error) {
             logger.warn({ taskId: this.taskId, error: (error as Error).message }, 'Could not read recorded task spend');
@@ -259,6 +267,44 @@ export class RunCostGuard implements ActiveRunCostCap {
         if (this.timer) clearInterval(this.timer);
         this.timer = null;
     }
+}
+
+/**
+ * Observed usage of finished executions whose rows are not recorded yet (or
+ * failed to be). An execution that reported its session is matched only to
+ * that session's recorded growth since it ended. Without a session (or a
+ * per-session split), recorded growth outside those sessions since it ended
+ * may be its row; that growth is shared, so each recorded dollar covers at
+ * most one execution and the rest still counts.
+ */
+function unrecordedUsd(recorded: RecordedSpend, finished: readonly FinishedExecution[], observedUsd: readonly number[]): number {
+    const matched = new Set<string>();
+    if (recorded.bySessionUsd) {
+        for (const { tally } of finished) if (tally.sessionId) matched.add(tally.sessionId);
+    }
+    const keyOf = (execution: FinishedExecution) => execution.tally.sessionId && matched.has(execution.tally.sessionId) ? execution.tally.sessionId : null;
+    const amount = (spend: RecordedSpend, key: string | null): number => {
+        if (key !== null) return spend.bySessionUsd?.[key] ?? 0;
+        let other = spend.totalUsd;
+        for (const session of matched) other -= spend.bySessionUsd?.[session] ?? 0;
+        return other;
+    };
+    // Growth since the earliest finish of each group is the most its executions' rows can account for.
+    const available = new Map<string | null, number>();
+    for (const execution of finished) {
+        const key = keyOf(execution);
+        const growth = Math.max(0, amount(recorded, key) - amount(execution.recordedAtFinish, key));
+        available.set(key, Math.max(available.get(key) ?? 0, growth));
+    }
+    let total = 0;
+    finished.forEach((execution, index) => {
+        const key = keyOf(execution);
+        const sinceFinish = Math.max(0, amount(recorded, key) - amount(execution.recordedAtFinish, key));
+        const covered = Math.min(observedUsd[index], sinceFinish, available.get(key) ?? 0);
+        available.set(key, (available.get(key) ?? 0) - covered);
+        total += observedUsd[index] - covered;
+    });
+    return total;
 }
 
 /** Runs a task's work with its spend cap enforced on every agent container it starts. */
