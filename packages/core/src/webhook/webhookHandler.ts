@@ -405,6 +405,17 @@ async function handleIntentWithdrawal(payload: unknown, eventType: WebhookEventT
     }
 }
 
+async function handleCiEvent(payload: unknown, eventType: WebhookEventType, correlationId: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>): Promise<void> {
+    try {
+        if (eventType === 'check_run' && isCheckRunEvent(payload)) await handleCheckRunEvent(payload, correlationId);
+        else if (eventType === 'check_suite' && isCheckSuiteEvent(payload)) await handleCheckSuiteEvent(payload, correlationId);
+        else if (eventType === 'status' && isStatusEvent(payload)) await handleStatusEvent(payload, correlationId);
+    } catch (error) {
+        correlatedLogger.warn({ error, event: eventType }, 'CI event handler failed, continuing');
+    }
+}
+
 export async function processWebhookEvent(
     payload: unknown,
     eventType: WebhookEventType,
@@ -443,32 +454,8 @@ export async function processWebhookEvent(
     // Plan Issue Tracking (runs before standard processing to update status)
     await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);
 
-    // 5. Auto-merge: Handle check_run events to merge PRs when all checks pass
-    if (eventType === 'check_run' && isCheckRunEvent(payload)) {
-        try {
-            await handleCheckRunEvent(payload, correlationId);
-        } catch (checkRunError) {
-            correlatedLogger.warn({ error: checkRunError }, 'Check run handler failed, continuing');
-        }
-    }
-
-    // 5a. Completed check suites wake auto-merge and Ultrafix like check runs
-    if (eventType === 'check_suite' && isCheckSuiteEvent(payload)) {
-        try {
-            await handleCheckSuiteEvent(payload, correlationId);
-        } catch (checkSuiteError) {
-            correlatedLogger.warn({ error: checkSuiteError }, 'Check suite handler failed, continuing');
-        }
-    }
-
-    // 5b. Handle legacy commit status events for ultrafix loop continuation
-    if (eventType === 'status' && isStatusEvent(payload)) {
-        try {
-            await handleStatusEvent(payload, correlationId);
-        } catch (statusError) {
-            correlatedLogger.warn({ error: statusError }, 'Status event handler failed, continuing');
-        }
-    }
+    // 5. CI events (check_run, check_suite, legacy status) drive auto-merge and Ultrafix continuation
+    await handleCiEvent(payload, eventType, correlationId, correlatedLogger);
 
     // 6. Epic PR handling
     if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
