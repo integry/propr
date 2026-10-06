@@ -23,6 +23,7 @@ import {
   type AgentRunGrantDependencies,
 } from '../mcp/agentRunGrants.js';
 import { AGENT_RUN_GRANT_SIGNATURE_WINDOW_MS, createAgentRunInternalRoutes } from '../routes/agentRunInternalRoutes.js';
+import { createRequestRateLimiter } from '../requestRateLimits.js';
 
 after(async () => closeConnection());
 
@@ -80,7 +81,7 @@ beforeEach(async () => {
     environment: { SYSTEM_TASK_SECRET: SECRET, PROPR_INTERNAL_API_URL: 'http://api:4000' },
   });
   const app = express();
-  app.use(express.json());
+  app.use('/api', createRequestRateLimiter({ identifier: 'agent-run-grants-test-fixture', limit: 100, windowMs: 60_000 }), express.json());
   app.post('/api/internal/agent-runs/:runId/mcp-grants', routes.issueGrant);
   app.post('/api/internal/agent-runs/:runId/mcp-grants/revoke', routes.revokeGrant);
   server = createServer(app);
