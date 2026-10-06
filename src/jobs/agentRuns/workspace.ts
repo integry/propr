@@ -23,6 +23,7 @@ import {
     ensureRepoCloned,
     getRepoUrl,
     logger as defaultLogger,
+    resolveEffectiveContextRepositories,
     setupWorktreePermissions,
     type Attachment,
     type StoredAgentDefinition,
@@ -57,6 +58,8 @@ export interface PrepareAgentRunWorkspaceInput {
     /** Used to detect the default branch of the primary repository. */
     octokit?: unknown;
     logger?: Logger;
+    /** The primary repository's context policy; defaults to its repository settings. */
+    resolveContextPolicy?: (repository: string) => Promise<string[] | undefined>;
 }
 
 export type PrepareAgentRunWorkspace = (input: PrepareAgentRunWorkspaceInput) => Promise<AgentRunWorkspace>;
@@ -160,10 +163,24 @@ async function cloneContextRepository(repository: string, destination: string, g
     await createHooklessGit(destination).remote(['set-url', 'origin', publicUrl]);
 }
 
+/**
+ * Reject additional repositories the primary repository's context policy
+ * excludes. The agent's scoped token and clone mounts follow the same policy,
+ * but cannot take back files already copied into the workspace.
+ */
+export function assertContextRepositoriesAllowed(primary: string, additional: readonly string[], allowed: readonly string[] | undefined): void {
+    if (!allowed) return;
+    const excluded = additional.filter(repository => !allowed.includes(repository.toLowerCase()));
+    if (excluded.length > 0) {
+        throw new Error(`The contextRepositories setting of ${primary} does not allow reading ${excluded.join(', ')}. Remove ${excluded.length === 1 ? 'it' : 'them'} from the agent definition or allow ${excluded.length === 1 ? 'it' : 'them'} in the repository settings.`);
+    }
+}
+
 async function prepareRepositoryWorkspace(input: PrepareAgentRunWorkspaceInput, log: Logger): Promise<AgentRunWorkspace> {
-    const { runId, definition, githubToken, octokit } = input;
+    const { runId, definition, githubToken, octokit, resolveContextPolicy = resolveEffectiveContextRepositories } = input;
     const [primary, ...additional] = definition.repositories;
     const { owner, repo } = splitRepository(primary);
+    if (additional.length > 0) assertContextRepositoriesAllowed(primary, additional, await resolveContextPolicy(primary));
 
     await ensureGitRepository(log);
     const localRepoPath = await ensureRepoCloned({

@@ -26,7 +26,7 @@ const {
   createAgentRunProcessor,
 } = await import('../src/jobs/processAgentRunJob.ts');
 const { advanceAfterReport } = await import('../src/jobs/agentRuns/autonomy.ts');
-const { AGENT_CONTEXT_DIR, AGENT_INPUTS_DIR, copyAgentInputFiles, prepareAgentRunWorkspace, prepareReservedDirectory } = await import('../src/jobs/agentRuns/workspace.ts');
+const { AGENT_CONTEXT_DIR, AGENT_INPUTS_DIR, assertContextRepositoriesAllowed, copyAgentInputFiles, prepareAgentRunWorkspace, prepareReservedDirectory } = await import('../src/jobs/agentRuns/workspace.ts');
 type AgentRunProcessorDeps = import('../src/jobs/processAgentRunJob.ts').AgentRunProcessorDeps;
 type AgentRunWorkspace = import('../src/jobs/agentRuns/workspace.ts').AgentRunWorkspace;
 
@@ -857,6 +857,26 @@ describe('agent run workspace', () => {
     } finally {
       await fs.remove(inputs);
     }
+  });
+
+  test('additional repositories excluded by the primary repository context policy are never checked out', async () => {
+    const resolveContextPolicy = mock.fn(async () => ['acme/web']);
+    const prepared = prepareAgentRunWorkspace({
+      runId: 'run-restricted', definition: definition(), githubToken: 'worker-token', resolveContextPolicy,
+    });
+    // Rejected before any clone: a clone attempt would fail with a different error.
+    await assert.rejects(prepared, /contextRepositories setting of acme\/web does not allow reading acme\/api/);
+    assert.deepEqual(resolveContextPolicy.mock.calls.map(call => call.arguments), [['acme/web']]);
+  });
+
+  test('context policy checks follow the adapter semantics', () => {
+    // `all` (or no setting) allows every repository.
+    assertContextRepositoriesAllowed('acme/web', ['acme/api'], undefined);
+    // Policies are lowercased; definition names may not be.
+    assertContextRepositoriesAllowed('acme/web', ['Acme/API'], ['acme/api', 'acme/web']);
+    // `none` resolves to the primary repository alone.
+    assert.throws(() => assertContextRepositoriesAllowed('acme/web', ['acme/api'], ['acme/web']), /does not allow reading acme\/api/);
+    assert.throws(() => assertContextRepositoriesAllowed('acme/web', ['acme/api', 'acme/docs'], ['acme/api', 'acme/web']), /does not allow reading acme\/docs\./);
   });
 
   test('input files are not written through a checked-out symlink to a directory outside the workspace', async () => {
