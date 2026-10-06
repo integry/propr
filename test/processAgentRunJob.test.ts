@@ -11,6 +11,11 @@ import { UsageLimitError } from '../packages/core/src/claude/claudeHelpers.ts';
 // The scratch workspace root is read from the environment at import time.
 const SCRATCH_BASE = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-run-worktrees-'));
 process.env.GIT_WORKTREES_BASE_PATH = SCRATCH_BASE;
+// Workspace setup hands the checkout to UID 1000 through sudo, which CI runners
+// allow; the runner could then no longer delete the workspace afterwards.
+const SUDO_BIN = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-run-bin-'));
+await fs.writeFile(path.join(SUDO_BIN, 'sudo'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+process.env.PATH = `${SUDO_BIN}${path.delimiter}${process.env.PATH}`;
 
 const {
   AGENT_RUN_ABANDONED_REASON,
@@ -27,9 +32,13 @@ type AgentRunWorkspace = import('../src/jobs/agentRuns/workspace.ts').AgentRunWo
 
 // Importing @propr/core opens the shared database connection.
 after(async () => {
-  await fs.remove(SCRATCH_BASE);
-  const { closeConnection } = await import('../packages/core/src/db/connection.ts');
-  await closeConnection();
+  try {
+    await fs.remove(SCRATCH_BASE);
+    await fs.remove(SUDO_BIN);
+  } finally {
+    const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+    await closeConnection();
+  }
 });
 
 const NOW = Date.UTC(2026, 9, 6, 12, 0, 0);
