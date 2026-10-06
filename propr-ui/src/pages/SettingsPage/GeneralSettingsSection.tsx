@@ -81,8 +81,8 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
         <SettingsCheckboxField
           id="auto_resolve_merge_conflicts"
           name="auto_resolve_merge_conflicts"
-          label="Auto-Resolve Merge Conflicts"
-          helperText="When enabled, the system will automatically merge the PR base branch into contributor branches and ask an agent to resolve any conflicts. Disable this to prevent automatic mutation of open pull requests."
+          label="Auto-Resolve Merge Conflicts (default for repositories)"
+          helperText="Default for repositories that do not set their own value in Repositories → Automation. When on, ProPR merges the base branch into its conflicted pull requests and asks an agent to resolve the conflicts. A repository set to Always or Never overrides this default."
           checked={settings.auto_resolve_merge_conflicts}
           onChange={onSettingChange}
           onBlur={onBlur}

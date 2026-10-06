@@ -143,3 +143,13 @@ test('fast analysis model describes the review context scout', () => {
   assert.deepEqual(entry?.env, ['ANALYSIS_MODEL_FAST']);
   assert.ok(!SETTINGS_CATALOG.some(setting => setting.id === 'automation.auto_followup_score_threshold'));
 });
+
+test('find_setting returns the instance default and the repository override for merge conflicts', async () => {
+  const ids = (await findSetting('merge conflicts')).matches.map(match => match.id);
+  assert.ok(ids.includes('automation.auto_resolve_merge_conflicts'), ids.join(', '));
+  assert.ok(ids.includes('repository.auto_resolve_merge_conflicts'), ids.join(', '));
+  const repository = SETTINGS_CATALOG.find(entry => entry.id === 'repository.auto_resolve_merge_conflicts');
+  assert.deepEqual(repository?.mcp, { read: 'get_repository_configuration', write: 'update_repository_configuration' });
+  const instance = SETTINGS_CATALOG.find(entry => entry.id === 'automation.auto_resolve_merge_conflicts');
+  assert.match(instance?.label ?? '', /default/i);
+});

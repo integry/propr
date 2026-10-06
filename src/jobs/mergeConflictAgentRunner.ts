@@ -3,15 +3,13 @@ import type { Redis } from 'ioredis';
 import {
     AgentRegistry,
     TaskStates,
-    assertCommitIsAncestor,
-    commitChanges,
-    createHooklessGit,
     createLogFiles,
     db,
     getAuthenticatedOctokit,
+    performConflictResolution,
     recordLLMMetrics,
 } from '@propr/core';
-import type { ClaudeCodeResponse, JobResult, WorkerStateManager, WorktreeInfo } from '@propr/core';
+import type { ClaudeCodeResponse, ConflictResolverContext, JobResult, MergeBaseIntoBranchOptions, WorkerStateManager, WorktreeInfo } from '@propr/core';
 import { createContainerIdCallbackForPR, createSessionIdCallbackForPR } from './prCommentJobHelpers.js';
 import type { PullRequestPublication } from './prPublication.js';
 import { recordPushSalvageEvent } from './pushSalvageTimeline.js';
@@ -122,12 +120,14 @@ async function verifyNoConflictMarkers(worktreeInfo: WorktreeInfo, pullRequestNu
 }
 
 export async function handleMergeWithAgent(options: {
-    conflictedFiles?: string[];
+    /** Where the base branch is fetched from (the base repository for fork heads). */
+    mergeOptions: MergeBaseIntoBranchOptions;
+    /** Runs after the local merge and before the agent. */
+    onMerged?: (context: ConflictResolverContext) => Promise<void>;
     worktreeInfo: WorktreeInfo;
     /** Owns the mutable destination and adopts an unpushable fork into a continuation. */
     publication: PullRequestPublication;
     baseBranch: string;
-    baseCommit: string;
     pullRequestNumber: number;
     repoOwner: string;
     repoName: string;
@@ -140,73 +140,92 @@ export async function handleMergeWithAgent(options: {
     correlatedLogger: Logger;
     redisClient: Redis;
 }): Promise<JobResult> {
-    const { conflictedFiles, worktreeInfo, publication, baseBranch, baseCommit, pullRequestNumber,
+    const { mergeOptions, onMerged, worktreeInfo, publication, baseBranch, pullRequestNumber,
         repoOwner, repoName, githubToken, octokit, startingCommentId,
         stateManager, taskId, correlationId, correlatedLogger, redisClient } = options;
     const branchName = publication.target.branchName;
 
-    const prompt = buildConflictResolutionPrompt({
-        pullRequestNumber, baseBranch, headBranch: branchName, conflictedFiles, worktreeInfo, repoOwner, repoName,
-    });
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
     const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
     const agent = registry.getAgentByAlias(resolvedAlias);
     if (!agent) throw new Error(`Agent not found for alias: ${resolvedAlias}`);
 
-    correlatedLogger.info({
-        agentAlias: resolvedAlias, agentType: agent.config.type, model: resolvedModel, pullRequestNumber, conflictedFiles,
-    }, 'Executing merge conflict resolution with agent');
-    const wasCleanMerge = !conflictedFiles || conflictedFiles.length === 0;
+    // The agent is only the resolver: performConflictResolution owns the merge,
+    // marker verification, the merge commit and the push.
+    const resolveConflicts = async ({ conflictedFiles }: ConflictResolverContext): Promise<ClaudeCodeResponse> => {
+        const prompt = buildConflictResolutionPrompt({
+            pullRequestNumber, baseBranch, headBranch: branchName, conflictedFiles, worktreeInfo, repoOwner, repoName,
+        });
+        correlatedLogger.info({
+            agentAlias: resolvedAlias, agentType: agent.config.type, model: resolvedModel, pullRequestNumber, conflictedFiles,
+        }, 'Executing merge conflict resolution with agent');
 
-    const agentResult = await agent.executeTask({
+        const agentResult = await agent.executeTask({
+            worktreePath: worktreeInfo.worktreePath,
+            issueRef: { number: pullRequestNumber, repoOwner, repoName },
+            prompt,
+            model: resolvedModel,
+            githubToken: githubToken.token,
+            branchName,
+            onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolvedModel, stateManager, correlatedLogger, redisClient }),
+            onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
+            taskId,
+            prNumber: pullRequestNumber,
+        });
+
+        const claudeResult: ClaudeCodeResponse = agentResultToClaudeResponse(agentResult);
+        await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'merge_conflict', correlationId, taskId });
+        await createLogFiles(claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
+        await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
+            reason: `${agent.config.type} agent execution completed for merge conflict resolution`,
+            claudeResult: { success: claudeResult.success, sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, executionTime: claudeResult.executionTime },
+            historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model },
+        });
+        if (!claudeResult.success) {
+            throw new Error(`Agent execution failed during conflict resolution: ${getAgentFailureDetail(claudeResult)}`);
+        }
+        // Markers anywhere in the tree, not only in the files git reported.
+        await verifyNoConflictMarkers(worktreeInfo, pullRequestNumber, correlatedLogger);
+        return claudeResult;
+    };
+
+    const outcome = await performConflictResolution<ClaudeCodeResponse>({
         worktreePath: worktreeInfo.worktreePath,
-        issueRef: { number: pullRequestNumber, repoOwner, repoName },
-        prompt,
-        model: resolvedModel,
-        githubToken: githubToken.token,
+        baseBranch,
         branchName,
-        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: resolvedModel, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
-        taskId,
-        prNumber: pullRequestNumber,
+        merge: mergeOptions,
+        // /merge semantics: an agent verifies clean merges too.
+        resolveCleanMerges: true,
+        onMerged,
+        resolveConflicts,
+        author: AI_COMMIT_AUTHOR,
+        commitMessage: ({ conflictedFiles, wasCleanMerge, resolverResult }) => buildMergeConflictCommitMessage({
+            baseBranch, headBranch: branchName, pullRequestNumber, conflictedFiles,
+            model: resolverResult?.model || resolvedModel, wasCleanMerge,
+        }),
+        // A final fork rejection can be stricter than the dry-run preflight (for example,
+        // when this merge introduces workflow commits). Preserve this exact HEAD and adopt
+        // it into a ProPR-owned continuation rather than rerunning conflict resolution.
+        push: ({ worktreePath }) => publication.push(worktreePath, undefined, {
+            // Rebasing replays individual commits and can drop the merge commit that proves
+            // the fetched base was incorporated.
+            rebaseOnNonFastForward: false,
+            salvage: { taskId, onEvent: recordPushSalvageEvent(stateManager, taskId, correlatedLogger) },
+        }),
     });
 
-    const claudeResult: ClaudeCodeResponse = agentResultToClaudeResponse(agentResult);
-    await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'merge_conflict', correlationId, taskId });
-    await createLogFiles(claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
-    await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
-        reason: `${agent.config.type} agent execution completed for merge conflict resolution`,
-        claudeResult: { success: claudeResult.success, sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, executionTime: claudeResult.executionTime },
-        historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model },
-    });
-    if (!claudeResult.success) {
-        throw new Error(`Agent execution failed during conflict resolution: ${getAgentFailureDetail(claudeResult)}`);
+    if (outcome.status === 'unresolved') {
+        throw new Error(`Agent failed to resolve all merge conflicts. ${outcome.remainingMarkers.length} conflict marker(s) still present in files.`);
     }
-
-    await verifyNoConflictMarkers(worktreeInfo, pullRequestNumber, correlatedLogger);
-    // The agent is intentionally not allowed to own Git operations. Stage its
-    // resolution here so commitChanges can require an already-resolved index.
-    await createHooklessGit(worktreeInfo.worktreePath).add('.');
-    const commitMessage = buildMergeConflictCommitMessage({
-        baseBranch, headBranch: branchName, pullRequestNumber, conflictedFiles,
-        model: claudeResult.model || resolvedModel, wasCleanMerge,
-    });
-    const commitResult = await commitChanges(worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, { issueNumber: pullRequestNumber, issueTitle: wasCleanMerge ? 'Verify clean merge' : 'Resolve merge conflicts' });
-
-    const { simpleGit } = await import('simple-git');
-    const finalCommitHash = commitResult?.commitHash || (await simpleGit({ baseDir: worktreeInfo.worktreePath }).revparse(['HEAD'])).trim();
-    await assertCommitIsAncestor(worktreeInfo.worktreePath, baseCommit);
-    // A final fork rejection can be stricter than the dry-run preflight (for example,
-    // when this merge introduces workflow commits). Preserve this exact HEAD and adopt
-    // it into a ProPR-owned continuation rather than rerunning conflict resolution.
-    const pushResult = await publication.push(worktreeInfo.worktreePath, undefined, {
-        // Rebasing replays individual commits and can drop the merge commit that proves
-        // the fetched base was incorporated.
-        rebaseOnNonFastForward: false,
-        salvage: { taskId, onEvent: recordPushSalvageEvent(stateManager, taskId, correlatedLogger) },
-    });
-    const publishedCommitHash = pushResult.commitHash || finalCommitHash;
+    if (outcome.status === 'head_moved') {
+        throw new Error(`Pull request head moved from ${outcome.expectedHeadSha} to ${outcome.previousHeadSha} before the merge`);
+    }
+    const claudeResult = 'resolverResult' in outcome ? outcome.resolverResult : undefined;
+    if (!claudeResult) throw new Error('Merge conflict resolution finished without running the agent');
+    const conflictedFiles = outcome.conflictedFiles.length > 0 ? outcome.conflictedFiles : undefined;
+    const wasCleanMerge = !conflictedFiles;
+    const publishedCommitHash = outcome.headSha;
     const publishedBranchName = publication.target.branchName;
     const taskUrl = `${process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev'}/tasks/${encodeURIComponent(taskId)}`;
     let comment = buildMergeConflictComment({
