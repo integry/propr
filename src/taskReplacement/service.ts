@@ -17,8 +17,10 @@ import type {
     TaskReplacementStore,
 } from './store.js';
 import { createReplacementDelivery, REPLACEMENT_JOB_NAME, TERMINAL_STATES } from './delivery.js';
+import { deliverExhaustedComment } from './exhaustedComment.js';
 
 export { REPLACEMENT_JOB_NAME } from './delivery.js';
+export { exhaustedCommentMarker, MAX_EXHAUSTED_COMMENT_ATTEMPTS } from './exhaustedComment.js';
 /** A pending decision older than this is completed by the reconciler. */
 export const PENDING_REPLACEMENT_RECOVERY_MS = 5 * 60 * 1000;
 
@@ -88,6 +90,8 @@ export interface TaskReplacementDependencies {
         metadata?: Record<string, unknown>;
     }): Promise<unknown>;
     postIssueComment?(repoOwner: string, repoName: string, issueNumber: number, body: string): Promise<void>;
+    /** Whether a comment containing `marker` is on the issue. */
+    findIssueComment?(repoOwner: string, repoName: string, issueNumber: number, marker: string): Promise<boolean>;
     frontendUrl?: string;
     now?: () => Date;
     randomId?: () => string;
@@ -210,21 +214,6 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
         };
     }
 
-    async function postExhaustedComment(task: ReplaceableTask, lineage: LineageAttempt[], cause: ReplacementCause): Promise<void> {
-        const repository = splitRepository(task.repository);
-        if (!deps.postIssueComment || !repository || !task.issueNumber || cause !== 'infra_lost') return;
-        const body = `❌ **Failed to process this issue after ${lineage.length} attempts**\n\n`
-            + 'The last attempt was lost with its worker (no queue job or running task container remained), '
-            + 'and a second loss in the same lineage is final.\n\n'
-            + `**Attempts:**\n${formatAttempts(lineage)}\n\n`
-            + '---\n*Re-apply the trigger label to start a new run.*';
-        try {
-            await deps.postIssueComment(repository[0], repository[1], task.issueNumber, body);
-        } catch (error) {
-            deps.logger?.warn({ taskId: task.taskId, error: (error as Error).message }, 'Failed to post the final replacement failure comment');
-        }
-    }
-
     function lineageOrSelf(task: ReplaceableTask, lineage: LineageAttempt[]): LineageAttempt[] {
         return lineage.length > 0 ? lineage : [{
             taskId: task.taskId, attemptNumber: task.attemptNumber, replacementCause: task.replacementCause, state: task.latestState, costUsd: 0,
@@ -240,10 +229,12 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
      * Runs the follow-up of a released decision: its timeline events, the final
      * comment of an exhausted lineage, and the held-back failure alert. The decision
      * is already released, so the alert projects as final; the notice is cleared
-     * only afterwards, and recovery repeats an interrupted follow-up.
+     * only after the comment was delivered too, and recovery repeats an interrupted
+     * or failed follow-up.
      */
     async function deliverFailureNotice(task: ReplaceableTask, notice: FailureNoticeRecord, knownLineage?: LineageAttempt[]): Promise<void> {
         const { reason, cause, recordedAt: timestamp } = notice;
+        let commentPending = false;
         if (reason) {
             await deps.store.appendEvent({
                 taskId: task.taskId, event: 'replacement.skipped', reason: `Replacement skipped: ${describeReplacementSkip(reason)}`, timestamp,
@@ -258,7 +249,7 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
         }
         if (reason && notice.exhausted) {
             const lineage = lineageOrSelf(task, knownLineage ?? await deps.store.loadLineage(task.lineageRootTaskId));
-            const recorded = await deps.store.appendEvent({
+            await deps.store.appendEvent({
                 taskId: task.taskId, event: 'replacement.exhausted', reason: `All ${lineage.length} attempts failed`, timestamp,
                 once: notice.id,
                 metadata: {
@@ -267,8 +258,7 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
                     attempts: lineage.map(({ taskId, attemptNumber, state }) => ({ taskId, attemptNumber, state })),
                 },
             });
-            // Posted at most once: a repeated follow-up finds the event already recorded.
-            if (recorded) await postExhaustedComment(task, lineage, cause);
+            commentPending = !await deliverExhaustedComment(deps, task, notice, { count: lineage.length, formatted: formatAttempts(lineage) });
         }
         // A withdrawn decision awaited a failure that may never have been written.
         if (notice.publish && (reason || task.latestState === 'failed')) await deps.publishTaskUpdate?.({
@@ -279,6 +269,11 @@ export function createTaskReplacementService(deps: TaskReplacementDependencies):
             timestamp: now().toISOString(),
             ...(reason ? { metadata: { reason: `No replacement attempt: ${describeReplacementSkip(reason)}`, replacementSkipped: reason } } : {}),
         });
+        if (commentPending) {
+            // Recovery retries the comment; the alert is already out.
+            if (notice.publish) await deps.store.updateFailureNotice(task.taskId, notice.id, { publish: false });
+            return;
+        }
         await deps.store.clearFailureNotice(task.taskId, notice.id);
     }
 

@@ -112,7 +112,7 @@ Recovery runs through the PR conversation:
 ProPR replaces an issue task automatically in two cases (see [Reconciliation and automatic replacement runs](../architecture/worker.md#reconciliation-and-automatic-replacement-runs)):
 
 - **The run was lost with its worker** — no queue job and no running task container remained after a worker restart, host reboot or killed container. One replacement is dispatched; a second loss in the same lineage is final.
-- **The run ended with a transient provider error** (5xx, overloaded, connection reset, timeout) — up to `MAX_PROVIDER_REPLACEMENTS` replacements (default 2). Usage limits (429) are not replaced; they re-queue the same task until the limit resets.
+- **The run ended with a transient provider error** (5xx, overloaded, connection reset, timeout) — up to `MAX_PROVIDER_REPLACEMENTS` replacements (default 2). Usage limits (429) are not replaced; they re-queue the same task until the limit resets. GitHub and git failures (for example a GitHub 503 while publishing) are never replaced, because the agent run itself succeeded.
 
 Where to look:
 

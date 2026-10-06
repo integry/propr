@@ -166,7 +166,7 @@ export async function markTaskComplete(taskCompletionParams: TaskCompletionParam
     const { claudeResult } = taskCompletionParams;
     if (getTaskCompletionStatus(claudeResult, postProcessingResult) === 'claude_processing_failed') {
       await completeProviderReplacement({
-        taskId, error: claudeResult?.error ?? '',
+        taskId, error: claudeResult?.error ?? '', fromAgentExecution: true,
         terminationReason: claudeResult ? resolveAgentTerminationReason(claudeResult) ?? null : null, correlatedLogger,
       });
     }

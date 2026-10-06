@@ -29,6 +29,11 @@ export interface FailureNoticeRecord {
     /** Whether the task's failure alert was held back and must be published. */
     publish: boolean;
     recordedAt: string;
+    /**
+     * An exhausted lineage's final comment, recorded apart from its timeline event: posting
+     * attempts started (a GitHub response may be lost after any), and whether it is settled.
+     */
+    commentAttempts?: number; commentDelivered?: boolean;
 }
 
 export interface ReplacementRequestRecord {
@@ -138,6 +143,8 @@ export interface TaskReplacementStore {
     setState(taskId: string, state: ReplacementState | null): Promise<void>;
     /** Releases the decision as skipped or exhausted together with the follow-up it still owes. */
     recordSkipped(taskId: string, state: 'skipped' | 'exhausted', notice: FailureNoticeRecord): Promise<void>;
+    /** Merges progress into the task's follow-up, unless a newer one replaced it. */
+    updateFailureNotice(taskId: string, noticeId: string, patch: Partial<Pick<FailureNoticeRecord, 'commentAttempts' | 'commentDelivered' | 'publish'>>): Promise<void>;
     /** Clears a delivered follow-up, unless a newer one replaced it. */
     clearFailureNotice(taskId: string, noticeId: string): Promise<void>;
     listFailureNotices(recordedBefore: string, limit: number): Promise<PendingFailureNotice[]>;
@@ -307,6 +314,11 @@ export function createTaskReplacementStore(database: Knex): TaskReplacementStore
                 replacement_state: state,
                 replacement_request: database.raw("json_set(COALESCE(replacement_request, '{}'), '$.failureNotice', json(?))", [JSON.stringify(notice)]),
             });
+        },
+
+        async updateFailureNotice(taskId, noticeId, patch) {
+            const merged = database.raw("json_set(replacement_request, '$.failureNotice', json_patch(json_extract(replacement_request, '$.failureNotice'), json(?)))", [JSON.stringify(patch)]);
+            await database('tasks').where({ task_id: taskId }).whereRaw("json_extract(replacement_request, '$.failureNotice.id') = ?", [noticeId]).update({ replacement_request: merged });
         },
 
         async clearFailureNotice(taskId, noticeId) {

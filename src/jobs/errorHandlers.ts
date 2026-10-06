@@ -12,7 +12,7 @@ import {
     updateWithdrawnIssueLabels
 } from '@propr/core';
 import type { ClaudeResult, IssueJobData, JobResult, WorkerStateManager, ClaudeCodeResponse, WorktreeInfo } from '@propr/core';
-import { completeProviderReplacement, prepareProviderReplacement } from './providerReplacement.js';
+import { completeProviderReplacement, isAgentExecutionFailure, prepareProviderReplacement } from './providerReplacement.js';
 
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -328,7 +328,9 @@ export async function handleGenericError(
     }
 
     // Decided before the failure is reported, so the comment and Inbox reflect a pending replacement.
-    const replacementSection = isUserCancelled ? '' : await prepareProviderReplacement({ taskId, error, correlatedLogger });
+    // Only an error the agent's execution threw can be a provider failure; GitHub and git errors are not.
+    const fromAgentExecution = isAgentExecutionFailure(error);
+    const replacementSection = isUserCancelled ? '' : await prepareProviderReplacement({ taskId, error, fromAgentExecution, correlatedLogger });
     if (octokit && !isUserCancelled) {
         await postErrorComment(issueRef, error, { octokit, errorCategory, claudeResult, worktreeInfo, AI_PROCESSING_TAG, correlatedLogger, replacementSection });
     } else if (octokit && isUserCancelled) {
@@ -356,7 +358,7 @@ export async function handleGenericError(
             correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
         } else {
             await stateManager.markTaskFailed(taskId, error, { errorCategory });
-            await completeProviderReplacement({ taskId, error, correlatedLogger });
+            await completeProviderReplacement({ taskId, error, fromAgentExecution, correlatedLogger });
         }
     } catch (stateError) {
         correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state');

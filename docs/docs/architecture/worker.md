@@ -219,7 +219,9 @@ ProPR then dispatches **replacement runs** instead of leaving that work lost:
   instance setting **Provider failure replacements** overrides the
   environment; `0` disables it). 429 and usage-limit errors are excluded: they
   already re-queue the same task until the limit resets. Credential errors and
-  run timeouts are excluded as well.
+  run timeouts are excluded as well. Only errors from the coding agent's own
+  execution count: a GitHub or git failure before or after the agent ran never
+  starts a replacement, whatever its status code.
 
 Attempts are linked durably: the replaced task records `replaced_by_task_id`,
 the replacement records `replaces_task_id`, `attempt_number` and its lineage
@@ -249,8 +251,13 @@ every attempt with a link to each task. A decision interrupted by a restart
 (the failure was recorded, the replacement not yet queued) is completed by the
 reconciler on a later pass. When no replacement follows, the decision is
 released before the held-back failure alert is published, so the alert shows.
-The task keeps a durable obligation until the alert and timeline events are
-delivered, and the reconciler retries them if the worker stops in between.
+The task keeps a durable obligation until the alert, the timeline events and
+the final comment of a lineage lost twice are delivered, and the reconciler
+retries them if the worker stops in between or GitHub rejects the comment.
+The comment's delivery is recorded separately from its timeline event. The
+comment carries a hidden marker, so a retry after an uncertain GitHub response
+finds an earlier post instead of posting a duplicate. Recovery stops retrying
+after five rejected posts.
 
 Task detail shows the attempt lineage, and `propr task get --json` includes
 `replacesTaskId`, `replacedByTaskId` and `attemptNumber`.

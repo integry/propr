@@ -74,7 +74,7 @@ async function handleUnpublishableAgentFailure(options: {
         repoOwner: issueRef.repoOwner,
         repoName: issueRef.repoName,
     }, { publishedAs: 'issue_comment' });
-    const replacementSection = await prepareProviderReplacement({ taskId, error: claudeResult.error ?? errorMessage, terminationReason: resolveAgentTerminationReason(claudeResult) ?? null, correlatedLogger });
+    const replacementSection = await prepareProviderReplacement({ taskId, error: claudeResult.error ?? errorMessage, fromAgentExecution: true, terminationReason: resolveAgentTerminationReason(claudeResult) ?? null, correlatedLogger });
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: issueRef.repoOwner,
         repo: issueRef.repoName,

@@ -11,10 +11,28 @@ import type { LineageAttempt } from '../taskReplacement/store.js';
 export interface ProviderFailure {
     taskId?: string;
     error: unknown;
+    /**
+     * Whether the error came from the coding agent's execution (its result or an
+     * error it threw). GitHub, git and other job failures are never replaced,
+     * whatever their status: the provider may already have completed the run.
+     */
+    fromAgentExecution: boolean;
     /** Agent termination reason (timeout, max turns); such runs are never replaced. */
     terminationReason?: string | null;
     terminalReason?: string | null;
     correlatedLogger: Pick<Logger, 'warn'>;
+}
+
+const agentExecutionFailures = new WeakSet<object>();
+
+/** Tags an error thrown by the coding agent's own execution, so the job's error handler can tell it from GitHub or git failures. */
+export function markAgentExecutionFailure<T>(error: T): T {
+    if (error && typeof error === 'object') agentExecutionFailures.add(error);
+    return error;
+}
+
+export function isAgentExecutionFailure(error: unknown): boolean {
+    return !!error && typeof error === 'object' && agentExecutionFailures.has(error);
 }
 
 async function loadReplacement() {
@@ -42,7 +60,7 @@ export async function prepareProviderReplacement(failure: ProviderFailure): Prom
     try {
         const { service, isTransient } = await loadReplacement();
         let lineage: LineageAttempt[];
-        if (isTransient(failure.error, failure.terminationReason)) {
+        if (failure.fromAgentExecution && isTransient(failure.error, failure.terminationReason)) {
             const evaluation = await service.prepare({
                 taskId: failure.taskId, cause: 'provider_transient', terminalReason: failure.terminalReason ?? null,
             });
@@ -68,7 +86,7 @@ export async function completeProviderReplacement(failure: ProviderFailure): Pro
     if (!failure.taskId) return;
     try {
         const { service, isTransient } = await loadReplacement();
-        if (!isTransient(failure.error, failure.terminationReason)) return;
+        if (!failure.fromAgentExecution || !isTransient(failure.error, failure.terminationReason)) return;
         await service.complete({
             taskId: failure.taskId,
             cause: 'provider_transient',

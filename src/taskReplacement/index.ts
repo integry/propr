@@ -60,6 +60,13 @@ export function getTaskReplacementService(): TaskReplacementService {
                 owner, repo, issue_number: issueNumber, body,
             });
         },
+        async findIssueComment(owner, repo, issueNumber, marker) {
+            const octokit = await getAuthenticatedOctokit();
+            const comments = await octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner, repo, issue_number: issueNumber, per_page: 100,
+            }) as Array<{ body?: string | null }>;
+            return comments.some(comment => comment.body?.includes(marker));
+        },
         publishTaskUpdate: payload => getEventPublisher().publishTaskUpdate(payload),
         logger,
     });

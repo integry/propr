@@ -677,3 +677,124 @@ test('a skip interrupted before its timeline events keeps them recoverable', asy
         [['replacement.skipped', 'unsupported_task', '529 Overloaded']]);
     assert.deepEqual(recovery.seen.map(({ taskId, replacementState }) => [taskId, replacementState]), [['task-1', 'skipped']]);
 });
+
+/** task-1 replaced a lost task-0, so its own loss exhausts the infra-lost allowance. */
+async function seedExhaustingLineage(database: Knex): Promise<void> {
+    await seedTask(database, 'task-1');
+    // Decided while a replacement was still possible, so the failure alert is held back.
+    await harness(database).service.prepare({ taskId: 'task-1', cause: 'infra_lost' });
+    await database('tasks').insert({
+        task_id: 'task-0', repository: 'integry/propr', issue_number: 2739, task_type: 'issue', replaced_by_task_id: 'task-1',
+    });
+    await database('tasks').where({ task_id: 'task-1' }).update({ replaces_task_id: 'task-0', lineage_root_task_id: 'task-0', attempt_number: 2, replacement_cause: 'infra_lost' });
+}
+
+/** A GitHub issue whose comment requests can fail before or after the comment is created. */
+function commentingHarness(database: Knex, issue: string[], options: {
+    now: Date; post?: 'reject' | 'lose_response'; crashAfterExhaustedEvent?: boolean;
+}) {
+    const published: string[] = [];
+    let posts = 0;
+    const store = createTaskReplacementStore(database);
+    const service = createTaskReplacementService({
+        store: {
+            ...store,
+            async appendEvent(entry) {
+                const recorded = await store.appendEvent(entry);
+                if (options.crashAfterExhaustedEvent && entry.event === 'replacement.exhausted') throw new Error('worker lost before the comment');
+                return recorded;
+            },
+        },
+        enqueue: async () => {},
+        loadMaxProviderReplacements: async () => 2,
+        infraLostEnabled: () => true,
+        readIssueState: async () => ({ state: 'open' }),
+        publishTaskUpdate: async payload => { if (payload.state === 'failed') published.push(payload.taskId); return true; },
+        async postIssueComment(_owner, _repo, _number, body) {
+            posts++;
+            if (options.post === 'reject') throw new Error('GitHub 502');
+            issue.push(body);
+            if (options.post === 'lose_response') throw new Error('socket hang up');
+        },
+        findIssueComment: async (_owner, _repo, _number, marker) => issue.some(body => body.includes(marker)),
+        randomId: () => `replacement-correlation-${++ids}`,
+        now: () => options.now,
+    });
+    return { service, published, posts: () => posts };
+}
+
+async function failureNotice(database: Knex, taskId: string): Promise<Record<string, unknown> | undefined> {
+    const request = (await task(database, taskId)).replacement_request;
+    return request === null ? undefined : JSON.parse(String(request)).failureNotice;
+}
+
+test('a final comment interrupted after the exhausted event is posted by recovery', async () => {
+    const database = await createDatabase();
+    await seedExhaustingLineage(database);
+    const issue: string[] = [];
+    const live = commentingHarness(database, issue, { now: decidedAt, crashAfterExhaustedEvent: true });
+    await markState(database, 'task-1', 'failed');
+    await assert.rejects(live.service.complete({ taskId: 'task-1', cause: 'infra_lost' }), /worker lost/);
+    assert.equal(issue.length, 0);
+    assert.ok(await failureNotice(database, 'task-1'), 'the comment is still owed');
+
+    const recovery = commentingHarness(database, issue, { now: recoveredAt });
+    assert.deepEqual(await recovery.service.resumePending(), { resumed: 1, cleared: 0 });
+    assert.equal(issue.length, 1, 'recovery posts the comment although the event already exists');
+    assert.match(issue[0], /Failed to process this issue after 2 attempts/);
+    assert.match(issue[0], /\[task-0\]\(.*\/tasks\/task-0\)[\s\S]*\[task-1\]\(.*\/tasks\/task-1\)/, 'links every attempt');
+    assert.equal(await failureNotice(database, 'task-1'), undefined);
+    assert.deepEqual((await events(database, 'task-1')).map(entry => entry.event), ['replacement.skipped', 'replacement.exhausted']);
+});
+
+test('a rejected final comment keeps its obligation and is retried by recovery', async () => {
+    const database = await createDatabase();
+    await seedExhaustingLineage(database);
+    const issue: string[] = [];
+    const live = commentingHarness(database, issue, { now: decidedAt, post: 'reject' });
+    await markState(database, 'task-1', 'failed');
+    await live.service.complete({ taskId: 'task-1', cause: 'infra_lost' });
+    assert.deepEqual(live.published, ['task-1'], 'the failure alert does not wait for the comment');
+    const notice = await failureNotice(database, 'task-1');
+    assert.deepEqual([notice?.commentAttempts, notice?.commentDelivered, notice?.publish], [1, undefined, false]);
+
+    const recovery = commentingHarness(database, issue, { now: recoveredAt });
+    await recovery.service.resumePending();
+    assert.equal(issue.length, 1);
+    assert.deepEqual(recovery.published, [], 'the alert is not published again');
+    assert.equal(await failureNotice(database, 'task-1'), undefined);
+    assert.deepEqual(await recovery.service.resumePending(), { resumed: 0, cleared: 0 });
+});
+
+test('a final comment whose response was lost is found by its marker instead of posted twice', async () => {
+    const database = await createDatabase();
+    await seedExhaustingLineage(database);
+    const issue: string[] = [];
+    const live = commentingHarness(database, issue, { now: decidedAt, post: 'lose_response' });
+    await markState(database, 'task-1', 'failed');
+    await live.service.complete({ taskId: 'task-1', cause: 'infra_lost' });
+    assert.equal(issue.length, 1);
+    assert.ok(await failureNotice(database, 'task-1'), 'an uncertain response does not settle the obligation');
+
+    const recovery = commentingHarness(database, issue, { now: recoveredAt });
+    await recovery.service.resumePending();
+    assert.equal(recovery.posts(), 0, 'the marker reconciles the earlier post');
+    assert.equal(issue.length, 1);
+    assert.equal(await failureNotice(database, 'task-1'), undefined);
+});
+
+test('recovery gives up on a final comment GitHub keeps rejecting', async () => {
+    const { MAX_EXHAUSTED_COMMENT_ATTEMPTS } = await import('../src/taskReplacement/service.js');
+    const database = await createDatabase();
+    await seedExhaustingLineage(database);
+    const issue: string[] = [];
+    const live = commentingHarness(database, issue, { now: decidedAt, post: 'reject' });
+    await markState(database, 'task-1', 'failed');
+    await live.service.complete({ taskId: 'task-1', cause: 'infra_lost' });
+    const recovery = commentingHarness(database, issue, { now: recoveredAt, post: 'reject' });
+    for (let sweep = 1; sweep < MAX_EXHAUSTED_COMMENT_ATTEMPTS; sweep++) await recovery.service.resumePending();
+    assert.equal((await failureNotice(database, 'task-1'))?.commentAttempts, MAX_EXHAUSTED_COMMENT_ATTEMPTS);
+    await recovery.service.resumePending();
+    assert.equal(await failureNotice(database, 'task-1'), undefined, 'a permanently rejected comment does not block recovery forever');
+    assert.equal(recovery.posts(), MAX_EXHAUSTED_COMMENT_ATTEMPTS - 1);
+});
