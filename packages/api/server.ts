@@ -102,6 +102,7 @@ import {
   type RouteEntry
 } from './routeRegistry.js';
 import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
+import { createAgentRunInternalRoutes } from './routes/agentRunInternalRoutes.js';
 import { registerDesktopApiBoundary } from './desktopApiBoundary.js';
 import {
   startVisualPreviewOAuthRefreshScheduler,
@@ -336,6 +337,11 @@ function setupRoutes(): void {
   app.get('/api/compatibility', createDiscoveryRequestRateLimiter(), statusRoutes.getCompatibility);
   // MCP authenticates its own bearer tokens before the shared API guard.
   mountMcp(app, { db, taskQueue, redisClient, runtimeBuildQueue });
+  // Worker-only: run-scoped MCP grants for agent containers, authenticated by
+  // an HMAC signed with SYSTEM_TASK_SECRET instead of a browser session.
+  const agentRunInternalRoutes = createAgentRunInternalRoutes({ database: db });
+  app.post('/api/internal/agent-runs/:runId/mcp-grants', createDiscoveryRequestRateLimiter(), agentRunInternalRoutes.issueGrant);
+  app.post('/api/internal/agent-runs/:runId/mcp-grants/revoke', createDiscoveryRequestRateLimiter(), agentRunInternalRoutes.revokeGrant);
   registerDesktopApiBoundary(app, {
     discovery: statusRoutes.getDesktopDiscovery,
     startPairing: desktopAuthRoutes.startPairing,

@@ -85,6 +85,34 @@ export class McpOAuthProvider implements OAuthServerProvider {
     });
   }
 
+  /**
+   * A grant for a first-party delegate that never goes through browser consent
+   * (agent runs). It is persisted exactly like a consented grant, so the same
+   * authentication, Connected apps listing and revocation apply. Only a single
+   * access token living as long as the grant is issued: there is no refresh token.
+   * Scopes above the instance ceiling are narrowed, as for consent.
+   */
+  async issueDelegatedGrant({ credential, clientId, clientName, scopes, repositories, membershipSource, ttlMs }: {
+    credential: GitHubUser; clientId: string; clientName: string; scopes: McpScope[]; repositories: string[];
+    membershipSource: string; ttlMs: number;
+  }): Promise<{ grant: McpGrant; accessToken: string }> {
+    if (!credential.accessToken || !/^\d+$/.test(credential.id)) throw new InvalidGrantError('GitHub credential unavailable');
+    const allowed = this.allowedScopes();
+    const permitted = [...new Set<McpScope>(['read', ...scopes])].filter(scope => allowed.has(scope));
+    return this.store.db.transaction(async tx => {
+      const now = Date.now();
+      const grant: McpGrant = {
+        id: randomUUID(), ownerId: credential.id, clientId, clientName,
+        instanceId: this.config.instanceId, resource: this.config.resource,
+        scopes: permitted, repositories, createdAt: now, expiresAt: now + ttlMs, revoked: false, membershipSource,
+      };
+      await this.store.put('grant', grant.id, grant, { database: tx });
+      // Never replace a credential a browser consent or refresh already stored.
+      if (!await this.store.get('credential', credential.id, tx)) await this.store.put('credential', credential.id, credential, { database: tx });
+      return { grant, accessToken: await this.putAccessToken(grant, tx, permitted, grant.expiresAt) };
+    });
+  }
+
   async challengeForAuthorizationCode(client: OAuthClientInformationFull, code: string): Promise<string> {
     const record = await this.store.get<Code>('code', digest(code));
     if (!record || record.clientId !== client.client_id) throw new InvalidGrantError('Invalid authorization code');
@@ -110,11 +138,15 @@ export class McpOAuthProvider implements OAuthServerProvider {
     return grant;
   }
 
-  private async issue(grant: McpGrant, tx: Knex, scopes = grant.scopes): Promise<OAuthTokens> {
+  private async putAccessToken(grant: McpGrant, tx: Knex, scopes: McpScope[], expiresAt: number): Promise<string> {
     const access = `propr_mcp_${secret()}`;
+    await this.store.put('access', digest(access), { grantId: grant.id, clientId: grant.clientId, scopes, expiresAt }, { expiresAt, database: tx });
+    return access;
+  }
+
+  private async issue(grant: McpGrant, tx: Knex, scopes = grant.scopes): Promise<OAuthTokens> {
     const refresh = secret();
-    const accessExpiresAt = Date.now() + ACCESS_TOKEN_TTL_SECONDS * 1000;
-    await this.store.put('access', digest(access), { grantId: grant.id, clientId: grant.clientId, scopes, expiresAt: accessExpiresAt }, { expiresAt: accessExpiresAt, database: tx });
+    const access = await this.putAccessToken(grant, tx, scopes, Date.now() + ACCESS_TOKEN_TTL_SECONDS * 1000);
     // Retain spent refresh tokens until the grant expires, to detect reuse.
     await this.store.put('refresh', digest(refresh), { grantId: grant.id, clientId: grant.clientId, scopes, expiresAt: grant.expiresAt, used: false }, { expiresAt: grant.expiresAt, database: tx });
     return { access_token: access, token_type: 'Bearer', expires_in: ACCESS_TOKEN_TTL_SECONDS, refresh_token: refresh, scope: scopes.join(' ') };

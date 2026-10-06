@@ -23,6 +23,7 @@ import {
 import { agentTaskOptions } from './agentRuns/agentTaskOptions.js';
 import { advanceAfterReport } from './agentRuns/autonomy.js';
 import { buildAgentReportPrompt } from './agentRuns/reportPrompt.js';
+import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import { AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError, reportFromResult } from './agentRuns/runErrors.js';
 import { definitionReadsRepositories, prepareAgentRunWorkspace, splitRepository, type AgentRunWorkspace, type PrepareAgentRunWorkspace } from './agentRuns/workspace.js';
 import type { GitHubToken } from './githubTypes.js';
@@ -70,6 +71,8 @@ export interface AgentRunProcessorDeps {
     /** Runs the agent inside the instance spend cap (`default_max_cost_usd`). */
     withCostCap: <T>(target: { taskId: string; repoOwner: string; repoName: string; modelName?: string; logger: Logger }, operation: () => Promise<T>) => Promise<T>;
     advanceAfterReport: (run: StoredAgentRun) => Promise<StoredAgentRun | null>;
+    /** Run-scoped ProPR MCP grant for the agent container, revoked when the phase ends. */
+    mcpGrants: { request: typeof requestAgentRunMcpGrant; revoke: typeof revokeAgentRunMcpGrant };
 }
 
 async function defaultResolveAgent(definition: StoredAgentDefinition, log: Logger): Promise<ResolvedAgentRunAgent> {
@@ -108,6 +111,7 @@ export const defaultAgentRunProcessorDeps: AgentRunProcessorDeps = {
         { ...defaultRunCostCapDeps, recordExceeded: (capTarget, snapshot) => writeTimelineEvent(capTarget, snapshot) },
     ),
     advanceAfterReport: run => advanceAfterReport(run),
+    mcpGrants: { request: requestAgentRunMcpGrant, revoke: revokeAgentRunMcpGrant },
 };
 
 export function agentRunReportTaskId(runId: string): string {
@@ -477,6 +481,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
         activeRuns.add(runId);
         let workspace: AgentRunWorkspace | undefined;
         let reportStored = false;
+        let mcpGrant: IssuedAgentRunMcpGrant | null = null;
         try {
             await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Preparing agent workspace' });
             const { token, octokit } = await gitHubAccessFor(definition);
@@ -499,7 +504,9 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, { reason: `Running agent ${alias}` });
             const stopped = await stoppedBeforeLaunch({ runId, taskId, stateManager, log }, correlationId);
             if (stopped) return stopped;
-            const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace });
+            // The report reads ProPR context over MCP only with `propr_mcp`.
+            if (definition.capabilities.includes('propr_mcp')) mcpGrant = await deps.mcpGrants.request(runId, 'report');
+            const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant });
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },
                 () => agent.executeTask(options),
@@ -534,8 +541,9 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             if (reportStored || error instanceof AgentRunSettlementError) throw error;
             return settleExecutionError({ runId, taskId, stateManager, log }, error, correlationId);
         } finally {
-            // 11. Nothing was committed or pushed; just remove the workspace.
+            // 11. Nothing was committed or pushed: end the MCP grant and remove the workspace.
             activeRuns.delete(runId);
+            await revokeGrantQuietly(deps.mcpGrants.revoke, runId, mcpGrant, log);
             await workspace?.cleanup();
         }
     };
