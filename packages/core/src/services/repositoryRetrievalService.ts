@@ -37,6 +37,7 @@ import {
   buildPagination,
   normalizePathPrefix,
   parseRepository,
+  remoteRefMappings,
 } from './repositoryRetrievalValidation.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones';
@@ -75,9 +76,16 @@ async function revParseCommit(repoPath: string, candidate: string): Promise<stri
   }
 }
 
+/** Resolves `ref` directly, then via the local refs an explicit fetch stores it under. */
 async function resolveCommit(repoPath: string, ref: string): Promise<string | null> {
-  return await revParseCommit(repoPath, ref)
-    ?? (ref === 'HEAD' ? null : await revParseCommit(repoPath, `refs/remotes/origin/${ref}`));
+  const direct = await revParseCommit(repoPath, ref);
+  if (direct) return direct;
+  for (const { local } of remoteRefMappings(ref)) {
+    if (local === ref) continue;
+    const commit = await revParseCommit(repoPath, local);
+    if (commit) return commit;
+  }
+  return null;
 }
 
 /**

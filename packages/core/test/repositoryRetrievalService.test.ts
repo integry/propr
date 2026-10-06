@@ -484,3 +484,48 @@ test('fetches requested branches, tags and commits missing from a shallow single
     ensureRepoCloned.mock.resetCalls();
   }
 });
+
+test('fetches qualified branch and tag refs missing from a shallow single-branch managed clone', async () => {
+  const managedPath = path.join(clonesBasePath, 'owner', 'managed-qualified');
+  execFileSync('git', ['clone', '-q', '--depth=1', '--single-branch', '--branch', 'main', `file://${repoPath}`, managedPath]);
+  const managedGit = (...args: string[]) => execFileSync('git', args, { cwd: managedPath, encoding: 'utf8' }).trim();
+  ensureRepoCloned.mock.mockImplementation(async () => {
+    managedGit('fetch', '-q', 'origin', '--prune');
+    return managedPath;
+  });
+  const managed = { repository: 'owner/managed-qualified' };
+  try {
+    assert.throws(() => managedGit('rev-parse', '--verify', '--quiet', 'refs/remotes/origin/feature'));
+    assert.throws(() => managedGit('rev-parse', '--verify', '--quiet', 'refs/tags/v-feature'));
+
+    const search = await searchRepositoryFiles({ ...managed, query: 'featureOnlyNeedle', mode: 'literal', ref: 'refs/heads/feature' });
+    assert.equal(search.commit, featureCommit);
+    assert.deepEqual(search.matches.map(match => match.path), ['src/feature.ts']);
+    // The branch keeps its namespace instead of becoming refs/heads/refs/heads/feature.
+    assert.equal(managedGit('rev-parse', 'refs/remotes/origin/feature'), featureCommit);
+
+    // Resolves locally on the next call without another refresh.
+    const callsBefore = ensureRepoCloned.mock.callCount();
+    const again = await readRepositoryFileContent({ ...managed, path: 'src/feature.ts', ref: 'refs/heads/feature' });
+    assert.equal(again.commit, featureCommit);
+    assert.equal(ensureRepoCloned.mock.callCount(), callsBefore);
+
+    const tagged = await readRepositoryFileContent({ ...managed, path: 'src/feature.ts', ref: 'refs/tags/v-feature' });
+    assert.equal(tagged.commit, featureCommit);
+    assert.equal(managedGit('rev-parse', 'refs/tags/v-feature^{commit}'), featureCommit);
+
+    await expectRetrievalError(
+      readRepositoryFileContent({ ...managed, path: 'src/util.ts', ref: 'refs/heads/no-such-branch' }),
+      404,
+      /not found/,
+    );
+    await expectRetrievalError(
+      readRepositoryFileContent({ ...managed, path: 'src/util.ts', ref: 'refs/tags/no-such-tag' }),
+      404,
+      /not found/,
+    );
+  } finally {
+    ensureRepoCloned.mock.restore();
+    ensureRepoCloned.mock.resetCalls();
+  }
+});

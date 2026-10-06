@@ -16,6 +16,7 @@ import { redactAuthenticatedGitUrl } from '../git/redactGitUrl.js';
 import { withGitLockRetry } from '../git/configLock.js';
 import logger from '../utils/logger.js';
 import { RepositoryRetrievalError, type RepositoryTargetOptions } from './repositoryRetrievalTypes.js';
+import { isFullCommitSha, remoteRefMappings } from './repositoryRetrievalValidation.js';
 
 const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
 
@@ -56,11 +57,8 @@ function isMissingRemoteRefError(error: unknown): boolean {
 
 /** Refspecs to try for `ref`, most specific first. `ref` must already be validated. */
 function refspecsFor(ref: string): string[] {
-  if (/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(ref)) return [ref];
-  return [
-    `+refs/heads/${ref}:refs/remotes/origin/${ref}`,
-    `+refs/tags/${ref}:refs/tags/${ref}`,
-  ];
+  if (isFullCommitSha(ref)) return [ref];
+  return remoteRefMappings(ref).map(({ remote, local }) => `+${remote}:${local}`);
 }
 
 /**

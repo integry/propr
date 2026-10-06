@@ -51,6 +51,33 @@ export function assertSafeRef(ref: string): string {
   return ref;
 }
 
+const FULL_COMMIT_SHA = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+
+export function isFullCommitSha(ref: string): boolean {
+  return FULL_COMMIT_SHA.test(ref);
+}
+
+/** A ref name on origin and the local ref an explicit fetch stores it under. */
+export interface RemoteRefMapping {
+  remote: string;
+  local: string;
+}
+
+/**
+ * Where a validated ref may live on origin, most specific first, and where it
+ * is kept locally once fetched. Qualified refs keep their namespace (so
+ * `refs/heads/x` is never looked up as `refs/heads/refs/heads/x`); a short
+ * name may be either a branch or a tag. HEAD and commit SHAs have no mapping.
+ */
+export function remoteRefMappings(ref: string): RemoteRefMapping[] {
+  if (ref === 'HEAD' || isFullCommitSha(ref)) return [];
+  const branch = (name: string): RemoteRefMapping => ({ remote: `refs/heads/${name}`, local: `refs/remotes/origin/${name}` });
+  if (ref.startsWith('refs/heads/')) return [branch(ref.slice('refs/heads/'.length))];
+  if (ref.startsWith('refs/remotes/origin/')) return [branch(ref.slice('refs/remotes/origin/'.length))];
+  if (ref.startsWith('refs/')) return [{ remote: ref, local: ref }];
+  return [branch(ref), { remote: `refs/tags/${ref}`, local: `refs/tags/${ref}` }];
+}
+
 export interface IntegerBounds {
   fallback: number;
   min: number;
