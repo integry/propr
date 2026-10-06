@@ -140,8 +140,12 @@ export async function maybeEnableAutoMerge(
         const gate = await gateAutoMergeArming({
             owner, repo, prNumber: pullRequestNumber, opportunity: 'ultrafix_goal', issueNumber: planIssue.issue_number, log: correlatedLogger,
         });
-        if (!gate.arm) return;
-        const result = await enableAutoMerge({ owner, repoName: repo, prNumber: pullRequestNumber, mergeMethod: gate.mergeMethod });
+        if (!gate.arm || !gate.pullRequest) return;
+        // Arm only the head the policy evaluated; a newer head needs its own decision.
+        const result = await enableAutoMerge({
+            owner, repoName: repo, prNumber: pullRequestNumber, mergeMethod: gate.mergeMethod,
+            expectedHead: { headSha: gate.pullRequest.headSha, baseRef: gate.pullRequest.baseRef },
+        });
         if (!result.success) {
             correlatedLogger.warn({ pullRequestNumber, error: result.error }, 'Failed to enable auto-merge after ultrafix success');
         }

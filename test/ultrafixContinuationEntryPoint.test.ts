@@ -28,7 +28,10 @@ const mockGetPendingReviewState = mock.fn(async () => ({
     isPartial: false,
 }));
 let labelTransitionActive = false;
-const mockGateAutoMergeArming = mock.fn(async (_input: Record<string, unknown>) => ({ arm: true, reason: 'armed', mergeMethod: 'SQUASH' }));
+const evaluatedPullRequest = { headSha: 'evaluated-head', baseRef: 'main' };
+const mockGateAutoMergeArming = mock.fn(async (_input: Record<string, unknown>) => ({
+    arm: true, reason: 'armed', mergeMethod: 'SQUASH', pullRequest: evaluatedPullRequest,
+}));
 let escalationEnabled = false;
 
 await mock.module('@propr/core', {
@@ -238,6 +241,9 @@ describe('Ultrafix continuation entry point', () => {
         const gateInput = mockGateAutoMergeArming.mock.calls.at(-1)?.arguments[0];
         assert.equal(gateInput?.opportunity, 'ultrafix_goal');
         assert.equal(gateInput?.prNumber, 44);
+        // Auto-merge is armed only for the head and base the policy evaluated.
+        const enableInput = (mockEnableAutoMerge.mock.calls.at(-1)?.arguments as unknown as [Record<string, unknown>])[0];
+        assert.deepEqual(enableInput.expectedHead, evaluatedPullRequest);
     });
 
     test('a goal-reaching Ultrafix does not arm auto-merge when the repository policy skips it', async () => {

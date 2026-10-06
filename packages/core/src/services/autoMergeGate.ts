@@ -1,6 +1,7 @@
 import type { Knex } from 'knex';
 import type { PullRequestEvent } from '@octokit/webhooks-types';
 import { db } from '../db/connection.js';
+import { replayableTransaction } from '../db/sqliteRetry.js';
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { findPlanIssueByRepoAndPR } from '../config/planIssueManager.js';
@@ -209,16 +210,21 @@ export async function recordAutoMergeDecisionEvent(input: AutoMergeDecisionEvent
             log.info({ repository: input.repository, prNumber: input.prNumber, reason: decision.reason }, 'No task found for auto-merge decision event');
             return false;
         }
-        // Repeat the latest lifecycle state so the event never changes the task's derived state.
-        const latest = await database('task_history').where({ task_id: taskId }).orderBy('timestamp', 'desc').first('state');
         const verb = input.action === 'disarmed' ? 'disarmed' : decision.arm ? 'armed' : 'not armed';
-        await database('task_history').insert({
-            task_id: taskId,
-            state: latest?.state ?? 'completed',
-            timestamp: new Date((deps.now ?? Date.now)()).toISOString(),
-            reason: `Auto-merge ${verb} for PR #${input.prNumber}: ${decision.reason}`,
-            metadata: JSON.stringify({ autoMergeDecision: decisionEventMetadata(input) }),
-        });
+        // Repeat the latest lifecycle state so the event never changes the task's derived state.
+        // The read and the append share one write transaction (SQLite opens it with BEGIN
+        // IMMEDIATE), so a lifecycle transition cannot land between them; "latest" uses the
+        // same history_id order lifecycle readers use, and a replay re-reads it.
+        await database.transaction(async trx => {
+            const latest = await trx('task_history').where({ task_id: taskId }).orderBy('history_id', 'desc').first('state');
+            await trx('task_history').insert({
+                task_id: taskId,
+                state: latest?.state ?? 'completed',
+                timestamp: new Date((deps.now ?? Date.now)()).toISOString(),
+                reason: `Auto-merge ${verb} for PR #${input.prNumber}: ${decision.reason}`,
+                metadata: JSON.stringify({ autoMergeDecision: decisionEventMetadata(input) }),
+            });
+        }, replayableTransaction());
         return true;
     } catch (error) {
         log.warn({ repository: input.repository, prNumber: input.prNumber, error: (error as Error).message }, 'Failed to record auto-merge decision event');

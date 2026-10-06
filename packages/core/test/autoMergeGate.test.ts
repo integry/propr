@@ -10,7 +10,9 @@ await mock.module('../src/utils/logger.js', { defaultExport: log });
 await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => { throw new Error('use the fake client'); } } });
 await mock.module('../src/config/planIssueManager.js', { namedExports: { findPlanIssueByRepoAndPR: async () => planIssue } });
 
-const { gateAutoMergeArming, reevaluateArmedAutoMergeOnNewHead, handleAutoMergePolicyPullRequestEvent, loadBaseAutoMergePolicy } = await import('../src/services/autoMergeGate.js');
+const {
+    gateAutoMergeArming, reevaluateArmedAutoMergeOnNewHead, handleAutoMergePolicyPullRequestEvent, loadBaseAutoMergePolicy, recordAutoMergeDecisionEvent,
+} = await import('../src/services/autoMergeGate.js');
 type GateOctokit = import('../src/services/autoMergeGate.js').AutoMergeGateOctokit;
 
 await database.schema.createTable('tasks', table => {
@@ -296,4 +298,41 @@ test('ProPR identity matching ignores login case', async () => {
     const github = fakeGitHub({ workflowByRef: {}, files: [{ filename: '.propr/workflow.yml' }], headSha: 'h2', baseRef: 'main', headRef: 'f', autoMerge: PROPR_ARMED });
     const result = await reevaluateArmedAutoMergeOnNewHead({ owner: 'acme', repo: 'repo', prNumber: 70, log }, { octokit: github.octokit, database, botLogin: async () => 'ProPR-Dev[bot]' });
     assert.equal(result.disarmed, true);
+});
+
+const disarmEvent = {
+    repository: 'acme/repo', prNumber: 70, taskId: 'task-1', opportunity: 'new_head' as const, action: 'disarmed' as const,
+    decision: { arm: false, reason: 'skipped_protected_path' as const, matchedPaths: ['migrations/001.sql'] },
+};
+
+async function latestLifecycleState() {
+    return (await database('task_history').where({ task_id: 'task-1' }).orderBy('history_id', 'desc').first('state'))?.state;
+}
+
+test('a decision event repeats the latest history entry in the order lifecycle readers use', async () => {
+    // A lifecycle entry written later with a skewed (older) clock is still the latest one.
+    await database('task_history').insert({ task_id: 'task-1', state: 'processing', timestamp: '2026-10-05T00:00:00.000Z', reason: 'follow-up', metadata: '{}' });
+    assert.equal(await recordAutoMergeDecisionEvent(disarmEvent, { database }, log), true);
+    assert.equal(await latestLifecycleState(), 'processing');
+});
+
+test('a lifecycle transition racing a decision event is never overwritten by a stale state', async () => {
+    await database('task_history').insert({ task_id: 'task-1', state: 'processing', timestamp: '2026-10-06T01:00:00.000Z', reason: 'follow-up', metadata: '{}' });
+    // The follow-up is cancelled the moment the recorder reads the latest state.
+    let transition: Promise<unknown> | null = null;
+    const onQuery = (query: { sql: string }) => {
+        if (transition || !/^select .*from .task_history./i.test(query.sql)) return;
+        transition = database('task_history').insert({ task_id: 'task-1', state: 'cancelled', timestamp: '2026-10-06T02:00:00.000Z', reason: 'cancelled', metadata: '{}' })
+            .then(() => undefined);
+    };
+    database.on('query', onQuery);
+    try {
+        assert.equal(await recordAutoMergeDecisionEvent(disarmEvent, { database }, log), true);
+        assert.ok(transition, 'the transition raced the recorder');
+        await transition;
+    } finally {
+        database.off('query', onQuery);
+    }
+    assert.equal(await latestLifecycleState(), 'cancelled');
+    assert.equal((await decisionEvents()).length, 3, 'the follow-up entry, the decision event and the transition were all written');
 });

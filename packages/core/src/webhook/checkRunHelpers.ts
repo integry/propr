@@ -14,6 +14,8 @@ export interface MergePROptions {
     mergeMethod?: 'merge' | 'squash' | 'rebase';
     commitTitle?: string;
     commitMessage?: string;
+    /** Head SHA the PR must still have; GitHub refuses the merge otherwise. */
+    sha?: string;
 }
 
 export interface MergePRResult {
@@ -29,7 +31,7 @@ export interface MergePRResult {
  * (e.g., when branch protection rules aren't configured).
  */
 export async function mergePR(options: MergePROptions): Promise<MergePRResult> {
-    const { owner, repoName, prNumber, mergeMethod = 'squash', commitTitle, commitMessage } = options;
+    const { owner, repoName, prNumber, mergeMethod = 'squash', commitTitle, commitMessage, sha } = options;
 
     try {
         const octokit = await getAuthenticatedOctokit();
@@ -42,7 +44,8 @@ export async function mergePR(options: MergePROptions): Promise<MergePRResult> {
             pull_number: prNumber,
             merge_method: mergeMethod,
             ...(commitTitle && { commit_title: commitTitle }),
-            ...(commitMessage && { commit_message: commitMessage })
+            ...(commitMessage && { commit_message: commitMessage }),
+            ...(sha && { sha })
         });
 
         logger.info({

@@ -367,15 +367,17 @@ export async function handleCreatedPlanIssuePR(options: {
         issueNumber: issueRef.number,
         log: correlatedLogger,
     });
-    if (!gate.arm) {
+    if (!gate.arm || !gate.pullRequest) {
         correlatedLogger.info({ prNumber, reason: gate.reason, matchedPaths: gate.matchedPaths }, 'Auto-merge not armed by repository policy');
         return;
     }
+    // Arm only the head the policy evaluated; a newer head needs its own decision.
     const autoMergeResult = await enableAutoMerge({
         owner: issueRef.repoOwner,
         repoName: issueRef.repoName,
         prNumber,
         mergeMethod: gate.mergeMethod,
+        expectedHead: { headSha: gate.pullRequest.headSha, baseRef: gate.pullRequest.baseRef },
     });
     if (autoMergeResult.success) {
         correlatedLogger.info({ prNumber, autoMergeEnabled: autoMergeResult.autoMergeEnabled }, 'Auto-merge enabled successfully');
