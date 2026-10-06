@@ -1,5 +1,5 @@
 import {
-    PR_BODY_MAX_LENGTH, PR_TEMPLATE_MAX_BYTES, PR_TEMPLATE_PATH, PrTemplateError,
+    PR_BODY_MAX_LENGTH, PR_TEMPLATE_BODY_SECTIONS, PR_TEMPLATE_MAX_BYTES, PR_TEMPLATE_PATH, PrTemplateError,
     composePrBody, composePrTitle, composeWithRepositoryTemplate, defaultPrBody, parsePrTemplate,
     type ParsedPrTemplate, type PrBodyPiece, type PrTemplateValues,
 } from '@propr/shared';
@@ -132,9 +132,14 @@ export function applyPrTemplate(template: ResolvedPrTemplate | undefined, pieces
     }
     const tooLarge = template.template.problems.find(problem => problem.kind === 'too_large');
     if (tooLarge) throw new PrTemplateError(tooLarge.message);
+    const { sections } = template.template;
+    // Without body sections (the commented `propr init` scaffold, or a title-only
+    // template) the description stays byte-identical to ProPR's default.
+    const overridesBody = PR_TEMPLATE_BODY_SECTIONS.some(section => sections[section] !== undefined);
+    if (!overridesBody && sections.title === undefined) return { title: defaultTitle, body: defaultPrBody(pieces) };
     return {
         title: composePrTitle(defaultTitle, template.template, values),
-        body: redactSecrets(composePrBody(pieces, template.template, values)),
+        body: overridesBody ? redactSecrets(composePrBody(pieces, template.template, values)) : defaultPrBody(pieces),
         template: { kind: template.kind, path: template.path },
     };
 }

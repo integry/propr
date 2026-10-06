@@ -85,6 +85,8 @@ export interface GeneratePRDescriptionOptions {
     defaultTitle?: string;
     branch?: string;
     repository?: string;
+    /** Model that implemented the change; `claudeResult.model` when absent. */
+    modelName?: string;
 }
 
 async function buildPRBodyPieces(issueNumber: number, issueTitle: string, commitMessage: string, claudeResult: ClaudeResult | null): Promise<{ pieces: PrBodyPiece[]; stats: { cost: number; totalTokens: number; executionTime: number } }> {
@@ -151,7 +153,7 @@ export async function describeIssuePullRequest(options: GeneratePRDescriptionOpt
     const { issueNumber, issueTitle, commitMessage, claudeResult } = options;
     const { pieces, stats } = await buildPRBodyPieces(issueNumber, issueTitle, commitMessage, claudeResult);
     const values = buildPrTemplateValues({
-        issueNumber, issueTitle, model: claudeResult?.model, summary: claudeResult?.summary,
+        issueNumber, issueTitle, model: options.modelName || claudeResult?.model, summary: claudeResult?.summary,
         sessionId: claudeResult?.sessionId, cost: stats.cost, totalTokens: stats.totalTokens, executionTime: `${stats.executionTime}s`,
         branch: options.branch, repository: options.repository, filesChanged: claudeResult?.modifiedFiles,
         commits: commitMessage ? [{ message: commitMessage }] : [],
@@ -179,7 +181,6 @@ export async function describeIssuePullRequestForRepository(options: Omit<Genera
     owner: string;
     repoName: string;
     baseBranch: string;
-    modelName?: string;
     correlationId?: string;
 }): Promise<{ title: string; body: string }> {
     const { octokit, owner, repoName, baseBranch, correlationId } = options;

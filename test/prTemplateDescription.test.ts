@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, mock, test } from 'node:test';
-import { defaultPrBody, parsePrTemplate } from '@propr/shared';
+import { defaultPrBody, parsePrTemplate, PR_TEMPLATE_SCAFFOLD } from '@propr/shared';
 import { closeConnection, formatSubscriptionUsage, generateCompletionComment, generateCompletionCommentParts, getDetailedUsageStats, redactSecrets, sanitizeAgentReport } from '@propr/core';
 import { describeIssuePullRequestForRepository, generatePRBody, generatePRDescription, type ClaudeResult } from '../src/github/prFormatters.js';
 import { buildIssuePullRequestBodyPieces, buildIssueReference } from '../src/jobs/issueJobHelpers.js';
@@ -68,6 +68,33 @@ test('generatePRBody without a template is byte-identical to the historical desc
     } finally {
         mock.timers.reset();
     }
+});
+
+test('the commented propr init scaffold keeps the historical description', async () => {
+    mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-06T08:00:00.000Z') });
+    try {
+        for (const result of results) {
+            const octokit = contentsOctokit({ '.propr/pr-template.md': PR_TEMPLATE_SCAFFOLD }, {});
+            const described = await describeIssuePullRequestForRepository({
+                octokit, owner: 'acme', repoName: 'app', baseBranch: 'main', issueNumber: 7, issueTitle: 'Fix login',
+                commitMessage: 'fix: login', claudeResult: result, modelName: 'claude-opus-4-5-20251101',
+            });
+            assert.equal(described.body, legacyGeneratePRBody(7, 'Fix login', 'fix: login', result));
+            assert.match(described.title, /^\[7 by .+\] Fix login$/);
+        }
+    } finally {
+        mock.timers.reset();
+    }
+});
+
+test('model placeholders use the supplied model when the result has none', async () => {
+    const octokit = contentsOctokit({ '.propr/pr-template.md': '## title\n{{model}} via {{agent}}\n' }, {});
+    const issue = { octokit, owner: 'acme', repoName: 'app', baseBranch: 'main', issueNumber: 7, issueTitle: 'Fix login', commitMessage: 'fix: login' };
+    const described = await describeIssuePullRequestForRepository({ ...issue, claudeResult: { success: true, summary: 'Fixed.' }, modelName: 'claude-opus-4-5-20251101' });
+    const expected = await describeIssuePullRequestForRepository({ ...issue, claudeResult: { success: true, summary: 'Fixed.', model: 'claude-opus-4-5-20251101' } });
+    assert.equal(described.title, expected.title);
+    assert.match(described.title, / via claude$/);
+    assert.doesNotMatch(described.title, /^AI via/);
 });
 
 test('generatePRDescription applies a template, sanitizing untrusted values', async () => {

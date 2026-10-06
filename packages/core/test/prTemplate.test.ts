@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { defaultPrBody, type PrBodyPiece } from '@propr/shared';
+import { defaultPrBody, parsePrTemplate, PR_TEMPLATE_SCAFFOLD, type PrBodyPiece } from '@propr/shared';
 import {
     applyPrTemplate, buildPrTemplateValues, describePullRequest, findGitHubPullRequestTemplate, loadPrTemplate,
     type PrTemplateSource, type PrTemplateSourceEntry,
@@ -56,6 +56,14 @@ test('loadPrTemplate falls back to the GitHub template only when the toggle allo
     assert.deepEqual(template, { kind: 'github', path: '.github/PULL_REQUEST_TEMPLATE.md', content: '## Checklist\n- [ ] tested\n' });
     assert.equal(await loadPrTemplate(repo, 'base-sha', { githubFallback: false }), undefined);
     assert.equal(applyPrTemplate(template, pieces, 'title', values).body, '## Summary\n\nCloses #7\n\n- Time: 1m\n\n## Checklist\n- [ ] tested');
+});
+
+test('a ProPR template without body sections keeps the default description', () => {
+    const resolve = (content: string) => ({ kind: 'propr' as const, path: '.propr/pr-template.md', template: parsePrTemplate(content) });
+    assert.deepEqual(applyPrTemplate(resolve(PR_TEMPLATE_SCAFFOLD), pieces, 'title', values), { title: 'title', body: defaultPrBody(pieces) });
+    assert.deepEqual(applyPrTemplate(resolve(''), pieces, 'title', values), { title: 'title', body: defaultPrBody(pieces) });
+    assert.deepEqual(applyPrTemplate(resolve('## title\n[{{issue_number}}] {{issue_title}}\n'), pieces, 'title', values),
+        { title: '[7] Fix it', body: defaultPrBody(pieces), template: { kind: 'propr', path: '.propr/pr-template.md' } });
 });
 
 test('findGitHubPullRequestTemplate follows GitHub locations and the template directory default', async () => {
