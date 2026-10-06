@@ -107,11 +107,15 @@ const GlobalSearch: React.FC<GlobalSearchProps> = ({ inputRef: externalInputRef 
   const items = useMemo(() => buildSearchItems(results, category), [results, category]);
   const activeItem: SearchItem | undefined = items[activeIndex];
 
-  // A new result set starts from the top of the full list.
-  useEffect(() => {
+  // A new result set starts from the top of the full list. Reset while rendering,
+  // not in an effect, so a pending reset can't undo a Tab pressed right after
+  // the results appear.
+  const [scopedResults, setScopedResults] = useState(results);
+  if (scopedResults !== results) {
+    setScopedResults(results);
     setCategory('all');
     setActiveIndex(0);
-  }, [results]);
+  }
 
   // Keep the highlighted row visible as the keyboard walks the list.
   useEffect(() => {
