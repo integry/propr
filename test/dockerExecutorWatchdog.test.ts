@@ -21,10 +21,13 @@ type AgentWatchdogTrip = import('../packages/core/src/claude/docker/agentActivit
 const FAST = { stallTimeoutMs: 300, toolStallTimeoutMs: 1_500, degenerateOutputLimit: 5 };
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-/** A streamed agent run whose process prints `script` output, then stays alive. */
-function runAgent(script: string, options: Record<string, unknown> = {}) {
+/**
+ * A streamed agent run whose process prints `script` output, then stays alive.
+ * Output records are passed as process arguments (`process.argv[1..]`), never spliced into the script source.
+ */
+function runAgent(script: string, options: Record<string, unknown> = {}, data: string[] = []) {
     const trips: Array<{ taskId: string; trip: AgentWatchdogTrip }> = [];
-    const execution = executeDockerCommand(process.execPath, ['-e', `${script}; setTimeout(() => {}, 60_000);`], {
+    const execution = executeDockerCommand(process.execPath, ['-e', `${script}; setTimeout(() => {}, 60_000);`, ...data], {
         taskId: 'watchdog-task', streamToRedis: true, preserveOutputOnTimeout: true, timeout: 30_000,
         watchdog: FAST, onWatchdogTrip: (taskId: string, trip: AgentWatchdogTrip) => { trips.push({ taskId, trip }); },
         ...options,
@@ -35,7 +38,7 @@ function runAgent(script: string, options: Record<string, unknown> = {}) {
 test('a silent agent is stopped with partial output and a stalled termination', async () => {
     const startedAt = Date.now();
     const record = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Reading the code' }] } });
-    const { execution, trips } = runAgent(`process.stdout.write(${JSON.stringify(`${record}\n`)})`);
+    const { execution, trips } = runAgent('process.stdout.write(process.argv[1])', {}, [`${record}\n`]);
     const result = await execution;
     assert.ok(Date.now() - startedAt < 10_000, 'the watchdog stops the run long before the deadline');
     assert.equal(result.timedOut, undefined);
@@ -64,8 +67,8 @@ test('a silent tool call gets the longer tool threshold', async () => {
     const tool = JSON.stringify({ type: 'item.started', item: { type: 'command_execution', command: 'npm ci' } });
     const done = JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', exit_code: 0 } });
     const { execution, trips } = runAgent(`
-        process.stdout.write(${JSON.stringify(`${tool}\n`)});
-        setTimeout(() => { process.stdout.write(${JSON.stringify(`${done}\n`)}); process.exit(0); }, 800);`);
+        process.stdout.write(process.argv[1]);
+        setTimeout(() => { process.stdout.write(process.argv[2]); process.exit(0); }, 800);`, {}, [`${tool}\n`, `${done}\n`]);
     const result = await execution;
     assert.equal(result.exitCode, 0, '800ms of silence is past the stall threshold but within the tool threshold');
     assert.equal(trips.length, 0);
@@ -74,7 +77,7 @@ test('a silent tool call gets the longer tool threshold', async () => {
 test('consecutive whitespace-only deltas stop the run as degenerate output', async () => {
     const delta = (text: string) => JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } });
     const lines = [delta(''), delta('ok'), ...Array.from({ length: 5 }, () => delta(' \n'))].join('\n');
-    const { execution, trips } = runAgent(`setInterval(() => process.stdout.write(${JSON.stringify(`${lines}\n`)}), 20)`);
+    const { execution, trips } = runAgent('setInterval(() => process.stdout.write(process.argv[1]), 20)', {}, [`${lines}\n`]);
     const result = await execution;
     assert.equal(result.watchdogTrip?.rule, 'degenerate_output');
     assert.equal(result.watchdogTrip?.degenerateDeltas, 5);
