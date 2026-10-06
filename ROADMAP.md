@@ -24,7 +24,6 @@ Driving ProPR entirely from CI and scripts.
 
 ## Documentation & site
 
-- Dashboard HTTP API reference (monitoring & integrations)
 - Product videos and fresh captures across the site and docs (scripts are
   written; production pending)
 
@@ -37,6 +36,13 @@ Driving ProPR entirely from CI and scripts.
 
 - CLI command-layer refactor: shared error handling, table/format helpers,
   tests for `ConfigManager` and the API client — [#1679](https://github.com/integry/propr/issues/1679)
+
+## Shipped
+
+- Dashboard HTTP API reference (monitoring & integrations): an OpenAPI 3.1
+  spec generated from the route registry, the
+  [API reference](https://docs.propr.dev/docs/operations/api-reference) page and
+  a documented `@propr/client` — [#2745](https://github.com/integry/propr/issues/2745)
 
 ## Non-goals (for now)
 

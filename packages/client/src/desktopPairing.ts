@@ -5,6 +5,7 @@ import type {
 import { canonicalProprHttpUrlOrigin, parseProprDesktopDiscovery } from '@propr/shared';
 import type { ProprClient } from './client.js';
 import { ProprClientError } from './errors.js';
+import { operationPath } from './operations.js';
 
 export interface ProprDesktopDiscovery extends SharedProprDesktopDiscovery {
   compatibility: ProprApiCompatibilityResult;
@@ -285,7 +286,7 @@ export const completeDesktopPairing = async (
         // not race it with a faster outer rejection: completion here is the
         // operation's guarantee that no response task survives this poll.
         value = await client.requestDesktopPairing(
-          `/api/desktop/pairings/${encodeURIComponent(start.pairingId)}/poll`,
+          operationPath('pollDesktopPairing', { pairingId: start.pairingId }),
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

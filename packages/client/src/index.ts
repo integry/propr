@@ -13,7 +13,16 @@ export {
   type ProprCompatibilityOptions,
   type ProprFetchOptions,
   type ProprRequestOptions,
+  type ProprTaskSubmissionOptions,
 } from './client.js';
+export type * as ProprApi from './generated/apiTypes.js';
+export {
+  operationPath,
+  PROPR_API_OPERATIONS,
+  withQuery,
+  type ProprApiOperation,
+  type ProprApiOperationId,
+} from './operations.js';
 export {
   DESKTOP_DISCOVERY_AUTHENTICATION_REQUIRED,
   isProprClientError,
