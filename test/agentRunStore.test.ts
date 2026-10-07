@@ -12,13 +12,13 @@ import {
   getAgentRunById,
   listAgentRuns,
   listDueDeferredRuns,
-  listPreviousReports,
   pauseUnclaimedAgentRunAction,
   rowToAgentRun,
   transitionAgentRun,
   type AgentRunRow,
   type StoredAgentRun,
 } from '../packages/core/src/services/agents/agentRunStore.ts';
+import { listPreviousReports } from '../packages/core/src/services/agents/agentRunReports.ts';
 
 const migrations = fileURLToPath(new URL('../packages/core/src/db/migrations/', import.meta.url));
 const NOW = Date.UTC(2026, 9, 6, 10, 7);

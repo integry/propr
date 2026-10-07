@@ -601,6 +601,7 @@ export * from './services/taskIntent.js';
 export * from './services/taskPlanning/epicExecutionQueue.js';
 export * from './services/agents/agentDefinitionStore.js';
 export * from './services/agents/agentRunStore.js';
+export * from './services/agents/agentRunReports.js';
 export * from './services/agents/agentRunTrigger.js';
 export * from './services/agents/agentRunCostGate.js';
 export * from './services/agents/agentRunDeferredRetry.js';
