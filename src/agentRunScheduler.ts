@@ -258,7 +258,12 @@ async function fireClaimedSlot(definition: StoredAgentDefinition, slot: number, 
         [receipt, outcome] = await skipSlot('Agent is disabled', 'agent_disabled');
     } else {
         try {
-            const { run, created, enqueued } = await context.trigger({ definition, trigger: 'schedule', ...slotKeys, gate: context.gate });
+            // A failed enqueue leaves the receipt `queued` and the slot pending:
+            // another sweep may have re-dispatched the receipt meanwhile, so
+            // failing it here could invalidate that dispatch.
+            const { run, created, enqueued } = await context.trigger({
+                definition, trigger: 'schedule', ...slotKeys, gate: context.gate, keepQueuedOnEnqueueFailure: true,
+            });
             logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: created ? run.state : 'existing' },
                 'Scheduled agent run');
             receipt = { run, redispatch: !enqueued };

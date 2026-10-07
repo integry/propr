@@ -103,6 +103,13 @@ export interface TriggerAgentRunInput {
   /** Replays with the same key return the existing run without enqueueing again. */
   idempotencyKey?: string | null;
   gate?: AgentRunGate;
+  /**
+   * Leave the receipt `queued` when its report phase cannot be enqueued, for a
+   * caller that keeps its own dispatch obligation and re-dispatches the
+   * receipt (the schedule's pending slot). Failing it instead could fail a run
+   * another caller has meanwhile enqueued.
+   */
+  keepQueuedOnEnqueueFailure?: boolean;
 }
 
 export interface TriggerAgentRunResult {
@@ -299,10 +306,11 @@ export async function validateAgentDefinitionRuntime(
  * as `skipped` or `deferred` instead, without enqueueing. Without a `gate`
  * input the Agent Tank cost gate is used, so every caller of this primitive
  * checks usage before an unattended run is queued. If enqueueing fails
- * after the run exists, the run is marked `failed` and the error is rethrown.
+ * after the run exists, the run is marked `failed` (or left `queued` with
+ * `keepQueuedOnEnqueueFailure`) and the error is rethrown.
  */
 export async function triggerAgentRun(
-  { definition, trigger, triggerSource = null, idempotencyKey = null, gate }: TriggerAgentRunInput,
+  { definition, trigger, triggerSource = null, idempotencyKey = null, gate, keepQueuedOnEnqueueFailure = false }: TriggerAgentRunInput,
   deps: AgentRunTriggerDependencies = {},
 ): Promise<TriggerAgentRunResult> {
   const storeDeps = { database: deps.database, now: deps.now };
@@ -336,6 +344,7 @@ export async function triggerAgentRun(
   try {
     await enqueueAgentRunPhase(run, 'report', deps);
   } catch (error) {
+    if (keepQueuedOnEnqueueFailure) throw error;
     const message = error instanceof Error ? error.message : String(error);
     const failureReason = `Failed to enqueue the agent run on the job queue: ${message}`;
     try {

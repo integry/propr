@@ -344,6 +344,52 @@ describe('agent run scheduler', () => {
       assert.equal((await listAgentRuns(definition.id, 'alice', {}, { database })).total, 1);
     });
 
+    test('a fresh slot whose enqueue fails keeps its queued receipt and is dispatched by the next sweep', async () => {
+      const definition = await define();
+      const failingTrigger = (input: TriggerAgentRunInput) => triggerAgentRun(input, {
+        database, now, enqueue: () => Promise.reject(new Error('redis down')),
+        loadRepos: async () => repos, loadAgents: async () => agents, loadSyntheticAgents: async () => [],
+      });
+
+      assert.equal((await runAgentScheduleSweep(deps({ trigger: failingTrigger }))).failed, 1);
+      const { runs } = await listAgentRuns(definition.id, 'alice', {}, { database });
+      assert.equal(runs.length, 1);
+      assert.equal(runs[0].state, 'queued');
+      assert.equal(Number((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot), T0900);
+
+      assert.equal((await runAgentScheduleSweep(deps())).existing, 1);
+      assert.deepEqual(enqueued, [runs[0].id]);
+      assert.equal((await getAgentRunById(runs[0].id, { database }))?.state, 'queued');
+      assert.equal((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot, null);
+    });
+
+    test('a late enqueue failure does not fail a receipt another sweep dispatched', async () => {
+      const definition = await define();
+      let enqueueStarted!: () => void;
+      const started = new Promise<void>(resolve => { enqueueStarted = resolve; });
+      let rejectEnqueue!: (error: Error) => void;
+      const heldTrigger = (input: TriggerAgentRunInput) => triggerAgentRun(input, {
+        database, now,
+        enqueue: () => new Promise((_resolve, reject) => { rejectEnqueue = reject; enqueueStarted(); }),
+        loadRepos: async () => repos, loadAgents: async () => agents, loadSyntheticAgents: async () => [],
+      });
+
+      // Sweep A claims the slot, creates the receipt and waits on its enqueue.
+      const sweepA = runAgentScheduleSweep(deps({ trigger: heldTrigger }));
+      await started;
+      // Sweep B resumes the pending slot, re-dispatches the receipt and releases the slot.
+      assert.equal((await runAgentScheduleSweep(deps())).existing, 1);
+      const { runs } = await listAgentRuns(definition.id, 'alice', {}, { database });
+      assert.deepEqual(enqueued, [runs[0].id]);
+      assert.equal((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot, null);
+
+      // A's enqueue now fails; B's job must still find a queued run.
+      rejectEnqueue(new Error('redis down'));
+      assert.equal((await sweepA).failed, 1);
+      assert.equal((await getAgentRunById(runs[0].id, { database }))?.state, 'queued');
+      assert.equal((await listAgentRuns(definition.id, 'alice', {}, { database })).total, 1);
+    });
+
     test('a pending slot whose receipt is past queued is released without dispatching', async () => {
       const definition = await define();
       await claimAgentDefinitionScheduleSlot(definition.id, { claimedNextRunAt: T0900, nextRunAt: T0900 + HOUR, slot: T0900 }, { database });
