@@ -26,6 +26,26 @@ function useSplitViewport(): boolean {
   return split;
 }
 
+const DEFINITION_PAGE_SIZE = 200;
+
+/**
+ * Every saved agent, read page by page until the reported total is reached,
+ * so the list and its search cover the whole collection. The list is ordered
+ * by last update, so an edit elsewhere between page reads can shift a row
+ * across a page boundary; rows are de-duplicated by id.
+ */
+async function listAllAgentDefinitions(isActive: () => boolean): Promise<AgentDefinitionRecord[]> {
+  const byId = new Map<string, AgentDefinitionRecord>();
+  let offset = 0;
+  for (;;) {
+    const page = await listAgentDefinitions({ limit: DEFINITION_PAGE_SIZE, offset });
+    if (!isActive()) return [];
+    page.definitions.forEach(definition => { if (!byId.has(definition.id)) byId.set(definition.id, definition); });
+    offset += page.definitions.length;
+    if (page.definitions.length === 0 || offset >= page.total) return [...byId.values()];
+  }
+}
+
 /** Saved agents plus the latest run state of each, for the list. */
 function useAgentDefinitions() {
   const [definitions, setDefinitions] = useState<AgentDefinitionRecord[] | null>(null);
@@ -34,12 +54,12 @@ function useAgentDefinitions() {
 
   useEffect(() => {
     let active = true;
-    listAgentDefinitions({ limit: 200 })
-      .then(page => {
+    listAllAgentDefinitions(() => active)
+      .then(loaded => {
         if (!active) return;
-        setDefinitions(page.definitions);
+        setDefinitions(loaded);
         // Last run states fill in as they arrive; a failed read just leaves the row at "Never run".
-        page.definitions.forEach(definition => {
+        loaded.forEach(definition => {
           void listAgentRuns(definition.id, { limit: 1 })
             .then(runs => {
               const latest = runs.runs[0];

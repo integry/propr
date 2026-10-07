@@ -139,4 +139,22 @@ describe('AgentEditor', () => {
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Changed in another tab'));
     expect(screen.queryByText('Changed elsewhere — reload')).not.toBeInTheDocument();
   });
+
+  it('locks the name and description while a save is pending so later typing is not overwritten', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    let finish: (saved: AgentDefinitionRecord) => void = () => undefined;
+    vi.mocked(updateAgentDefinition).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    renderEditor('agent-1');
+
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(screen.getByLabelText('Name')).toBeDisabled());
+    expect(screen.getByLabelText('Description')).toBeDisabled();
+
+    finish({ ...definition, name: 'Renamed', revision: 4 });
+    await waitFor(() => expect(screen.getByLabelText('Name')).toBeEnabled());
+    expect(screen.getByLabelText('Description')).toBeEnabled();
+    expect(screen.getByLabelText('Name')).toHaveValue('Renamed');
+  });
 });

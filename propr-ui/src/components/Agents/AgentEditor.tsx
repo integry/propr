@@ -119,7 +119,7 @@ export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerCo
         onSubmit={event => { event.preventDefault(); if (!readOnly && !editor.conflict) void editor.save(); }}
         className="min-h-0 flex-1 overflow-y-auto"
       >
-        <fieldset disabled={isDemoMode} className="min-w-0">
+        <fieldset disabled={readOnly} className="min-w-0">
           <AgentFormRow label="Name" htmlFor="agent-name" hint="Shown in the list and in run notifications.">
             <input
               id="agent-name"

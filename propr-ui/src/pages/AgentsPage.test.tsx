@@ -109,6 +109,25 @@ describe('AgentsPage', () => {
     expect(screen.getByTestId('agent-editor')).toHaveTextContent('editor for new');
   });
 
+  it('reads every page so agents past the first page can be found by search', async () => {
+    setViewport(true);
+    const firstPage = Array.from({ length: 200 }, (_, index) => agent(`p${index}`, `Agent ${index}`));
+    vi.mocked(listAgentDefinitions).mockImplementation(async page => (page?.offset ?? 0) === 0
+      ? { definitions: firstPage, total: 202, limit: 200, offset: 0 }
+      // The last row of page one shifted down while paging; it must not appear twice.
+      : { definitions: [firstPage[199], agent('late', 'Quarterly audit')], total: 202, limit: 200, offset: 200 });
+    renderAt('/agents');
+
+    await screen.findByRole('link', { name: /Agent 0/ });
+    fireEvent.change(screen.getByLabelText('Search agents'), { target: { value: 'Quarterly' } });
+
+    expect(await screen.findByRole('link', { name: /Quarterly audit/ })).toBeInTheDocument();
+    expect(listAgentDefinitions).toHaveBeenCalledWith({ limit: 200, offset: 0 });
+    expect(listAgentDefinitions).toHaveBeenCalledWith({ limit: 200, offset: 200 });
+    fireEvent.change(screen.getByLabelText('Search agents'), { target: { value: 'Agent 199' } });
+    expect(screen.getAllByRole('link', { name: /Agent 199/ })).toHaveLength(1);
+  });
+
   it('explains what an agent is when there are none', async () => {
     setViewport(true);
     vi.mocked(listAgentDefinitions).mockResolvedValue({ definitions: [], total: 0, limit: 200, offset: 0 });
