@@ -11,6 +11,7 @@ import { AgentAutonomySection } from './AgentAutonomySection';
 import { BUTTON_CLASSES } from './AgentEditorHeader';
 import { agentDisplayName } from './agentPresentation';
 import type { useAgentEditor } from './useAgentEditor';
+import { useUnattendedNotice } from './useUnattendedNotice';
 
 interface AgentSettingsFormProps {
   editor: ReturnType<typeof useAgentEditor>;
@@ -25,6 +26,7 @@ interface AgentSettingsFormProps {
 /** The agent's settings: scope, prompt and files, model, capabilities, schedule and autonomy. */
 export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, readOnly, isDemoMode, hidden, onDelete }) => {
   const { definition, form, update } = editor;
+  const unattendedNotice = useUnattendedNotice(definition?.id, Boolean(definition?.scheduleEnabled) && form.scheduleEnabled);
   return (
   <form
     id="agent-editor-form"
@@ -92,6 +94,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, re
         expression={form.schedule}
         onChange={update}
         disabled={readOnly}
+        unattendedNotice={unattendedNotice}
       />
 
       <AgentAutonomySection

@@ -394,6 +394,13 @@ export {
 } from './configManagerUltrafix.js';
 
 export {
+    loadUnattendedMaxConcurrent,
+    loadUnattendedWindow,
+    interpretUnattendedWindow,
+    type UnattendedWindowSetting
+} from './configManagerUnattended.js';
+
+export {
     AGENT_WATCHDOG_SETTING_DEFINITIONS,
     DEFAULT_AGENT_STALL_TIMEOUT_MS,
     DEFAULT_AGENT_TOOL_STALL_TIMEOUT_MS,

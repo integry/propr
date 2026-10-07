@@ -13,7 +13,8 @@ import {
 import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
 import { getAgentTankSettings } from '../../api/revertApi';
 import { Settings, type AgentNetworkSettingName, type AgentNetworkValues, type AgentWatchdogSettingName } from './types';
-import { parseLoadedData, runLimitSettingsToSave } from './parseLoadedData';
+import { useUnattendedSettingSave } from './useUnattendedSettingSave';
+import { DEFAULT_UNATTENDED_SETTINGS, parseLoadedData, runLimitSettingsToSave } from './parseLoadedData';
 import { useAgentTankSettings } from './useAgentTankSettings';
 import { useListManagement } from './useListManagement';
 import { isCommittedConfigWriteError } from '../../api/apiClient';
@@ -76,6 +77,7 @@ export function useSettingsState() {
     ultrafix_max_cycles: 5,
     ultrafix_pause_seconds: 60,
     default_max_cost_usd: '',
+    ...DEFAULT_UNATTENDED_SETTINGS,
     agent_stall_timeout_ms: null,
     agent_tool_stall_timeout_ms: null,
     agent_degenerate_output_limit: null,
@@ -317,6 +319,7 @@ export function useSettingsState() {
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
 
+  const handleUnattendedSettingChange = useUnattendedSettingSave({ beginSave, completeSave, failSave, reconcileSaveFailure, setSettings });
   // Saves one agent run override (watchdog or network) immediately.
   const handleAgentRunSettingChange = useCallback((name: AgentWatchdogSettingName | AgentNetworkSettingName, value: number | null | AgentNetworkValues[AgentNetworkSettingName]) => {
     const newSettings = { ...settings, [name]: value };
@@ -430,12 +433,10 @@ export function useSettingsState() {
   return {
     loading, saveStatus, globalError, settings, prLabel, agents, catalogAgents,
     summarizationSettings, isReindexing, agentTankSettings,
-    agentTankAvailable, agentTankCheckingStatus,
-    setSettings, setPrLabel,
-    triggerSettingsSave, handleModelSelectionChange, handleEscalationModelsChange, handleAgentRunSettingChange, handleReviewContextEnabledChange,
+    agentTankAvailable, agentTankCheckingStatus, setSettings, setPrLabel,
+    triggerSettingsSave, handleModelSelectionChange, handleEscalationModelsChange, handleAgentRunSettingChange, handleUnattendedSettingChange, handleReviewContextEnabledChange,
     handleReviewContextBudgetPercentCommit, handleRemoveLegacyReviewCap,
-    handleSummarizationChange, handleSummarizationModelChange,
-    handleSummarizationFallbackModelChange,
+    handleSummarizationChange, handleSummarizationModelChange, handleSummarizationFallbackModelChange,
     handleDefaultAgentChange, handleReindexAll, handleAgentTankChange,
     savePrLabelOnly,
     ...lists,

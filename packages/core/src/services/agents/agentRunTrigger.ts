@@ -77,7 +77,13 @@ export interface AgentRunTriggerDependencies {
 export type AgentRunGateDecision =
   | { action: 'proceed' }
   | { action: 'skip'; reason: string }
-  | { action: 'defer'; until: number; reason: string };
+  | {
+    action: 'defer';
+    until: number;
+    reason: string;
+    /** False for a wait that does not count against the deferral limit (the unattended window). */
+    countsDeferral?: boolean;
+  };
 
 export interface AgentRunGateContext {
   definition: StoredAgentDefinition;
@@ -126,8 +132,8 @@ let sharedCostGate: AgentRunGate | null = null;
  * The gate an unattended run is admitted through unless the caller supplies
  * one. Shared, so its "usage unknown" log stays once per provider.
  */
-function defaultCostGate({ now, costGate }: AgentRunTriggerDependencies): AgentRunGate {
-  if (costGate) return createAgentRunCostGate({ now, ...costGate });
+function defaultCostGate({ now, database, costGate }: AgentRunTriggerDependencies): AgentRunGate {
+  if (costGate || database) return createAgentRunCostGate({ now, database, ...costGate });
   return sharedCostGate ??= createAgentRunCostGate();
 }
 
@@ -331,7 +337,10 @@ export async function triggerAgentRun(
   const { run, created } = decision.action === 'skip'
     ? await createAgentRun({ ...base, initialState: 'skipped', skipReason: decision.reason }, storeDeps)
     : decision.action === 'defer'
-      ? await createAgentRun({ ...base, initialState: 'deferred', deferredUntil: decision.until, skipReason: decision.reason }, storeDeps)
+      ? await createAgentRun({
+        ...base, initialState: 'deferred', deferredUntil: decision.until, skipReason: decision.reason,
+        deferralCounted: decision.countsDeferral !== false,
+      }, storeDeps)
       : await createAgentRun(base, storeDeps);
 
   if (decision.action !== 'proceed') {

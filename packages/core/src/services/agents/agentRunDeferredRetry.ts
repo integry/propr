@@ -19,7 +19,8 @@ import { enqueueAgentRunPhase, type AgentRunGate, type AgentRunTriggerDependenci
  * through the gate with the run's own deferral count:
  *
  * - proceed: the run moves to `queued` and its report phase is enqueued;
- * - defer: the run stays `deferred` with the new retry time and one more deferral;
+ * - defer: the run stays `deferred` with the new retry time and, unless the
+ *   decision is a wait for the unattended window, one more deferral;
  * - skip (including the deferral limit): the run is `skipped` with the reason.
  *
  * Every write is a compare-and-set on the deferred run and the retry time it
@@ -77,7 +78,8 @@ async function retryDeferredRun(
     return await transitionDeferredAgentRun(run.id, evaluatedDeferredUntil, 'skipped', { skipReason: decision.reason }, storeDeps) ? 'skipped' : null;
   }
   if (decision.action === 'defer') {
-    return await redeferAgentRun(run.id, evaluatedDeferredUntil, decision.until, decision.reason, storeDeps) ? 'deferred' : null;
+    const deferral = { until: decision.until, reason: decision.reason, counted: decision.countsDeferral !== false };
+    return await redeferAgentRun(run.id, evaluatedDeferredUntil, deferral, storeDeps) ? 'deferred' : null;
   }
 
   const queued = await transitionDeferredAgentRun(run.id, evaluatedDeferredUntil, 'queued', {}, storeDeps);
@@ -112,7 +114,7 @@ export async function retryDueDeferredAgentRuns(deps: DeferredAgentRunRetryDepen
   const {
     now = Date.now,
     batchSize = DEFAULT_DEFERRED_AGENT_RUN_BATCH_SIZE,
-    gate = createAgentRunCostGate({ now }),
+    gate = createAgentRunCostGate({ now, database: deps.database }),
     loadDefinition = run => getAgentDefinition(run.definitionId, run.ownerId, { database: deps.database }),
   } = deps;
   const result: DeferredAgentRunRetryResult = { queued: 0, redispatched: 0, deferred: 0, skipped: 0, failed: 0 };

@@ -28,7 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   step ends and expire after two hours. Unattended runs are cost-gated on
   Agent Tank usage (`agent_run_usage_pause_percent`, default 90): they are
   deferred for a session window (up to 6 times), skipped for a weekly one, and
-  proceed when no usage data is available. New MCP tools:
+  proceed when no usage data is available. They are also limited by
+  `unattended_max_concurrent` (default 1 active unattended run; more are
+  deferred 5 minutes at a time) and an optional local-time window
+  `unattended_window` (e.g. `02:00-07:00@Europe/Riga`; outside it runs wait
+  without using up deferrals, and a malformed window blocks them). All three
+  are in **Settings → Automation → Unattended agent runs** and `propr setting`.
+  New MCP tools:
   `list_agent_definitions`, `get_agent_definition`,
   `get_agent_definition_contract`, `list_agent_runs`, `get_agent_run`,
   `trigger_agent_run`, `approve_agent_run`, `reject_agent_run`. New optional

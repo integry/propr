@@ -563,3 +563,4 @@ export * from './prTemplate.js';
 // API, MCP, CLI, UI, worker and scheduler.
 export * from './agentDefinitions.js';
 export * from './cronSchedule.js';
+export * from './agentUnattendedLimits.js';
