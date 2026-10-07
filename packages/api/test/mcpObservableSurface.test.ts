@@ -313,8 +313,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'ultrafix_rating_goal', 'ultrafix_max_cycles', 'goal', 'maxCycles',
     // Input fields and categories accepted by generate_repository_improvements.
     'branch', 'categories', 'architecture', 'documentation', 'performance', 'scalability', 'security', 'testing',
-    // Agent run receipt fields, run states and autonomy modes returned by the agent run tools.
-    'created', 'deferred', 'awaiting_approval', 'dry_run', 'preview', 'auto', 'note',
+    // Agent run receipt fields, run states, autonomy modes and capabilities of the agent run tools.
+    'created', 'deferred', 'awaiting_approval', 'dry_run', 'preview', 'auto', 'note', 'propr_mcp',
     // Prompt names share tool-like spelling but are discovered under prompts/list.
     'check_progress', 'diagnose_failure', 'operator_briefing', 'plan_change', 'prepare_handoff',
     'review_and_improve_pr', 'start_goal',

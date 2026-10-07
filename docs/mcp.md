@@ -104,10 +104,10 @@ Repeating `create_task` with its original key returns its durable receipt;
 using a different key starts a separate request. MCP direct task submission
 currently accepts text instructions; file uploads remain available in the UI.
 
-## Run a saved agent
+## Agents
 
 Agents are saved, reusable definitions that run on demand or on a schedule and
-produce a free-form report. With read scope, `list_agent_definitions` (optional
+produce a free-form report (see the [Agents guide](docs/features/agents.md)). With read scope, `list_agent_definitions` (optional
 `repository` filter) and `get_agent_definition` show your agents, including the
 schedule, next run, capabilities and autonomy mode;
 `get_agent_definition_contract` returns the shared field contract.
@@ -144,6 +144,18 @@ hidden from lists and its tools fail with `REPOSITORY_FORBIDDEN`. Tokens that
 ProPR issues to a running agent cannot call `trigger_agent_run`,
 `approve_agent_run` or `reject_agent_run` (`AGENT_RECURSION_FORBIDDEN`), so an
 agent never starts or approves agent runs.
+
+Agent runs are also MCP clients. A report run with the `propr_mcp` capability,
+and every acting step of a `preview` or `auto` agent, receives a delegated
+grant from the internal client **ProPR Agent**. The grant acts as the agent's
+owner, is limited to the definition's repositories, and carries `read` scope for
+the report run or `read`, `plan` and `execute` for the acting step, never
+`merge`, `deploy`, `review`, `publish` or `manage`. Like any grant it is
+re-checked against membership and GitHub access on every call, listed under
+connected apps and recorded in the MCP access log. It expires after two hours
+at the latest and is revoked as soon as its step ends. Issuing it requires
+MCP to be enabled (`MCP_DISABLED` otherwise) and a current GitHub
+authorization for the owner (`GITHUB_AUTHORIZATION_REQUIRED` otherwise).
 
 ## Client compatibility and verified upstream details
 

@@ -62,6 +62,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'features/launching-work',
         'features/goals',
+        'features/agents',
         'features/planning',
         'features/inbox',
         'features/mcp',

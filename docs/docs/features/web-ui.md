@@ -4,7 +4,7 @@ The ProPR Web UI configures repositories and agents, launches work, and shows pr
 
 ## Navigation And Chrome
 
-The sidebar's work area contains **Dashboard**, **Inbox**, **Tasks**, **Goals** and **Plans**. The system area contains **Repositories**, **Coding Agents** (administrators), **Analytics**, the collapsible **Logs** group, **Settings** and **Access** (administrators). Count badges show current work and unread Inbox items. Agent Tank usage appears below navigation when enabled.
+The sidebar's work area contains **Dashboard**, **Inbox**, **Tasks**, **Goals**, **Agents** and **Plans**. The system area contains **Repositories**, **Coding Agents** (administrators), **Analytics**, the collapsible **Logs** group, **Settings** and **Access** (administrators). Count badges show current work and unread Inbox items. Agent Tank usage appears below navigation when enabled.
 
 The header includes search (`Cmd/Ctrl+K`), activity/review controls, quick add to-do (`Alt+T`) and system health. **New Task** is the default creation action. It becomes **New Plan** in Plans/Planner Studio and **New Goal** in Goals; the adjacent menu offers the other two actions. See [Launching work](./launching-work.md) to choose between them. After quick add confirms **To-Do added**, choose **Add another** to enter the next item without closing the popover. Desktop puts application information in **About ProPR** rather than the sidebar footer.
 
@@ -51,6 +51,12 @@ These records are the heart of ProPR's observability — see [Observability And 
 ## Goals and Inbox
 
 **Goals** (`/goals`) shows continuing objectives and opens the console for progress, artifacts and corrective inputs. See [Goals](./goals.md) for native execution and lifecycle controls. **Inbox** (`/inbox`) links notifications to the work requiring your attention; [Inbox and notifications](./inbox.md) explains personal and repository preferences.
+
+## Agents
+
+**Agents** (`/agents`) lists your saved [agents](./agents.md) with search, each one's schedule and next run, and the state of its last run. **New agent** opens the form. Its sections are name and description, prompt and input files, repositories, agent and model, previous reports, capabilities (with a note where a runtime only enforces `web` on a best-effort basis), schedule (Off, or a UTC cron expression with presets, inline validation and a next-run preview) and autonomy. Saving with a stale copy open in another tab is refused rather than overwriting the newer version.
+
+A saved agent has **Settings** and **Runs** tabs. **Run now** starts a run straight away; when Agent Tank reports the provider over the usage pause threshold, it asks you to confirm first. **Runs** lists the history newest first with trigger, state and skip or failure reasons. A run opens its detail view: state and timing, the rendered **Report**, **What the acting agent did** for runs that acted, links to the underlying tasks, and **Cancel run** while the run is still active. A `preview` run awaiting approval shows **Approve and act**, with an optional note for the acting agent, and **Reject**. Its Inbox notification links to the run's report task.
 
 ## Repositories
 

@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agents (v1)**: saved, reusable definitions (prompt, input files,
+  repositories, agent and model, previous reports, capabilities, schedule and
+  autonomy) that run as an isolated task and produce a free-form Markdown
+  report. Runs start from **Run now** on the new **Agents** page, a UTC 5-field
+  cron schedule (at most every 15 minutes, fired once per slot by the daemon),
+  `POST /api/agent-definitions/:id/runs` with an `Idempotency-Key`, the MCP
+  tool `trigger_agent_run`, or `propr automation run` (alias
+  `propr automations`). Capabilities `repository_read`, `web` and `propr_mcp`
+  are switched separately: Claude Code and Codex enforce `web` natively, other
+  runtimes only best effort, and `propr_mcp` requires Claude Code or Codex.
+  Autonomy `dry_run` only reports. `preview` waits for **Approve and act** or
+  **Reject**, and `auto` acts at once. Acting is a separate agent run limited to
+  ProPR MCP tools with `read`/`plan`/`execute` scope on the definition's
+  repositories. It never merges, deploys, changes settings or triggers agents
+  (`AGENT_RECURSION_FORBIDDEN`). Agent runs never commit or push. Their
+  delegated MCP grants are signed with `SYSTEM_TASK_SECRET`, revoked when each
+  step ends and expire after two hours. Unattended runs are cost-gated on
+  Agent Tank usage (`agent_run_usage_pause_percent`, default 90): they are
+  deferred for a session window (up to 6 times), skipped for a weekly one, and
+  proceed when no usage data is available. New MCP tools:
+  `list_agent_definitions`, `get_agent_definition`,
+  `get_agent_definition_contract`, `list_agent_runs`, `get_agent_run`,
+  `trigger_agent_run`, `approve_agent_run`, `reject_agent_run`. New optional
+  environment variables `PROPR_INTERNAL_API_URL` and `PROPR_AGENT_MCP_URL`.
+  Event triggers, per-action-kind autonomy and schedule time zones are deferred.
+  See the [Agents guide](docs/docs/features/agents.md).
 - **Automatic replacement runs**: an issue task lost with its worker (the
   reconciler finds neither its queue job nor its task container) now gets one
   replacement attempt instead of only being marked failed; a second loss in the
