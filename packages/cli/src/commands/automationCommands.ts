@@ -214,8 +214,11 @@ function recoveryHint(error: unknown, context: FailureContext, code: AutomationF
   return null;
 }
 
-/** Prints a failure (JSON document on stdout with --json, message on stderr otherwise) and exits 1. */
-function fail(error: unknown, context: FailureContext): never {
+/**
+ * Prints a failure (JSON document on stdout with --json, message on stderr otherwise) and sets exit
+ * status 1. It does not force termination, so piped output is flushed; callers must return after it.
+ */
+function fail(error: unknown, context: FailureContext): void {
   const { code, status } = failureCode(error);
   const message = error instanceof Error ? error.message : String(error);
   const idempotencyKey = error instanceof GoalMutationUncertainError ? error.idempotencyKey : context.idempotencyKey;
@@ -245,7 +248,7 @@ function fail(error: unknown, context: FailureContext): never {
     });
   }
   if (!context.json && recovery) console.error(recovery);
-  process.exit(AUTOMATION_RUN_EXIT_CODES.error);
+  process.exitCode = AUTOMATION_RUN_EXIT_CODES.error;
 }
 
 function parseLimit(value: string | undefined, max: number): number | undefined {
@@ -409,7 +412,7 @@ Examples:
           console.log(`Showing ${items.length} of ${page.total}. More agents: --offset ${next}`);
         }
       } catch (error) {
-        fail(error, { command: "list", json: options.json });
+        return fail(error, { command: "list", json: options.json });
       }
     });
 
@@ -426,7 +429,7 @@ Examples:
         }
         printAutomation(item);
       } catch (error) {
-        fail(error, { command: "show", json: options.json, automationId: id });
+        return fail(error, { command: "show", json: options.json, automationId: id });
       }
     });
 
@@ -524,9 +527,10 @@ GitHub Actions example:
           }
         }
       } catch (error) {
-        fail(error, { command: "run", json: options.json, automationId: id, idempotencyKey: key });
+        return fail(error, { command: "run", json: options.json, automationId: id, idempotencyKey: key });
       }
-      if (exitCode !== AUTOMATION_RUN_EXIT_CODES.completed) process.exit(exitCode);
+      // Set rather than exit so buffered stdout (the report or JSON) is flushed before the process ends.
+      if (exitCode !== AUTOMATION_RUN_EXIT_CODES.completed) process.exitCode = exitCode;
     });
 
   automation
@@ -560,7 +564,7 @@ GitHub Actions example:
           console.log(`Showing ${runs.length} of ${page.total}. More runs: --offset ${next}`);
         }
       } catch (error) {
-        fail(error, { command: "runs", json: options.json, automationId: id });
+        return fail(error, { command: "runs", json: options.json, automationId: id });
       }
     });
 
@@ -592,9 +596,9 @@ Exits 1 when the run has no report yet.
           }
         }
       } catch (error) {
-        fail(error, { command: "report", json: options.json, runId });
+        return fail(error, { command: "report", json: options.json, runId });
       }
-      if (missing) process.exit(AUTOMATION_RUN_EXIT_CODES.error);
+      if (missing) process.exitCode = AUTOMATION_RUN_EXIT_CODES.error;
     });
 
   const decision = (
@@ -616,7 +620,7 @@ Exits 1 when the run has no report yet.
         console.log(`${verb} run ${run.id}.`);
         console.log(`state: ${run.state}`);
       } catch (error) {
-        fail(error, { command: action, json: options.json, runId });
+        return fail(error, { command: action, json: options.json, runId });
       }
     });
 

@@ -7,17 +7,12 @@ const originalConsoleLog = console.log;
 const originalConsoleError = console.error;
 const originalProcessExit = process.exit;
 
-class CommandExit extends Error {
-  constructor(readonly code: number) {
-    super(`Command exited with ${code}`);
-  }
-}
-
 afterEach(() => {
   globalThis.fetch = originalFetch;
   console.log = originalConsoleLog;
   console.error = originalConsoleError;
   process.exit = originalProcessExit;
+  process.exitCode = undefined;
 });
 
 interface RecordedRequest {
@@ -74,7 +69,6 @@ async function run(
   const stdout: string[] = [];
   const stderr: string[] = [];
   const requests: RecordedRequest[] = [];
-  let exitCode = 0;
   let clock = 0;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const request: RecordedRequest = {
@@ -94,10 +88,11 @@ async function run(
   }) as typeof fetch;
   console.log = (...values: unknown[]) => { stdout.push(values.map(String).join(" ")); };
   console.error = (...values: unknown[]) => { stderr.push(values.map(String).join(" ")); };
-  process.exit = ((code?: string | number | null) => {
-    exitCode = Number(code ?? 0);
-    throw new CommandExit(exitCode);
+  // Commands must set process.exitCode and return: process.exit would discard buffered piped stdout.
+  process.exit = (() => {
+    throw new Error("process.exit must not be called; set process.exitCode instead");
   }) as typeof process.exit;
+  process.exitCode = undefined;
   const command = createAutomationCommand({
     pollIntervalMs: options.pollIntervalMs ?? 5_000,
     now: () => clock,
@@ -105,9 +100,12 @@ async function run(
   });
   try {
     await command.parseAsync(args, { from: "user" });
-  } catch (error) {
-    if (!(error instanceof CommandExit)) throw error;
+  } finally {
+    process.exit = originalProcessExit;
   }
+  const exitCode = Number(process.exitCode ?? 0);
+  // Reset so a documented nonzero status does not fail the test process itself.
+  process.exitCode = undefined;
   return { stdout: stdout.join("\n"), stderr: stderr.join("\n"), requests, exitCode };
 }
 
@@ -253,6 +251,29 @@ test("a missing agent prints 'Agent not found' and exits 1", async () => {
   const document = JSON.parse(shown.stdout);
   assert.equal(document.kind, "automation-error");
   assert.equal(document.error.code, "not_found");
+});
+
+test("nonzero outcomes set process.exitCode and return instead of forcing exit, so piped output is complete", async () => {
+  const report = `# Proposed actions\n\n${"- close stale issue\n".repeat(5_000)}`;
+  const awaiting = await run(["run", "agent-1", "--wait", "--json"], triggerThenPoll(runFixture({ autonomyMode: "preview" }), [
+    runFixture({ state: "awaiting_approval", autonomyMode: "preview", report }),
+  ]));
+  assert.equal(awaiting.exitCode, AUTOMATION_RUN_EXIT_CODES.awaiting_approval);
+  const document = JSON.parse(awaiting.stdout);
+  assert.equal(document.exitCode, AUTOMATION_RUN_EXIT_CODES.awaiting_approval);
+  assert.equal(document.run.report, report);
+
+  const plain = await run(["run", "agent-1", "--wait"], triggerThenPoll(runFixture({ autonomyMode: "preview" }), [
+    runFixture({ state: "awaiting_approval", autonomyMode: "preview", report }),
+  ]));
+  assert.equal(plain.exitCode, AUTOMATION_RUN_EXIT_CODES.awaiting_approval);
+  assert.equal(plain.stdout, report.slice(0, -1));
+
+  for (const args of [["run", "agent-1", "--json"], ["list", "--json"], ["show", "agent-1", "--json"], ["runs", "agent-1", "--json"], ["report", "run-1", "--json"], ["cancel", "run-1", "--json"]]) {
+    const failed = await run(args, () => ({ status: 500, body: { error: "boom" } }));
+    assert.equal(failed.exitCode, AUTOMATION_RUN_EXIT_CODES.error, args.join(" "));
+    assert.equal(JSON.parse(failed.stdout).kind, "automation-error", args.join(" "));
+  }
 });
 
 test("report writes the Markdown to stdout and metadata to stderr", async () => {
