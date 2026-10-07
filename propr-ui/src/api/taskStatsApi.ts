@@ -99,9 +99,11 @@ export interface StatsOverviewCacheUsage {
 
 /** Run volume: agent executions, the compute behind the deliverables. */
 export interface StatsOverviewRuns {
+  /** Agent executions in the period: the Models table's runs, summed. */
   total: number;
+  /** Tasks created in the period: the totals band's "Total tasks". */
   tasks: number;
-  /** Runs per task, the iteration multiplier; null without any task runs. */
+  /** `total / tasks`, the iteration multiplier; null without any tasks. */
   per_task: number | null;
 }
 

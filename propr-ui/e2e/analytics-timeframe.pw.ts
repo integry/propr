@@ -15,7 +15,9 @@ const dayKeys = (days: number): string[] => Array.from({ length: days }, (_, ind
 
 /** Each timeframe answers with different numbers, so a stale section would show. */
 const SCALE: Record<string, number> = { '24h': 1, '7d': 3, '30d': 10, '90d': 24, '1y': 60, all: 80 };
-const DAYS: Record<string, number> = { '24h': 2, '7d': 8, '30d': 31, '90d': 91, '1y': 366, all: 400 };
+/** Day periods are whole UTC days ending today; a rolling 24 hours touches two. */
+const DAYS: Record<string, number> = { '24h': 2, '7d': 7, '30d': 30, '90d': 90, '1y': 365, all: 400 };
+const DAY_PERIODS = new Set(['7d', '30d', '90d', '1y']);
 
 async function stubAnalytics(page: Page, requests: string[] = []) {
   await page.route('**/api/stats/{tasks,repositories,overview,review-scores}*', route => {
@@ -25,7 +27,8 @@ async function stubAnalytics(page: Page, requests: string[] = []) {
     const scale = SCALE[period] ?? 10;
     if (url.pathname === '/api/stats/tasks') {
       return route.fulfill({ json: {
-        dailyCounts: dayKeys(DAYS[period] ?? 31).map((date, index) => ({ date, count: (index * 7 + scale) % 9 })),
+        // A day period lost its eighth (earliest) day; each remaining day keeps its count.
+        dailyCounts: dayKeys(DAYS[period] ?? 30).map((date, index) => ({ date, count: ((index + (DAY_PERIODS.has(period) ? 1 : 0)) * 7 + scale) % 9 })),
         statusDistribution: [
           { status: 'completed', count: 8 * scale },
           { status: 'failed', count: scale },
@@ -218,11 +221,11 @@ test('a week labels every day under its bar, and each day owns its full-height c
   await expect(page.getByText('design-system')).toBeVisible();
 
   const chart = page.getByTestId('activity-chart');
-  // Eight days, eight labels: the weekday over the day, Sep 16 through today.
+  // Seven days, seven labels: the weekday over the day, Sep 17 through today.
   const labels = chart.getByTestId('activity-date-label');
-  await expect(labels).toHaveCount(8);
+  await expect(labels).toHaveCount(7);
   expect(await labels.allTextContents()).toEqual([
-    'WedSep 16', 'Thu17', 'Fri18', 'Sat19', 'Sun20', 'Mon21', 'Tue22', 'Wed23',
+    'ThuSep 17', 'Fri18', 'Sat19', 'Sun20', 'Mon21', 'Tue22', 'Wed23',
   ]);
 
   // Each label sits under its own bar, not on a rail of its own.

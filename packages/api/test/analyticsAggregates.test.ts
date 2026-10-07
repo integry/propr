@@ -25,20 +25,26 @@ before(async () => {
 after(async () => database.destroy());
 beforeEach(async () => clearDashboardTestDatabase(database));
 
-test('run volume separates agent executions from the tasks they ran for', async () => {
+test('runs per task divides total runs by total tasks, so the two figures beside it multiply out', async () => {
+  for (const [taskId, days] of [['a', 1], ['b', 2], ['queued', 3], ['c', 30]] as const) {
+    await seedTask(database, { taskId, states: [{ state: 'queued', timestamp: daysAgo(days) }] });
+  }
   await database('llm_executions').insert([
     { task_id: 'a', start_time: daysAgo(1) },
     { task_id: 'a', start_time: daysAgo(1) },
     { task_id: 'a', start_time: daysAgo(1) },
     { task_id: 'b', start_time: daysAgo(2) },
-    // A planning run belongs to no task: it is compute, but not a task's iteration.
+    // A planning run belongs to no task, but it is still a run in the Models table.
     { task_id: null, start_time: daysAgo(2) },
     { task_id: 'c', start_time: daysAgo(30) },
   ]);
-  assert.deepEqual(await loadRunVolume(database, WEEK), { total: 5, tasks: 2, per_task: 2 });
-  assert.deepEqual(await loadRunVolume(database, null), { total: 6, tasks: 3, per_task: 1.67 });
+  // 'queued' never ran, yet it is one of the week's tasks: 5 runs over 3 tasks, not over the 2 that ran.
+  assert.deepEqual(await loadRunVolume(database, WEEK), { total: 5, tasks: 3, per_task: 1.67 });
+  assert.deepEqual(await loadRunVolume(database, null), { total: 6, tasks: 4, per_task: 1.5 });
 
   await database('llm_executions').del();
+  assert.deepEqual(await loadRunVolume(database, WEEK), { total: 0, tasks: 3, per_task: 0 });
+  await database('tasks').del();
   assert.deepEqual(await loadRunVolume(database, WEEK), { total: 0, tasks: 0, per_task: null });
 });
 

@@ -412,11 +412,9 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
       const to = now();
       const from = analyticsTimeframeStart(period, to)!;
       const current: AnalyticsWindow = { timeframe: period, from, to };
-      const previous: AnalyticsWindow = {
-        timeframe: period,
-        from: new Date(from.getTime() - (to.getTime() - from.getTime())),
-        to: new Date(from.getTime() - 1),
-      };
+      // The same number of whole days, ending the moment the current window starts.
+      const previousTo = new Date(from.getTime() - 1);
+      const previous: AnalyticsWindow = { timeframe: period, from: analyticsTimeframeStart(period, previousTo)!, to: previousTo };
 
       const [currentStats, previousStats, currentSpend, previousSpend] = await timeApiStage(
         'dashboard.stats',

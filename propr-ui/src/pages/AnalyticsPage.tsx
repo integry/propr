@@ -118,9 +118,9 @@ const buildDeliveryMetrics = (overview: { data: StatsOverviewResponse | null; lo
     {
       label: 'Runs per task',
       testId: 'metric-runs-per-task',
-      hint: 'Agent runs per task: the iteration multiplier. A task often takes several runs — implement, review, fix',
+      hint: 'Total runs divided by total tasks: the iteration multiplier. A task often takes several runs — implement, review, fix',
       value: read(runs?.per_task == null ? undefined : `${runs.per_task.toFixed(1)}×`),
-      detail: runs ? `${runs.total.toLocaleString()} runs` : undefined,
+      detail: runs ? `${runs.total.toLocaleString()} runs · ${runs.tasks.toLocaleString()} tasks` : undefined,
     },
     {
       label: 'First-time pass',

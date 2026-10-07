@@ -46,8 +46,8 @@ test('success rate excludes queued, running and cancelled work and is null when 
   assert.equal(mixed.body.successRate, 75);
   // Every task created in the window is volume, finished or not.
   assert.equal(mixed.body.tasks, 6);
-  // A rolling seven days touches eight UTC days, exactly as the Analytics activity chart does.
-  assert.equal((mixed.body.dailyTasks as unknown[]).length, 8);
+  // Seven days are seven whole UTC days, today included, exactly as the Analytics activity chart draws them.
+  assert.equal((mixed.body.dailyTasks as unknown[]).length, 7);
   assert.equal((mixed.body.dailyTasks as Array<{ date: string; count: number }>)
     .reduce((total, day) => total + day.count, 0), 6);
 });
@@ -74,7 +74,7 @@ test('dashboard stats compare against the previous period and report recorded sp
   assert.equal(empty.body.successRate, null);
   assert.equal(empty.body.recordedSpend, null);
   assert.equal(empty.body.tasks, 0);
-  assert.equal((empty.body.dailyTasks as unknown[]).length, 31);
+  assert.equal((empty.body.dailyTasks as unknown[]).length, 30);
 });
 
 test('historical stats keep a recorded failure once its retry starts', async () => {

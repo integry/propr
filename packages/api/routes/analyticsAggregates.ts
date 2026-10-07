@@ -97,31 +97,40 @@ export async function loadRecordedSpend(
 }
 
 export interface RunVolume {
-  /** Agent executions started in the window. */
+  /** Agent executions started in the window: the sum of the Models table's runs. */
   total: number;
-  /** Distinct tasks those executions ran for. */
+  /** Tasks created in the window: the totals band's "Total tasks". */
   tasks: number;
-  /** Executions per task: the iteration multiplier. Null without any task runs. */
+  /** `total / tasks`, the iteration multiplier. Null without any tasks. */
   per_task: number | null;
 }
 
 /**
  * Run volume: the compute behind the deliverables. A task often takes several
  * runs — implement, review, fix — so runs and tasks are reported separately.
+ *
+ * The multiplier divides the two figures the page prints beside it — total
+ * runs, as the Models table sums them, by total tasks, as the totals band
+ * counts them — so `tasks × per_task = total` holds on screen. Dividing by
+ * only the tasks that recorded a run would leave tasks with no recorded run
+ * (queued, cancelled, or on an agent that reports none) out of one figure and
+ * in the other.
  */
 export async function loadRunVolume(db: Knex, window: AnalyticsWindow | null): Promise<RunVolume> {
-  const query = db('llm_executions')
-    .count('* as total')
-    .countDistinct('task_id as tasks')
-    .count('task_id as task_runs');
-  whereCreatedWithin(query, 'start_time', window);
-  const row = await query.first() as { total?: number | string; tasks?: number | string; task_runs?: number | string } | undefined;
-  const tasks = Number(row?.tasks ?? 0);
-  const taskRuns = Number(row?.task_runs ?? 0);
+  const runsQuery = db('llm_executions').count('* as total');
+  whereCreatedWithin(runsQuery, 'start_time', window);
+  const tasksQuery = db('tasks').count('* as tasks');
+  whereCreatedWithin(tasksQuery, 'created_at', window);
+  const [runs, tasks] = await Promise.all([
+    runsQuery.first() as unknown as Promise<{ total?: number | string } | undefined>,
+    tasksQuery.first() as unknown as Promise<{ tasks?: number | string } | undefined>,
+  ]);
+  const total = Number(runs?.total ?? 0);
+  const taskCount = Number(tasks?.tasks ?? 0);
   return {
-    total: Number(row?.total ?? 0),
-    tasks,
-    per_task: tasks > 0 ? Number((taskRuns / tasks).toFixed(2)) : null,
+    total,
+    tasks: taskCount,
+    per_task: taskCount > 0 ? Number((total / taskCount).toFixed(2)) : null,
   };
 }
 

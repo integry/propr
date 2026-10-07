@@ -49,6 +49,9 @@ const Figure: React.FC<{ value: string | null; basis: string; className?: string
   </td>
 );
 
+const UNTRACKED_LABEL = 'Manual / Untracked';
+const UNTRACKED_HINT = 'Scored pull requests with no recorded implementing run: written by hand, or by an agent outside ProPR';
+
 const score = (value: number | null | undefined): string | null =>
   value === null || value === undefined ? null : value.toFixed(1);
 
@@ -62,13 +65,14 @@ const Delta: React.FC<{ value: number | null | undefined; n: number }> = ({ valu
 };
 
 const ModelRow: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
-  const label = row.implementer_model ? formatModelName(row.implementer_model) : 'Unknown model';
+  // Scored PRs with no recorded implementer were written outside an agent run ProPR tracked.
+  const label = row.implementer_model ? formatModelName(row.implementer_model) : UNTRACKED_LABEL;
   const runs = row.runs_to_merge;
   const rate = row.merge_rate.value;
   return (
     <tr className="border-b border-slate-100 last:border-b-0" data-testid="review-quality-row">
       <td className={`${CELL} min-w-0`}>
-        <span className={`block truncate font-medium ${row.implementer_model ? 'text-slate-800' : 'italic text-slate-500'}`} title={row.implementer_model ?? undefined}>
+        <span className={`block truncate font-medium ${row.implementer_model ? 'text-slate-800' : 'italic text-slate-500'}`} title={row.implementer_model ?? UNTRACKED_HINT}>
           {label}
         </span>
       </td>

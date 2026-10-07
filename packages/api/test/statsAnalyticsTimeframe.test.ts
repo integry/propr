@@ -106,7 +106,8 @@ test('without a period the endpoints keep their historical scope', async () => {
     { model: 'gpt-5.6', runs: 1, tasks: 1, tokens: 1200, cost_usd: 0.5 },
     { model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 120, cost_usd: 1.5 },
   ]);
-  assert.deepEqual(overview.body.runs, { total: 2, tasks: 2, per_task: 1 });
+  // Two runs across the three tasks the totals band counts.
+  assert.deepEqual(overview.body.runs, { total: 2, tasks: 3, per_task: 0.67 });
 });
 
 test('a period bounds task counts to tasks created inside the window', async () => {
@@ -126,15 +127,16 @@ test('a period bounds task counts to tasks created inside the window', async () 
   assert.deepEqual((repositories.body.repositories as Array<{ repository: string }>).map(row => row.repository), ['acme/recent']);
 });
 
-test('a period zero-fills one daily count per UTC day the window touches', async () => {
+test('a day period zero-fills one daily count per UTC day, today and the days before it', async () => {
   await seedRecentAndOlder();
   const stats = createStatsRoutes({ db: database, now: () => NOW });
 
   const week = await call(stats.getTaskStats, { period: '7d' });
   const days = week.body.dailyCounts as Array<{ date: string; count: number }>;
-  assert.ok(days.length === 7 || days.length === 8, `expected 7 or 8 days, got ${days.length}`);
+  // "Last 7 days" draws seven bars: today and the six days before it.
+  assert.equal(days.length, 7);
   assert.deepEqual(days.map(day => day.date), [...days.map(day => day.date)].sort());
-  assert.equal(days[0].date, daysAgo(7).slice(0, 10));
+  assert.equal(days[0].date, daysAgo(6).slice(0, 10));
   assert.equal(days[days.length - 1].date, NOW.toISOString().slice(0, 10));
   assert.equal(days.find(day => day.date === daysAgo(2).slice(0, 10))?.count, 1);
   assert.equal(days.find(day => day.date === NOW.toISOString().slice(0, 10))?.count, 1);
@@ -170,12 +172,15 @@ test('a period bounds overview usage by execution start but never the indexed re
 test('the dashboard widget and the Analytics page report the same figures for the same period', async () => {
   await seedTask(database, { taskId: 'today', issueNumber: 1, states: [{ state: 'completed', timestamp: daysAgo(0.1) }] });
   await seedTask(database, { taskId: 'midweek', issueNumber: 2, states: [{ state: 'failed', timestamp: daysAgo(3), reason: 'nope' }] });
-  // Inside a rolling week, but before the widget's old whole-day window began.
-  await seedTask(database, { taskId: 'edge', issueNumber: 3, states: [{ state: 'completed', timestamp: daysAgo(6.9) }] });
+  // Just after midnight six days ago: the first of the window's seven days.
+  await seedTask(database, { taskId: 'edge', issueNumber: 3, states: [{ state: 'completed', timestamp: daysAgo(6.4) }] });
+  // Within 7 × 24 hours of now, but on an eighth calendar day, so outside "7 days".
+  await seedTask(database, { taskId: 'eighth-day', issueNumber: 5, states: [{ state: 'completed', timestamp: daysAgo(6.9) }] });
   await seedTask(database, { taskId: 'outside', issueNumber: 4, states: [{ state: 'completed', timestamp: daysAgo(8) }] });
   await database('llm_executions').insert([
     { task_id: 'today', start_time: daysAgo(0.1), cost_usd: 2 },
-    { task_id: 'edge', start_time: daysAgo(6.9), cost_usd: 0.75 },
+    { task_id: 'edge', start_time: daysAgo(6.4), cost_usd: 0.75 },
+    { task_id: 'eighth-day', start_time: daysAgo(6.9), cost_usd: 4 },
     { task_id: 'outside', start_time: daysAgo(8), cost_usd: 9 },
   ]);
 

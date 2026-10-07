@@ -10,7 +10,7 @@ The dashboard reads its own endpoints, each of which accepts `repository=all` or
 - `GET /api/dashboard/attention` — blockers and pending decisions, oldest first, derived from task and plan-issue state and never from notification read or dismissal state
 - `GET /api/dashboard/active` — running work with its lifecycle phase and latest reported progress line, plus a queue summary with the reason work is waiting when the backend knows one
 - `GET /api/dashboard/outcomes` — recent terminal results, including merges and closes recorded after the run finished
-- `GET /api/stats/dashboard?period=7d|30d` — tasks, success rate, recorded spend and daily task counts, with a previous-period comparison. It reads the same aggregation over the same rolling window as the Analytics page for that period, so the dashboard's Historical stats and `/analytics?period=7d` always agree
+- `GET /api/stats/dashboard?period=7d|30d` — tasks, success rate, recorded spend and daily task counts, with a previous-period comparison. It reads the same aggregation over the same window as the Analytics page for that period, so the dashboard's Historical stats and `/analytics?period=7d` always agree. Day periods (`7d`, `30d`, `90d`, `1y`) are whole UTC days ending today — `7d` is today and the six days before it, seven daily bars — while `24h` is a rolling 24 hours
 
 The analytics page (`/analytics`) and the rest of the UI continue to read the aggregate endpoints:
 
@@ -31,7 +31,7 @@ The Analytics page reports task volume (the deliverables) and run volume (the co
 
 | Figure | How it is computed |
 |---|---|
-| Runs per task | Agent executions started in the period ÷ the distinct tasks they ran for: the iteration multiplier |
+| Runs per task | Agent executions started in the period (the Models table's runs, summed) ÷ tasks created in the period (the totals band's Total tasks): the iteration multiplier. Tasks that recorded no run still count, so tasks × runs per task equals the runs shown |
 | First-time pass | Of pull requests opened by tasks in the period and merged, those that needed no fix: one implementation run, no follow-up fix task on the PR (reviews do not count) and no Ultrafix cycle after the first |
 | Time to merge | Mean (and median) wall-clock time from the issue's first task to the merge |
 | Autonomy | Of tasks created in the period that finished, those that never failed and never entered an attention state; the rest required an operator. Cancelled work is left out |
@@ -139,7 +139,7 @@ The pull request is the unit. Each per-model entry reports:
 | `score_delta.mean` | Mean of each PR's final score minus its first score: whether follow-up work improved the code | PRs with a final score |
 | `runs_to_merge.mean` | Mean agent executions across a merged PR's implementation and follow-up tasks | Merged PRs with recorded runs |
 
-Every figure carries its own `n`. A figure with nothing behind it — no merged PRs, no recorded cost, no Ultrafix goal — is `null`, never `0`. PRs whose implementer is unknown are grouped under `implementer_model: null`.
+Every figure carries its own `n`. A figure with nothing behind it — no merged PRs, no recorded cost, no Ultrafix goal — is `null`, never `0`. PRs whose implementer is unknown are grouped under `implementer_model: null`, which the Analytics page labels **Manual / Untracked**: the PR was written by hand, or by an agent run ProPR did not record.
 
 **Cost per merged PR** sums `llm_executions.cost_usd` over every task attached to the pull request: the implementation task and every task that acted on the PR afterwards (follow-ups, `/fix`, Ultrafix fixes and reviews, merge-conflict resolution). The cost is the PR's whole recorded spend, not only the spend inside the period. A merged PR none of whose executions recorded a cost is left out of the mean and of `n`, rather than counted as free.
 

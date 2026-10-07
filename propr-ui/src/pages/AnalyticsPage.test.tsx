@@ -334,7 +334,7 @@ describe('AnalyticsPage', () => {
 
     const delivery = screen.getByTestId('analytics-delivery-strip');
     expect(within(delivery).getByTestId('metric-runs-per-task')).toHaveTextContent('2.4×');
-    expect(within(delivery).getByTestId('metric-runs-per-task-detail')).toHaveTextContent('941 runs');
+    expect(within(delivery).getByTestId('metric-runs-per-task-detail')).toHaveTextContent('941 runs · 392 tasks');
     expect(within(delivery).getByTestId('metric-first-time-pass')).toHaveTextContent('71%');
     expect(within(delivery).getByTestId('metric-first-time-pass-detail')).toHaveTextContent('30 of 42 merged PRs');
     expect(within(delivery).getByTestId('metric-time-to-merge')).toHaveTextContent('14m 20s');
@@ -419,7 +419,7 @@ describe('AnalyticsPage', () => {
     // A model that made the code worse reads as a red drop.
     expect(within(rows[1]).getByTestId('review-quality-delta')).toHaveTextContent('−2.0 ▼');
     expect(within(rows[1]).getByTestId('review-quality-delta').firstElementChild).toHaveClass('text-red-600');
-    expect(rows[2]).toHaveTextContent('Unknown model');
+    expect(rows[2]).toHaveTextContent('Manual / Untracked');
     // A server that predates delta and runs leaves them unknown, as it does merge rate.
     expect(within(rows[2]).getAllByText('—')).toHaveLength(3);
     expect(screen.getByTestId('review-quality-scope')).toHaveTextContent('Covers the 4 PRs with a review score in this period');
