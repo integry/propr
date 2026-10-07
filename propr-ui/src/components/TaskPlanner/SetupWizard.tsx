@@ -107,7 +107,6 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const handleExcludeFile = appendConfigArrayValue(setConfig, 'excludedFiles');
   const isGenerating = generationPolling.isGenerating || generationHandlers.isStartingGeneration;
   const isMobile = useIsMobile(768);
-  const stats = contextRefresh.preview.data?.stats;
   const showPreviewProgress = shouldShowPreviewProgress(isGenerating, isMobile);
   // Plan shape, model and Generate are docked to the prompt box rather than a page-wide footer
   const composerFooter = (
@@ -125,7 +124,6 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
         agents={agents}
         generationModel={config.generationModel}
         onModelChange={handleModelChange}
-        modelName={stats?.modelName}
         disabled={isGenerating}
       />
       <div className="ml-auto flex flex-shrink-0 items-center gap-1 sm:gap-2">

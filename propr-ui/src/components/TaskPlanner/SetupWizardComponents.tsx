@@ -1,8 +1,11 @@
-import React from 'react';
-import { Sparkles, ChevronDown } from 'lucide-react';
+import React, { useId, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { Sparkles, ChevronDown, Check } from 'lucide-react';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
 import { useAgentsLoader } from './setupWizardHooks';
+import { useAnchoredPopover } from './useAnchoredPopover';
+import { useInstanceDefaultModel } from './useInstanceDefaultModel';
 
 // Generate button content - extracted to reduce cyclomatic complexity
 export const GenerateButtonContent: React.FC<{
@@ -30,68 +33,177 @@ export const GenerateButtonContent: React.FC<{
   return (
     <>
       <Sparkles className="w-4 h-4" />
-      <span>Generate Plan ({issueCountText})</span>
+      {/* The selected Break-plan pill already shows the estimate, so narrow docks drop it to keep the model name readable. */}
+      <span>Generate Plan<span className="hidden 2xl:inline"> ({issueCountText})</span></span>
     </>
   );
 };
 
-// Model selector component - extracted to reduce cyclomatic complexity
+const splitModelValue = (value: string): { agent: string | null; model: string } => {
+  const separator = value.indexOf(':');
+  return separator === -1 ? { agent: null, model: value } : { agent: value.slice(0, separator), model: value.slice(separator + 1) };
+};
+
+const modelDisplayName = (modelId: string) => MODEL_INFO_MAP[modelId]?.name || modelId;
+
+interface ModelMenuOption {
+  value: string;
+  agent: string | null;
+  label: string;
+  secondary?: string;
+}
+
+/** The "no explicit model" choice, named after the model it resolves to. */
+const buildDefaultOption = (planDefault: string | null | undefined, instanceDefault: string | null): { option: ModelMenuOption; name: string | null } => {
+  const resolved = planDefault || instanceDefault;
+  const parts = resolved ? splitModelValue(resolved) : null;
+  const name = parts ? modelDisplayName(parts.model) : null;
+  const source = planDefault ? 'Plan Default' : 'Configured Default';
+  return {
+    name,
+    option: { value: '', agent: parts?.agent ?? null, label: name ? `${name} (${source})` : source, secondary: parts?.agent ?? undefined },
+  };
+};
+
+const ModelMenuOptions: React.FC<{
+  options: ModelMenuOption[];
+  selectedValue: string;
+  onChoose: (value: string) => void;
+  onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
+}> = ({ options, selectedValue, onChoose, onKeyDown }) => (
+  <>
+    {options.map(option => {
+      const isSelected = option.value === selectedValue;
+      return (
+        <button
+          key={option.value || 'default'}
+          type="button"
+          role="option"
+          aria-selected={isSelected}
+          autoFocus={isSelected}
+          onClick={() => onChoose(option.value)}
+          onKeyDown={onKeyDown}
+          className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs focus:outline-none focus:bg-slate-100 hover:bg-slate-50 ${isSelected ? 'font-medium text-slate-900' : 'text-slate-700'}`}
+        >
+          <Check className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-teal-600' : 'invisible'}`} aria-hidden="true" />
+          {option.agent && <ProviderLogo provider={option.agent} className="w-3.5 h-3.5 flex-shrink-0" />}
+          <span className="whitespace-nowrap">{option.label}</span>
+          {option.secondary && <span className="ml-auto pl-4 font-mono text-[11px] text-slate-400">{option.secondary}</span>}
+        </button>
+      );
+    })}
+  </>
+);
+
+/**
+ * Plan generation / refinement model picker. The "use the default" choice always names the
+ * model it resolves to — "Claude Opus 5.5 (Default)" — so nobody has to guess which model
+ * (and price tier) a generation call will run on.
+ */
 export const ModelSelector: React.FC<{
   agents: ReturnType<typeof useAgentsLoader>;
   generationModel: string | null;
   onModelChange: (value: string | null) => void;
-  modelName?: string;
+  /** Plan-level model used when nothing is selected; falls back to the instance default. */
+  defaultModel?: string | null;
   disabled?: boolean;
-}> = ({ agents, generationModel, onModelChange, modelName, disabled = false }) => {
+}> = ({ agents, generationModel, onModelChange, defaultModel, disabled = false }) => {
+  const instanceDefaultModel = useInstanceDefaultModel();
+  const { open, position, toggle, close, containerRef, popoverRef } = useAnchoredPopover();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listboxId = useId();
   const enabledAgents = agents.filter(agent => agent.enabled);
 
   if (enabledAgents.length === 0) {
     return null;
   }
 
-  const selectedAgent = generationModel?.includes(':')
-    ? generationModel.split(':')[0]
-    : generationModel;
+  const { option: defaultOption, name: defaultName } = buildDefaultOption(defaultModel, instanceDefaultModel);
+  const options: ModelMenuOption[] = [
+    defaultOption,
+    ...enabledAgents.flatMap(agent =>
+      (agent.supportedModels || []).map(modelId => ({
+        value: `${agent.alias}:${modelId}`,
+        agent: agent.alias,
+        label: modelDisplayName(modelId),
+        secondary: agent.alias,
+      }))
+    ),
+  ];
 
-  const modelOptions = enabledAgents.flatMap(agent =>
-    (agent.supportedModels || []).map(modelId => ({
-      value: `${agent.alias}:${modelId}`,
-      label: `${agent.alias} / ${MODEL_INFO_MAP[modelId]?.name || modelId}`,
-      agent: agent.alias
-    }))
-  );
+  const selectedValue = generationModel || '';
+  const selectedParts = generationModel ? splitModelValue(generationModel) : null;
+  const buttonAgent = selectedParts ? selectedParts.agent : defaultOption.agent;
+  // The closed button says "(Default)"; the menu spells out where that default comes from.
+  const buttonLabel = selectedParts
+    ? modelDisplayName(selectedParts.model)
+    : defaultName ? `${defaultName} (Default)` : 'Default';
 
-  const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    onModelChange(e.target.value || null);
+  const choose = (value: string) => {
+    close();
+    triggerRef.current?.focus();
+    if (value !== selectedValue) onModelChange(value || null);
+  };
+
+  const focusOption = (from: HTMLElement, step: number) => {
+    const items = Array.from(popoverRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? []);
+    if (items.length === 0) return;
+    const index = items.indexOf(from);
+    items[(index + step + items.length) % items.length].focus();
+  };
+
+  const handleOptionKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusOption(event.currentTarget, event.key === 'ArrowDown' ? 1 : -1);
+    } else if (event.key === 'Escape' || event.key === 'Tab') {
+      close();
+      triggerRef.current?.focus();
+    }
   };
 
   return (
     <div className={`flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm min-w-0 flex-1 sm:flex-initial ${disabled ? 'text-gray-400' : 'text-gray-600'}`}>
       <span className={`${disabled ? 'text-gray-400' : 'text-gray-500'} hidden sm:inline text-xs`}>Model:</span>
-      <div
-        className="relative inline-flex min-w-0 items-center flex-1 max-w-[160px]"
-        title={disabled ? 'Model is locked while plan generation is running' : 'Select AI model for plan generation'}
-      >
-        {selectedAgent && (
-          <ProviderLogo
-            provider={selectedAgent}
-            className={`w-4 h-4 absolute left-2 pointer-events-none z-10 ${disabled ? 'opacity-40 grayscale' : ''}`}
-          />
-        )}
-        <select
-          value={generationModel || ''}
-          onChange={handleChange}
+      <div ref={containerRef} className="relative inline-flex min-w-0 max-w-[240px] items-center">
+        <button
+          ref={triggerRef}
+          type="button"
+          onClick={toggle}
+          onKeyDown={event => {
+            if (!open && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+              event.preventDefault();
+              toggle();
+            }
+          }}
           disabled={disabled}
-          className={`appearance-none border rounded-md text-xs py-1 pr-6 sm:pr-7 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition-colors truncate w-full ${disabled ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-gray-200 text-gray-700 hover:border-gray-300 cursor-pointer'} ${selectedAgent ? 'pl-7' : 'pl-2'}`}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-controls={open ? listboxId : undefined}
+          aria-label={`Model: ${buttonLabel}`}
+          title={disabled ? 'Model is locked while plan generation is running' : `${buttonLabel}${buttonAgent ? ` via ${buttonAgent}` : ''}`}
+          data-testid="planner-model-selector"
+          className={`inline-flex w-full min-w-0 items-center gap-1.5 rounded-md border py-1 pl-2 pr-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition-colors ${disabled ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-gray-200 text-gray-700 hover:border-gray-300 cursor-pointer'}`}
         >
-          <option value="">{modelName ? `${modelName}` : 'Default'}</option>
-          {modelOptions.map(opt => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-        <ChevronDown className={`w-3.5 h-3.5 sm:w-4 sm:h-4 absolute right-1.5 sm:right-2 pointer-events-none ${disabled ? 'text-gray-300' : 'text-gray-400'}`} />
+          {buttonAgent && (
+            <ProviderLogo provider={buttonAgent} className={`w-4 h-4 flex-shrink-0 ${disabled ? 'opacity-40 grayscale' : ''}`} />
+          )}
+          <span className="truncate">{buttonLabel}</span>
+          <ChevronDown className={`ml-auto w-3.5 h-3.5 sm:w-4 sm:h-4 flex-shrink-0 ${disabled ? 'text-gray-300' : 'text-gray-400'}`} />
+        </button>
+        {position && createPortal(
+          <div
+            ref={popoverRef}
+            id={listboxId}
+            role="listbox"
+            aria-label="Plan model"
+            style={position}
+            className="fixed z-50 w-max min-w-[220px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+          >
+            <ModelMenuOptions options={options} selectedValue={selectedValue} onChoose={choose} onKeyDown={handleOptionKeyDown} />
+          </div>,
+          document.body
+        )}
       </div>
     </div>
   );

@@ -54,7 +54,8 @@ export const GranularityPills: React.FC<{
               }`}
               style={isSelected ? { color: 'rgb(29, 138, 138)' } : undefined}
             >
-              <Icon className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+              {/* The docked composer row is shared with the model picker, so compact pills keep icons for wide screens only. */}
+              <Icon className={`w-3 h-3 sm:w-3.5 sm:h-3.5 ${compact ? 'hidden 2xl:block' : ''}`} />
               <span className="hidden sm:inline">{opt.label}</span>
               <span className="sm:hidden">{opt.shortLabel}</span>
             </button>

@@ -377,6 +377,11 @@ test('execution step for a 17-issue plan keeps the title readable and queues the
   // The title keeps at least 320px next to the grouped header controls.
   const title = page.getByRole('heading', { level: 1 });
   expect((await title.boundingBox())!.width).toBeGreaterThanOrEqual(320);
+  // A compact repository chip leads the title so the git context is never lost.
+  const repoChip = page.getByTestId('plan-repo-chip');
+  await expect(repoChip).toHaveText('propr');
+  await expect(repoChip).toHaveAttribute('title', 'integry/propr / main');
+  expect((await repoChip.boundingBox())!.x).toBeLessThan((await title.boundingBox())!.x);
   await expect(page.getByRole('link', { name: 'View issues on GitHub' })).toHaveText('GitHub');
   await expect(page.getByTitle('Delete Plan')).toHaveCount(0);
   await page.getByRole('button', { name: 'More plan actions' }).click();
@@ -419,6 +424,33 @@ test('define step shows technical scope estimates and consistent token units', a
   expect((await composerFooter.boundingBox())!.y + (await composerFooter.boundingBox())!.height).toBeLessThan(700);
   await expect(page.getByRole('navigation', { name: 'Plan phase' })).toContainText('Define');
   await capture(page, 'define-context-scope');
+});
+
+test('model selectors name the default model instead of a bare "Default"', async ({ page }) => {
+  await page.goto('/studio/plan-setup');
+  const defineModel = page.getByTestId('composer-footer').getByTestId('planner-model-selector');
+  await expect(defineModel).toHaveText('Claude Opus 5.5 (Default)');
+  // The docked row leaves the full label readable rather than truncating it to "Cla…".
+  expect(await defineModel.locator('span').last().evaluate(label => label.scrollWidth <= label.clientWidth)).toBe(true);
+  await defineModel.click();
+  const menu = page.getByRole('listbox', { name: 'Plan model' });
+  await expect(menu.getByRole('option', { selected: true })).toContainText('Claude Opus 5.5 (Configured Default)');
+  await expect(menu.getByRole('option')).toHaveCount(3);
+  await capture(page, 'define-model-default-menu');
+  await menu.getByRole('option', { name: /Claude Sonnet 5\.5/ }).click();
+  await expect(defineModel).toHaveText('Claude Sonnet 5.5');
+
+  await page.goto('/studio/plan-agents');
+  const assistant = page.getByTestId('plan-assistant');
+  await expect(assistant.getByText('Refine with')).toHaveCount(0);
+  await expect(assistant.getByText('Model:')).toBeVisible();
+  const refineModel = assistant.getByTestId('planner-model-selector');
+  await expect(refineModel).toHaveText('Claude Opus 5.5 (Default)');
+  await refineModel.click();
+  await expect(page.getByRole('listbox', { name: 'Plan model' }).getByRole('option', { selected: true })).toContainText('Claude Opus 5.5 (Configured Default)');
+  await capture(page, 'review-assistant-model-menu');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('listbox', { name: 'Plan model' })).toHaveCount(0);
 });
 
 test('short plans can still be reordered from the tab bar', async ({ page }) => {

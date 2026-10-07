@@ -208,6 +208,17 @@ interface PlanHeaderSummaryProps {
 }
 const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftStatus, isPaused, repository, baseBranch, initialPrompt }) => (
   <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
+    {/* Compact repository chip anchors the git context without a full breadcrumb row; owner and branch are in the tooltip. */}
+    {repository && (
+      <span
+        data-testid="plan-repo-chip"
+        className="inline-flex max-w-[96px] sm:max-w-[140px] flex-shrink-0 items-center gap-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-xs text-slate-700"
+        title={`${repository} / ${baseBranch}`}
+      >
+        <GitBranch size={12} className="flex-shrink-0 text-slate-500" />
+        <span className="truncate">{repository.split('/').pop() || repository}</span>
+      </span>
+    )}
     {/* The title keeps at least 320px before the header controls are allowed to squeeze it. */}
     <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 md:min-w-[320px] max-w-lg flex-shrink" title={planName}>
       {planName}
@@ -222,14 +233,6 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
         <Pause size={12} /><span className="hidden sm:inline">Paused</span>
       </span>
     )}
-    <div className="hidden 2xl:flex items-center gap-2 text-sm flex-shrink-0">
-      <div className="h-4 w-px bg-gray-300" />
-      <Github size={16} className="text-gray-500" />
-      <span className="font-medium text-gray-900 truncate max-w-[200px]" title={repository}>{repository}</span>
-      <span className="text-gray-400">/</span>
-      <GitBranch size={14} className="text-gray-500" />
-      <span className="text-gray-600">{baseBranch}</span>
-    </div>
     {initialPrompt && (
       <>
         <div className="h-4 w-px bg-gray-300 flex-shrink-0 hidden lg:block" />
