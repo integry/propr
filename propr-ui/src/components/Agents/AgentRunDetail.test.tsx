@@ -93,6 +93,20 @@ describe('AgentRunDetail', () => {
     expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument();
   });
 
+  it('refuses a run that belongs to another agent and links to its own agent instead', async () => {
+    const server = serveRun({ ...baseRun, definitionId: 'agent-2', state: 'awaiting_approval', finishedAt: null });
+    renderDetail();
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('This run belongs to a different agent, so it is not shown under Dependency review.');
+    expect(within(alert).getByRole('link', { name: 'Open it under its own agent' })).toHaveAttribute('href', '/agents/agent-2/runs/run-1');
+    expect(screen.queryByTestId('agent-run-detail')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('agent-run-approval')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Approve and act/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel run' })).not.toBeInTheDocument();
+    expect(server.calls.every(call => call.method === 'GET')).toBe(true);
+  });
+
   it('does not render raw HTML from the report', async () => {
     serveRun({ ...baseRun, report: 'Before <img src="x" onerror="alert(1)"> after' });
     renderDetail();

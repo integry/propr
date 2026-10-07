@@ -152,7 +152,7 @@ const AgentRunTaskLinks: React.FC<{ run: AgentRunRecord }> = ({ run }) => {
  */
 export const AgentRunDetail: React.FC<AgentRunDetailProps> = ({ definitionId, runId, agentName, repositories = [], readOnly = false }) => {
   useDocumentTitle(`Run · ${agentName}`);
-  const { run, loadError, actionError, pendingAction, reload, act } = useAgentRun(runId);
+  const { run, foreignDefinitionId, loadError, actionError, pendingAction, reload, act } = useAgentRun(definitionId, runId);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const runsPath = `/agents/${encodeURIComponent(definitionId)}/runs`;
 
@@ -161,6 +161,23 @@ export const AgentRunDetail: React.FC<AgentRunDetailProps> = ({ definitionId, ru
       <ArrowLeft className="h-4 w-4" aria-hidden="true" />Runs
     </Link>
   );
+
+  if (foreignDefinitionId !== null) {
+    return (
+      <div className="space-y-4 p-4">
+        {back}
+        <SystemAlert>
+          <p>This run belongs to a different agent, so it is not shown under {agentName}.</p>
+          <Link
+            to={`/agents/${encodeURIComponent(foreignDefinitionId)}/runs/${encodeURIComponent(runId)}`}
+            className="mt-1 inline-block font-medium underline"
+          >
+            Open it under its own agent
+          </Link>
+        </SystemAlert>
+      </div>
+    );
+  }
 
   if (!run) {
     return (

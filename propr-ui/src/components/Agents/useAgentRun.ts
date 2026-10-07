@@ -14,9 +14,13 @@ export type AgentRunAction = 'approve' | 'reject' | 'cancel';
  * or acting task, and no longer once it reaches a terminal state. A read is
  * applied only if nothing newer was recorded after it was sent, so a poll
  * answered after an approval cannot show the run as awaiting approval again.
+ * Runs are fetched by their global ID, so a run that belongs to an agent other
+ * than `definitionId` is never kept: `foreignDefinitionId` names its actual
+ * agent instead, and no action can be taken on it from here.
  */
-export function useAgentRun(runId: string) {
+export function useAgentRun(definitionId: string, runId: string) {
   const [run, setRun] = useState<AgentRunRecord | null>(null);
+  const [foreignDefinitionId, setForeignDefinitionId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<AgentRunAction | null>(null);
@@ -30,9 +34,14 @@ export function useAgentRun(runId: string) {
 
   const record = useCallback((next: AgentRunRecord) => {
     version.current += 1;
+    if (next.definitionId !== definitionId) {
+      setRun(null);
+      setForeignDefinitionId(next.definitionId);
+      return;
+    }
     if (next.report !== undefined && next.reportedAt !== null) rememberReportPreview(next.id, next.report);
     setRun(next);
-  }, []);
+  }, [definitionId]);
 
   const load = useCallback(() => {
     if (inFlight.current) return;
@@ -50,6 +59,7 @@ export function useAgentRun(runId: string) {
 
   useEffect(() => {
     setRun(null);
+    setForeignDefinitionId(null);
     setLoadError(null);
     load();
   }, [load]);
@@ -89,5 +99,5 @@ export function useAgentRun(runId: string) {
     }
   }, [record, runId]);
 
-  return { run, loadError, actionError, pendingAction, reload: load, act };
+  return { run, foreignDefinitionId, loadError, actionError, pendingAction, reload: load, act };
 }
