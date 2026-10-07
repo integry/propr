@@ -25,6 +25,7 @@ import type {
 } from '../types.js';
 import { boundedProviderDiagnostic } from './utils/boundedProviderOutput.js';
 import { LiveAgentOutput } from './utils/liveAgentOutput.js';
+import { spawnWithNetworkPolicy } from '../../claude/docker/dockerNetworkPolicy.js';
 import { processDockerResult } from './utils/dockerResultProcessor.js';
 
 const execFileAsync = promisify(execFile);
@@ -703,7 +704,7 @@ export async function executeClaudeNativeGoal(
     const dockerArgs = await launch.buildDockerArgs();
     if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
     const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
-    const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
+    const child = await spawnWithNetworkPolicy(args, runArgs => spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath }));
     const abort = (): void => { child.kill('SIGTERM'); };
     ownership?.signal.addEventListener('abort', abort, { once: true });
     const stream = new ClaudeGoalStream(child, options.taskId, records => control.appendOutput(records));

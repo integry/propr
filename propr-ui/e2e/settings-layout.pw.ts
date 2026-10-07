@@ -52,6 +52,11 @@ async function installSettingsFixture(page: Page): Promise<void> {
         agent_tool_stall_timeout_ms: null,
         agent_degenerate_output_limit: null,
         agent_watchdog_defaults: { agent_stall_timeout_ms: 600_000, agent_tool_stall_timeout_ms: 1_800_000, agent_degenerate_output_limit: 50 },
+        agent_network_mode: 'restricted',
+        agent_network_mode_enforced: null,
+        agent_network_allow: ['registry.example.com', '*.internal.example.com'],
+        agent_network_ignore_repository_allow: true,
+        agent_network_defaults: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [], agent_network_ignore_repository_allow: false },
       },
       '/api/config/followup-keywords': { followup_keywords: ['PROPR', 'FIXIT'] },
       '/api/config/followup-ignore-keywords': { followup_ignore_keywords: ['Deployment In Progress'] },
@@ -135,6 +140,16 @@ test('lays settings out as one contained, single-column form', async ({ page }) 
   await expect(chipRemove).toBeVisible();
   await expect(chipRemove.locator('xpath=../..')).toHaveClass(/flex-wrap/);
   await capture(page, 'settings-automation-lists', whitelist);
+
+  const network = page.getByRole('region', { name: 'Agent network' });
+  await expect(network.getByLabel('Network mode')).toHaveValue('restricted');
+  await expect(network.getByLabel('Additional allowed hosts')).toHaveValue('registry.example.com\n*.internal.example.com');
+  await expect(network.getByLabel('Repository allowed hosts')).toHaveValue('true');
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await mkdir(path.resolve('../.propr/previews'), { recursive: true });
+    await network.scrollIntoViewIfNeeded();
+    await network.screenshot({ animations: 'disabled', path: path.resolve('../.propr/previews/settings-agent-network.png') });
+  }
 
   await page.getByRole('tab', { name: 'Integrations' }).click();
   await expect(page.getByRole('heading', { name: 'LLM Usage Tracking' })).toBeVisible();

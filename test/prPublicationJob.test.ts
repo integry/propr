@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { refineWorkflowPreviews, repositoryWorkflowPrompt, loadRepositoryWorkflow, WORKFLOW_MAX_BYTES, WORKFLOW_PATH, RepositoryWorkflowPolicyError } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '../packages/core/src/workflow/repositoryWorkflow.js';
 import { executeWithRepositoryWorkflow } from '../packages/core/src/workflow/workflowExecution.js';
+import { executeWithNetworkPolicy, networkEgressReportFromError } from '../packages/core/src/network/egressExecution.js';
+import { resolveNetworkPolicy } from '../packages/core/src/network/networkPolicy.js';
 import { forgetRepositoryWorkflowWaiter, releaseRepositoryWorkflowSlot, withRepositoryWorkflowSlot } from '../packages/core/src/workflow/workflowConcurrency.js';
 import { beforeEach, mock, test } from 'node:test';
 import { getPendingPrCommentsKey } from '../packages/core/src/utils/constants.js';
@@ -107,6 +109,10 @@ await mock.module('@propr/core', { namedExports: {
     inspectTaskContainerLivenessForTask: async () => ({ liveness: 'not_found', container: null }),
     inspectLegacyDockerContainerLivenessForTask: async () => 'not_found',
     issueQueue: {}, getPendingPrCommentsKey,
+    // Open network: no egress proxy and no timeline event.
+    executeWithNetworkPolicy, networkEgressReportFromError, resolveNetworkPolicy,
+    loadInstanceNetworkPolicy: async () => ({ mode: 'open', enforced: false, allow: [], ignoreRepositoryAllow: false }),
+    db: () => { throw new Error('no database in this test'); },
 } });
 // Real helpers for re-entry tests; the rest of the suite keeps their fakes.
 const realRecovery = await import('../src/jobs/prCommentCollisionRecovery.js');

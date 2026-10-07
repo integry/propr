@@ -1,10 +1,11 @@
 import { preventWithdrawnJob } from '@propr/core';
+import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
 import { startUsageTipsSelectionRunner } from './usageTipsSelectionRunner.js';
 import 'dotenv/config';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager, runMigrations } from '@propr/core';
-import { generateCorrelationId, logger, reconcileEpicExecutionQueues } from '@propr/core';
+import { generateCorrelationId, logger, reconcileEpicExecutionQueues, startEgressProxySweeper } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatusForRepo } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings, loadSettingsFromConfig } from '@propr/core';
 import { setUltrafixDeps } from '@propr/core';
@@ -407,12 +408,15 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
 
     const usageTipsRunner = await startUsageTipsSelectionRunner();
+    const egressProxySweeper = startEgressProxySweeper();
+    enforceInstanceNetworkPolicyOutsideRuns();
 
     const close = async (): Promise<void> => {
         clearInterval(heartbeatInterval);
         await usageTipsRunner.close();
         await taskStateRecovery.close();
-        await worker.close();
+        // Proxies close only after running jobs (and their containers) have drained.
+        await worker.close().finally(() => egressProxySweeper.close());
         await attachedTaskStateFinalizers.close();
         await closeStateManager();
         await runtimeBuildWorker.close();
@@ -425,17 +429,13 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await heartbeatRedis.quit();
     };
 
-    process.on('SIGINT', async () => {
-        logger.info('Worker received SIGINT, shutting down gracefully...');
-        await close();
-        process.exit(0);
-    });
-
-    process.on('SIGTERM', async () => {
-        logger.info('Worker received SIGTERM, shutting down gracefully...');
-        await close();
-        process.exit(0);
-    });
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+        process.on(signal, async () => {
+            logger.info(`Worker received ${signal}, shutting down gracefully...`);
+            await close();
+            process.exit(0);
+        });
+    }
 
     return { worker, runtimeBuildWorker, close };
 }

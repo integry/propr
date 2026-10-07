@@ -1,6 +1,6 @@
 import { createDashboardRoutes } from '../routes/dashboardRoutes.js';
 import assert from 'node:assert/strict';
-import { after, before, beforeEach, test } from 'node:test';
+import { after, before, beforeEach, mock, test } from 'node:test';
 import type { Knex } from 'knex';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
 import { getTasksFromDb } from '../routes/taskHelpers.js';
@@ -50,12 +50,13 @@ test('summary returns four integer counts that match the active endpoint for the
   assert.equal((scopedActive.body.running as unknown[]).length, scopedSummary.body.running);
 });
 
-/** The task page behind a dashboard count. */
+/** The task page behind a dashboard count, read at the fixtures' fixed NOW, not the wall clock. */
 async function taskPage(status: string, repository: string, limit = 0): Promise<{ total: number; ids: string[] }> {
+  mock.timers.enable({ apis: ['Date'], now: NOW });
   const page = await getTasksFromDb({
     db: database, status, repository, limit, offset: 0, now: NOW,
     previewReader: { project: async (rows: unknown[]) => rows.map(() => ({ previews: [] })) } as never,
-  });
+  }).finally(() => mock.timers.reset());
   return { total: page.total, ids: (page.tasks as Array<{ id: string }>).map(task => task.id) };
 }
 

@@ -46,6 +46,7 @@ const PlansPage: React.FC = () => {
   // All repositories for filter dropdown (fetched once without filters)
   const [allRepositories, setAllRepositories] = useState<{ repo: string; count: number }[]>([]);
   const [totalAllDrafts, setTotalAllDrafts] = useState(0);
+  const allRepositoryNames = useMemo(() => allRepositories.map(entry => entry.repo), [allRepositories]);
   const liveDraftStatusesRef = useRef<Map<string, string>>(new Map());
   const draftsRequestId = useRef(0);
   const repositoriesRequestId = useRef(0);
@@ -349,6 +350,7 @@ const PlansPage: React.FC = () => {
     return (
       <PlansTable
         drafts={visibleDrafts}
+        repositories={allRepositoryNames}
         abortingId={abortingId}
         onDelete={handleDelete}
         onAbort={handleAbort}

@@ -21,6 +21,7 @@ import { detectContainerId } from './dockerContainerDetection.js';
 import type { AgentWatchdogTrip } from './agentActivityWatchdog.js';
 import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
 import { settleTimeoutStop, settleWatchdogStop } from './dockerExecutionSettlement.js';
+import { startWithNetworkPolicy, type NetworkPolicyOptions } from './dockerNetworkPolicy.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
@@ -66,7 +67,7 @@ export type LegacyTaskContainerLiveness = 'running' | 'not_found' | 'unavailable
  * watchdog (see {@link startExecutionWatchdog}); it is on by default for
  * streamed agent runs that preserve partial output.
  */
-export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'watchdog' | 'onWatchdogTrip'> {
+export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'watchdog' | 'onWatchdogTrip'>, NetworkPolicyOptions {
     timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
     /** Resolve with buffered output on timeout or a spend-cap stop so implementation jobs can publish partial work. */
     preserveOutputOnTimeout?: boolean;
@@ -231,12 +232,12 @@ export function executeDockerCommand(command: string, args: string[], options: D
     // A chargeable container starts only once its run's cap admitted it: a run
     // whose recorded spend already reaches the cap launches nothing.
     const admission = admitCostExecution(command, args, options);
-    if (!admission) return startDockerCommand(command, args, options, { ownershipContext, executionSignal });
+    if (!admission) return startWithNetworkPolicy(command, args, { executionSignal, networkPolicyExempt: options.networkPolicyExempt }, runArgs => startDockerCommand(command, runArgs, options, { ownershipContext, executionSignal }));
     return admission.then(refusal => {
         if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
         const abortError = getExecutionAbortError(executionSignal);
         if (abortError) throw abortError;
-        return startDockerCommand(command, args, options, { ownershipContext, executionSignal });
+        return startWithNetworkPolicy(command, args, { executionSignal, networkPolicyExempt: options.networkPolicyExempt }, runArgs => startDockerCommand(command, runArgs, options, { ownershipContext, executionSignal }));
     });
 }
 

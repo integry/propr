@@ -587,6 +587,10 @@ export { checkNameMatches, isNonBlockingCheck } from './webhook/nonBlockingCheck
 export * from './services/usageTips/index.js';
 
 export * from './workflow/repositoryWorkflow.js';
+export * from './network/egressAllowlist.js';
+export * from './network/egressProxy.js';
+export * from './network/networkPolicy.js';
+export * from './network/egressExecution.js';
 export * from './workflow/autoMergePolicy.js';
 export * from './services/autoMergeGate.js';
 export * from './workflow/prTemplate.js';

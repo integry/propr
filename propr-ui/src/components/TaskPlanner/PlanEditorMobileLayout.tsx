@@ -142,40 +142,36 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
       </div>
 
       {/* Mobile Footer - Compact with chat toggle */}
-      <div className="mobile-safe-action-area sticky bottom-0 z-20 flex flex-wrap items-center justify-between px-3 pt-3 border-t border-gray-200 bg-gray-100 flex-shrink-0 gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <button
-            onClick={() => onSetChatExpanded(true)}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            <MessageCircle size={16} />
-            <span>Refine</span>
-          </button>
-          <span className="text-xs text-gray-500">
-            {plan.length} {plan.length === 1 ? 'task' : 'tasks'}
-          </span>
-        </div>
+      <div className="mobile-safe-action-area sticky bottom-0 z-20 flex items-center gap-2 px-3 pt-3 border-t border-gray-200 bg-gray-100 flex-shrink-0">
+        <button
+          onClick={() => onSetChatExpanded(true)}
+          className="flex flex-shrink-0 items-center gap-1.5 px-3 py-2 text-sm text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+        >
+          <MessageCircle size={16} />
+          <span>Refine</span>
+        </button>
+        {/* The task count lives in the primary action, so the bar holds just two buttons at any phone width. */}
         <button
           onClick={onFinalize}
           disabled={isFinalizing || plan.length === 0 || isReadOnly}
           title={isReadOnly ? 'Demo mode is read-only' : undefined}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
+          className="flex min-w-0 flex-1 items-center justify-center gap-1.5 px-4 py-2.5 text-sm text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
           style={{ backgroundColor: isFinalizing || plan.length === 0 || isReadOnly ? undefined : 'rgb(29, 138, 138)' }}
         >
           {isReadOnly ? (
             <>
-              <Github size={14} />
-              <span>Read-only</span>
+              <Github size={14} className="flex-shrink-0" />
+              <span className="truncate">Read-only</span>
             </>
           ) : isFinalizing ? (
             <>
-              <Loader2 size={14} className="animate-spin" />
-              <span>Creating...</span>
+              <Loader2 size={14} className="flex-shrink-0 animate-spin" />
+              <span className="truncate">Creating...</span>
             </>
           ) : (
             <>
-              <Github size={14} />
-              <span>Create Issues</span>
+              <Github size={14} className="flex-shrink-0" />
+              <span className="truncate">Create {plan.length} {plan.length === 1 ? 'Issue' : 'Issues'}</span>
             </>
           )}
         </button>

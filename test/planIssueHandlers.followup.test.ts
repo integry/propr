@@ -28,6 +28,8 @@ await mock.module('@propr/core', {
     updatePlanIssue: mockUpdatePlanIssue,
     loadPrimaryProcessingLabels: mockLoadPrimaryProcessingLabels,
     getAuthenticatedOctokit: mockGetAuthenticatedOctokit,
+    getEpicExecutionQueue: async () => null,
+    summarizeEpicQueue: () => null,
     storeIssueCostCapOverride: async () => undefined,
     safeUpdateLabels: mockSafeUpdateLabels,
     logger: {

@@ -106,17 +106,89 @@ must grant the required read permissions; see [own-App prerequisites](../operati
 
 The image-based install starts service and agent containers from published images. Source builds can use local images during development.
 
-## Network Firewall (Optional, Off By Default)
+## Restricted Network Mode
 
-The unified agent image ships `scripts/init-firewall.sh`, an iptables script that drops all traffic except loopback, DNS, outbound SSH, and HTTPS to `api.anthropic.com`, `api.github.com`, `github.com`, and `objects.githubusercontent.com`. Its allowlist has no entries for OpenAI, Google, OpenCode providers, or Mistral, so enabling it as shipped would block every agent except Claude Code.
+Agent containers run in one of two network modes:
 
-The script is **not executed by default**. Every agent entrypoint (`scripts/claude-entrypoint.sh`, `codex-entrypoint.sh`, `antigravity-entrypoint.sh`, `opencode-entrypoint.sh`, `vibe-entrypoint.sh`) currently skips it and logs:
+- **`open`** (the default): the container is on Docker's bridge network with ordinary outbound access.
+- **`restricted`**: the container is started with `--network none`, so it has no network interface except loopback. Its only route out is a Unix socket, bind-mounted read-only from the worker, behind which a per-container HTTP/HTTPS proxy accepts connections only to allowlisted hosts. No `--privileged` flag, `NET_ADMIN` capability or iptables rules are involved.
 
-```text
-Skipping firewall setup (would require --privileged Docker flag)
-```
+### How a restricted run works
 
-Applying iptables rules inside a container requires elevated container privileges (`--privileged` or equivalent capabilities), which ProPR does not request for agent containers. Treat the firewall script as available hardening you can wire in yourself if your deployment can grant those privileges; it is inactive by default. Without it, agent containers have ordinary outbound network access.
+1. Before `docker run`, the worker starts an allowlist proxy on a Unix socket in its own directory under `PROPR_EGRESS_SOCKET_DIR` (default `/tmp/propr-egress/<run id>/proxy.sock`). Every agent container gets its own socket and directory, so concurrent runs on one worker never share a port or a proxy. The directories are traversable but not listable (`0711`), so other accounts on the worker host cannot enumerate run sockets.
+2. The container starts with `--network none` and that directory mounted at `/run/propr-egress`. Before setup hooks and the agent run, a small bridge in the container exposes the socket as `127.0.0.1:3128`.
+3. `HTTP_PROXY`, `HTTPS_PROXY` (and their lowercase forms) point at `http://127.0.0.1:3128`, `NO_PROXY` covers loopback, and Git gets `http.proxy` through `GIT_CONFIG_*`. Any proxy variables configured for the agent are replaced.
+4. The proxy accepts `CONNECT host:port` tunnels (HTTPS, Git, package managers) and plain `http://` requests. A denied target gets `403 Forbidden` and is counted. An allowed target that cannot be reached gets `502 Bad Gateway`, and the failure is counted too. A plain HTTP response that the upstream cuts off mid-body is cut off for the container as well, so the client sees a failed transfer and does not hang.
+5. When the container exits, its proxy closes and its socket directory is removed. If removing the directory fails, the failure is logged and does not change the run's result; the periodic sweep removes the directory later.
+6. If the worker itself reaches the internet only through a proxy, set the standard `HTTPS_PROXY`/`HTTP_PROXY` (and `NO_PROXY`) variables on the worker. Allowed connections are then chained through that proxy (`CONNECT` over `CONNECT`, credentials from the proxy URL), and `NO_PROXY` hosts are reached directly. The allowlist is still enforced first, on the worker.
+
+**DNS** is resolved by the proxy, on the worker. The container has no resolver to query, so DNS cannot be used as a side channel. The proxy connects to the address it resolved and checked, so a second lookup cannot answer differently.
+
+**Private addresses.** The proxy connects from the worker's network position, which reaches more than an open container does: the worker's loopback and, in the bundled Compose stack, the Redis service on its private network. So a connection to a loopback, private (RFC 1918, unique local), carrier-grade NAT, link-local (including `169.254.169.254`), IPv4-mapped or NAT64 (`64:ff9b::/96`) form of those addresses is refused (403, listed as denied) whether it is named directly or by a hostname that resolves to one. To reach such an address, an administrator lists it as an IP literal in `agent_network_allow` (for example `10.0.0.5:5000`); a hostname entry that resolves to that address is then allowed too. Repository `network.allow` entries never open one. Through a worker proxy the hostname is sent on for that proxy to resolve, but a name the worker resolves to a private address is still refused.
+
+**Addresses.** Every address a name resolves to is checked, and the proxy connects only to those addresses, without a second lookup. When a name has several, the proxy tries them in turn, alternating IPv6 and IPv4 and starting the next attempt after 250 ms if the previous one has not connected yet, so a worker without an IPv6 route still reaches a dual-stack host over IPv4.
+
+**Timeouts.** Connecting to an upstream (all of its addresses together), and a worker proxy's answer to the chained `CONNECT`, must complete within 30 seconds; otherwise the client gets `504 Gateway Timeout` and the run's report counts a failed connection. An established connection has no deadline.
+
+### What is allowed
+
+Each agent gets a built-in base list, plus the instance and repository additions:
+
+| Agent | Provider hosts |
+| --- | --- |
+| Claude Code | `api.anthropic.com`, `console.anthropic.com`, `platform.claude.com` |
+| Codex | `api.openai.com`, `auth.openai.com`, `chatgpt.com` |
+| Antigravity | `generativelanguage.googleapis.com`, `cloudcode-pa.googleapis.com`, `oauth2.googleapis.com` (see compatibility below) |
+| OpenCode | `opencode.ai`, `models.dev`, `api.anthropic.com`, `api.openai.com`, `openrouter.ai`, `generativelanguage.googleapis.com` |
+| Vibe | `api.mistral.ai` |
+
+Every agent also gets `github.com`, `api.github.com`, `codeload.github.com`, `uploads.github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com`, `media.githubusercontent.com`, `github-cloud.githubusercontent.com`, `registry.npmjs.org`, `registry.yarnpkg.com`, `pypi.org` and `files.pythonhosted.org`. Git LFS on GitHub uses the batch API on `github.com` and fetches objects from `media.githubusercontent.com` or `github-cloud.githubusercontent.com`; a repository whose LFS objects come from elsewhere (its own LFS server, or another storage host) adds that host to `network.allow`, and the timeline's denied-host list names it.
+
+Allowlist entries are exact hostnames (`registry.example.com`), wildcards that match subdomains but not the apex (`*.internal.example.com`), or IP literals. Without a port, an entry allows ports 80 and 443; `host:port` allows only that port. IP literals are denied unless that exact address is listed; wildcards never match an IP address. An IPv6 address matches in any spelling: `[fd00:0:0:0:0:0:0:5]:5000` and `[fd00::5]:5000` are the same entry, and either authorizes a connection to `fd00::5` whether it is named directly, reached through an `http://[fd00::5]:5000/` URL or resolved from an allowed hostname. A bare `*` or a one-label wildcard such as `*.com` is rejected. Private addresses need an instance IP-literal entry, as described above.
+
+**Non-essential agent traffic.** The base lists hold only the hosts an agent needs to work. Claude Code would also contact its telemetry, error-reporting and update-check hosts; a restricted container therefore gets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (unless the run's configuration already sets that variable), so those connections are never attempted and a clean run is not labelled as having denied connections. Codex exports telemetry only when its `config.toml` configures an exporter; whatever an agent still attempts outside its list is denied and appears in the timeline event as usual.
+
+### Choosing the mode
+
+- **Instance** (Settings → Automation → Agent network, `propr setting update agent_network_mode restricted`, or MCP `update_execution_settings`): `agent_network_mode` sets the default mode, `agent_network_allow` adds hosts for every restricted run (in Settings, **Allowed hosts list** chooses between the environment default and a custom list; an empty custom list adds no hosts, and an entry the API would reject is shown in red and left unsaved), and `agent_network_mode_enforced` makes restricted mode mandatory. With enforcement, `agent_network_ignore_repository_allow` also ignores the hosts repositories add, so every run is bounded by the instance list. Environment defaults: `AGENT_NETWORK_MODE`, `AGENT_NETWORK_ALLOW` (comma separated), `AGENT_NETWORK_MODE_ENFORCED` and `AGENT_NETWORK_IGNORE_REPOSITORY_ALLOW`. The policy is read for every run, so a change applies to the next run without a restart. If the stored policy cannot be read, the run fails rather than running open.
+- **Repository** (`.propr/workflow.yml`, see [Repository workflow](./repository-workflow.md#network)): `network.mode` can tighten an open instance to `restricted`, or relax a non-enforced restricted default to `open`. `network.allow` adds hosts. When the instance enforces restricted mode, `network.mode: open` is ignored (the timeline says so), but `network.allow` still applies unless `agent_network_ignore_repository_allow` is set.
+
+Restricted mode covers the agent containers of issue jobs and pull request comment jobs (implementations, follow-ups, `/fix` and the other PR commands that job runs), `/review` (its repository-inspection context scout and every reviewer), goals (including native goal sessions) and indexing summarization, with or without a workflow file. The repository's `network` block applies to issue, pull request comment and review jobs. Goals and indexing follow the instance policy. As a safety net, an agent container that a worker or indexing worker starts outside any of these runs follows the instance policy when it enforces restricted mode, rather than running open; its report is logged. A job that runs under the policy and calls back into another job's agent helpers (which apply the policy themselves) joins the enclosing run's record, so the run still gets one timeline event.
+
+**The API process is not covered.** Agent containers the API starts itself, that is plan generation and the agent sign-in (login) containers, run with the open network even when the instance enforces restricted mode: the API registers neither the per-run proxy nor the safety net above. Enforcement bounds the worker and the indexing worker.
+
+Inside a restricted run, every `docker run` is subject to the policy unless it already has no network (`--network none`). That includes containers on the default network, `bridge`, `host` and custom networks. A container that does not identify a supported agent falls back to open networking (with a timeline warning) or, when restricted mode is enforced, is refused. The worker's own containers inside a run are accounted for: ProPR's usage probe (Agent Tank) is the one deliberate exemption, since it runs only ProPR code with read-only credential mounts and keeps its network to read provider usage APIs, and the runtime package inspection container already runs with `--network none`. Image builds and the package catalog queries run in the API or outside agent runs.
+
+### Agent compatibility
+
+Restricted mode relies on each agent CLI honouring the standard proxy variables for its API traffic:
+
+| Agent | Status |
+| --- | --- |
+| Claude Code | Supported. Claude Code honours `HTTPS_PROXY`/`HTTP_PROXY`. |
+| Codex | Supported. Codex CLI honours `HTTPS_PROXY`/`HTTP_PROXY`. |
+| OpenCode | Supported. OpenCode runs on Bun, whose HTTP client honours the proxy variables. |
+| Vibe | Supported. Vibe uses httpx, which honours the proxy variables. |
+| Antigravity | **Falls back to `open`.** The Antigravity CLI has not been verified to send its Google sign-in and API traffic through the proxy, so its containers run with the open network and the task timeline records a warning. When the instance enforces restricted mode, Antigravity runs are refused instead. |
+
+A CI job (`.github/workflows/restricted-network-smoke.yml`) builds the agent image from the checkout under test, so changes to `Dockerfile.agent` and the entrypoints are exercised, and runs it behind the proxy. On pull requests that change the proxy, the image or the entrypoints it checks the socket mount, the bridge and allow/deny decisions. Nightly, and on dispatch (optionally against a published image), it also runs each supported CLI against its real provider with an invalid credential: the provider's authentication error shows that the CLI's real transport, including Codex's WebSocket and SSE streams, went through the proxy. That live check is kept off pull requests so a provider outage cannot fail an unrelated change.
+
+`git`, `gh`, `curl`, `npm`, `pip` and `uv` inside the container use the proxy. Tools that ignore the proxy variables (for example Node.js `fetch()` in repository scripts, which ignores them unless `NODE_USE_ENV_PROXY=1` is set on Node 24 or later) fail to connect rather than bypassing the policy.
+
+### Observability
+
+At the end of each restricted run the task timeline gets one **Restricted Network** event with the mode, where it came from, any agent that fell back to open networking or was refused, every denied host with its attempt count, and any allowed connection that failed upstream (for example, one a worker proxy refused). The event is labelled by what the run's containers finally did: if a refused agent is followed by one that ran behind the proxy, the label reflects the proxied run and the refusal appears as a detail line. A run that ended before any agent container started says so. Indexing has no task timeline, so it logs a run's report only when a connection was denied or failed, or an agent fell back or was refused. The task detail shows the first hosts by name and counts the rest; the full list is in the event metadata. Beyond 100 distinct denied hosts per run, further hosts are counted (hosts and attempts) rather than named, so no denial is dropped from the record. A failed or cancelled run still records its event.
+
+### Limitations
+
+- The proxy allowlists hostnames; it does not inspect TLS traffic. An agent with credentials for an allowed host (for example a GitHub token) can still send data to that host.
+- Only HTTP(S) through the proxy works. SSH (`git@github.com:`), raw TCP and UDP have no route; use HTTPS remotes.
+- An allowlisted wildcard trusts every public address its DNS zone resolves to.
+- The worker and the Docker daemon must see the socket directory at the same path, or `HOST_PROPR_EGRESS_SOCKET_DIR` must name the Docker host path for `PROPR_EGRESS_SOCKET_DIR`. The bundled Compose files and launcher mount `/tmp/propr-egress`. Docker Desktop file sharing does not support Unix sockets, so restricted mode needs a Linux Docker host. If the socket is missing, the container logs `ProPR restricted network: egress proxy socket ... is missing` and has no network at all. Before its first restricted container, each worker process runs one throwaway container (the run's own image, `--network none`, the same mount) to check that it can see a run's socket; if it cannot, the worker logs a warning naming the two directory settings and the Docker Desktop limitation. The run still fails closed.
+- A run's socket accepts connections from any account on the worker host that knows its path (the container's user differs from the worker's). The directories cannot be listed, but the path appears in the `docker run` command line. Such an account could use the proxy for the run's duration to reach the run's allowlisted hosts, and nothing else. On a worker host shared with untrusted accounts, run the worker on a dedicated host or VM.
+- Proxies run in the worker process. If the worker dies, its restricted containers lose their network (they fail closed); the worker removes socket directories left by dead workers in its own PID namespace at startup and every 10 minutes, and any directory not refreshed for 48 hours. Directories left by a worker container that has since restarted are removed by that age rule.
+
+ProPR no longer ships the old iptables firewall script (`scripts/init-firewall.sh`). It needed privileged containers, so no entrypoint ever ran it.
 
 ## Spend Caps
 

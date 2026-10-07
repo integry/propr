@@ -29,9 +29,9 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 253
+    total: 255
     documented: 38
-    undocumented: 215
+    undocumented: 217
 servers:
   - url: "{origin}"
     description: Your ProPR API origin, for example the value of `API_PUBLIC_URL`.
@@ -4211,6 +4211,57 @@ paths:
           schema:
             type: string
         - name: attachmentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/planner/drafts/{id}/execution-queue:
+    get:
+      operationId: getApiPlannerDraftsIdExecutionQueue
+      summary: GET /api/planner/drafts/{id}/execution-queue
+      description: This route is registered but not documented yet.
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+    post:
+      operationId: postApiPlannerDraftsIdExecutionQueue
+      summary: POST /api/planner/drafts/{id}/execution-queue
+      description: This route is registered but not documented yet.
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
           in: path
           required: true
           schema:

@@ -59,6 +59,23 @@ test('rejects malformed and privilege-expanding policy with actionable field err
     assert.throws(() => parseRepositoryWorkflow('a'.repeat(128 * 1024 + 1)), /exceeds 128 KiB/);
 });
 
+test('validates the network block: mode and allowlist hostnames', () => {
+    assert.deepEqual(parseRepositoryWorkflow('network:\n  mode: restricted\n  allow:\n    - "registry.npmjs.org"\n    - "*.internal.example.com"\n').network,
+        { mode: 'restricted', allow: ['registry.npmjs.org', '*.internal.example.com'] });
+    assert.deepEqual(parseRepositoryWorkflow('network: { mode: open }').network, { mode: 'open' });
+    assert.deepEqual(parseRepositoryWorkflow('network: { allow: ["git.example.com:8443", "10.0.0.5"] }').network, { allow: ['git.example.com:8443', '10.0.0.5'] });
+    for (const [source, message] of [
+        ['network: { mode: closed }', /network\.mode must be "open" or "restricted"/],
+        ['network: { mode: restricted, proxy: x }', /unknown field network\.proxy/],
+        ['network: { allow: registry.npmjs.org }', /network\.allow must be an array/],
+        ['network: { allow: ["*"] }', /network\.allow\[0\]/],
+        ['network: { allow: ["*.com"] }', /network\.allow\[0\]/],
+        ['network: { allow: ["ok.example.com", "bad host.example.com"] }', /network\.allow\[1\]/],
+        ['network: { allow: ["example.com:70000"] }', /invalid port/],
+        ['network: []', /network must be a mapping/],
+    ] as const) assert.throws(() => parseRepositoryWorkflow(source), message, source);
+});
+
 test('pins branch-specific policy and instructions to the same base revision and caps instance limits', async () => {
     const reads: string[] = [];
     const source = {
@@ -102,6 +119,12 @@ test('published editor schema agrees with runtime on supported fields and reject
         { limits: { max_parallel_tasks: 8 }, previews: { types: [] }, validation: ['echo ok'] },
         { limits: { max_cost_usd: 5 } }, { limits: { max_cost_usd: 2.5, max_parallel_tasks: 2 } }, { limits: { max_cost_usd: 0 } },
         { limits: { max_cost: 5 } },
+        { network: { mode: 'restricted', allow: ['registry.npmjs.org', '*.internal.example.com', 'git.example.com:8443'] } }, { network: { mode: 'open' } }, { network: {} },
+        { network: { mode: 'closed' } }, { network: { allow: ['*'] } }, { network: { allow: ['*.com'] } }, { network: { allow: 'registry.npmjs.org' } }, { network: { proxy: 'x' } },
+        // Hostname entries the runtime rejects are flagged in the editor too.
+        ...['example', 'localhost', '-bad.example.com', 'bad-.example.com', 'example.com:70000', 'example.com:0', 'a*.example.com', 'bad_host.example.com',
+            'example..com', `${'a'.repeat(64)}.example.com`, '[::1]:70000', ':::'].map(entry => ({ network: { allow: [entry] } })),
+        ...['10.0.0.5', '[::1]:8080', 'fe80::1', 'Example.COM.', 'example.com:65535', '*.example.com:8443', ' registry.example.com '].map(entry => ({ network: { allow: [entry] } })),
         { network: 'host' }, { hooks: { timeout_ms: -1 } }, { instructions: '../oops' }, { instructions: 'a//b' },
         { validation: [null] }, { limits: { max_parallel_tasks: 1.5 } }, { previews: { types: ['image', 'image'] } },
         // Path checks must cross embedded newlines like the runtime check does.
@@ -484,14 +507,16 @@ test('the transport time limit reaches only this execution\'s docker run wrapper
 });
 
 test('post-agent validation stops before the execution time limit instead of turning a finished agent into a timeout', async () => {
-    // 31 s limit minus the 30 s reserve leaves one second for validation.
+    // The limit leaves two seconds for validation after the reserve. The wrapper's deadline
+    // uses whole-second SECONDS, which can tick within milliseconds of the wrapper starting,
+    // so a one-second budget could already be spent before the first command.
     const workflow = policy('validation: ["sleep 10", "echo second >> \\"$TRACE\\""]\nhooks: { before_remove: "echo remove >> \\"$TRACE\\"" }');
     workflow.timeoutMs = 4000;
     const reserve = 30 + 4 + 5;
     const started = Date.now();
     const result = await executeWithRepositoryWorkflow(workflow, async () => {
         const { marker } = repositoryWorkflowExecution.getStore()!;
-        const execution = await runWrapper(workflow, 'echo agent >> "$TRACE"; exit 0', undefined, marker, {}, [`PROPR_EXECUTION_TIMEOUT_MS=${(reserve + 1) * 1000}`]);
+        const execution = await runWrapper(workflow, 'echo agent >> "$TRACE"; exit 0', undefined, marker, {}, [`PROPR_EXECUTION_TIMEOUT_MS=${(reserve + 2) * 1000}`]);
         assert.equal(execution.exitCode, 0, 'the agent exit code is preserved');
         assert.equal(execution.trace, 'agent\nremove\n', 'later commands are skipped, cleanup hooks still run');
         assert.match(execution.stderr, /skipped validation command 2: execution time limit reached/);

@@ -24,6 +24,7 @@ import {
 } from './utils/antigravityOutputParser.js';
 import { splitAntigravityInvocations } from './utils/antigravityInvocations.js';
 import { LiveAgentOutput } from './utils/liveAgentOutput.js';
+import { spawnWithNetworkPolicy } from '../../claude/docker/dockerNetworkPolicy.js';
 import {
     ANTIGRAVITY_GOAL_COMPLETE_MARKER,
     AntigravityGoalStream,
@@ -361,7 +362,7 @@ export async function executeAntigravityNativeGoal(
         if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
         if (expired) throw new Error('Antigravity native goal attempt exceeded its execution timeout');
         const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
-        const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
+        const child = await spawnWithNetworkPolicy(args, runArgs => spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath }));
         current = child;
         // Print mode reads the prompt from non-TTY stdin, avoiding argv limits.
         child.stdin?.end(message);

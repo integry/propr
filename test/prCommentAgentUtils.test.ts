@@ -1,4 +1,4 @@
-import { test, describe, after } from 'node:test';
+import { test, describe, after, mock } from 'node:test';
 import assert from 'node:assert';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -10,6 +10,18 @@ const privateKeyPath = join(tmpdir(), 'propr-test-private-key.pem');
 writeFileSync(privateKeyPath, '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n');
 process.env.GH_PRIVATE_KEY_PATH ||= privateKeyPath;
 process.env.DEFAULT_CLAUDE_MODEL ||= 'haiku';
+// Every execution runs under the run's network policy; recorded here instead of read from the settings database.
+const networkPolicyRuns: Array<{ taskId?: string; workflow?: unknown }> = [];
+const realNetworkEgress = await import('../src/jobs/networkEgress.js');
+mock.module('../src/jobs/networkEgress.js', {
+    namedExports: {
+        ...realNetworkEgress,
+        runWithNetworkPolicy: async (options: { taskId?: string; workflow?: unknown }, execute: () => Promise<unknown>) => {
+            networkPolicyRuns.push({ taskId: options.taskId, workflow: options.workflow });
+            return execute();
+        },
+    },
+});
 const { generateSummaryTitle, resolveAndExecuteAgent } = await import('../src/jobs/prCommentAgentUtils.js');
 const { buildCompletionComment } = await import('../src/jobs/prCompletionComment.js');
 const { AgentRegistry } = await import('@propr/core');
@@ -356,8 +368,10 @@ test('out-of-scope executions with terminal task IDs bypass workflow admission a
             correlatedLogger: logger as never, githubToken: 'token',
             redisClient: { eval: async () => assert.fail('out-of-scope caller entered repository slot') } as never,
         };
+        networkPolicyRuns.length = 0;
         assert.equal((await resolveAndExecuteAgent(params)).claudeResult.success, true);
         assert.equal(stateReads, 0);
+        assert.deepEqual(networkPolicyRuns, [{ taskId: `original-${state}`, workflow: undefined }], 'outside the workflow the agent still runs under the network policy');
         await assert.rejects(resolveAndExecuteAgent({ ...params, applyRepositoryWorkflow: true }), /Task ended/);
     }
     assert.equal(executions, 3);
