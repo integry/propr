@@ -77,6 +77,52 @@ describe('TaskCardList adaptive navigation', () => {
     expect(tab(/Step Title 3/)).toHaveAttribute('aria-current', 'step');
   });
 
+  it('observes every step container and updates the active step when one crosses the reading line', () => {
+    const observers: Array<{ callback: IntersectionObserverCallback; options?: IntersectionObserverInit; targets: Element[] }> = [];
+    class MockIntersectionObserver {
+      targets: Element[] = [];
+      callback: IntersectionObserverCallback;
+      options?: IntersectionObserverInit;
+      constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+        this.callback = callback;
+        this.options = options;
+        observers.push(this);
+      }
+      observe(target: Element) { this.targets.push(target); }
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+    try {
+      renderList(3);
+      const list = document.querySelector('[data-task-list]') as HTMLElement;
+      const cards = Array.from(list.querySelectorAll('[data-task-index]')) as HTMLElement[];
+      const observer = observers[observers.length - 1];
+      expect(observer.targets).toHaveLength(3);
+      observer.targets.forEach((target, index) => expect(target).toBe(cards[index]));
+      expect(observer.options?.root).toBe(list);
+      expect(observer.options?.rootMargin).toBe('0px 0px -60% 0px');
+      // No scroll event: the observer alone moves the active step (e.g. after a section collapses).
+      const layout = (scrollTop: number) => {
+        list.getBoundingClientRect = () => ({ top: 0, height: 500 }) as DOMRect;
+        Object.defineProperty(list, 'clientHeight', { configurable: true, value: 500 });
+        Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 1800 });
+        list.scrollTop = scrollTop;
+        cards.forEach((card, index) => { card.getBoundingClientRect = () => ({ top: index * 600 - scrollTop }) as DOMRect; });
+        act(() => { observer.callback([], observer as unknown as IntersectionObserver); });
+      };
+      const tab = (name: RegExp) => screen.getByRole('button', { name });
+      // Step 2's heading 250px down a 500px pane is still below the reading line (40%).
+      layout(350);
+      expect(tab(/Step Title 1/)).toHaveAttribute('aria-current', 'step');
+      // Once it rises into the upper 40% it is the step being read, well before it reaches the top.
+      layout(420);
+      expect(tab(/Step Title 2/)).toHaveAttribute('aria-current', 'step');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('shows no navigation for a single-step plan', () => {
     renderList(1);
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument();

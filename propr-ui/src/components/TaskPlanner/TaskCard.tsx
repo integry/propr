@@ -1,4 +1,4 @@
-import { useState, forwardRef, useRef, useCallback } from 'react';
+import { useState, forwardRef, useRef, useCallback, useLayoutEffect } from 'react';
 import { MessageSquare, Trash2, Pencil, ChevronDown, Maximize2, Minimize2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PlanTask, uploadAttachment, removeAttachment } from '../../api/proprApi';
@@ -150,14 +150,12 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
               <span className="text-xl font-semibold flex-shrink-0 mt-0.5" style={{ color: 'rgb(29, 138, 138)' }}>{stepNumber}.</span>
               <div className="flex-1 min-w-0">
                 {viewMode === 'edit' || editingField === 'title' ? (
-                  <input
+                  <TaskTitleInput
                     value={task.title}
-                    onChange={e => onChange({ ...task, title: e.target.value })}
+                    onChange={title => onChange({ ...task, title })}
                     onBlur={handleBlur}
                     onFocus={() => setEditingField('title')}
                     autoFocus={editingField === 'title'}
-                    className="w-full text-xl font-semibold text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 rounded px-2 py-1 -ml-2 border border-transparent focus:border-indigo-200"
-                    placeholder="Task Title"
                   />
                 ) : (
                   <h3
@@ -189,19 +187,6 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 markdownClassName="w-full mt-1.5 text-gray-700 leading-relaxed text-sm"
               />
             </div>
-            {/* Edit mode holds the deliberate Delete action, well away from the pencil in the heading. */}
-            {viewMode === 'edit' && (
-              <div className="flex">
-                <button
-                  type="button"
-                  onClick={() => setShowDeleteDialog(true)}
-                  className="flex items-center gap-1.5 rounded-md border border-red-200 bg-white px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
-                >
-                  <Trash2 size={14} />
-                  Delete task
-                </button>
-              </div>
-            )}
           </div>
         </div>
 
@@ -317,6 +302,21 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
             </div>
           </div>
         )}
+
+        {/* Edit mode holds the deliberate Delete action at the very end of the step, after the notes,
+            so it never interrupts the specification and sits well away from the pencil in the heading. */}
+        {viewMode === 'edit' && (
+          <div className="mb-8 flex">
+            <button
+              type="button"
+              onClick={() => setShowDeleteDialog(true)}
+              className="flex items-center gap-1.5 rounded-md border border-red-200 bg-white px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+            >
+              <Trash2 size={14} />
+              Delete task
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Confirmation Dialog for clearing implementation */}
@@ -345,6 +345,44 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
 });
 
 TaskCard.displayName = 'TaskCard';
+
+interface TaskTitleInputProps {
+  value: string;
+  onChange: (title: string) => void;
+  onBlur: () => void;
+  onFocus: () => void;
+  autoFocus: boolean;
+}
+
+/**
+ * The title editor wraps onto as many lines as the title needs, so a long title is never clipped
+ * mid-word beside the pencil. It is still a single-line value: Enter and pasted line breaks are dropped.
+ */
+const TaskTitleInput: React.FC<TaskTitleInputProps> = ({ value, onChange, onBlur, onFocus, autoFocus }) => {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    // border-box: the height includes the borders, which scrollHeight leaves out.
+    textarea.style.height = `${textarea.scrollHeight + textarea.offsetHeight - textarea.clientHeight}px`;
+  }, [value]);
+  return (
+    <textarea
+      ref={textareaRef}
+      rows={1}
+      value={value}
+      onChange={e => onChange(e.target.value.replace(/\s*[\r\n]+\s*/g, ' '))}
+      onKeyDown={e => { if (e.key === 'Enter') e.preventDefault(); }}
+      onBlur={onBlur}
+      onFocus={onFocus}
+      autoFocus={autoFocus}
+      aria-label="Task title"
+      className="block w-full resize-none overflow-hidden text-xl font-semibold leading-tight text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 rounded px-2 py-1 -ml-2 border border-transparent focus:border-indigo-200"
+      placeholder="Task Title"
+    />
+  );
+};
 
 interface TaskHeadingActionsProps {
   isEditing: boolean;

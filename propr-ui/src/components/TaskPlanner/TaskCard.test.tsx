@@ -55,4 +55,27 @@ describe('TaskCard delete', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
     expect(onDelete).toHaveBeenCalledTimes(1);
   });
+
+  it('puts the edit-mode Delete at the end of the step, after the notes, not inside the specification', () => {
+    renderCard(true);
+    fireEvent.click(screen.getByTitle('Edit task'));
+    const deleteButton = screen.getByRole('button', { name: 'Delete task' });
+    for (const section of ['Suggested Implementation', 'User Notes']) {
+      expect(screen.getByText(section).compareDocumentPosition(deleteButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
+});
+
+describe('TaskCard title editor', () => {
+  it('wraps the full title instead of clipping it in a one-line input, and keeps it one line of text', () => {
+    const onChange = vi.fn();
+    render(<TaskCard task={task} isHighlighted={false} stepNumber={1} draftId="draft" onChange={onChange} onDelete={vi.fn()} isMobile />);
+    fireEvent.click(screen.getByTitle('Edit task'));
+    const title = screen.getByRole('textbox', { name: 'Task title' });
+    expect(title.tagName).toBe('TEXTAREA');
+    expect(title).toHaveValue(task.title);
+    expect(title).toHaveClass('resize-none');
+    fireEvent.change(title, { target: { value: 'Shared\ncontracts' } });
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ title: 'Shared contracts' }));
+  });
 });

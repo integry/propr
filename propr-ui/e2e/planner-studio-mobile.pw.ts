@@ -197,6 +197,20 @@ test('planner screens on a mobile viewport', async ({ page }) => {
   const firstTask = page.locator('[data-task-index="0"]');
   await expect(firstTask.getByTitle('Delete task')).toHaveCount(0);
   await firstTask.getByTitle('Edit task').click();
+  // The title editor wraps the full title beside the pencil instead of clipping it mid-word.
+  const titleEditor = firstTask.getByRole('textbox', { name: 'Task title' });
+  await expect(titleEditor).toHaveValue(/Shared contracts/);
+  expect(await titleEditor.evaluate(el => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+  expect((await titleEditor.boundingBox())!.height).toBeGreaterThan(40);
+  await capture(page, 'mobile-review-edit-mode-title');
+  // Delete sits at the very end of the step, beneath the notes, not between Requirements and the implementation.
+  const deleteTask = firstTask.getByRole('button', { name: 'Delete task' });
+  const notesBox = (await firstTask.getByText('User Notes').boundingBox())!;
+  const implementationBox = (await firstTask.getByText(/^Suggested Implementation/).boundingBox())!;
+  const deleteBox = (await deleteTask.boundingBox())!;
+  expect(deleteBox.y).toBeGreaterThan(implementationBox.y);
+  expect(deleteBox.y).toBeGreaterThan(notesBox.y);
+  await deleteTask.scrollIntoViewIfNeeded();
   await capture(page, 'mobile-review-edit-mode-delete');
   await firstTask.getByRole('button', { name: 'Delete task' }).click();
   const confirmDelete = page.getByRole('dialog', { name: 'Delete task 1?' });
@@ -229,6 +243,22 @@ test('planner screens on a mobile viewport', async ({ page }) => {
   await expect(jumperBar).toHaveCSS('position', 'sticky');
   await expect(jumper).toContainText(/Task 1[45] of 17/);
   await capture(page, 'mobile-review-scrolled-notes-pinned-jumper');
+  // Scroll-spy: the jumper follows the step being read, not the last one picked from the sheet.
+  const placeHeading = (index: number, fraction: number) => page.evaluate(([index, fraction]) => {
+    const list = document.querySelector('[data-task-list]') as HTMLElement;
+    const listRect = list.getBoundingClientRect();
+    const card = list.querySelector(`[data-task-index="${index}"]`)!;
+    list.scrollTop += card.getBoundingClientRect().top - (listRect.top + listRect.height * fraction);
+  }, [index, fraction] as const);
+  await placeHeading(14, 0.7);
+  await expect(jumper).toContainText('Task 14 of 17');
+  // Task 15 rising into the upper part of the pane makes it the active task, well before it reaches the jumper.
+  await placeHeading(14, 0.3);
+  await expect(jumper).toContainText('Task 15 of 17');
+  await expect(jumper).toContainText('Web UI: Agents list');
+  await capture(page, 'mobile-review-scroll-spy-task-15');
+  await placeHeading(14, 0.7);
+  await expect(jumper).toContainText('Task 14 of 17');
   // On a 360px Android phone the two footer buttons still sit side by side without wrapping or overlapping.
   await page.setViewportSize({ width: 360, height: 780 });
   const refineBox = (await page.getByRole('button', { name: 'Refine' }).boundingBox())!;

@@ -7,6 +7,10 @@ import { MobileTaskJumper } from './MobileTaskJumper';
 import { PlanTask } from '../../api/proprApi';
 import { useIsMobile } from '../../hooks/useIsMobile';
 
+// The reading line sits 40% of the way down the specification pane: a step becomes active as soon
+// as its heading scrolls into the upper part of the pane, not only once it reaches the very top.
+const SCROLL_SPY_READING_LINE = 0.4;
+
 interface TaskCardListProps {
   tasks: PlanTask[];
   highlightedIds: string[];
@@ -33,13 +37,13 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
   const listRef = useRef<HTMLDivElement>(null);
 
   // Scroll-spy: the specification is one continuous document, so the active step follows
-  // the scroll position. A step is active once its heading passes the reading line near the
-  // top of the pane; at the very bottom the last step wins even if it is too short to get there.
+  // the scroll position. A step is active once its heading passes the reading line in the
+  // upper part of the pane; at the very bottom the last step wins even if it is too short to get there.
   const syncActiveTaskFromScroll = useCallback((container: HTMLElement) => {
     const cards = Array.from(container.querySelectorAll('[data-task-index]'));
     if (cards.length === 0) return;
     const containerRect = container.getBoundingClientRect();
-    const readingLine = containerRect.top + Math.min(120, containerRect.height / 3);
+    const readingLine = containerRect.top + containerRect.height * SCROLL_SPY_READING_LINE;
     const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 2;
 
     let activeIndex = 0;
@@ -73,6 +77,19 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
   useEffect(() => () => {
     if (clickScrollLockRef.current !== null) window.clearTimeout(clickScrollLockRef.current);
   }, []);
+
+  // Each step's container is observed against the band above the reading line, so the active step
+  // (and the sticky jumper/tabs) updates whenever a step crosses it, including layout shifts such as
+  // a collapsed section or a deleted step that move the document without a scroll event.
+  useEffect(() => {
+    const container = listRef.current;
+    if (!container || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(() => {
+      if (clickScrollLockRef.current === null) syncActiveTaskFromScroll(container);
+    }, { root: container, rootMargin: `0px 0px -${Math.round((1 - SCROLL_SPY_READING_LINE) * 100)}% 0px` });
+    container.querySelectorAll('[data-task-index]').forEach(card => observer.observe(card));
+    return () => observer.disconnect();
+  }, [tasks, syncActiveTaskFromScroll]);
 
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     if (clickScrollLockRef.current !== null) {
