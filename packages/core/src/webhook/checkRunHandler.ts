@@ -62,19 +62,19 @@ export function setUltrafixCheckRunHook(hook: UltrafixCheckRunHook): void {
  * deferred (or stranded) loop continuation can resume. Shared by webhook
  * intake (check_run, check_suite, status) and the polling reconciler.
  * Returns whether a hook was registered and completed without throwing.
+ * A failure is logged through `log`, so callers keep their correlation ID.
  */
 export async function triggerUltrafixCheckRunHook(
-    owner: string,
-    repo: string,
-    prNumber: number,
-    headSha: string,
+    target: { owner: string; repo: string; prNumber: number; headSha: string },
+    log: Pick<typeof logger, 'warn'> = logger,
 ): Promise<boolean> {
     if (!_ultrafixCheckRunHook) return false;
+    const { owner, repo, prNumber, headSha } = target;
     try {
         await _ultrafixCheckRunHook(owner, repo, prNumber, headSha);
         return true;
     } catch (error) {
-        logger.warn({ owner, repo, prNumber, headSha, error: (error as Error).message }, 'Ultrafix check hook failed');
+        log.warn({ owner, repo, prNumber, headSha, error: (error as Error).message }, 'Ultrafix check hook failed');
         return false;
     }
 }
@@ -388,7 +388,7 @@ async function processGreenCheckForPR(ctx: PRContext, headSha: string): Promise<
     } catch (error) {
         log.error({ owner, repoName, prNumber, error: (error as Error).message }, 'Error processing auto-merge for PR');
     }
-    await triggerUltrafixCheckRunHook(owner, repoName, prNumber, headSha);
+    await triggerUltrafixCheckRunHook({ owner, repo: repoName, prNumber, headSha }, log);
 }
 
 /**
@@ -484,6 +484,6 @@ export async function handleStatusEvent(
             continue;
         }
 
-        await triggerUltrafixCheckRunHook(owner, repoName, pr.number, payload.sha);
+        await triggerUltrafixCheckRunHook({ owner, repo: repoName, prNumber: pr.number, headSha: payload.sha }, log);
     }
 }

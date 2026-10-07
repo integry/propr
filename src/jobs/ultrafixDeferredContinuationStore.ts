@@ -7,7 +7,12 @@ import {
     saveDeferredContinuationIfCurrent,
     ULTRAFIX_DEFERRED_KEY_PREFIX,
 } from './ultrafixAutomaticWorkEpoch.js';
-import { getUltrafixRearmRetryKey, indexUltrafixResumeCandidate, REARM_RETRY_KEY_PREFIX } from './ultrafixResumeIndex.js';
+import {
+    getUltrafixRearmRetryKey,
+    indexUltrafixResumeCandidate,
+    pruneUltrafixResumeCandidate,
+    REARM_RETRY_KEY_PREFIX,
+} from './ultrafixResumeIndex.js';
 
 export { getUltrafixRearmRetryKey };
 
@@ -112,7 +117,7 @@ export function parseDeferredKey(key: string): { owner: string; repo: string; pr
 // --- Stranded-loop retry obligations ---
 
 /** Long enough to outlive any CI wait; a loop that is still stranded re-records it. */
-const REARM_RETRY_TTL_SECONDS = 7 * 24 * 60 * 60;
+export const REARM_RETRY_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 /**
  * A durable request to re-examine a stranded loop whose recovery could not
@@ -137,29 +142,18 @@ export interface UltrafixRearmRetry {
      * back while the loop is still at `stateDigest` under the step's epoch.
      */
     claimedStep?: UltrafixClaimedStep;
+    /**
+     * Bumped by every exhausted-step notification, so the obligation a resume
+     * recorded for its handoff no longer matches once its step failed for
+     * good, and settling that handoff cannot release it.
+     */
+    failureVersion?: number;
 }
 
 export interface UltrafixClaimedStep {
     deferred: UltrafixDeferredContinuation;
     /** SHA-256 of the serialized loop state the step was claimed against. */
     stateDigest: string;
-}
-
-export async function saveRearmRetry(redis: Redis, retry: UltrafixRearmRetry): Promise<void> {
-    await redis.set(getUltrafixRearmRetryKey(retry.owner, retry.repo, retry.pr), JSON.stringify(retry), 'EX', REARM_RETRY_TTL_SECONDS);
-    await indexUltrafixResumeCandidate(redis, retry);
-}
-
-/**
- * Record the obligation only when none is recorded yet: an existing one
- * already makes the loop a candidate, and may carry evidence (e.g. a claimed
- * step) this caller knows nothing about.
- */
-export async function saveRearmRetryIfAbsent(redis: Redis, retry: UltrafixRearmRetry): Promise<boolean> {
-    const saved = await redis.set(getUltrafixRearmRetryKey(retry.owner, retry.repo, retry.pr), JSON.stringify(retry), 'EX', REARM_RETRY_TTL_SECONDS, 'NX');
-    if (saved !== 'OK') return false;
-    await indexUltrafixResumeCandidate(redis, retry);
-    return true;
 }
 
 export async function loadRearmRetry(redis: Redis, owner: string, repo: string, pr: number): Promise<UltrafixRearmRetry | null> {
@@ -181,7 +175,7 @@ end
 if ARGV[2] ~= '' and (redis.call('GET', KEYS[3]) or '0') ~= ARGV[2] then
     return -1
 end
-if ARGV[3] ~= '' and redis.call('GET', KEYS[2]) ~= ARGV[3] then
+if ARGV[4] == '1' and (redis.call('GET', KEYS[2]) or '') ~= ARGV[3] then
     return -2
 end
 redis.call('DEL', KEYS[2])
@@ -194,11 +188,21 @@ local holder = redis.call('GET', KEYS[1])
 if holder and holder ~= ARGV[1] then
     return 0
 end
+if ARGV[5] == '1' and (redis.call('GET', KEYS[2]) or '') ~= ARGV[4] then
+    return -2
+end
 redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
 return 1
 `;
 
 export type RearmRetryClearOutcome = 'cleared' | 'claim_not_held' | 'superseded' | 'retry_changed';
+export type RearmRetrySaveOutcome = 'saved' | 'claim_taken' | 'retry_changed';
+
+/**
+ * An expected stored obligation: its exact serialized value, or `null` for
+ * none at all. `undefined` places no condition on it.
+ */
+export type ExpectedRearmRetry = string | null | undefined;
 
 /**
  * Release the retry obligation only while `claimToken` still holds the resume
@@ -210,14 +214,15 @@ export type RearmRetryClearOutcome = 'cleared' | 'claim_not_held' | 'superseded'
  * invalidated since then (e.g. a manual command) will be rejected or was
  * removed, so the obligation is kept for the sweep.
  *
- * With `expectedRaw`, only that exact obligation is released: one recorded
- * after the caller read it is newer evidence and survives.
+ * With `raw`, only that exact obligation is released (`null`: only while
+ * none is recorded): one recorded after the caller read or wrote it, such as
+ * an exhausted-step notification, is newer evidence and survives.
  */
 export async function clearRearmRetryIfClaimHeld(
     redis: Redis,
     identity: { owner: string; repo: string; pr: number },
     claim: { key: string; token: string },
-    expected: { workEpoch?: number; raw?: string } = {},
+    expected: { workEpoch?: number; raw?: ExpectedRearmRetry } = {},
 ): Promise<RearmRetryClearOutcome> {
     const { workEpoch, raw } = expected;
     const cleared = Number(await redis.eval(
@@ -229,6 +234,7 @@ export async function clearRearmRetryIfClaimHeld(
         claim.token,
         workEpoch === undefined ? '' : String(workEpoch),
         raw ?? '',
+        raw === undefined ? '' : '1',
     ));
     if (cleared === 1) return 'cleared';
     if (cleared === -2) return 'retry_changed';
@@ -238,14 +244,17 @@ export async function clearRearmRetryIfClaimHeld(
 /**
  * Record the retry obligation unless another trigger holds the resume claim
  * at `claimKey`; that holder owns the obligation and may already have
- * recorded or released it.
+ * recorded or released it. With `expectedRaw`, it replaces only that exact
+ * obligation (`null`: only when none is recorded), so evidence recorded
+ * meanwhile (a claimed step, an exhausted-step notification) is not lost.
  */
 export async function saveRearmRetryUnlessClaimTaken(
     redis: Redis,
     retry: UltrafixRearmRetry,
     claim: { key: string; token: string },
-): Promise<boolean> {
-    const saved = await redis.eval(
+    expectedRaw?: ExpectedRearmRetry,
+): Promise<RearmRetrySaveOutcome> {
+    const saved = Number(await redis.eval(
         SAVE_REARM_RETRY_UNLESS_CLAIM_TAKEN_SCRIPT,
         2,
         claim.key,
@@ -253,9 +262,51 @@ export async function saveRearmRetryUnlessClaimTaken(
         claim.token,
         JSON.stringify(retry),
         String(REARM_RETRY_TTL_SECONDS),
-    );
-    if (Number(saved) !== 1) return false;
+        expectedRaw ?? '',
+        expectedRaw === undefined ? '' : '1',
+    ));
+    if (saved === -2) return 'retry_changed';
+    if (saved !== 1) return 'claim_taken';
     await indexUltrafixResumeCandidate(redis, retry);
+    return 'saved';
+}
+
+const COMMIT_STARTED_LOOP_STATE_SCRIPT = `
+-- commit started loop state
+if (redis.call('GET', KEYS[1]) or '0') ~= ARGV[1] then
+    return 0
+end
+redis.call('SET', KEYS[2], ARGV[2])
+redis.call('DEL', KEYS[3])
+return 1
+`;
+
+/**
+ * Commit a newly started loop's state while `workEpoch` is still current, and
+ * drop any retry obligation left by the loop it replaces in the same step.
+ * That obligation describes superseded work; left in place it would make the
+ * new loop look stranded (a trigger could take it over before its initial
+ * step is queued) and keep it a sweep candidate until it expired.
+ */
+export async function commitStartedLoopState(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    workEpoch: number,
+    state: { key: string; serialized: string },
+): Promise<boolean> {
+    const { owner, repo, pr } = identity;
+    const committed = await redis.eval(
+        COMMIT_STARTED_LOOP_STATE_SCRIPT,
+        3,
+        getUltrafixAutomaticWorkEpochKey(owner, repo, pr),
+        state.key,
+        getUltrafixRearmRetryKey(owner, repo, pr),
+        String(workEpoch),
+        state.serialized,
+    );
+    if (Number(committed) !== 1) return false;
+    // Only drops the index entry when no deferred record or obligation remains.
+    await pruneUltrafixResumeCandidate(redis, identity);
     return true;
 }
 

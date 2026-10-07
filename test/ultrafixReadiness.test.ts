@@ -1,5 +1,6 @@
 import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert';
+import { evalUltrafixScript } from './fixtures/ultrafixRedisDouble.js';
 
 import {
     isCooldownElapsed,
@@ -74,7 +75,6 @@ function createMockRedis() {
             return value;
         },
         async eval(script: string, _keyCount: number, ...args: string[]) {
-            const [epochKey, deferredKey] = args;
             if (script.includes("redis.call('PEXPIRE'")) {
                 // Token-checked renewal of a claim.
                 const [claimKey, token, ttl] = args;
@@ -92,64 +92,8 @@ function createMockRedis() {
                 expiresAt.delete(claimKey);
                 return 1;
             }
-            if (script.includes('-- reserve epoch and replace state')) {
-                // Epoch- and snapshot-conditional reservation of the next epoch.
-                const [epochKey, stateKey, deferredKey, expectedEpoch, expectedState, value] = args;
-                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
-                if (store.get(stateKey) !== expectedState) return 0;
-                const next = Number(expectedEpoch) + 1;
-                store.set(epochKey, String(next));
-                store.delete(deferredKey);
-                store.set(stateKey, value);
-                return next;
-            }
-            if (script.includes('local current_state')) {
-                // Epoch- and snapshot-conditional state replace/clear.
-                const [, stateKey, expectedEpoch, expectedState, value] = args;
-                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
-                if (store.get(stateKey) !== expectedState) return 0;
-                if (script.includes("redis.call('DEL', KEYS[2])")) store.delete(stateKey);
-                else store.set(stateKey, value);
-                return 1;
-            }
-            if (script.includes("local existing = redis.call('GET', KEYS[4])")) {
-                const [, , stateKey, takeoverKey, ttl] = args;
-                const existing = store.get(takeoverKey);
-                if (existing) return existing.split(':').map(Number);
-
-                const currentEpoch = Number(store.get(epochKey) ?? '0');
-                const rawState = store.get(stateKey);
-                let hadAutomaticWork = store.has(deferredKey);
-                if (!hadAutomaticWork && rawState) {
-                    try {
-                        const state = JSON.parse(rawState) as { active?: unknown; workEpoch?: unknown };
-                        const stateEpoch = typeof state.workEpoch === 'number' ? state.workEpoch : 0;
-                        hadAutomaticWork = state.active === true && stateEpoch === currentEpoch;
-                    } catch {
-                        hadAutomaticWork = currentEpoch === 0;
-                    }
-                }
-
-                const nextEpoch = currentEpoch + 1;
-                store.set(epochKey, String(nextEpoch));
-                store.delete(deferredKey);
-                store.set(takeoverKey, `${nextEpoch}:${hadAutomaticWork ? 1 : 0}`);
-                assert.strictEqual(ttl, String(24 * 60 * 60));
-                return [nextEpoch, hadAutomaticWork ? 1 : 0];
-            }
-            if (script.includes("redis.call('INCR'")) {
-                const nextEpoch = Number(store.get(epochKey) ?? '0') + 1;
-                store.set(epochKey, String(nextEpoch));
-                store.delete(deferredKey);
-                return nextEpoch;
-            }
-            if ((store.get(epochKey) ?? '0') !== args[2]) return 0;
-            if (script.includes("redis.call('DEL', KEYS[2])")) {
-                store.delete(deferredKey);
-                return 1;
-            }
-            store.set(deferredKey, args[3]);
-            return 1;
+            // Everything else has no TTL to honour: the shared double runs it.
+            return evalUltrafixScript(store, script, args);
         },
         async llen(key: string) { return (lists.get(key) ?? []).length; },
         async lpush(key: string, ...values: string[]) {

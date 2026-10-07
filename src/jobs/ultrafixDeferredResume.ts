@@ -16,6 +16,7 @@ import {
     listRearmRetryKeys,
     loadDeferredContinuation,
     loadRearmRetry,
+    loadRearmRetryRaw,
     parseDeferredKey,
     parseRearmRetryKey,
 } from './ultrafixOrchestrationService.js';
@@ -25,8 +26,9 @@ import { applyUltrafixCiDeferral } from './ultrafixCiWait.js';
 import { rearmStrandedUltrafixLoop } from './ultrafixStrandedLoopRearm.js';
 import { restoreDeferredContinuationIfUnchanged } from './ultrafixAutomaticWorkEpoch.js';
 import { getCheckRunDeps } from './ultrafixCheckRunDeps.js';
-import { claimDeferredStep, restoreInterruptedClaim } from './ultrafixDeferredClaim.js';
+import { claimDeferredStep, findPendingClaimedStep, restoreInterruptedClaim } from './ultrafixDeferredClaim.js';
 import {
+    acquireUltrafixResumeSweepLease,
     indexUltrafixResumeCandidate,
     listIndexedUltrafixResumeCandidates,
     pruneUltrafixResumeCandidate,
@@ -115,16 +117,22 @@ async function settleRearmRetry(
     result: ContinuationResult,
     ctx: { redisClient: Redis; correlatedLogger: Logger; claim: ResumeClaim },
 ): Promise<ContinuationResult> {
-    const { owner, repo, pr } = prId;
-    const { redisClient, correlatedLogger, claim } = ctx;
+    const { pr } = prId;
+    const { correlatedLogger, claim } = ctx;
     let settled = result;
     try {
         if (!leavesLoopWaiting(result.reason)) {
             // Only the current holder may release it: a takeover may have
             // recorded a newer obligation this outcome knows nothing about.
+            // So may the handed-off step itself, by failing for good before
+            // its enqueue was acknowledged: the release is bound to the
+            // obligation this holder recorded, and that newer one survives.
             const cleared = await claim.clearRetry({ workEpoch: result.workEpoch });
             if (cleared === 'claim_not_held') {
                 correlatedLogger.info({ pr, reason: result.reason }, 'Ultrafix resume: resume claim no longer held, leaving retry obligation in place');
+            }
+            if (cleared === 'retry_changed') {
+                correlatedLogger.info({ pr, reason: result.reason }, 'Ultrafix resume: retry obligation changed meanwhile, leaving it in place');
             }
             if (cleared !== 'superseded') return result;
             correlatedLogger.info(
@@ -134,7 +142,36 @@ async function settleRearmRetry(
             settled = { continued: false, reason: 'ultrafix_superseded', cycleCount: result.cycleCount };
         }
         // A trigger that took the claim over owns the obligation now.
-        const saved = await claim.saveRetry({
+        if (await recordUnsettledRetry(prId, settled, ctx)) {
+            correlatedLogger.info({ pr, reason: settled.reason, retryDelayMs: settled.retryDelayMs }, 'Ultrafix resume: recorded retry for unsettled loop');
+        }
+    } catch (err) {
+        correlatedLogger.warn({ pr, error: (err as Error).message }, 'Ultrafix resume: failed to update retry obligation');
+    }
+    return settled;
+}
+
+/** Bound on re-reads when the obligation keeps changing underneath. */
+const MAX_RETRY_REPLACE_ATTEMPTS = 3;
+
+/**
+ * Replace the obligation with one for this unsettled outcome. A claimed step
+ * it carries stays on it while that step may still be the only copy of an
+ * authorized step (see `findPendingClaimedStep`): an attempt that failed
+ * between claiming the step and putting it back (or whose put-back failed)
+ * must not drop it, or recovery would skip e.g. a permitted final fix.
+ */
+async function recordUnsettledRetry(
+    prId: { owner: string; repo: string; pr: number },
+    settled: ContinuationResult,
+    ctx: { redisClient: Redis; claim: ResumeClaim },
+): Promise<boolean> {
+    const { owner, repo, pr } = prId;
+    const { redisClient, claim } = ctx;
+    for (let attempt = 1; attempt <= MAX_RETRY_REPLACE_ATTEMPTS; attempt++) {
+        const current = await loadRearmRetryRaw(redisClient, owner, repo, pr);
+        const claimedStep = await findPendingClaimedStep(redisClient, prId, current);
+        const saved = await claim.replaceRetry({
             owner, repo, pr,
             workEpoch: await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr),
             reason: settled.reason,
@@ -142,14 +179,16 @@ async function settleRearmRetry(
             ...(settled.retryDelayMs
                 ? { notBefore: new Date(Date.now() + settled.retryDelayMs).toISOString() }
                 : {}),
-        });
-        if (saved) {
-            correlatedLogger.info({ pr, reason: settled.reason, retryDelayMs: settled.retryDelayMs }, 'Ultrafix resume: recorded retry for unsettled loop');
-        }
-    } catch (err) {
-        correlatedLogger.warn({ pr, error: (err as Error).message }, 'Ultrafix resume: failed to update retry obligation');
+            ...(claimedStep ? { claimedStep } : {}),
+        }, current);
+        if (saved !== 'retry_changed') return saved === 'saved';
     }
-    return settled;
+    return false;
+}
+
+/** Shorter than the sweep period, so the holder's next tick finds it expired. */
+function sweepLeaseTtlMs(periodMs: number): number {
+    return Math.max(1, Math.floor(periodMs * 0.9));
 }
 
 /** The index is backed by a full keyspace scan on a process's first sweep, then every this many sweeps. */
@@ -192,12 +231,19 @@ async function listSweepCandidates(redisClient: Redis, fullScan?: boolean): Prom
  * resume index (see `ultrafixResumeIndex.ts`), so a sweep costs one set read
  * rather than a keyspace walk; `fullScan` forces or suppresses the scan that
  * otherwise backs the index up periodically.
+ *
+ * A periodic caller passes its period as `leaseMs`: the sweep then runs only
+ * if no other process (e.g. the API server and the daemon on one Redis) has
+ * swept within that period.
  */
 export async function sweepUltrafixResumeCandidates(
     redisClient: Redis,
     createLogger: () => Logger,
-    options: { fullScan?: boolean } = {},
+    options: { fullScan?: boolean; leaseMs?: number } = {},
 ): Promise<Array<{ prId: PrRef; result: ContinuationResult }>> {
+    if (options.leaseMs !== undefined && !await acquireUltrafixResumeSweepLease(redisClient, sweepLeaseTtlMs(options.leaseMs))) {
+        return [];
+    }
     const { refs, indexed } = await listSweepCandidates(redisClient, options.fullScan);
     const outcomes: Array<{ prId: PrRef; result: ContinuationResult }> = [];
     for (const prId of refs) {

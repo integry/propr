@@ -6,6 +6,7 @@
 
 import { after, beforeEach, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createUltrafixRedis } from './fixtures/ultrafixRedisDouble.js';
 import type { CheckRunEvent, CheckSuiteEvent } from '@octokit/webhooks-types';
 
 const OWNER = 'acme';
@@ -181,12 +182,14 @@ await mock.module('../src/jobs/reviewCommentGatherer.js', {
 
 const { resumeDeferredContinuation, setCheckRunDeps } = await import('../src/jobs/ultrafixLoopContinuation.js');
 const {
+    getUltrafixRearmRetryKey,
     invalidateUltrafixAutomaticWork,
     loadState,
     saveDeferredContinuation,
     saveState,
     startLoop,
 } = await import('../src/jobs/ultrafixOrchestrationService.js');
+const { hasUltrafixResumeCandidate } = await import('../src/jobs/ultrafixResumeClaim.js');
 const { pollForPullRequestComments, reconcileUltrafixForPR } = await import('../src/polling/prCommentPolling.js');
 
 after(async () => {
@@ -195,85 +198,8 @@ after(async () => {
     await closeConnection();
 });
 
-/** Redis mock executing the epoch, deferred-record, state and claim scripts. */
-function createRedis() {
-    const store = new Map<string, string>();
-    return {
-        store,
-        async get(key: string) { return store.get(key) ?? null; },
-        async set(key: string, value: string, ...options: Array<string | number>) {
-            if (options.includes('NX') && store.has(key)) return null;
-            store.set(key, value);
-            return 'OK';
-        },
-        async del(key: string) { return store.delete(key) ? 1 : 0; },
-        async getdel(key: string) {
-            const value = store.get(key) ?? null;
-            store.delete(key);
-            return value;
-        },
-        async eval(script: string, _keyCount: number, ...args: string[]) {
-            if (script.includes('-- clear rearm retry if claim held')) {
-                const [claimKey, retryKey, epochKey, token, expectedEpoch, expectedRetry] = args;
-                if (store.get(claimKey) !== token) return 0;
-                if (expectedEpoch !== '' && (store.get(epochKey) ?? '0') !== expectedEpoch) return -1;
-                if (expectedRetry && store.get(retryKey) !== expectedRetry) return -2;
-                store.delete(retryKey);
-                return 1;
-            }
-            if (script.includes('-- save rearm retry unless claim taken')) {
-                const [claimKey, retryKey, token, value] = args;
-                const holder = store.get(claimKey);
-                if (holder !== undefined && holder !== token) return 0;
-                store.set(retryKey, value);
-                return 1;
-            }
-            if (script.includes('-- restore deferred if loop unchanged')) {
-                const [epochKey, stateKey, deferredKey, expectedEpoch, expectedState, value] = args;
-                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
-                if (store.get(stateKey) !== expectedState) return 0;
-                if (store.has(deferredKey)) return 0;
-                store.set(deferredKey, value);
-                return 1;
-            }
-            if (script.includes("redis.call('PEXPIRE'")) return store.get(args[0]) === args[1] ? 1 : 0;
-            if (script.includes("redis.call('DEL', KEYS[1])")) {
-                return store.get(args[0]) === args[1] && store.delete(args[0]) ? 1 : 0;
-            }
-            if (script.includes('-- reserve epoch and replace state')) {
-                // Epoch- and snapshot-conditional reservation of the next epoch.
-                const [epochKey, stateKey, deferredKey, expectedEpoch, expectedState, value] = args;
-                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
-                if (store.get(stateKey) !== expectedState) return 0;
-                const next = Number(expectedEpoch) + 1;
-                store.set(epochKey, String(next));
-                store.delete(deferredKey);
-                store.set(stateKey, value);
-                return next;
-            }
-            if (script.includes('local current_state')) {
-                const [epochKey, stateKey, expectedEpoch, expectedState, value] = args;
-                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
-                if (store.get(stateKey) !== expectedState) return 0;
-                if (script.includes("redis.call('DEL', KEYS[2])")) store.delete(stateKey);
-                else store.set(stateKey, value);
-                return 1;
-            }
-            const [epochKey, targetKey, expectedEpoch, value] = args;
-            if (script.includes("redis.call('INCR'")) {
-                const next = Number(store.get(epochKey) ?? '0') + 1;
-                store.set(epochKey, String(next));
-                store.delete(targetKey);
-                return next;
-            }
-            if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
-            if (script.includes("redis.call('DEL', KEYS[2])")) store.delete(targetKey);
-            else store.set(targetKey, value);
-            return 1;
-        },
-        async llen() { return 0; },
-    };
-}
+/** Redis double executing the epoch, deferred-record, state and claim scripts. */
+const createRedis = createUltrafixRedis;
 
 let redis = createRedis();
 
@@ -441,6 +367,65 @@ describe('Ultrafix recovery through the real intake entry points', () => {
             ['one-sha', 'two-sha'],
             'only labelled PRs are reconciled, against their listed heads',
         );
+    });
+
+    test('the polling reconciler skips a loop whose retry is still backing off, as the sweep does', async () => {
+        const { state } = await startLoop(redis as never, { owner: OWNER, repo: REPO, pr: 211, goal: 8, maxCycles: 5, pauseSeconds: 30 }, false);
+        ciStatus = GREEN;
+        // A trigger found the loop held by its own in-flight step and backed its retry off.
+        const retry = {
+            owner: OWNER, repo: REPO, pr: 211, workEpoch: state.workEpoch, reason: 'rearm_not_ready: current_step_queued',
+            savedAt: new Date().toISOString(), notBefore: new Date(Date.now() + 15 * 60_000).toISOString(),
+        };
+        redis.store.set(getUltrafixRearmRetryKey(OWNER, REPO, 211), JSON.stringify(retry));
+        const pr = { number: 211, title: 'Backoff', labels: [{ name: 'ultrafix' }], head: { ref: 'feature', sha: 'backoff-sha' } };
+
+        await reconcileUltrafixForPR(pr, { owner: OWNER, repo: REPO, repoFullName: `${OWNER}/${REPO}`, correlationId: 'cid-poll' }, redis as never);
+
+        assert.equal(mockGetCheckRunsStatusForRepo.mock.callCount(), 0, 'no CI lookup until the backoff passes');
+        assert.equal(mockOctokitRequest.mock.callCount(), 0);
+        assert.equal(await hasUltrafixResumeCandidate(redis as never, { owner: OWNER, repo: REPO, pr: 211 }), true, 'check events still run it');
+
+        // Once due, polling reconciles it again.
+        redis.store.set(getUltrafixRearmRetryKey(OWNER, REPO, 211), JSON.stringify({ ...retry, notBefore: new Date(Date.now() - 1).toISOString() }));
+        await reconcileUltrafixForPR(pr, { owner: OWNER, repo: REPO, repoFullName: `${OWNER}/${REPO}`, correlationId: 'cid-poll' }, redis as never);
+        assert.equal(mockGetCheckRunsStatusForRepo.mock.callCount(), 1);
+    });
+
+    test('a polling cycle picks up every PR\'s comments before reconciling any loop', async () => {
+        await strandLoop(212);
+        await strandLoop(213);
+        ciStatus = GREEN;
+        const listed = [
+            { number: 212, title: 'One', labels: [{ name: 'ultrafix' }], head: { ref: 'one', sha: 'one-sha' } },
+            { number: 213, title: 'Two', labels: [{ name: 'ultrafix' }], head: { ref: 'two', sha: 'two-sha' } },
+        ];
+        const order: string[] = [];
+        const paginate = mock.fn(async (route: string, options: { issue_number?: number; pull_number?: number }) => {
+            if (route === 'GET /repos/{owner}/{repo}/pulls') return listed;
+            order.push(`comments:${options.issue_number ?? options.pull_number}`);
+            return [];
+        });
+        mockGetCheckRunsStatusForRepo.mock.mockImplementation(async (_owner: string, _repo: string, ref: string) => {
+            order.push(`reconcile:${ref}`);
+            return ciStatus;
+        });
+        try {
+            await pollForPullRequestComments({ paginate } as never, `${OWNER}/${REPO}`, 'cid-order', {
+                redisClient: redis as never,
+                PR_FOLLOWUP_TRIGGER_KEYWORDS: [],
+                MODEL_LABEL_PATTERN: '',
+            });
+        } finally {
+            mockGetCheckRunsStatusForRepo.mock.restore();
+        }
+
+        const firstReconcile = order.findIndex(event => event.startsWith('reconcile:'));
+        assert.ok(firstReconcile > 0, 'loops are reconciled');
+        assert.ok(order.slice(firstReconcile).every(event => event.startsWith('reconcile:')), `comments come first: ${order.join(', ')}`);
+        assert.ok(order.includes('comments:213'));
+        assert.equal(reviewJobs(212).length, 1);
+        assert.equal(reviewJobs(213).length, 1);
     });
 
     test('the polling reconciler leaves a loop alone while its checks are red', async () => {

@@ -144,9 +144,11 @@ export async function initializeUltrafix(ioRedisClient: Redis): Promise<void> {
         // a loop whose last trigger could not settle it is retried without a webhook.
         const sweepDeferredContinuations = async (): Promise<void> => {
             try {
+                // The lease keeps a daemon sweeping the same Redis from doubling the work.
                 const outcomes = await contMod.sweepUltrafixResumeCandidates(
                     ioRedisClient,
                     () => logger.withCorrelation(generateCorrelationId()),
+                    { leaseMs: DEFERRED_SWEEP_INTERVAL_MS },
                 );
                 for (const { prId, result } of outcomes) {
                     if (result.continued) {

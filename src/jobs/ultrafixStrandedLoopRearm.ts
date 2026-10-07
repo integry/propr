@@ -17,7 +17,6 @@ import {
     loadDeferredContinuation,
     loadRearmRetryRaw,
     saveDeferredContinuation,
-    saveRearmRetry,
     type UltrafixReadinessResult,
 } from './ultrafixOrchestrationService.js';
 import { applyUltrafixCiDeferral } from './ultrafixCiWait.js';
@@ -200,8 +199,10 @@ function takeOwnership({ prId, ctx, snapshot, currentEpoch, ownHandoff }: RearmA
                 reason: REARM_HANDOFF_RETRY_REASON,
                 savedAt: new Date().toISOString(),
             };
+            // Through the claim, so settlement releases exactly this obligation
+            // and not a failure notification that replaces it meanwhile.
+            if (!await ctx.claim.saveRetry(retry)) return CLAIM_LOST;
             ownHandoff.raw = JSON.stringify(retry);
-            await saveRearmRetry(ctx.redisClient, retry);
             return reserveStateWorkEpoch(ctx.redisClient, snapshot, currentEpoch);
         },
     );

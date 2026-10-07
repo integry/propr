@@ -53,6 +53,8 @@ test('the schedule sweeps at once, then on every tick without overlapping a slow
         await new Promise(resolve => setImmediate(resolve));
         mock.timers.tick(1_000);
         assert.equal(sweep.mock.callCount(), 2);
+        // Each run takes the shared sweep lease for one period.
+        assert.deepEqual((sweep.mock.calls[1].arguments as unknown[])[2], { leaseMs: 1_000 });
         clearInterval(interval);
     } finally {
         mock.timers.reset();

@@ -62,6 +62,8 @@ test('initializeUltrafix wires the check hook and the periodic resume sweep', as
     // The sweep runs once at startup, against the server's Redis client.
     assert.equal(sweepUltrafixResumeCandidates.mock.callCount(), 1);
     assert.equal(sweepUltrafixResumeCandidates.mock.calls[0].arguments[0], redis);
+    // Under the shared lease, so a daemon on the same Redis does not sweep the same period too.
+    assert.deepEqual((sweepUltrafixResumeCandidates.mock.calls[0].arguments as unknown[])[2], { leaseMs: 60_000 });
 
     // Check events resume the PR's loop through the hook.
     assert.ok(checkHook);

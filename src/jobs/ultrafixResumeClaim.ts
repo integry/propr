@@ -22,7 +22,7 @@ import {
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction, UltrafixLoopState, UltrafixRearmRetry } from './ultrafixOrchestrationService.js';
 import type { ContinuationResult } from './ultrafixLoopContinuation.js';
-import type { RearmRetryClearOutcome } from './ultrafixDeferredContinuationStore.js';
+import type { ExpectedRearmRetry, RearmRetryClearOutcome, RearmRetrySaveOutcome } from './ultrafixDeferredContinuationStore.js';
 
 export type UltrafixPrId = { owner: string; repo: string; pr: number };
 
@@ -105,19 +105,51 @@ export interface ResumeClaim {
      * still being held in Redis. Evidence gathered by a holder whose claim
      * expired (e.g. a late enqueue acknowledgment) cannot release an
      * obligation a successor may have recorded since. With `workEpoch` it is
-     * also conditional on that automatic-work epoch still being current; with
-     * `raw`, on the stored obligation still being exactly that one.
+     * also conditional on that automatic-work epoch still being current.
+     *
+     * It is also conditional on the stored obligation still being the one
+     * this holder last read or wrote (`raw` overrides that): a handed-off step
+     * that failed for good before the handoff was acknowledged has replaced
+     * it, and that newer evidence must survive the settlement.
      */
-    clearRetry(expected?: { workEpoch?: number; raw?: string }): Promise<RearmRetryClearOutcome>;
+    clearRetry(expected?: { workEpoch?: number; raw?: ExpectedRearmRetry }): Promise<RearmRetryClearOutcome>;
     /**
      * Record the PR's retry obligation unless another trigger holds the claim
      * now; that holder owns the obligation. A claim lost to a renewal fault or
      * plain expiry has no new holder, so the obligation is still recorded.
      */
     saveRetry(retry: UltrafixRearmRetry): Promise<boolean>;
+    /** Like `saveRetry`, but replaces only the obligation stored as `expectedRaw` (`null`: none). */
+    replaceRetry(retry: UltrafixRearmRetry, expectedRaw: string | null): Promise<RearmRetrySaveOutcome>;
 }
 
 export const RESUME_CLAIM_LOST_REASON = 'resume_claim_lost';
+
+/**
+ * Recoveries allowed after step jobs fail for good with no completed step in
+ * between. Each recovery schedules a fresh job under a new epoch (a fresh
+ * attempt budget) without advancing the action counts the cycle breaker
+ * reads, so a persistent failure would otherwise be retried indefinitely.
+ */
+export const MAX_FAILED_STEP_RECOVERIES = 2;
+
+/** Step jobs that failed for good since the loop last completed a step. */
+export function getConsecutiveFailedSteps(state: UltrafixLoopState): number {
+    const streak = state.failedStepStreak;
+    if (!streak) return 0;
+    const { reviewCount, fixCount } = getActionCounts(state);
+    // A completed step since the streak was recorded is progress: it resets it.
+    return streak.completedSteps === reviewCount + fixCount ? streak.count : 0;
+}
+
+/** The state after one more step job failed for good. */
+export function recordFailedStepInState(state: UltrafixLoopState): UltrafixLoopState {
+    const { reviewCount, fixCount } = getActionCounts(state);
+    return {
+        ...state,
+        failedStepStreak: { completedSteps: reviewCount + fixCount, count: getConsecutiveFailedSteps(state) + 1 },
+    };
+}
 
 export type StrandedLoopRearmDecision =
     | { action: 'skip'; reason: 'no_active_loop' }
@@ -155,6 +187,15 @@ export function evaluateStrandedLoopRearm(state: UltrafixLoopState | null): Stra
             action: 'complete',
             completionStatus: 'failed',
             reason: `Max cycles reached: ${reviewCount} review and ${fixCount} fix steps completed (limit ${state.maxCycles})`,
+        };
+    }
+
+    const failedSteps = getConsecutiveFailedSteps(state);
+    if (failedSteps > MAX_FAILED_STEP_RECOVERIES) {
+        return {
+            action: 'complete',
+            completionStatus: 'failed',
+            reason: `Ultrafix steps failed ${failedSteps} times in a row without completing (recovery limit ${MAX_FAILED_STEP_RECOVERIES})`,
         };
     }
 
@@ -213,15 +254,26 @@ export async function reserveStateWorkEpoch(
  * which keeps it a candidate. So a healthy mid-cycle loop costs no GitHub calls
  * per poll, and a trigger cannot fence a startup whose initial job is not
  * queued yet.
+ *
+ * With `honourRetryBackoff`, a loop named only by an obligation whose
+ * `notBefore` has not passed is not a candidate yet, as for the sweep; this
+ * keeps a periodic poller from re-running a loop held by its own in-flight
+ * step on every cycle.
  */
-export async function hasUltrafixResumeCandidate(redis: Redis, prId: UltrafixPrId): Promise<boolean> {
+export async function hasUltrafixResumeCandidate(
+    redis: Redis,
+    prId: UltrafixPrId,
+    options: { honourRetryBackoff?: boolean } = {},
+): Promise<boolean> {
     const { owner, repo, pr } = prId;
     if (await loadDeferredContinuation(redis, owner, repo, pr)) return true;
     const state = await loadState(redis, owner, repo, pr);
     if (!state || evaluateStrandedLoopRearm(state).action === 'skip') return false;
     const stateEpoch = typeof state.workEpoch === 'number' ? state.workEpoch : 0;
     if (stateEpoch !== await getUltrafixAutomaticWorkEpoch(redis, owner, repo, pr)) return true;
-    return await loadRearmRetry(redis, owner, repo, pr) !== null;
+    const retry = await loadRearmRetry(redis, owner, repo, pr);
+    if (!retry) return false;
+    return !options.honourRetryBackoff || !retry.notBefore || Date.parse(retry.notBefore) <= Date.now();
 }
 
 export function getUltrafixResumeRecheckKey(owner: string, repo: string, pr: number): string {
@@ -256,6 +308,10 @@ async function runWithHeldClaim(
     const { redisClient, correlatedLogger } = ctx;
     let lost = false;
     const claimKey = getUltrafixResumeClaimKey(prId.owner, prId.repo, prId.pr);
+    // The obligation as this holder last read or wrote it (read once the
+    // claim is held). Anything else found when settling was recorded by
+    // someone else meanwhile.
+    let knownRetry: string | null = null;
     const claim: ResumeClaim = {
         async confirm() {
             if (lost) return false;
@@ -269,17 +325,30 @@ async function runWithHeldClaim(
             if (lost) correlatedLogger.warn({ pr: prId.pr }, 'Ultrafix resume: resume claim lost, aborting');
             return !lost;
         },
-        clearRetry(expected) {
-            return clearRearmRetryIfClaimHeld(redisClient, prId, { key: claimKey, token }, expected);
+        async clearRetry(expected = {}) {
+            const outcome = await clearRearmRetryIfClaimHeld(
+                redisClient, prId, { key: claimKey, token },
+                { ...expected, raw: expected.raw === undefined ? knownRetry : expected.raw },
+            );
+            if (outcome === 'cleared') knownRetry = null;
+            return outcome;
         },
-        saveRetry(retry) {
-            return saveRearmRetryUnlessClaimTaken(redisClient, retry, { key: claimKey, token });
+        async saveRetry(retry) {
+            const saved = await saveRearmRetryUnlessClaimTaken(redisClient, retry, { key: claimKey, token });
+            if (saved === 'saved') knownRetry = JSON.stringify(retry);
+            return saved === 'saved';
+        },
+        async replaceRetry(retry, expectedRaw) {
+            const saved = await saveRearmRetryUnlessClaimTaken(redisClient, retry, { key: claimKey, token }, expectedRaw);
+            if (saved === 'saved') knownRetry = JSON.stringify(retry);
+            return saved;
         },
     };
     // Keep the claim alive across slow awaits (GitHub, queue scans) between confirmations.
     const renewal = setInterval(() => { void claim.confirm(); }, RESUME_CLAIM_RENEW_INTERVAL_MS);
     renewal.unref?.();
     try {
+        knownRetry = await loadRearmRetryRaw(redisClient, prId.owner, prId.repo, prId.pr);
         return await operation(claim);
     } finally {
         clearInterval(renewal);

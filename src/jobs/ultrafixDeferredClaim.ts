@@ -13,10 +13,11 @@ import type { Redis } from 'ioredis';
 import {
     claimDeferredContinuationIfUnchanged,
     getUltrafixAutomaticWorkEpoch,
+    loadDeferredContinuation,
     loadDeferredContinuationSnapshot,
     loadRearmRetry,
 } from './ultrafixOrchestrationService.js';
-import type { UltrafixDeferredContinuation } from './ultrafixOrchestrationService.js';
+import type { UltrafixClaimedStep, UltrafixDeferredContinuation, UltrafixRearmRetry } from './ultrafixOrchestrationService.js';
 import { restoreDeferredContinuationIfUnchanged } from './ultrafixAutomaticWorkEpoch.js';
 import { loadStateSnapshot, type ResumeClaim, type UltrafixPrId } from './ultrafixResumeClaim.js';
 import { indexUltrafixResumeCandidate } from './ultrafixResumeIndex.js';
@@ -101,4 +102,27 @@ export async function restoreInterruptedClaim(prId: UltrafixPrId, ctx: DeferredC
     if (restored) await indexUltrafixResumeCandidate(redisClient, prId);
     correlatedLogger.info({ pr, nextAction: step.deferred.nextAction, workEpoch, restored }, 'Ultrafix deferred resume: restoring step claimed by an interrupted resume');
     return restored;
+}
+
+/**
+ * The claimed step carried by the obligation stored as `retryRaw`, while it
+ * may still be the only copy of an authorized step: it was not put back (no
+ * deferred record exists), its epoch is still current and the loop is still
+ * at the state it was claimed against. A step for which any of these fails
+ * was restored, superseded or already run, and is not carried forward.
+ * `restoreInterruptedClaim` re-checks all of it atomically before acting.
+ */
+export async function findPendingClaimedStep(
+    redisClient: Redis,
+    prId: UltrafixPrId,
+    retryRaw: string | null,
+): Promise<UltrafixClaimedStep | null> {
+    const { owner, repo, pr } = prId;
+    const step = retryRaw ? (JSON.parse(retryRaw) as UltrafixRearmRetry).claimedStep : undefined;
+    if (!step) return null;
+    if (await loadDeferredContinuation(redisClient, owner, repo, pr)) return null;
+    const workEpoch = step.deferred.workEpoch ?? step.deferred.ultrafixMeta?.workEpoch ?? 0;
+    if (await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr) !== workEpoch) return null;
+    const snapshot = await loadStateSnapshot(redisClient, owner, repo, pr);
+    return snapshot && digestUltrafixState(snapshot.raw) === step.stateDigest ? step : null;
 }

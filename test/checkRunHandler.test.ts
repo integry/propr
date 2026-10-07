@@ -2427,7 +2427,7 @@ describe('check intake fallbacks and Ultrafix hook', () => {
     test('triggerUltrafixCheckRunHook dispatches to the registered hook', async () => {
         const hookCalls = installHookRecorder();
         try {
-            assert.strictEqual(await triggerUltrafixCheckRunHook('o', 'r', 3, 'sha3'), true);
+            assert.strictEqual(await triggerUltrafixCheckRunHook({ owner: 'o', repo: 'r', prNumber: 3, headSha: 'sha3' }), true);
         } finally {
             clearHook();
         }
@@ -2436,14 +2436,19 @@ describe('check intake fallbacks and Ultrafix hook', () => {
 
     test('triggerUltrafixCheckRunHook returns false without a hook and swallows hook errors', async () => {
         clearHook();
-        assert.strictEqual(await triggerUltrafixCheckRunHook('o', 'r', 3, 'sha3'), false);
+        assert.strictEqual(await triggerUltrafixCheckRunHook({ owner: 'o', repo: 'r', prNumber: 3, headSha: 'sha3' }), false);
 
         setUltrafixCheckRunHook(async () => { throw new Error('boom'); });
+        const warn = mock.fn();
         try {
-            assert.strictEqual(await triggerUltrafixCheckRunHook('o', 'r', 3, 'sha3'), false);
+            assert.strictEqual(await triggerUltrafixCheckRunHook({ owner: 'o', repo: 'r', prNumber: 3, headSha: 'sha3' }), false);
+            // The caller's correlated logger reports the failure.
+            assert.strictEqual(await triggerUltrafixCheckRunHook({ owner: 'o', repo: 'r', prNumber: 3, headSha: 'sha3' }, { warn } as never), false);
         } finally {
             clearHook();
         }
+        assert.strictEqual(warn.mock.callCount(), 1);
+        assert.match(String(warn.mock.calls[0].arguments[1]), /Ultrafix check hook failed/);
     });
 });
 
@@ -2483,6 +2488,32 @@ describe('commit to PR lookup cache', () => {
         // A PR may be opened for the commit moments later: "none" expires sooner.
         assert.deepStrictEqual(cache.set.mock.calls[0].arguments.slice(2), ['EX', COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS]);
         assert.ok(COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS < COMMIT_PRS_CACHE_TTL_SECONDS);
+    });
+
+    test('repeated empty lookups for one commit are cached for longer each time, up to the positive TTL', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({ data: [] }));
+        const cache = memoryCache();
+
+        for (let i = 0; i < 4; i++) {
+            cache.store.clear(); // the previous entry expired
+            await findPRsForCommitCached('test-owner', 'test-repo', 'slow-push-sha', cache as never);
+        }
+        assert.deepStrictEqual(cache.set.mock.calls.map(call => call.arguments[3]), [
+            COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS,
+            COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS * 2,
+            COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS * 4,
+            COMMIT_PRS_CACHE_TTL_SECONDS,
+        ]);
+
+        // A PR found for the commit resets the streak.
+        cache.store.clear();
+        mockGreenAutoMergePR('slow-push-sha');
+        await findPRsForCommitCached('test-owner', 'test-repo', 'slow-push-sha', cache as never);
+        cache.store.clear();
+        mockOctokit.request.mock.mockImplementation(async () => ({ data: [] }));
+        await findPRsForCommitCached('test-owner', 'test-repo', 'slow-push-sha', cache as never);
+        assert.strictEqual(cache.set.mock.calls.at(-1)!.arguments[3], COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS);
     });
 
     test('a failed lookup is not cached', async () => {

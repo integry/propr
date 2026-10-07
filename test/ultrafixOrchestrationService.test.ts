@@ -1,5 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import { evalUltrafixScript } from './fixtures/ultrafixRedisDouble.js';
 
 import {
     getUltrafixStateKey,
@@ -36,20 +37,7 @@ function createMockRedis() {
         async set(key: string, value: string) { store.set(key, value); return 'OK'; },
         async del(key: string) { store.delete(key); return 1; },
         async eval(script: string, _keyCount: number, ...args: string[]) {
-            const [epochKey, targetKey] = args;
-            if (script.includes("redis.call('INCR'")) {
-                const nextEpoch = Number(store.get(epochKey) ?? '0') + 1;
-                store.set(epochKey, String(nextEpoch));
-                store.delete(targetKey);
-                return nextEpoch;
-            }
-            if ((store.get(epochKey) ?? '0') !== args[2]) return 0;
-            if (script.includes("redis.call('DEL', KEYS[2])")) {
-                store.delete(targetKey);
-                return 1;
-            }
-            store.set(targetKey, args[3]);
-            return 1;
+            return evalUltrafixScript(store, script, args);
         },
     };
 }

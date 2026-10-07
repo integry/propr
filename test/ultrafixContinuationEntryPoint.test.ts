@@ -1,5 +1,6 @@
 import { beforeEach, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createUltrafixRedis } from './fixtures/ultrafixRedisDouble.js';
 
 const mockQueueAdd = mock.fn(async () => ({}));
 const mockQueueGetJobs = mock.fn(async () => [] as unknown[]);
@@ -408,90 +409,8 @@ test('disabled escalation leaves persisted review state byte-for-byte unchanged'
 
 // --- Stranded loop re-arming ---
 
-/** Redis mock that executes the epoch, deferred, and claim scripts faithfully. */
-function createRearmRedis() {
-    const store = new Map<string, string>();
-    return {
-        store,
-        async get(key: string) { return store.get(key) ?? null; },
-        async set(key: string, value: string, ...options: Array<string | number>) {
-            if (options.includes('NX') && store.has(key)) return null;
-            store.set(key, value);
-            return 'OK';
-        },
-        async del(key: string) { return store.delete(key) ? 1 : 0; },
-        async getdel(key: string) {
-            const value = store.get(key) ?? null;
-            store.delete(key);
-            return value;
-        },
-        async eval(script: string, _keyCount: number, ...args: string[]) {
-            if (script.includes('-- clear rearm retry if claim held')) {
-                const [claimKey, retryKey, epochKey, token, expectedEpoch, expectedRetry] = args;
-                if (store.get(claimKey) !== token) return 0;
-                if (expectedEpoch !== '' && (store.get(epochKey) ?? '0') !== expectedEpoch) return -1;
-                if (expectedRetry && store.get(retryKey) !== expectedRetry) return -2;
-                store.delete(retryKey);
-                return 1;
-            }
-            if (script.includes('-- save rearm retry unless claim taken')) {
-                const [claimKey, retryKey, token, value] = args;
-                const holder = store.get(claimKey);
-                if (holder !== undefined && holder !== token) return 0;
-                store.set(retryKey, value);
-                return 1;
-            }
-            if (script.includes('-- restore deferred if loop unchanged')) {
-                const [epochKey, stateKey, deferredKey, expectedEpoch, expectedState, value] = args;
-                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
-                if (store.get(stateKey) !== expectedState) return 0;
-                if (store.has(deferredKey)) return 0;
-                store.set(deferredKey, value);
-                return 1;
-            }
-            if (script.includes("redis.call('PEXPIRE'")) {
-                const [claimKey, token] = args;
-                return store.get(claimKey) === token ? 1 : 0;
-            }
-            if (script.includes("redis.call('DEL', KEYS[1])")) {
-                const [claimKey, token] = args;
-                return store.get(claimKey) === token && store.delete(claimKey) ? 1 : 0;
-            }
-            if (script.includes('-- reserve epoch and replace state')) {
-                // Epoch- and snapshot-conditional reservation of the next epoch.
-                const [epochKey, stateKey, deferredKey, expectedEpoch, expectedState, value] = args;
-                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
-                if (store.get(stateKey) !== expectedState) return 0;
-                const next = Number(expectedEpoch) + 1;
-                store.set(epochKey, String(next));
-                store.delete(deferredKey);
-                store.set(stateKey, value);
-                return next;
-            }
-            if (script.includes('local current_state')) {
-                // Epoch- and snapshot-conditional state replace/clear.
-                const [epochKey, stateKey, expectedEpoch, expectedState, value] = args;
-                if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
-                if (store.get(stateKey) !== expectedState) return 0;
-                if (script.includes("redis.call('DEL', KEYS[2])")) store.delete(stateKey);
-                else store.set(stateKey, value);
-                return 1;
-            }
-            const [epochKey, targetKey, expectedEpoch, value] = args;
-            if (script.includes("redis.call('INCR'")) {
-                const next = Number(store.get(epochKey) ?? '0') + 1;
-                store.set(epochKey, String(next));
-                store.delete(targetKey);
-                return next;
-            }
-            if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
-            if (script.includes("redis.call('DEL', KEYS[2])")) store.delete(targetKey);
-            else store.set(targetKey, value);
-            return 1;
-        },
-        async llen(_key: string) { return 0; },
-    };
-}
+/** Redis double that executes the epoch, deferred, and claim scripts faithfully. */
+const createRearmRedis = createUltrafixRedis;
 
 const greenChecks = async () => ({ count: 1, allPassing: true, anyPending: false, anyFailed: false });
 

@@ -14,6 +14,7 @@ import type { Redis } from 'ioredis';
 import { getUltrafixDeferredKey } from './ultrafixAutomaticWorkEpoch.js';
 
 export const ULTRAFIX_RESUME_INDEX_KEY = 'ultrafix:resume-index';
+export const ULTRAFIX_RESUME_SWEEP_LEASE_KEY = 'ultrafix:resume-sweep-lease';
 export const REARM_RETRY_KEY_PREFIX = 'ultrafix:rearm-retry';
 
 const PRUNE_RESUME_INDEX_SCRIPT = `
@@ -76,5 +77,23 @@ export async function pruneUltrafixResumeCandidate(redis: Redis, ref: UltrafixPr
         return Number(removed) === 1;
     } catch {
         return false;
+    }
+}
+
+/**
+ * Take the cluster-wide lease for one periodic sweep. Every process that
+ * sweeps (API server, daemon) ticks on its own timer; the lease lets one of
+ * them sweep per period instead of each re-evaluating every deferred loop
+ * (each evaluation may call GitHub). A lease slightly shorter than the
+ * period lets its holder take it again on its next tick, and another
+ * process takes over within a period once the holder stops sweeping. A
+ * lease that cannot be read fails open: an extra sweep only costs calls,
+ * and the per-PR resume claim still serializes the two.
+ */
+export async function acquireUltrafixResumeSweepLease(redis: Redis, ttlMs: number): Promise<boolean> {
+    try {
+        return await redis.set(ULTRAFIX_RESUME_SWEEP_LEASE_KEY, String(process.pid), 'PX', ttlMs, 'NX') === 'OK';
+    } catch {
+        return true;
     }
 }

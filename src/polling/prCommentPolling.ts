@@ -110,9 +110,13 @@ export async function pollForPullRequestComments(
             return;
         }
 
+        const repoContext = { owner, repo, repoFullName, correlationId };
         for (const pr of prs) {
-            const repoContext = { owner, repo, repoFullName, correlationId };
             await processPullRequestComments(octokit, pr, repoContext, config);
+        }
+        // After the comment pass: a resume can wait on queue scans, GitHub and
+        // the label-transition lease, which must not delay comment pickup.
+        for (const pr of prs) {
             await reconcileUltrafixForPR(pr, repoContext, config.redisClient);
         }
     } catch (error) {
@@ -132,8 +136,9 @@ export async function reconcileUltrafixForPR(pr: PullRequest, repoContext: RepoC
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     try {
-        // Redis first: a labelled PR with no deferred record or active loop needs no GitHub calls.
-        if (!await hasUltrafixResumeCandidate(redisClient, { owner, repo, pr: pr.number })) {
+        // Redis first: a labelled PR with no deferred record or active loop needs
+        // no GitHub calls, nor does one whose retry is backing off (as in the sweep).
+        if (!await hasUltrafixResumeCandidate(redisClient, { owner, repo, pr: pr.number }, { honourRetryBackoff: true })) {
             correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number }, 'Ultrafix reconcile skipped: no loop waiting');
             return;
         }
@@ -150,7 +155,7 @@ export async function reconcileUltrafixForPR(pr: PullRequest, repoContext: RepoC
             return;
         }
         correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number, headSha }, 'Ultrafix reconcile: checks green, triggering check hook');
-        await triggerUltrafixCheckRunHook(owner, repo, pr.number, headSha);
+        await triggerUltrafixCheckRunHook({ owner, repo, prNumber: pr.number, headSha }, correlatedLogger);
     } catch (error) {
         correlatedLogger.warn({ repository: repoFullName, pullRequestNumber: pr.number, error: (error as Error).message }, 'Ultrafix CI reconciliation failed');
     }

@@ -10,6 +10,7 @@ import type { Redis } from 'ioredis';
 import type { UltrafixEscalationState } from './ultrafixEscalationPolicy.js';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import { saveUltrafixStateIfCurrent } from './ultrafixAutomaticWorkEpoch.js';
+import { commitStartedLoopState } from './ultrafixDeferredContinuationStore.js';
 export {
     clearDeferredContinuationIfCurrent,
     clearUltrafixStateIfCurrent,
@@ -26,6 +27,7 @@ export {
     claimDeferredContinuation,
     claimDeferredContinuationIfUnchanged,
     clearDeferredContinuation,
+    commitStartedLoopState,
     clearRearmRetryIfClaimHeld,
     getUltrafixRearmRetryKey,
     listDeferredContinuationKeys,
@@ -37,8 +39,6 @@ export {
     parseDeferredKey,
     parseRearmRetryKey,
     saveDeferredContinuation,
-    saveRearmRetry,
-    saveRearmRetryIfAbsent,
     saveRearmRetryUnlessClaimTaken,
 } from './ultrafixDeferredContinuationStore.js';
 export type { UltrafixClaimedStep, UltrafixDeferredContinuation, UltrafixRearmRetry } from './ultrafixDeferredContinuationStore.js';
@@ -105,6 +105,11 @@ export interface UltrafixLoopState {
     findingLifecycle?: Record<string, UltrafixFindingLifecycle>;
     escalation?: UltrafixEscalationState;
     escalationBestScore?: number;
+    /**
+     * Step jobs that failed for good in a row, and how many steps the loop
+     * had completed then; a step completed since resets the streak.
+     */
+    failedStepStreak?: { completedSteps: number; count: number };
 }
 
 export interface UltrafixFindingLifecycle {
@@ -361,7 +366,14 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
     const initialAction = determineInitialAction(hasPendingReviews);
     state.lastAction = initialAction;
     state.lastActionTimestamp = new Date().toISOString();
-    const saved = await saveOwnedState(redis, state, options.workEpoch);
+    const saved = options.workEpoch === undefined
+        ? await saveOwnedState(redis, state)
+        : await commitStartedLoopState(
+            redis,
+            { owner: state.owner, repo: state.repo, pr: state.pr },
+            options.workEpoch,
+            { key: getUltrafixStateKey(state.owner, state.repo, state.pr), serialized: JSON.stringify(state) },
+        );
     if (!saved) throw new Error('Ultrafix startup was superseded before state commit');
     return { state, initialAction };
 }

@@ -122,6 +122,7 @@ const {
     restoreDeferredContinuationIfUnchanged,
 } = await import('../src/jobs/ultrafixAutomaticWorkEpoch.js');
 const { enqueueNextStep, getUltrafixStepJobId } = await import('../src/jobs/ultrafixLoopContinuationHelpers.js');
+const { recordFailedUltrafixStep } = await import('../src/jobs/ultrafixFailedStep.js');
 const {
     listIndexedUltrafixResumeCandidates,
     pruneUltrafixResumeCandidate,
@@ -315,8 +316,8 @@ describe('Ultrafix recovery on real Redis and BullMQ', () => {
         const retry = { ...id, workEpoch: 0, reason: 'test', savedAt: new Date().toISOString() };
         await acquireResumeClaim(client, id, 'holder', 5_000);
 
-        assert.equal(await saveRearmRetryUnlessClaimTaken(client, retry, { key: claimKey, token: 'other' }), false, 'another trigger holds the claim');
-        assert.equal(await saveRearmRetryUnlessClaimTaken(client, retry, { key: claimKey, token: 'holder' }), true);
+        assert.equal(await saveRearmRetryUnlessClaimTaken(client, retry, { key: claimKey, token: 'other' }), 'claim_taken', 'another trigger holds the claim');
+        assert.equal(await saveRearmRetryUnlessClaimTaken(client, retry, { key: claimKey, token: 'holder' }, null), 'saved', 'none was recorded yet');
         assert.ok(await client.ttl(getUltrafixRearmRetryKey(OWNER, REPO, 5)) > 0, 'the obligation carries its TTL');
 
         assert.equal(await clearRearmRetryIfClaimHeld(client, id, { key: claimKey, token: 'other' }), 'claim_not_held');
@@ -327,11 +328,66 @@ describe('Ultrafix recovery on real Redis and BullMQ', () => {
         await saveRearmRetryUnlessClaimTaken(client, { ...retry, reason: 'newer' }, { key: claimKey, token: 'holder' });
         assert.equal(await clearRearmRetryIfClaimHeld(client, id, { key: claimKey, token: 'holder' }, { raw: stale! }), 'retry_changed');
         assert.equal((await loadRearmRetry(client, OWNER, REPO, 5))?.reason, 'newer', 'a newer obligation survives');
+        assert.equal(await clearRearmRetryIfClaimHeld(client, id, { key: claimKey, token: 'holder' }, { raw: null }), 'retry_changed', 'one exists where none was expected');
+        assert.equal(
+            await saveRearmRetryUnlessClaimTaken(client, { ...retry, reason: 'replaced' }, { key: claimKey, token: 'holder' }, stale),
+            'retry_changed',
+            'a replacement of a superseded obligation is rejected',
+        );
         assert.equal(await clearRearmRetryIfClaimHeld(client, id, { key: claimKey, token: 'holder' }, { workEpoch: 1 }), 'cleared');
         assert.equal(await loadRearmRetry(client, OWNER, REPO, 5), null);
 
         await releaseResumeClaim(client, id, 'holder');
-        assert.equal(await saveRearmRetryUnlessClaimTaken(client, retry, { key: claimKey, token: 'expired' }), true, 'a claim with no new holder still records it');
+        assert.equal(await saveRearmRetryUnlessClaimTaken(client, retry, { key: claimKey, token: 'expired' }), 'saved', 'a claim with no new holder still records it');
+    });
+
+    test('an exhausted step versions the obligation and its loop atomically, keeping a claimed step', async t => {
+        const client = requireRedis(t);
+        if (!client) return;
+        const id = prId(12);
+        const { state } = await startLoop(client, { ...id, goal: 8, maxCycles: 5, pauseSeconds: 30, workEpoch: 0 }, false);
+        const claimKey = getUltrafixResumeClaimKey(OWNER, REPO, 12);
+        const claimedStep = { deferred: { ...id, nextAction: 'fix' as const, savedAt: 'then', reason: 'test', workEpoch: 0 }, stateDigest: 'digest' };
+        const handoff = { ...id, workEpoch: 0, reason: 'deferred_claim_pending', savedAt: new Date().toISOString(), claimedStep };
+        await acquireResumeClaim(client, id, 'holder', 5_000);
+        assert.equal(await saveRearmRetryUnlessClaimTaken(client, handoff, { key: claimKey, token: 'holder' }), 'saved');
+
+        assert.equal(await recordFailedUltrafixStep(client, { repoOwner: OWNER, repoName: REPO, pullRequestNumber: 12, ultrafixMeta: { workEpoch: 0 } }), true);
+
+        const retry = await loadRearmRetry(client, OWNER, REPO, 12);
+        assert.equal(retry?.reason, 'step_job_failed');
+        assert.equal(retry?.failureVersion, 1);
+        assert.deepEqual(retry?.claimedStep, claimedStep);
+        assert.ok(await client.ttl(getUltrafixRearmRetryKey(OWNER, REPO, 12)) > 0);
+        assert.deepEqual((await loadState(client, OWNER, REPO, 12))?.failedStepStreak, { completedSteps: 0, count: 1 });
+        assert.equal(
+            await clearRearmRetryIfClaimHeld(client, id, { key: claimKey, token: 'holder' }, { raw: JSON.stringify(handoff) }),
+            'retry_changed',
+            'settling the handoff keeps the failure',
+        );
+
+        // A step of a superseded epoch records nothing.
+        await invalidateUltrafixAutomaticWork(client, OWNER, REPO, 12);
+        assert.equal(await recordFailedUltrafixStep(client, { repoOwner: OWNER, repoName: REPO, pullRequestNumber: 12, ultrafixMeta: { workEpoch: state.workEpoch } }), false);
+        assert.equal((await loadRearmRetry(client, OWNER, REPO, 12))?.failureVersion, 1);
+        await releaseResumeClaim(client, id, 'holder');
+    });
+
+    test('a started loop commits its state and drops the previous loop\'s obligation in one step', async t => {
+        const client = requireRedis(t);
+        if (!client) return;
+        const id = prId(13);
+        await client.set(getUltrafixRearmRetryKey(OWNER, REPO, 13), JSON.stringify({ ...id, workEpoch: 0, reason: 'rearm_not_ready: pr_jobs_active', savedAt: 'then' }));
+        const stale = await invalidateUltrafixAutomaticWork(client, OWNER, REPO, 13);
+        const workEpoch = await invalidateUltrafixAutomaticWork(client, OWNER, REPO, 13);
+
+        await assert.rejects(startLoop(client, { ...id, workEpoch: stale }, false), /superseded/);
+        assert.ok(await loadRearmRetry(client, OWNER, REPO, 13), 'a superseded startup changes nothing');
+        assert.equal(await loadState(client, OWNER, REPO, 13), null);
+
+        await startLoop(client, { ...id, workEpoch }, false);
+        assert.equal(await loadRearmRetry(client, OWNER, REPO, 13), null);
+        assert.equal((await loadState(client, OWNER, REPO, 13))?.workEpoch, workEpoch);
     });
 
     test('the resume index is pruned only while the PR has neither record', async t => {

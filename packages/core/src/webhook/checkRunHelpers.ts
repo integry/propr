@@ -903,7 +903,32 @@ export const COMMIT_PRS_CACHE_TTL_SECONDS = 60;
  * the burst of a default-branch push, whose commits never have an open PR.
  */
 export const COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS = 10;
+/**
+ * A commit whose lookups keep coming back empty (a default-branch push whose
+ * jobs finish over several minutes) is cached for longer each time: the TTL
+ * doubles per consecutive empty result in this process, up to the TTL of a
+ * found PR, so the window in which a newly opened PR goes unseen never
+ * exceeds that of a cached positive result.
+ */
+const COMMIT_PRS_EMPTY_STREAK_LIMIT = 1_000;
+const commitPREmptyStreaks = new Map<string, number>();
 const commitPRLookupsInFlight = new Map<string, Promise<Array<{ number: number }>>>();
+
+/** TTL for a lookup result, tracking consecutive empty results for the commit. */
+function commitPRsCacheTtlSeconds(key: string, prs: Array<{ number: number }>): number {
+    if (prs.length > 0) {
+        commitPREmptyStreaks.delete(key);
+        return COMMIT_PRS_CACHE_TTL_SECONDS;
+    }
+    const streak = (commitPREmptyStreaks.get(key) ?? 0) + 1;
+    // Re-insert so the oldest commit is evicted first once the limit is hit.
+    commitPREmptyStreaks.delete(key);
+    commitPREmptyStreaks.set(key, streak);
+    if (commitPREmptyStreaks.size > COMMIT_PRS_EMPTY_STREAK_LIMIT) {
+        commitPREmptyStreaks.delete(commitPREmptyStreaks.keys().next().value!);
+    }
+    return Math.min(COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS * 2 ** (streak - 1), COMMIT_PRS_CACHE_TTL_SECONDS);
+}
 
 type CommitPRsCache = Pick<Redis, 'get' | 'set'>;
 
@@ -943,8 +968,7 @@ export async function findPRsForCommitCached(
             return [];
         }
         try {
-            const ttlSeconds = prs.length > 0 ? COMMIT_PRS_CACHE_TTL_SECONDS : COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS;
-            await cache.set(key, JSON.stringify(prs), 'EX', ttlSeconds);
+            await cache.set(key, JSON.stringify(prs), 'EX', commitPRsCacheTtlSeconds(key, prs));
         } catch (error) {
             logger.debug({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to cache PRs for commit');
         }
