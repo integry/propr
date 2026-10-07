@@ -323,6 +323,147 @@ for two minutes, adopting marked issues before creating missing ones. An
 earlier resume fails with `PRECONDITION_FAILED` and `details.claimLapsesAt`.
 Automatic recovery of uncertain external effects is not implemented.
 
+### Searching and reading repository files
+
+`search_repository_files` and `read_repository_file` let an agent find and
+read source code over MCP without cloning the repository. Both are `read`
+scope, read-only, and check the grant, instance configuration and current
+GitHub access for the repository before touching git; an inaccessible
+repository is `REPOSITORY_FORBIDDEN` (403). Both read the instance's managed
+clone at an exact commit resolved from `ref`, else `branch`, else the
+repository's configured base branch, so the answer never depends on what is
+checked out. Every result reports the resolved `ref` and `commit`; pass that
+`commit` as `ref` to keep a multi-step loop on one snapshot.
+
+The managed clone is a cache shared with worker runs, whose local branches
+are not kept up to date, so each call refreshes the requested ref from
+GitHub before resolving it: a branch, `origin/<branch>`, `refs/heads/…` or tag
+is fetched and resolved through the fetched copy, and `HEAD` means GitHub's
+default branch, not the clone's checkout. A short name is resolved as a tag
+before a branch, as git does; that a short name is *not* a tag is remembered
+for a minute, so a tag created on GitHub with the same name as a branch is
+seen up to a minute late. Full commit SHAs already in the clone are answered
+without a fetch. A branch or tag GitHub no longer has is `REF_NOT_FOUND`
+even if the clone still holds an old copy, and a tag deleted on GitHub never
+shadows a surviving branch of the same name. An abbreviated SHA resolves only
+as a commit id, never through a same-named local branch. If GitHub cannot be reached and the
+ref is cached, the result is answered from the cached commit and carries a
+`refCaveat` saying it may be behind; with nothing cached the call fails with
+`REPOSITORY_RETRIEVAL_FAILED`. Retrieval never checks out or moves branches
+in the shared clone; it only clones a repository that has no clone yet.
+
+`search_repository_files` returns paths, never file contents:
+
+| Parameter | Meaning |
+| --- | --- |
+| `repository` | Exact `owner/name` in the grant. |
+| `query` | 1–1000 characters. |
+| `mode` | `semantic` (default) or `literal`. |
+| `branch`, `ref` | Optional. `ref` may be a branch, tag, `origin/<branch>`, fully qualified ref or commit SHA (either case). `branch` also selects the index used by semantic search. |
+| `path` | Optional repository-relative prefix (`src/` or a partial name such as `src/auth`). Absolute paths, `..` segments and backslashes are `INVALID_PATH`; names such as `CHANGELOG..md` are allowed. |
+| `caseSensitive` | Literal mode only; defaults to case-insensitive. |
+| `offset`, `limit` | Pagination; `limit` defaults to 20 and is at most 100. |
+
+```jsonc
+// semantic
+{ "repository": "acme/web", "mode": "semantic", "query": "token validation", "ref": "main", "commit": "4f1c…",
+  "pathPrefix": null,
+  "matches": [{ "path": "src/auth/token.ts", "score": 87.5, "reasons": ["semantic", "path-match"] }],
+  "pagination": { "offset": 0, "limit": 20, "totalMatches": 7, "nextOffset": null },
+  "freshness": { "indexBranch": "main", "indexingStatus": "completed", "lastIndexedAt": "2026-10-01T00:00:00.000Z",
+                 "lastIndexedHash": "4f1c…", "usedIndex": true, "stale": false },
+  "keywordsDetected": ["token", "validation"] }
+// literal
+{ "repository": "acme/web", "mode": "literal", "query": "validateToken(", "ref": "main", "commit": "4f1c…", "pathPrefix": "src/",
+  "matches": [{ "path": "src/auth/login.ts", "matchCount": 2,
+                "lineMatches": [{ "lineNumber": 4, "text": "  if (!validateToken(token)) throw new Error('denied');" }] }],
+  "pagination": { "offset": 0, "limit": 20, "totalMatches": 1, "nextOffset": null } }
+```
+
+Semantic mode ranks files with the planner's relevance engine: indexed file
+summaries (`semantic`), path matches (`path-match`) and git history
+(`git-history`), reported per file in `reasons`. `freshness` says how much to
+trust the ranking. When the branch has never been indexed, indexing is in
+progress or failed, no default agent is configured, or summaries contribute
+nothing, the search still answers from path and history heuristics with
+`usedIndex: false`, `stale: true` and a `caveat`. An index built from an older
+commit keeps `usedIndex: true` but sets `stale: true` and a caveat naming both
+commits, because recently changed files may be ranked from outdated summaries.
+An index that does not record the commit it was built from is treated the same
+way, since its summaries cannot be verified against the searched commit. When
+the requested branch has no index but `HEAD` does, the `HEAD` index is used and
+`freshness.indexBranch` is `"HEAD"`. Index the branch with `index_repository` to remove the caveat. Repeating or
+paging the same semantic query reuses the ranking for up to a minute while the
+resolved commit and index build are unchanged, so walking `nextOffset` does
+not rerun the ranking.
+
+Literal mode is an exact, fixed-string (non-regex) `git grep` of the resolved
+commit. It needs no index and so carries no `freshness`. Each file reports its
+total `matchCount` and up to five `lineMatches` (text capped at 500
+characters). Binary files are skipped. No match is an ordinary result with an
+empty `matches` array and `totalMatches: 0`, not an error. Follow
+`pagination.nextOffset` until it is `null` to see every file. A page whose
+previews would not fit in the 256 KiB response ends early, with `nextOffset`
+pointing at the first file left out. The grep output is streamed with a
+budget (10000 matching files or 64 MiB of output); when it runs out,
+`scanTruncated` is `true`, `totalMatches` is a lower bound and later files may
+also match, so narrow the query or `path`. If the budget ran out partway
+through a file, that file carries `countTruncated: true` and its `matchCount`
+is a lower bound; every other file's count is complete.
+
+`read_repository_file` reads one text file from the git object database:
+
+| Parameter | Meaning |
+| --- | --- |
+| `repository`, `branch`, `ref` | As for search. |
+| `path` | Repository-relative file path. |
+| `startLine` | First line, 1-based; default 1. |
+| `endLine` | Optional last line, inclusive; must be ≥ `startLine`. |
+| `maxLines` | Default 800, at most 1000. |
+| `maxBytes` | Default 120000, at most 200000; counts UTF-8 bytes including newlines between returned lines. |
+
+```json
+{ "repository": "acme/web", "path": "src/auth/login.ts", "ref": "main", "commit": "4f1c…",
+  "content": "import { validateToken } from './token';\n…", "startLine": 1, "endLine": 800,
+  "totalLines": 2140, "totalBytes": 81234, "returnedBytes": 31877, "truncated": true, "nextStartLine": 801 }
+```
+
+Only whole lines are returned. When `maxLines`, `maxBytes` or the response
+limit stops the read before `endLine` (or the end of the file), `truncated` is
+`true` and `nextStartLine` is where to continue; otherwise `nextStartLine` is
+`null`. The response limit counts the content once JSON-encoded, so text with
+many quotes, backslashes or control characters can stop before `maxBytes`.
+`content` is the file's text exactly as committed (a `.json` file is not
+reformatted); only credential-shaped strings such as GitHub tokens are masked
+as `[redacted]` (a mask never spans a line break, so line numbers are unchanged), and `returnedBytes` is the UTF-8 size of the `content`
+actually returned. A `startLine` past the end returns empty content. Failures are `FILE_NOT_FOUND`
+(404) for a path absent at that commit, `REF_NOT_FOUND` (404) for an unknown
+ref, `BINARY_FILE` (400), `INVALID_PATH` (400) for traversal, absolute or
+backslash paths, directories and symbolic links (the message names the link
+target to read instead), `INVALID_REF` (400) for a malformed ref,
+`FILE_TOO_LARGE` (413) for a blob over 20 MiB, a single line larger than
+`maxBytes` (the message gives the `maxBytes` that would read it, when one
+exists) or a line too large for any response, and
+`REPOSITORY_RETRIEVAL_FAILED` (502, retryable) when cloning or fetching from
+GitHub fails, or 500 for a local git or ranking failure.
+
+A search-then-read loop looks like this:
+
+1. Locate candidates: `search_repository_files` with
+   `{ "repository": "acme/web", "query": "where are session tokens validated" }`.
+   Check `freshness.caveat`; if present, prefer a literal search to confirm.
+2. Confirm the exact symbol and pin the snapshot: `search_repository_files` with
+   `{ "repository": "acme/web", "mode": "literal", "query": "validateToken(", "path": "src/", "caseSensitive": true }`,
+   then reuse the returned `commit` as `ref` in every later call.
+3. Read around a match: `read_repository_file` with
+   `{ "repository": "acme/web", "ref": "<commit>", "path": "src/auth/login.ts", "startLine": 1, "endLine": 60 }`,
+   using a match's `lineNumber` to pick the window.
+4. Continue a long file from `nextStartLine` while `truncated` is `true`, and
+   page further search results from `pagination.nextOffset`.
+
+`get_repository_context` remains the tool for indexed directory and file
+summaries; use these two tools when the agent needs the code itself.
+
 ## Errors
 
 Every tool failure uses one structured `error` envelope. `code` is the stable,
@@ -373,6 +514,11 @@ Stable codes introduced by the observable operator surface are:
 | `PREVIEW_NOT_FOUND`, `PREVIEW_NOT_RENDERABLE`, `PREVIEW_TOO_LARGE` | Preview evidence is absent, is metadata-only/invalid, or cannot fit the MCP response bound. |
 | `SETTING_ENVIRONMENT_MANAGED` | A setting is controlled by deployment environment and is read-only through MCP. |
 | `CONFIRMATION_REQUIRED` | The requested configuration change needs its explicit safety confirmation flag. |
+| `INVALID_PATH` | A repository path is absolute, contains a `..` segment or backslashes, or names a directory or symbolic link where a file is required. |
+| `FILE_NOT_FOUND`, `REF_NOT_FOUND` | `read_repository_file` found no such file at the resolved commit, or the requested ref does not exist. |
+| `BINARY_FILE`, `FILE_TOO_LARGE` | The file is binary, or is too large (or has a line too long) to return as bounded text. |
+| `INVALID_REF` | A `ref` or `branch` is malformed: it starts with `-`, contains whitespace, control characters, `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\`, `@{` or `//`, is `@`, starts or ends with `/`, ends with `.`, or has a component starting with `.` or ending with `.lock` (the rules of `git check-ref-format`). |
+| `REPOSITORY_RETRIEVAL_FAILED` | Repository search or read could not complete: 502 and retryable when cloning or fetching from GitHub failed with nothing cached to answer from, 500 for a local git or relevance-engine failure. |
 
 ## Did it actually happen? Following a receipt
 
