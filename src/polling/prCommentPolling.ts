@@ -5,7 +5,7 @@ import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type Unproc
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
 import { extractLlmFromLabels, resolveModelAlias } from '@propr/core';
 import { hasValidTriggerLabel } from '@propr/core';
-import { areAllChecksPassing, getCurrentPRHead, triggerUltrafixCheckRunHook } from '@propr/core';
+import { getCheckRunsStatusForRepo, getCurrentPRHead, triggerUltrafixCheckRunHook } from '@propr/core';
 import type { Redis } from 'ioredis';
 import { hasUltrafixResumeCandidate } from '../jobs/ultrafixResumeClaim.js';
 
@@ -143,7 +143,9 @@ export async function reconcileUltrafixForPR(pr: PullRequest, repoContext: RepoC
             correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number }, 'Ultrafix reconcile skipped: PR head SHA unavailable');
             return;
         }
-        if (!await areAllChecksPassing(owner, repo, headSha)) {
+        // The loop's own readiness gate: non-blocking checks never hold it, and a
+        // head with no checks at all is ready (no check event will ever come for it).
+        if (!(await getCheckRunsStatusForRepo(owner, repo, headSha)).allPassing) {
             correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number, headSha }, 'Ultrafix reconcile: checks not green yet');
             return;
         }

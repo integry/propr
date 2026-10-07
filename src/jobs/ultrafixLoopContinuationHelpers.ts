@@ -38,6 +38,20 @@ import type {
     GetCheckRunsStatusFn,
 } from './ultrafixLoopContinuation.js';
 
+async function fetchUltrafixLabelPresence(owner: string, repo: string, pullRequestNumber: number): Promise<boolean> {
+    const octokit = await withRetry(
+        () => getAuthenticatedOctokit(),
+        { ...retryConfigs.githubApi },
+        'get_authenticated_octokit_ultrafix_label_check',
+    );
+    const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner,
+        repo,
+        pull_number: pullRequestNumber,
+    });
+    return prData.data.labels.some((label: { name?: string }) => label.name === 'ultrafix');
+}
+
 export async function hasUltrafixLabel(
     owner: string,
     repo: string,
@@ -45,23 +59,38 @@ export async function hasUltrafixLabel(
     correlatedLogger: Logger,
 ): Promise<boolean> {
     try {
-        const octokit = await withRetry(
-            () => getAuthenticatedOctokit(),
-            { ...retryConfigs.githubApi },
-            'get_authenticated_octokit_ultrafix_label_check',
-        );
-        const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-            owner,
-            repo,
-            pull_number: pullRequestNumber,
-        });
-        return prData.data.labels.some((label: { name?: string }) => label.name === 'ultrafix');
+        return await fetchUltrafixLabelPresence(owner, repo, pullRequestNumber);
     } catch (err) {
         correlatedLogger.warn(
             { error: (err as Error).message, pullRequestNumber },
             'Failed to check ultrafix label, assuming removed for safety',
         );
         return false;
+    }
+}
+
+/** `unverified` when GitHub could not be asked: the label may well still be there. */
+export type UltrafixLabelState = 'present' | 'absent' | 'unverified';
+
+/**
+ * Like `hasUltrafixLabel`, but a failed lookup is reported as `unverified`
+ * rather than as a removed label, for callers that must not tear a loop down
+ * on a transient GitHub error.
+ */
+export async function getUltrafixLabelState(
+    owner: string,
+    repo: string,
+    pullRequestNumber: number,
+    correlatedLogger: Logger,
+): Promise<UltrafixLabelState> {
+    try {
+        return await fetchUltrafixLabelPresence(owner, repo, pullRequestNumber) ? 'present' : 'absent';
+    } catch (err) {
+        correlatedLogger.warn(
+            { error: (err as Error).message, pullRequestNumber },
+            'Failed to check ultrafix label; leaving the loop untouched',
+        );
+        return 'unverified';
     }
 }
 

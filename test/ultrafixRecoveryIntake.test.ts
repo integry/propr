@@ -125,6 +125,7 @@ const GREEN: CheckStatus = { count: 1, allPassing: true, anyPending: false, anyF
 let ciStatus: CheckStatus = RED;
 let prHead = 'head-sha';
 const mockAreAllChecksPassing = mock.fn(async () => ciStatus.allPassing);
+const mockGetCheckRunsStatusForRepo = mock.fn(async (_owner: string, _repo: string, _ref: string) => ciStatus);
 const mockGetCurrentPRHead = mock.fn(async () => prHead);
 
 await mock.module('@propr/core', {
@@ -139,6 +140,7 @@ await mock.module('@propr/core', {
         resolveModelAlias: (model: string) => model,
         hasValidTriggerLabel: () => false,
         areAllChecksPassing: mockAreAllChecksPassing,
+        getCheckRunsStatusForRepo: mockGetCheckRunsStatusForRepo,
         getCurrentPRHead: mockGetCurrentPRHead,
         triggerUltrafixCheckRunHook,
         loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
@@ -183,7 +185,7 @@ const {
     saveState,
     startLoop,
 } = await import('../src/jobs/ultrafixOrchestrationService.js');
-const { reconcileUltrafixForPR } = await import('../src/polling/prCommentPolling.js');
+const { pollForPullRequestComments, reconcileUltrafixForPR } = await import('../src/polling/prCommentPolling.js');
 
 after(async () => {
     setUltrafixCheckRunHook(null as never);
@@ -325,6 +327,7 @@ describe('Ultrafix recovery through the real intake entry points', () => {
         for (const key of Object.keys(openPRsForCommit)) delete openPRsForCommit[key];
         mockOctokitRequest.mock.resetCalls();
         mockAreAllChecksPassing.mock.resetCalls();
+        mockGetCheckRunsStatusForRepo.mock.resetCalls();
         mockGetCurrentPRHead.mock.resetCalls();
         setCheckRunDeps({
             areAllChecksPassing: mockAreAllChecksPassing,
@@ -370,7 +373,7 @@ describe('Ultrafix recovery through the real intake entry points', () => {
 
         assert.equal(reviewJobs(203).length, 1);
         // The green-check gate uses the head the PR listing already carried.
-        assert.deepEqual(mockAreAllChecksPassing.mock.calls[0].arguments, [OWNER, REPO, 'listed-sha']);
+        assert.deepEqual(mockGetCheckRunsStatusForRepo.mock.calls[0].arguments, [OWNER, REPO, 'listed-sha']);
     });
 
     test('the polling reconciler makes no GitHub calls for a labelled PR without a loop', async () => {
@@ -378,10 +381,63 @@ describe('Ultrafix recovery through the real intake entry points', () => {
 
         await reconcileUltrafixForPR(pr, { owner: OWNER, repo: REPO, repoFullName: `${OWNER}/${REPO}`, correlationId: 'cid-poll' }, redis as never);
 
-        assert.equal(mockAreAllChecksPassing.mock.callCount(), 0);
+        assert.equal(mockGetCheckRunsStatusForRepo.mock.callCount(), 0);
         assert.equal(mockGetCurrentPRHead.mock.callCount(), 0);
         assert.equal(mockOctokitRequest.mock.callCount(), 0);
         assert.equal(await loadState(redis as never, OWNER, REPO, 204), null);
+    });
+
+    test('the polling reconciler wakes a loop on a head with no checks at all', async () => {
+        // No CI: a manual `/fix` stranded the loop while follow-up work was active.
+        await strandLoop(206);
+        ciStatus = { count: 0, allPassing: true, anyPending: false, anyFailed: false };
+        const pr = { number: 206, title: 'No CI', labels: [{ name: 'ultrafix' }], head: { ref: 'feature', sha: 'no-ci-sha' } };
+
+        await reconcileUltrafixForPR(pr, { owner: OWNER, repo: REPO, repoFullName: `${OWNER}/${REPO}`, correlationId: 'cid-poll' }, redis as never);
+
+        assert.equal(reviewJobs(206).length, 1, 'zero checks is ready, as for the loop itself');
+        assert.equal(mockAreAllChecksPassing.mock.callCount(), 0, 'not the merge gate, which requires a check signal');
+    });
+
+    test('the polling reconciler makes no GitHub calls for a loop its current step owns', async () => {
+        await startLoop(redis as never, { owner: OWNER, repo: REPO, pr: 207, goal: 8, maxCycles: 5, pauseSeconds: 30 }, false);
+        ciStatus = GREEN;
+        const pr = { number: 207, title: 'Busy', labels: [{ name: 'ultrafix' }], head: { ref: 'feature', sha: 'busy-sha' } };
+
+        await reconcileUltrafixForPR(pr, { owner: OWNER, repo: REPO, repoFullName: `${OWNER}/${REPO}`, correlationId: 'cid-poll' }, redis as never);
+
+        assert.equal(mockGetCheckRunsStatusForRepo.mock.callCount(), 0);
+        assert.equal(mockOctokitRequest.mock.callCount(), 0);
+        assert.equal(reviewJobs(207).length, 0);
+    });
+
+    test('a polling cycle reconciles every listed Ultrafix PR', async () => {
+        await strandLoop(208);
+        await strandLoop(209);
+        ciStatus = GREEN;
+        const listed = [
+            { number: 208, title: 'One', labels: [{ name: 'ultrafix' }], head: { ref: 'one', sha: 'one-sha' } },
+            { number: 209, title: 'Two', labels: [{ name: 'ultrafix' }], head: { ref: 'two', sha: 'two-sha' } },
+            { number: 210, title: 'Plain', labels: [], head: { ref: 'plain', sha: 'plain-sha' } },
+        ];
+        // The first PR's CI lookup fails; polling still reaches the second.
+        mockGetCheckRunsStatusForRepo.mock.mockImplementationOnce(async () => { throw new Error('GitHub 502'); });
+        const paginate = mock.fn(async (route: string) => (route === 'GET /repos/{owner}/{repo}/pulls' ? listed : []));
+
+        await pollForPullRequestComments({ paginate } as never, `${OWNER}/${REPO}`, 'cid-cycle', {
+            redisClient: redis as never,
+            PR_FOLLOWUP_TRIGGER_KEYWORDS: [],
+            MODEL_LABEL_PATTERN: '',
+        });
+
+        assert.equal(reviewJobs(208).length, 0, 'a failed reconcile leaves the loop for the next cycle');
+        assert.equal((await loadState(redis as never, OWNER, REPO, 208))?.active, true);
+        assert.equal(reviewJobs(209).length, 1);
+        assert.deepEqual(
+            mockGetCheckRunsStatusForRepo.mock.calls.map(call => call.arguments[2]),
+            ['one-sha', 'two-sha'],
+            'only labelled PRs are reconciled, against their listed heads',
+        );
     });
 
     test('the polling reconciler leaves a loop alone while its checks are red', async () => {

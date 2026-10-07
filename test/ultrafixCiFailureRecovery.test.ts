@@ -245,6 +245,7 @@ async function strandLoopAfterCiFailure(
     pr: number,
     stateOverrides: Record<string, unknown> = {},
     startOverrides: { instructions?: string; userId?: string } = {},
+    { followUpPushed = true }: { followUpPushed?: boolean } = {},
 ): Promise<FakeRedis> {
     const redis = createRedis();
     const { state } = await startLoop(redis as never, { owner: OWNER, repo: REPO, pr, goal: 8, maxCycles: 5, pauseSeconds: 30, ...startOverrides }, false);
@@ -276,7 +277,8 @@ async function strandLoopAfterCiFailure(
     // 2. A CI-failure follow-up pushes a fix commit and fences older automatic work.
     const epochBefore = await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, pr);
     await invalidateUltrafixAutomaticWork(redis as never, OWNER, REPO, pr);
-    prHead = `follow-up-fix-sha-${pr}`;
+    // Unless told otherwise, the follow-up has already pushed its commit.
+    if (followUpPushed) prHead = `follow-up-fix-sha-${pr}`;
     assert.equal(await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, pr), epochBefore + 1);
     assert.equal(await loadDeferredContinuation(redis as never, OWNER, REPO, pr), null, 'deferred record removed');
     assert.equal((await loadState(redis as never, OWNER, REPO, pr))?.active, true, 'loop is still active');
@@ -326,6 +328,7 @@ describe('Ultrafix recovery after a CI failure', () => {
         mockQueueGetJobs.mock.restore();
         mockQueueAdd.mock.restore();
         mockGetCheckRunsStatus.mock.restore();
+        mockOctokitRequest.mock.restore();
         mockOctokitRequest.mock.resetCalls();
         setCheckRunDeps({
             areAllChecksPassing: mockAreAllChecksPassing,
@@ -387,10 +390,13 @@ describe('Ultrafix recovery after a CI failure', () => {
         assert.equal(results.filter(result => result.continued).length, 1);
         assert.equal(reviewJobs(103).length, 1, 'only one review job enqueued');
 
-        // A later event while that review is still queued must not add another.
+        // A later event while that review is still queued must not add another:
+        // the loop's current epoch owns it, so the event has nothing to resume.
+        mockQueueGetJobs.mock.resetCalls();
         const late = await checksTurnGreen(redis, 103);
         assert.equal(late.continued, false);
-        assert.match(late.reason, /follow_up_jobs_active/);
+        assert.equal(late.reason, 'no_deferred_continuation');
+        assert.equal(mockQueueGetJobs.mock.callCount(), 0);
         assert.equal(reviewJobs(103).length, 1);
     });
 
@@ -415,7 +421,12 @@ describe('Ultrafix recovery after a CI failure', () => {
         const redis = await strandLoopAfterCiFailure(105);
         await checksTurnGreen(redis, 105);
         const [first] = reviewJobs(105);
-        // The queue scan misses the job (e.g. it moved between states).
+        // A retry obligation (e.g. left by a lost process) makes the loop a
+        // candidate again, and the queue scan misses the job (e.g. it moved
+        // between states).
+        await redis.set(getUltrafixRearmRetryKey(OWNER, REPO, 105), JSON.stringify({
+            owner: OWNER, repo: REPO, pr: 105, workEpoch: first.data.ultrafixMeta.workEpoch, reason: 'test', savedAt: new Date().toISOString(),
+        }));
         hideQueueScan = true;
 
         const second = await checksTurnGreen(redis, 105);
@@ -443,6 +454,8 @@ describe('Ultrafix recovery after a CI failure', () => {
     });
 
     test('enforces the rating goal circuit breaker', async () => {
+        // Defensive state: a running loop does not record `finalScore` (a loop
+        // that reaches its goal finishes at once), but one that does must not cycle on.
         const redis = await strandLoopAfterCiFailure(107, { finalScore: 9 });
 
         const result = await checksTurnGreen(redis, 107);
@@ -466,6 +479,30 @@ describe('Ultrafix recovery after a CI failure', () => {
         assert.equal(reviewJobs(108).length, 0);
         assert.equal(await loadState(redis as never, OWNER, REPO, 108), null, 'loop state cleaned up');
         assert.equal(await loadDeferredContinuation(redis as never, OWNER, REPO, 108), null);
+    });
+
+    test('a failed label lookup keeps the loop and leaves a retry instead of clearing it', async () => {
+        const redis = await strandLoopAfterCiFailure(132);
+        const before = await loadState(redis as never, OWNER, REPO, 132);
+        mockOctokitRequest.mock.mockImplementation(async (route: string) => {
+            if (route.startsWith('GET')) throw new Error('502 Bad Gateway');
+            return { data: {} };
+        });
+
+        const result = await checksTurnGreen(redis, 132);
+
+        assert.equal(result.continued, false);
+        assert.equal(result.reason, 'rearm_not_ready: label_unverified');
+        assert.deepEqual(await loadState(redis as never, OWNER, REPO, 132), before, 'the loop survives the API blip');
+        assert.equal(reviewJobs(132).length, 0);
+        assert.ok(await loadRearmRetry(redis as never, OWNER, REPO, 132), 'the sweep will look again');
+
+        // GitHub answers again: the sweep recovers the loop.
+        mockOctokitRequest.mock.restore();
+        const outcomes = await sweepUltrafixResumeCandidates(redis as never, () => logger as never);
+        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        assert.equal(reviewJobs(132).length, 1);
+        assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 132), null);
     });
 
     test('a recovered loop keeps cycling after the resumed review finishes', async () => {
@@ -626,8 +663,11 @@ describe('Ultrafix recovery after a CI failure', () => {
     });
 
     test('red CI on a recovered loop posts one notice and is bounded by the CI wait timeout', async () => {
-        const redis = await strandLoopAfterCiFailure(116);
         const posts = () => mockOctokitRequest.mock.calls.filter(call => String(call.arguments[0]).startsWith('POST'));
+        const redis = await strandLoopAfterCiFailure(116);
+        // The original deferral noticed the old head; the follow-up pushed a new one.
+        assert.equal(posts().length, 1);
+        assert.match(String((posts()[0].arguments[1] as { body: string }).body), /`red-hea`/);
         mockOctokitRequest.mock.resetCalls();
 
         const first = await resumeDeferredContinuation({ owner: OWNER, repo: REPO, pr: 116 }, redis as never, logger as never);
@@ -650,6 +690,46 @@ describe('Ultrafix recovery after a CI failure', () => {
         assert.equal(state?.active, false);
         assert.equal(state?.completionReason, ULTRAFIX_CI_TIMEOUT_REASON);
         assert.equal(reviewJobs(116).length, 0);
+    });
+
+    test('a re-arm on the head that already has a CI notice does not post another', async () => {
+        const posts = () => mockOctokitRequest.mock.calls
+            .filter(call => String(call.arguments[0]).startsWith('POST'))
+            .filter(call => /waiting for CI/.test(String((call.arguments[1] as { body?: string }).body)));
+        // The follow-up is still running: the PR head is the one CI failed on.
+        const redis = await strandLoopAfterCiFailure(127, {}, {}, { followUpPushed: false });
+        const waitKey = getUltrafixCiWaitKey(OWNER, REPO, 127);
+        const original = JSON.parse(redis.store.get(waitKey)!);
+        assert.equal(posts().length, 1, 'the original deferral posted its notice');
+
+        // Other jobs on the same head finish and wake the stranded loop.
+        const result = await resumeDeferredContinuation({ owner: OWNER, repo: REPO, pr: 127 }, redis as never, logger as never);
+
+        assert.match(result.reason, /^rearm_deferred: checks_not_passing/);
+        assert.equal(posts().length, 1, 'one notice per head across the epoch handoff');
+        const wait = JSON.parse(redis.store.get(waitKey)!);
+        assert.equal(wait.workEpoch, result.workEpoch, 'the wait now belongs to the re-armed epoch');
+        assert.equal(wait.headSha, original.headSha);
+        assert.equal(wait.since, original.since, 'the CI wait timeout still counts from when this head first blocked');
+        assert.equal(wait.noticePostedAt, original.noticePostedAt);
+    });
+
+    test('a wait left by an earlier loop on the same head does not carry over to a re-arm', async () => {
+        const posts = () => mockOctokitRequest.mock.calls
+            .filter(call => String(call.arguments[0]).startsWith('POST'))
+            .filter(call => /waiting for CI/.test(String((call.arguments[1] as { body?: string }).body)));
+        const redis = await strandLoopAfterCiFailure(128, {}, {}, { followUpPushed: false });
+        const waitKey = getUltrafixCiWaitKey(OWNER, REPO, 128);
+        const state = await loadState(redis as never, OWNER, REPO, 128);
+        // The recorded wait predates this loop's current owner.
+        const stale = { ...JSON.parse(redis.store.get(waitKey)!), workEpoch: state!.workEpoch - 1, since: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString() };
+        redis.store.set(waitKey, JSON.stringify(stale));
+        mockOctokitRequest.mock.resetCalls();
+
+        const result = await resumeDeferredContinuation({ owner: OWNER, repo: REPO, pr: 128 }, redis as never, logger as never);
+
+        assert.match(result.reason, /^rearm_deferred: checks_not_passing/, 'an unrelated old wait does not time the loop out');
+        assert.equal(posts().length, 1, 'a fresh notice for this loop');
     });
 
     test('a continuation whose next step is already queued reports it instead of continuing', async () => {
@@ -722,7 +802,19 @@ describe('Ultrafix recovery after a CI failure', () => {
         await checksTurnGreen(redis, 120);
         assert.equal(reviewJobs(120).length, 1);
 
-        // A late check_suite finds the loop's own current-epoch review outstanding.
+        // A late check_suite has nothing to resume: the review's epoch owns the loop.
+        mockQueueGetJobs.mock.resetCalls();
+        const ignored = await checksTurnGreen(redis, 120);
+        assert.equal(ignored.reason, 'no_deferred_continuation');
+        assert.equal(mockQueueGetJobs.mock.callCount(), 0);
+        assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 120), null, 'no retry churn for a healthy loop');
+
+        // A leftover retry obligation makes it a candidate; the trigger then
+        // finds the loop's own current-epoch review outstanding.
+        const [review] = reviewJobs(120);
+        await redis.set(getUltrafixRearmRetryKey(OWNER, REPO, 120), JSON.stringify({
+            owner: OWNER, repo: REPO, pr: 120, workEpoch: review.data.ultrafixMeta.workEpoch, reason: 'test', savedAt: new Date().toISOString(),
+        }));
         const late = await checksTurnGreen(redis, 120);
         assert.match(late.reason, /rearm_not_ready: follow_up_jobs_active/);
         const retry = await loadRearmRetry(redis as never, OWNER, REPO, 120);
@@ -818,6 +910,66 @@ describe('Ultrafix recovery after a CI failure', () => {
         const epoch = await getUltrafixAutomaticWorkEpoch(restarted as never, OWNER, REPO, 125);
         assert.equal((await loadDeferredContinuation(restarted as never, OWNER, REPO, 125))?.workEpoch, epoch);
         assert.equal(await loadRearmRetry(restarted as never, OWNER, REPO, 125), null, 'released once the deferral is durable');
+    });
+
+    test('a trigger between startup\'s state commit and its initial enqueue does not fence the startup', async () => {
+        const redis = createRedis();
+        // `/ultrafix` committed its state under its reserved epoch; the initial job is not queued yet.
+        const { state } = await startLoop(redis as never, { owner: OWNER, repo: REPO, pr: 129, goal: 8, maxCycles: 5, pauseSeconds: 30 }, false);
+        const epoch = await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 129);
+        ciStatus = GREEN;
+        mockOctokitRequest.mock.resetCalls();
+
+        const result = await checksTurnGreen(redis, 129);
+
+        assert.equal(result.reason, 'no_deferred_continuation');
+        assert.equal(await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 129), epoch, 'the startup epoch is untouched');
+        assert.equal((await loadState(redis as never, OWNER, REPO, 129))?.workEpoch, state.workEpoch);
+        assert.equal(reviewJobs(129).length, 0, 'no re-armed review replaces the initial step');
+        assert.equal(mockOctokitRequest.mock.callCount(), 0, 'a healthy loop costs no GitHub calls');
+    });
+
+    test('a process lost right after claiming a deferred record leaves a retry the sweep honours', async () => {
+        const redis = await strandLoopAfterCiFailure(130);
+        // CI on the follow-up head is red: the recovery becomes a deferral under its own epoch.
+        await resumeDeferredContinuation({ owner: OWNER, repo: REPO, pr: 130 }, redis as never, logger as never);
+        const deferred = await loadDeferredContinuation(redis as never, OWNER, REPO, 130);
+        assert.equal(deferred?.workEpoch, await getUltrafixAutomaticWorkEpoch(redis as never, OWNER, REPO, 130));
+        assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 130), null);
+
+        // Checks turn green; the process dies right after the claim removed the record.
+        let atClaim: Map<string, string> | undefined;
+        const getdel = redis.getdel.bind(redis);
+        redis.getdel = async (key: string) => {
+            const value = await getdel(key);
+            if (value && key.startsWith('ultrafix:deferred:')) atClaim ??= new Map(redis.store);
+            return value;
+        };
+        await checksTurnGreen(redis, 130);
+        assert.ok(atClaim, 'the deferred record was claimed');
+
+        const restarted = restartFrom(atClaim, 130);
+        assert.equal(await loadDeferredContinuation(restarted as never, OWNER, REPO, 130), null);
+        assert.ok(await loadRearmRetry(restarted as never, OWNER, REPO, 130), 'the obligation was persisted before the claim');
+
+        const outcomes = await sweepUltrafixResumeCandidates(restarted as never, () => logger as never);
+
+        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        assert.equal(reviewJobs(130).length, 1);
+        assert.equal(await loadRearmRetry(restarted as never, OWNER, REPO, 130), null, 'released once the review is queued');
+    });
+
+    test('a deferred resume that settles releases the obligation it recorded before the claim', async () => {
+        const redis = await strandLoopAfterCiFailure(131);
+        await resumeDeferredContinuation({ owner: OWNER, repo: REPO, pr: 131 }, redis as never, logger as never);
+
+        const stillRed = await resumeDeferredContinuation({ owner: OWNER, repo: REPO, pr: 131 }, redis as never, logger as never);
+        assert.match(stillRed.reason, /^still_deferred/);
+        assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 131), null, 'a re-saved deferral needs no retry');
+
+        const resumed = await checksTurnGreen(redis, 131);
+        assert.equal(resumed.reason, 'deferred_resumed');
+        assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 131), null);
     });
 
     test('repositories whose names join to the same text keep separate step jobs', async () => {

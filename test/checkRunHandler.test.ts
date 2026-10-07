@@ -134,6 +134,8 @@ const {
     getPRAutoMergeInfo,
     linkedIssueHasAutoMergeLabel,
     getFirstCommitMessage,
+    findPRsForCommitCached,
+    COMMIT_PRS_CACHE_TTL_SECONDS,
     resetUltrafixStateRedisForTests
 } = await import('../packages/core/src/webhook/checkRunHelpers.js');
 
@@ -2347,5 +2349,62 @@ describe('check intake fallbacks and Ultrafix hook', () => {
         } finally {
             clearHook();
         }
+    });
+});
+
+describe('commit to PR lookup cache', () => {
+    function memoryCache() {
+        const store = new Map<string, string>();
+        const set = mock.fn(async (key: string, value: string, ..._options: Array<string | number>) => { store.set(key, value); return 'OK' as const; });
+        return { store, set, get: async (key: string) => store.get(key) ?? null };
+    }
+    const lookups = () => mockOctokit.request.mock.calls.filter(call =>
+        (call.arguments[0] as string).includes('/commits/{commit_sha}/pulls'));
+
+    test('a burst of check runs for one commit costs one GitHub lookup', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('burst-sha');
+        const cache = memoryCache();
+
+        const burst = await Promise.all([1, 2, 3].map(() =>
+            findPRsForCommitCached('test-owner', 'test-repo', 'burst-sha', cache as never)));
+        const later = await findPRsForCommitCached('test-owner', 'test-repo', 'burst-sha', cache as never);
+
+        for (const prs of [...burst, later]) assert.deepStrictEqual(prs, [{ number: 77 }]);
+        assert.strictEqual(lookups().length, 1);
+        assert.deepStrictEqual(cache.set.mock.calls[0].arguments.slice(2), ['EX', COMMIT_PRS_CACHE_TTL_SECONDS]);
+    });
+
+    test('commits and repositories are cached separately, and empty results are cached too', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({ data: [{ number: 9, state: 'closed' }] }));
+        const cache = memoryCache();
+
+        assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'main-sha', cache as never), []);
+        assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'main-sha', cache as never), []);
+        await findPRsForCommitCached('test-owner', 'other-repo', 'main-sha', cache as never);
+        await findPRsForCommitCached('test-owner', 'test-repo', 'next-sha', cache as never);
+        assert.strictEqual(lookups().length, 3);
+    });
+
+    test('a failed lookup is not cached', async () => {
+        resetMocks();
+        const cache = memoryCache();
+        mockOctokit.request.mock.mockImplementation(async () => { throw new Error('502'); });
+        assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'flaky-sha', cache as never), []);
+        assert.strictEqual(cache.store.size, 0);
+
+        mockGreenAutoMergePR('flaky-sha');
+        assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'flaky-sha', cache as never), [{ number: 77 }]);
+    });
+
+    test('an unavailable cache falls back to the plain lookup', async () => {
+        resetMocks();
+        mockGreenAutoMergePR('no-cache-sha');
+        const broken = {
+            get: async () => { throw new Error('redis down'); },
+            set: async () => { throw new Error('redis down'); },
+        };
+        assert.deepStrictEqual(await findPRsForCommitCached('test-owner', 'test-repo', 'no-cache-sha', broken as never), [{ number: 77 }]);
     });
 });

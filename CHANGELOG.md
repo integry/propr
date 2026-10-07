@@ -161,6 +161,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Ultrafix recovers from red CI**: a loop paused on failing CI is no longer
+  left stranded when a CI-failure follow-up, `/fix` or push retires its
+  deferred review. Green `check_run` and `check_suite` events and polling
+  reconciliation now wake it and schedule its next review under a new work
+  epoch. The cycle limit, the goal and the `ultrafix` label still apply. A
+  re-arm on a head that is still red keeps that head's single "waiting for CI"
+  notice and its CI wait timeout. `check_suite` is now a supported webhook
+  event. Check runs and suites whose payload lists no PRs are matched to open
+  PRs by commit. That lookup is cached per commit for 60 seconds, so a push
+  with many jobs costs one GitHub call. Because of the lookup, events GitHub
+  sends without PR numbers, notably for fork PRs, now reach their PRs: an
+  opted-in failed-CI follow-up can now fire for them, as it already could for
+  `status` events. The retry sweep runs only in the API server.
 - **Ultrafix no longer stalls on non-blocking checks**: Ultrafix review
   readiness now honours the repository's `nonBlockingChecks` patterns, so a
   failing or still-pending check such as `Validate unsigned *` no longer defers

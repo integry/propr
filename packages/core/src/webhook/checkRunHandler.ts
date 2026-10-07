@@ -11,6 +11,7 @@ import {
     linkedIssueHasAutoMergeLabel,
     hasActiveTasksForPR,
     findPRsForCommit,
+    findPRsForCommitCached,
     type MergePROptions,
     type MergePRResult,
     type PRAutoMergeInfo
@@ -344,7 +345,8 @@ export async function handleCheckRunEvent(
  * PRs a check run/suite applies to. When the payload lists none, open PRs are
  * looked up by commit. The branch name cannot rule that lookup out: a PR may
  * use the default branch as its head (`main` into `release`), and a fork PR's
- * head branch may share the base repository's default-branch name.
+ * head branch may share the base repository's default-branch name. Every job
+ * of a default-branch push lists no PRs, so the lookup is cached per commit.
  */
 async function resolveTargetPRs(
     owner: string,
@@ -354,7 +356,7 @@ async function resolveTargetPRs(
     if (source.pullRequests && source.pullRequests.length > 0) {
         return source.pullRequests.map(pr => ({ number: pr.number }));
     }
-    return findPRsForCommit(owner, repoName, source.headSha);
+    return findPRsForCommitCached(owner, repoName, source.headSha);
 }
 
 /**

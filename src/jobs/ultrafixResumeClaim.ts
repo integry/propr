@@ -9,13 +9,14 @@
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
-import { reserveEpochAndReplaceStateIfUnchanged } from './ultrafixAutomaticWorkEpoch.js';
+import { getUltrafixAutomaticWorkEpoch, reserveEpochAndReplaceStateIfUnchanged } from './ultrafixAutomaticWorkEpoch.js';
 import {
     clearRearmRetry,
     clearRearmRetryIfClaimHeld,
     getActionCounts,
     getUltrafixStateKey,
     loadDeferredContinuation,
+    loadRearmRetry,
     loadState,
     saveRearmRetryUnlessClaimTaken,
 } from './ultrafixOrchestrationService.js';
@@ -130,6 +131,10 @@ export type StrandedLoopRearmDecision =
 export function evaluateStrandedLoopRearm(state: UltrafixLoopState | null): StrandedLoopRearmDecision {
     if (!state || !state.active) return { action: 'skip', reason: 'no_active_loop' };
 
+    // Defensive: `finalScore` is only written when a loop completes, and a loop
+    // whose review reaches the goal completes at once, so an active loop does
+    // not normally carry it. The check keeps a state that does (e.g. written by
+    // an older release or by hand) from cycling past its own goal.
     if (state.finalScore !== null && state.finalScore !== undefined && state.finalScore >= state.goal) {
         return {
             action: 'complete',
@@ -190,13 +195,27 @@ export async function reserveStateWorkEpoch(
 }
 
 /**
- * Cheap Redis gate shared by every resume trigger: is there a deferred record
- * or an active loop for this PR? Most CI events are for PRs with neither.
+ * Cheap Redis gate shared by every resume trigger: is there anything for this
+ * PR to resume? That is a deferred record, or an active loop that is stranded:
+ * its epoch was superseded, or a retry obligation names it. Most CI events are
+ * for PRs with none of these.
+ *
+ * An active loop still owned by the current epoch is not a candidate: its own
+ * step (startup's initial job, a queued step, or that step's continuation)
+ * drives it. The resume paths that hand such a loop off (a re-arm taking
+ * ownership, a deferred record being claimed) record a retry obligation first,
+ * which keeps it a candidate. So a healthy mid-cycle loop costs no GitHub calls
+ * per poll, and a trigger cannot fence a startup whose initial job is not
+ * queued yet.
  */
 export async function hasUltrafixResumeCandidate(redis: Redis, prId: UltrafixPrId): Promise<boolean> {
     const { owner, repo, pr } = prId;
     if (await loadDeferredContinuation(redis, owner, repo, pr)) return true;
-    return evaluateStrandedLoopRearm(await loadState(redis, owner, repo, pr)).action !== 'skip';
+    const state = await loadState(redis, owner, repo, pr);
+    if (!state || evaluateStrandedLoopRearm(state).action === 'skip') return false;
+    const stateEpoch = typeof state.workEpoch === 'number' ? state.workEpoch : 0;
+    if (stateEpoch !== await getUltrafixAutomaticWorkEpoch(redis, owner, repo, pr)) return true;
+    return await loadRearmRetry(redis, owner, repo, pr) !== null;
 }
 
 export function getUltrafixResumeRecheckKey(owner: string, repo: string, pr: number): string {

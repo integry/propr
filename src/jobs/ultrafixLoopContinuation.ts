@@ -28,6 +28,7 @@ import {
     isUltrafixAutomaticWorkCurrent,
     listDeferredContinuationKeys,
     listRearmRetryKeys,
+    loadDeferredContinuation,
     loadRearmRetry,
     parseDeferredKey,
     parseRearmRetryKey,
@@ -99,6 +100,9 @@ export function setCheckRunDeps(deps: {
 }
 
 export type CheckRunDeps = Parameters<typeof evaluateReadiness>[2];
+
+/** Reason recorded on the retry obligation that covers a claimed deferred record. */
+export const DEFERRED_CLAIM_RETRY_REASON = 'deferred_claim_pending';
 
 /** The step this continuation would enqueue is already queued or running; that job owns the loop. */
 export const NEXT_STEP_ALREADY_QUEUED_REASON = 'next_step_already_queued';
@@ -543,6 +547,19 @@ async function resumeClaimedContinuation(
     claim: ResumeClaim,
 ): Promise<ContinuationResult> {
     const { owner, repo, pr } = prId;
+    // Claiming the deferred record removes it. A process lost before this
+    // attempt settles (which no error handler can observe) would leave an
+    // active loop that nothing durable names, so the retry obligation is
+    // persisted first; settling the attempt releases or replaces it.
+    if (await loadDeferredContinuation(redisClient, owner, repo, pr)) {
+        const saved = await claim.saveRetry({
+            owner, repo, pr,
+            workEpoch: await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr),
+            reason: DEFERRED_CLAIM_RETRY_REASON,
+            savedAt: new Date().toISOString(),
+        });
+        if (!saved) return { continued: false, reason: RESUME_CLAIM_LOST_REASON };
+    }
     // Atomically claim the deferred record so concurrent check_run events
     // for the same PR cannot double-enqueue the next step.
     const deferred = await claimDeferredContinuation(redisClient, owner, repo, pr);

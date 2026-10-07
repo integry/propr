@@ -854,6 +854,21 @@ export async function hasActiveTasksForPR(
     };
 }
 
+async function requestOpenPRsForCommit(
+    owner: string,
+    repoName: string,
+    commitSha: string
+): Promise<Array<{ number: number }>> {
+    const octokit = await getAuthenticatedOctokit();
+    const { data: pulls } = await octokit.request(
+        'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+        { owner, repo: repoName, commit_sha: commitSha, headers: { accept: 'application/vnd.github.groot-preview+json' } }
+    );
+    return pulls
+        .filter((pr: { state: string }) => pr.state === 'open')
+        .map((pr: { number: number }) => ({ number: pr.number }));
+}
+
 /**
  * Finds open PRs whose head SHA matches the given commit.
  * Used by the status event handler to map a commit status update to PRs.
@@ -864,16 +879,70 @@ export async function findPRsForCommit(
     commitSha: string
 ): Promise<Array<{ number: number }>> {
     try {
-        const octokit = await getAuthenticatedOctokit();
-        const { data: pulls } = await octokit.request(
-            'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
-            { owner, repo: repoName, commit_sha: commitSha, headers: { accept: 'application/vnd.github.groot-preview+json' } }
-        );
-        return pulls
-            .filter((pr: { state: string }) => pr.state === 'open')
-            .map((pr: { number: number }) => ({ number: pr.number }));
+        return await requestOpenPRsForCommit(owner, repoName, commitSha);
     } catch (error) {
         logger.warn({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to find PRs for commit');
         return [];
+    }
+}
+
+const COMMIT_PRS_CACHE_KEY_PREFIX = 'propr:commit-open-prs';
+/**
+ * Long enough to absorb the burst of check runs one push produces, short enough
+ * that a PR opened for the commit afterwards is soon seen. A run that misses it
+ * meanwhile is covered by later check events and polling reconciliation.
+ */
+export const COMMIT_PRS_CACHE_TTL_SECONDS = 60;
+const commitPRLookupsInFlight = new Map<string, Promise<Array<{ number: number }>>>();
+
+type CommitPRsCache = Pick<Redis, 'get' | 'set'>;
+
+async function readCachedCommitPRs(cache: CommitPRsCache, key: string): Promise<Array<{ number: number }> | null> {
+    try {
+        const raw = await cache.get(key);
+        return raw ? JSON.parse(raw) as Array<{ number: number }> : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * `findPRsForCommit` behind a short-lived Redis cache keyed by repository and
+ * commit, plus in-process sharing of a lookup already in flight. Every job of
+ * a push (e.g. 20–30 check runs on the default branch, which list no PRs) then
+ * costs one GitHub lookup instead of one each. A failed lookup is not cached,
+ * and a cache failure falls back to the plain lookup.
+ */
+export async function findPRsForCommitCached(
+    owner: string,
+    repoName: string,
+    commitSha: string,
+    cache: CommitPRsCache = getUltrafixStateRedis(),
+): Promise<Array<{ number: number }>> {
+    const key = `${COMMIT_PRS_CACHE_KEY_PREFIX}:${owner}:${repoName}:${commitSha}`;
+    const inFlight = commitPRLookupsInFlight.get(key);
+    if (inFlight) return inFlight;
+    const lookup = (async () => {
+        const cached = await readCachedCommitPRs(cache, key);
+        if (cached) return cached;
+        let prs: Array<{ number: number }>;
+        try {
+            prs = await requestOpenPRsForCommit(owner, repoName, commitSha);
+        } catch (error) {
+            logger.warn({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to find PRs for commit');
+            return [];
+        }
+        try {
+            await cache.set(key, JSON.stringify(prs), 'EX', COMMIT_PRS_CACHE_TTL_SECONDS);
+        } catch (error) {
+            logger.debug({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to cache PRs for commit');
+        }
+        return prs;
+    })();
+    commitPRLookupsInFlight.set(key, lookup);
+    try {
+        return await lookup;
+    } finally {
+        commitPRLookupsInFlight.delete(key);
     }
 }

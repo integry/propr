@@ -79,7 +79,7 @@ for reason codes and issue state labels.
 
 ## Automatic Follow-Up For Failed CI
 
-**Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Enable it only where CI failures are trustworthy signals.
+**Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Check runs that GitHub delivers without a PR number, which is common for fork PRs, are matched to open PRs by commit, so they are reported too. Enable it only where CI failures are trustworthy signals.
 
 ## Cancelling Obsolete Checks During Follow-Up
 

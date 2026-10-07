@@ -20,7 +20,7 @@ import {
     evaluateReadiness,
     findOutstandingUltrafixWork,
     finishUltrafixLoop,
-    hasUltrafixLabel,
+    getUltrafixLabelState,
 } from './ultrafixLoopContinuationHelpers.js';
 import type { CheckRunDeps, ContinuationResult, UltrafixContinuationParams } from './ultrafixLoopContinuation.js';
 import {
@@ -41,6 +41,9 @@ const MAX_REARM_ATTEMPTS = 3;
  * never settles it, not something to re-run every sweep.
  */
 export const IN_FLIGHT_STEP_RETRY_DELAY_MS = 15 * 60_000;
+
+/** Readiness reason when GitHub could not confirm whether the `ultrafix` label is still attached. */
+export const LABEL_UNVERIFIED_REASON = 'label_unverified';
 
 const STATE_CHANGED = Symbol('state_changed');
 const CLAIM_LOST = Symbol('claim_lost');
@@ -115,7 +118,10 @@ async function rearmFromSnapshot(prId: UltrafixPrId, ctx: StrandedLoopRearmConte
         prId, ctx, snapshot,
         currentEpoch: await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr),
     };
-    if (!await hasUltrafixLabel(owner, repo, pr, correlatedLogger)) return clearUnlabelledLoop(attempt);
+    const label = await getUltrafixLabelState(owner, repo, pr, correlatedLogger);
+    // A failed lookup is not a removed label: keep the loop and retry later.
+    if (label === 'unverified') return { continued: false, reason: `rearm_not_ready: ${LABEL_UNVERIFIED_REASON}` };
+    if (label === 'absent') return clearUnlabelledLoop(attempt);
     if (decision.action === 'complete') return completeStrandedLoop(attempt, decision);
     return enqueueRearmReview(attempt);
 }
@@ -265,7 +271,8 @@ async function enqueueRearmReview(attempt: RearmAttempt): Promise<RearmAttemptRe
  * it back into an ordinary deferred review under its reserved epoch. The CI
  * wait then applies exactly as for any deferral — one notice per head, and
  * the loop stops with "CI did not settle" once `ultrafix_ci_wait_timeout_ms`
- * elapses — and the deferred record keeps the review durable for the sweep.
+ * elapses, counted from when this head first held the loop back — and the
+ * deferred record keeps the review durable for the sweep.
  */
 async function deferRearmedReview(
     attempt: RearmAttempt,
@@ -295,7 +302,9 @@ async function deferRearmedReview(
     ctx.correlatedLogger.info({ pr: prId.pr, workEpoch, reasons }, 'Ultrafix re-arm: CI not green, review deferred under its reserved epoch');
 
     if (!await ctx.claim.confirm()) return claimLost();
-    const ci = await applyUltrafixCiDeferral(params, readiness, owned);
+    // A wait already recorded for this head by the loop's previous owner is
+    // the same wait: keep its notice and its start time.
+    const ci = await applyUltrafixCiDeferral(params, readiness, owned, { carryOverFromEpoch: attempt.snapshot.state.workEpoch });
     return ci.terminal ?? {
         continued: false,
         deferred: true,
