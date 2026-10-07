@@ -62,7 +62,7 @@ The Web UI includes an AI Agents page for configuring coding agents. Each agent 
 
 The model IDs you enable here become the durable names used by labels and slash commands.
 
-For an interactive login, choose direct login while adding the agent or select **Log in** on an existing entry. Open the authorization URL shown in the dialog and send a confirmation code or requested response when prompted. Login sessions are private to the dashboard user who started them, permit only one writer per credential directory, expire after ten minutes of inactivity, and are not persisted in task or LLM logs.
+For an interactive login, choose direct login while adding the agent or choose **Log in** from an existing entry's **⋯** actions menu. Open the authorization URL shown in the dialog and send a confirmation code or requested response when prompted. Login sessions are private to the dashboard user who started them, permit only one writer per credential directory, expire after ten minutes of inactivity, and are not persisted in task or LLM logs.
 
 {/* SCREENSHOT PLACEHOLDER (P2 — interim: the site's ui-agents.png): Capture the AI Agents page with the add-agent modal open for Claude: the new-account/existing-config credential choice, alias, enable toggle, and supported models with one default selected. */}
 

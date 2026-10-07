@@ -7,281 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **Dashboard HTTP API reference and a documented `@propr/client`**:
-  `npm run gen:openapi` generates an OpenAPI 3.1 spec,
-  `docs/static/openapi/propr-api.yaml`, from the API route registry and the
-  zod schemas in `packages/api/openapi`. The spec lists every registered route
-  with its authentication (session, bearer token or MCP scope) and any required
-  instance permission. Routes without annotations yet are marked
-  `x-undocumented: true`, and `info.x-route-coverage` counts them. The spec
-  documents the common error envelope (`code`, `message`, `hint`). Routes that
-  still return ad-hoc errors are marked `x-legacy-error`; their behaviour is
-  unchanged. A new "API reference" page under Operations in the docs renders the
-  spec. `@propr/client` gains typed `listTasks`, `getTaskHistory`,
-  `createTaskSubmission`, `getTaskSubmission` and `retryTaskSubmission`
-  methods. Its request and response types (`ProprApi.*`) are generated from the
-  same schemas, and a new `packages/client/README.md` covers installation,
-  bearer authentication, examples and the Socket.IO events. Pull request checks
-  run `gen:openapi:check`, which fails on a stale or invalid spec, and
-  `check:client-contract`, which fails when the client's operations or method
-  signatures drift from the spec.
-- **Automatic replacement runs**: an issue task lost with its worker (the
-  reconciler finds neither its queue job nor its task container) now gets one
-  replacement attempt instead of only being marked failed; a second loss in the
-  same lineage is final. A run that ends with a transient provider error that
-  `withRetry` treats as retryable (5xx, `529`/overloaded, connection resets,
-  timeouts; 429 and usage limits excluded) is replaced up to
-  `MAX_PROVIDER_REPLACEMENTS` times (default 2, also the instance setting
-  `max_provider_replacements`; `0` disables it). `INFRA_LOST_REPLACEMENT=false`
-  disables lost-run replacement. Replacements reuse the original agent, model
-  and per-task overrides, continue the pushed work branch, go through
-  repository capacity admission, and receive the per-run cost cap minus what
-  earlier attempts spent. User and withdrawal cancellations, watchdog, timeout
-  and cost-cap stops, goal tasks and closed issues are never replaced. Attempts
-  are linked with `replaces_task_id`, `replaced_by_task_id` and
-  `attempt_number`, so the cap survives restarts. The task timeline records
-  `replacement.dispatched`, `replacement.skipped` and `replacement.exhausted`;
-  the Inbox shows one "Replacement started" card instead of a failure alert;
-  the final GitHub failure comment links every attempt; task detail shows the
-  attempt lineage and `propr task get --json` includes `replacesTaskId`,
-  `replacedByTaskId` and `attemptNumber`. `withRetry` now also retries HTTP
-  `529` and "overloaded" errors.
-- **Persisted review scores and per-model review quality**: every `/review`
-  and Ultrafix review cycle that produces a parsed `Score: N/10` now writes a
-  `review_scores` row with the reviewer and implementer agent and model, blocker
-  and suggestion counts, the reviewed head and, for Ultrafix, the cycle number
-  and goal. Merged and closed outcomes are recorded on the PR's existing state
-  row. `GET /api/stats/review-scores` (and `.csv`) reports, per implementer
-  model, PRs scored, mean and median first score, mean final score, cycles to
-  goal, merge rate and cost per merged PR, each with its denominator and with
-  unknown values as `null`. `GET /api/pull-requests/:number/scores` returns one
-  PR's score history, and `/api/stats/overview` model rows gain
-  `mean_final_score` and `n_scored`. The Analytics page adds a "Review quality
-  by model" table, task details show a PR's score history, `propr stats
-  review-scores` prints the summary (`--json` supported), and MCP
-  `get_pull_request` includes `scoreHistory`. Earlier scores are not backfilled.
-- **Fail-closed auto-merge policy with protected paths**: `.propr/workflow.yml`
-  accepts an `auto_merge` block (`enabled`, `method`, `protected_paths`), and
-  `.propr/**` is always protected. Before arming GitHub auto-merge (after the PR
-  is created, after Ultrafix reaches its goal, and for Epic queue heads), ProPR
-  reads the policy from the PR's base branch and lists the changed files from a
-  fresh GitHub API fetch. It never uses the head branch or the agent's worktree.
-  An invalid or unreadable policy, an empty diff, an unavailable diff or a
-  protected path means auto-merge is not armed. Each decision writes one task
-  timeline event with a stable reason code (`armed`, `skipped_protected_path`,
-  `skipped_disabled`, `skipped_empty_diff`, `skipped_policy_invalid`,
-  `skipped_diff_unavailable`). A skip posts a one-line PR comment and keeps the
-  `auto-merge` label for a person to act on. The check-based fallback merge
-  applies the same policy. A new head on a PR that ProPR armed is re-evaluated,
-  and auto-merge is disabled with a comment if the head now violates the policy.
-  A skipped Epic queue head shows "Waiting for human merge" and resumes once a
-  person merges the PR.
-- **Per-run spend caps**: a run whose estimated cost reaches its cap is now
-  stopped while it executes, and its partial work is published like a
-  timed-out run's. The cap comes from a per-task `maxCostUsd` (task
-  submissions, MCP `create_task`, `propr issue implement --max-cost`), then
-  `limits.max_cost_usd` in `.propr/workflow.yml`, then the new instance setting
-  `default_max_cost_usd` (Settings, `propr setting update`, MCP
-  `update_execution_settings`; empty or 0 = no cap). It covers implementations,
-  PR follow-ups, `/fix`, ultrafix cycles and reviews. A malformed or negative
-  value is ignored with a warning instead of capping runs at $0. Retries share
-  the task's budget. A capped run ends with the new terminal reason
-  `cost_cap_exceeded`, records a `budget.exceeded` timeline event, sends an
-  Inbox notification and comments on the issue or PR. Task details, the task
-  history API and `propr task get --json` show the cap, the spend and the
-  percentage used. `LLM_COST_THRESHOLD_USD` still only raises high-cost alerts.
-  The unused `AgentTankConfig` type was removed from `@propr/shared`.
-- **Pull request templates**: an optional `.propr/pr-template.md`, read from
-  the base-branch commit like `.propr/workflow.yml`, shapes the title and
-  description of the pull requests ProPR opens. Its sections are `title`,
-  `summary`, `run`, `commits`, `files_changed`, `prompt`,
-  `review_guidelines`, `commands` and `trailer`. A present section replaces
-  ProPR's default content, a whitespace-only section removes it, and an
-  absent section keeps it. Sections use `{{placeholder}}` substitution only.
-  Untrusted values (issue title, agent summary, commit subjects) are sanitized
-  and their HTML is escaped. Without the file, ProPR adds the repository's
-  GitHub pull request template under its summary and run block. This fallback
-  is a per-repository option, enabled by default
-  (`propr repo toggle --no-github-pr-template`, `githubPrTemplateFallback`).
-  Templates also apply to continuation pull requests opened during
-  publication and publication recovery. `propr init` scaffolds a commented
-  example and the new `propr repo validate` reports unknown sections and
-  placeholders. A template that cannot be read or rendered never fails a run:
-  ProPR logs it, records it on the task timeline and uses the default
-  description, which is unchanged when no template exists.
-- **Agent stall and degenerate-output watchdog**: a running implementation agent
-  (Claude, Codex, Antigravity, OpenCode or Vibe) that produces no output for
-  `AGENT_STALL_TIMEOUT_MS` (10 minutes), or emits
-  `AGENT_DEGENERATE_OUTPUT_LIMIT` (50) consecutive whitespace-only text deltas,
-  is now stopped instead of holding its worker slot and repository capacity
-  until the 24-hour execution timeout. A tool call that starts without
-  streaming output gets the longer `AGENT_TOOL_STALL_TIMEOUT_MS` (30 minutes);
-  tools that keep printing never trip it. Partial work is published like a
-  timed-out run's, the task ends with the new `terminalReason` `stalled` or
-  `degenerate_output`, the trip is written to the task timeline, the Inbox and
-  the issue/PR comment explain the stop, and `GET /api/llm-metrics` counts
-  trips per rule (`watchdogTrips`). The thresholds are instance settings
-  (Settings → Automation → Agent watchdog, `propr setting update
-  agent_stall_timeout_ms <ms>`, MCP `update_execution_settings`) that apply to
-  the next run without a restart; `0` disables a rule and the environment
-  variables are the defaults.
-- **Push salvage and rejection diagnosis**: when the final push of an
-  implementation run, PR follow-up, `/fix`, ultrafix cycle or merge-conflict
-  job fails, ProPR no longer loses the agent's commits with the worktree. It
-  retries once with a refreshed installation token, then pushes the commits to
-  `refs/propr/rescue/<taskId>--<timestamp>` on the same remote, then writes a git bundle to
-  `<DATA_DIR>/rescue/` (`PUSH_RESCUE_BUNDLE_DIR`), and finally keeps the
-  worktree, recorded in `<DATA_DIR>/rescue-worktrees/` (`PUSH_RESCUE_WORKTREE_RECORD_DIR`)
-  outside the checkout. The rejection is classified as
-  `push_protection` (with GitHub's unblock URL verbatim),
-  `ruleset_or_branch_protection`, `non_fast_forward`, `auth`, `network` or
-  `unknown`, and the class, the salvage rung and the exact recovery command are
-  shown on the task timeline, in `propr task get` (`pushFailure` in `--json`)
-  and in the GitHub failure comment. The daemon deletes rescue refs and bundles
-  older than `PUSH_RESCUE_RETENTION_DAYS` (default 14), aging rescue refs from
-  the creation time in their name; rescue refs are never
-  treated as task branches.
-- **Managed agent in Linux desktop previews**: the Preview Runtime Images
-  workflow has separate `prepare-agent` and `publish-agent` operations. They
-  build the existing linux/amd64-only managed agent image from the exact `main`
-  commit, run a smoke test that is offline and uses no credentials, and record
-  immutable candidate evidence. They publish only `propr/agent:<full-SHA>`, and
-  only after the existing protected runtime-publication approval. Desktop Linux
-  Preview `stage-draft` now requires a digest-pinned `runtime_agent_image` from
-  the same commit. It checks that image's architecture and source labels before
-  packaging and embeds it in each package's launcher manifest, in
-  `linux-preview.json` (schema 2) and in the checksums. A preview no longer
-  ships the unpublished version-tagged agent. A digest-pinned agent now gets its
-  local `propr/agent:latest` tag correctly. arm64 packages remain available, but
-  the managed agent, and so agent tasks, are amd64 only.
-  Image archive checksums are computed in fixed 8 MiB chunks instead of reading
-  the whole archive into memory, which failed `prepare-agent` on the ~2.4 GB
-  agent `docker save` archive with `File size ... is greater than 2 GiB`.
-- **Complete bundled third-party notices**: `scripts/generate-notices.sh` now
-  refuses to run without the root dependency tree installed at the
-  `package-lock.json` pins, and refuses to replace `THIRD_PARTY_LICENSES.md`
-  unless the result has the full `@anthropic-ai/claude-code` and
-  `@anthropic-ai/sdk` license texts and a production inventory covering every
-  direct dependency. Previously a clean checkout silently baked a notice without
-  them into images. The preview app/UI and agent builds now run
-  `npm ci --ignore-scripts` before building images.
-- **Bounded goal waits**: MCP `wait_goal` and `propr goal wait <id>` wait, with
-  a finite deadline, for a confirmed goal state (`completed`, `failed`,
-  `cancelled`, `paused`, `terminal`) or a newly published `checkpoint` instead
-  of polling. Waits read a durable, monotonic per-goal event journal that the
-  database appends with each goal or checkpoint write, so a requested pause or
-  cancellation, a finished child task or an idle agent never matches, and an
-  opaque cursor lets a retry or reconnect resume without missing or repeating a
-  transition. MCP requests block at most 30 seconds and return `timed_out` as an
-  ordinary result; the CLI chains them until `--timeout` and exits `2` on
-  timeout. A wait resumed past a finished goal's final event returns
-  `unreachable` at once, and a wait over the per-user limit fails with
-  `wait_limit`. Cancelling a wait, a disconnect or Ctrl-C never affects the goal.
-- **Goal blockers**: goals that need you — a confirmed pause, or an explicit
-  provider question or approval — now appear as durable, evidence-backed
-  blockers in the goal console, the goal list, the dashboard's attention list,
-  `get_goal` (`goal.attention`), the new MCP `list_goal_attention`,
-  `get_current_activity` and `propr goal attention`. Each names its prompt or
-  reason, when it was observed and the supported action that resolves it.
-  A lone Codex App Server question is answered with the next goal input; approvals
-  are reported but never approved by ProPR. Claude and Antigravity expose no
-  structured question or approval signal, so only pauses are reported for them.
-  `pendingInput.waitingForOperator` is now true for any open blocker, with
-  `reason` set to `provider_question` or `provider_approval` alongside the
-  existing `paused_awaiting_resume_or_input`.
-
-- **Sequential MCP epics**: `implement_plan` now queues exactly the selected
-  issues in publication order for `useEpic: true`, starts one model on the head,
-  and advances durably after merge. Optional `epicAdvanceOn: "terminal"` also
-  advances on closed/failed issues; the default records a `blockedReason` until
-  a blocked head is fixed and merged. Pause/resume holds and releases the next
-  issue, and worker reconciliation repairs missed advancement and dispatch.
-  Results and plan/operation reads expose queue progress; receipts stay
-  accepted until completion. `epicExecution: "parallel"` restores fan-out and
-  multi-model comparisons, and still labels the epic PR once every issue is done.
-  A head closed with its unmerged PR resumes when that PR is reopened and merged. Existing idempotency hashes are preserved. UI, CLI
-  and API **Implement Epic** and non-epic auto-merge requests feed the same
-  queue with `terminal` advancement, so a failed issue still continues the
-  plan. Plans already running at upgrade have no queue; restart them from
-  their next pending issue.
-- **Review fix selection**: `/fix all` requests every pending merge blocker and
-  optional suggestion. Review comments include a copyable `/fix F# S#` command
-  containing their published records for editing an explicit selection.
-- **Analytics timeframe**: one selector in the Analytics header scopes the
-  activity, task status, repository and model sections to the last 24 hours,
-  7 days, 30 days (default), 90 days, 12 months or all time. The choice is kept
-  in the URL as `?period=`. `GET /api/stats/tasks`, `/api/stats/repositories`
-  and `/api/stats/overview` accept the same optional `period` parameter and
-  behave as before without it.
-- **Analytics layout**: the page is one console instead of four cards: a
-  totals band (tasks, success rate, tokens, spend) over a split pane with
-  daily activity bars and repository performance on the left, and the
-  per-model table (tasks, tokens, cost), task status and token consumption
-  (input against output, spend per million tokens) on the right. Past days'
-  activity bars are neutral slate and only today's is teal; the chart's scale
-  carries a midline, and every day that has room is labelled under its bar
-  (weekday over day for a week). Repository rows open the Tasks list filtered
-  to that repository, a failure count opens its failed tasks, and model rows
-  open the LLM log for that model. The toolbar shows the repository scope as a locked
-  `All Repos`. `GET /api/stats/overview` adds `model_usage`, a per-model list
-  of tasks, tokens and cost, and `usage.input_tokens` / `usage.output_tokens`.
-
-### Fixed
-
-- **Ultrafix recovers from red CI**: a loop paused on failing CI is no longer
-  left stranded when a CI-failure follow-up, `/fix` or push retires its
-  deferred review. Green `check_run` and `check_suite` events and polling
-  reconciliation now wake it and schedule its next review under a new work
-  epoch. The cycle limit, the goal and the `ultrafix` label still apply. A
-  re-arm on a head that is still red keeps that head's single "waiting for CI"
-  notice and its CI wait timeout. `check_suite` is now a supported webhook
-  event. Check runs and suites whose payload lists no PRs are matched to open
-  PRs by commit. That lookup is cached per commit for 60 seconds, so a push
-  with many jobs costs one GitHub call. A "no open PR" result is cached for
-  only 10 seconds, so a PR opened right after its branch was pushed is not
-  missed for long. Because of the lookup, events GitHub sends without PR
-  numbers, notably for fork PRs, now reach their PRs: an opted-in failed-CI
-  follow-up can now fire for them, as it already could for `status` events.
-  The retry sweep runs in both the API server and the daemon. It reads an
-  index of pending retries and deferred reviews instead of scanning the whole
-  keyspace every minute. A deferred step taken by a process that stopped before
-  scheduling it, including a permitted final fix, resumes after a restart. A
-  step job that fails after all its attempts leaves a retry, so its loop is
-  re-armed. A loop stranded right after its final permitted fix still gets its
-  verifying review. A re-arm now also waits for any other job on the PR, such
-  as a manual `/fix`, to finish.
-- **Ultrafix no longer stalls on non-blocking checks**: Ultrafix review
-  readiness now honours the repository's `nonBlockingChecks` patterns, so a
-  failing or still-pending check such as `Validate unsigned *` no longer defers
-  the next `/review` forever. Matching legacy commit statuses are excluded too,
-  and `areAllChecksPassing` (Epic queue advance, auto-merge) applies the same
-  per-context exclusion. When blocking CI defers a review, ProPR posts one PR
-  comment naming the blocking checks; if CI has not settled within
-  `ultrafix_ci_wait_timeout_ms` (default 2 hours, also
-  `ULTRAFIX_CI_WAIT_TIMEOUT_MS`), the loop stops with "Ultrafix stopped" and the
-  reason "CI did not settle". `start_ultrafix`/`run_ultrafix` operation receipts
-  report the deferral and its blocking checks instead of `COMMAND_NOT_PICKED_UP`.
-
 ## [0.9.0] - 2026-09-29
 
-Release preparation covering v0.8.15 through base commit `c2de30509`. This section
-records delivered source changes; it does not announce published packages, images,
-desktop installers or a release tag. See the [coverage audit](docs/release-0.9.0-audit.md).
+Covers every change merged since v0.8.15. This section records delivered source
+changes; it does not announce published packages, images, desktop installers or a
+release tag. The [coverage audit](docs/release-0.9.0-audit.md) covers changes
+through `c2de30509`.
 
 ### Added
 
-- **Goals and native execution**: launch long-running objectives with Codex or
-  Claude Code, follow their progress and artifacts, and send corrective inputs.
-  Pause/resume/cancel controls and capability-aware input delivery preserve work
-  across execution boundaries. Goal timelines show operator corrections verbatim.
+- **Goals and native execution**: launch long-running objectives with Claude Code,
+  Codex or Antigravity, follow their progress and artifacts, and send corrective
+  inputs. Antigravity runs goals through its built-in `/goal` command; inputs,
+  pauses and model changes are applied at the next finished step and the same
+  conversation resumes. Pause/resume/cancel controls and capability-aware input
+  delivery preserve work across execution boundaries. Goal timelines show operator
+  corrections verbatim, and published checkpoints render as a `CHECKPOINT` card
+  instead of raw JSON.
+- **Goal CLI, blockers and waits**: the `propr goal` command group covers
+  `capabilities`, `create`, `list`, `inspect`, `input`, `inputs`, `pause`,
+  `resume`, `cancel`, `model`, `attention` and `wait`, with `--json` output and
+  idempotent retries. Goals that need you (a confirmed pause, or a Codex question
+  or approval) appear as durable blockers in the goal console's **Needs you**
+  panel, the goal list, the dashboard, `propr goal attention` and MCP
+  `list_goal_attention`, each naming the action that resolves it; ProPR never
+  approves on your behalf. MCP `wait_goal` and `propr goal wait` wait with a
+  finite deadline for a confirmed state or a new checkpoint, and a resumable
+  cursor means a reconnect never misses or repeats a transition. MCP
+  `create_goal` accepts `ultrafix` and `maxParallelTasks` (default 1 over MCP).
+- **Automations**: saved prompts that run on demand or on a UTC cron schedule
+  (15-minute minimum) and produce a free-form Markdown report. Create them on the
+  **Agents** page, trigger them with **Run now**, `POST
+  /api/agent-definitions/:id/runs` (with an `Idempotency-Key`), MCP
+  `trigger_agent_run` or `propr automation run --wait`, and read the report in the
+  UI, over MCP or with `propr automation report`. Each run is an isolated ProPR
+  task that never commits or pushes, with up to 10 repositories read-only,
+  optional web access, up to 10 input files and up to 5 previous reports as
+  context. Autonomy is **Dry run** (report only, the default), **Preview +
+  approve** (an acting step waits for your approval, with an Inbox notice) or
+  **Auto**. The acting step works only through ProPR MCP tools with a
+  short-lived grant limited to the automation's repositories; it can create
+  tasks, to-dos and PR comments, and cannot merge, deploy, change settings or
+  trigger other automations. Acting and ProPR tool access need Claude
+  Code or Codex. Unattended runs are skipped or deferred when Agent Tank reports
+  usage at or above `agent_run_usage_pause_percent` (default 90%); missed
+  schedule slots coalesce into one run.
 - **New Task**: launch a single instruction against a repository without planning
-  a multi-issue project. Repository and to-do shortcuts prefill the request; the
-  resulting issue, task and pull request remain traceable.
+  a multi-issue project. New Task and New Goal share one dialog with a **Prompt**
+  field, docked attachments and collapsed **Advanced Options**; New Task
+  preselects your last repository, agent and model, and repository pickers list
+  starred repositories first. Repository and to-do shortcuts prefill the request,
+  attached images are embedded in the created GitHub issue, and the resulting
+  issue, task and pull request remain traceable.
 - **Plan revision history**: inspect saved plan snapshots and restore a prior
-  version. Refinement retains the complete plan; file-based generation validates
-  every issue before accepting output, with guarded syntax repair when needed.
+  version; each revision is labelled **Generated**, **Refined**, **Manual edit**,
+  **Restored** or **Renamed**. Refinement retains the complete plan and rejects
+  partial output instead of overwriting the plan with a fragment; file-based
+  generation validates every issue before accepting output, with guarded syntax
+  repair when needed.
+- **Sequential epics**: **Implement Epic** in the UI, CLI, API and MCP
+  `implement_plan` queues the selected issues in publication order, runs one at a
+  time and advances durably after each merge. Over MCP the default holds a failed
+  or closed head until it is fixed and merged, `epicAdvanceOn: "terminal"` moves
+  past it, and `epicExecution: "parallel"` restores fan-out and multi-model
+  comparisons. Pause/resume holds and releases the next issue. Plans already
+  running at upgrade have no queue; restart them from their next pending issue.
 - **Inbox, PWA and Web Push**: install the web app, opt into browser notifications,
   choose personal categories and quiet hours, and suppress repository notifications
   without stopping automation. Inbox opens the relevant task, plan or goal and
@@ -292,16 +82,144 @@ desktop installers or a release tag. See the [coverage audit](docs/release-0.9.0
   review control. Status filters and a payload-free administrative access log
   make activity easier to inspect. One-off MCP tasks support explicit Ultrafix
   and auto-merge options with the corresponding scopes.
+- **MCP tools**: `list_operations` and a receipt lifecycle (`accepted`,
+  `running`, `completed`, `failed`, `cancelled`) followed through to completion,
+  including `/review`, `/fix` and Ultrafix progress; `get_work_overview` for
+  running and recent tasks with their PR checks, review and Ultrafix state;
+  `list_task_submissions`; `start_ultrafix`; `review_pull_request` with one or
+  up to 8 review models; `generate_repository_improvements` for the **Improve**
+  tab; `search_repository_files` (semantic or literal) and
+  `read_repository_file` to find and read code without cloning;
+  `list_visual_previews`, `get_visual_preview` and `get_comment_attachment` for
+  images on tasks, PRs and comments; `get_trigger_access_configuration` and
+  `update_trigger_access_configuration`; and `list_docs`, `get_doc`,
+  `search_docs` and `find_setting`, answered from the documentation bundled with
+  the running version. A generated "Where each setting lives" docs page uses the
+  same settings catalog.
+- **HTTP API reference and `@propr/client`**: an OpenAPI 3.1 spec generated from
+  the API route registry, with each route's authentication and required
+  permission and a common error envelope (`code`, `message`, `hint`), rendered as
+  an "API reference" page under Operations in the docs. `@propr/client` gains
+  typed task and task submission methods, generated `ProprApi.*` types and a
+  README covering authentication, examples and Socket.IO events.
 - **Desktop application**: browser-approved pairing, saved accounts and instances,
   local setup, connection diagnostics, native menus and notifications, and separate
   application/runtime version displays. Linux/macOS packaging and Linux preview
-  verification are present; distribution remains subject to the documented release
-  gates, and Windows package validation remains paused.
+  verification are present; Linux previews embed a digest-pinned managed agent
+  image built from the same commit. Distribution remains subject to the
+  documented release gates, Windows package validation remains paused, and agent
+  tasks run on amd64 only.
 - **Visual previews**: repository capture settings, GitHub attachments, optional
   Plus managed originals, task/goal galleries and zoomable image viewing. Private
   PR images use authenticated media access in web and desktop.
 - **Synthetic pools**: virtual models route among direct agent/model members using
   priority tiers, usage limits, scheduling and failover.
+- **Repository workflow file**: an optional `.propr/workflow.yml`, read from the
+  base-branch commit for every implementation and PR follow-up, defines lifecycle
+  hooks (`after_create`, `before_run`, `after_run`, `before_remove`), an
+  instructions file appended to prompts, `validation` commands whose results are
+  added to the completion summary, preview types, `limits.max_parallel_tasks`,
+  `limits.max_cost_usd`, `auto_merge` and `network`. An invalid file fails the
+  run before the agent starts. `propr init` scaffolds a commented example, and a
+  JSON schema is published for editors.
+- **Pull request templates**: an optional `.propr/pr-template.md` shapes the
+  title and description of the pull requests ProPR opens, with sections such as
+  `title`, `summary`, `run` and `trailer` and `{{placeholder}}` substitution.
+  Untrusted values are sanitized and HTML-escaped. Without the file, ProPR adds
+  the repository's GitHub pull request template under its own summary (per
+  repository, on by default: `propr repo toggle --no-github-pr-template`).
+  `propr repo validate` checks a template locally. A template that cannot be read
+  or rendered falls back to the default description and never fails a run.
+- **Auto-merge policy with protected paths**: an `auto_merge` block in
+  `.propr/workflow.yml` (`enabled`, `method`, `protected_paths`, with `.propr/**`
+  always protected) gates every point where ProPR arms GitHub auto-merge or
+  merges an `auto-merge` PR. The policy is read from the base branch and the
+  changed files from a fresh GitHub fetch, and anything unreadable means no
+  auto-merge. A skip is recorded with a reason code, commented on the PR and
+  leaves the label for a person; a new head that violates the policy disarms
+  auto-merge ProPR armed. A skipped Epic head waits for a human merge.
+- **Per-run spend caps**: a run whose estimated cost reaches its cap is stopped
+  while it executes and its partial work is published. The cap comes from a
+  per-task `maxCostUsd` (task submissions, MCP `create_task`, `propr issue
+  implement --max-cost`), then `limits.max_cost_usd` in `.propr/workflow.yml`,
+  then the instance `default_max_cost_usd`. It covers implementations,
+  follow-ups, `/fix`, Ultrafix cycles and reviews; retries share the budget.
+  Capped runs end with `cost_cap_exceeded`, notify the Inbox and comment on the
+  issue or PR, and task details show spend against the cap.
+- **Agent watchdog**: an agent that produces no output for 10 minutes (30
+  minutes while a tool runs silently), or streams 50 consecutive whitespace-only
+  deltas, is stopped instead of holding its worker slot until the 24-hour
+  timeout. Partial work is published, the task ends `stalled` or
+  `degenerate_output`, and the Inbox and GitHub comment explain the stop.
+  Thresholds are instance settings under **Settings → Automation → Agent
+  watchdog** and apply to the next run.
+- **Automatic replacement runs**: an issue task lost with its worker gets one
+  replacement, and a run that ends on a transient provider error (5xx,
+  overloaded, connection reset) gets up to `max_provider_replacements` (default
+  2). Replacements reuse the agent, model and overrides, continue the pushed
+  branch and receive what remains of the spend cap; user and withdrawal
+  cancellations, timeouts, watchdog and spend-cap stops and goal tasks are never
+  replaced. Task details show "Attempt N of M", the Inbox shows one
+  "Replacement started" card, and the final failure comment links every attempt.
+- **Push salvage and rejection diagnosis**: when the final push of a run fails,
+  ProPR retries with a fresh token, then pushes to a
+  `refs/propr/rescue/<taskId>` ref, then writes a git bundle under
+  `<DATA_DIR>/rescue/`, then keeps the worktree, so the agent's commits are never
+  lost. The rejection is classified (`push_protection` with GitHub's unblock URL,
+  `ruleset_or_branch_protection`, `non_fast_forward`, `auth`, `network`,
+  `unknown`) and shown with the exact recovery command in task details,
+  `propr task get` and the failure comment. An issue run whose push fails now
+  ends failed. Rescue refs and bundles are pruned after
+  `PUSH_RESCUE_RETENTION_DAYS` (default 14).
+- **Restricted network mode**: an optional `restricted` mode starts agent
+  containers with `--network none`; their only route out is a per-run HTTP/HTTPS
+  allowlist proxy on the worker, reached through a Unix socket. No privileged
+  containers, `NET_ADMIN` or iptables are needed. The default allowlist covers
+  the agent's provider API, GitHub, npm and PyPI; the instance and each
+  repository's `network.allow` add exact hosts, `*.domain` wildcards or
+  `host:port`. DNS resolves on the worker, and loopback, private and link-local
+  addresses (including cloud metadata) are refused unless the instance lists
+  the IP. The instance
+  sets the default mode (`open` by default) and can enforce restricted mode
+  across repositories (**Settings → Automation → Agent network**, `propr setting
+  update`, MCP `update_execution_settings`). Issue runs, PR commands, reviews,
+  goals and indexing are covered; plan generation is not. Each restricted run
+  records one timeline event listing every denied host. Claude Code, Codex,
+  OpenCode and Vibe run behind the proxy; Antigravity falls back to open
+  networking with a warning, or is refused when restricted mode is enforced.
+  Requires a Linux Docker host that shares `PROPR_EGRESS_SOCKET_DIR` with the
+  worker; the bundled Compose files and launcher mount it.
+- **Ultrafix escalation**: an opt-in instance policy
+  (`ultrafix_escalation_enabled`) raises the implementing model's reasoning
+  effort one tier at a time when review scores stop improving for
+  `ultrafix_escalation_patience` reviews, then hands off to the next model in
+  `ultrafix_escalation_models`, skipping models Agent Tank reports at their
+  usage limit.
+- **Review scores and agent efficacy**: every `/review` and Ultrafix review with a
+  parsed score is stored with the reviewer and implementer model, and PR merge
+  outcomes are recorded. Analytics shows **Agent efficacy by model** (evaluated
+  PRs, initial and final score, score delta, average runs to merge, merge rate),
+  task details show a PR's score history, `propr stats review-scores` prints the
+  summary, `GET /api/stats/review-scores` (and `.csv`) serves it, and MCP
+  `get_pull_request` includes `scoreHistory`. Earlier scores are not backfilled.
+- **Withdrawing work**: closing an issue or removing its trigger label cancels its
+  queued and running implementation work, and closing a PR without merging
+  cancels its follow-ups, reviews and Ultrafix loop. Webhooks act immediately,
+  polling catches the rest, and workers re-check GitHub before starting.
+  Withdrawal cancellations are terminal and never retried; reopen and reapply
+  the label to restart.
+- **GitHub App from the CLI**: `propr github-app create` registers a private
+  GitHub App through GitHub's manifest flow, verifies the installation, writes
+  the private key and `.env`, and configures direct webhooks and GitHub login;
+  `propr github-app manifest` writes the files for manual registration, and
+  `--no-browser` works over SSH. `propr setup` offers **Create it for me** for a
+  custom App, with Connect remaining the default.
+- **Bundled Agent Tank**: Agent Tank usage tracking has three modes, **Disabled**
+  (default), **Bundled** and **External**. Bundled mode runs Agent Tank inside
+  the agent image with nothing to install; external mode points at your own
+  daemon. Set it in **Settings → Integrations → Agent Tank**, with
+  `propr tank bundled|external|off` or MCP `update_provider_policy`. Existing
+  settings migrate.
 
 ### Changed
 
@@ -310,31 +228,136 @@ desktop installers or a release tag. See the [coverage audit](docs/release-0.9.0
   Add another after saving. Work and system navigation are grouped;
   Goals, repository settings and connected apps have revised layouts. The dashboard
   shows Needs attention, Happening now, Completed and Historical stats, with a
-  repository filter, activity summaries and documentation-derived usage tips.
-  Broader reporting lives in Analytics.
+  repository filter, activity summaries and documentation-derived usage tips;
+  Completed loads an entry's earlier updates when you expand it. `Cmd/Ctrl+K`
+  opens a command palette with category tabs and a live preview pane. Lists
+  share one loading skeleton. Broader reporting lives in Analytics.
+- **Tasks console**: Tasks is one ledger with a row per task (status, agent,
+  duration, score, a **Merged** state and a run-count chip summarizing earlier
+  runs) and 25 tasks per page. From 1280px wide a task opens in a side pane
+  (`?task=` survives reloads; `j`/`k` move between rows, `Esc` closes); the full
+  task page lists every run in a timeline and switches screenshots, trace and
+  changed files per run. Task details group metadata, list the largest file
+  changes first and move **Delete** into the overflow menu.
+- **Analytics**: one console with a timeframe selector (24 hours to all time,
+  kept in the URL as `?period=`; the stats API accepts the same `period`). A
+  totals band and a **Delivery** band (runs per task, first-time pass, time to
+  merge, autonomy) sit over daily activity bars for runs and tasks, repository
+  performance, a per-model table counting runs, task status and token
+  consumption with cache hit rate and savings from caching. Rows open the
+  filtered Tasks list or the LLM log. The dashboard's Historical stats use the
+  same aggregation and window, so the figures match.
+- **Planner Studio**: plans move through a **Define › Review › Execute** stepper.
+  Define has a **Scope** control (**Focused**, **Expanded**, **Full Scan**) and a
+  docked composer for task size, model and context export. Review adds a step
+  tab bar, a collapsible, reorderable **Plan Outline** and a **Jump to task**
+  sheet on phones. Execute toggles between **Epic PR** and **Individual Tasks**,
+  shows issues in one matrix with per-row agent overrides, and **Queue
+  Remaining** starts the first pending issue and chains the rest (individual
+  tasks chain only with auto-merge on). Plan statuses are simplified, with
+  "Ready for Review" now **In Review**.
+- **Coding Agents screen**: compact model chips copy their alias on click,
+  providers collapse, and **Log in**, **Edit path** and **Delete provider** moved
+  into each provider's actions menu.
 - **Live activity**: push-driven refresh, hidden-tab reconciliation, append-based
   logs, cached/coalesced reads and bounded output reduce polling and rendering work.
 - **Review commands**: `/fix F20 S3 S5` can select findings and optional suggestions
-  together; unknown or malformed identifiers reject the whole selection. `F#` and
-  `S#` sequences persist independently per PR. Suggestions remain optional and do
-  not extend Ultrafix or change score gates. Multiline instructions are preserved.
+  together, and `/fix all` selects every pending blocker and suggestion. Every
+  review comment ends with a copyable `/fix F# S#` line to trim. Unknown or
+  malformed identifiers reject the whole selection. `F#` and `S#` sequences
+  persist independently per PR. Suggestions remain optional and do not extend
+  Ultrafix or change score gates. Multiline instructions are preserved.
+- **MCP behaviour**: tool failures return a structured error with `code`,
+  `message`, `stage` and `retryable`, with secrets and absolute paths redacted.
+  `expectedHead` is optional on `review_pull_request`, `fix_review_findings`,
+  `run_ultrafix` and `comment_on_pull_request`; supplying it still rejects a
+  moved head. `fix_review_findings` re-anchors findings onto a newer head like a
+  typed `/fix`. `merge_pull_request` names the failed precondition (for example
+  `CHECKS_FAILING` or `MERGE_CONFLICT`). `publish_plan` accepts `resume: true` to
+  continue a partly published plan. `delete_plan` deletes idle and finished
+  plans without a revision and reports `PLAN_NOT_DELETABLE` separately from
+  `STALE_REVISION`. An omitted Ultrafix goal now uses the instance
+  `ultrafix_rating_goal` instead of 9.
 - **CI cancellation**: an opt-in repository setting cancels only explicitly selected
   workflows on the exact PR head being replaced. Interrupted/no-change follow-ups
   retain restart obligations; closed PR cleanup uses the same opt-in policy.
   Per-repository non-blocking check patterns keep selected checks from delaying
-  ProPR automation while preserving their visible GitHub results.
-- **Agent models**: Claude Opus 5.5 and Sonnet 5.5 join the catalog; Opus 5.5 is the
-  default Claude model. Older models remain selectable behind the legacy fold.
-  Claude Code is bundled at 2.1.284; agent configuration, runtime authentication
-  and Agent Tank integration have been refreshed.
+  ProPR automation, Ultrafix and Epic advancement while preserving their visible
+  GitHub results.
+- **Agent models**: Claude Code adds Claude Opus 5.5 (the new default), Fable 5.1
+  and Sonnet 5.5, bundled at Claude Code 2.1.284. Codex adds GPT-6 Astra (the new
+  default), GPT-6.1 Sol, GPT-6 Sol and GPT-6 Luna on Codex CLI 0.160.0.
+  Antigravity lists one entry per model (Gemini 3.8 Flash by default, Gemini 3.1
+  Pro, Claude Sonnet 5.5, Claude Opus 5.5, GPT-OSS 120B) with a separate
+  reasoning selector instead of effort-suffixed entries; saved suffixed selections
+  and labels still resolve. OpenCode defaults to Big Pickle and adds Ling 3.0
+  Flash Fin Free, Muse Spark 1.2 and 1.3 Contributor Free and Nemotron 3.5
+  Lightning Free. Mistral Vibe adds GLM 5.3 and GLM 5.2 on the same Mistral
+  credentials (Vibe 2.25.8, Python 3.12). Older models remain selectable behind
+  the legacy fold. GitHub comments and commit messages show model display names.
+- **Read-only agent GitHub access**: implementation, follow-up, review-fix and
+  direct-goal containers receive a read-only installation token, and the
+  worktree's `.git` and shared clones are mounted read-only; ProPR performs every
+  push, merge, comment and label itself. The repository setting
+  `contextRepositories` limits the token and mounted clones to the task
+  repository plus a list. Orchestrated goals keep write access.
 - **Voice briefings**: experimental and off by default; enable per account,
   instance and device in Settings.
 - **Security and operations**: durable instance roles, scoped repository access,
   guarded agent runtimes and desktop network/credential boundaries; improved
   health signals, rootless CI worker routing and change-aware validation.
 
+### Removed
+
+- **Post-implementation analysis**: the execution analysis that rated each run's
+  prompt, efficiency and implementation is gone, with the analysis worker
+  service (upgrades remove its container), `GET /api/task/:taskId/analysis`, the
+  task details analysis panel, critique score pills and the **Auto-Followup Score
+  Threshold** setting. "Post-Implementation Analysis Model" is now **Fast
+  Analysis Model**, used by `/review` to gather context. `/review`, review scores
+  and Ultrafix are unaffected.
+- **iptables firewall**: the allowlist firewall script (`scripts/init-firewall.sh`)
+  needed privileged containers, so no entrypoint ran it. The script and the agent
+  image's `iptables` package are gone; restricted network mode replaces them.
+- **Retired models**: Antigravity Gemini 3.5 Flash (its labels no longer
+  resolve), with Gemini 3.6 and 3.7 Flash leaving the picker while saved
+  selections still run; OpenCode DeepSeek V4 Flash Free, Laguna S 2.1 Free, Ling
+  3.0 Flash Free and North Mini Code Free; Vibe Devstral Small, whose saved
+  defaults move to Mistral Medium.
+
 ### Fixed
 
+- **Ultrafix and CI**: a loop paused on failing CI resumes when green `check_run`
+  or `check_suite` events or polling show the build fixed, and a deferred step
+  survives restarts and failed jobs. Review readiness honours the repository's
+  non-blocking check patterns; when blocking CI defers a review ProPR posts one
+  comment naming the checks, and stops the loop with "CI did not settle" after
+  `ultrafix_ci_wait_timeout_ms` (default 2 hours). Check events without PR
+  numbers, notably for fork PRs, are matched to their PRs by commit. Existing
+  GitHub Apps must subscribe to the **Check suite** event; `propr check --verify`
+  reports it missing.
+- **Merge-conflict auto-resolution**: detection no longer skips most conflicts.
+  ProPR waits for GitHub to compute mergeability, checks open PRs when their
+  base branch moves, sweeps periodically, and records a reason for every skip;
+  resolution creates a real merge commit and leaves the remote untouched on
+  failure. A per-repository **Auto-resolve merge conflicts** override (Always,
+  Never or the instance default) is available in repository settings,
+  `propr repo toggle --auto-resolve-conflicts` and MCP.
+- **Publishing runs**: follow-up and `/fix` agents edit the writable workspace
+  instead of the read-only worktree path, issue implementations refresh GitHub
+  credentials before pushing, and parallel tasks on one repository no longer fail
+  or re-clone on Git config lock contention.
+- **Notifications**: deferred reviews no longer send a "ready for review"
+  notification. Inbox shows "Inbox unavailable offline" instead of hanging, and
+  reloads on reconnect.
+- **Web, mobile and WebKit**: list search on phones for Tasks, Plans and Goals,
+  repository tabs and the sidebar fit narrow screens, Tasks pagination no longer
+  overlaps pages, New Task attachment recovery works in Safari, and lightbox
+  keyboard focus no longer strands in WebKit.
+- **Third-party notices**: the notices generator refuses to produce a
+  `THIRD_PARTY_LICENSES.md` without the full Claude Code and Anthropic SDK license
+  texts and a complete production dependency inventory, so images no longer ship
+  incomplete notices.
 - Bounded SQLite lock retries and explicit transaction replay rules protect
   concurrent workers and goal heartbeat writes.
 - Durable task reconciliation, worktree cleanup before lock release, follow-up
@@ -343,6 +366,15 @@ desktop installers or a release tag. See the [coverage audit](docs/release-0.9.0
   generation rejection prevent silent loss of planning content.
 - Private preview diagnostics, notification cleanup, live logs, partial indexing
   retries, model-aware review concurrency and alias-aware usage pricing.
+
+### Security
+
+- **Dependency advisories**: runtime dependencies are patched, including
+  `simple-git` 4.0.2 (critical advisories),
+  `@modelcontextprotocol/sdk` 1.32.1, `sharp` 0.35.5, `hono` 4.13.12,
+  `proxy-addr`, `fast-copy`, `argv-parser` and `tinypool`; process-local Git
+  authentication now strips inherited Git, editor, pager and SSH overrides.
+  Desktop packaging and documentation build tooling are patched as well.
 
 ## [0.8.15] - 2026-08-15
 

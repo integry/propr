@@ -10,6 +10,10 @@ Use **New Task** for one bounded change, **New Plan** when you want to review a 
 
 ![New task form with a repository, invoice formatting instruction and Run task action](/img/screenshots/0.9.0/new-task.png)
 
+New Task preselects the repository, agent and model from your last task that created its issue or was queued; the choice is kept in this browser. A launcher that passes a repository, such as the repository workspace's **New task** action, overrides it, and a remembered repository that has since been removed or disabled is cleared.
+
+Attached images also appear inline in the GitHub issue. ProPR uploads them with the visual preview upload credential (**Settings → Integrations → Visual preview uploads**) under the issue's attachment list, while the files themselves still reach the task worktree. Without that credential, or when an upload fails, the issue is created without the inline image; text attachments are listed only. See [Visual previews](./visual-previews.md#publication-and-upload-failures) for GitHub's attachment limits.
+
 The repository workspace's **New task** action prefills the repository. Select a to-do and choose **Run task** to prefill its text; launching does not mark the to-do complete. Submission acceptance is not implementation completion. If submission reports a failure or uncertain issue creation, use the displayed recovery action instead of starting duplicate requests.
 
 MCP clients can use `create_task` with execute scope and a stable idempotency key, then follow the task and its pull request with `get_task_submission`; see [MCP](./mcp.md). `create_task` and `POST /api/task-submissions` accept an optional `maxCostUsd` that caps what the run may spend; see [Spend caps](./execution-safety.md#spend-caps). The CLI's existing issue implementation and `task inspect` commands are described in [ProPR CLI](./propr-cli.md#issue-implementation).

@@ -6,7 +6,7 @@ The ProPR Web UI configures repositories and agents, launches work, and shows pr
 
 The sidebar's work area contains **Dashboard**, **Inbox**, **Tasks**, **Goals** and **Plans**. The system area contains **Repositories**, **Coding Agents** (administrators), **Analytics**, the collapsible **Logs** group, **Settings** and **Access** (administrators). Count badges show current work and unread Inbox items. Agent Tank usage appears below navigation when enabled.
 
-The header includes search (`Cmd/Ctrl+K`), activity/review controls, quick add to-do (`Alt+T`) and system health. **New Task** is the default creation action. It becomes **New Plan** in Plans/Planner Studio and **New Goal** in Goals; the adjacent menu offers the other two actions. See [Launching work](./launching-work.md) to choose between them. After quick add confirms **To-Do added**, choose **Add another** to enter the next item without closing the popover. Desktop puts application information in **About ProPR** rather than the sidebar footer.
+The header includes search (`Cmd/Ctrl+K`), activity/review controls, quick add to-do (`Alt+T`) and system health. Search opens a command palette that groups matching repositories, plans and tasks, with a preview of the highlighted item beside the list on wider screens. Tab and Shift+Tab switch between the **All**, **Repos**, **Plans** and **Tasks** tabs, Enter opens the highlighted item, Cmd/Ctrl+Enter opens it on GitHub, and **Search all tasks** runs the term as a full Tasks search. **New Task** is the default creation action. It becomes **New Plan** in Plans/Planner Studio and **New Goal** in Goals; the adjacent menu offers the other two actions. See [Launching work](./launching-work.md) to choose between them. After quick add confirms **To-Do added**, choose **Add another** to enter the next item without closing the popover. Desktop puts application information in **About ProPR** rather than the sidebar footer.
 
 Voice briefings are experimental and off by default. Enable them in Settings to show the on-demand launcher; see [Voice briefings](./voice-briefings.md). Demo mode is read-only and hides installation administration.
 
@@ -38,13 +38,18 @@ Planner Studio is covered step by step in the [Planner Studio tutorial](../tutor
 
 ## Tasks
 
-**Tasks** (`/tasks`) is the execution history, with status, repository, and search filters and live updates. Selecting a task opens the **task detail** view:
+**Tasks** (`/tasks`) is a triage console with status, repository and search filters and live updates. Each row is one task (a PR or an issue) with its repository, status, agent, duration, last update and review score; the newest run's type and outcome sit under the title, and a run-count chip summarizes earlier runs. A task whose PR merged shows **Merged**. Twenty-five tasks fit on a page.
+
+On screens 1280px and wider, selecting a task opens its details in a right-hand pane and adds `?task=<id>` to the URL, so a reload keeps both the task and the filters. `j`/`k` or the arrow keys move between rows; `Esc` or **Close** closes the pane, and **Open full page** opens `/tasks/:id`. On narrower screens a click opens the full page directly. Titles are real links, so Ctrl/Cmd-click opens a task in a new tab.
+
+The task detail view contains:
 
 - a context strip with repository, model, PR link, commit, duration, cost, and (with Agent Tank) usage deltas;
+- a **TIMELINE** of every run on the task; select a run to switch the screenshots, trace and changed files to it;
 - the exact prompt and execution log files;
-- a live event log, a thinking log where the agent emits one, and per-file diffs as they change;
+- a live event log, a thinking log where the agent emits one, and per-file diffs as they change, largest changes first;
 - a progress bar over the agent's to-do list;
-- actions to **Follow Up**, **Stop**, and **Delete**.
+- **Follow Up** and **Stop** buttons, with **Delete** in the **⋯** (More task actions) menu.
 
 These records are the heart of ProPR's observability — see [Observability And Control](./observability.md). To undo a committed change, the **Revert** flow (`/revert`) previews the target commit and the resulting HEAD before running a signed revert.
 
@@ -60,7 +65,7 @@ A repository's **New task** shortcut or a selected to-do's **Run task** action p
 
 ## Coding Agents
 
-**Coding Agents** (`/ai-agents`) is an administrator-only split view: configure agent aliases and their models on one side, and a **playground** to test an agent interactively on the other. When adding Claude, Codex, Antigravity, or OpenCode, choose a new-account login or reuse an existing config. New-account login creates an isolated ProPR-managed credential directory, so multiple accounts of the same provider can coexist without entering host paths. The login dialog starts the configured agent image, displays the CLI's authorization link and instructions, and accepts requested confirmation codes or terminal menu input without requiring the agent CLI on the host. Existing entries also include **Log in**. The dialog includes Up, Down, and Enter controls for provider and login-method menus; Escape or backdrop dismissal cancels its temporary container. Vibe uses an API key or pre-populated config instead of this interactive flow. See [Agents And Models](./agents-and-models.md).
+**Coding Agents** (`/ai-agents`) is an administrator-only split view: configure agent aliases and their models on one side, and a **playground** to test an agent interactively on the other. When adding Claude, Codex, Antigravity, or OpenCode, choose a new-account login or reuse an existing config. New-account login creates an isolated ProPR-managed credential directory, so multiple accounts of the same provider can coexist without entering host paths. The login dialog starts the configured agent image, displays the CLI's authorization link and instructions, and accepts requested confirmation codes or terminal menu input without requiring the agent CLI on the host. To log in again on an existing entry, open its **⋯** actions menu and choose **Log in**; the same menu holds **Edit path** and **Delete provider**. The dialog includes Up, Down, and Enter controls for provider and login-method menus; Escape or backdrop dismissal cancels its temporary container. Vibe uses an API key or pre-populated config instead of this interactive flow. See [Agents And Models](./agents-and-models.md).
 
 Administrators can switch the configuration pane to **Synthetic Pools** to combine direct agent/model pairs behind virtual models with strict priority tiers, usage caps, round-robin or usage-based routing, and failover. Synthetic models also appear in the playground, which reports the virtual choice and physical member used. See [Synthetic Pools](./synthetic-pools.md).
 
@@ -120,7 +125,7 @@ The UI subscribes to socket.io events, so the dashboard, task list, task detail,
 
 Polling is the fallback for a client whose websocket is unavailable, not the normal path: while the socket is connected and nothing is happening, an open tab issues no requests of its own. A hidden or backgrounded tab does no work either, and reconciles once when you come back to it — as does a tab whose socket dropped and reconnected. The Agent Tank **Refresh usage** button still asks the backend to re-probe the providers on demand.
 
-Keyboard shortcuts: `Cmd/Ctrl+K` focuses global search, `Alt+T` opens quick add to-do, and `Esc` closes open popovers.
+Keyboard shortcuts: `Cmd/Ctrl+K` opens the search palette, `j`/`k` move through the Tasks list, `Alt+T` opens quick add to-do, and `Esc` closes open popovers.
 
 
 ## Visual preview settings
