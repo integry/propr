@@ -189,10 +189,10 @@ test('history is quiet: only today is teal, the scale has a midline, and the rig
   // Seven settled days with tasks, then today; an empty day draws no bar.
   expect(fills.slice(0, -1).every(fill => fill === '#CBD5E1')).toBe(true);
   expect(fills.at(-1)).toBe('#14B8A6');
-  // The busiest day is 8, so the scale reads 0, a dashed midline at 4, and 8.
+  // The busiest day is 8; with headroom the scale reads 0, a dashed midline at 5, and 10.
   const ticks = chart.locator('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value');
   await expect(ticks).toHaveCount(3);
-  expect((await ticks.allTextContents()).map(text => Number(text.trim())).sort((a, b) => a - b)).toEqual([0, 4, 8]);
+  expect((await ticks.allTextContents()).map(text => Number(text.trim())).sort((a, b) => a - b)).toEqual([0, 5, 10]);
   // The midline is a grid line, drawn behind the bars, and lighter than the edge rules.
   const strokes = await chart.locator('.recharts-cartesian-grid-horizontal line').evaluateAll(lines =>
     lines.map(line => `${line.getAttribute('stroke')} ${line.getAttribute('stroke-dasharray')}`).sort());
@@ -351,9 +351,11 @@ test('runs and tasks share one chart: each day pairs its runs and tasks side by 
     expect(Math.abs(centre - pairCentre)).toBeLessThan(1);
   });
 
-  // One scale for both: the top rule is the busiest day's runs.
+  // One scale for both, with headroom: 571 runs on the busiest day rounds up to a ceiling of 700.
   const ticks = chart.locator('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value');
-  expect(Math.max(...(await ticks.allTextContents()).map(text => Number(text.trim())))).toBe(571);
+  expect(Math.max(...(await ticks.allTextContents()).map(text => Number(text.trim())))).toBe(700);
+  // A quiet day beside the outlier still stands a visible bar, not a line on the baseline.
+  [...outerBoxes, ...innerBoxes].forEach(box => expect(box.bottom - box.top).toBeGreaterThanOrEqual(3.9));
 
   // Hovering a day reads both series and the ratio between them.
   const tuesday = outerBoxes[5];
@@ -375,6 +377,11 @@ test('runs and tasks share one chart: each day pairs its runs and tasks side by 
   expect(Math.abs(tip.x - pairCentre(5))).toBeLessThan(1.5);
   expect(tip.bottom).toBeLessThanOrEqual(tuesday.top);
   expect(tuesday.top - tip.bottom).toBeLessThan(6);
+  // The card stays inside the chart, clear of the legend in the pane heading.
+  const chartBox = (await chart.boundingBox())!;
+  const legendBox = (await legend.boundingBox())!;
+  expect((await tooltip.boundingBox())!.y).toBeGreaterThanOrEqual(chartBox.y);
+  expect((await tooltip.boundingBox())!.y).toBeGreaterThanOrEqual(legendBox.y + legendBox.height);
   // At the edges the card slides to stay over the plot, but the caret keeps to its day.
   const plot = (await chart.boundingBox())!;
   for (const index of [0, 6]) {

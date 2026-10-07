@@ -21,9 +21,14 @@
  * the paired chart runs are always light slate and tasks dark slate, as the
  * legend says; only today's tasks bar, the deliverable, takes the teal.
  *
- * The scale is the window's own maximum and zero, both always labelled, with
- * a lighter dashed midline between them, so a bar's height can be read to
- * within a task or two without hovering it; the exact figures, and the day's
+ * The scale runs from zero to a round ceiling at least 15% above the window's
+ * busiest day, both always labelled, with a lighter dashed midline between
+ * them, so a bar's height can be read without hovering it. The headroom is for
+ * the hover card: the tallest bar stops short of the ceiling, so the card over
+ * it stays inside the plot instead of climbing into the legend above, and it
+ * never rises past the chart's top edge. A day with any count stands at least
+ * a few pixels tall, so a quiet day beside an outlier is still a bar you can
+ * see and point at, not a line on the baseline. The exact figures, and the day's
  * runs per task, are still one hover away. The heading belongs to the pane
  * that holds the chart, and the legend with the window's totals sits in it
  * (`ActivityLegend`), so the chart takes no more height than before.
@@ -41,7 +46,7 @@
 import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { ChartNoAxesColumn, Slash } from 'lucide-react';
-import { midlineTick, tooltipStyle } from './chartConstants';
+import { headroomCeiling, midlineTick, tooltipStyle } from './chartConstants';
 import { CURRENT_DAY_FILL, dailyBarFill, utcToday } from './Dashboard/chartPalette';
 import { planActivityAxis, type ActivityAxisLabel } from './Analytics/activityAxis';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
@@ -70,10 +75,32 @@ const PLACEHOLDER_BAR_HEIGHTS = [45, 30, 60, 40, 75, 55, 35, 65, 50, 80, 40, 60,
 /** The y-axis gutter, which the plot and the skeleton are both inset by. */
 const Y_AXIS_WIDTH = 28;
 /** The space above the plot, and the date axis beneath it. */
-const PLOT_TOP = 6;
+const PLOT_TOP = 12;
 const X_AXIS_HEIGHT = 28;
 /** How far the tooltip's caret stands off the top of the bar it points at. */
 const CARET_SIZE = 6;
+/**
+ * How tall the hover card stands over its bar, caret included: two 16px lines,
+ * 4px of padding either side and the border. The ceiling leaves this much room
+ * above the tallest bar, less the space already above the plot.
+ */
+const CARD_CLEARANCE = 2 * 16 + 2 * 4 + 2 + CARET_SIZE;
+/** The least headroom over the busiest day, as a share of it. */
+const MIN_HEADROOM = 0.15;
+/**
+ * The headroom the busiest day needs for its card to fit between its bar and
+ * the chart's top edge, at least `MIN_HEADROOM`. Before the plot is measured,
+ * and on one too short to spare the room, the minimum stands; the card then
+ * clamps to the top edge rather than climbing over the legend.
+ */
+const headroomFor = (plotHeight: number): number => {
+  const clearance = CARD_CLEARANCE - PLOT_TOP;
+  if (plotHeight <= clearance * 2) return MIN_HEADROOM;
+  return Math.max(MIN_HEADROOM, plotHeight / (plotHeight - clearance) - 1);
+};
+/** The shortest a bar with any count stands, in pixels; an empty day draws none. */
+const MIN_BAR_HEIGHT = 4;
+const minBarHeight = (value: number | undefined | null): number => (value ? MIN_BAR_HEIGHT : 0);
 
 /** The hover track behind a day's bar (slate-100: slate-50 vanishes on the white canvas). */
 const COLUMN_TRACK_FILL = '#F1F5F9';
@@ -87,7 +114,7 @@ const RUNS_FILL = '#CBD5E1';
 const TASKS_FILL = '#334155';
 /** The widest either bar of a pair gets, in pixels, and the gap between them. */
 const PAIRED_BAR_SIZE = 14;
-const PAIRED_BAR_GAP = 2;
+const PAIRED_BAR_GAP = 3;
 /** The share of a day's slot its pair may fill, leaving the `barCategoryGap` either side. */
 const PAIRED_SLOT_SHARE = 0.7;
 
@@ -97,6 +124,16 @@ const PAIRED_SLOT_SHARE = 0.7;
  */
 const pairedBarSize = (slot: number): number =>
   Math.max(1, Math.min(PAIRED_BAR_SIZE, Math.floor((slot * PAIRED_SLOT_SHARE - PAIRED_BAR_GAP) / 2)));
+
+/**
+ * How far a day's pair sits off its slot's centre. Recharts truncates the
+ * pair's inset to a whole pixel, so the pair can sit up to a pixel left of
+ * centre; the date and the card follow the pair, not the slot.
+ */
+const pairDrift = (slot: number, barSize: number): number => {
+  const inset = (slot - (2 * barSize + PAIRED_BAR_GAP)) / 2;
+  return Math.trunc(inset) - inset;
+};
 
 /** Whether the days carry runs, so the chart can pair them with tasks. */
 const hasRuns = (data: ActivityDay[]): boolean => data.some(day => day.runs !== undefined);
@@ -131,17 +168,19 @@ export const ActivityLegend: React.FC<{ data: ActivityDay[] }> = ({ data }) => {
  * A day's figures, centred over its column with a caret down to the top of
  * its taller bar. Recharts pins its wrapper at the chart's corner (`position`
  * below), so `x` and `y` are the anchor in chart pixels. Near either edge the
- * box slides to stay over the plot; the caret stays on the column.
+ * box slides to stay over the plot; the caret stays on the column. It never
+ * rises above the chart's top edge, where the pane's legend sits.
  */
 const AnchoredTooltip: React.FC<{ x: number; y: number; minX: number; maxX: number; children: React.ReactNode }> = ({
   x, y, minX, maxX, children,
 }) => {
   const box = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
+  const [{ width, height }, setBox] = useState({ width: 0, height: 0 });
   useLayoutEffect(() => {
-    if (box.current) setWidth(box.current.offsetWidth);
+    if (box.current) setBox({ width: box.current.offsetWidth, height: box.current.offsetHeight });
   }, [children]);
   const left = Math.max(minX, Math.min(x - width / 2, maxX - width));
+  const top = Math.max(0, y - CARET_SIZE - height);
   return (
     <div
       ref={box}
@@ -150,11 +189,11 @@ const AnchoredTooltip: React.FC<{ x: number; y: number; minX: number; maxX: numb
         ...tooltipStyle,
         position: 'absolute',
         left,
-        top: y - CARET_SIZE,
-        transform: 'translateY(-100%)',
+        top,
         whiteSpace: 'nowrap',
-        padding: '6px 10px',
+        padding: '4px 8px',
         fontSize: '12px',
+        lineHeight: '16px',
         visibility: width > 0 ? 'visible' : 'hidden',
       }}
     >
@@ -180,9 +219,12 @@ const AnchoredTooltip: React.FC<{ x: number; y: number; minX: number; maxX: numb
 };
 
 /** One day's date under its bar: the weekday or day on top, the date, month or year beneath. */
-const DateTick: React.FC<{ x?: number; y?: number; payload?: { value: string }; labels: Map<string, ActivityAxisLabel> }> = ({
-  x = 0, y = 0, payload, labels,
+const DateTick: React.FC<{
+  x?: number; y?: number; payload?: { value: string }; labels: Map<string, ActivityAxisLabel>; drift?: number;
+}> = ({
+  x: slotCentre = 0, y = 0, payload, labels, drift = 0,
 }) => {
+  const x = slotCentre + drift;
   const label = payload ? labels.get(payload.value) : undefined;
   if (!label) return null;
   return (
@@ -195,16 +237,17 @@ const DateTick: React.FC<{ x?: number; y?: number; payload?: { value: string }; 
 
 const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false }) => {
   const paired = hasRuns(data);
-  // Never a rounded-up invention: the top rule is a count the window reached.
-  const max = Math.max(1, ...data.map(point => Math.max(point.count, point.runs ?? 0)));
-  const mid = midlineTick(max);
   const today = utcToday();
   const [size, setSize] = useState({ width: 0, height: 0 });
   const plotWidth = Math.max(0, size.width - Y_AXIS_WIDTH);
   const plotHeight = Math.max(0, size.height - PLOT_TOP - X_AXIS_HEIGHT);
+  const busiest = Math.max(0, ...data.map(point => Math.max(point.count, point.runs ?? 0)));
+  const max = headroomCeiling(busiest, headroomFor(plotHeight));
+  const mid = midlineTick(max);
   const slot = data.length > 0 ? plotWidth / data.length : 0;
   const labels = useMemo(() => planActivityAxis(data.map(point => point.date), slot), [data, slot]);
   const barSize = pairedBarSize(slot);
+  const drift = paired ? pairDrift(slot, barSize) : 0;
   const onResize = (width: number, height: number) => setSize({ width, height });
 
   return (
@@ -236,7 +279,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
                 // Every day is a tick; the plan decides which ones carry a date.
                 interval={0}
                 height={X_AXIS_HEIGHT}
-                tick={<DateTick labels={labels} />}
+                tick={<DateTick labels={labels} drift={drift} />}
               />
               <YAxis
                 width={Y_AXIS_WIDTH}
@@ -267,8 +310,8 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
                   const ratio = paired ? formatRatio(day.runs ?? 0, day.count) : null;
                   return (
                     <AnchoredTooltip
-                      x={Y_AXIS_WIDTH + (index + 0.5) * slot}
-                      y={PLOT_TOP + plotHeight * (1 - top / max)}
+                      x={Y_AXIS_WIDTH + (index + 0.5) * slot + drift}
+                      y={PLOT_TOP + plotHeight - Math.max(plotHeight * (top / max), minBarHeight(top))}
                       minX={Y_AXIS_WIDTH}
                       maxX={size.width}
                     >
@@ -282,12 +325,12 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
               />
               {paired ? (
                 [
-                  <Bar key="runs" dataKey="runs" name="Runs" radius={[2, 2, 0, 0]} barSize={barSize} isAnimationActive={false}>
+                  <Bar key="runs" dataKey="runs" name="Runs" radius={[2, 2, 0, 0]} barSize={barSize} minPointSize={minBarHeight} isAnimationActive={false}>
                     {data.map(point => (
                       <Cell key={point.date} fill={RUNS_FILL} data-testid={`activity-runs-bar-${point.date}`} />
                     ))}
                   </Bar>,
-                  <Bar key="tasks" dataKey="count" name="Tasks" radius={[2, 2, 0, 0]} barSize={barSize} isAnimationActive={false}>
+                  <Bar key="tasks" dataKey="count" name="Tasks" radius={[2, 2, 0, 0]} barSize={barSize} minPointSize={minBarHeight} isAnimationActive={false}>
                     {data.map(point => (
                       <Cell
                         key={point.date}
@@ -298,7 +341,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
                   </Bar>,
                 ]
               ) : (
-                <Bar dataKey="count" radius={[2, 2, 0, 0]} maxBarSize={40} isAnimationActive={false}>
+                <Bar dataKey="count" radius={[2, 2, 0, 0]} maxBarSize={40} minPointSize={minBarHeight} isAnimationActive={false}>
                   {data.map(point => (
                     <Cell key={point.date} fill={dailyBarFill(point.date, today)} data-testid={`activity-bar-${point.date}`} />
                   ))}

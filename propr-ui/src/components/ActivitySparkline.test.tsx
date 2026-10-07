@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import ActivitySparkline, { ActivityLegend } from './ActivitySparkline';
-import { midlineTick } from './chartConstants';
+import { headroomCeiling, midlineTick } from './chartConstants';
 
 const barHeights = (container: HTMLElement) =>
   Array.from(container.querySelectorAll<HTMLElement>('[data-skeleton-block].flex-1')).map(bar => bar.style.height);
@@ -31,6 +31,17 @@ describe('ActivitySparkline', () => {
     expect(midlineTick(2)).toBe(1);
     // Too small a range has no distinct midline.
     expect(midlineTick(1)).toBeNull();
+  });
+
+  it('rounds the ceiling up to a whole count at least 15% over the busiest day', () => {
+    expect(headroomCeiling(571)).toBe(700);
+    expect(headroomCeiling(8)).toBe(10);
+    expect(headroomCeiling(90)).toBe(120);
+    expect(headroomCeiling(1)).toBe(2);
+    // An empty window still has a scale.
+    expect(headroomCeiling(0)).toBe(2);
+    // More headroom when the card over the tallest bar needs it.
+    expect(headroomCeiling(571, 0.3)).toBe(800);
   });
 
   it('keys the layered chart with each series total over the window', () => {
