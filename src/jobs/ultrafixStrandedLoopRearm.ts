@@ -13,7 +13,13 @@ import {
     clearUltrafixStateIfUnchanged,
     getUltrafixAutomaticWorkEpoch,
 } from './ultrafixAutomaticWorkEpoch.js';
-import { saveDeferredContinuation, saveRearmRetry, type UltrafixReadinessResult } from './ultrafixOrchestrationService.js';
+import {
+    loadDeferredContinuation,
+    loadRearmRetryRaw,
+    saveDeferredContinuation,
+    saveRearmRetry,
+    type UltrafixReadinessResult,
+} from './ultrafixOrchestrationService.js';
 import { applyUltrafixCiDeferral } from './ultrafixCiWait.js';
 import {
     enqueueNextStep,
@@ -60,6 +66,14 @@ export interface StrandedLoopRearmContext {
     claim: ResumeClaim;
 }
 
+/** Reason when the loop turned out to be driven by its current epoch's own step. */
+export const LOOP_OWNED_BY_CURRENT_EPOCH_REASON = 'loop_owned_by_current_epoch';
+
+/** The handoff obligation this re-arm itself recorded, which is no evidence the loop is stranded. */
+interface OwnHandoff {
+    raw?: string;
+}
+
 /**
  * Re-arm an active loop whose deferred continuation was cleared or superseded.
  * The caller must hold the resume claim (see `withResumeClaim`).
@@ -77,8 +91,9 @@ export async function rearmStrandedUltrafixLoop(
     prId: UltrafixPrId,
     ctx: StrandedLoopRearmContext,
 ): Promise<ContinuationResult> {
+    const ownHandoff: OwnHandoff = {};
     for (let attempt = 1; attempt <= MAX_REARM_ATTEMPTS; attempt++) {
-        const result = await rearmFromSnapshot(prId, ctx);
+        const result = await rearmFromSnapshot(prId, ctx, ownHandoff);
         if (result !== STATE_CHANGED) return result;
         ctx.correlatedLogger.info({ pr: prId.pr, attempt }, 'Ultrafix re-arm: loop state changed, re-evaluating');
     }
@@ -93,14 +108,47 @@ interface RearmAttempt {
     ctx: StrandedLoopRearmContext;
     snapshot: UltrafixStateSnapshot;
     currentEpoch: number;
+    ownHandoff: OwnHandoff;
 }
 
-async function rearmFromSnapshot(prId: UltrafixPrId, ctx: StrandedLoopRearmContext): Promise<RearmAttemptResult> {
+/**
+ * Whether the loop is owned by the current epoch with nothing durable naming
+ * it as stranded: no deferred record and no retry obligation other than the
+ * one this re-arm recorded itself. That is a healthy loop driven by its own
+ * step, e.g. a `/ultrafix` startup that committed its state (under the label
+ * lease) after this re-arm's previous snapshot but has not queued its initial
+ * job yet; taking ownership would fence that job.
+ */
+async function isOwnedByCurrentEpoch(
+    prId: UltrafixPrId,
+    redisClient: Redis,
+    state: UltrafixStateSnapshot['state'],
+    ownHandoff: OwnHandoff,
+): Promise<boolean> {
+    const { owner, repo, pr } = prId;
+    const stateEpoch = typeof state.workEpoch === 'number' ? state.workEpoch : 0;
+    if (stateEpoch !== await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr)) return false;
+    if (await loadDeferredContinuation(redisClient, owner, repo, pr)) return false;
+    const retry = await loadRearmRetryRaw(redisClient, owner, repo, pr);
+    return retry === null || retry === ownHandoff.raw;
+}
+
+async function rearmFromSnapshot(
+    prId: UltrafixPrId,
+    ctx: StrandedLoopRearmContext,
+    ownHandoff: OwnHandoff,
+): Promise<RearmAttemptResult> {
     const { owner, repo, pr } = prId;
     const { redisClient, correlatedLogger } = ctx;
     const snapshot = await loadStateSnapshot(redisClient, owner, repo, pr);
     const decision = evaluateStrandedLoopRearm(snapshot?.state ?? null);
     if (!snapshot || decision.action === 'skip') return { continued: false, reason: 'no_active_loop' };
+    // Re-checked on every snapshot, not only by the candidate check made
+    // before the claim: the loop may have been (re)started since.
+    if (await isOwnedByCurrentEpoch(prId, redisClient, snapshot.state, ownHandoff)) {
+        correlatedLogger.info({ pr }, 'Ultrafix re-arm: loop is owned by its current epoch, leaving it to its own step');
+        return { continued: false, reason: LOOP_OWNED_BY_CURRENT_EPOCH_REASON };
+    }
 
     // A queued or running step (e.g. a permitted final fix) is not stranded:
     // finishing or clearing the loop here would cut that continuation off.
@@ -115,7 +163,7 @@ async function rearmFromSnapshot(prId: UltrafixPrId, ctx: StrandedLoopRearmConte
     }
 
     const attempt: RearmAttempt = {
-        prId, ctx, snapshot,
+        prId, ctx, snapshot, ownHandoff,
         currentEpoch: await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr),
     };
     const label = await getUltrafixLabelState(owner, repo, pr, correlatedLogger);
@@ -140,18 +188,20 @@ export const REARM_HANDOFF_RETRY_REASON = 'rearm_handoff_pending';
  * so a process lost in between leaves the sweep something to resume. The
  * resume caller releases it once the attempt settles.
  */
-function takeOwnership({ prId, ctx, snapshot, currentEpoch }: RearmAttempt) {
+function takeOwnership({ prId, ctx, snapshot, currentEpoch, ownHandoff }: RearmAttempt) {
     return withUltrafixLabelTransition(
         ctx.redisClient,
         prId,
         async () => {
             if (!await ctx.claim.confirm()) return CLAIM_LOST;
-            await saveRearmRetry(ctx.redisClient, {
+            const retry = {
                 ...prId,
                 workEpoch: currentEpoch,
                 reason: REARM_HANDOFF_RETRY_REASON,
                 savedAt: new Date().toISOString(),
-            });
+            };
+            ownHandoff.raw = JSON.stringify(retry);
+            await saveRearmRetry(ctx.redisClient, retry);
             return reserveStateWorkEpoch(ctx.redisClient, snapshot, currentEpoch);
         },
     );

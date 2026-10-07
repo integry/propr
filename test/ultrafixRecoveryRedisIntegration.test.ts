@@ -6,7 +6,9 @@
  * BullMQ job retention, so it independently checks conditional writes, claim
  * expiry and renewal, retry release, job-ID deduplication and recovery by a
  * restarted process. It is skipped when Redis is not reachable (set
- * REDIS_HOST / REDIS_PORT; CI starts one with scripts/ci-redis.sh).
+ * REDIS_HOST / REDIS_PORT; CI starts one with scripts/ci-redis.sh), unless
+ * PROPR_REQUIRE_REDIS_INTEGRATION=1, which CI sets so an unreachable Redis
+ * fails the suite instead of silently skipping it.
  */
 
 import { after, before, beforeEach, describe, mock, test, type TestContext } from 'node:test';
@@ -121,6 +123,10 @@ const {
 } = await import('../src/jobs/ultrafixAutomaticWorkEpoch.js');
 const { enqueueNextStep, getUltrafixStepJobId } = await import('../src/jobs/ultrafixLoopContinuationHelpers.js');
 const {
+    listIndexedUltrafixResumeCandidates,
+    pruneUltrafixResumeCandidate,
+} = await import('../src/jobs/ultrafixResumeIndex.js');
+const {
     acquireResumeClaim,
     getUltrafixResumeClaimKey,
     releaseResumeClaim,
@@ -134,8 +140,11 @@ before(async () => {
     try {
         await client.connect();
         await client.ping();
-    } catch {
+    } catch (error) {
         client.disconnect();
+        if (process.env.PROPR_REQUIRE_REDIS_INTEGRATION === '1') {
+            throw new Error(`Redis integration tests are required but Redis at ${REDIS_HOST}:${REDIS_PORT} is unreachable: ${(error as Error).message}`);
+        }
         return;
     }
     redis = client;
@@ -151,6 +160,8 @@ after(async () => {
         cursor = next;
         if (keys.length > 0) await redis.del(...keys);
     } while (cursor !== '0');
+    const indexed = (await redis.smembers('ultrafix:resume-index')).filter(member => member.includes(OWNER));
+    if (indexed.length > 0) await redis.srem('ultrafix:resume-index', ...indexed);
     await queue?.obliterate({ force: true }).catch(() => {});
     await queue?.close();
     for (const client of extraClients) client.disconnect();
@@ -310,13 +321,31 @@ describe('Ultrafix recovery on real Redis and BullMQ', () => {
 
         assert.equal(await clearRearmRetryIfClaimHeld(client, id, { key: claimKey, token: 'other' }), 'claim_not_held');
         await invalidateUltrafixAutomaticWork(client, OWNER, REPO, 5);
-        assert.equal(await clearRearmRetryIfClaimHeld(client, id, { key: claimKey, token: 'holder' }, 0), 'superseded');
+        assert.equal(await clearRearmRetryIfClaimHeld(client, id, { key: claimKey, token: 'holder' }, { workEpoch: 0 }), 'superseded');
         assert.ok(await loadRearmRetry(client, OWNER, REPO, 5), 'kept for the sweep');
-        assert.equal(await clearRearmRetryIfClaimHeld(client, id, { key: claimKey, token: 'holder' }, 1), 'cleared');
+        const stale = await client.get(getUltrafixRearmRetryKey(OWNER, REPO, 5));
+        await saveRearmRetryUnlessClaimTaken(client, { ...retry, reason: 'newer' }, { key: claimKey, token: 'holder' });
+        assert.equal(await clearRearmRetryIfClaimHeld(client, id, { key: claimKey, token: 'holder' }, { raw: stale! }), 'retry_changed');
+        assert.equal((await loadRearmRetry(client, OWNER, REPO, 5))?.reason, 'newer', 'a newer obligation survives');
+        assert.equal(await clearRearmRetryIfClaimHeld(client, id, { key: claimKey, token: 'holder' }, { workEpoch: 1 }), 'cleared');
         assert.equal(await loadRearmRetry(client, OWNER, REPO, 5), null);
 
         await releaseResumeClaim(client, id, 'holder');
         assert.equal(await saveRearmRetryUnlessClaimTaken(client, retry, { key: claimKey, token: 'expired' }), true, 'a claim with no new holder still records it');
+    });
+
+    test('the resume index is pruned only while the PR has neither record', async t => {
+        const client = requireRedis(t);
+        if (!client) return;
+        const id = prId(11);
+        const ours = async () => (await listIndexedUltrafixResumeCandidates(client))!.filter(ref => ref.owner === OWNER && ref.pr === 11);
+        await saveDeferredContinuation(client, { ...id, nextAction: 'review', savedAt: new Date().toISOString(), reason: 'test', workEpoch: 0 });
+        assert.equal((await ours()).length, 1, 'a deferral indexes its PR');
+
+        assert.equal(await pruneUltrafixResumeCandidate(client, id), false, 'kept while the deferred record exists');
+        await client.del(getUltrafixDeferredKey(OWNER, REPO, 11));
+        assert.equal(await pruneUltrafixResumeCandidate(client, id), true);
+        assert.equal((await ours()).length, 0);
     });
 
     test('BullMQ retains a step\'s job ID: a pending duplicate is skipped, a finished attempt is replaced', async t => {
@@ -416,10 +445,11 @@ describe('Ultrafix recovery on real Redis and BullMQ', () => {
 
         ciStatus = GREEN;
         const mortal = mortalClient(client);
-        const getdel = client.getdel.bind(client);
-        const spy = mock.method(client, 'getdel', async (key: string) => {
-            const value = await getdel(key);
-            if (key === getUltrafixDeferredKey(OWNER, REPO, 9) && value) mortal.kill();
+        const evaluate = client.eval.bind(client) as (...args: unknown[]) => Promise<unknown>;
+        const spy = mock.method(client, 'eval', async (...args: unknown[]) => {
+            const value = await evaluate(...args);
+            // The compare-and-delete that claims the deferred record.
+            if (args[2] === getUltrafixDeferredKey(OWNER, REPO, 9) && Number(value) === 1) mortal.kill();
             return value;
         });
         try {
@@ -428,13 +458,18 @@ describe('Ultrafix recovery on real Redis and BullMQ', () => {
             spy.mock.restore();
         }
         assert.equal(await loadDeferredContinuation(client, OWNER, REPO, 9), null, 'the claim removed the record');
-        assert.ok(await loadRearmRetry(client, OWNER, REPO, 9), 'the obligation was persisted before the claim');
+        const retry = await loadRearmRetry(client, OWNER, REPO, 9);
+        assert.ok(retry, 'the obligation was persisted before the claim');
+        assert.equal(retry.claimedStep?.deferred.nextAction, 'review', 'it carries the claimed step');
+        const epoch = await getUltrafixAutomaticWorkEpoch(client, OWNER, REPO, 9);
 
         await expireDeadProcessLeases(client, 9);
         const outcomes = (await sweepUltrafixResumeCandidates(client, () => logger as never))
             .filter(outcome => outcome.prId.owner === OWNER && outcome.prId.pr === 9);
 
-        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['stranded_loop_rearmed']);
+        // The claimed step itself resumes; no new epoch is reserved for it.
+        assert.deepEqual(outcomes.map(outcome => outcome.result.reason), ['deferred_resumed']);
+        assert.equal(await getUltrafixAutomaticWorkEpoch(client, OWNER, REPO, 9), epoch);
         assert.equal((await queuedSteps(9, 'review')).length, 1);
         assert.equal(await loadRearmRetry(client, OWNER, REPO, 9), null);
     });

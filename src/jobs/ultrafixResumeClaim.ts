@@ -11,12 +11,12 @@ import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import { getUltrafixAutomaticWorkEpoch, reserveEpochAndReplaceStateIfUnchanged } from './ultrafixAutomaticWorkEpoch.js';
 import {
-    clearRearmRetry,
     clearRearmRetryIfClaimHeld,
     getActionCounts,
     getUltrafixStateKey,
     loadDeferredContinuation,
     loadRearmRetry,
+    loadRearmRetryRaw,
     loadState,
     saveRearmRetryUnlessClaimTaken,
 } from './ultrafixOrchestrationService.js';
@@ -105,9 +105,10 @@ export interface ResumeClaim {
      * still being held in Redis. Evidence gathered by a holder whose claim
      * expired (e.g. a late enqueue acknowledgment) cannot release an
      * obligation a successor may have recorded since. With `workEpoch` it is
-     * also conditional on that automatic-work epoch still being current.
+     * also conditional on that automatic-work epoch still being current; with
+     * `raw`, on the stored obligation still being exactly that one.
      */
-    clearRetry(workEpoch?: number): Promise<RearmRetryClearOutcome>;
+    clearRetry(expected?: { workEpoch?: number; raw?: string }): Promise<RearmRetryClearOutcome>;
     /**
      * Record the PR's retry obligation unless another trigger holds the claim
      * now; that holder owns the obligation. A claim lost to a renewal fault or
@@ -143,8 +144,13 @@ export function evaluateStrandedLoopRearm(state: UltrafixLoopState | null): Stra
         };
     }
 
+    // Same budget as the ordinary continuation (`determineNextAction`): after a
+    // fix only the review count is capped, so the final permitted fix still
+    // gets its verifying review; after a review, an exhausted fix budget ends
+    // the loop because the next step would have been a fix.
     const { reviewCount, fixCount } = getActionCounts(state);
-    if (reviewCount >= state.maxCycles || fixCount >= state.maxCycles) {
+    const fixBudgetSpent = state.lastAction !== 'fix' && fixCount >= state.maxCycles;
+    if (reviewCount >= state.maxCycles || fixBudgetSpent) {
         return {
             action: 'complete',
             completionStatus: 'failed',
@@ -263,8 +269,8 @@ async function runWithHeldClaim(
             if (lost) correlatedLogger.warn({ pr: prId.pr }, 'Ultrafix resume: resume claim lost, aborting');
             return !lost;
         },
-        clearRetry(workEpoch) {
-            return clearRearmRetryIfClaimHeld(redisClient, prId, { key: claimKey, token }, workEpoch);
+        clearRetry(expected) {
+            return clearRearmRetryIfClaimHeld(redisClient, prId, { key: claimKey, token }, expected);
         },
         saveRetry(retry) {
             return saveRearmRetryUnlessClaimTaken(redisClient, retry, { key: claimKey, token });
@@ -281,6 +287,21 @@ async function runWithHeldClaim(
             correlatedLogger.warn({ pr: prId.pr, error: err.message }, 'Ultrafix resume: failed to release resume claim');
         });
     }
+}
+
+/**
+ * A retry obligation can outlive its loop (e.g. the loop finished or was
+ * stopped meanwhile). A negative candidate check made without the claim may be
+ * stale: another trigger may since have recorded an obligation for a loop that
+ * is stranded again. So the obligation is dropped only under the claim, after
+ * re-checking, and only if it is still exactly the one read under it.
+ */
+async function dropObsoleteRetry(prId: UltrafixPrId, redisClient: Redis, token: string): Promise<void> {
+    const { owner, repo, pr } = prId;
+    const raw = await loadRearmRetryRaw(redisClient, owner, repo, pr);
+    if (!raw || await hasUltrafixResumeCandidate(redisClient, prId)) return;
+    const claimKey = getUltrafixResumeClaimKey(owner, repo, pr);
+    await clearRearmRetryIfClaimHeld(redisClient, prId, { key: claimKey, token }, { raw });
 }
 
 /**
@@ -302,15 +323,27 @@ export async function withResumeClaim(
     const { owner, repo, pr } = prId;
     let result: ContinuationResult | null = null;
     for (let pass = 1; pass <= MAX_RESUME_PASSES; pass++) {
-        if (!await hasUltrafixResumeCandidate(redisClient, prId)) {
-            // Nothing left to resume: a retry obligation for this PR is moot.
-            await clearRearmRetry(redisClient, owner, repo, pr);
+        const candidate = await hasUltrafixResumeCandidate(redisClient, prId);
+        // Nothing to resume and no obligation that could be obsolete: no claim needed.
+        if (!candidate && await loadRearmRetryRaw(redisClient, owner, repo, pr) === null) {
             return result ?? { continued: false, reason: 'no_deferred_continuation' };
         }
         const token = await acquireOrRequestRecheck(redisClient, prId);
         // The current holder will honour the recorded re-check request.
         if (!token) return result ?? { continued: false, reason: 'resume_in_progress' };
-        const passResult = await runWithHeldClaim(prId, token, { redisClient, correlatedLogger }, operation);
+        let passResult: ContinuationResult;
+        if (candidate) {
+            passResult = await runWithHeldClaim(prId, token, { redisClient, correlatedLogger }, operation);
+        } else {
+            try {
+                await dropObsoleteRetry(prId, redisClient, token);
+            } finally {
+                await releaseResumeClaim(redisClient, prId, token).catch((err: Error) => {
+                    correlatedLogger.warn({ pr, error: err.message }, 'Ultrafix resume: failed to release resume claim');
+                });
+            }
+            passResult = { continued: false, reason: 'no_deferred_continuation' };
+        }
         // A pass that scheduled the next step is what this trigger achieved.
         if (!result?.continued) result = passResult;
         if (!await redisClient.getdel(getUltrafixResumeRecheckKey(owner, repo, pr))) return result;

@@ -149,6 +149,7 @@ const {
     getFirstCommitMessage,
     findPRsForCommitCached,
     COMMIT_PRS_CACHE_TTL_SECONDS,
+    COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS,
     resetUltrafixStateRedisForTests
 } = await import('../packages/core/src/webhook/checkRunHelpers.js');
 
@@ -2479,6 +2480,9 @@ describe('commit to PR lookup cache', () => {
         await findPRsForCommitCached('test-owner', 'other-repo', 'main-sha', cache as never);
         await findPRsForCommitCached('test-owner', 'test-repo', 'next-sha', cache as never);
         assert.strictEqual(lookups().length, 3);
+        // A PR may be opened for the commit moments later: "none" expires sooner.
+        assert.deepStrictEqual(cache.set.mock.calls[0].arguments.slice(2), ['EX', COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS]);
+        assert.ok(COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS < COMMIT_PRS_CACHE_TTL_SECONDS);
     });
 
     test('a failed lookup is not cached', async () => {

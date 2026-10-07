@@ -24,21 +24,24 @@ export {
 } from './ultrafixAutomaticWorkEpoch.js';
 export {
     claimDeferredContinuation,
+    claimDeferredContinuationIfUnchanged,
     clearDeferredContinuation,
-    clearRearmRetry,
     clearRearmRetryIfClaimHeld,
     getUltrafixRearmRetryKey,
     listDeferredContinuationKeys,
     listRearmRetryKeys,
     loadDeferredContinuation,
+    loadDeferredContinuationSnapshot,
     loadRearmRetry,
+    loadRearmRetryRaw,
     parseDeferredKey,
     parseRearmRetryKey,
     saveDeferredContinuation,
     saveRearmRetry,
+    saveRearmRetryIfAbsent,
     saveRearmRetryUnlessClaimTaken,
 } from './ultrafixDeferredContinuationStore.js';
-export type { UltrafixDeferredContinuation, UltrafixRearmRetry } from './ultrafixDeferredContinuationStore.js';
+export type { UltrafixClaimedStep, UltrafixDeferredContinuation, UltrafixRearmRetry } from './ultrafixDeferredContinuationStore.js';
 export {
     areChecksReadyForUltrafix,
     checkReadiness,

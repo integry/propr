@@ -99,6 +99,7 @@ const {
     getUltrafixAutomaticWorkEpoch,
     invalidateUltrafixAutomaticWork,
     loadDeferredContinuation,
+    loadRearmRetry,
     saveDeferredContinuation,
     saveState,
     loadState,
@@ -426,9 +427,10 @@ function createRearmRedis() {
         },
         async eval(script: string, _keyCount: number, ...args: string[]) {
             if (script.includes('-- clear rearm retry if claim held')) {
-                const [claimKey, retryKey, epochKey, token, expectedEpoch] = args;
+                const [claimKey, retryKey, epochKey, token, expectedEpoch, expectedRetry] = args;
                 if (store.get(claimKey) !== token) return 0;
                 if (expectedEpoch !== '' && (store.get(epochKey) ?? '0') !== expectedEpoch) return -1;
+                if (expectedRetry && store.get(retryKey) !== expectedRetry) return -2;
                 store.delete(retryKey);
                 return 1;
             }
@@ -772,7 +774,8 @@ describe('stranded Ultrafix loop re-arming', () => {
 
         const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 74 }, redis as never, logger as never);
 
-        assert.match(result.reason, /rearm_not_ready: .*follow_up_jobs_active/);
+        // The newer loop owns the current epoch: it is left to its own step.
+        assert.match(result.reason, /rearm_not_ready: .*follow_up_jobs_active|loop_owned_by_current_epoch/);
         assert.equal(mockQueueAdd.mock.callCount(), 0);
         const state = await loadState(redis as never, 'acme', 'web', 74);
         assert.equal(state?.active, true);
@@ -782,6 +785,35 @@ describe('stranded Ultrafix loop re-arming', () => {
         assert.equal(state?.completionStatus, null);
         const posts = mockOctokitRequest.mock.calls.filter(call => String(call.arguments[0]).startsWith('POST'));
         assert.equal(posts.length, 0, 'no stopped-loop comment for the newer loop');
+    });
+
+    test('a startup that lands while the re-arm reserves its epoch is not fenced on re-evaluation', async () => {
+        const redis = await strandLoop(76);
+        const evaluate = redis.eval.bind(redis);
+        let started = false;
+        redis.eval = async (script: string, keyCount: number, ...args: string[]) => {
+            if (script.includes('-- reserve epoch and replace state') && !started) {
+                // A new /ultrafix startup commits its state under the label lease
+                // and has not queued its initial job yet.
+                started = true;
+                const workEpoch = await invalidateUltrafixAutomaticWork(redis as never, 'acme', 'web', 76);
+                await saveState(redis as never, {
+                    ...createDefaultState({ owner: 'acme', repo: 'web', pr: 76, goal: 9, maxCycles: 5, pauseSeconds: 30 }),
+                    workEpoch,
+                });
+            }
+            return evaluate(script, keyCount, ...args);
+        };
+
+        const result = await resumeDeferredContinuation({ owner: 'acme', repo: 'web', pr: 76 }, redis as never, logger as never);
+
+        assert.ok(started);
+        assert.equal(result.reason, 'loop_owned_by_current_epoch');
+        assert.equal(mockQueueAdd.mock.callCount(), 0, 'no re-armed review replaces the startup step');
+        const state = await loadState(redis as never, 'acme', 'web', 76);
+        assert.equal(state?.workEpoch, await getUltrafixAutomaticWorkEpoch(redis as never, 'acme', 'web', 76), 'the startup epoch is untouched');
+        assert.equal(state?.goal, 9);
+        assert.equal(await loadRearmRetry(redis as never, 'acme', 'web', 76), null, "the re-arm's own handoff obligation is released");
     });
 
     test('a loop stopped during the readiness check is not overwritten or re-armed', async () => {

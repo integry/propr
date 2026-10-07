@@ -896,6 +896,13 @@ const COMMIT_PRS_CACHE_KEY_PREFIX = 'propr:commit-open-prs';
  * meanwhile is covered by later check events and polling reconciliation.
  */
 export const COMMIT_PRS_CACHE_TTL_SECONDS = 60;
+/**
+ * "No open PR" is kept much more briefly: a branch pushed and then opened as
+ * a PR seconds later would otherwise have its remaining check runs (and the
+ * suite completion) dropped for a whole minute. Ten seconds still collapses
+ * the burst of a default-branch push, whose commits never have an open PR.
+ */
+export const COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS = 10;
 const commitPRLookupsInFlight = new Map<string, Promise<Array<{ number: number }>>>();
 
 type CommitPRsCache = Pick<Redis, 'get' | 'set'>;
@@ -936,7 +943,8 @@ export async function findPRsForCommitCached(
             return [];
         }
         try {
-            await cache.set(key, JSON.stringify(prs), 'EX', COMMIT_PRS_CACHE_TTL_SECONDS);
+            const ttlSeconds = prs.length > 0 ? COMMIT_PRS_CACHE_TTL_SECONDS : COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS;
+            await cache.set(key, JSON.stringify(prs), 'EX', ttlSeconds);
         } catch (error) {
             logger.debug({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to cache PRs for commit');
         }

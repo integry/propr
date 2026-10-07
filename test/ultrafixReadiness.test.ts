@@ -20,6 +20,7 @@ import {
     isUltrafixAutomaticWorkCurrent,
     parseDeferredKey,
     createDefaultState,
+    determineNextAction,
     areChecksReadyForUltrafix,
     getActionCounts,
     loadState,
@@ -755,9 +756,19 @@ describe('stranded loop re-arming gate', () => {
         assert.strictEqual(decision.action === 'complete' && decision.completionStatus, 'failed');
     });
 
-    test('completes as failed once fixes reach maxCycles', () => {
-        const decision = evaluateStrandedLoopRearm(makeState({ lastAction: 'fix', reviewCount: 4, fixCount: 5 }));
+    test('completes as failed once fixes reach maxCycles and the next step would be a fix', () => {
+        const decision = evaluateStrandedLoopRearm(makeState({ lastAction: 'review', reviewCount: 4, fixCount: 5 }));
         assert.strictEqual(decision.action === 'complete' && decision.completionStatus, 'failed');
+    });
+
+    test('re-arms the verifying review after the final permitted fix, like the ordinary continuation', () => {
+        const state = makeState({ lastAction: 'fix', reviewCount: 4, fixCount: 5 });
+        assert.deepStrictEqual(evaluateStrandedLoopRearm(state), { action: 'rearm' });
+        assert.strictEqual(determineNextAction(state, null).action, 'review');
+
+        const spent = makeState({ lastAction: 'fix', reviewCount: 5, fixCount: 5 });
+        assert.strictEqual(evaluateStrandedLoopRearm(spent).action, 'complete');
+        assert.strictEqual(determineNextAction(spent, null).action, null);
     });
 
     test('derives legacy action counts when enforcing maxCycles', () => {

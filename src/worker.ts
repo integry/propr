@@ -32,11 +32,9 @@ import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
 import { processGoalJob } from './jobs/processGoalJob.js';
 import { createConfiguredMainWorker } from './workerFactory.js';
 import type { MainWorker } from './workerFactory.js';
-import {
-    attachPRCommentTaskStateFinalizers,
-    type PRCommentTaskStateFinalizers,
-} from './jobs/prCommentTaskStateFinalizers.js';
+import { attachPRCommentTaskStateFinalizers, type PRCommentTaskStateFinalizers } from './jobs/prCommentTaskStateFinalizers.js';
 import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
+import { ultrafixFailedStepFinalizerOptions } from './jobs/ultrafixFailedStepFinalizer.js';
 import { getTaskReplacementService } from './taskReplacement/index.js';
 import { recoverNonterminalGoals } from './goalRecovery.js';
 import { reconcileFollowupCiSuspensions } from './jobs/followupCiSuspension.js';
@@ -393,7 +391,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             return reason ? { status: 'cancelled', reason } : null;
         },
         beforeRun: configuredWorker => {
-            taskStateFinalizers = attachPRCommentTaskStateFinalizers(configuredWorker, stateManager);
+            taskStateFinalizers = attachPRCommentTaskStateFinalizers(configuredWorker, stateManager, ultrafixFailedStepFinalizerOptions);
         },
     });
     if (!taskStateFinalizers) throw new Error('PR comment task state finalizers were not attached');

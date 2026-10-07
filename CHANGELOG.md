@@ -221,10 +221,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notice and its CI wait timeout. `check_suite` is now a supported webhook
   event. Check runs and suites whose payload lists no PRs are matched to open
   PRs by commit. That lookup is cached per commit for 60 seconds, so a push
-  with many jobs costs one GitHub call. Because of the lookup, events GitHub
-  sends without PR numbers, notably for fork PRs, now reach their PRs: an
-  opted-in failed-CI follow-up can now fire for them, as it already could for
-  `status` events. The retry sweep runs only in the API server.
+  with many jobs costs one GitHub call. A "no open PR" result is cached for
+  only 10 seconds, so a PR opened right after its branch was pushed is not
+  missed for long. Because of the lookup, events GitHub sends without PR
+  numbers, notably for fork PRs, now reach their PRs: an opted-in failed-CI
+  follow-up can now fire for them, as it already could for `status` events.
+  The retry sweep runs in both the API server and the daemon. It reads an
+  index of pending retries and deferred reviews instead of scanning the whole
+  keyspace every minute. A deferred step taken by a process that stopped before
+  scheduling it, including a permitted final fix, resumes after a restart. A
+  step job that fails after all its attempts leaves a retry, so its loop is
+  re-armed. A loop stranded right after its final permitted fix still gets its
+  verifying review. A re-arm now also waits for any other job on the PR, such
+  as a manual `/fix`, to finish.
 - **Ultrafix no longer stalls on non-blocking checks**: Ultrafix review
   readiness now honours the repository's `nonBlockingChecks` patterns, so a
   failing or still-pending check such as `Validate unsigned *` no longer defers

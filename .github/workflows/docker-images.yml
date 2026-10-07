@@ -105,6 +105,8 @@ jobs:
       - name: Run full server and UI suites
         env:
           NODE_ENV: test
+          # Redis was started above: its integration suites must run, not skip.
+          PROPR_REQUIRE_REDIS_INTEGRATION: '1'
         run: npm run test:full:prepared
 
       - name: Stop isolated Redis

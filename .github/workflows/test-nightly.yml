@@ -69,6 +69,8 @@ jobs:
         continue-on-error: true
         env:
           NODE_ENV: test
+          # Redis was started above: its integration suites must run, not skip.
+          PROPR_REQUIRE_REDIS_INTEGRATION: '1'
         run: |
           echo "Running full test suite with Redis..."
           npm run test:full:prepared 2>&1 | tee test_output.txt

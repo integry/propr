@@ -9,7 +9,6 @@ import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import { generateCorrelationId } from '@propr/core';
 import {
-    claimDeferredContinuation,
     saveDeferredContinuation,
     getUltrafixAutomaticWorkEpoch,
     isUltrafixAutomaticWorkCurrent,
@@ -26,6 +25,12 @@ import { applyUltrafixCiDeferral } from './ultrafixCiWait.js';
 import { rearmStrandedUltrafixLoop } from './ultrafixStrandedLoopRearm.js';
 import { restoreDeferredContinuationIfUnchanged } from './ultrafixAutomaticWorkEpoch.js';
 import { getCheckRunDeps } from './ultrafixCheckRunDeps.js';
+import { claimDeferredStep, restoreInterruptedClaim } from './ultrafixDeferredClaim.js';
+import {
+    indexUltrafixResumeCandidate,
+    listIndexedUltrafixResumeCandidates,
+    pruneUltrafixResumeCandidate,
+} from './ultrafixResumeIndex.js';
 import {
     getNextStepNumber,
     loadStateSnapshot,
@@ -36,8 +41,10 @@ import {
 } from './ultrafixResumeClaim.js';
 import type { ContinuationResult, UltrafixContinuationParams } from './ultrafixLoopContinuation.js';
 
-/** Reason recorded on the retry obligation that covers a claimed deferred record. */
-export const DEFERRED_CLAIM_RETRY_REASON = 'deferred_claim_pending';
+export { DEFERRED_CLAIM_RETRY_REASON } from './ultrafixDeferredClaim.js';
+
+/** The deferred record kept changing while this resume tried to claim it; it is still there. */
+const DEFERRED_CLAIM_CONTENDED_REASON = 'deferred_claim_contended';
 
 /** The step this continuation would enqueue is already queued or running; that job owns the loop. */
 export const NEXT_STEP_ALREADY_QUEUED_REASON = 'next_step_already_queued';
@@ -89,6 +96,7 @@ function leavesLoopWaiting(reason: string): boolean {
         || reason.startsWith('resume_failed')
         || reason === 'deferred_cancelled'
         || reason === 'ultrafix_superseded'
+        || reason === DEFERRED_CLAIM_CONTENDED_REASON
         || reason === RESUME_CLAIM_LOST_REASON;
 }
 
@@ -114,7 +122,7 @@ async function settleRearmRetry(
         if (!leavesLoopWaiting(result.reason)) {
             // Only the current holder may release it: a takeover may have
             // recorded a newer obligation this outcome knows nothing about.
-            const cleared = await claim.clearRetry(result.workEpoch);
+            const cleared = await claim.clearRetry({ workEpoch: result.workEpoch });
             if (cleared === 'claim_not_held') {
                 correlatedLogger.info({ pr, reason: result.reason }, 'Ultrafix resume: resume claim no longer held, leaving retry obligation in place');
             }
@@ -144,29 +152,64 @@ async function settleRearmRetry(
     return settled;
 }
 
+/** The index is backed by a full keyspace scan on a process's first sweep, then every this many sweeps. */
+const FULL_SCAN_EVERY_SWEEPS = 30;
+let sweepsSinceFullScan: number | null = null;
+
+type PrRef = { owner: string; repo: string; pr: number };
+
+/**
+ * PRs the sweep should look at: the resume index, plus a full keyspace scan
+ * when it is due or the index cannot be read. The scan finds records written
+ * by a process lost before indexing them (or by an older release) and indexes
+ * them. Returns whether the index was readable, i.e. may be pruned.
+ */
+async function listSweepCandidates(redisClient: Redis, fullScan?: boolean): Promise<{ refs: PrRef[]; indexed: boolean }> {
+    const refs = new Map<string, PrRef>();
+    const add = (ref: PrRef) => refs.set(`${ref.owner}/${ref.repo}#${ref.pr}`, ref);
+    const indexed = await listIndexedUltrafixResumeCandidates(redisClient);
+    indexed?.forEach(add);
+    const scan = indexed === null || (fullScan ?? (sweepsSinceFullScan === null || sweepsSinceFullScan >= FULL_SCAN_EVERY_SWEEPS));
+    if (fullScan === undefined) sweepsSinceFullScan = scan ? 1 : (sweepsSinceFullScan ?? 0) + 1;
+    if (scan) {
+        const keys = [
+            ...(await listDeferredContinuationKeys(redisClient)).map(parseDeferredKey),
+            ...(await listRearmRetryKeys(redisClient)).map(parseRearmRetryKey),
+        ];
+        for (const ref of keys) {
+            if (!ref) continue;
+            add(ref);
+            if (indexed) await indexUltrafixResumeCandidate(redisClient, ref);
+        }
+    }
+    return { refs: [...refs.values()], indexed: indexed !== null };
+}
+
 /**
  * Periodic reconciliation: re-run every deferred continuation and every
  * recorded retry obligation that is due, so a loop whose last trigger could
- * not settle it is retried without another webhook.
+ * not settle it is retried without another webhook. Candidates come from the
+ * resume index (see `ultrafixResumeIndex.ts`), so a sweep costs one set read
+ * rather than a keyspace walk; `fullScan` forces or suppresses the scan that
+ * otherwise backs the index up periodically.
  */
 export async function sweepUltrafixResumeCandidates(
     redisClient: Redis,
     createLogger: () => Logger,
-): Promise<Array<{ prId: { owner: string; repo: string; pr: number }; result: ContinuationResult }>> {
-    const candidates = new Map<string, { owner: string; repo: string; pr: number }>();
-    for (const key of await listDeferredContinuationKeys(redisClient)) {
-        const parsed = parseDeferredKey(key);
-        if (parsed) candidates.set(`${parsed.owner}/${parsed.repo}#${parsed.pr}`, parsed);
-    }
-    for (const key of await listRearmRetryKeys(redisClient)) {
-        const parsed = parseRearmRetryKey(key);
-        if (!parsed) continue;
-        const retry = await loadRearmRetry(redisClient, parsed.owner, parsed.repo, parsed.pr);
+    options: { fullScan?: boolean } = {},
+): Promise<Array<{ prId: PrRef; result: ContinuationResult }>> {
+    const { refs, indexed } = await listSweepCandidates(redisClient, options.fullScan);
+    const outcomes: Array<{ prId: PrRef; result: ContinuationResult }> = [];
+    for (const prId of refs) {
+        const { owner, repo, pr } = prId;
+        const deferred = await loadDeferredContinuation(redisClient, owner, repo, pr);
+        const retry = deferred ? null : await loadRearmRetry(redisClient, owner, repo, pr);
+        if (!deferred && !retry) {
+            // Settled since it was indexed: drop it unless a record appeared meanwhile.
+            if (indexed) await pruneUltrafixResumeCandidate(redisClient, prId);
+            continue;
+        }
         if (retry?.notBefore && Date.parse(retry.notBefore) > Date.now()) continue;
-        candidates.set(`${parsed.owner}/${parsed.repo}#${parsed.pr}`, parsed);
-    }
-    const outcomes: Array<{ prId: { owner: string; repo: string; pr: number }; result: ContinuationResult }> = [];
-    for (const prId of candidates.values()) {
         const log = createLogger();
         try {
             outcomes.push({ prId, result: await resumeDeferredContinuation(prId, redisClient, log) });
@@ -184,25 +227,22 @@ async function resumeClaimedContinuation(
     claim: ResumeClaim,
 ): Promise<ContinuationResult> {
     const { owner, repo, pr } = prId;
-    // Claiming the deferred record removes it. A process lost before this
-    // attempt settles (which no error handler can observe) would leave an
-    // active loop that nothing durable names, so the retry obligation is
-    // persisted first; settling the attempt releases or replaces it.
-    if (await loadDeferredContinuation(redisClient, owner, repo, pr)) {
-        const saved = await claim.saveRetry({
-            owner, repo, pr,
-            workEpoch: await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pr),
-            reason: DEFERRED_CLAIM_RETRY_REASON,
-            savedAt: new Date().toISOString(),
-        });
-        if (!saved) return { continued: false, reason: RESUME_CLAIM_LOST_REASON };
+    const claimCtx = { redisClient, correlatedLogger, claim };
+    // A resume that claimed a deferred step and was lost before settling it
+    // left that step only in its retry obligation: put it back first, so the
+    // same authorized step resumes instead of stranded-loop recovery.
+    if (!await loadDeferredContinuation(redisClient, owner, repo, pr)) {
+        await restoreInterruptedClaim(prId, claimCtx);
     }
     // Atomically claim the deferred record so concurrent check_run events
     // for the same PR cannot double-enqueue the next step.
-    const deferred = await claimDeferredContinuation(redisClient, owner, repo, pr);
-    if (!deferred) {
+    const claimedStep = await claimDeferredStep(prId, claimCtx);
+    if (claimedStep.kind === 'claim_lost') return { continued: false, reason: RESUME_CLAIM_LOST_REASON };
+    if (claimedStep.kind === 'contended') return { continued: false, reason: DEFERRED_CLAIM_CONTENDED_REASON };
+    if (claimedStep.kind === 'none') {
         return rearmStrandedUltrafixLoop(prId, { redisClient, correlatedLogger, checkRunDeps: getCheckRunDeps(), claim });
     }
+    const { deferred } = claimedStep;
 
     const workEpoch = deferred.workEpoch ?? deferred.ultrafixMeta?.workEpoch;
     if (!await isUltrafixAutomaticWorkCurrent(redisClient, { owner, repo, pr }, workEpoch)) {
@@ -253,6 +293,7 @@ async function restoreClaimedDeferred(
             { workEpoch: deferred.workEpoch ?? 0, rawState: snapshot.raw },
             JSON.stringify(deferred),
         );
+        if (restored) await indexUltrafixResumeCandidate(ctx.redisClient, prId);
         ctx.correlatedLogger.info({ pr: prId.pr, nextAction: deferred.nextAction, restored }, 'Ultrafix deferred resume: put the claimed step back');
     } catch (err) {
         ctx.correlatedLogger.warn({ pr: prId.pr, error: (err as Error).message }, 'Ultrafix deferred resume: failed to put the claimed step back');

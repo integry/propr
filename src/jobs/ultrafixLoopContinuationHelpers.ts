@@ -273,10 +273,17 @@ export async function evaluateCIChecksPassing(
     return (await evaluateCIChecks(params, deps)).passing;
 }
 
+/** Outstanding-work reason for a queued or running non-Ultrafix job on the PR. */
+export const PR_JOBS_ACTIVE_REASON = 'pr_jobs_active';
+
 /**
  * Ultrafix work for the PR that is still queued, running, or batched. Unlike
  * readiness this fails closed: when the queue or pending comments cannot be
  * read, the work is reported as unknown so no terminal decision is made blind.
+ *
+ * Any other queued or running job for the same PR (e.g. a manual `/fix` that
+ * fenced the loop, or a CI-failure follow-up) is outstanding too: it has not
+ * pushed yet, so a review re-armed now would review the wrong head.
  *
  * `currentStepsOnly` is set when the only outstanding work is Ultrafix steps of
  * the current epoch: their own continuation owns the loop. Steps of a fenced
@@ -293,10 +300,11 @@ export async function findOutstandingUltrafixWork(
     try {
         const issueQueue = await getIssueQueue();
         const jobs = await issueQueue.getJobs(['waiting', 'active', 'delayed']) as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: { workEpoch?: number } } }>;
-        const steps = jobs.filter(job => job.data.repoOwner === owner
+        const prJobs = jobs.filter(job => job.data.repoOwner === owner
             && job.data.repoName === repo
-            && job.data.pullRequestNumber === pullRequestNumber
-            && job.data.ultrafixMeta != null);
+            && job.data.pullRequestNumber === pullRequestNumber);
+        const steps = prJobs.filter(job => job.data.ultrafixMeta != null);
+        if (prJobs.length > steps.length) outstanding.push(PR_JOBS_ACTIVE_REASON);
         if (steps.length > 0) {
             outstanding.push('follow_up_jobs_active');
             // Read after the scan: a step at this epoch was current once the scan saw it.
