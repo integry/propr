@@ -49,6 +49,7 @@ import { ChartNoAxesColumn, Slash } from 'lucide-react';
 import { headroomCeiling, midlineTick, tooltipStyle } from './chartConstants';
 import { CURRENT_DAY_FILL, dailyBarFill, utcToday } from './Dashboard/chartPalette';
 import { planActivityAxis, type ActivityAxisLabel } from './Analytics/activityAxis';
+import { pairDrift, pairedBarGeometry } from './Analytics/activityPairs';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
@@ -113,28 +114,6 @@ const COLUMN_TRACK_FILL = '#F1F5F9';
 const RUNS_FILL = '#CBD5E1';
 /** Tasks on a closed day (slate-700); today's is brand teal. */
 const TASKS_FILL = '#334155';
-/** The widest either bar of a pair gets, in pixels, and the gap between them. */
-const PAIRED_BAR_SIZE = 14;
-const PAIRED_BAR_GAP = 3;
-/** The share of a day's slot its pair may fill, leaving the `barCategoryGap` either side. */
-const PAIRED_SLOT_SHARE = 0.7;
-
-/**
- * Each bar's width in a day's pair. Set outright, not as a `maxBarSize`: a
- * capped bar is centred in its half of the slot, and the pair drifts apart.
- */
-const pairedBarSize = (slot: number): number =>
-  Math.max(1, Math.min(PAIRED_BAR_SIZE, Math.floor((slot * PAIRED_SLOT_SHARE - PAIRED_BAR_GAP) / 2)));
-
-/**
- * How far a day's pair sits off its slot's centre. Recharts truncates the
- * pair's inset to a whole pixel, so the pair can sit up to a pixel left of
- * centre; the date and the card follow the pair, not the slot.
- */
-const pairDrift = (slot: number, barSize: number): number => {
-  const inset = (slot - (2 * barSize + PAIRED_BAR_GAP)) / 2;
-  return Math.trunc(inset) - inset;
-};
 
 /** Whether the days carry runs, so the chart can pair them with tasks. */
 const hasRuns = (data: ActivityDay[]): boolean => data.some(day => day.runs !== undefined);
@@ -257,8 +236,11 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
   const mid = midlineTick(max);
   const slot = data.length > 0 ? plotWidth / data.length : 0;
   const labels = useMemo(() => planActivityAxis(data.map(point => point.date), slot), [data, slot]);
-  const barSize = pairedBarSize(slot);
-  const drift = paired ? pairDrift(slot, barSize) : 0;
+  // Each bar's width is set outright, not as a `maxBarSize`: a capped bar is
+  // centred in its half of the slot, and the pair drifts apart.
+  const pair = pairedBarGeometry(slot);
+  const { barSize } = pair;
+  const drift = paired ? pairDrift(slot, pair) : 0;
   const onResize = (width: number, height: number) => setSize({ width, height });
 
   return (
@@ -274,7 +256,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
           </SkeletonRegion>
         ) : data.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%" onResize={onResize}>
-            <BarChart data={data} margin={{ top: PLOT_TOP, right: 0, left: 0, bottom: 0 }} barCategoryGap="15%" barGap={PAIRED_BAR_GAP}>
+            <BarChart data={data} margin={{ top: PLOT_TOP, right: 0, left: 0, bottom: 0 }} barCategoryGap="15%" barGap={pair.gap}>
               {/*
                 The baseline and maximum rules, then a lighter midline that reads
                 as a guide. Both are grids, so they sit behind the bars.

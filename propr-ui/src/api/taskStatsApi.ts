@@ -135,7 +135,8 @@ export interface StatsOverviewSystem {
 
 /** One model's share of the period: runs, distinct tasks, tokens and recorded cost. */
 export interface StatsOverviewModelUsage {
-  model: string;
+  /** Null for the runs that recorded no model, kept as one row so the runs sum to the period's total. */
+  model: string | null;
   /** Agent executions on the model; absent from servers that predate it. */
   runs?: number;
   tasks: number;

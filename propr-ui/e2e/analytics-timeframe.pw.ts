@@ -406,3 +406,47 @@ test('runs and tasks share one chart: each day pairs its runs and tasks side by 
   await expect(page.getByText('Sep 22: 571 runs · 210 tasks')).toBeVisible();
   await captureTarget(page.locator('[aria-labelledby="analytics-activity-heading"]'), 'analytics-activity-runs-vs-tasks-paired');
 });
+
+for (const [period, days] of [['1y', 365], ['all', 400]] as const) {
+  for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }]) {
+    test(`a ${period} paired chart keeps every day's pair in its own column at ${viewport.width}px`, async ({ page }) => {
+      await fixture(page, viewport);
+      await stubAnalytics(page);
+      // Every day has both a run and a task, so every day draws two bars.
+      await page.route('**/api/stats/tasks*', route => route.fulfill({ json: {
+        dailyCounts: dayKeys(days).map((date, index) => ({ date, count: 1 + (index % 5), runs: 2 + ((index * 7) % 11) })),
+        statusDistribution: [{ status: 'completed', count: 400 }],
+        avgProcessingTime: [],
+        summary: { total: 400, completed: 400, failed: 0 },
+      } }));
+      await page.goto(`/analytics?period=${period}`);
+      const chart = page.getByTestId('activity-chart');
+      const runBars = chart.locator('path[data-testid^="activity-runs-bar-"]');
+      const taskBars = chart.locator('path[data-testid^="activity-tasks-bar-"]');
+      await expect(runBars).toHaveCount(days);
+      await expect(taskBars).toHaveCount(days);
+
+      const boxes = (locator: typeof runBars) => locator.evaluateAll(paths =>
+        paths.map(path => path.getBoundingClientRect()).map(box => ({ left: box.x, right: box.x + box.width, width: box.width })));
+      const runs = await boxes(runBars);
+      const tasks = await boxes(taskBars);
+      // The one-pixel floor and fixed gap give way when a day is narrow: no bar
+      // collapses to nothing, and no pair spills into the next day's.
+      for (let index = 0; index < days; index += 1) {
+        expect(runs[index].width).toBeGreaterThan(0);
+        expect(Math.abs(tasks[index].width - runs[index].width)).toBeLessThan(0.5);
+        expect(tasks[index].left).toBeGreaterThanOrEqual(runs[index].right - 0.01);
+        if (index + 1 < days) expect(runs[index + 1].left).toBeGreaterThanOrEqual(tasks[index].right - 0.01);
+      }
+      // A date still sits under the pair it names, however thin the pair.
+      const labelled = await chart.locator('.recharts-xAxis-tick-labels .recharts-cartesian-axis-tick-label').evaluateAll(ticks => ticks
+        .map((tick, index) => ({ index, label: tick.querySelector('[data-testid="activity-date-label"]') }))
+        .filter(({ label }) => label !== null)
+        .map(({ index, label }) => { const box = label!.getBoundingClientRect(); return { index, centre: box.x + box.width / 2 }; }));
+      expect(labelled.length).toBeGreaterThan(0);
+      for (const { index, centre } of labelled) {
+        expect(Math.abs(centre - (runs[index].left + tasks[index].right) / 2)).toBeLessThan(1);
+      }
+    });
+  }
+}

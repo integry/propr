@@ -8,6 +8,10 @@
  * acting on the PR itself. Outcomes come from `notification_pull_request_state`,
  * the same merge marker review quality reads.
  *
+ * A merged PR is judged by the work it took to reach the merge: tasks created,
+ * runs started and Ultrafix cycles scored after its recorded merge time are
+ * left out, so later work on the same issue never rewrites its verdict.
+ *
  * Every figure carries its denominator, and a figure with nothing behind it is
  * null, never 0.
  */
@@ -31,7 +35,7 @@ export interface DeliveryMetrics {
   first_time_pass: { rate: number | null; passed: number; n: number };
   /** Wall-clock minutes from the issue's first task to the merge. n is merged PRs with a merge time. */
   time_to_merge_minutes: { mean: number | null; median: number | null; n: number };
-  /** Agent executions across each merged PR's tasks. */
+  /** Agent executions across each merged PR's tasks, started at or before its merge. */
   runs_per_merged_pr: { mean: number | null; n: number };
 }
 
@@ -51,7 +55,8 @@ export interface TaskRow {
   pr_number: number | null;
   task_type: string | null;
   created_at: string;
-  initial_job_data?: string | null;
+  /** `initial_job_data.commandMode`, when the schema records job data. */
+  command_mode?: string | null;
 }
 
 interface PullRequest {
@@ -74,20 +79,17 @@ function median(values: number[]): number | null {
 
 const toTime = (value: string | Date): number => new Date(value).getTime();
 
+/** Whether a timestamp falls at or before a merge; with no recorded merge time there is no cutoff. */
+const atOrBefore = (value: string | Date, mergedAt: string | null): boolean =>
+  mergedAt === null || toTime(value) <= toTime(mergedAt);
+
 /**
  * Any task acting on a PR is a fix unless it only reviews. An Ultrafix loop's
  * fix step is a fix like any other: the task itself is the evidence, whether
  * or not a later review of the fixed code was ever scored.
  */
 function isFixTask(task: TaskRow): boolean {
-  if (task.task_type === 'review') return false;
-  let data: { commandMode?: unknown } = {};
-  try {
-    data = task.initial_job_data ? JSON.parse(task.initial_job_data) as typeof data : {};
-  } catch {
-    data = {};
-  }
-  return data.commandMode !== 'review';
+  return task.task_type !== 'review' && task.command_mode !== 'review';
 }
 
 async function loadOutcomes(db: Knex, pullRequests: PullRequest[]): Promise<Map<string, { merged_at: string | null; outcome: string | null }>> {
@@ -108,12 +110,12 @@ async function loadOutcomes(db: Knex, pullRequests: PullRequest[]): Promise<Map<
 }
 
 /**
- * PRs whose Ultrafix loop recorded a scored cycle after the first, which only
- * a fix leads to. Supporting evidence: a fix whose next review was never
- * scored is still found by its task.
+ * When each PR's Ultrafix loop first recorded a scored cycle after the first,
+ * which only a fix leads to. Supporting evidence: a fix whose next review was
+ * never scored is still found by its task.
  */
-async function loadUltrafixFixedPullRequests(db: Knex, pullRequests: PullRequest[]): Promise<Set<string>> {
-  const fixed = new Set<string>();
+async function loadUltrafixFixTimes(db: Knex, pullRequests: PullRequest[]): Promise<Map<string, string>> {
+  const fixed = new Map<string, string>();
   if (!pullRequests.length || !await hasTable(db, 'review_scores')) return fixed;
   const repositories = [...new Set(pullRequests.map(pr => pr.repository))];
   for (const numbers of chunk([...new Set(pullRequests.map(pr => pr.prNumber))])) {
@@ -122,27 +124,45 @@ async function loadUltrafixFixedPullRequests(db: Knex, pullRequests: PullRequest
       .whereIn('pr_number', numbers)
       .where('source', 'ultrafix')
       .where('cycle_number', '>', 1)
-      .distinct('repository_id', 'pr_number') as Array<{ repository_id: string; pr_number: number }>;
-    for (const row of rows) fixed.add(prKey(row.repository_id, row.pr_number));
+      .select('repository_id', 'pr_number')
+      .min('created_at as first_at')
+      .groupBy('repository_id', 'pr_number') as Array<{ repository_id: string; pr_number: number; first_at: string }>;
+    for (const row of rows) fixed.set(prKey(row.repository_id, row.pr_number), row.first_at);
   }
   return fixed;
 }
 
 const TASK_COLUMNS = ['task_id', 'repository', 'issue_number', 'pr_number', 'task_type', 'created_at'];
 
-/** Task columns to read; `initial_job_data` only tells reviews apart, so a schema without it reads every follow-up as a fix. */
-async function taskColumns(db: Knex): Promise<string[]> {
-  return await hasColumn(db, 'tasks', 'initial_job_data') ? [...TASK_COLUMNS, 'initial_job_data'] : TASK_COLUMNS;
+/**
+ * Task columns to read. Of the job data only the command mode is read, to tell
+ * reviews apart, rather than every task's whole JSON; a schema without job
+ * data reads every follow-up as a fix.
+ */
+async function taskColumns(db: Knex): Promise<Array<string | Knex.Raw>> {
+  if (!await hasColumn(db, 'tasks', 'initial_job_data')) return TASK_COLUMNS;
+  return [...TASK_COLUMNS, db.raw(
+    `CASE WHEN json_valid(initial_job_data) THEN json_extract(initial_job_data, '$.commandMode') END AS command_mode`,
+  )];
 }
+
+/**
+ * Numbers per related-task query. Each batch is bound twice (issue and PR
+ * number) beside the repositories, so half the usual batch keeps the query
+ * under SQLite's historical limit of 999 bound parameters.
+ */
+const RELATED_BATCH_SIZE = 250;
 
 /**
  * Every task in the given repositories that names one of the numbers, by issue
  * or PR, once each: a task whose issue and PR numbers fall in different
  * batches is matched by both.
  */
-export async function loadRelatedTasks(db: Knex, repositories: string[], numbers: number[], columns: string[]): Promise<TaskRow[]> {
+export async function loadRelatedTasks(
+  db: Knex, repositories: string[], numbers: number[], columns: Array<string | Knex.Raw>,
+): Promise<TaskRow[]> {
   const rows = new Map<string, TaskRow>();
-  for (const batch of chunk(numbers)) {
+  for (const batch of chunk(numbers, RELATED_BATCH_SIZE)) {
     const matched = await db('tasks')
       .whereIn('repository', repositories)
       .where(function (this: Knex.QueryBuilder) {
@@ -154,17 +174,63 @@ export async function loadRelatedTasks(db: Knex, repositories: string[], numbers
   return [...rows.values()];
 }
 
-async function loadRunCounts(db: Knex, taskIds: string[]): Promise<Map<string, number>> {
-  const counts = new Map<string, number>();
-  for (const batch of chunk(taskIds)) {
-    const rows = await db('llm_executions')
-      .whereIn('task_id', batch)
-      .select('task_id')
-      .count('* as runs')
-      .groupBy('task_id') as Array<{ task_id: string; runs: number | string }>;
-    for (const row of rows) counts.set(row.task_id, Number(row.runs));
+/** One task's runs counted toward one merged PR, up to that PR's merge time. */
+interface RunEvidence { key: string; taskId: string; mergedAt: string | null }
+
+/**
+ * Executions per merged PR across its tasks, counting only runs started at or
+ * before the PR's merge. A task can belong to two PRs with different merge
+ * times (two PRs for one issue), so the cutoff travels with each pairing.
+ */
+async function loadRunsToMerge(db: Knex, evidence: RunEvidence[]): Promise<Map<string, number>> {
+  const runs = new Map<string, number>();
+  // Three bindings per pairing keep each batch under 999 bound parameters.
+  for (const batch of chunk(evidence, 300)) {
+    const rows = await db.raw(
+      `WITH evidence(pr_key, task_id, cutoff) AS (VALUES ${batch.map(() => '(?, ?, ?)').join(', ')})
+       SELECT evidence.pr_key AS pr_key, count(*) AS runs
+       FROM evidence JOIN llm_executions AS e ON e.task_id = evidence.task_id
+       WHERE evidence.cutoff IS NULL OR e.start_time <= evidence.cutoff
+       GROUP BY evidence.pr_key`,
+      batch.flatMap(item => [item.key, item.taskId, item.mergedAt]),
+    ) as Array<{ pr_key: string; runs: number | string }>;
+    for (const row of rows) runs.set(row.pr_key, (runs.get(row.pr_key) ?? 0) + Number(row.runs));
   }
-  return counts;
+  return runs;
+}
+
+/** Related tasks keyed by repository and every number they name, issue or PR. */
+function indexRelatedTasks(related: TaskRow[]): Map<string, TaskRow[]> {
+  const index = new Map<string, TaskRow[]>();
+  for (const task of related) {
+    const keys = new Set([task.issue_number, task.pr_number].flatMap(number => number === null ? [] : [prKey(task.repository, number)]));
+    for (const key of keys) index.set(key, [...(index.get(key) ?? []), task]);
+  }
+  return index;
+}
+
+interface MergedPullRequestEvidence {
+  implementations: TaskRow[];
+  followUps: TaskRow[];
+}
+
+/**
+ * The tasks that took one merged PR to its merge: its implementation attempts
+ * and the follow-ups acting on it, created at or before the merge. A goal
+ * task names the issue it works toward but opens no PR, so it is never an
+ * implementation attempt.
+ */
+function mergedPullRequestEvidence(pr: PullRequest & { mergedAt: string | null }, index: Map<string, TaskRow[]>): MergedPullRequestEvidence {
+  const candidates = new Map<string, TaskRow>();
+  for (const number of pr.issueNumber === null ? [pr.prNumber] : [pr.prNumber, pr.issueNumber]) {
+    for (const task of index.get(prKey(pr.repository, number)) ?? []) candidates.set(task.task_id, task);
+  }
+  const beforeMerge = [...candidates.values()].filter(task => atOrBefore(task.created_at, pr.mergedAt));
+  return {
+    implementations: beforeMerge.filter(task => !isPullRequestTask(task) && task.task_type !== 'goal'
+      && (Number(task.pr_number) === pr.prNumber || (pr.issueNumber !== null && Number(task.issue_number) === pr.issueNumber))),
+    followUps: beforeMerge.filter(task => isPullRequestTask(task) && Number(task.issue_number) === pr.prNumber),
+  };
 }
 
 interface MergedPullRequest {
@@ -174,16 +240,12 @@ interface MergedPullRequest {
   minutesToMerge: number | null;
 }
 
-/** How one merged PR got there: its implementation attempts and the follow-ups acting on it. */
+/** How one merged PR got there, from the evidence recorded up to its merge. */
 function mergedPullRequestFacts(
-  pr: PullRequest & { mergedAt: string | null; ultrafixFixed: boolean }, related: TaskRow[], runs: Map<string, number>,
+  pr: { mergedAt: string | null; ultrafixFixed: boolean }, evidence: MergedPullRequestEvidence, runs: number,
 ): MergedPullRequest {
   const { mergedAt, ultrafixFixed } = pr;
-  const sameRepository = related.filter(task => task.repository === pr.repository);
-  const implementations = sameRepository.filter(task => !isPullRequestTask(task)
-    && (Number(task.pr_number) === pr.prNumber || (pr.issueNumber !== null && Number(task.issue_number) === pr.issueNumber)));
-  const followUps = sameRepository.filter(task => isPullRequestTask(task) && Number(task.issue_number) === pr.prNumber);
-  const runsOf = (tasks: TaskRow[]) => tasks.reduce((sum, task) => sum + (runs.get(task.task_id) ?? 0), 0);
+  const { implementations, followUps } = evidence;
 
   let minutesToMerge: number | null = null;
   if (mergedAt && implementations.length) {
@@ -195,14 +257,14 @@ function mergedPullRequestFacts(
   // that fixed the PR belongs to a follow-up task, judged by isFixTask.
   return {
     firstTimePass: implementations.length <= 1 && !followUps.some(isFixTask) && !ultrafixFixed,
-    runs: runsOf([...implementations, ...followUps]),
+    runs,
     minutesToMerge,
   };
 }
 
 /** Pull requests opened by tasks created in the window, once each. */
-async function loadOpenedPullRequests(db: Knex, window: AnalyticsWindow | null, columns: string[]): Promise<Map<string, PullRequest>> {
-  const query = db('tasks').whereNotNull('pr_number').select(columns);
+async function loadOpenedPullRequests(db: Knex, window: AnalyticsWindow | null): Promise<Map<string, PullRequest>> {
+  const query = db('tasks').whereNotNull('pr_number').select(TASK_COLUMNS);
   whereCreatedWithin(query, 'created_at', window);
   const pullRequests = new Map<string, PullRequest>();
   for (const task of await query as TaskRow[]) {
@@ -214,29 +276,39 @@ async function loadOpenedPullRequests(db: Knex, window: AnalyticsWindow | null, 
 }
 
 export async function loadDeliveryMetrics(db: Knex, window: AnalyticsWindow | null): Promise<DeliveryMetrics> {
-  const columns = await taskColumns(db);
-  const pullRequests = await loadOpenedPullRequests(db, window, columns);
+  const pullRequests = await loadOpenedPullRequests(db, window);
   const prs = [...pullRequests.values()];
-  const repositories = [...new Set(prs.map(pr => pr.repository))];
-  const numbers = [...new Set(prs.flatMap(pr => pr.issueNumber === null ? [pr.prNumber] : [pr.prNumber, pr.issueNumber]))];
-
-  const [outcomes, ultrafixFixed, related] = await Promise.all([
-    loadOutcomes(db, prs),
-    loadUltrafixFixedPullRequests(db, prs),
-    repositories.length ? loadRelatedTasks(db, repositories, numbers, columns) : Promise.resolve([] as TaskRow[]),
-  ]);
-  const runs = await loadRunCounts(db, related.map(task => task.task_id));
+  const outcomes = await loadOutcomes(db, prs);
 
   let closed = 0;
-  const merged: MergedPullRequest[] = [];
+  const mergedPullRequests = new Map<string, PullRequest & { mergedAt: string | null }>();
   for (const [key, pr] of pullRequests) {
     const outcome = outcomes.get(key);
     if (outcome?.outcome === 'merged' || outcome?.merged_at) {
-      merged.push(mergedPullRequestFacts({ ...pr, mergedAt: outcome.merged_at, ultrafixFixed: ultrafixFixed.has(key) }, related, runs));
+      mergedPullRequests.set(key, { ...pr, mergedAt: outcome.merged_at });
     } else if (outcome?.outcome === 'closed') {
       closed += 1;
     }
   }
+
+  // Only merged PRs are judged, so only their history is read.
+  const mergedList = [...mergedPullRequests.values()];
+  const repositories = [...new Set(mergedList.map(pr => pr.repository))];
+  const numbers = [...new Set(mergedList.flatMap(pr => pr.issueNumber === null ? [pr.prNumber] : [pr.prNumber, pr.issueNumber]))];
+  const [ultrafixFixTimes, related] = await Promise.all([
+    loadUltrafixFixTimes(db, mergedList),
+    repositories.length ? loadRelatedTasks(db, repositories, numbers, await taskColumns(db)) : Promise.resolve([] as TaskRow[]),
+  ]);
+  const index = indexRelatedTasks(related);
+  const evidence = new Map([...mergedPullRequests].map(([key, pr]) => [key, mergedPullRequestEvidence(pr, index)]));
+  const runs = await loadRunsToMerge(db, [...evidence].flatMap(([key, { implementations, followUps }]) =>
+    [...implementations, ...followUps].map(task => ({ key, taskId: task.task_id, mergedAt: mergedPullRequests.get(key)!.mergedAt }))));
+
+  const merged: MergedPullRequest[] = [...mergedPullRequests].map(([key, pr]) => {
+    const fixedAt = ultrafixFixTimes.get(key);
+    const ultrafixFixed = fixedAt !== undefined && atOrBefore(fixedAt, pr.mergedAt);
+    return mergedPullRequestFacts({ mergedAt: pr.mergedAt, ultrafixFixed }, evidence.get(key)!, runs.get(key) ?? 0);
+  });
 
   const passed = merged.filter(pr => pr.firstTimePass).length;
   const minutesToMerge = merged.flatMap(pr => pr.minutesToMerge === null ? [] : [pr.minutesToMerge]);

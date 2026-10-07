@@ -239,3 +239,47 @@ test('analytics day keys cover every UTC day from start to end inclusive', () =>
     ['2026-09-29', '2026-09-30', '2026-10-01'],
   );
 });
+
+test('every run reaches the Models table, so its runs sum to the delivery band and the activity chart', async () => {
+  await seedRecentAndOlder();
+  // Runs that recorded no model name, or an empty one, are still runs.
+  await database('llm_executions').insert([
+    { execution_id: 3, task_id: 'recent', start_time: minutesAgo(20), cost_usd: 0.25, model_name: null },
+    { execution_id: 4, task_id: 'older', start_time: daysAgo(1.5), cost_usd: null, model_name: '' },
+  ]);
+  await database('llm_execution_details').insert({ execution_id: 3, token_count_input: 10, token_count_output: 5 });
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+
+  const overview = await call(stats.getOverview, { period: '7d' });
+  // The unknown runs share one row, listed last, with no review figures of its own.
+  assert.deepEqual(overview.body.model_usage, [
+    { model: 'gpt-5.6', runs: 1, tasks: 1, tokens: 1200, cost_usd: 0.5 },
+    { model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 120, cost_usd: 1.5 },
+    { model: null, runs: 2, tasks: 2, tokens: 15, cost_usd: 0.25 },
+  ]);
+  const modelRuns = (overview.body.model_usage as Array<{ runs: number }>).reduce((sum, row) => sum + row.runs, 0);
+  assert.equal((overview.body.runs as { total: number }).total, modelRuns);
+
+  const tasks = await call(stats.getTaskStats, { period: '7d' });
+  const chartRuns = (tasks.body.dailyCounts as Array<{ runs: number }>).reduce((sum, day) => sum + day.runs, 0);
+  assert.equal(chartRuns, modelRuns);
+});
+
+test('goal tasks are left out of task volume on the Analytics page and the dashboard widget alike', async () => {
+  await seedRecentAndOlder();
+  // A goal orchestrates the tasks that deliver its work; it is not a deliverable itself.
+  await seedTask(database, {
+    taskId: 'goal', repository: 'acme/recent', issueNumber: 1, taskType: 'goal',
+    states: [{ state: 'processing', timestamp: minutesAgo(40) }, { state: 'completed', timestamp: minutesAgo(5) }],
+  });
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+
+  const tasks = await call(stats.getTaskStats, { period: '7d' });
+  assert.deepEqual(tasks.body.summary, { total: 2, completed: 1, failed: 1 });
+  assert.equal((tasks.body.dailyCounts as Array<{ count: number }>).reduce((sum, day) => sum + day.count, 0), 2);
+  const overview = await call(stats.getOverview, { period: '7d' });
+  assert.deepEqual(overview.body.runs, { total: 2, tasks: 2, per_task: 1 });
+  const widget = await call(stats.getDashboardStats, { repository: 'acme/recent', period: '7d' });
+  assert.equal(widget.body.tasks, 1);
+  assert.equal(widget.body.completed, 1);
+});

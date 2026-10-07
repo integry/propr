@@ -23,10 +23,10 @@ beforeEach(async () => {
 });
 
 /** A task acting on PR `pr`, as the comment handler records it. */
-async function seedFollowUp(taskId: string, pr: number, jobData: Record<string, unknown>): Promise<void> {
+async function seedFollowUp(taskId: string, pr: number, jobData: Record<string, unknown>, createdAt = daysAgo(2)): Promise<void> {
   await database('tasks').insert({
     task_id: taskId, repository: REPOSITORY, issue_number: pr, pr_number: null, task_type: 'pr-comment',
-    model_name: 'claude-opus-5', created_at: daysAgo(2), initial_job_data: JSON.stringify(jobData), final_result: null,
+    model_name: 'claude-opus-5', created_at: createdAt, initial_job_data: JSON.stringify(jobData), final_result: null,
   });
 }
 
@@ -57,25 +57,29 @@ test('autonomy counts a failure even when a retry later completed the task', asy
 });
 
 test('a task matched by two batches is related to its PR once', async () => {
-  // Issue 1000 opens the first batch of 500 numbers and PR 1 the second.
+  // Issue 1000 opens the first batch of numbers and PR 1 a later one.
   await seedTask(database, { taskId: 'impl', issueNumber: 1000, prNumber: 1, states: [{ state: 'completed', timestamp: daysAgo(2) }] });
   const numbers = [1000, ...Array.from({ length: 499 }, (_, index) => 2000 + index), 1];
   const related = await loadRelatedTasks(database, [REPOSITORY], numbers, ['task_id']);
   assert.deepEqual(related.map(task => task.task_id), ['impl']);
 });
 
-test('a merged PR spanning two batches keeps one run and passes first time', async () => {
-  // An unmerged PR for issue 1 names number 1 first; 599 more PRs fill the first batch of 500 numbers.
+test('a merged PR spanning two batches is one implementation attempt and passes first time', async () => {
+  // Only merged PRs' numbers are read. A merged PR for issue 1 names number 1
+  // first; 599 more merged PRs fill the first batches of numbers.
   await seedTask(database, { taskId: 'issue-1', issueNumber: 1, prNumber: 9999, states: [{ state: 'completed', timestamp: daysAgo(4) }] });
   for (let pr = 2; pr <= 600; pr += 1) {
     await seedTask(database, { taskId: `filler-${pr}`, issueNumber: null, prNumber: pr, states: [{ state: 'completed', timestamp: daysAgo(3) }] });
   }
-  // PR 1 is matched in the first batch by its PR number and in the second by its issue, 5000.
+  await database.batchInsert('notification_pull_request_state', [9999, ...Array.from({ length: 599 }, (_, index) => index + 2)].map(pr => ({
+    repository: REPOSITORY, pr_number: pr, merged_at: daysAgo(1), outcome: 'merged', closed_at: daysAgo(1),
+  })), 100);
+  // PR 1 is matched in the first batch by its PR number and in a later one by its issue, 5000.
   await seedMergedPullRequest(1, 5000);
   const delivery = await loadDeliveryMetrics(database, WEEK);
-  assert.equal(delivery.prs_merged, 1);
-  assert.deepEqual(delivery.runs_per_merged_pr, { mean: 1, n: 1 });
-  assert.deepEqual(delivery.first_time_pass, { rate: 1, passed: 1, n: 1 });
+  assert.equal(delivery.prs_merged, 601);
+  // Matched twice, PR 1 would read as two implementation attempts and fail.
+  assert.deepEqual(delivery.first_time_pass, { rate: 1, passed: 601, n: 601 });
 });
 
 test('an Ultrafix fix whose next review was never scored still fails first-time pass', async () => {
@@ -108,4 +112,51 @@ test('extra runs on the one implementation task do not fail first-time pass', as
   assert.deepEqual(delivery.first_time_pass, { rate: 0.5, passed: 1, n: 2 });
   // The runs still count toward runs per merged PR.
   assert.deepEqual(delivery.runs_per_merged_pr, { mean: 1.5, n: 2 });
+});
+
+test('work recorded after the merge never changes the merged PR\'s verdict or its runs', async () => {
+  // PR 30 merged a day ago after one implementation run.
+  await seedMergedPullRequest(30, 130);
+  // Since then: a review task on the merged PR with its own run, a fresh
+  // implementation task on the same issue, and a fix requested on the PR.
+  await seedFollowUp('late-review-30', 30, { commandMode: 'review' }, daysAgo(0.5));
+  await database('llm_executions').insert({ task_id: 'late-review-30', start_time: daysAgo(0.5) });
+  await seedTask(database, { taskId: 'late-impl-130', issueNumber: 130, states: [{ state: 'completed', timestamp: daysAgo(0.5) }] });
+  await database('llm_executions').insert({ task_id: 'late-impl-130', start_time: daysAgo(0.5) });
+  await seedFollowUp('late-fix-30', 30, { commandMode: 'fix' }, daysAgo(0.4));
+  // A run the implementation task recorded after the merge is not a run to merge either.
+  await database('llm_executions').insert({ task_id: 'impl-30', start_time: daysAgo(0.3) });
+
+  const delivery = await loadDeliveryMetrics(database, WEEK);
+  assert.deepEqual(delivery.first_time_pass, { rate: 1, passed: 1, n: 1 });
+  assert.deepEqual(delivery.runs_per_merged_pr, { mean: 1, n: 1 });
+  // Two days from the implementation task to the merge, as before the later work.
+  assert.deepEqual(delivery.time_to_merge_minutes, { mean: 2880, median: 2880, n: 1 });
+});
+
+test('an Ultrafix cycle scored after the merge does not fail first-time pass', async () => {
+  await seedMergedPullRequest(31, 131);
+  await database('review_scores').insert({
+    repository_id: REPOSITORY, pr_number: 31, task_id: 'ultrafix-review-2', implementer_model: 'claude-opus-5',
+    reviewer_agent: 'codex', reviewer_model: 'gpt-5.6', score: 9, blocker_count: 0, suggestion_count: 0,
+    cycle_number: 2, goal: 8, goal_reached: true, source: 'ultrafix', head_sha: 'sha-2', created_at: daysAgo(0.5),
+  });
+  assert.deepEqual((await loadDeliveryMetrics(database, WEEK)).first_time_pass, { rate: 1, passed: 1, n: 1 });
+
+  // The same cycle scored before the merge is a fix.
+  await database('review_scores').where({ pr_number: 31 }).update({ created_at: daysAgo(2) });
+  assert.deepEqual((await loadDeliveryMetrics(database, WEEK)).first_time_pass, { rate: 0, passed: 0, n: 1 });
+});
+
+test('a goal task naming the PR\'s issue is not an implementation attempt', async () => {
+  await seedMergedPullRequest(32, 132);
+  // The goal that set the work in motion, created well before the implementation.
+  await seedTask(database, { taskId: 'goal-132', issueNumber: 132, taskType: 'goal', states: [{ state: 'processing', timestamp: daysAgo(6) }] });
+  await database('llm_executions').insert({ task_id: 'goal-132', start_time: daysAgo(6) });
+
+  const delivery = await loadDeliveryMetrics(database, WEEK);
+  assert.deepEqual(delivery.first_time_pass, { rate: 1, passed: 1, n: 1 });
+  // Time to merge still starts at the implementation task, and the goal's runs are not the PR's.
+  assert.deepEqual(delivery.time_to_merge_minutes, { mean: 2880, median: 2880, n: 1 });
+  assert.deepEqual(delivery.runs_per_merged_pr, { mean: 1, n: 1 });
 });

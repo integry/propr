@@ -336,3 +336,36 @@ test('delivery metrics follow each opened PR to its merge', async () => {
     runs_per_merged_pr: { mean: 1.33, n: 3 },
   });
 });
+
+test('score delta runs from the initial score to the final one, whatever the window holds', async () => {
+  const repository = 'acme/delta';
+  // PR 40 rose from 5 to 8 and merged five days ago; a review after the merge scored it 9.
+  await seedScore({ pr: 40, score: 5, at: daysAgo(10), model: OPUS, repository });
+  await seedScore({ pr: 40, score: 8, at: daysAgo(6), model: OPUS, repository });
+  await seedScore({ pr: 40, score: 9, at: daysAgo(2), model: OPUS, repository });
+  // PR 41, still open, was first scored before the window and again inside it.
+  await seedScore({ pr: 41, score: 4, at: daysAgo(10), model: OPUS, repository });
+  await seedScore({ pr: 41, score: 7, at: daysAgo(1), model: OPUS, repository });
+  await database('notification_pull_request_state').insert({
+    repository, pr_number: 40, merged_at: daysAgo(5), outcome: 'merged', closed_at: daysAgo(5),
+  });
+  // One run implemented PR 40 before the merge; the post-merge review ran once more.
+  await database('tasks').insert([
+    { task_id: 'impl-40', repository, issue_number: 400, pr_number: 40, task_type: 'issue', model_name: OPUS, created_at: daysAgo(11) },
+    { task_id: 'review-40', repository, issue_number: 40, pr_number: null, task_type: 'review', model_name: GPT, created_at: daysAgo(2) },
+  ]);
+  await database('llm_executions').insert([
+    { task_id: 'impl-40', model_name: OPUS, start_time: daysAgo(11), cost_usd: 1 },
+    { task_id: 'review-40', model_name: GPT, start_time: daysAgo(2), cost_usd: 0.5 },
+  ]);
+
+  // The window opens three days ago: after PR 40's merge and after both PRs' first scores.
+  const window: AnalyticsWindow = { timeframe: '7d', from: new Date(NOW.getTime() - 3 * 24 * 60 * 60_000), to: NOW };
+  const [opus] = (await loadReviewScoreSummary(database, window, repository)).models;
+  // PR 40: 5 → 8 before the merge, not the post-merge 9 back down to 8. PR 41: 4 → 7.
+  assert.deepEqual(opus.score_delta, { mean: 3, n: 2 });
+  assert.deepEqual(opus.final_score, { mean: 7.5, n: 2 });
+  // The review after the merge is not a run to merge, though its cost is still the PR's lifetime spend.
+  assert.deepEqual(opus.runs_to_merge, { mean: 1, n: 1 });
+  assert.deepEqual(opus.cost_per_merged_pr, { usd: 1.5, n: 1 });
+});

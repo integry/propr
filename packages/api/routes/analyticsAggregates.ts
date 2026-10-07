@@ -14,7 +14,7 @@ import { analyticsDayKeys, whereCreatedWithin, type AnalyticsWindow } from './an
 import { hasColumn } from './analyticsSchema.js';
 
 export interface TaskSummary {
-  /** Tasks created in the window. */
+  /** Tasks created in the window, goal tasks aside. */
   total: number;
   /** Of those, tasks that recorded a completion. */
   completed: number;
@@ -28,6 +28,17 @@ const scopeToRepository = <T extends Knex.QueryBuilder>(query: T, column: string
   if (repository && repository !== 'all') query.where(column, repository);
   return query;
 };
+
+/**
+ * Leaves goal tasks out of a task count. A goal orchestrates the tasks that do
+ * its work rather than delivering any itself, and the task pages, the
+ * Completed feed and the summary strip all leave it out; counting it here
+ * would make the widget and the Analytics totals disagree with them.
+ */
+const excludeGoalTasks = <T extends Knex.QueryBuilder>(query: T, column: string): T =>
+  query.where(function (this: Knex.QueryBuilder) {
+    this.whereNull(column).orWhereNot(column, 'goal');
+  }) as T;
 
 /**
  * Task volume for a window, or for all time without one: what was submitted,
@@ -48,6 +59,7 @@ export async function loadTaskSummary(
     .orderBy('date', 'asc');
   whereCreatedWithin(dailyQuery, 'created_at', window);
   scopeToRepository(dailyQuery, 'repository', repository);
+  excludeGoalTasks(dailyQuery, 'task_type');
   if (dailySince) dailyQuery.where('created_at', '>=', dailySince.toISOString());
 
   // Without a bound on the days, the days themselves add up to the total.
@@ -55,6 +67,7 @@ export async function loadTaskSummary(
     const query = db('tasks').count('* as count');
     whereCreatedWithin(query, 'created_at', window);
     scopeToRepository(query, 'repository', repository);
+    excludeGoalTasks(query, 'task_type');
     return query.first() as unknown as Promise<{ count?: number | string } | undefined>;
   };
 
@@ -65,6 +78,7 @@ export async function loadTaskSummary(
       .where('h.state', state);
     whereCreatedWithin(query, 't.created_at', window);
     scopeToRepository(query, 't.repository', repository);
+    excludeGoalTasks(query, 't.task_type');
     return query.first() as unknown as Promise<{ count?: number | string } | undefined>;
   };
 
@@ -132,9 +146,12 @@ export async function loadRecordedSpend(
 }
 
 export interface RunVolume {
-  /** Agent executions started in the window: the sum of the Models table's runs. */
+  /**
+   * Agent executions started in the window: the sum of the Models table's
+   * runs, its unknown-model row included.
+   */
   total: number;
-  /** Tasks created in the window: the totals band's "Total tasks". */
+  /** Tasks created in the window, goal tasks aside: the totals band's "Total tasks". */
   tasks: number;
   /** `total / tasks`, the iteration multiplier. Null without any tasks. */
   per_task: number | null;
@@ -156,6 +173,7 @@ export async function loadRunVolume(db: Knex, window: AnalyticsWindow | null): P
   whereCreatedWithin(runsQuery, 'start_time', window);
   const tasksQuery = db('tasks').count('* as tasks');
   whereCreatedWithin(tasksQuery, 'created_at', window);
+  excludeGoalTasks(tasksQuery, 'task_type');
   const [runs, tasks] = await Promise.all([
     runsQuery.first() as unknown as Promise<{ total?: number | string } | undefined>,
     tasksQuery.first() as unknown as Promise<{ tasks?: number | string } | undefined>,

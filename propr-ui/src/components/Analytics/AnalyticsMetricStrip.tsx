@@ -32,10 +32,8 @@ const CELL_RULES = [
 
 export const UNAVAILABLE = '—';
 
-export const AnalyticsMetricStrip: React.FC<{ metrics: AnalyticsMetric[]; testId?: string; label?: string }> = ({
-  metrics, testId = 'analytics-metric-strip', label,
-}) => (
-  <dl className="grid flex-none grid-cols-2 border-b border-slate-200 lg:grid-cols-4" data-testid={testId} aria-label={label}>
+const MetricList: React.FC<{ metrics: AnalyticsMetric[]; testId: string }> = ({ metrics, testId }) => (
+  <dl className="grid flex-none grid-cols-2 border-b border-slate-200 lg:grid-cols-4" data-testid={testId}>
     {metrics.map((metric, index) => (
       <div key={metric.testId} className={`min-w-0 border-slate-200 px-4 py-3 sm:px-6 ${CELL_RULES[index] ?? ''}`}>
         <dt className="text-[10px] font-bold uppercase tracking-wider text-slate-500" title={metric.hint}>
@@ -54,5 +52,16 @@ export const AnalyticsMetricStrip: React.FC<{ metrics: AnalyticsMetric[]; testId
     ))}
   </dl>
 );
+
+/**
+ * A named strip is a group around its list: ARIA does not allow a name on a
+ * bare `<dl>`, which has no role to carry one.
+ */
+export const AnalyticsMetricStrip: React.FC<{ metrics: AnalyticsMetric[]; testId?: string; label?: string }> = ({
+  metrics, testId = 'analytics-metric-strip', label,
+}) => {
+  const list = <MetricList metrics={metrics} testId={testId} />;
+  return label ? <div role="group" aria-label={label} className="flex-none">{list}</div> : list;
+};
 
 export default AnalyticsMetricStrip;

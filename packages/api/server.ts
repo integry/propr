@@ -1,7 +1,8 @@
 import { startDashboardReadService, type DashboardReadService } from './services/dashboardReadService.js';
 import { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
 import { dashboardNarrativeModel } from './routes/dashboardNarrativeModel.js';
-import { getConfig, getOfficialModelPricing, getOpenRouterId } from '@propr/core';
+import { getConfig } from '@propr/core';
+import { officialCachePrice } from './routes/analyticsPricing.js';
 import { createTaskSubmissionRoutes, taskSubmissionUpload } from './routes/taskSubmissionRoutes.js';
 import { GOAL_TASK_GUARD_MOUNTS } from './openapi/directRoutes.js';
 import { createRepositoryMediaRoutes } from './routes/repositoryMediaRoutes.js';
@@ -363,17 +364,7 @@ function setupRoutes(): void {
   const relevanceRoutes = createRelevanceRoutes();
   const agentRoutes = createAgentRoutes();
   const agentLoginRoutes = createAgentLoginRoutes();
-  const statsRoutes = createStatsRoutes({
-    db,
-    // Official first-party prices only: an analytics read never waits on a pricing fetch.
-    cachePrice: model => {
-      try {
-        return getOfficialModelPricing(getOpenRouterId(model));
-      } catch {
-        return null;
-      }
-    },
-  });
+  const statsRoutes = createStatsRoutes({ db, cachePrice: officialCachePrice });
   const reviewScoreRoutes = createReviewScoreRoutes({ db });
   const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: async () => (await getConfig('dashboard_summary_enabled', true)) !== false });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();

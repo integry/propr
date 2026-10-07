@@ -10,6 +10,7 @@
 import type { Request, Response } from 'express';
 import type { Knex } from 'knex';
 import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
+import { chunk } from './dashboardQueries.js';
 import { validateRepository, validateRepositoryFilter } from './validation.js';
 
 /** Task types that act on an existing PR, as in the dashboard's PR identity. */
@@ -68,11 +69,17 @@ export interface ReviewScoreModelSummary {
   /** Recorded cost of merged PRs' implementation and follow-up tasks; n counts merged PRs with recorded cost. */
   cost_per_merged_pr: { usd: number | null; n: number };
   /**
-   * Mean change from first to final score, over PRs that have both: did the
-   * model's follow-up work actually improve the code?
+   * Mean change from a PR's initial score to its final score, over PRs that
+   * have both: did the model's follow-up work actually improve the code? Both
+   * ends come from the PR's whole history, not the window, and a merged PR's
+   * from its scores at or before the merge, so the change always runs forward
+   * in time.
    */
   score_delta: MeanFigure;
-  /** Agent executions across merged PRs' implementation and follow-up tasks; n counts merged PRs with recorded runs. */
+  /**
+   * Agent executions started at or before the merge across merged PRs'
+   * implementation and follow-up tasks; n counts merged PRs with recorded runs.
+   */
   runs_to_merge: MeanFigure;
 }
 
@@ -89,6 +96,8 @@ interface PullRequestFacts {
   agent: string | null;
   first: number;
   final: number | null;
+  /** The PR's earliest score in its whole history; a merged PR's earliest at or before the merge. */
+  initial: number | null;
   cyclesToGoal: number | null;
   hadGoal: boolean;
   outcome: 'merged' | 'closed' | null;
@@ -125,21 +134,31 @@ function cyclesToGoal(rows: ScoreRow[]): { hadGoal: boolean; cycles: number | nu
 
 interface PullRequestSpend { cost: number | null; runs: number }
 
-/** Recorded cost and run count per pull request: its implementation task plus every task acting on it. */
+/**
+ * Recorded cost and run count per pull request: its implementation task plus
+ * every task acting on it. Cost is the PR's lifetime spend; runs stop at the
+ * recorded merge, so a review after the merge never adds a run to merge.
+ */
 async function loadPullRequestCosts(db: Knex, repositories: string[]): Promise<Map<string, PullRequestSpend>> {
   if (!repositories.length) return new Map();
   const types = PULL_REQUEST_TASK_TYPES.map(() => '?').join(', ');
-  const rows = await db('llm_executions as e')
+  const executions = db('llm_executions as e')
     .join('tasks as t', 't.task_id', 'e.task_id')
     .whereIn('t.repository', repositories)
-    .select('t.repository')
+    .select('t.repository', 'e.cost_usd', 'e.start_time')
     .select(db.raw(`COALESCE(t.pr_number,
       CASE WHEN t.task_type IN (${types}) OR substr(t.task_id, 1, 10) = 'pr-comment' THEN t.issue_number END) AS pull_request_number`,
     [...PULL_REQUEST_TASK_TYPES]))
-    .sum('e.cost_usd as cost')
-    .count('e.cost_usd as costed')
-    .count('* as runs')
-    .groupBy('t.repository', 'pull_request_number') as unknown as CostRow[];
+    .as('x');
+  const rows = await db.from(executions)
+    .leftJoin('notification_pull_request_state as n', function (this: Knex.JoinClause) {
+      this.on('n.repository', '=', 'x.repository').andOn('n.pr_number', '=', 'x.pull_request_number');
+    })
+    .select('x.repository', 'x.pull_request_number')
+    .sum('x.cost_usd as cost')
+    .count('x.cost_usd as costed')
+    .select(db.raw('sum(CASE WHEN n.merged_at IS NULL OR x.start_time <= n.merged_at THEN 1 ELSE 0 END) AS runs'))
+    .groupBy('x.repository', 'x.pull_request_number') as unknown as CostRow[];
   const costs = new Map<string, PullRequestSpend>();
   for (const row of rows) {
     if (row.pull_request_number === null) continue;
@@ -162,40 +181,52 @@ async function loadOutcomes(db: Knex, repositories: string[]): Promise<Map<strin
 const outcomeState = (outcome: OutcomeRow | undefined): PullRequestFacts['outcome'] =>
   outcome?.outcome === 'merged' || outcome?.merged_at ? 'merged' : outcome?.outcome === 'closed' ? 'closed' : null;
 
+/** A PR's earliest and latest scores over its whole history, bounded by its merge when it merged. */
+interface ScoreEndpoints { initial: number | null; final: number | null }
+
 /**
- * Each merged PR's last score at or before its merge, read from its whole
- * history rather than the selected window, which can start after the merge.
+ * Each PR's first and last score from its whole history rather than the
+ * selected window, which can start after its first review or after its merge.
+ * A merged PR reads only scores at or before its recorded merge; one merged
+ * without a recorded time has no known endpoints.
  */
-async function loadPreMergeFinalScores(
+async function loadScoreEndpoints(
   db: Knex, byPullRequest: Map<string, ScoreRow[]>, outcomes: Map<string, OutcomeRow>,
-): Promise<Map<string, number>> {
-  const mergedAt = new Map<string, string>();
+): Promise<Map<string, ScoreEndpoints>> {
+  const endpoints = new Map<string, ScoreEndpoints>();
+  if (!byPullRequest.size) return endpoints;
+  // The latest moment whose scores count: the merge, or no bound for a PR that has not merged.
+  const cutoffs = new Map<string, number>();
   for (const key of byPullRequest.keys()) {
     const outcome = outcomes.get(key);
-    if (outcomeState(outcome) === 'merged' && outcome?.merged_at) mergedAt.set(key, outcome.merged_at);
+    if (outcomeState(outcome) !== 'merged') cutoffs.set(key, Infinity);
+    else if (outcome?.merged_at) cutoffs.set(key, new Date(outcome.merged_at).getTime());
   }
-  if (!mergedAt.size) return new Map();
-  const merged = [...mergedAt.keys()].map(key => byPullRequest.get(key)![0]);
-  const rows = await db('review_scores')
-    .whereIn('repository_id', [...new Set(merged.map(row => row.repository_id))])
-    .whereIn('pr_number', [...new Set(merged.map(row => row.pr_number))])
-    .orderBy([{ column: 'created_at', order: 'asc' }, { column: 'id', order: 'asc' }])
-    .select('repository_id', 'pr_number', 'score', 'created_at') as Array<Pick<ScoreRow, 'repository_id' | 'pr_number' | 'score' | 'created_at'>>;
-  const finals = new Map<string, number>();
-  for (const row of rows) {
-    const key = prKey(row.repository_id, row.pr_number);
-    const cutoff = mergedAt.get(key);
-    if (cutoff !== undefined && row.created_at <= cutoff) finals.set(key, row.score);
+  const scored = [...byPullRequest.values()].map(rows => rows[0]);
+  const repositories = [...new Set(scored.map(row => row.repository_id))];
+  for (const numbers of chunk([...new Set(scored.map(row => row.pr_number))])) {
+    const rows = await db('review_scores')
+      .whereIn('repository_id', repositories)
+      .whereIn('pr_number', numbers)
+      .orderBy([{ column: 'created_at', order: 'asc' }, { column: 'id', order: 'asc' }])
+      .select('repository_id', 'pr_number', 'score', 'created_at') as Array<Pick<ScoreRow, 'repository_id' | 'pr_number' | 'score' | 'created_at'>>;
+    for (const row of rows) {
+      const key = prKey(row.repository_id, row.pr_number);
+      const cutoff = cutoffs.get(key);
+      if (cutoff === undefined || new Date(row.created_at).getTime() > cutoff) continue;
+      const known = endpoints.get(key);
+      endpoints.set(key, { initial: known?.initial ?? row.score, final: row.score });
+    }
   }
-  return finals;
+  return endpoints;
 }
 
 function pullRequestFacts(
-  rows: ScoreRow[], outcome: OutcomeRow | undefined, spend: PullRequestSpend | null, preMergeFinal: number | null,
+  rows: ScoreRow[], outcome: OutcomeRow | undefined, spend: PullRequestSpend | null, history: ScoreEndpoints | null,
 ): PullRequestFacts {
   const state = outcomeState(outcome);
   // A merged PR's final score is only ever a pre-merge score; without one it is unknown.
-  const final = state === 'merged' ? preMergeFinal : rows.at(-1)!.score;
+  const final = state === 'merged' ? history?.final ?? null : rows.at(-1)!.score;
   const attributed = [...rows].reverse().find(row => row.implementer_model);
   const goal = cyclesToGoal(rows);
   return {
@@ -203,6 +234,7 @@ function pullRequestFacts(
     agent: attributed?.implementer_agent ?? null,
     first: rows[0].score,
     final,
+    initial: history?.initial ?? null,
     cyclesToGoal: goal.cycles,
     hadGoal: goal.hadGoal,
     outcome: state,
@@ -218,7 +250,7 @@ function summarizeModel(model: string | null, prs: PullRequestFacts[]): ReviewSc
   const resolved = prs.filter(pr => pr.outcome !== null);
   const merged = resolved.filter(pr => pr.outcome === 'merged');
   const costs = merged.flatMap(pr => pr.cost === null ? [] : [pr.cost]);
-  const deltas = prs.flatMap(pr => pr.final === null ? [] : [pr.final - pr.first]);
+  const deltas = prs.flatMap(pr => pr.final === null || pr.initial === null ? [] : [pr.final - pr.initial]);
   const runs = merged.flatMap(pr => pr.runs === null ? [] : [pr.runs]);
   const agents = [...new Set(prs.flatMap(pr => pr.agent ? [pr.agent] : []))];
   return {
@@ -257,11 +289,11 @@ export async function loadReviewScoreSummary(
   }
   const repositories = [...new Set(rows.map(row => row.repository_id))];
   const [outcomes, costs] = await Promise.all([loadOutcomes(db, repositories), loadPullRequestCosts(db, repositories)]);
-  const preMergeFinals = await loadPreMergeFinalScores(db, byPullRequest, outcomes);
+  const endpoints = await loadScoreEndpoints(db, byPullRequest, outcomes);
 
   const byModel = new Map<string | null, PullRequestFacts[]>();
   for (const [key, prRows] of byPullRequest) {
-    const facts = pullRequestFacts(prRows, outcomes.get(key), costs.get(key) ?? null, preMergeFinals.get(key) ?? null);
+    const facts = pullRequestFacts(prRows, outcomes.get(key), costs.get(key) ?? null, endpoints.get(key) ?? null);
     byModel.set(facts.model, [...(byModel.get(facts.model) ?? []), facts]);
   }
   const models = [...byModel].map(([model, prs]) => summarizeModel(model, prs))
@@ -279,17 +311,18 @@ export async function loadReviewScoreSummary(
 /**
  * The overview's model rows, each with the mean final review score and the
  * number of scored PRs behind that mean. Review scores join by implementer
- * model; a model with no scored PR has no mean. Unchanged when the instance
- * has no score table.
+ * model; a model with no scored PR, and the unknown-model row, have no mean.
+ * Unchanged when the instance has no score table.
  */
-export async function withModelScoreFigures<T extends { model: string }>(
+export async function withModelScoreFigures<T extends { model: string | null }>(
   db: Knex, analyticsWindow: AnalyticsWindow | null, modelUsage: T[],
 ): Promise<Array<T | T & { mean_final_score: number | null; n_scored: number }>> {
   if (!await db.schema.hasTable('review_scores')) return modelUsage;
   const summary = await loadReviewScoreSummary(db, analyticsWindow);
   const figures = new Map(summary.models.map(model => [model.implementer_model, model.final_score]));
   return modelUsage.map(entry => {
-    const final = figures.get(entry.model);
+    // Runs with no recorded model are not the PRs whose implementer is unknown.
+    const final = entry.model === null ? undefined : figures.get(entry.model);
     return { ...entry, mean_final_score: final?.mean ?? null, n_scored: final?.n ?? 0 };
   });
 }

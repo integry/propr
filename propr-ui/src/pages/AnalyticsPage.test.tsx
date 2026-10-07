@@ -313,8 +313,10 @@ describe('AnalyticsPage', () => {
       model_usage: [
         { model: 'claude-opus-5-5', runs: 552, tasks: 100, tokens: 3_100_000, cost_usd: 9.4 },
         { model: 'gpt-5.6', runs: 389, tasks: 90, tokens: 1_100_000, cost_usd: 3.02 },
+        // Runs that recorded no model are still runs.
+        { model: null, runs: 12, tasks: 4, tokens: 0, cost_usd: 0 },
       ],
-      runs: { total: 941, tasks: 392, per_task: 2.4 },
+      runs: { total: 953, tasks: 392, per_task: 2.43 },
       delivery: {
         prs_opened: 50, prs_merged: 42, prs_closed: 3,
         first_time_pass: { rate: 0.7143, passed: 30, n: 42 },
@@ -330,11 +332,18 @@ describe('AnalyticsPage', () => {
     const models = await screen.findByTestId('model-breakdown-table');
     expect(within(models).getByRole('columnheader', { name: 'Runs' })).toBeInTheDocument();
     expect(within(models).queryByRole('columnheader', { name: 'Tasks' })).not.toBeInTheDocument();
-    expect(within(models).getAllByTestId('model-run-count').map(cell => cell.textContent)).toEqual(['552', '389']);
+    expect(within(models).getAllByTestId('model-run-count').map(cell => cell.textContent)).toEqual(['552', '389', '12']);
+    // The unknown-model row keeps the column summing to the band's total, and opens no log.
+    const unknown = within(models).getByTestId('model-unknown-row');
+    expect(unknown).toHaveTextContent('Unknown model');
+    expect(within(unknown).queryByRole('link')).not.toBeInTheDocument();
 
-    const delivery = screen.getByTestId('analytics-delivery-strip');
+    // The band is named through a group around its list, never on the bare list.
+    const deliveryGroup = screen.getByRole('group', { name: 'Delivery' });
+    const delivery = within(deliveryGroup).getByTestId('analytics-delivery-strip');
+    expect(delivery).not.toHaveAttribute('aria-label');
     expect(within(delivery).getByTestId('metric-runs-per-task')).toHaveTextContent('2.4×');
-    expect(within(delivery).getByTestId('metric-runs-per-task-detail')).toHaveTextContent('941 runs · 392 tasks');
+    expect(within(delivery).getByTestId('metric-runs-per-task-detail')).toHaveTextContent('953 runs · 392 tasks');
     expect(within(delivery).getByTestId('metric-first-time-pass')).toHaveTextContent('71%');
     expect(within(delivery).getByTestId('metric-first-time-pass-detail')).toHaveTextContent('30 of 42 merged PRs');
     expect(within(delivery).getByTestId('metric-time-to-merge')).toHaveTextContent('14m 20s');
