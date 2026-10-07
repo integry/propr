@@ -1,14 +1,16 @@
 ---
-title: Agents
+title: Automations
 ---
 
-An **Agent** is a saved, reusable definition that runs on demand or on a schedule and produces a free-form report. Use one for recurring investigation: a weekly dependency review, a daily triage of new issues, a check of a competitor's changelog, a summary of what merged last week. Use a [task](./launching-work.md) for a single change and a [goal](./goals.md) for a continuing objective.
+An **Automation** is a saved, reusable definition that runs on demand or on a schedule and produces a free-form report. Use one for recurring investigation: a weekly dependency review, a daily triage of new issues, a check of a competitor's changelog, a summary of what merged last week. Use a [task](./launching-work.md) for a single change and a [goal](./goals.md) for a continuing objective.
+
+The Web UI calls these **Automations**, to keep them apart from the **Coding Agents** (Claude Code, Codex and the other runtimes) that execute them. The REST API, MCP tools and stored records still call one an *agent definition*, and the CLI drives them with `propr automation`.
 
 Every run follows the same path:
 
 1. **Definition.** A name, a prompt with optional input files, repositories, an agent and model, capabilities, an optional schedule and an autonomy mode.
 2. **Isolated report run.** ProPR starts an ordinary task container for the run. The agent investigates and its final message becomes the report.
-3. **Free-form report.** Markdown stored with the run, shown on the **Agents** page and available over the API, MCP and CLI.
+3. **Free-form report.** Markdown stored with the run, shown on the **Automations** page and available over the API, MCP and CLI.
 4. **Optional acting step.** In `preview` or `auto` mode, a second, separate agent run reads the report and acts on it through ProPR's MCP tools (see [Acting on a report](#acting-on-a-report)).
 
 What an Agent is **not**:
@@ -21,7 +23,7 @@ Agents are personal: every definition and run belongs to the user who created it
 
 ## Create an agent
 
-Open **Agents** in the sidebar and choose **New agent**. Save it, then use **Run now** or the **Runs** tab. The REST API (`POST /api/agent-definitions`) accepts the same fields; `GET /api/agent-definitions/contract` and the MCP tool `get_agent_definition_contract` return the authoritative limits.
+Open **Automations** in the sidebar and choose **New automation**. Save it, then use **Run now** or the **Runs** tab. The REST API (`POST /api/agent-definitions`) accepts the same fields; `GET /api/agent-definitions/contract` and the MCP tool `get_agent_definition_contract` return the authoritative limits.
 
 ### Scope
 
@@ -97,7 +99,7 @@ Every run goes through one trigger primitive, whatever started it. The run histo
 
 | Trigger | Started by | Cost-gated |
 | --- | --- | --- |
-| `manual` | **Run now** on the Agents page | No (you see a capacity warning instead) |
+| `manual` | **Run now** on the Automations page | No (you see a capacity warning instead) |
 | `schedule` | The daemon, from the definition's schedule | Yes |
 | `api` | `POST /api/agent-definitions/:id/runs` from a script or service | Yes |
 | `cli` | `propr automation run` | Yes |

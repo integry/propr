@@ -55,7 +55,7 @@ export const AgentPromptSection: React.FC<AgentPromptSectionProps> = ({
       <AgentFormRow
         label="Prompt"
         htmlFor="agent-prompt"
-        hint="What the agent should look into and report on. Each run starts from this prompt."
+        hint="What the coding agent should look into and report on. Each run starts from this prompt."
       >
         <div className="rounded-md border border-slate-300 bg-white focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500">
           <TextareaAutosize
@@ -102,7 +102,7 @@ export const AgentPromptSection: React.FC<AgentPromptSectionProps> = ({
               className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-transparent"
             >
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Paperclip className="h-3.5 w-3.5" aria-hidden="true" />}
-              {saved ? 'Add input files' : 'Save the agent to add input files'}
+              {saved ? 'Add input files' : 'Save the automation to add input files'}
             </button>
             <input
               ref={inputRef}
@@ -119,7 +119,7 @@ export const AgentPromptSection: React.FC<AgentPromptSectionProps> = ({
 
       <AgentFormRow
         label="Previous reports"
-        hint="Feed the most recent reports back in, so the agent can say what changed since last time."
+        hint="Feed the most recent reports back in, so each run can say what changed since last time."
       >
         <div className="flex flex-wrap items-center gap-3">
           <label className="inline-flex items-center gap-2 text-sm text-slate-700">

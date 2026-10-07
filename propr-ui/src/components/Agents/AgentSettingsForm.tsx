@@ -44,7 +44,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, re
           className={AGENT_INPUT_CLASSES}
         />
       </AgentFormRow>
-      <AgentFormRow label="Description" htmlFor="agent-description" hint="Optional. What this agent is for.">
+      <AgentFormRow label="Description" htmlFor="agent-description" hint="Optional. What this automation is for.">
         <input
           id="agent-description"
           value={form.description}
@@ -67,7 +67,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, re
         disabled={readOnly}
       />
 
-      <AgentFormRow label="Model" hint="The coding agent and model that write the report. Without a choice, the instance default agent runs it.">
+      <AgentFormRow label="Coding agent" hint="The coding agent and model that write the report. Left on the default, the instance default agent runs it.">
         <AgentModelSelector
           agents={editor.agents}
           selectedAgent={form.agentId}
@@ -75,6 +75,8 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, re
           onAgentChange={editor.changeAgent}
           onModelChange={model => update({ model })}
           formatAgentLabel={agent => agentDisplayName(agent.alias, editor.agents)}
+          agentPlaceholder="Default coding agent"
+          agentLabel="Coding agent"
           disabled={readOnly}
         />
       </AgentFormRow>
@@ -104,7 +106,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, re
 
     {definition && !isDemoMode && (
       <div className="flex items-center justify-between gap-3 px-4 py-4">
-        <p className="text-xs text-slate-500">Deleting removes the agent, its input files and its run history.</p>
+        <p className="text-xs text-slate-500">Deleting removes the automation, its input files and its run history.</p>
         <button
           type="button"
           onClick={onDelete}

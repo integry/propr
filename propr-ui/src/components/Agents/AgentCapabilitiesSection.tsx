@@ -49,7 +49,7 @@ export const AgentCapabilitiesSection: React.FC<AgentCapabilitiesSectionProps> =
 
   const hintFor = (capability: AgentCapability): string | null => {
     if (capability === 'propr_mcp' && proprMcpSupport === 'unsupported') {
-      return `Not available for ${agentType ? agentTypeLabel(agentType) : 'this agent'}: only Claude and Codex agents can use ProPR tools.`;
+      return `Not available for ${agentType ? agentTypeLabel(agentType) : 'this coding agent'}: only Claude and Codex agents can use ProPR tools.`;
     }
     if (capability === 'web' && agentType && !NATIVE_WEB_RUNTIMES.has(agentType)) {
       return `Best effort on ${agentTypeLabel(agentType)}: web access depends on what the runtime provides.`;
@@ -58,7 +58,7 @@ export const AgentCapabilitiesSection: React.FC<AgentCapabilitiesSectionProps> =
   };
 
   return (
-    <AgentFormRow label="Capabilities" hint="What the agent may use while it writes its report.">
+    <AgentFormRow label="Capabilities" hint="What the coding agent may use while it writes the report.">
       <ul className="space-y-3">
         {AGENT_CAPABILITIES.map(capability => {
           const text = CAPABILITY_TEXT[capability];

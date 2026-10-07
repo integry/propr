@@ -24,7 +24,7 @@ export const AgentDeleteDialog: React.FC<AgentDeleteDialogProps> = ({ name, dele
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
       <div role="dialog" aria-modal="true" aria-labelledby="agent-delete-title" className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-2xl">
         <div className="px-5 py-4">
-          <h2 id="agent-delete-title" className="text-base font-semibold text-slate-900">Delete agent?</h2>
+          <h2 id="agent-delete-title" className="text-base font-semibold text-slate-900">Delete automation?</h2>
           <p className="mt-2 text-sm text-slate-600">
             <span className="font-medium text-slate-900">{name}</span>, its input files and its run history will be removed. This cannot be undone.
           </p>

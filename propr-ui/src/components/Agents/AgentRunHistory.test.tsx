@@ -24,10 +24,10 @@ const run = (id: string, patch: Partial<AgentRunRecord> = {}): AgentRunRecord =>
 const LocationProbe = () => <output data-testid="location">{useLocation().pathname}</output>;
 
 const renderHistory = () => render(
-  <MemoryRouter initialEntries={['/agents/agent-1/runs']}>
+  <MemoryRouter initialEntries={['/automations/agent-1/runs']}>
     <Routes>
-      <Route path="/agents/:definitionId/runs" element={<AgentRunHistory definitionId="agent-1" now={NOW} />} />
-      <Route path="/agents/:definitionId/runs/:runId" element={<p>run detail</p>} />
+      <Route path="/automations/:definitionId/runs" element={<AgentRunHistory definitionId="agent-1" now={NOW} />} />
+      <Route path="/automations/:definitionId/runs/:runId" element={<p>run detail</p>} />
     </Routes>
     <LocationProbe />
   </MemoryRouter>,
@@ -85,7 +85,7 @@ describe('AgentRunHistory', () => {
     renderHistory();
 
     fireEvent.click(await screen.findByTestId('agent-run-row'));
-    expect(screen.getByTestId('location')).toHaveTextContent('/agents/agent-1/runs/r1');
+    expect(screen.getByTestId('location')).toHaveTextContent('/automations/agent-1/runs/r1');
     expect(screen.getByText('run detail')).toBeInTheDocument();
   });
 

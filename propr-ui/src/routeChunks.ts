@@ -58,7 +58,7 @@ const initialRouteChunks: Array<{
   { matches: pathname => pathname === '/repositories', load: loadRepositoriesPage },
   { matches: pathname => pathname === '/tasks' || pathname.startsWith('/tasks/'), load: loadTasksPage },
   { matches: pathname => pathname === '/goals' || pathname.startsWith('/goals/'), load: loadGoalsPage },
-  { matches: pathname => pathname === '/agents' || pathname.startsWith('/agents/'), load: loadAgentsPage },
+  { matches: pathname => pathname === '/automations' || pathname.startsWith('/automations/'), load: loadAgentsPage },
   { matches: pathname => pathname === '/studio/new' || pathname.startsWith('/studio/'), load: loadPlanStudioPage },
   { matches: pathname => pathname === '/plans', load: loadPlansPage },
   { matches: pathname => pathname === '/ai-agents', load: loadAiAgentsPage },

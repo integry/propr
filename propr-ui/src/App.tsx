@@ -21,6 +21,7 @@ import {
 import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/AuthContext'
 import type { InstancePermission } from './api/proprTypes'
 import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
+import { LegacyAgentsRedirect } from './components/LegacyAgentsRedirect'
 import { ConnectAccountProvider } from './contexts/ConnectAccountContext'
 import { BrowserPushProvider } from './hooks/useBrowserPush'
 import { NotificationCenterProvider } from './contexts/NotificationCenterContext'
@@ -222,12 +223,11 @@ const AppContent: React.FC = () => {
                         </Layout>
                       }
                     />
-                    <Route path="/goals" element={<Layout><GoalsPage /></Layout>} />
-                    <Route path="/goals/:goalId" element={<Layout><GoalsPage /></Layout>} />
-                    <Route path="/agents" element={<Layout><AgentsPage /></Layout>} />
-                    <Route path="/agents/new" element={<Layout><AgentsPage isNew /></Layout>} />
-                    <Route path="/agents/:definitionId" element={<Layout><AgentsPage /></Layout>} />
-                    <Route path="/agents/:definitionId/runs/:runId?" element={<Layout><AgentsPage section="runs" /></Layout>} />
+                    <Route path="/goals/:goalId?" element={<Layout><GoalsPage /></Layout>} />
+                    <Route path="/automations/:definitionId?" element={<Layout><AgentsPage /></Layout>} />
+                    <Route path="/automations/new" element={<Layout><AgentsPage isNew /></Layout>} />
+                    <Route path="/automations/:definitionId/runs/:runId?" element={<Layout><AgentsPage section="runs" /></Layout>} />
+                    <Route path="/agents/*" element={<LegacyAgentsRedirect />} />
                     <Route
                       path="/studio/new"
                       element={

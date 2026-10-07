@@ -184,6 +184,8 @@ interface SingleSelectModeProps {
   onModelChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   showMultiOption: boolean;
   formatAgentLabel?: (agent: InstanceCatalogAgent) => string;
+  agentPlaceholder?: string;
+  agentLabel?: string;
 }
 
 export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
@@ -197,7 +199,9 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
   onAgentChange,
   onModelChange,
   showMultiOption,
-  formatAgentLabel = agent => agent.alias
+  formatAgentLabel = agent => agent.alias,
+  agentPlaceholder = 'Select Agent',
+  agentLabel
 }) => {
   const selectClass = getSelectClass(compact);
   const agentPadding = selectedAgent ? (compact ? 'pl-6' : 'pl-8') : '';
@@ -219,8 +223,9 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
           disabled={disabled}
           className={`${selectClass} ${agentPadding} max-w-[120px] sm:max-w-none`}
           title="Select AI agent"
+          aria-label={agentLabel}
         >
-          <option value="">Select Agent</option>
+          <option value="">{agentPlaceholder}</option>
           {enabledAgents.map(agent => (
             <option key={agent.alias} value={agent.alias}>
               {formatAgentLabel(agent)}

@@ -29,9 +29,13 @@ export interface AgentEditorCallbacks {
   onRunStarted?: (run: AgentRunRecord) => void;
 }
 
+/** A short confirmation of what a save or Run now did, shown as a toast rather than in the header. */
+export type AgentEditorNotify = (message: string, type: 'success' | 'info') => void;
+
 interface AgentEditorOptions {
   /** Opens a run Run now started (or the one already in progress), while this editor is still open. */
   openRun?: (run: AgentRunRecord) => void;
+  notify?: AgentEditorNotify;
 }
 
 export const CONFLICT_MESSAGE = 'Changed elsewhere — reload';
@@ -48,7 +52,7 @@ interface RunGate { running: boolean; saving: boolean; dirty: boolean; conflict:
  */
 export function runAvailability(isDemoMode: boolean, { running, saving, dirty, conflict, loading, attachmentsPending, disabledAgent }: RunGate) {
   let runHint: string | null = null;
-  if (!isDemoMode && disabledAgent) runHint = 'This agent is disabled';
+  if (!isDemoMode && disabledAgent) runHint = 'This automation is disabled';
   else if (!isDemoMode && dirty && !saving && !conflict) runHint = RUN_NEEDS_SAVE_MESSAGE;
   return {
     runDisabled: isDemoMode || disabledAgent || running || saving || dirty || conflict || loading || attachmentsPending,
@@ -78,7 +82,7 @@ export function proprMcpSupportFor(agents: readonly InstanceCatalogAgent[], alia
 export function useAgentEditor(
   definitionId: string | null,
   { onSaved, onDeleted, onRunStarted }: AgentEditorCallbacks,
-  { openRun }: AgentEditorOptions = {},
+  { openRun, notify }: AgentEditorOptions = {},
 ) {
   const [definition, setDefinition] = useState<AgentDefinitionRecord | null>(null);
   const [form, setForm] = useState<AgentEditorForm>(emptyAgentForm);
@@ -92,7 +96,6 @@ export function useAgentEditor(
   const [capacityQuestion, setCapacityQuestion] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
   const [attachmentsPending, setAttachmentsPending] = useState(0);
   /** Set synchronously while a save is in flight, so a run cannot start on the configuration being replaced. */
   const savingRef = useRef(false);
@@ -167,7 +170,6 @@ export function useAgentEditor(
 
   const update = useCallback((patch: AgentEditorFormPatch) => {
     setForm(current => ({ ...current, ...patch }));
-    setNotice(null);
   }, []);
 
   /** Picking an agent that cannot use ProPR tools drops the options that need them. */
@@ -189,7 +191,6 @@ export function useAgentEditor(
     savingRef.current = true;
     setSaving(true);
     setError(null);
-    setNotice(null);
     try {
       const saved = definition
         ? await updateAgentDefinition(definition.id, input, definition.revision)
@@ -197,7 +198,7 @@ export function useAgentEditor(
       if (!openRef.current) { onSaved(saved, !definition, false); return; }
       setDefinition(saved);
       setForm(formFromDefinition(saved));
-      setNotice('Saved');
+      notify?.(definition ? 'Automation saved' : 'Automation created', 'success');
       onSaved(saved, !definition, true);
     } catch (saveFailure) {
       if (!openRef.current) return;
@@ -210,7 +211,7 @@ export function useAgentEditor(
       savingRef.current = false;
       setSaving(false);
     }
-  }, [definition, form, onSaved, proprMcpSupport]);
+  }, [definition, form, notify, onSaved, proprMcpSupport]);
 
   const remove = useCallback(async () => {
     // A save answered after the deletion would describe an agent that no longer exists.
@@ -270,7 +271,8 @@ export function useAgentEditor(
     setError(null);
     try {
       const result = await triggerAgentRun(current.id);
-      setNotice(result.created ? 'Run started' : 'A run is already in progress');
+      if (result.created) notify?.('Run started', 'success');
+      else notify?.('A run is already in progress', 'info');
       onRunStarted?.(result.run);
       if (openRef.current) openRun?.(result.run);
     } catch (runFailure) {
@@ -278,7 +280,7 @@ export function useAgentEditor(
     } finally {
       setRunning(false);
     }
-  }, [onRunStarted, openRun, runBlocked]);
+  }, [notify, onRunStarted, openRun, runBlocked]);
 
   /**
    * Run now checks the agent's subscription first. Attended runs may go ahead
@@ -323,7 +325,7 @@ export function useAgentEditor(
   }, [definition, load]);
 
   return {
-    definition, form, agents, loading, loadError, saving, deleting, running, error, conflict, notice, dirty,
+    definition, form, agents, loading, loadError, saving, deleting, running, error, conflict, dirty,
     attachmentsPending: attachmentsPending > 0,
     proprMcpSupport, agentType, update, changeAgent, save, remove, upload, removeAttachment, run, reload,
     capacityQuestion, confirmRun, dismissRun,

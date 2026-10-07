@@ -15,6 +15,9 @@ export interface ToastContextType {
 
 export const ToastContext = createContext<ToastContextType | null>(null);
 
+/** The toast actions, or null outside a ToastProvider (isolated component tests). */
+export const useOptionalToast = (): ToastContextType | null => useContext(ToastContext);
+
 export const useToast = () => {
   const context = useContext(ToastContext);
   if (!context) {

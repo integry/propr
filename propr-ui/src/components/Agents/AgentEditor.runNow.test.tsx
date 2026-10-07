@@ -11,6 +11,7 @@ import {
   type AgentDefinitionRecord,
 } from '../../api/agentDefinitionsApi';
 import { getInstanceCatalog } from '../../api/proprApi';
+import { ToastProvider } from '../ui/Toast';
 
 vi.mock('../../api/agentDefinitionsApi', async importOriginal => ({
   ...(await importOriginal<typeof import('../../api/agentDefinitionsApi')>()),
@@ -52,10 +53,12 @@ const Editor = () => {
 };
 
 const renderEditor = () => render(
-  <MemoryRouter initialEntries={['/agents/agent-1']}>
-    <Routes><Route path="/agents/*" element={<Editor />} /></Routes>
-    <LocationProbe />
-  </MemoryRouter>,
+  <ToastProvider>
+    <MemoryRouter initialEntries={['/automations/agent-1']}>
+      <Routes><Route path="/automations/*" element={<Editor />} /></Routes>
+      <LocationProbe />
+    </MemoryRouter>
+  </ToastProvider>,
 );
 
 describe('AgentEditor Run now', () => {
@@ -75,11 +78,29 @@ describe('AgentEditor Run now', () => {
     renderEditor();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Run now' }));
-    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/agents/agent-1/runs/run-9'));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/automations/agent-1/runs/run-9'));
     expect(getAgentCapacity).toHaveBeenCalledWith('agent-1');
     expect(triggerAgentRun).toHaveBeenCalledWith('agent-1');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByText('run run-9')).toBeInTheDocument();
+  });
+
+  it('confirms the start in a toast and shows the run under a breadcrumb instead of the tabs', async () => {
+    vi.mocked(getAgentCapacity).mockResolvedValue(roomy);
+    renderEditor();
+    expect(await screen.findByRole('navigation', { name: 'Automation sections' })).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Run now' }));
+    await screen.findByText('run run-9');
+    const header = screen.getByRole('banner');
+    expect(within(header).queryByText('Run started')).not.toBeInTheDocument();
+    expect(screen.getByText('Run started')).toBeInTheDocument();
+
+    expect(screen.queryByRole('navigation', { name: 'Automation sections' })).not.toBeInTheDocument();
+    const breadcrumb = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(within(breadcrumb).getByRole('link', { name: 'Dependency review' })).toHaveAttribute('href', '/automations/agent-1');
+    expect(within(breadcrumb).getByRole('link', { name: 'Runs' })).toHaveAttribute('href', '/automations/agent-1/runs');
+    expect(within(breadcrumb).getByText('Run run-9')).toHaveAttribute('aria-current', 'page');
   });
 
   it('asks before running near the limit, and cancelling sends no run request', async () => {
@@ -95,7 +116,7 @@ describe('AgentEditor Run now', () => {
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(triggerAgentRun).not.toHaveBeenCalled();
-    expect(screen.getByTestId('location')).toHaveTextContent('/agents/agent-1');
+    expect(screen.getByTestId('location')).toHaveTextContent('/automations/agent-1');
     expect(screen.getByRole('button', { name: 'Run now' })).toBeEnabled();
   });
 
@@ -106,7 +127,7 @@ describe('AgentEditor Run now', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Run now' }));
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Run anyway' }));
 
-    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/agents/agent-1/runs/run-9'));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/automations/agent-1/runs/run-9'));
     expect(triggerAgentRun).toHaveBeenCalledTimes(1);
   });
 
@@ -157,6 +178,6 @@ describe('AgentEditor Run now', () => {
     renderEditor();
 
     expect(await screen.findByRole('button', { name: 'Run now' })).toBeDisabled();
-    expect(screen.getByText('This agent is disabled')).toBeInTheDocument();
+    expect(screen.getByText('This automation is disabled')).toBeInTheDocument();
   });
 });
