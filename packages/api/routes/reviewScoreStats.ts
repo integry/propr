@@ -12,9 +12,8 @@ import type { Knex } from 'knex';
 import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
 import { chunk } from './dashboardQueries.js';
 import { validateRepository, validateRepositoryFilter } from './validation.js';
-
-/** Task types that act on an existing PR, as in the dashboard's PR identity. */
-const PULL_REQUEST_TASK_TYPES = ['pr-comment', 'review', 'merge_conflict'] as const;
+import type { AnalyticsCache } from './analyticsCache.js';
+import { loadPullRequestCosts, type PullRequestSpend } from './reviewScoreSpend.js';
 
 interface ScoreRow {
   id: number;
@@ -38,20 +37,18 @@ interface OutcomeRow {
   merged_at: string | null;
 }
 
-interface CostRow {
-  repository: string;
-  pull_request_number: number | null;
-  cost: number | string | null;
-  costed: number | string;
-  runs: number | string;
-}
-
 export interface MeanFigure { mean: number | null; n: number }
 export interface ReviewScoreModelSummary {
   implementer_model: string | null;
   implementer_agent: string | null;
   /** Pull requests with at least one score in the period. */
   prs_scored: number;
+  /**
+   * The earliest score in each PR's whole history, the same starting point
+   * `score_delta` runs from; a merged PR's is its earliest at or before the
+   * merge, and one with no such score has no initial score and is left out
+   * of n, as it is left out of the final score.
+   */
   first_score: MeanFigure & { median: number | null };
   /**
    * Last score at or before merge, from the PR's whole history; the latest
@@ -71,14 +68,16 @@ export interface ReviewScoreModelSummary {
   /**
    * Mean change from a PR's initial score to its final score, over PRs that
    * have both: did the model's follow-up work actually improve the code? Both
-   * ends come from the PR's whole history, not the window, and a merged PR's
-   * from its scores at or before the merge, so the change always runs forward
-   * in time.
+   * ends are `first_score`'s and `final_score`'s, from the PR's whole history
+   * rather than the window, and a merged PR's from its scores at or before
+   * the merge, so the change always runs forward in time and the three
+   * figures never contradict one another.
    */
   score_delta: MeanFigure;
   /**
    * Agent executions started at or before the merge across merged PRs'
-   * implementation and follow-up tasks; n counts merged PRs with recorded runs.
+   * implementation attempts and follow-up tasks, attached as the delivery
+   * band attaches them; n counts merged PRs with recorded runs.
    */
   runs_to_merge: MeanFigure;
 }
@@ -94,10 +93,9 @@ export interface ReviewScoreSummary {
 interface PullRequestFacts {
   model: string | null;
   agent: string | null;
-  first: number;
-  final: number | null;
   /** The PR's earliest score in its whole history; a merged PR's earliest at or before the merge. */
   initial: number | null;
+  final: number | null;
   cyclesToGoal: number | null;
   hadGoal: boolean;
   outcome: 'merged' | 'closed' | null;
@@ -130,44 +128,6 @@ function cyclesToGoal(rows: ScoreRow[]): { hadGoal: boolean; cycles: number | nu
   const reached = goalRows.find(row => Boolean(row.goal_reached));
   if (!reached) return { hadGoal: true, cycles: null };
   return { hadGoal: true, cycles: reached.cycle_number ?? jobs.indexOf(reached.task_id) + 1 };
-}
-
-interface PullRequestSpend { cost: number | null; runs: number }
-
-/**
- * Recorded cost and run count per pull request: its implementation task plus
- * every task acting on it. Cost is the PR's lifetime spend; runs stop at the
- * recorded merge, so a review after the merge never adds a run to merge.
- */
-async function loadPullRequestCosts(db: Knex, repositories: string[]): Promise<Map<string, PullRequestSpend>> {
-  if (!repositories.length) return new Map();
-  const types = PULL_REQUEST_TASK_TYPES.map(() => '?').join(', ');
-  const executions = db('llm_executions as e')
-    .join('tasks as t', 't.task_id', 'e.task_id')
-    .whereIn('t.repository', repositories)
-    .select('t.repository', 'e.cost_usd', 'e.start_time')
-    .select(db.raw(`COALESCE(t.pr_number,
-      CASE WHEN t.task_type IN (${types}) OR substr(t.task_id, 1, 10) = 'pr-comment' THEN t.issue_number END) AS pull_request_number`,
-    [...PULL_REQUEST_TASK_TYPES]))
-    .as('x');
-  const rows = await db.from(executions)
-    .leftJoin('notification_pull_request_state as n', function (this: Knex.JoinClause) {
-      this.on('n.repository', '=', 'x.repository').andOn('n.pr_number', '=', 'x.pull_request_number');
-    })
-    .select('x.repository', 'x.pull_request_number')
-    .sum('x.cost_usd as cost')
-    .count('x.cost_usd as costed')
-    .select(db.raw('sum(CASE WHEN n.merged_at IS NULL OR x.start_time <= n.merged_at THEN 1 ELSE 0 END) AS runs'))
-    .groupBy('x.repository', 'x.pull_request_number') as unknown as CostRow[];
-  const costs = new Map<string, PullRequestSpend>();
-  for (const row of rows) {
-    if (row.pull_request_number === null) continue;
-    costs.set(prKey(row.repository, row.pull_request_number), {
-      cost: Number(row.costed) === 0 ? null : Number(row.cost || 0),
-      runs: Number(row.runs || 0),
-    });
-  }
-  return costs;
 }
 
 async function loadOutcomes(db: Knex, repositories: string[]): Promise<Map<string, OutcomeRow>> {
@@ -232,9 +192,9 @@ function pullRequestFacts(
   return {
     model: attributed?.implementer_model ?? null,
     agent: attributed?.implementer_agent ?? null,
-    first: rows[0].score,
-    final,
+    // The same starting point the delta runs from, never the window's first score.
     initial: history?.initial ?? null,
+    final,
     cyclesToGoal: goal.cycles,
     hadGoal: goal.hadGoal,
     outcome: state,
@@ -244,7 +204,7 @@ function pullRequestFacts(
 }
 
 function summarizeModel(model: string | null, prs: PullRequestFacts[]): ReviewScoreModelSummary {
-  const firsts = prs.map(pr => pr.first);
+  const firsts = prs.flatMap(pr => pr.initial === null ? [] : [pr.initial]);
   const finals = prs.flatMap(pr => pr.final === null ? [] : [pr.final]);
   const cycles = prs.flatMap(pr => pr.cyclesToGoal === null ? [] : [pr.cyclesToGoal]);
   const resolved = prs.filter(pr => pr.outcome !== null);
@@ -270,10 +230,14 @@ function summarizeModel(model: string | null, prs: PullRequestFacts[]): ReviewSc
   };
 }
 
-/** Per implementer model, the review quality of PRs scored in the window. */
+/**
+ * Per implementer model, the review quality of PRs scored in the window.
+ * With a cache, an all-time read is remembered for a short while.
+ */
 export async function loadReviewScoreSummary(
-  db: Knex, analyticsWindow: AnalyticsWindow | null, repository = 'all',
+  db: Knex, analyticsWindow: AnalyticsWindow | null, repository = 'all', cache?: AnalyticsCache,
 ): Promise<ReviewScoreSummary> {
+  if (cache) return cache.remember(`review-scores|${repository}`, analyticsWindow, () => loadReviewScoreSummary(db, analyticsWindow, repository));
   const query = db('review_scores')
     .select('id', 'repository_id', 'pr_number', 'task_id', 'implementer_model', 'implementer_agent', 'score',
       'blocker_count', 'cycle_number', 'goal', 'goal_reached', 'created_at')
@@ -288,8 +252,18 @@ export async function loadReviewScoreSummary(
     byPullRequest.set(key, [...(byPullRequest.get(key) ?? []), row]);
   }
   const repositories = [...new Set(rows.map(row => row.repository_id))];
-  const [outcomes, costs] = await Promise.all([loadOutcomes(db, repositories), loadPullRequestCosts(db, repositories)]);
-  const endpoints = await loadScoreEndpoints(db, byPullRequest, outcomes);
+  const outcomes = await loadOutcomes(db, repositories);
+  // Only merged PRs report cost and runs to merge, so only their tasks are read.
+  const merged = [...byPullRequest].flatMap(([key, prRows]) => {
+    const outcome = outcomes.get(key);
+    return outcomeState(outcome) === 'merged'
+      ? [{ repository: prRows[0].repository_id, prNumber: prRows[0].pr_number, mergedAt: outcome?.merged_at ?? null }]
+      : [];
+  });
+  const [costs, endpoints] = await Promise.all([
+    loadPullRequestCosts(db, merged),
+    loadScoreEndpoints(db, byPullRequest, outcomes),
+  ]);
 
   const byModel = new Map<string | null, PullRequestFacts[]>();
   for (const [key, prRows] of byPullRequest) {
@@ -315,10 +289,10 @@ export async function loadReviewScoreSummary(
  * Unchanged when the instance has no score table.
  */
 export async function withModelScoreFigures<T extends { model: string | null }>(
-  db: Knex, analyticsWindow: AnalyticsWindow | null, modelUsage: T[],
+  db: Knex, analyticsWindow: AnalyticsWindow | null, modelUsage: T[], cache?: AnalyticsCache,
 ): Promise<Array<T | T & { mean_final_score: number | null; n_scored: number }>> {
   if (!await db.schema.hasTable('review_scores')) return modelUsage;
-  const summary = await loadReviewScoreSummary(db, analyticsWindow);
+  const summary = await loadReviewScoreSummary(db, analyticsWindow, 'all', cache);
   const figures = new Map(summary.models.map(model => [model.implementer_model, model.final_score]));
   return modelUsage.map(entry => {
     // Runs with no recorded model are not the PRs whose implementer is unknown.
@@ -403,9 +377,11 @@ export async function loadPullRequestScores(db: Knex, repository: string, prNumb
 interface ReviewScoreRoutesDeps {
   db: Knex;
   now?: () => Date;
+  /** Remembers the all-time summary for a short while; shared with the stats routes. */
+  analyticsCache?: AnalyticsCache;
 }
 
-export function createReviewScoreRoutes({ db, now = () => new Date() }: ReviewScoreRoutesDeps) {
+export function createReviewScoreRoutes({ db, now = () => new Date(), analyticsCache }: ReviewScoreRoutesDeps) {
   async function readSummary(req: Request, res: Response): Promise<ReviewScoreSummary | null> {
     const analyticsWindow = readAnalyticsWindow(req, res, now());
     if (analyticsWindow === false) return null;
@@ -415,7 +391,7 @@ export function createReviewScoreRoutes({ db, now = () => new Date() }: ReviewSc
       res.status(400).json({ error: validation.error });
       return null;
     }
-    return await loadReviewScoreSummary(db, analyticsWindow, repository === 'all' ? 'all' : repository.trim());
+    return await loadReviewScoreSummary(db, analyticsWindow, repository === 'all' ? 'all' : repository.trim(), analyticsCache);
   }
 
   async function getSummary(req: Request, res: Response): Promise<void> {

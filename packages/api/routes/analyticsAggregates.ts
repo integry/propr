@@ -33,9 +33,10 @@ const scopeToRepository = <T extends Knex.QueryBuilder>(query: T, column: string
  * Leaves goal tasks out of a task count. A goal orchestrates the tasks that do
  * its work rather than delivering any itself, and the task pages, the
  * Completed feed and the summary strip all leave it out; counting it here
- * would make the widget and the Analytics totals disagree with them.
+ * would make the widget and the Analytics totals disagree with them. The
+ * delivery band's autonomy figure leaves it out for the same reason.
  */
-const excludeGoalTasks = <T extends Knex.QueryBuilder>(query: T, column: string): T =>
+export const excludeGoalTasks = <T extends Knex.QueryBuilder>(query: T, column: string): T =>
   query.where(function (this: Knex.QueryBuilder) {
     this.whereNull(column).orWhereNot(column, 'goal');
   }) as T;

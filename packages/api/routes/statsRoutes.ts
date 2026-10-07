@@ -16,6 +16,7 @@ import {
   type CachePriceLookup,
 } from './analyticsAggregates.js';
 import { loadAutonomy, loadDeliveryMetrics } from './analyticsDelivery.js';
+import { createAnalyticsCache, type AnalyticsCache } from './analyticsCache.js';
 
 /** Periods the dashboard's historical stats section can request. */
 export const DASHBOARD_STATS_PERIODS = ['7d', '30d'] as const;
@@ -30,6 +31,11 @@ interface StatsRoutesDeps {
    * savings estimate. Without one, savings are reported as unknown.
    */
   cachePrice?: CachePriceLookup;
+  /**
+   * Remembers the all-time delivery and review-quality aggregations for a
+   * short while; shared with the review score routes so both read one copy.
+   */
+  analyticsCache?: AnalyticsCache;
 }
 
 interface DailyCountRow {
@@ -84,6 +90,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const cachePrice: CachePriceLookup = deps.cachePrice ?? (() => null);
+  const allTimeCache = deps.analyticsCache ?? createAnalyticsCache();
 
   async function getTaskStats(req: Request, res: Response): Promise<void> {
     const analyticsWindow = readAnalyticsWindow(req, res, now());
@@ -250,8 +257,11 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
     // The same recorded spend the dashboard widget reports
     const recordedSpend = await loadRecordedSpend(db, analyticsWindow);
 
-    // Model Distribution - count unique tasks per model from llm_executions
-    // This gives accurate counts since a task may use multiple models or have retries
+    // Model Distribution - count unique tasks per model from llm_executions.
+    // This is the legacy `usage.models` figure: distinct tasks, not runs.
+    // `model_usage` (loadModelUsage) carries runs per model, and the Models
+    // table only falls back to this one when a server predates it; the two
+    // are kept apart so older clients keep reading the figure they expect.
     const modelStatsQuery = db('llm_executions')
       .select('model_name')
       .countDistinct('task_id as count')
@@ -311,13 +321,13 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
 
       // 2-3. Token, cost and model usage
       const usage = await loadOverviewUsage(analyticsWindow);
-      const modelUsage = await loadModelUsage(db, analyticsWindow);
+      const modelUsage = await loadModelUsage(db, analyticsWindow, allTimeCache);
 
       // Run volume, prompt caching, delivery and autonomy
       const [runs, cache, delivery, autonomy] = await Promise.all([
         loadRunVolume(db, analyticsWindow),
         loadCacheUsage(db, analyticsWindow, cachePrice),
-        loadDeliveryMetrics(db, analyticsWindow),
+        allTimeCache.remember('delivery', analyticsWindow, () => loadDeliveryMetrics(db, analyticsWindow)),
         loadAutonomy(db, analyticsWindow),
       ]);
 

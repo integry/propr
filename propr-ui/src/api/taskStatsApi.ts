@@ -86,6 +86,11 @@ export interface StatsOverviewUsage {
   input_tokens?: number;
   output_tokens?: number;
   total_cost_usd: number;
+  /**
+   * Distinct tasks with at least one execution per model: the legacy figure
+   * the Models table falls back to, labelled Tasks, when a server predates
+   * `model_usage`. Not runs: `model_usage[].runs` counts those.
+   */
   models: Record<string, number>;
   /** Prompt cache effectiveness; null when no run reported a cache breakdown, absent from older servers. */
   cache?: StatsOverviewCacheUsage | null;

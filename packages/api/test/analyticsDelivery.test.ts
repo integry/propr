@@ -4,6 +4,7 @@ import type { Knex } from 'knex';
 import { up as createPullRequestState } from '../../core/src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 import { up as createReviewScores } from '../../core/src/db/migrations/20261006000000_create_review_scores.js';
 import { loadAutonomy, loadDeliveryMetrics, loadRelatedTasks } from '../routes/analyticsDelivery.js';
+import { loadTaskSummary } from '../routes/analyticsAggregates.js';
 import { NOW, clearDashboardTestDatabase, createDashboardTestDatabase, daysAgo, seedTask } from './dashboardTestHarness.js';
 
 let database: Knex;
@@ -54,6 +55,19 @@ test('autonomy counts a failure even when a retry later completed the task', asy
   // A population made only of the recovered task is not 100% autonomous.
   await database('tasks').where({ task_id: 'clean' }).del();
   assert.deepEqual(await loadAutonomy(database, WEEK), { rate: 0, autonomous: 0, operator: 1, n: 1 });
+});
+
+test('finished goal tasks are not part of the autonomy population', async () => {
+  // The only deliverable task failed.
+  await seedTask(database, { taskId: 'failed', states: [{ state: 'failed', timestamp: daysAgo(2), reason: 'nope' }] });
+  // A goal that finished cleanly, and one that failed, orchestrated it; neither delivered anything.
+  await seedTask(database, { taskId: 'goal-done', issueNumber: 2, taskType: 'goal', states: [{ state: 'processing', timestamp: daysAgo(3) }, { state: 'completed', timestamp: daysAgo(1) }] });
+  await seedTask(database, { taskId: 'goal-failed', issueNumber: 3, taskType: 'goal', states: [{ state: 'failed', timestamp: daysAgo(1), reason: 'nope' }] });
+
+  const autonomy = await loadAutonomy(database, WEEK);
+  assert.deepEqual(autonomy, { rate: 0, autonomous: 0, operator: 1, n: 1 });
+  // The same population the page's Total tasks counts.
+  assert.equal(autonomy.n, (await loadTaskSummary(database, WEEK)).total);
 });
 
 test('a task matched by two batches is related to its PR once', async () => {

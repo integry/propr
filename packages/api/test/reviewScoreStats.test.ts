@@ -5,6 +5,7 @@ import knex, { type Knex } from 'knex';
 import { up as createPullRequestState } from '../../core/src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 import { up as createReviewScores } from '../../core/src/db/migrations/20261006000000_create_review_scores.js';
 import { createReviewScoreRoutes, loadReviewScoreSummary, median, reviewScoreSummaryCsv } from '../routes/reviewScoreStats.js';
+import { createAnalyticsCache } from '../routes/analyticsCache.js';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
 import { loadDeliveryMetrics } from '../routes/analyticsDelivery.js';
 import type { AnalyticsWindow } from '../routes/analyticsWindow.js';
@@ -285,9 +286,12 @@ test('a merged PR\'s final score comes from its pre-merge history even when the 
   const summary = await loadReviewScoreSummary(database, window, 'acme/repo');
   const opus = summary.models.find(model => model.implementer_model === OPUS)!;
   assert.equal(opus.prs_scored, 1);
-  assert.deepEqual(opus.first_score, { mean: 9, median: 9, n: 1 });
+  // The earliest score in the PR's history (5), not the window's first score: the delta's own starting point.
+  assert.deepEqual(opus.first_score, { mean: 5, median: 5, n: 1 });
   // The last score at or before the merge (8), never the post-merge 9.
   assert.deepEqual(opus.final_score, { mean: 8, n: 1 });
+  assert.deepEqual(opus.score_delta, { mean: 3, n: 1 });
+  assert.equal(opus.first_score.mean, opus.final_score.mean! - opus.score_delta.mean!);
 });
 
 test('a merged PR with no score at or before its merge has an unknown final score', async () => {
@@ -298,8 +302,11 @@ test('a merged PR with no score at or before its merge has an unknown final scor
     const summary = await loadReviewScoreSummary(database, null, 'acme/late');
     const [model] = summary.models;
     assert.equal(model.prs_scored, 1);
+    // Neither endpoint is known, so no figure claims one.
+    assert.deepEqual(model.first_score, { mean: null, median: null, n: 0 });
     assert.deepEqual(model.final_score, { mean: null, n: 0 });
-    assert.equal(reviewScoreSummaryCsv(summary).split('\r\n')[1].split(',').slice(6, 8).join(','), ',0');
+    assert.deepEqual(model.score_delta, { mean: null, n: 0 });
+    assert.equal(reviewScoreSummaryCsv(summary).split('\r\n')[1].split(',').slice(3, 8).join(','), ',,0,,0');
   } finally {
     await database('review_scores').where({ repository_id: 'acme/late' }).delete();
     await database('notification_pull_request_state').where({ repository: 'acme/late' }).delete();
@@ -365,7 +372,75 @@ test('score delta runs from the initial score to the final one, whatever the win
   // PR 40: 5 → 8 before the merge, not the post-merge 9 back down to 8. PR 41: 4 → 7.
   assert.deepEqual(opus.score_delta, { mean: 3, n: 2 });
   assert.deepEqual(opus.final_score, { mean: 7.5, n: 2 });
+  // The initial score is the delta's starting point, not the window's first score (9 and 7), so Final − Initial = Delta.
+  assert.deepEqual(opus.first_score, { mean: 4.5, median: 4.5, n: 2 });
+  assert.equal(opus.first_score.mean, opus.final_score.mean! - opus.score_delta.mean!);
   // The review after the merge is not a run to merge, though its cost is still the PR's lifetime spend.
   assert.deepEqual(opus.runs_to_merge, { mean: 1, n: 1 });
   assert.deepEqual(opus.cost_per_merged_pr, { usd: 1.5, n: 1 });
+});
+
+test('runs to merge count an earlier implementation attempt at the issue, as the delivery band does', async () => {
+  const repository = 'acme/retry';
+  // The first attempt at issue 500 ran once and opened no PR; the second ran once and opened PR 60, scored and merged.
+  await database('tasks').insert([
+    { task_id: 'impl-500-first', repository, issue_number: 500, pr_number: null, task_type: 'issue', model_name: OPUS, created_at: daysAgo(22) },
+    { task_id: 'impl-500-second', repository, issue_number: 500, pr_number: 60, task_type: 'issue', model_name: OPUS, created_at: daysAgo(21) },
+    // A goal naming the issue, and a later review of the merged PR, are not runs to merge.
+    { task_id: 'goal-500', repository, issue_number: 500, pr_number: null, task_type: 'goal', model_name: OPUS, created_at: daysAgo(23) },
+    { task_id: 'review-60', repository, issue_number: 60, pr_number: null, task_type: 'review', model_name: GPT, created_at: daysAgo(18) },
+  ]);
+  await database('llm_executions').insert([
+    { task_id: 'impl-500-first', model_name: OPUS, start_time: daysAgo(22), cost_usd: 2 },
+    { task_id: 'impl-500-second', model_name: OPUS, start_time: daysAgo(21), cost_usd: 3 },
+    { task_id: 'goal-500', model_name: OPUS, start_time: daysAgo(23), cost_usd: 10 },
+    { task_id: 'review-60', model_name: GPT, start_time: daysAgo(18), cost_usd: 1 },
+  ]);
+  await seedScore({ pr: 60, score: 8, at: daysAgo(20), model: OPUS, repository });
+  await database('notification_pull_request_state').insert({
+    repository, pr_number: 60, merged_at: daysAgo(19), outcome: 'merged', closed_at: daysAgo(19),
+  });
+  try {
+    const [opus] = (await loadReviewScoreSummary(database, null, repository)).models;
+    // Both attempts' runs, not only the one that opened the PR; the goal's run is nobody's.
+    assert.deepEqual(opus.runs_to_merge, { mean: 2, n: 1 });
+    // The cost of both attempts and of the review after the merge: the PR's lifetime spend.
+    assert.deepEqual(opus.cost_per_merged_pr, { usd: 6, n: 1 });
+    // The delivery band, over the window holding PR 60's opening task, counts the same two runs.
+    const window: AnalyticsWindow = { timeframe: '30d', from: new Date(NOW.getTime() - 25 * 24 * 60 * 60_000), to: new Date(NOW.getTime() - 15 * 24 * 60 * 60_000) };
+    const delivery = await loadDeliveryMetrics(database, window);
+    assert.deepEqual(delivery.runs_per_merged_pr, { mean: 2, n: 1 });
+    assert.equal(delivery.runs_per_merged_pr.mean, opus.runs_to_merge.mean);
+  } finally {
+    await database('tasks').where({ repository }).delete();
+    await database('llm_executions').whereIn('task_id', ['impl-500-first', 'impl-500-second', 'goal-500', 'review-60']).delete();
+    await database('review_scores').where({ repository_id: repository }).delete();
+    await database('notification_pull_request_state').where({ repository }).delete();
+  }
+});
+
+test('an all-time summary is remembered by the shared cache; a bounded period is not', async () => {
+  const repository = 'acme/cached';
+  await seedScore({ pr: 70, score: 6, at: daysAgo(1), model: OPUS, repository });
+  let clock = NOW.getTime();
+  const analyticsCache = createAnalyticsCache({ ttlMs: 1_000, now: () => clock });
+  const cached = createReviewScoreRoutes({ db: database, now: () => NOW, analyticsCache });
+  const read = async (period?: string) => {
+    const state = await invoke(cached.getSummary, { repository, ...(period ? { period } : {}) });
+    return (state.body as { scores_recorded: number }).scores_recorded;
+  };
+  try {
+    assert.equal(await read('all'), 1);
+    assert.equal(await read(), 1);
+    await seedScore({ pr: 70, score: 8, at: daysAgo(0.5), model: OPUS, repository });
+    // The bounded period reads afresh; the all-time reads keep their remembered copies until they expire.
+    assert.equal(await read('7d'), 2);
+    assert.equal(await read('all'), 1);
+    assert.equal(await read(), 1);
+    clock += 1_001;
+    assert.equal(await read('all'), 2);
+    assert.equal(await read(), 2);
+  } finally {
+    await database('review_scores').where({ repository_id: repository }).delete();
+  }
 });

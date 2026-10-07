@@ -18,6 +18,7 @@ export { createAgentLoginRoutes } from './agentLoginRoutes.js';
 export { createAgentVersionRoutes } from './agentVersionRoutes.js';
 export { createStatsRoutes } from './statsRoutes.js';
 export { createReviewScoreRoutes } from './reviewScoreStats.js';
+export { createAnalyticsCache } from './analyticsCache.js';
 export { createDashboardRoutes } from './dashboardRoutes.js';
 export {
   createSummaryBrowserRoutes,

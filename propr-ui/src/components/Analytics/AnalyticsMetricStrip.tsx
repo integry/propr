@@ -6,7 +6,8 @@
  * two by two, and the rules fold with it.
  *
  * A figure the page cannot report yet pulses; one it cannot report at all is
- * an em dash, never a zero.
+ * an em dash, never a zero — and carries no detail line, so an unknown figure
+ * is never qualified by a count of nothing.
  */
 
 import React from 'react';
@@ -45,7 +46,7 @@ const MetricList: React.FC<{ metrics: AnalyticsMetric[]; testId: string }> = ({ 
         >
           {metric.value === null ? <SkeletonBlock pulse className="h-8 w-20" /> : metric.value}
         </dd>
-        {metric.detail && metric.value !== null && (
+        {metric.detail && metric.value !== null && metric.value !== UNAVAILABLE && (
           <dd className="mt-0.5 truncate text-xs text-slate-500" data-testid={`${metric.testId}-detail`}>{metric.detail}</dd>
         )}
       </div>

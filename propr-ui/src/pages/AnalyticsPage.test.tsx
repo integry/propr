@@ -376,6 +376,8 @@ describe('AnalyticsPage', () => {
     const delivery = await screen.findByTestId('analytics-delivery-strip');
     for (const id of ['metric-runs-per-task', 'metric-first-time-pass', 'metric-time-to-merge', 'metric-autonomy']) {
       await waitFor(() => expect(within(delivery).getByTestId(id)).toHaveTextContent('—'));
+      // An unknown figure carries no detail line: never "—" over "0 runs · 0 tasks".
+      expect(within(delivery).queryByTestId(`${id}-detail`)).not.toBeInTheDocument();
     }
     // A server that reports no cache breakdown shows no cache rows at all.
     expect(screen.queryByTestId('token-row-cache-hit-rate')).not.toBeInTheDocument();

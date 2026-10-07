@@ -35,6 +35,7 @@ import {
   createAgentVersionRoutes,
   createStatsRoutes,
   createReviewScoreRoutes,
+  createAnalyticsCache,
   createDashboardRoutes,
   createSummaryBrowserRoutes,
   createRepoChatRoutes,
@@ -364,8 +365,10 @@ function setupRoutes(): void {
   const relevanceRoutes = createRelevanceRoutes();
   const agentRoutes = createAgentRoutes();
   const agentLoginRoutes = createAgentLoginRoutes();
-  const statsRoutes = createStatsRoutes({ db, cachePrice: officialCachePrice });
-  const reviewScoreRoutes = createReviewScoreRoutes({ db });
+  // The all-time delivery and review-quality aggregations read every PR's history; both routes share one short-lived copy.
+  const analyticsCache = createAnalyticsCache();
+  const statsRoutes = createStatsRoutes({ db, cachePrice: officialCachePrice, analyticsCache });
+  const reviewScoreRoutes = createReviewScoreRoutes({ db, analyticsCache });
   const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: async () => (await getConfig('dashboard_summary_enabled', true)) !== false });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();

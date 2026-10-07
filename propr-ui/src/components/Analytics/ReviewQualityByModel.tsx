@@ -31,10 +31,10 @@ const UNKNOWN = '—';
 
 const COLUMNS: Array<{ label: string; hint: string }> = [
   { label: 'Evaluated PRs', hint: 'Pull requests with at least one review score in the period' },
-  { label: 'Initial score', hint: 'Mean first review score, out of 10' },
+  { label: 'Initial score', hint: 'Mean earliest review score in each pull request\'s history, before merge if merged, out of 10' },
   { label: 'Final score', hint: 'Mean last score before merge, or latest score if not merged, out of 10' },
-  { label: 'Score delta', hint: 'Mean change from first to final score: whether follow-up work improved the code' },
-  { label: 'Avg runs to merge', hint: 'Mean agent runs across a merged pull request\'s implementation and follow-up tasks' },
+  { label: 'Score delta', hint: 'Mean change from initial to final score: whether follow-up work improved the code' },
+  { label: 'Avg runs to merge', hint: 'Mean agent runs across a merged pull request\'s implementation attempts and follow-up tasks' },
   { label: 'Merge rate', hint: 'Merged pull requests among those merged or closed' },
 ];
 
@@ -77,7 +77,7 @@ const ModelRow: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
         </span>
       </td>
       <td className={`${CELL} text-right text-slate-800`}>{row.prs_scored.toLocaleString()}</td>
-      <Figure value={score(row.first_score.mean)} basis={`Mean over ${prs(row.first_score.n)}`} />
+      <Figure value={score(row.first_score.mean)} basis={`Mean over ${prs(row.first_score.n)} with a known initial score`} testId="review-quality-initial" />
       <Figure value={score(row.final_score.mean)} basis={`Mean over ${prs(row.final_score.n)}`} testId="review-quality-final" />
       {row.implementer_model ? (
         <Delta value={row.score_delta?.mean} n={row.score_delta?.n ?? 0} />

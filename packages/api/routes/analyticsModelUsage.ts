@@ -5,6 +5,7 @@
 import type { Knex } from 'knex';
 import { whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
 import { withModelScoreFigures } from './reviewScoreStats.js';
+import type { AnalyticsCache } from './analyticsCache.js';
 
 interface ModelUsageRow {
   model_name: string | null;
@@ -45,9 +46,10 @@ export interface ModelUsage {
  * row, listed last, so the rows' runs reconcile with the delivery band's total
  * and the activity chart, which count every execution.
  * Each row also carries the review quality of the PRs the model implemented
- * (see `withModelScoreFigures`), bounded by when the scores were recorded.
+ * (see `withModelScoreFigures`), bounded by when the scores were recorded;
+ * with a cache, an all-time read of those scores is remembered for a while.
  */
-export async function loadModelUsage(db: Knex, analyticsWindow: AnalyticsWindow | null): Promise<ModelUsage[]> {
+export async function loadModelUsage(db: Knex, analyticsWindow: AnalyticsWindow | null, cache?: AnalyticsCache): Promise<ModelUsage[]> {
   // A null and an empty model name are both unknown, and group as one.
   const runsQuery = db('llm_executions')
     .select(db.raw(`NULLIF(model_name, '') as model_name`))
@@ -80,5 +82,5 @@ export async function loadModelUsage(db: Knex, analyticsWindow: AnalyticsWindow 
     // The unknown row is listed last, whatever its size.
     .sort((left, right) => (left.model === null ? 1 : 0) - (right.model === null ? 1 : 0)
       || right.runs - left.runs || right.tokens - left.tokens || String(left.model).localeCompare(String(right.model)));
-  return withModelScoreFigures(db, analyticsWindow, usage);
+  return withModelScoreFigures(db, analyticsWindow, usage, cache);
 }

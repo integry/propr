@@ -21,6 +21,7 @@ import { whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
 import { ATTENTION_TASK_STATES, chunk } from './dashboardQueries.js';
 import { isPullRequestTask } from './pullRequestTaskIdentity.js';
 import { hasColumn, hasTable } from './analyticsSchema.js';
+import { excludeGoalTasks } from './analyticsAggregates.js';
 
 export interface DeliveryMetrics {
   /** Pull requests opened by tasks created in the window. */
@@ -45,6 +46,7 @@ export interface AutonomyMetrics {
   autonomous: number;
   /** Finished tasks that failed or asked for a human at any point. */
   operator: number;
+  /** Finished tasks created in the window, goal tasks aside: never more than the page's Total tasks. */
   n: number;
 }
 
@@ -59,7 +61,7 @@ export interface TaskRow {
   command_mode?: string | null;
 }
 
-interface PullRequest {
+export interface PullRequest {
   repository: string;
   prNumber: number;
   issueNumber: number | null;
@@ -138,8 +140,12 @@ const TASK_COLUMNS = ['task_id', 'repository', 'issue_number', 'pr_number', 'tas
  * Task columns to read. Of the job data only the command mode is read, to tell
  * reviews apart, rather than every task's whole JSON; a schema without job
  * data reads every follow-up as a fix.
+ *
+ * `json_valid` and `json_extract` are SQLite's JSON1 functions. ProPR's task
+ * store is SQLite, as every analytics query here assumes; another Knex
+ * dialect would need its own JSON path expression.
  */
-async function taskColumns(db: Knex): Promise<Array<string | Knex.Raw>> {
+export async function taskColumns(db: Knex): Promise<Array<string | Knex.Raw>> {
   if (!await hasColumn(db, 'tasks', 'initial_job_data')) return TASK_COLUMNS;
   return [...TASK_COLUMNS, db.raw(
     `CASE WHEN json_valid(initial_job_data) THEN json_extract(initial_job_data, '$.commandMode') END AS command_mode`,
@@ -175,14 +181,18 @@ export async function loadRelatedTasks(
 }
 
 /** One task's runs counted toward one merged PR, up to that PR's merge time. */
-interface RunEvidence { key: string; taskId: string; mergedAt: string | null }
+export interface RunEvidence { key: string; taskId: string; mergedAt: string | null }
 
 /**
  * Executions per merged PR across its tasks, counting only runs started at or
  * before the PR's merge. A task can belong to two PRs with different merge
  * times (two PRs for one issue), so the cutoff travels with each pairing.
+ *
+ * The pairings are bound as a `VALUES` common table expression, SQLite's
+ * form of a row-value list; like `taskColumns`, this assumes the SQLite task
+ * store rather than any Knex dialect.
  */
-async function loadRunsToMerge(db: Knex, evidence: RunEvidence[]): Promise<Map<string, number>> {
+export async function loadRunsToMerge(db: Knex, evidence: RunEvidence[]): Promise<Map<string, number>> {
   const runs = new Map<string, number>();
   // Three bindings per pairing keep each batch under 999 bound parameters.
   for (const batch of chunk(evidence, 300)) {
@@ -200,7 +210,7 @@ async function loadRunsToMerge(db: Knex, evidence: RunEvidence[]): Promise<Map<s
 }
 
 /** Related tasks keyed by repository and every number they name, issue or PR. */
-function indexRelatedTasks(related: TaskRow[]): Map<string, TaskRow[]> {
+export function indexRelatedTasks(related: TaskRow[]): Map<string, TaskRow[]> {
   const index = new Map<string, TaskRow[]>();
   for (const task of related) {
     const keys = new Set([task.issue_number, task.pr_number].flatMap(number => number === null ? [] : [prKey(task.repository, number)]));
@@ -209,27 +219,46 @@ function indexRelatedTasks(related: TaskRow[]): Map<string, TaskRow[]> {
   return index;
 }
 
-interface MergedPullRequestEvidence {
+export interface MergedPullRequestEvidence {
   implementations: TaskRow[];
   followUps: TaskRow[];
 }
 
+/** Whether a task is an implementation attempt at a PR: one that opened it, or any other attempt at its issue. */
+export function isImplementationAttempt(task: TaskRow, pr: PullRequest): boolean {
+  return !isPullRequestTask(task) && task.task_type !== 'goal'
+    && (Number(task.pr_number) === pr.prNumber || (pr.issueNumber !== null && Number(task.issue_number) === pr.issueNumber));
+}
+
 /**
- * The tasks that took one merged PR to its merge: its implementation attempts
- * and the follow-ups acting on it, created at or before the merge. A goal
- * task names the issue it works toward but opens no PR, so it is never an
- * implementation attempt.
+ * Every task attached to one PR over its whole history: its implementation
+ * attempts — the task that opened it and every other task on its issue, an
+ * attempt that opened no PR included — and the follow-ups acting on the PR
+ * itself. A goal task names the issue it works toward but opens no PR, so it
+ * is never an implementation attempt. Review quality's cost and runs to merge
+ * read the same attachment, so the two pages count one PR's work alike.
  */
-function mergedPullRequestEvidence(pr: PullRequest & { mergedAt: string | null }, index: Map<string, TaskRow[]>): MergedPullRequestEvidence {
+export function attachedTasks(pr: PullRequest, index: Map<string, TaskRow[]>): MergedPullRequestEvidence {
   const candidates = new Map<string, TaskRow>();
   for (const number of pr.issueNumber === null ? [pr.prNumber] : [pr.prNumber, pr.issueNumber]) {
     for (const task of index.get(prKey(pr.repository, number)) ?? []) candidates.set(task.task_id, task);
   }
-  const beforeMerge = [...candidates.values()].filter(task => atOrBefore(task.created_at, pr.mergedAt));
+  const attached = [...candidates.values()];
   return {
-    implementations: beforeMerge.filter(task => !isPullRequestTask(task) && task.task_type !== 'goal'
-      && (Number(task.pr_number) === pr.prNumber || (pr.issueNumber !== null && Number(task.issue_number) === pr.issueNumber))),
-    followUps: beforeMerge.filter(task => isPullRequestTask(task) && Number(task.issue_number) === pr.prNumber),
+    implementations: attached.filter(task => isImplementationAttempt(task, pr)),
+    followUps: attached.filter(task => isPullRequestTask(task) && Number(task.issue_number) === pr.prNumber),
+  };
+}
+
+/**
+ * The tasks that took one merged PR to its merge: its attached tasks created
+ * at or before the merge.
+ */
+function mergedPullRequestEvidence(pr: PullRequest & { mergedAt: string | null }, index: Map<string, TaskRow[]>): MergedPullRequestEvidence {
+  const { implementations, followUps } = attachedTasks(pr, index);
+  return {
+    implementations: implementations.filter(task => atOrBefore(task.created_at, pr.mergedAt)),
+    followUps: followUps.filter(task => atOrBefore(task.created_at, pr.mergedAt)),
   };
 }
 
@@ -328,7 +357,9 @@ export async function loadDeliveryMetrics(db: Knex, window: AnalyticsWindow | nu
  * without a human: they never failed and never entered an attention state.
  * A failure counts even when a retry later completed the task, as the
  * dashboard's own queries keep it. Cancelled work is an operator's choice,
- * not an outcome, and is left out.
+ * not an outcome, and is left out. So are goal tasks, as the page's task
+ * totals leave them out: a goal that finishes delivers nothing itself, and
+ * counting it would let the share describe a population the page never shows.
  */
 export async function loadAutonomy(db: Knex, window: AnalyticsWindow | null): Promise<AutonomyMetrics> {
   const finishedStates = ['completed', 'failed'];
@@ -347,6 +378,7 @@ export async function loadAutonomy(db: Knex, window: AnalyticsWindow | null): Pr
       SELECT 1 FROM task_history AS a WHERE a.task_id = t.task_id AND a.state IN (${operatorStates.map(() => '?').join(', ')})
     ) THEN t.task_id END) as operator`, operatorStates));
   whereCreatedWithin(query, 't.created_at', window);
+  excludeGoalTasks(query, 't.task_type');
   const row = await query.first() as { finished?: number | string; operator?: number | string } | undefined;
   const n = Number(row?.finished ?? 0);
   const operator = Number(row?.operator ?? 0);
