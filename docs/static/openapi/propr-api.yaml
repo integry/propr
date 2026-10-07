@@ -29,9 +29,9 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 236
+    total: 255
     documented: 38
-    undocumented: 198
+    undocumented: 217
 servers:
   - url: "{origin}"
     description: Your ProPR API origin, for example the value of `API_PUBLIC_URL`.
@@ -65,6 +65,8 @@ tags:
     description: Instance settings. Most routes require a management permission.
   - name: Agents
     description: Agent login, images, runtime packages and health.
+  - name: Agent definitions
+    description: Saved agent definitions, their runs, reports and approvals.
   - name: Administration
     description: Instance members and MCP administration.
   - name: MCP
@@ -434,6 +436,379 @@ paths:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: member
       x-propr-permission: instance.manage_members
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-definitions:
+    get:
+      operationId: getApiAgentDefinitions
+      summary: GET /api/agent-definitions
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+    post:
+      operationId: postApiAgentDefinitions
+      summary: POST /api/agent-definitions
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-definitions/contract:
+    get:
+      operationId: getApiAgentDefinitionsContract
+      summary: GET /api/agent-definitions/contract
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-definitions/{id}:
+    get:
+      operationId: getApiAgentDefinitionsId
+      summary: GET /api/agent-definitions/{id}
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+    patch:
+      operationId: patchApiAgentDefinitionsId
+      summary: PATCH /api/agent-definitions/{id}
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+    delete:
+      operationId: deleteApiAgentDefinitionsId
+      summary: DELETE /api/agent-definitions/{id}
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-definitions/{id}/attachments:
+    post:
+      operationId: postApiAgentDefinitionsIdAttachments
+      summary: POST /api/agent-definitions/{id}/attachments
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-definitions/{id}/attachments/{attachmentId}:
+    delete:
+      operationId: deleteApiAgentDefinitionsIdAttachmentsAttachmentId
+      summary: DELETE /api/agent-definitions/{id}/attachments/{attachmentId}
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: attachmentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-definitions/{id}/capacity:
+    get:
+      operationId: getApiAgentDefinitionsIdCapacity
+      summary: GET /api/agent-definitions/{id}/capacity
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-definitions/{id}/runs:
+    get:
+      operationId: getApiAgentDefinitionsIdRuns
+      summary: GET /api/agent-definitions/{id}/runs
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+    post:
+      operationId: postApiAgentDefinitionsIdRuns
+      summary: POST /api/agent-definitions/{id}/runs
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-runs/{runId}:
+    get:
+      operationId: getApiAgentRunsRunId
+      summary: GET /api/agent-runs/{runId}
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-runs/{runId}/approve:
+    post:
+      operationId: postApiAgentRunsRunIdApprove
+      summary: POST /api/agent-runs/{runId}/approve
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-runs/{runId}/cancel:
+    post:
+      operationId: postApiAgentRunsRunIdCancel
+      summary: POST /api/agent-runs/{runId}/cancel
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agent-runs/{runId}/reject:
+    post:
+      operationId: postApiAgentRunsRunIdReject
+      summary: POST /api/agent-runs/{runId}/reject
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
   /api/agent-runtime/packages:
@@ -3076,6 +3451,50 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/internal/agent-runs/{runId}/mcp-grants:
+    post:
+      operationId: postApiInternalAgentRunsRunIdMcpGrants
+      summary: POST /api/internal/agent-runs/{runId}/mcp-grants
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security: []
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-undocumented: true
+      x-legacy-error: true
+  /api/internal/agent-runs/{runId}/mcp-grants/revoke:
+    post:
+      operationId: postApiInternalAgentRunsRunIdMcpGrantsRevoke
+      summary: POST /api/internal/agent-runs/{runId}/mcp-grants/revoke
+      description: This route is registered but not documented yet.
+      tags:
+        - Agent definitions
+      security: []
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-undocumented: true
+      x-legacy-error: true
   /api/llm-logs:
     get:
       operationId: getApiLlmLogs
@@ -3792,6 +4211,57 @@ paths:
           schema:
             type: string
         - name: attachmentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+  /api/planner/drafts/{id}/execution-queue:
+    get:
+      operationId: getApiPlannerDraftsIdExecutionQueue
+      summary: GET /api/planner/drafts/{id}/execution-queue
+      description: This route is registered but not documented yet.
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-undocumented: true
+      x-legacy-error: true
+    post:
+      operationId: postApiPlannerDraftsIdExecutionQueue
+      summary: POST /api/planner/drafts/{id}/execution-queue
+      description: This route is registered but not documented yet.
+      tags:
+        - Planner
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: id
           in: path
           required: true
           schema:

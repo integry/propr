@@ -1,6 +1,6 @@
-import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
+import { withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import fs from 'fs';
-import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../agentGitAccess.js';
+import { buildAgentGitCredentialArgs, buildAgentGitMountArgs, prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
@@ -81,7 +81,8 @@ export class VibeAgent implements Agent {
         let envFilePath: string | undefined;
         let runtimeHomePath: string | undefined;
         try {
-            const prompt = buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
+            // No native web switch: the restriction is best effort through the prompt.
+            const prompt = buildPromptWithRetryContext(withPromptOnlyToolPolicy(customPrompt, options.toolPolicy), isRetry, retryReason);
             promptFilePath = writeVibePromptFile(prompt);
             const mistralApiKey = await this.getMistralApiKey();
             runtimeHomePath = prepareRuntimeHome(taskId);

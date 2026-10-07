@@ -19,6 +19,8 @@ import {
   createGetContextStatsHandler,
   createGetIssuesHandler,
   createImplementIssueHandler,
+  createGetExecutionQueueHandler,
+  createQueueRemainingHandler,
   createUpdateIssueHandler,
   validatePreviewInput,
   recoverStaleRefinement,
@@ -307,6 +309,8 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
   const getIssues = withAuthCheck(db, createGetIssuesHandler({ verifyOwnership: ownershipVerifier }));
   const implementIssue = withAuthCheck(db, createImplementIssueHandler({ verifyOwnership: ownershipVerifier }, { enqueueEpics: deps.enqueueEpics }));
   const updateIssue = withAuthCheck(db, createUpdateIssueHandler({ verifyOwnership: ownershipVerifier }));
+  const getExecutionQueue = withAuthCheck(db, createGetExecutionQueueHandler({ verifyOwnership: ownershipVerifier }));
+  const queueRemaining = withAuthCheck(db, createQueueRemainingHandler({ verifyOwnership: ownershipVerifier }));
   const validateContextRepository = withAuthCheck(db, createValidateContextRepositoryHandler());
 
   const generate = createGenerateHandler(db);
@@ -366,7 +370,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     listRepositories, listDrafts, createDraft, getDraft, updateDraft, deleteDraft,
     uploadAttachment, deleteAttachment, getAttachmentContent, getRepositoryInfo,
     getContextStats, previewContext, downloadContext, generate, refine, finalize,
-    resetDraftToSetup, getIssues, implementIssue, updateIssue,
+    resetDraftToSetup, getIssues, implementIssue, updateIssue, getExecutionQueue, queueRemaining,
     validateContextRepository, abortGeneration, abortRefinement, reviseDraft,
     pauseDraftExecution, resumeDraftExecution, updateExecutionSettings,
     listPlanRevisions, getPlanRevision, restorePlanRevision,

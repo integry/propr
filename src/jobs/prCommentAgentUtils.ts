@@ -1,3 +1,4 @@
+import { runWithNetworkPolicy } from './networkEgress.js';
 import { runRepositoryWorkflow } from './repositoryWorkflow.js';
 import type { ResolvedRepositoryWorkflow } from '@propr/core';
 import type { Logger } from 'pino';
@@ -331,7 +332,8 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
     });
     const agentResult = await (params.applyRepositoryWorkflow ? runRepositoryWorkflow({
         workflow: params.repositoryWorkflow, repoOwner, repoName, redisClient, taskId, stateManager, correlatedLogger,
-    }, execute) : execute());
+    // Outside the workflow the agent still runs under the run's network policy (and its timeline record).
+    }, execute) : runWithNetworkPolicy({ workflow: params.repositoryWorkflow, taskId, correlatedLogger }, execute));
 
     return { claudeResult: agentResultToClaudeResponse(agentResult), agentType: agent.config.type };
 }

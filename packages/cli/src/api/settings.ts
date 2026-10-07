@@ -144,6 +144,14 @@ export interface SystemSettings {
    */
   ultrafix_ci_wait_timeout_ms: number;
 
+  /** Agent network policy overrides; null uses the environment default. */
+  agent_network_mode?: "open" | "restricted" | null;
+  agent_network_mode_enforced?: boolean | null;
+  agent_network_allow?: string[] | null;
+  agent_network_ignore_repository_allow?: boolean | null;
+  agent_network_defaults?: Record<string, unknown>;
+  agent_network_effective?: Record<string, unknown>;
+
   /**
    * Agent watchdog overrides (null = the environment default applies; 0 disables the rule).
    * Absent when the server predates the watchdog.
@@ -306,6 +314,12 @@ export interface UpdateSettingsOptions {
   agent_stall_timeout_ms?: number | null;
   agent_tool_stall_timeout_ms?: number | null;
   agent_degenerate_output_limit?: number | null;
+
+  /** Agent network policy overrides; null restores the environment default. */
+  agent_network_mode?: "open" | "restricted" | null;
+  agent_network_mode_enforced?: boolean | null;
+  agent_network_allow?: string[] | null;
+  agent_network_ignore_repository_allow?: boolean | null;
 }
 
 /**
@@ -331,7 +345,7 @@ export interface UpdateSettingsResponse {
 /**
  * Valid setting keys that can be updated.
  */
-export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings' | 'agent_watchdog_defaults' | 'agent_watchdog_effective'>;
+export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings' | 'agent_watchdog_defaults' | 'agent_watchdog_effective' | 'agent_network_defaults' | 'agent_network_effective'>;
 
 /**
  * List of valid setting keys for validation.
@@ -367,6 +381,10 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "agent_stall_timeout_ms",
   "agent_tool_stall_timeout_ms",
   "agent_degenerate_output_limit",
+  "agent_network_mode",
+  "agent_network_mode_enforced",
+  "agent_network_allow",
+  "agent_network_ignore_repository_allow",
 ];
 
 /**
@@ -403,6 +421,27 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
+    case "agent_network_mode": {
+      if (/^(default|null)$/i.test(value.trim())) return null;
+      const mode = value.trim().toLowerCase();
+      if (mode !== "open" && mode !== "restricted") {
+        throw new Error(`Invalid value for ${key}: must be "open", "restricted" or "default"`);
+      }
+      return mode;
+    }
+    case "agent_network_mode_enforced":
+    case "agent_network_ignore_repository_allow": {
+      if (/^(default|null)$/i.test(value.trim())) return null;
+      const lower = value.trim().toLowerCase();
+      if (lower !== "true" && lower !== "false") {
+        throw new Error(`Invalid value for ${key}: must be "true", "false" or "default"`);
+      }
+      return lower === "true";
+    }
+    case "agent_network_allow":
+      // Comma-separated hostnames; "default" restores the environment list.
+      if (/^(default|null)$/i.test(value.trim())) return null;
+      return value.split(",").map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0);
     case "usage_tips_dismissal_cooldown_days": {
       const parsed = /^\d+$/.test(value) ? Number(value) : NaN;
       if (!isUsageTipsCooldownDays(parsed)) throw new Error('Cooldown must be an integer from 1 to 365');

@@ -3,6 +3,8 @@ import type { DraftStatus, DraftUpdateGenerationTrace, StepStatus } from '@propr
 export interface GenerationStepData {
   keywords?: string[];
   files?: Array<{ path: string; reason: string; score: number }>;
+  /** Ranked relevance candidates reported when the relevance step completes. */
+  candidates?: Array<{ path: string; reason?: string; score?: number }>;
   includedFiles?: string[];
   tokenCount?: number;
   estimatedDuration?: number;

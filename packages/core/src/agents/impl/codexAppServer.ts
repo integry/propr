@@ -18,6 +18,7 @@ import {
     type GoalProtocolResult,
     type ThreadIdentity,
 } from './codexAppServerGoalProtocol.js';
+import { spawnWithNetworkPolicy } from '../../claude/docker/dockerNetworkPolicy.js';
 import { buildCodexAppServerDockerArgs } from './utils/codexDockerArgsBuilder.js';
 
 export { CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MS, runGoalProtocol } from './codexAppServerGoalProtocol.js';
@@ -89,7 +90,7 @@ export async function executeCodexAppServerGoal(
         taskId: options.taskId,
     });
     const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
-    const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
+    const child = await spawnWithNetworkPolicy(args, runArgs => spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath }));
     const abort = (): void => { child.kill('SIGTERM'); };
     ownership?.signal.addEventListener('abort', abort, { once: true });
     const connection = new AppServerConnection(child, options.taskId, records => control.appendOutput(records));

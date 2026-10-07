@@ -8,7 +8,24 @@ export interface IssueCreationProgress {
   totalCount: number;
   failedCount: number;
   lastCreatedIssue?: { number: number; url: string; title: string };
+  /**
+   * The issues this client saw being created, in arrival order (events only carry the latest one).
+   * A client that connects mid-run misses the earlier events, so this can be incomplete; each entry
+   * keeps the index of the task that created it instead of relying on its array position.
+   */
+  createdIssues?: CreatedIssue[];
   error?: string;
+}
+
+export interface CreatedIssue {
+  number: number;
+  url: string;
+  title: string;
+  /**
+   * Index of the plan task that created this issue. The server creates issues one task at a time and
+   * counts every settled task as created or failed, so it is the event's createdCount + failedCount - 1.
+   */
+  taskIndex: number;
 }
 
 /** Data payload for execution step updates */
@@ -35,6 +52,16 @@ export function createProgressState(
     lastCreatedIssue: status === 'in_progress' ? data?.lastCreatedIssue : undefined,
     error: status === 'failed' ? (data?.error || 'Issue creation failed') : undefined
   };
+}
+
+/** Carries the issues created earlier in the same run forward into the next progress state. */
+export function withCreatedIssues(next: IssueCreationProgress, previous: IssueCreationProgress): IssueCreationProgress {
+  const prior = next.createdCount === 0 ? [] : previous.createdIssues ?? [];
+  const latest = next.lastCreatedIssue;
+  const createdIssues = latest && next.createdCount > 0 && !prior.some(issue => issue.number === latest.number)
+    ? [...prior, { ...latest, taskIndex: next.createdCount + next.failedCount - 1 }]
+    : prior;
+  return { ...next, createdIssues };
 }
 
 interface DraftCompletionOptions {

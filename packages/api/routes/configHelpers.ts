@@ -21,10 +21,15 @@ export const SPECIALIZED_SETTING_NAMES = [
   'ultrafix_max_cycles',
   'ultrafix_pause_seconds',
   'default_max_cost_usd',
+  'agent_run_usage_pause_percent',
   'ultrafix_ci_wait_timeout_ms',
   'agent_stall_timeout_ms',
   'agent_tool_stall_timeout_ms',
-  'agent_degenerate_output_limit'
+  'agent_degenerate_output_limit',
+  'agent_network_mode',
+  'agent_network_mode_enforced',
+  'agent_network_allow',
+  'agent_network_ignore_repository_allow'
 ] as const;
 const DEFAULT_LOCK_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 10_000;

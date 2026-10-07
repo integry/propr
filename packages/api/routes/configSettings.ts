@@ -1,5 +1,5 @@
 import { isUsageTipsCooldownDays, MAX_RUN_COST_CAP_USD } from '@propr/shared';
-import { validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
+import { AGENT_RUN_USAGE_PAUSE_PERCENT_MAX, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, validateAgentNetworkSetting, validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
 interface SettingFields {
   usage_tips_enabled?: unknown;
@@ -17,10 +17,15 @@ interface SettingFields {
   ultrafix_max_cycles?: unknown;
   ultrafix_pause_seconds?: unknown;
   default_max_cost_usd?: unknown;
+  agent_run_usage_pause_percent?: unknown;
   ultrafix_ci_wait_timeout_ms?: unknown;
   agent_stall_timeout_ms?: unknown;
   agent_tool_stall_timeout_ms?: unknown;
   agent_degenerate_output_limit?: unknown;
+  agent_network_mode?: unknown;
+  agent_network_mode_enforced?: unknown;
+  agent_network_allow?: unknown;
+  agent_network_ignore_repository_allow?: unknown;
 }
 
 export type SettingSaveName =
@@ -39,11 +44,15 @@ export type SettingSaveName =
   | 'ultrafix_max_cycles'
   | 'ultrafix_pause_seconds'
   | 'default_max_cost_usd'
+  | 'agent_run_usage_pause_percent'
   | 'ultrafix_ci_wait_timeout_ms'
-  | AgentWatchdogSettingName;
+  | AgentWatchdogSettingName
+  | AgentNetworkSettingName;
 
 export const AGENT_WATCHDOG_SETTING_NAMES = ['agent_stall_timeout_ms', 'agent_tool_stall_timeout_ms', 'agent_degenerate_output_limit'] as const;
 export type AgentWatchdogSettingName = typeof AGENT_WATCHDOG_SETTING_NAMES[number];
+export const AGENT_NETWORK_SETTING_NAMES = ['agent_network_mode', 'agent_network_mode_enforced', 'agent_network_allow', 'agent_network_ignore_repository_allow'] as const;
+export type AgentNetworkSettingName = typeof AGENT_NETWORK_SETTING_NAMES[number];
 
 export interface LabeledSaveDescriptor {
   name: SettingSaveName;
@@ -171,6 +180,12 @@ function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSaves
     normalized.default_max_cost_usd = v;
     saves.push({ name: 'default_max_cost_usd' });
   }
+  if (fields.agent_run_usage_pause_percent !== undefined) {
+    const v = validateStrictInt(fields.agent_run_usage_pause_percent, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, AGENT_RUN_USAGE_PAUSE_PERCENT_MAX);
+    if (v === null) return { error: `agent_run_usage_pause_percent must be an integer from ${AGENT_RUN_USAGE_PAUSE_PERCENT_MIN} to ${AGENT_RUN_USAGE_PAUSE_PERCENT_MAX}`, saves: [], normalized };
+    normalized.agent_run_usage_pause_percent = v;
+    saves.push({ name: 'agent_run_usage_pause_percent' });
+  }
   if (fields.ultrafix_ci_wait_timeout_ms !== undefined) {
     const v = validateStrictInt(fields.ultrafix_ci_wait_timeout_ms, 1, Infinity);
     if (v === null) return { error: 'ultrafix_ci_wait_timeout_ms must be a positive integer', saves: [], normalized };
@@ -183,7 +198,26 @@ function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSaves
 async function extractTrailingSettingSaves(fields: SettingFields, result: SettingSavesResult): Promise<SettingSavesResult> {
   const watchdog = extractAgentWatchdogSettingSaves(fields, result);
   if (watchdog.error) return watchdog;
+  const network = extractAgentNetworkSettingSaves(fields, result);
+  if (network.error) return network;
   return extractEscalationSettingSaves(fields, result);
+}
+
+/** Agent network policy: null uses the environment default (AGENT_NETWORK_MODE and friends). */
+function extractAgentNetworkSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
+  const { saves, normalized } = result;
+  for (const name of AGENT_NETWORK_SETTING_NAMES) {
+    const raw = fields[name];
+    if (raw === undefined) continue;
+    const error = validateAgentNetworkSetting(name, raw);
+    if (error) return { error: `${error}, or null to use the environment default`, saves: [], normalized };
+    normalized[name] = raw === null ? null
+      : name === 'agent_network_mode' ? String(raw).trim().toLowerCase()
+      : name === 'agent_network_allow' ? [...new Set((raw as string[]).map(entry => entry.trim().toLowerCase()))]
+      : raw;
+    saves.push({ name });
+  }
+  return result;
 }
 
 /** Watchdog overrides: a non-negative integer (0 disables the rule) or null to use the environment default. */

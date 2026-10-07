@@ -46,6 +46,8 @@ import {
   createAdminRoutes,
   createAdminMcpRoutes,
   createGoalRoutes,
+  createAgentDefinitionRoutes,
+  agentDefinitionAttachmentUpload,
   createVisualPreviewAuthRoutes,
   createVoiceRoutes,
   createInstanceCatalogRoutes,
@@ -101,6 +103,7 @@ import {
   createOperationalRouteEntries,
   registerRouteEntries,
 } from './routeRegistry.js';
+import { createAgentRunInternalRoutes } from './routes/agentRunInternalRoutes.js';
 import { registerDesktopApiBoundary } from './desktopApiBoundary.js';
 import {
   startVisualPreviewOAuthRefreshScheduler,
@@ -335,6 +338,11 @@ function setupRoutes(): void {
   app.get('/api/compatibility', createDiscoveryRequestRateLimiter(), statusRoutes.getCompatibility);
   // MCP authenticates its own bearer tokens before the shared API guard.
   mountMcp(app, { db, taskQueue, redisClient, runtimeBuildQueue });
+  // Worker-only: run-scoped MCP grants for agent containers, authenticated by
+  // an HMAC signed with SYSTEM_TASK_SECRET instead of a browser session.
+  const agentRunInternalRoutes = createAgentRunInternalRoutes({ database: db });
+  app.post('/api/internal/agent-runs/:runId/mcp-grants', createDiscoveryRequestRateLimiter(), agentRunInternalRoutes.issueGrant);
+  app.post('/api/internal/agent-runs/:runId/mcp-grants/revoke', createDiscoveryRequestRateLimiter(), agentRunInternalRoutes.revokeGrant);
   registerDesktopApiBoundary(app, {
     discovery: statusRoutes.getDesktopDiscovery,
     startPairing: desktopAuthRoutes.startPairing,
@@ -394,11 +402,13 @@ function setupRoutes(): void {
   const activeWorkRoutes = createActiveWorkRoutes({ db, taskQueue });
   const taskSubmissionRoutes = createTaskSubmissionRoutes({ db });
   const goalRoutes = createGoalRoutes({ db, taskQueue, redisClient });
+  const agentDefinitionRoutes = createAgentDefinitionRoutes({ db, redisClient });
 
   app.use([...GOAL_TASK_GUARD_MOUNTS], goalRoutes.requireGoalTaskOwnership);
 
   const operationalRoutes = createOperationalRouteEntries({
     activeWorkRoutes,
+    agentDefinitionRoutes,
     dashboardRoutes,
     dockerRoutes,
     executionRoutes,
@@ -430,6 +440,7 @@ function setupRoutes(): void {
     taskSubmissionUpload,
     goalAttachmentUpload,
     attachmentUpload,
+    agentDefinitionAttachmentUpload,
   });
   const routes = [
     ...operationalRoutes,

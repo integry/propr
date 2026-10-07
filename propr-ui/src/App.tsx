@@ -31,6 +31,7 @@ import { useCurrentUserBootstrap } from './hooks/useCurrentUserBootstrap'
 import { DesktopTaskNotificationAdapter } from './desktop/DesktopTaskNotificationAdapter'
 import {
   AccessManagementPage,
+  AgentsPage,
   AiAgentsPage,
   AnalyticsPage,
   Dashboard,
@@ -223,6 +224,10 @@ const AppContent: React.FC = () => {
                     />
                     <Route path="/goals" element={<Layout><GoalsPage /></Layout>} />
                     <Route path="/goals/:goalId" element={<Layout><GoalsPage /></Layout>} />
+                    <Route path="/agents" element={<Layout><AgentsPage /></Layout>} />
+                    <Route path="/agents/new" element={<Layout><AgentsPage isNew /></Layout>} />
+                    <Route path="/agents/:definitionId" element={<Layout><AgentsPage /></Layout>} />
+                    <Route path="/agents/:definitionId/runs/:runId?" element={<Layout><AgentsPage section="runs" /></Layout>} />
                     <Route
                       path="/studio/new"
                       element={

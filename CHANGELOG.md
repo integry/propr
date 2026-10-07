@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agents (v1)**: saved, reusable definitions (prompt, input files,
+  repositories, agent and model, previous reports, capabilities, schedule and
+  autonomy) that run as an isolated task and produce a free-form Markdown
+  report. Runs start from **Run now** on the new **Agents** page, a UTC 5-field
+  cron schedule (at most every 15 minutes, fired once per slot by the daemon),
+  `POST /api/agent-definitions/:id/runs` with an `Idempotency-Key`, the MCP
+  tool `trigger_agent_run`, or `propr automation run` (alias
+  `propr automations`). Capabilities `repository_read`, `web` and `propr_mcp`
+  are switched separately: Claude Code and Codex enforce `web` natively, other
+  runtimes only best effort, and `propr_mcp` requires Claude Code or Codex.
+  Autonomy `dry_run` only reports. `preview` waits for **Approve and act** or
+  **Reject**, and `auto` acts at once. Acting is a separate agent run limited to
+  ProPR MCP tools with `read`/`plan`/`execute` scope on the definition's
+  repositories. It never merges, deploys, changes settings or triggers agents
+  (`AGENT_RECURSION_FORBIDDEN`). Agent runs never commit or push. Their
+  delegated MCP grants are signed with `SYSTEM_TASK_SECRET`, revoked when each
+  step ends and expire after two hours. Unattended runs are cost-gated on
+  Agent Tank usage (`agent_run_usage_pause_percent`, default 90): they are
+  deferred for a session window (up to 6 times), skipped for a weekly one, and
+  proceed when no usage data is available. New MCP tools:
+  `list_agent_definitions`, `get_agent_definition`,
+  `get_agent_definition_contract`, `list_agent_runs`, `get_agent_run`,
+  `trigger_agent_run`, `approve_agent_run`, `reject_agent_run`. New optional
+  environment variables `PROPR_INTERNAL_API_URL` and `PROPR_AGENT_MCP_URL`.
+  Event triggers, per-action-kind autonomy and schedule time zones are deferred.
+  See the [Agents guide](docs/docs/features/agents.md).
+- **Restricted network egress for agent containers**: a new `restricted`
+  network mode starts agent containers with `--network none` and routes their
+  traffic through a per-run allowlist proxy on the worker, reached through a
+  Unix socket mounted into the container. It needs no privileged containers or
+  `NET_ADMIN`. The proxy resolves DNS on the worker and allows the agent's
+  provider API, GitHub, npm and PyPI hosts, plus hosts added by the instance
+  (`agent_network_allow`) and by `.propr/workflow.yml` (`network.allow`, exact
+  hosts, `*.domain` wildcards or `host:port`). The instance sets the default
+  mode (`agent_network_mode`, env `AGENT_NETWORK_MODE`, default `open`) and can
+  enforce restricted mode (`agent_network_mode_enforced`), in which case a
+  repository's `network.mode: open` is ignored, and can also ignore the hosts
+  repositories add (`agent_network_ignore_repository_allow`). The proxy refuses
+  loopback, private and link-local addresses (including their IPv4-mapped and
+  NAT64 forms), named directly or reached through a hostname, unless the
+  instance lists that address as an IP literal. A name with several addresses
+  is tried address by address, alternating IPv6 and IPv4, so a worker without
+  IPv6 still reaches dual-stack hosts. Settings → Automation → Agent
+  network, `propr setting update` and MCP `update_execution_settings` manage the
+  instance policy. Each restricted run ends with one timeline event listing the
+  mode and every denied host with its attempt count; the task detail shows it.
+  Claude Code, Codex, OpenCode and Vibe run behind the proxy. Antigravity is not
+  verified to honour proxy variables, so its containers fall back to open
+  networking with a timeline warning, or are refused when restricted mode is
+  enforced. Proxies close with their container, and the worker removes socket
+  directories left by dead workers. Containerized workers need
+  `PROPR_EGRESS_SOCKET_DIR` (default `/tmp/propr-egress`) shared with the Docker
+  host; the bundled Compose files and launcher mount it, and each worker checks
+  once, with a throwaway container, that the Docker host shares it, logging an
+  actionable warning otherwise. IP-literal entries match an IPv6 address in any
+  spelling. The base list includes GitHub's Git LFS object hosts, and a
+  restricted Claude Code container gets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+  so telemetry and update checks are not attempted and denied.
 - **Dashboard HTTP API reference and a documented `@propr/client`**:
   `npm run gen:openapi` generates an OpenAPI 3.1 spec,
   `docs/static/openapi/propr-api.yaml`, from the API route registry and the
@@ -227,6 +285,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open the LLM log for that model. The toolbar shows the repository scope as a locked
   `All Repos`. `GET /api/stats/overview` adds `model_usage`, a per-model list
   of tasks, tokens and cost, and `usage.input_tokens` / `usage.output_tokens`.
+
+### Removed
+
+- **`scripts/init-firewall.sh`**: the iptables firewall script shipped in the
+  agent image needed privileged containers, so no entrypoint ever ran it. The
+  script, the `iptables` package it needed and the entrypoints' "Skipping
+  firewall setup" lines are gone; restricted network mode replaces it.
 
 ### Fixed
 

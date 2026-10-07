@@ -1,6 +1,5 @@
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Download, Loader2 } from 'lucide-react';
 import { PlannerDraft, createDraft, GenerationTrace, getRepoBranches } from '../../api/proprApi';
 import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
@@ -11,7 +10,11 @@ import { useToast } from '../ui/useToast';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
-import { GranularityPills } from './ComposerControls';
+import { SetupComposerFooter, MobileGenerateDock } from './SetupComposerFooter';
+import { ContextLevelSlider } from './ContextLevelSlider';
+import { ContextRepositoriesSection } from './ContextRepositoriesSection';
+import { CostPreview } from './CostPreview';
+import { SmartFileSelection } from './SmartFileSelection';
 import { GenerateButtonContent, ModelSelector } from './SetupWizardComponents';
 import { getEstimatedIssueText } from './setupWizardUtils';
 import type { RepoSelection } from '../RepositorySelector';
@@ -107,8 +110,45 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const handleExcludeFile = appendConfigArrayValue(setConfig, 'excludedFiles');
   const isGenerating = generationPolling.isGenerating || generationHandlers.isStartingGeneration;
   const isMobile = useIsMobile(768);
-  const stats = contextRefresh.preview.data?.stats;
   const showPreviewProgress = shouldShowPreviewProgress(isGenerating, isMobile);
+  const smartSelection = contextRefresh.preview.data?.smartSelection;
+  // On a phone the context pane's controls become rows of the one settings group under the prompt.
+  const mobileSettingsRows = isMobile ? [
+    <ContextLevelSlider key="scope" compact value={config.contextLevel} onChange={setContextLevel} modelMaxTokens={contextRefresh.preview.data?.stats.modelMaxContextTokens} />,
+    <ContextRepositoriesSection key="repos" compact repositories={config.contextRepositories} availableRepos={availableRepos} onAdd={handleAddContextRepo} onRemove={handleRemoveContextRepo} />,
+    // The cost states draw their own top rule for the desktop pane; the group's divider replaces it here.
+    <div key="cost" data-testid="setup-cost-row" className="text-xs [&>div:first-child]:border-t-0 [&>div:first-child]:pt-0">
+      <CostPreview
+        preview={contextRefresh.preview}
+        contextRepositories={config.contextRepositories}
+        isContextStale={contextRefresh.isContextStale}
+        timeUntilRefresh={contextRefresh.timeUntilRefresh}
+        onManualRefresh={promptTrimmed ? handleManualRefresh : undefined}
+        isNewMode={isNewMode}
+        previewTrace={previewTrace}
+        showPreviewProgress={showPreviewProgress}
+      />
+    </div>,
+  ] : [];
+  const generateAction = {
+    onGenerate: isDemoMode ? undefined : handleGenerate,
+    generateDisabled: isGenerateDisabled,
+    generateLabel: isDemoMode ? 'Read-only demo' : <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />,
+    generateTitle: isDemoMode ? 'Demo mode is read-only' : undefined,
+  };
+  const composerFooter = (
+    <SetupComposerFooter
+      stacked={isMobile}
+      extraSettingsRows={mobileSettingsRows}
+      granularity={config.granularity}
+      onGranularityChange={setGranularity}
+      modelSelector={<ModelSelector agents={agents} generationModel={config.generationModel} onModelChange={handleModelChange} disabled={isGenerating} fullWidth={isMobile} hideLabel={isMobile} />}
+      onExport={handleExportContext}
+      isExporting={contextExport.isExporting}
+      exportDisabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
+      {...generateAction}
+    />
+  );
   return (
     <div className="h-full flex flex-col bg-white">
       <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-auto">
@@ -147,11 +187,12 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           manualFiles={config.manualFiles}
           onAddManualFile={handleAddManualFile}
           onRemoveManualFile={handleRemoveManualFile}
+          composerFooter={isMobile ? undefined : composerFooter}
         />
-        <SetupWizardRightPane
+        {!isMobile && <SetupWizardRightPane
           contextLevel={config.contextLevel}
           onContextLevelChange={setContextLevel}
-          smartSelection={contextRefresh.preview.data?.smartSelection}
+          smartSelection={smartSelection}
           isPreviewLoading={contextRefresh.preview.isLoading}
           contextRepositories={config.contextRepositories}
           availableRepos={availableRepos}
@@ -165,53 +206,16 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           previewTrace={previewTrace}
           showPreviewProgress={showPreviewProgress}
           onExcludeFile={handleExcludeFile}
-        />
-      </div>
-      <div className="mobile-safe-action-area sticky bottom-0 z-20 flex-shrink-0 px-3 md:px-6 pt-2 md:py-4 bg-gray-100 border-t border-gray-300">
-        <div className="flex flex-col gap-2 md:gap-4">
-          <div className="flex min-w-0 max-w-full items-center gap-2 overflow-x-auto">
-            <span className="text-xs sm:text-sm text-gray-500 whitespace-nowrap">Break plan:</span>
-            <GranularityPills
-              value={config.granularity}
-              onChange={setGranularity}
-              hideEstimate
-            />
+        />}
+        {/* A phone runs the form edge to edge on the white page: prompt, settings rows, then the files found. */}
+        {isMobile && <div data-testid="composer-footer">{composerFooter}</div>}
+        {isMobile && !!smartSelection?.length && (
+          <div className="border-b border-slate-100">
+            <SmartFileSelection smartSelection={smartSelection} onExcludeFile={handleExcludeFile} />
           </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3 md:gap-4">
-            <button
-              onClick={isDemoMode ? undefined : handleGenerate}
-              disabled={isGenerateDisabled}
-              title={isDemoMode ? 'Demo mode is read-only' : undefined}
-              className="flex max-w-full items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 md:px-6 py-2 md:py-2.5 text-white text-sm sm:text-base font-medium rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex-shrink-0"
-              style={{ backgroundColor: isGenerateDisabled ? undefined : 'rgb(29, 138, 138)' }}
-              onMouseEnter={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(24, 118, 118)'; }}
-              onMouseLeave={(e) => { if (!isGenerateDisabled) e.currentTarget.style.backgroundColor = 'rgb(29, 138, 138)'; }}
-            >
-              {isDemoMode ? 'Read-only demo' : <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />}
-            </button>
-            <ModelSelector
-              agents={agents}
-              generationModel={config.generationModel}
-              onModelChange={handleModelChange}
-              modelName={stats?.modelName}
-              disabled={isGenerating}
-            />
-            <button
-              onClick={handleExportContext}
-              disabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
-              className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-gray-500 hover:text-gray-700 hover:bg-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm ml-auto"
-              title="Export context as XML"
-            >
-              {contextExport.isExporting ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Download className="w-4 h-4" />
-              )}
-              <span>Export Context</span>
-            </button>
-          </div>
-        </div>
+        )}
       </div>
+      {isMobile && <MobileGenerateDock {...generateAction} />}
     </div>
   );
 };

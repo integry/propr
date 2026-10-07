@@ -51,6 +51,7 @@ import { queryTaskSummaries } from './taskListing.js';
 import { addVisualPreviewTools, type VisualPreviewToolServices } from './toolsPreviews.js';
 import { resolveUltrafixGoal, ultrafixGoalSchema } from './ultrafix.js';
 import { addImprovementTools, expireStaleImprovements, type RepoImprovementsToolServices } from './toolsImprovements.js';
+import { addAgentRunTools, trackAgentRunOperation, type AgentRunToolServices } from './toolsAgentRuns.js';
 
 export { applyTaskVisibility } from './taskListing.js';
 
@@ -93,9 +94,11 @@ export interface McpTool {
   permission?: InstancePermission;
   /** `optional` opts one arm of an exactly-one-of schema out of the target check; the default fails closed. */
   target?: { table: string; column: string; arg: string; owner?: string; optional?: boolean };
-  run: (context: ToolContext) => Promise<OperationResult>;
+  /** Tool-specific authorization checked before dispatch, so a denial never records a mutation receipt. */
+  authorize?: (context: Pick<ToolContext, 'principal' | 'args'>) => Promise<void>;
+  run:  (context: ToolContext) => Promise<OperationResult>;
 }
-export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices }
+export interface ToolDeps { db: Knex; taskQueue: Queue; redisClient: RedisClientType; runtimeBuildQueue: Queue; policy: McpPolicy; taskSubmissionServices?: Parameters<typeof createTaskSubmissionRoutes>[0]['services']; goalServices?: Omit<Parameters<typeof createGoalRoutes>[0], 'db' | 'taskQueue' | 'redisClient'>; visualPreviews?: VisualPreviewToolServices; repoImprovements?: RepoImprovementsToolServices; agentRuns?: AgentRunToolServices }
 export const ok = (data: unknown): OperationResult => ({ status: 200, data });
 
 export { markMergedPullRequests, markMergedListPullRequests };
@@ -186,6 +189,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
   addDocsTools(tools, deps);
   addVisualPreviewTools(tools, deps);
   addImprovementTools(tools, deps);
+  addAgentRunTools(tools, deps);
 
   tools.push({ name: 'list_goals', description: 'List compact goal summaries, progress, runtime and pull request context. Omit repository to list every repository in this grant; filter with state to see only what is still running.', scope: 'read', readOnly: true, schema: z.object({ ...listScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
     const query = db('goals').where({ owner_id: principal.user.id });
@@ -362,6 +366,7 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
     await trackExecution(deps, row, principal, receipt);
     await trackCancellation(deps, row, principal, receipt);
     await refreshPlanImplementation(row, result, receipt);
+    await trackAgentRunOperation(deps, row, principal, receipt);
     await syncReceiptLifecycle(operations, row, receipt, !!unavailableOutcome);
     const durableRow = await operations.get(principal, row.id);
     const durableReceipt = operations.project(durableRow);

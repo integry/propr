@@ -3,8 +3,9 @@ import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
 import { AgentRegistry, getActiveRunCostGuard, getAuthenticatedOctokit, getModelName, loadPrReviewModel, RepositoryWorkflowPolicyError, resolveLlmLabel, retryConfigs, TaskStates, withRetry } from '@propr/core';
 import { prepareRepositoryWorkflow } from './repositoryWorkflow.js';
+import { runWithNetworkPolicy } from './networkEgress.js';
 import { applyWorkflowCostCap } from './runCostCap.js';
-import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
+import type { ResolvedRepositoryWorkflow, WorkerStateManager, WorktreeInfo } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { resolvePrReasoningLevelOverride, updateTaskTitleForPR } from './prCommentJobHelpers.js';
 import { buildCombinedComment, fetchOriginalContributionDiscussion } from './prCommentJobUtils.js';
@@ -56,6 +57,8 @@ interface ProcessingState {
     authorsText: string;
     unprocessedComments: UnprocessedComment[];
     startingWorkComment: { data: { id: number; html_url: string; user?: { login: string } | null } } | null;
+    /** The admitted policy, whose `network` block the review's containers follow. */
+    repositoryWorkflow?: ResolvedRepositoryWorkflow;
 }
 
 export interface ExecuteReviewParams {
@@ -236,29 +239,31 @@ async function handleSkippedPRValidation(
 }
 
 /**
- * Reviews do not run the repository workflow, but its spend cap still applies.
- * A missing or invalid workflow leaves the task and instance caps in force; a
- * workflow that cannot be read fails the review before any agent starts, unless
- * the task override (which outranks it) already sets the cap.
+ * Reviews do not run the repository workflow, but its spend cap and its
+ * `network` block apply. A missing or invalid workflow leaves the task and
+ * instance caps and the instance network policy in force; a workflow that
+ * cannot be read fails the review before any agent starts, since it may
+ * restrict the review's network or cap its spend.
  */
-export async function applyReviewWorkflowCostCap(
+export async function prepareReviewRepositoryWorkflow(
     octokit: Parameters<typeof prepareRepositoryWorkflow>[0]['octokit'],
     prData: { data: object },
     context: Pick<PRJobContext, 'repoOwner' | 'repoName' | 'correlationId' | 'correlatedLogger'>,
     loadWorkflow: typeof prepareRepositoryWorkflow = prepareRepositoryWorkflow,
-): Promise<void> {
-    const guard = getActiveRunCostGuard();
-    if (!guard || guard.cap?.source === 'override') return;
+): Promise<ResolvedRepositoryWorkflow | undefined> {
     const baseBranch = (prData.data as { base?: { ref?: string } }).base?.ref ?? null;
     let workflow: Awaited<ReturnType<typeof prepareRepositoryWorkflow>>;
     try {
         workflow = await loadWorkflow({ octokit, repoOwner: context.repoOwner, repoName: context.repoName, baseBranch, correlationId: context.correlationId });
     } catch (error) {
         if (!(error instanceof RepositoryWorkflowPolicyError)) throw error;
-        context.correlatedLogger.warn({ error: error.message }, 'Ignoring the invalid repository workflow spend cap for this review');
-        return;
+        context.correlatedLogger.warn({ error: error.message }, 'Ignoring the invalid repository workflow (spend cap and network block) for this review');
+        return undefined;
     }
-    await applyWorkflowCostCap(workflow);
+    // A task override outranks the workflow cap.
+    const guard = getActiveRunCostGuard();
+    if (guard && guard.cap?.source !== 'override') await applyWorkflowCostCap(workflow);
+    return workflow;
 }
 
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {
@@ -273,7 +278,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;
     state.unprocessedComments = validUnprocessed!;
     llm = resolvedLlm;
-    await applyReviewWorkflowCostCap(state.octokit, prData!, context);
+    state.repositoryWorkflow = await prepareReviewRepositoryWorkflow(state.octokit, prData!, context);
     const { combinedCommentBody, commentAuthors } = buildCombinedComment(state.unprocessedComments);
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
     const taskUrl = getWebUiTaskUrl(taskId);
@@ -357,68 +362,68 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         });
     }
 
-    let relatedContext = '';
-    if (reviewContextEnabled) {
-        try {
-            relatedContext = await prepareRelatedReviewContext({
-                registry,
-                fallbackAssignment: routedAssignments[0] ?? assignments[0],
-                configuredModel: reviewContextModel,
-                fastAnalysisModel,
-                state,
-                githubToken: githubToken.token,
-                // The reviewed head decides the repository, so a fork PR is scouted in
-                // the contributor's repository rather than a same-named base branch.
-                target: resolvePullRequestGitTarget(prData!.data.head, { repoOwner, repoName }),
-                headSha: prData!.data.head.sha,
-                prDiff,
-                changedFiles: changedFilePaths,
-                originalTaskSpec,
-                pullRequestNumber,
-                repoOwner,
-                repoName,
-                taskId,
-                correlationId,
-                correlatedLogger,
-            });
-        } catch (scoutError) {
-            correlatedLogger.warn({
-                pullRequestNumber,
-                error: (scoutError as Error).message,
-            }, 'PR review context scout failed; continuing with deterministic review context');
+    // The scout and every reviewer run under the run's network policy, like implementation agents.
+    const { octokit, startingWorkComment } = state;
+    const reviewResults = await runWithNetworkPolicy({ workflow: state.repositoryWorkflow, taskId, correlatedLogger }, async () => {
+        let relatedContext = '';
+        if (reviewContextEnabled) {
+            try {
+                relatedContext = await prepareRelatedReviewContext({
+                    registry,
+                    fallbackAssignment: routedAssignments[0] ?? assignments[0],
+                    configuredModel: reviewContextModel,
+                    fastAnalysisModel,
+                    state,
+                    githubToken: githubToken.token,
+                    // The reviewed head decides the repository, so a fork PR is scouted in
+                    // the contributor's repository rather than a same-named base branch.
+                    target: resolvePullRequestGitTarget(prData!.data.head, { repoOwner, repoName }),
+                    headSha: prData!.data.head.sha,
+                    prDiff,
+                    changedFiles: changedFilePaths,
+                    originalTaskSpec,
+                    pullRequestNumber,
+                    repoOwner,
+                    repoName,
+                    taskId,
+                    correlationId,
+                    correlatedLogger,
+                });
+            } catch (scoutError) {
+                correlatedLogger.warn({
+                    pullRequestNumber,
+                    error: (scoutError as Error).message,
+                }, 'PR review context scout failed; continuing with deterministic review context');
+            }
+        } else {
+            correlatedLogger.info({ pullRequestNumber }, 'PR review context scout disabled by settings');
         }
-    } else {
-        correlatedLogger.info({ pullRequestNumber }, 'PR review context scout disabled by settings');
-    }
 
-    const reviewCtx: RunReviewsContext = {
-        registry, octokit: state.octokit, pullRequestNumber, repoOwner, repoName,
-        taskId, taskUrl, combinedCommentBody, reviewedHead: prData!.data.head.sha,
-        // Prior review prose must never become an expanded Ultrafix objective.
-        commentHistory: (job.data.ultrafixMeta ? '' : commentHistory) + originalDiscussion,
-        originalTaskSpec,
-        commandInstructions: job.data.commandInstructions,
-        preparedDiff,
-        tokenStats: new ReviewTokenStatsCache(),
-        changedFilePaths,
-        findingStartNumber: 1,
-        suggestionStartNumber: 1,
-        redisClient,
-        fileContents, relatedContext, checkSummary, hasCurrentCheckFailure,
-        reviewPromptOverride,
-        reviewBudgetSettings: {
-            percent: reviewContextBudgetPercent,
-            legacyMaxContextTokens: configuredReviewMaxContextTokens,
-        },
-        reasoningLevel: job.data.reasoningLevel,
-        correlatedLogger,
-    };
+        const reviewCtx: RunReviewsContext = {
+            registry, octokit, pullRequestNumber, repoOwner, repoName,
+            taskId, taskUrl, combinedCommentBody, reviewedHead: prData!.data.head.sha,
+            // Prior review prose must never become an expanded Ultrafix objective.
+            commentHistory: (job.data.ultrafixMeta ? '' : commentHistory) + originalDiscussion,
+            originalTaskSpec,
+            commandInstructions: job.data.commandInstructions,
+            preparedDiff,
+            tokenStats: new ReviewTokenStatsCache(),
+            changedFilePaths,
+            findingStartNumber: 1,
+            suggestionStartNumber: 1,
+            redisClient,
+            fileContents, relatedContext, checkSummary, hasCurrentCheckFailure,
+            reviewPromptOverride,
+            reviewBudgetSettings: {
+                percent: reviewContextBudgetPercent,
+                legacyMaxContextTokens: configuredReviewMaxContextTokens,
+            },
+            reasoningLevel: job.data.reasoningLevel,
+            correlatedLogger,
+        };
 
-    const reviewResults = await runReviewRoutingOutcomes(
-        routingOutcomes,
-        reviewCtx,
-        getNextAuthenticatedReviewRecordNumbers(allComments, state.startingWorkComment.data.user?.login),
-    );
+        return runReviewRoutingOutcomes(routingOutcomes, reviewCtx, getNextAuthenticatedReviewRecordNumbers(allComments, startingWorkComment.data.user?.login));
+    });
 
     const finalState = await stateManager.getTaskState(taskId);
     if (finalState?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: finalState.terminalReason };

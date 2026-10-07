@@ -289,7 +289,7 @@ function parseIssueNumberParam(req: FlatRequest, res: Response): number | null {
   }
   return issueNumber;
 }
-function sendImplementIssueError(res: Response, error: unknown): void {
+export function sendImplementIssueError(res: Response, error: unknown): void {
   if (error instanceof ContextConfigParseError) {
     res.status(409).json({ error: error.message });
     return;

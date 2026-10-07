@@ -16,13 +16,20 @@ import {
 } from '../packages/api/routes/liveDetailsRoutes.ts';
 import { parseRedisOutput } from '../packages/api/services/redisOutputParser.ts';
 
-/** No stored watchdog overrides: the environment defaults (unset here) apply. */
+/** No stored watchdog or network overrides: the environment defaults (unset here) apply. */
 const DEFAULT_WATCHDOG_SETTINGS_RESPONSE = {
     agent_stall_timeout_ms: null,
     agent_tool_stall_timeout_ms: null,
     agent_degenerate_output_limit: null,
     agent_watchdog_defaults: { agent_stall_timeout_ms: 600_000, agent_tool_stall_timeout_ms: 1_800_000, agent_degenerate_output_limit: 50 },
     agent_watchdog_effective: { agent_stall_timeout_ms: 600_000, agent_tool_stall_timeout_ms: 1_800_000, agent_degenerate_output_limit: 50 },
+    // No stored network overrides: the default open policy applies.
+    agent_network_mode: null,
+    agent_network_mode_enforced: null,
+    agent_network_allow: null,
+    agent_network_ignore_repository_allow: null,
+    agent_network_defaults: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [], agent_network_ignore_repository_allow: false },
+    agent_network_effective: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [], agent_network_ignore_repository_allow: false },
 };
 
 after(async () => {
@@ -1171,6 +1178,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
             default_max_cost_usd: 0,
+            agent_run_usage_pause_percent: 90,
             ultrafix_ci_wait_timeout_ms: 7200000,
             ultrafix_escalation_enabled: false,
             ultrafix_escalation_models: [],
@@ -1262,6 +1270,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
             default_max_cost_usd: 0,
+            agent_run_usage_pause_percent: 90,
             ultrafix_ci_wait_timeout_ms: 7200000,
             ultrafix_escalation_enabled: false,
             ultrafix_escalation_models: [],
@@ -1345,6 +1354,7 @@ describe('config route follow-up helpers', () => {
             ultrafix_max_cycles: 9,
             ultrafix_pause_seconds: 12,
             default_max_cost_usd: 0,
+            agent_run_usage_pause_percent: 90,
             ultrafix_ci_wait_timeout_ms: 7200000,
             ultrafix_escalation_enabled: false,
             ultrafix_escalation_models: [],
@@ -3058,6 +3068,7 @@ describe('config route follow-up helpers', () => {
                 ultrafix_max_cycles: 5,
                 ultrafix_pause_seconds: 60,
                 default_max_cost_usd: 0,
+                agent_run_usage_pause_percent: 90,
                 ultrafix_ci_wait_timeout_ms: 7200000,
                 ultrafix_escalation_enabled: false,
                 ultrafix_escalation_models: [],

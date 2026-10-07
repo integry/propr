@@ -2,6 +2,7 @@ import type { Express, RequestHandler } from 'express';
 import type {
   createAdminRoutes,
   createAdminMcpRoutes,
+  createAgentDefinitionRoutes,
   createAgentLoginRoutes,
   createAgentRuntimeRoutes,
   createAgentVersionRoutes,
@@ -66,6 +67,7 @@ interface ManagementRouteDeps {
 
 interface OperationalRouteDeps {
   activeWorkRoutes: ReturnType<typeof createActiveWorkRoutes>;
+  agentDefinitionRoutes: ReturnType<typeof createAgentDefinitionRoutes>;
   dashboardRoutes: ReturnType<typeof createDashboardRoutes>;
   dockerRoutes: ReturnType<typeof createDockerRoutes>;
   executionRoutes: ReturnType<typeof createExecutionRoutes>;
@@ -98,6 +100,7 @@ interface OperationalRouteDeps {
   taskSubmissionUpload: RequestHandler;
   goalAttachmentUpload: RequestHandler;
   attachmentUpload: RequestHandler;
+  agentDefinitionAttachmentUpload: RequestHandler;
 }
 
 interface MemberCatalogRouteDeps {
@@ -193,6 +196,7 @@ export function createManagementRouteEntries({
 export function createOperationalRouteEntries(deps: OperationalRouteDeps): RouteEntry[] {
   const {
     activeWorkRoutes,
+    agentDefinitionRoutes,
     dashboardRoutes,
     dockerRoutes,
     executionRoutes,
@@ -224,6 +228,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     taskSubmissionUpload,
     goalAttachmentUpload,
     attachmentUpload,
+    agentDefinitionAttachmentUpload,
   } = deps;
   return [
     ['get', '/api/desktop/active-work', activeWorkRoutes.getActiveWork],
@@ -246,6 +251,21 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['patch', '/api/goals/:goalId/model', goalRoutes.requestModel],
     ['post', '/api/goals/:goalId/input', goalAttachmentUpload, goalRoutes.input],
     ['get', '/api/goals/:goalId/attachments/:attachmentId', goalRoutes.attachment],
+    ['get', '/api/agent-definitions', agentDefinitionRoutes.list],
+    ['get', '/api/agent-definitions/contract', agentDefinitionRoutes.contract],
+    ['post', '/api/agent-definitions', agentDefinitionRoutes.create],
+    ['get', '/api/agent-definitions/:id', agentDefinitionRoutes.get],
+    ['patch', '/api/agent-definitions/:id', agentDefinitionRoutes.update],
+    ['delete', '/api/agent-definitions/:id', agentDefinitionRoutes.remove],
+    ['post', '/api/agent-definitions/:id/attachments', agentDefinitionAttachmentUpload, agentDefinitionRoutes.uploadAttachments],
+    ['delete', '/api/agent-definitions/:id/attachments/:attachmentId', agentDefinitionRoutes.deleteAttachment],
+    ['post', '/api/agent-definitions/:id/runs', agentDefinitionRoutes.triggerRun],
+    ['get', '/api/agent-definitions/:id/capacity', agentDefinitionRoutes.capacity],
+    ['get', '/api/agent-definitions/:id/runs', agentDefinitionRoutes.listRuns],
+    ['get', '/api/agent-runs/:runId', agentDefinitionRoutes.getRun],
+    ['post', '/api/agent-runs/:runId/cancel', agentDefinitionRoutes.cancelRun],
+    ['post', '/api/agent-runs/:runId/approve', agentDefinitionRoutes.approveRun],
+    ['post', '/api/agent-runs/:runId/reject', agentDefinitionRoutes.rejectRun],
     ['get', '/api/status', statusRoutes.getStatus],
     ['get', '/api/tasks', taskRoutes.getTasks],
     ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview],
@@ -285,6 +305,8 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/planner/drafts/:id/issues', plannerRoutes.getIssues],
     ['post', '/api/planner/drafts/:id/issues/:issueNumber/implement', plannerRoutes.implementIssue],
     ['patch', '/api/planner/drafts/:id/issues/:issueNumber', plannerRoutes.updateIssue],
+    ['get', '/api/planner/drafts/:id/execution-queue', plannerRoutes.getExecutionQueue],
+    ['post', '/api/planner/drafts/:id/execution-queue', plannerRoutes.queueRemaining],
     ['post', '/api/planner/context/stats', plannerRoutes.getContextStats],
     ['post', '/api/planner/preview', plannerRoutes.previewContext],
     ['post', '/api/planner/preview/context', plannerRoutes.downloadContext],

@@ -3,6 +3,7 @@ import { History, Loader2, RotateCcw, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getPlanRevision, listPlanRevisions, type PlanRevision, type PlanRevisionSummary } from '../../api/proprApi';
 import { describeRevision, describeRevisionCause } from './planRevisionLabels';
+import { getOutlineTitle } from './planDisplayName';
 
 interface PlanHistoryDialogProps {
   isOpen: boolean;
@@ -151,7 +152,7 @@ export const PlanHistoryDialog: React.FC<PlanHistoryDialogProps> = ({ isOpen, dr
                   <ol className="space-y-3">
                     {selected.plan.map((task, index) => (
                       <li key={task.id ?? index} className="border border-gray-200 rounded-md p-3">
-                        <div className="text-sm font-semibold text-gray-900">{index + 1}. {task.title}</div>
+                        <div className="text-sm font-semibold text-gray-900">{index + 1}. {getOutlineTitle(task.title)}</div>
                         <p className="mt-1 text-xs text-gray-600 whitespace-pre-wrap line-clamp-6">{task.body}</p>
                       </li>
                     ))}

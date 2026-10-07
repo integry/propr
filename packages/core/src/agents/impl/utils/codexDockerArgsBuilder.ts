@@ -1,6 +1,7 @@
 import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../agentGitAccess.js';
 import logger from '../../../utils/logger.js';
-import type { AgentConfig } from '../../types.js';
+import type { AgentConfig, AgentToolPolicy } from '../../types.js';
+import { codexToolPolicyArgs } from '../../agentToolPolicy.js';
 import {
     assertCodexConfigPathAvailable,
     resolveCodexConfigPath,
@@ -63,7 +64,7 @@ export function resolveCodexStreamConfig(
     };
 }
 
-function buildCodexStreamConfigArgs(config: CodexStreamConfig): string[] {
+export function buildCodexStreamConfigArgs(config: CodexStreamConfig): string[] {
     if (config.transport === 'inherit') return [];
 
     return [
@@ -114,6 +115,8 @@ export interface CodexDockerArgsParams {
     repositoryInspection?: boolean;
     executionMode?: 'task' | 'goal';
     resumeSessionId?: string;
+    /** Per-run web/MCP policy; its tokens must reach the docker process through `extraEnvVars`. */
+    toolPolicy?: AgentToolPolicy;
 }
 
 function resolveTaskType(params: CodexDockerArgsParams): string {
@@ -144,6 +147,7 @@ function buildCodexCliArgs(params: CodexDockerArgsParams, streamConfig: CodexStr
             ]),
         ...buildCodexStreamConfigArgs(streamConfig),
         ...(reasoningLevel ? ['--config', `model_reasoning_effort="${reasoningLevel}"`] : []),
+        ...(params.toolPolicy ? codexToolPolicyArgs(params.toolPolicy).cliArgs : []),
         '--skip-git-repo-check',
         '--cd', '/home/node/workspace',
         ...(isGoalResume ? [resumeSessionId] : []),
@@ -164,10 +168,11 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
     const configPath = resolveCodexConfigPath(config.configPath);
     assertCodexConfigPathAvailable(configPath);
     const workerOwnedGit = !agentOwnsGit(params);
-    const envVars = buildEnvironmentVariableArgs(
-        [config.envVars, environment],
-        true,
-    );
+    const envVars = [
+        ...buildEnvironmentVariableArgs([config.envVars, environment], true),
+        // Name only: docker copies the value from its own environment.
+        ...Object.keys(params.toolPolicy ? codexToolPolicyArgs(params.toolPolicy).env : {}).flatMap(name => ['-e', name]),
+    ];
     const streamConfig = resolveCodexStreamConfig({
         ...process.env,
         ...config.envVars,
