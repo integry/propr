@@ -32,8 +32,9 @@ export interface AdvanceAfterReportDeps {
 
 let defaultGate: AgentRunGate | undefined;
 
-function lowerFirst(text: string): string {
-    return text.charAt(0).toLowerCase() + text.slice(1);
+/** The `skipReason` of a run whose unattended acting step the cost gate held back. */
+export function actingPausedReason(gateReason: string): string {
+    return `Acting paused: ${gateReason.charAt(0).toLowerCase()}${gateReason.slice(1)}`;
 }
 
 const REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
@@ -96,7 +97,7 @@ export async function advanceAfterReport(
                 : null;
             if (decision && decision.action !== 'proceed') {
                 logger.info({ runId: run.id, action: decision.action, reason: decision.reason }, 'Agent run acting step paused by the cost gate');
-                return awaitApproval(`Acting paused: ${lowerFirst(decision.reason)}`);
+                return awaitApproval(actingPausedReason(decision.reason));
             }
             const acting = await transitionRun(run.id, ['report_ready'], 'acting');
             return acting ? startActing(acting) : null;

@@ -13,6 +13,7 @@ import {
   listAgentRuns,
   listDueDeferredRuns,
   listPreviousReports,
+  pauseUnclaimedAgentRunAction,
   rowToAgentRun,
   transitionAgentRun,
   type AgentRunRow,
@@ -208,6 +209,25 @@ describe('agentRunStore', () => {
     assert.equal(claimed?.approvedBy, 'alice');
     assert.equal(await claimAgentRunAction(reported.id, 'other-task', deps()), null);
     assert.equal((await getAgentRunById(reported.id, deps()))?.actionTaskId, 'action-task');
+  });
+
+  test('pauseUnclaimedAgentRunAction returns only an unclaimed, unapproved acting run to awaiting approval', async () => {
+    const auto = await runWithReport('Report');
+    await transitionAgentRun(auto.id, ['report_ready'], 'acting', {}, deps());
+    const paused = await pauseUnclaimedAgentRunAction(auto.id, 'Acting paused: over the threshold.', deps());
+    assert.equal(paused?.state, 'awaiting_approval');
+    assert.equal(paused?.skipReason, 'Acting paused: over the threshold.');
+    assert.equal(await pauseUnclaimedAgentRunAction(auto.id, 'again', deps()), null);
+
+    const approved = await transitionAgentRun(auto.id, ['awaiting_approval'], 'acting', { approvedBy: 'alice' }, deps());
+    assert.equal(approved?.state, 'acting');
+    assert.equal(await pauseUnclaimedAgentRunAction(auto.id, 'approved', deps()), null);
+
+    const claimed = await runWithReport('Report');
+    await transitionAgentRun(claimed.id, ['report_ready'], 'acting', {}, deps());
+    await claimAgentRunAction(claimed.id, 'action-task', deps());
+    assert.equal(await pauseUnclaimedAgentRunAction(claimed.id, 'claimed', deps()), null);
+    assert.equal((await getAgentRunById(claimed.id, deps()))?.state, 'acting');
   });
 
   test('rejects illegal transition pairs as programming errors', async () => {

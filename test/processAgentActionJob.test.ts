@@ -84,6 +84,7 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
   }));
   const buildPrompt = mock.fn(buildAgentActionPrompt);
   const grants = { requested: [] as string[], revoked: [] as string[] };
+  const notified: StoredAgentRun[] = [];
 
   const deps: Partial<AgentActionProcessorDeps> = {
     getRun: async () => current,
@@ -114,8 +115,15 @@ function harness(options: { run?: StoredAgentRun; execute?: (options: AgentTaskO
       },
       revoke: async (_runId, grant) => { grants.revoked.push(grant.grantId); },
     },
+    gate: async () => ({ action: 'proceed' }),
+    pauseAction: async (_runId, skipReason) => {
+      if (current.state !== 'acting' || current.actionTaskId !== null || current.approvedBy !== null) return null;
+      current = { ...current, state: 'awaiting_approval', skipReason };
+      return current;
+    },
+    notifyAwaitingApproval: async waiting => { notified.push(waiting); },
   };
-  return { deps, run: () => current, taskState: () => task, transitions, stateCalls, executeTask, prepareWorkspace, buildPrompt, cleanup, grants };
+  return { deps, run: () => current, taskState: () => task, transitions, stateCalls, executeTask, prepareWorkspace, buildPrompt, cleanup, grants, notified };
 }
 
 describe('processAgentActionJob', () => {
@@ -254,13 +262,67 @@ describe('processAgentActionJob', () => {
     assert.deepEqual(h.grants.requested, []);
   });
 
-  test('the cost gate is re-checked before acting', async () => {
+  test('the cost gate is re-checked before acting and a held-back run waits for approval', async () => {
     const h = harness();
-    h.deps.gate = async () => ({ action: 'skip', reason: 'daily agent budget reached' });
+    const gateCalls: unknown[] = [];
+    h.deps.gate = async input => { gateCalls.push(input); return { action: 'skip', reason: 'Daily agent budget reached.' }; };
     const result = await createAgentActionProcessor(h.deps)(actionJob());
-    assert.equal(result.status, 'failed');
-    assert.equal(h.run().failureReason, 'Acting step not started: daily agent budget reached');
+    assert.equal(result.status, 'skipped');
+    assert.equal(h.run().state, 'awaiting_approval');
+    assert.equal(h.run().skipReason, 'Acting paused: daily agent budget reached.');
+    assert.equal(h.run().failureReason, null);
+    assert.deepEqual(h.notified.map(run => run.id), ['run-1']);
+    assert.equal(gateCalls.length, 1);
+    assert.equal(h.stateCalls.length, 0);
+    assert.deepEqual(h.grants.requested, []);
+    assert.equal(h.prepareWorkspace.mock.callCount(), 0);
     assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('a deferring gate also holds the acting step back for approval', async () => {
+    const h = harness();
+    h.deps.gate = async () => ({ action: 'defer', until: NOW + 60_000, reason: 'Session usage is at 95%.' });
+    const result = await createAgentActionProcessor(h.deps)(actionJob());
+    assert.equal(result.status, 'skipped');
+    assert.equal(h.run().state, 'awaiting_approval');
+    assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('an acting step a human approved is not held back by the cost gate', async () => {
+    const h = harness({ run: actingRun({ autonomyMode: 'preview', approvedBy: 'user-1' }) });
+    let gateCalls = 0;
+    h.deps.gate = async () => { gateCalls += 1; return { action: 'skip', reason: 'Over the threshold.' }; };
+    const result = await createAgentActionProcessor(h.deps)(actionJob());
+    assert.equal(result.status, 'complete');
+    assert.equal(gateCalls, 0);
+    assert.equal(h.executeTask.mock.callCount(), 1);
+  });
+
+  test('a run that left acting while the gate was consulted is not paused', async () => {
+    const h = harness();
+    h.deps.gate = async () => ({ action: 'skip', reason: 'Over the threshold.' });
+    h.deps.pauseAction = async () => null;
+    const result = await createAgentActionProcessor(h.deps)(actionJob());
+    assert.equal(result.status, 'skipped');
+    assert.equal(h.run().state, 'acting');
+    assert.deepEqual(h.notified, []);
+    assert.equal(h.executeTask.mock.callCount(), 0);
+  });
+
+  test('a lost Inbox item does not undo the pause', async () => {
+    const h = harness();
+    h.deps.gate = async () => ({ action: 'skip', reason: 'Over the threshold.' });
+    h.deps.notifyAwaitingApproval = async () => { throw new Error('notifications down'); };
+    const result = await createAgentActionProcessor(h.deps)(actionJob());
+    assert.equal(result.status, 'skipped');
+    assert.equal(h.run().state, 'awaiting_approval');
+  });
+
+  test('the production processor consults the cost gate, and manual runs pass it', async () => {
+    const { defaultAgentActionProcessorDeps } = await import('../src/jobs/processAgentActionJob.ts');
+    assert.equal(typeof defaultAgentActionProcessorDeps.gate, 'function');
+    const decision = await defaultAgentActionProcessorDeps.gate({ definition: definition(), trigger: 'manual', triggerSource: null });
+    assert.deepEqual(decision, { action: 'proceed' });
   });
 
   test('a grant that cannot be issued fails the run without starting the agent', async () => {

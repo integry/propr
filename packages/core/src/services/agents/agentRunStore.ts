@@ -36,7 +36,8 @@ export const MAX_AGENT_RUN_PAGE_SIZE = 200;
  * - running           → report_ready | failed | cancelled
  * - report_ready      → completed (dry_run) | awaiting_approval (preview) | acting (auto) | failed
  * - awaiting_approval → acting (approved) | rejected | cancelled
- * - acting            → completed | failed | cancelled
+ * - acting            → completed | failed | cancelled | awaiting_approval (an unclaimed
+ *                       unattended acting step held back by the cost gate)
  */
 export const AGENT_RUN_TRANSITIONS: Readonly<Record<AgentRunState, readonly AgentRunState[]>> = {
   queued: ['running', 'deferred', 'skipped', 'cancelled', 'failed'],
@@ -44,7 +45,7 @@ export const AGENT_RUN_TRANSITIONS: Readonly<Record<AgentRunState, readonly Agen
   running: ['report_ready', 'failed', 'cancelled'],
   report_ready: ['completed', 'awaiting_approval', 'acting', 'failed'],
   awaiting_approval: ['acting', 'rejected', 'cancelled'],
-  acting: ['completed', 'failed', 'cancelled'],
+  acting: ['completed', 'failed', 'cancelled', 'awaiting_approval'],
   completed: [],
   failed: [],
   skipped: [],
@@ -379,6 +380,24 @@ export async function failUnclaimedAgentRunAction(
   const timestamp = now();
   const [updated] = await database(TABLE).where({ id, state: 'acting' }).whereNull('action_task_id')
     .update({ state: 'failed', failure_reason: failureReason, updated_at: timestamp, finished_at: timestamp })
+    .returning('*') as AgentRunRow[];
+  return updated ? rowToAgentRun(updated) : null;
+}
+
+/**
+ * Returns an unattended `acting` run to `awaiting_approval` with `skipReason`,
+ * but only while no action job has claimed it and no human approved it: the
+ * cost gate held its acting step back before any task or container existed.
+ * Returns the waiting run, or null when the run was claimed, approved or left
+ * `acting` first.
+ */
+export async function pauseUnclaimedAgentRunAction(
+  id: string,
+  skipReason: string,
+  { database = db, now = Date.now }: AgentRunStoreDependencies = {},
+): Promise<StoredAgentRun | null> {
+  const [updated] = await database(TABLE).where({ id, state: 'acting' }).whereNull('action_task_id').whereNull('approved_by')
+    .update({ state: 'awaiting_approval', skip_reason: skipReason, updated_at: now() })
     .returning('*') as AgentRunRow[];
   return updated ? rowToAgentRun(updated) : null;
 }

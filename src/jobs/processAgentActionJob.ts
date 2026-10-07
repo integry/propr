@@ -2,7 +2,9 @@ import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
     claimAgentRunAction,
+    createAgentRunCostGate,
     logger,
+    pauseUnclaimedAgentRunAction,
     TaskStates,
     transitionAgentRun,
     UsageLimitError,
@@ -15,6 +17,7 @@ import {
 } from '@propr/core';
 import { buildAgentActionPrompt } from './agentRuns/actionPrompt.js';
 import { agentTaskOptions } from './agentRuns/agentTaskOptions.js';
+import { actingPausedReason, notifyAgentReportAwaitingApproval } from './agentRuns/autonomy.js';
 import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import { actionSummaryFromResult, AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError } from './agentRuns/runErrors.js';
 import { definitionReadsRepositories, type AgentRunWorkspace, type PrepareAgentRunWorkspace } from './agentRuns/workspace.js';
@@ -44,8 +47,15 @@ export interface AgentActionProcessorDeps extends Pick<AgentRunProcessorDeps,
     claimAction: (runId: string, actionTaskId: string) => Promise<StoredAgentRun | null>;
     prepareWorkspace: PrepareAgentRunWorkspace;
     buildPrompt: typeof buildAgentActionPrompt;
-    /** Cost gate (issue 11): acting after an unattended report is unattended spend too. */
-    gate?: AgentRunGate;
+    /**
+     * Cost gate (issue 11), re-checked for acting steps no human approved:
+     * usage may have crossed the threshold while the action job was queued.
+     */
+    gate: AgentRunGate;
+    /** Returns an unclaimed, unapproved `acting` run to `awaiting_approval`; null when it was claimed or left `acting`. */
+    pauseAction: (runId: string, skipReason: string) => Promise<StoredAgentRun | null>;
+    /** Tells the owner a held-back run waits for approval; best-effort. */
+    notifyAwaitingApproval: (run: StoredAgentRun) => Promise<void>;
 }
 
 export const defaultAgentActionProcessorDeps: AgentActionProcessorDeps = {
@@ -60,6 +70,9 @@ export const defaultAgentActionProcessorDeps: AgentActionProcessorDeps = {
     claimAction: (runId, actionTaskId) => claimAgentRunAction(runId, actionTaskId),
     prepareWorkspace: defaultAgentRunProcessorDeps.prepareWorkspace,
     buildPrompt: buildAgentActionPrompt,
+    gate: createAgentRunCostGate(),
+    pauseAction: (runId, skipReason) => pauseUnclaimedAgentRunAction(runId, skipReason),
+    notifyAwaitingApproval: run => notifyAgentReportAwaitingApproval(run),
 };
 
 export function agentRunActionTaskId(runId: string): string {
@@ -169,9 +182,31 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
         const invalid = await deps.validateDefinition(definition);
         if (invalid) return invalid;
         if (!run.report?.trim()) return MISSING_REPORT_REASON;
-        const decision = await deps.gate?.({ definition, trigger: run.trigger, triggerSource: run.triggerSource });
-        if (decision && decision.action !== 'proceed') return `Acting step not started: ${decision.reason}`;
         return null;
+    }
+
+    /**
+     * The cost gate's reason for holding back an acting step no human approved,
+     * or null when it may start. The gate already let `manual` runs through.
+     */
+    async function capacityHold(run: StoredAgentRun, definition: StoredAgentDefinition): Promise<string | null> {
+        if (run.approvedBy !== null) return null;
+        const decision = await deps.gate({ definition, trigger: run.trigger, triggerSource: run.triggerSource, run });
+        return !decision || decision.action === 'proceed' ? null : decision.reason;
+    }
+
+    /** Hands a held-back acting step back to its owner, before any task or container exists. */
+    async function pauseForApproval(context: ActionContext, gateReason: string): Promise<JobResult> {
+        const { runId, log, correlationId } = context;
+        const reason = actingPausedReason(gateReason);
+        const waiting = await deps.pauseAction(runId, reason);
+        if (!waiting) return taskFollowsRun(context);
+        log.info({ runId, reason }, 'Agent run acting step paused by the cost gate');
+        // The run already waits for its owner; a lost Inbox item must not undo that.
+        await deps.notifyAwaitingApproval(waiting).catch(error => {
+            log.warn({ runId, err: error }, 'Could not notify the owner that an agent report awaits approval');
+        });
+        return { status: 'skipped', runId, reason, correlationId };
     }
 
     async function gitHubAccessFor(definition: StoredAgentDefinition): Promise<{ token: string; octokit: unknown }> {
@@ -204,6 +239,8 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
             await failActingRun(runId, reason, log);
             return { status: 'failed', runId, reason, correlationId };
         }
+        const held = await capacityHold(run, definition);
+        if (held) return pauseForApproval(context, held);
 
         // 3. The receipt in the Tasks UI, then the claim.
         const issueRef = agentRunActionIssueRef(definition);
