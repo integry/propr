@@ -110,6 +110,7 @@ await mock.module('@propr/core', { namedExports: {
     appendVisualPreviewSection: (body: string) => body,
     renderVisualPreviewSection: () => '', renderVisualPreviewUploadFailureSection: () => '',
     resolveAgentTerminationReason: (result: { success: boolean }) => result.success ? undefined : 'timeout', VISUAL_PREVIEW_SLOT: '',
+    describeAgentTermination: () => 'Agent stopped.',
     commitChanges: async (worktree: string, message: string) => {
         git(worktree, 'add', '.');
         git(worktree, 'commit', '-m', message);
