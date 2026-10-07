@@ -1,17 +1,10 @@
-import type { Logger } from 'pino';
+import { createHash } from 'node:crypto';
 import {
-    findPlanIssueByRepoAndPR,
-    gateAutoMergeArming,
     generateCorrelationId,
-    getAuthenticatedOctokit,
     getIssueQueue,
     getPendingPrCommentsKey,
-    retryConfigs,
-    safeRemoveLabel,
     withUltrafixLabelTransition,
-    withRetry,
 } from '@propr/core';
-import { enableAutoMerge } from '../github/autoMergeOperations.js';
 import {
     checkReadiness,
     areChecksReadyForUltrafix,
@@ -19,6 +12,7 @@ import {
     clearUltrafixStateIfCurrent,
     completeLoop,
     hasReviewReachedGoal,
+    getUltrafixAutomaticWorkEpoch,
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
     isUltrafixAutomaticWorkCurrent,
@@ -36,124 +30,16 @@ import type {
     GetPRHeadFn,
     GetCheckRunsStatusFn,
 } from './ultrafixLoopContinuation.js';
+import { maybeEnableAutoMerge, postPrComment, removeUltrafixLabel } from './ultrafixLoopGithub.js';
 
-export async function hasUltrafixLabel(
-    owner: string,
-    repo: string,
-    pullRequestNumber: number,
-    correlatedLogger: Logger,
-): Promise<boolean> {
-    try {
-        const octokit = await withRetry(
-            () => getAuthenticatedOctokit(),
-            { ...retryConfigs.githubApi },
-            'get_authenticated_octokit_ultrafix_label_check',
-        );
-        const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-            owner,
-            repo,
-            pull_number: pullRequestNumber,
-        });
-        return prData.data.labels.some((label: { name?: string }) => label.name === 'ultrafix');
-    } catch (err) {
-        correlatedLogger.warn(
-            { error: (err as Error).message, pullRequestNumber },
-            'Failed to check ultrafix label, assuming removed for safety',
-        );
-        return false;
-    }
-}
-
-export async function removeUltrafixLabel(
-    owner: string,
-    repo: string,
-    pullRequestNumber: number,
-    correlatedLogger: Logger,
-): Promise<void> {
-    try {
-        const octokit = await withRetry(
-            () => getAuthenticatedOctokit(),
-            { ...retryConfigs.githubApi },
-            'get_authenticated_octokit_ultrafix_label_remove',
-        );
-        await safeRemoveLabel(
-            { octokit, owner, repo, issueNumber: pullRequestNumber, logger: correlatedLogger },
-            'ultrafix',
-        );
-    } catch (err) {
-        correlatedLogger.warn(
-            { error: (err as Error).message, pullRequestNumber },
-            'Failed to remove ultrafix label',
-        );
-    }
-}
-
-export async function postPrComment(options: {
-    owner: string;
-    repo: string;
-    pullRequestNumber: number;
-    body: string;
-    correlatedLogger: Logger;
-}): Promise<void> {
-    const { owner, repo, pullRequestNumber, body, correlatedLogger } = options;
-    try {
-        const octokit = await withRetry(
-            () => getAuthenticatedOctokit(),
-            { ...retryConfigs.githubApi },
-            'get_authenticated_octokit_ultrafix_comment',
-        );
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner,
-            repo,
-            issue_number: pullRequestNumber,
-            body,
-        });
-    } catch (err) {
-        correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Failed to post ultrafix status comment');
-    }
-}
-
-export async function maybeEnableAutoMerge(
-    owner: string,
-    repo: string,
-    pullRequestNumber: number,
-    correlatedLogger: Logger,
-): Promise<void> {
-    try {
-        const repository = `${owner}/${repo}`;
-        const planIssue = await findPlanIssueByRepoAndPR(repository, pullRequestNumber);
-        if (!planIssue) return;
-
-        const octokit = await withRetry(
-            () => getAuthenticatedOctokit(),
-            { ...retryConfigs.githubApi },
-            'get_authenticated_octokit_ultrafix_issue_labels',
-        );
-        const issueResponse = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-            owner,
-            repo,
-            issue_number: planIssue.issue_number,
-        });
-        const labels = (issueResponse.data.labels as Array<{ name?: string } | string>)
-            .map((label) => typeof label === 'string' ? label : (label.name || ''));
-        if (!labels.includes('auto-merge')) return;
-
-        const gate = await gateAutoMergeArming({
-            owner, repo, prNumber: pullRequestNumber, opportunity: 'ultrafix_goal', issueNumber: planIssue.issue_number, log: correlatedLogger,
-        });
-        if (!gate.arm || !gate.pullRequest) return;
-        // Arm only the head the policy evaluated; a newer head needs its own decision.
-        const result = await enableAutoMerge({
-            owner, repoName: repo, prNumber: pullRequestNumber, mergeMethod: gate.mergeMethod,
-            expectedHead: { headSha: gate.pullRequest.headSha, baseRef: gate.pullRequest.baseRef },
-        });
-        if (!result.success) {
-            correlatedLogger.warn({ pullRequestNumber, error: result.error }, 'Failed to enable auto-merge after ultrafix success');
-        }
-    } catch (err) {
-        correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Failed to evaluate auto-merge re-enable after ultrafix success');
-    }
-}
+export {
+    getUltrafixLabelState,
+    hasUltrafixLabel,
+    maybeEnableAutoMerge,
+    postPrComment,
+    removeUltrafixLabel,
+    type UltrafixLabelState,
+} from './ultrafixLoopGithub.js';
 
 /** Finish a loop without allowing an older automatic job to clean up newer work. */
 export async function finishUltrafixLoop(input: {
@@ -225,47 +111,113 @@ export async function finishUltrafixLoop(input: {
     };
 }
 
+/**
+ * Deterministic queue identity for one Ultrafix step. The epoch scopes it to the
+ * owning automatic work and the step number separates later cycles in that epoch,
+ * so concurrent resume triggers for the same step collapse into one job.
+ *
+ * The readable prefix is joined with `-`, which owner and repository names may
+ * also contain (`acme-tools/web` vs `acme/tools-web`), so the suffix hashes the
+ * structured tuple to keep one PR's step from matching another repository's.
+ */
+export function getUltrafixStepJobId(
+    owner: string,
+    repo: string,
+    pullRequestNumber: number,
+    step: { action: UltrafixAction; workEpoch: number; stepNumber: number },
+): string {
+    const identity = createHash('sha256')
+        .update(JSON.stringify([owner, repo, pullRequestNumber, step.action, step.workEpoch, step.stepNumber]))
+        .digest('hex')
+        .slice(0, 32);
+    return `pr-comments-batch-${owner}-${repo}-${pullRequestNumber}-ultrafix-${step.action}-${step.workEpoch}-${step.stepNumber}-${identity}`;
+}
+
+function isDuplicateJobError(err: unknown): boolean {
+    const error = err as { name?: string; message?: string } | null;
+    return error?.name === 'JobAlreadyExistsError' || /already exists/i.test(error?.message ?? '');
+}
+
+/**
+ * Enqueue the next Ultrafix step. `stepNumber` is the ordinal of the step
+ * being enqueued for its action (completed count + 1).
+ *
+ * Returns false when the same step is already queued or running.
+ */
 export async function enqueueNextStep(
     params: UltrafixContinuationParams,
     nextAction: UltrafixAction,
     delayMs: number,
-): Promise<void> {
+    stepNumber: number,
+): Promise<boolean> {
     const { owner, repo, pullRequestNumber, ultrafixMeta, correlatedLogger } = params;
     const nextCorrelationId = generateCorrelationId();
-    const jobId = `pr-comments-batch-${owner}-${repo}-${pullRequestNumber}-ultrafix-${Date.now()}`;
+    const jobId = getUltrafixStepJobId(owner, repo, pullRequestNumber, {
+        action: nextAction,
+        workEpoch: ultrafixMeta?.workEpoch ?? 0,
+        stepNumber,
+    });
     const commandMode = nextAction === 'review' ? 'review' as const : 'fix' as const;
     const requestedModels = nextAction === 'review' && ultrafixMeta?.reviewModel
         ? [ultrafixMeta.reviewModel]
         : undefined;
 
     const issueQueue = await getIssueQueue();
-    await issueQueue.add('processPullRequestComment', {
-        ...(params.userId ? { userId: params.userId } : {}),
-        pullRequestNumber,
-        repoOwner: owner,
-        repoName: repo,
-        correlationId: nextCorrelationId,
-        commandMode,
-        commandInstructions: ultrafixMeta?.instructions || '',
-        ultrafixMeta,
-        comments: [{
-            id: 0,
-            body: `/${nextAction}\nTriggered automatically by the ultrafix loop.`,
-            author: 'propr-ultrafix',
-            type: 'issue' as const,
+    // BullMQ silently ignores an add whose ID is retained in any state. A
+    // finished attempt of this step never recorded its action, so it must not
+    // block the retry; a pending one is the duplicate we want to skip.
+    const existing = await issueQueue.getJob(jobId);
+    if (existing) {
+        const existingState = await existing.getState();
+        if (existingState === 'completed' || existingState === 'failed') {
+            await existing.remove();
+        } else if (existingState !== 'unknown') {
+            correlatedLogger.info(
+                { pullRequestNumber, nextAction, jobId, existingState },
+                'Ultrafix loop: next step already queued, skipping duplicate',
+            );
+            return false;
+        }
+        // 'unknown': the job vanished after getJob, so nothing holds the ID.
+    }
+
+    try {
+        await issueQueue.add('processPullRequestComment', {
+            ...(params.userId ? { userId: params.userId } : {}),
+            pullRequestNumber,
+            repoOwner: owner,
+            repoName: repo,
+            correlationId: nextCorrelationId,
             commandMode,
+            commandInstructions: ultrafixMeta?.instructions || '',
             ultrafixMeta,
-        }],
-        ...(requestedModels && { requestedModels }),
-    }, {
-        jobId,
-        delay: delayMs,
-    });
+            comments: [{
+                id: 0,
+                body: `/${nextAction}\nTriggered automatically by the ultrafix loop.`,
+                author: 'propr-ultrafix',
+                type: 'issue' as const,
+                commandMode,
+                ultrafixMeta,
+            }],
+            ...(requestedModels && { requestedModels }),
+        }, {
+            jobId,
+            delay: delayMs,
+        });
+    } catch (err) {
+        if (!isDuplicateJobError(err)) throw err;
+        correlatedLogger.info(
+            { pullRequestNumber, nextAction, jobId },
+            'Ultrafix loop: next step already queued, skipping duplicate',
+        );
+        return false;
+    }
 
     correlatedLogger.info(
         { pullRequestNumber, nextAction, jobId, delayMs, nextCorrelationId },
         `Ultrafix loop: enqueued next ${nextAction} step`,
     );
+    return true;
 }
 
 export interface UltrafixCIEvaluation {
@@ -319,6 +271,59 @@ export async function evaluateCIChecksPassing(
     deps: Parameters<typeof evaluateCIChecks>[1],
 ): Promise<boolean> {
     return (await evaluateCIChecks(params, deps)).passing;
+}
+
+/** Outstanding-work reason for a queued or running non-Ultrafix job on the PR. */
+export const PR_JOBS_ACTIVE_REASON = 'pr_jobs_active';
+
+/**
+ * Ultrafix work for the PR that is still queued, running, or batched. Unlike
+ * readiness this fails closed: when the queue or pending comments cannot be
+ * read, the work is reported as unknown so no terminal decision is made blind.
+ *
+ * Any other queued or running job for the same PR (e.g. a manual `/fix` that
+ * fenced the loop, or a CI-failure follow-up) is outstanding too: it has not
+ * pushed yet, so a review re-armed now would review the wrong head.
+ *
+ * `currentStepsOnly` is set when the only outstanding work is Ultrafix steps of
+ * the current epoch: their own continuation owns the loop. Steps of a fenced
+ * epoch do not count, since their continuation will stop as superseded.
+ */
+export async function findOutstandingUltrafixWork(
+    owner: string,
+    repo: string,
+    pullRequestNumber: number,
+    redisClient: UltrafixContinuationParams['redisClient'],
+): Promise<{ reasons: string[]; currentStepsOnly: boolean }> {
+    const outstanding: string[] = [];
+    let currentSteps = false;
+    try {
+        const issueQueue = await getIssueQueue();
+        const jobs = await issueQueue.getJobs(['waiting', 'active', 'delayed']) as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: { workEpoch?: number } } }>;
+        const prJobs = jobs.filter(job => job.data.repoOwner === owner
+            && job.data.repoName === repo
+            && job.data.pullRequestNumber === pullRequestNumber);
+        const steps = prJobs.filter(job => job.data.ultrafixMeta != null);
+        if (prJobs.length > steps.length) outstanding.push(PR_JOBS_ACTIVE_REASON);
+        if (steps.length > 0) {
+            outstanding.push('follow_up_jobs_active');
+            // Read after the scan: a step at this epoch was current once the scan saw it.
+            const currentEpoch = await getUltrafixAutomaticWorkEpoch(redisClient, owner, repo, pullRequestNumber)
+                .catch(() => null);
+            currentSteps = currentEpoch !== null
+                && steps.every(job => (job.data.ultrafixMeta?.workEpoch ?? 0) === currentEpoch);
+        }
+    } catch {
+        outstanding.push('follow_up_jobs_unknown');
+    }
+    try {
+        if (await hasPendingBatchedComments(redisClient, getPendingPrCommentsKey(owner, repo, pullRequestNumber))) {
+            outstanding.push('pending_comments_exist');
+        }
+    } catch {
+        outstanding.push('pending_comments_unknown');
+    }
+    return { reasons: outstanding, currentStepsOnly: currentSteps && outstanding.length === 1 };
 }
 
 export async function evaluateReadiness(

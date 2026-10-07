@@ -80,7 +80,7 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
 
         assert.ok(wrapped.includes('PROPR_AGENT_TYPE=antigravity'));
         assert.ok(wrapped.includes('PROPR_WORKSPACE=/home/node/workspace'));
-        assert.ok(wrapped.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/antigravity'));
+        assert.ok(wrapped.includes('PROPR_CACHE_DIR=/tmp/propr-setup-cache/antigravity'));
         assert.ok(wrapped.includes('PROPR_REPO_SETUP=0'));
         assert.ok(wrapped.includes('GIT_AUTHOR_NAME=ProPR Antigravity Bot'));
         assert.ok(wrapped.includes('GIT_AUTHOR_EMAIL=antigravity-bot@propr.dev'));
@@ -99,7 +99,7 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         ], 'propr/agent:latest', 'vibe');
 
         assert.ok(wrapped.includes('PROPR_AGENT_TYPE=vibe'));
-        assert.ok(wrapped.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
+        assert.ok(wrapped.includes('PROPR_CACHE_DIR=/tmp/propr-setup-cache/vibe'));
 
         const imageIndex = wrapped.indexOf('propr/agent:latest');
         assert.strictEqual(wrapped[imageIndex + 3], '/home/node/vibe-entrypoint.sh');

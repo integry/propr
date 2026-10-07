@@ -49,6 +49,7 @@ import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { sweepDraftContext } from './daemon/draftContextSweep.js';
 import { sweepPushRescues } from './daemon/rescueRefSweep.js';
 import { scheduleAgentRunSweeps } from './agentRunScheduler.js';
+import { scheduleUltrafixResumeSweep } from './daemon/ultrafixResumeSweep.js';
 import {
     clearUltrafixStateIfCurrent,
     hasUltrafixAutomaticWork,
@@ -236,6 +237,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         const log = logger.withCorrelation(generateCorrelationId());
         await resumeDeferredContinuation({ owner, repo, pr: prNumber }, redisClient, log as unknown as Logger);
     });
+    // Retry obligations and deferred reviews are swept here too, so a daemon
+    // without the API server and with polling off does not wait for a webhook.
+    const ultrafixResumeSweepInterval = scheduleUltrafixResumeSweep(redisClient);
 
     const repos = getRepos();
     await reconcileTaskIntentsSafely(redisClient, repos);
@@ -453,6 +457,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
         clearInterval(pushRescueSweepInterval);
+        clearInterval(ultrafixResumeSweepInterval);
         clearInterval(mergeConflictSweepInterval);
         await stopAgentRunSweeps();
         // Stop the routing service first so it can drain in-flight deliveries and

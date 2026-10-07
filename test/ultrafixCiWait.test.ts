@@ -7,6 +7,7 @@ await mock.module('@propr/core', {
         DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS: 2 * 60 * 60 * 1000,
         loadUltrafixCiWaitTimeoutMs: async () => 2 * 60 * 60 * 1000,
         withUltrafixLabelTransition: async (_redis: unknown, _identity: unknown, operation: () => Promise<unknown>) => operation(),
+        recoverCiFailureFollowups: async () => undefined,
     },
 });
 
@@ -70,6 +71,20 @@ function deferral(redis: ReturnType<typeof createMockRedis>, headSha = 'abc1234d
 }
 
 describe('Ultrafix CI deferral notice', () => {
+    test('retries missed failure recovery without repeating the wait notice', async () => {
+        const redis = createMockRedis();
+        const { deps, postComment } = makeDeps();
+        const calls: unknown[][] = [];
+        deps.recoverFailures = async (...args) => {
+            calls.push(args);
+            if (calls.length === 1) throw new Error('GitHub temporarily unavailable');
+        };
+        await handleUltrafixCiDeferral(deferral(redis), deps);
+        await handleUltrafixCiDeferral(deferral(redis), deps);
+        assert.deepEqual(calls, Array(2).fill(['integry', 'propr', 2755, 'abc1234def']));
+        assert.equal(postComment.mock.callCount(), 1);
+    });
+
     test('posts one comment per deferral, not per poll', async () => {
         const redis = createMockRedis();
         const { deps, postComment, stopLoop, advance } = makeDeps();
@@ -108,6 +123,35 @@ describe('Ultrafix CI deferral notice', () => {
         assert.equal(postComment.mock.callCount(), 2);
         await handleUltrafixCiDeferral(deferral(redis, 'head-two', { workEpoch: 4 }), deps);
         assert.equal(postComment.mock.callCount(), 3);
+    });
+
+    test('a wait from an earlier epoch of the same loop carries over to its new epoch', async () => {
+        const redis = createMockRedis();
+        const { deps, postComment, stopLoop, advance } = makeDeps();
+
+        await handleUltrafixCiDeferral(deferral(redis, 'head-one'), deps);
+        advance(TIMEOUT_MS / 2);
+        await handleUltrafixCiDeferral(deferral(redis, 'head-one', { workEpoch: 5, carryOverFromEpoch: 3 }), deps);
+        assert.equal(postComment.mock.callCount(), 1, 'no second notice for the same head');
+        const record = await loadUltrafixCiWait(redis as never, 'integry', 'propr', 2755);
+        assert.equal(record?.workEpoch, 5);
+        assert.equal(record?.since, '2026-10-06T00:00:00.000Z', 'the wait keeps its start time');
+
+        advance(TIMEOUT_MS / 2);
+        const timedOut = await handleUltrafixCiDeferral(deferral(redis, 'head-one', { workEpoch: 5 }), deps);
+        assert.equal(timedOut.stopped, true, 'the timeout counts from when the head first blocked');
+        assert.equal((stopLoop.mock.calls[0].arguments as unknown as [{ workEpoch: number }])[0].workEpoch, 5);
+    });
+
+    test('a carry-over never adopts a wait from before the loop\'s previous owner', async () => {
+        const redis = createMockRedis();
+        const { deps, postComment } = makeDeps();
+
+        await handleUltrafixCiDeferral(deferral(redis, 'head-one', { workEpoch: 2 }), deps);
+        await handleUltrafixCiDeferral(deferral(redis, 'head-one', { workEpoch: 5, carryOverFromEpoch: 3 }), deps);
+        assert.equal(postComment.mock.callCount(), 2);
+        await handleUltrafixCiDeferral(deferral(redis, 'head-two', { workEpoch: 6, carryOverFromEpoch: 5 }), deps);
+        assert.equal(postComment.mock.callCount(), 3, 'a new head is still a new deferral');
     });
 
     test('stops the loop with "CI did not settle" once the wait exceeds the timeout', async () => {

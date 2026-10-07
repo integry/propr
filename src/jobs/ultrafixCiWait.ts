@@ -13,6 +13,7 @@ import {
     DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS,
     loadUltrafixCiWaitTimeoutMs,
     withUltrafixLabelTransition,
+    recoverCiFailureFollowups,
 } from '@propr/core';
 import {
     clearDeferredContinuationIfCurrent,
@@ -46,6 +47,13 @@ export interface UltrafixCiDeferralInput {
     repo: string;
     pr: number;
     workEpoch: number;
+    /**
+     * Earliest epoch of the same loop whose wait may carry over to `workEpoch`.
+     * A re-arm hands the loop to a freshly reserved epoch; a wait recorded for
+     * the same head under an earlier epoch of that loop is the same wait, so
+     * its notice and start time carry over instead of starting again.
+     */
+    carryOverFromEpoch?: number;
     ci: UltrafixCiObservation;
     goal?: number;
     lastScore?: number | null;
@@ -60,6 +68,7 @@ export interface UltrafixCiDeferralResult {
 }
 
 export interface UltrafixCiWaitDeps {
+    recoverFailures?: typeof recoverCiFailureFollowups;
     now: () => number;
     loadTimeoutMs: () => Promise<number>;
     postComment: (options: { owner: string; repo: string; pullRequestNumber: number; body: string; correlatedLogger: Logger }) => Promise<void>;
@@ -183,11 +192,18 @@ async function loadTimeoutMsSafely(): Promise<number> {
 }
 
 const defaultDeps: UltrafixCiWaitDeps = {
+    recoverFailures: recoverCiFailureFollowups,
     now: () => Date.now(),
     loadTimeoutMs: loadTimeoutMsSafely,
     postComment: postPrComment,
     stopLoop: stopUltrafixLoopForCiTimeout,
 };
+
+/** Whether a wait recorded under `recordedEpoch` belongs to the deferral now running under `workEpoch`. */
+function isSameLoopWait(recordedEpoch: number, workEpoch: number, carryOverFromEpoch: number | undefined): boolean {
+    if (recordedEpoch === workEpoch) return true;
+    return carryOverFromEpoch !== undefined && recordedEpoch >= carryOverFromEpoch && recordedEpoch < workEpoch;
+}
 
 /**
  * Record that blocking CI deferred the next Ultrafix review. The first
@@ -202,7 +218,7 @@ export async function handleUltrafixCiDeferral(
     const { redis, owner, repo, pr, workEpoch, ci, correlatedLogger } = input;
     const nowMs = deps.now();
     const existing = await loadUltrafixCiWait(redis, owner, repo, pr);
-    const sameDeferral = existing?.workEpoch === workEpoch && existing.headSha === ci.headSha;
+    const sameDeferral = existing?.headSha === ci.headSha && isSameLoopWait(existing.workEpoch, workEpoch, input.carryOverFromEpoch);
     const record: UltrafixCiWaitRecord = {
         workEpoch,
         headSha: ci.headSha,
@@ -213,6 +229,13 @@ export async function handleUltrafixCiDeferral(
         lastScore: input.lastScore !== undefined ? input.lastScore : (sameDeferral ? existing.lastScore : undefined),
     };
     const blockingChecks = listBlockingChecks(record);
+    if (record.blockingFailed.length > 0 && deps.recoverFailures) {
+        try {
+            await deps.recoverFailures(owner, repo, pr, ci.headSha);
+        } catch (error) {
+            correlatedLogger.warn({ error: (error as Error).message, pr }, 'Failed to recover missed CI follow-up; will retry on next poll');
+        }
+    }
     const waitedMs = Math.max(0, nowMs - Date.parse(record.since));
     const timeoutMs = await deps.loadTimeoutMs();
 
@@ -271,6 +294,7 @@ export async function applyUltrafixCiDeferral(
     params: Pick<UltrafixContinuationParams, 'owner' | 'repo' | 'pullRequestNumber' | 'redisClient' | 'correlatedLogger' | 'ultrafixMeta'>,
     readiness: UltrafixReadinessResult,
     loop: { goal: number; maxCycles: number; cycleCount: number; lastScore?: number | null },
+    options: Pick<UltrafixCiDeferralInput, 'carryOverFromEpoch'> = {},
 ): Promise<{ terminal?: ContinuationResult; extra: Pick<ContinuationResult, 'blockingChecks'> }> {
     if (!readiness.ci || !readiness.reasons.includes('checks_not_passing')) return { extra: {} };
     const result = await handleUltrafixCiDeferralSafely({
@@ -279,6 +303,7 @@ export async function applyUltrafixCiDeferral(
         repo: params.repo,
         pr: params.pullRequestNumber,
         workEpoch: params.ultrafixMeta?.workEpoch ?? 0,
+        ...options,
         ci: readiness.ci,
         goal: loop.goal,
         lastScore: loop.lastScore,

@@ -33,9 +33,15 @@ async function isFailureExhausted(job: Job<MainJobData>): Promise<boolean> {
     return false;
 }
 
+export interface PRCommentTaskStateFinalizerOptions {
+    /** Runs once a job's attempts are exhausted, e.g. so a failed Ultrafix step's loop is not stranded. */
+    onExhaustedFailure?: (job: Job<MainJobData>) => Promise<void>;
+}
+
 export function attachPRCommentTaskStateFinalizers(
     worker: MainWorker,
     stateManager: WorkerStateManager,
+    options: PRCommentTaskStateFinalizerOptions = {},
 ): PRCommentTaskStateFinalizers {
     const pending = new Set<Promise<void>>();
     let closed = false;
@@ -74,6 +80,11 @@ export function attachPRCommentTaskStateFinalizers(
         const finalizeIfExhausted = async (): Promise<PRCommentTaskFinalizationResult> => {
             if (!await isFailureExhausted(job)) {
                 return { outcome: 'retry_pending', stateChanged: false };
+            }
+            try {
+                await options.onExhaustedFailure?.(job);
+            } catch (hookError) {
+                logger.warn({ taskId, error: (hookError as Error).message }, 'Failed to record follow-up for exhausted PR comment job');
             }
             return finalizeFailedPRCommentTask(taskId, error, stateManager);
         };

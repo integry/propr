@@ -34,6 +34,21 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Visual previews published for a task or PR (images; videos are metadata only) | `list_visual_previews`, `get_visual_preview` |
 | Screenshots embedded in a PR/issue comment or description (images; videos are metadata only) | `get_pull_request_discussion` `attachments`, then `get_comment_attachment` |
 | Product docs and where a setting lives | `search_docs`, `get_doc`, `find_setting` |
+| Find and read code in a granted repository without cloning it | `search_repository_files` (`mode: "semantic"` ranks paths from the index; `mode: "literal"` greps exact text with line previews), then `read_repository_file` in bounded line ranges |
+
+`search_repository_files` returns paths only. Its default semantic mode uses
+the repository index and reports `freshness`. If the branch has not been
+indexed, indexing is running or failed, or the index was built from an older
+(or unrecorded) commit, the search still answers, but marks the result `stale`
+with a `caveat`.
+Re-index the branch with `index_repository` if the caveat matters. Literal mode
+greps the exact commit and needs no index. An empty result means no match, not
+an error. `read_repository_file` returns at most 800 lines (or `maxLines`, up
+to 1000) and 120000 bytes (or `maxBytes`) per call. A capped read sets
+`truncated: true` and `nextStartLine` for the next call. Both tools report the
+`commit` they read; pass it back as `ref` to keep a multi-step lookup on one
+snapshot. Binary files, paths with `..`, and repositories outside the grant
+are rejected with `BINARY_FILE`, `INVALID_PATH` and `REPOSITORY_FORBIDDEN`.
 
 `implement_plan` with `useEpic: true` runs selected issues sequentially in plan
 publication order. It starts one issue and durably queues the rest, using one

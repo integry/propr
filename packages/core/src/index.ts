@@ -144,7 +144,8 @@ export type {
 } from './queue/taskQueue.js';
 
 export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
-export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
+export { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, triggerUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
+export { recoverCiFailureFollowups } from './webhook/ciFailureRecovery.js';
 export * from './webhook/ciFailureFollowup.js';
 export * from './webhook/closedPullRequestCi.js';
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
@@ -202,6 +203,27 @@ export { generateContext, generateAdditionalContext, ContextTokenLimitError, Sec
 export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile, AdditionalContextOptions, AdditionalContextResult } from './services/context/index.js';
 export { findRelevantFiles } from './services/relevanceService.js';
 export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';
+export {
+  searchRepositoryFiles,
+  readRepositoryFileContent,
+  parseGitGrepOutput,
+  assertSafeRepositoryPath,
+  RepositoryRetrievalError,
+} from './services/repositoryRetrievalService.js';
+export type {
+  RepositorySearchMode,
+  RepositoryMatchReason,
+  RepositoryIndexingState,
+  SearchRepositoryFilesOptions,
+  SearchRepositoryFilesResult,
+  RepositorySearchMatch,
+  RepositoryLineMatch,
+  RepositorySearchFreshness,
+  RepositorySearchPagination,
+  ReadRepositoryFileOptions,
+  ReadRepositoryFileResult,
+  RepositoryRetrievalErrorKind,
+} from './services/repositoryRetrievalService.js';
 export { generatePlan, refinePlan, normalizeRefinedPlan, RefinementOutputError, REFINEMENT_OUTPUT_INVALID, generateContextPreview, checkoutBranch, PlanningFailedError, BranchNotFoundError, buildFullContext } from './services/taskPlanningService.js';
 export type { GeneratePlanOptions, RefinePlanOptions, RefinePlanResult, RefinePlanEstimation, GenerateContextPreviewOptions, PreviewResult, PreviewStats, SmartFileSelection, TaskDraftConfig, Granularity } from './services/taskPlanningService.js';
 export type { IncompleteRefinedTask, NormalizedRefinedPlan, RefinementOutputDetails, RefinementOutputFailureReason } from './services/taskPlanningService.js';

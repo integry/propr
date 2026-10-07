@@ -348,6 +348,8 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
 }
 
 export interface CleanupOptions {
+    /** False when the attempt failed before publishing its work. */
+    success?: boolean;
     /** Capacity deferral keeps pending work on the same delayed job. */
     skipPendingCommentFollowup?: boolean;
     stateManager: WorkerStateManager; lockKey: string; lockToken: string;
@@ -375,7 +377,10 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
     // lease while that removal is still running.
     if (localRepoPath && worktreeInfo) {
         try {
-            await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, { deleteBranch: false, success: true });
+            await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
+                deleteBranch: false, success: options.success ?? true,
+                ...(options.success === false ? { retentionStrategy: 'keep_on_failure' } : {}),
+            });
         } catch (cleanupError) {
             correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');
         }

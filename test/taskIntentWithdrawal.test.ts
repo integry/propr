@@ -110,7 +110,7 @@ await mock.module('../packages/core/src/webhook/planIssueTracking.js', { namedEx
     handlePlanIssueStatusUpdate: async () => {}, handlePlanPRUpdate: async () => {}, handlePlanPRCommentTracking: async () => {},
 } });
 await mock.module('../packages/core/src/webhook/checkRunHandler.js', { namedExports: {
-    handleCheckRunEvent: async () => {}, handleStatusEvent: async () => {}, reevaluatePRAutoMerge: async () => {},
+    handleCheckRunEvent: async () => {}, handleCheckSuiteEvent: async () => {}, handleStatusEvent: async () => {}, reevaluatePRAutoMerge: async () => {},
 } });
 await mock.module('../packages/core/src/webhook/epicPRHandler.js', { namedExports: {
     handleEpicPRCreationOnMerge: async () => {}, handleEpicPRLabelCleanup: async () => {},

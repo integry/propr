@@ -1,9 +1,9 @@
-import { McpError } from './config.js';
+import { MAX_TOOL_RESULT_BYTES, McpError } from './config.js';
 import { accessPrincipal, claimMcpSurface, classifyMcpFailure, recordMcpAccess, type McpAccessOutcome } from './accessLog.js';
 import { McpPolicy, type McpPrincipal } from './policy.js';
 import { McpOperations } from './operations.js';
 import { cancellationTarget } from './operationTracking.js';
-import { redact } from './adapter.js';
+import { redact, redactText } from './adapter.js';
 import { presentResult, type PresentedResult } from './presentation.js';
 import type { Args, McpTool, ToolDeps } from './tools.js';
 import type { ContentBlock } from '@modelcontextprotocol/sdk/types.js';
@@ -85,15 +85,49 @@ function noteToolOutcome(tool: McpTool, access: ToolAccess, data: Record<string,
  * offsets are calculated. Preserve that exact slice while retaining the
  * dispatch safeguard for every other result field: re-redacting a continuation
  * that happens to start with JSON can otherwise parse and reshape the text.
+ * Repository source text, paths and queries are opaque for the same reason:
+ * a `.json` file or a matched `[1, 2]` line must come back byte-for-byte, so
+ * those fields only get the in-place credential masking.
  */
 function redactToolResult(tool: McpTool, result: unknown): Record<string, unknown> {
-  const data = redact(result) as Record<string, unknown>;
-  if (tool.name === 'get_doc' && result && typeof result === 'object') {
-    const content = (result as Record<string, unknown>).content;
-    if (typeof content === 'string') data.content = content;
-  }
-  return data;
+  const opaque = OPAQUE_RESULT_FIELDS[tool.name];
+  return (opaque ? redactExceptOpaque(result, opaque) : redact(result)) as Record<string, unknown>;
 }
+
+type OpaqueFields = Record<string, (value: unknown) => unknown>;
+
+/**
+ * Opaque fields are left out of the generic pass rather than redacted and then
+ * discarded, so large file content is not parsed and rebuilt for nothing. The
+ * object's field order is kept.
+ */
+function redactExceptOpaque(value: unknown, opaque: OpaqueFields): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return redact(value);
+  const source = value as Record<string, unknown>;
+  const isOpaque = (key: string) => Object.hasOwn(opaque, key);
+  const data = redact(Object.fromEntries(Object.entries(source).filter(([key]) => !isOpaque(key)))) as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(source)
+    .filter(key => isOpaque(key) || Object.hasOwn(data, key))
+    .map(key => [key, isOpaque(key) ? opaque[key](source[key]) : data[key]]));
+}
+
+const maskText = (value: unknown) => typeof value === 'string' ? redactText(value) : redact(value);
+const maskLineMatches = (value: unknown) => Array.isArray(value)
+  ? (value as Record<string, unknown>[]).map(line => ({ lineNumber: line.lineNumber, text: typeof line.text === 'string' ? redactText(line.text) : line.text }))
+  : redact(value);
+
+/** Per-tool result fields exempt from the generic redaction pass, with the masking each gets instead. */
+const OPAQUE_RESULT_FIELDS: Record<string, OpaqueFields> = {
+  get_doc: { content: value => typeof value === 'string' ? value : redact(value) },
+  read_repository_file: { content: maskText, path: maskText },
+  search_repository_files: {
+    query: maskText,
+    pathPrefix: maskText,
+    matches: value => Array.isArray(value)
+      ? value.slice(0, 200).map(match => redactExceptOpaque(match, { path: maskText, lineMatches: maskLineMatches }))
+      : redact(value),
+  },
+};
 
 /** Preserve binary content while applying the result-redaction boundary to text overrides. */
 function redactToolContent(content: ContentBlock[] | undefined): ContentBlock[] | undefined {
@@ -146,7 +180,7 @@ async function runTool({ tool, raw, principal, deps, access, signal }: ToolInvoc
   // Binary content has its own tool-specific bound and is intentionally not
   // subject to the JSON page limit below.
   noteToolOutcome(tool, access, data, content);
-  if (jsonBytes > 256 * 1024) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
+  if (jsonBytes > MAX_TOOL_RESULT_BYTES) throw new McpError('RESULT_TOO_LARGE', 'Request a smaller page or narrower target.');
   return { ...presentResult(tool, args, data, deps.policy.config), data, ...(content ? { content } : {}) };
 }
 

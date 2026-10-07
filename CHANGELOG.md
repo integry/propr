@@ -35,6 +35,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment variables `PROPR_INTERNAL_API_URL` and `PROPR_AGENT_MCP_URL`.
   Event triggers, per-action-kind autonomy and schedule time zones are deferred.
   See the [Agents guide](docs/docs/features/agents.md).
+- **Dashboard HTTP API reference and a documented `@propr/client`**:
+  `npm run gen:openapi` generates an OpenAPI 3.1 spec,
+  `docs/static/openapi/propr-api.yaml`, from the API route registry and the
+  zod schemas in `packages/api/openapi`. The spec lists every registered route
+  with its authentication (session, bearer token or MCP scope) and any required
+  instance permission. Routes without annotations yet are marked
+  `x-undocumented: true`, and `info.x-route-coverage` counts them. The spec
+  documents the common error envelope (`code`, `message`, `hint`). Routes that
+  still return ad-hoc errors are marked `x-legacy-error`; their behaviour is
+  unchanged. A new "API reference" page under Operations in the docs renders the
+  spec. `@propr/client` gains typed `listTasks`, `getTaskHistory`,
+  `createTaskSubmission`, `getTaskSubmission` and `retryTaskSubmission`
+  methods. Its request and response types (`ProprApi.*`) are generated from the
+  same schemas, and a new `packages/client/README.md` covers installation,
+  bearer authentication, examples and the Socket.IO events. Pull request checks
+  run `gen:openapi:check`, which fails on a stale or invalid spec, and
+  `check:client-contract`, which fails when the client's operations or method
+  signatures drift from the spec.
 - **Automatic replacement runs**: an issue task lost with its worker (the
   reconciler finds neither its queue job nor its task container) now gets one
   replacement attempt instead of only being marked failed; a second loss in the
@@ -238,6 +256,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Ultrafix recovers from red CI**: a loop paused on failing CI is no longer
+  left stranded when a CI-failure follow-up, `/fix` or push retires its
+  deferred review. Green `check_run` and `check_suite` events and polling
+  reconciliation now wake it and schedule its next review under a new work
+  epoch. The cycle limit, the goal and the `ultrafix` label still apply. A
+  re-arm on a head that is still red keeps that head's single "waiting for CI"
+  notice and its CI wait timeout. `check_suite` is now a supported webhook
+  event. Check runs and suites whose payload lists no PRs are matched to open
+  PRs by commit. That lookup is cached per commit for 60 seconds, so a push
+  with many jobs costs one GitHub call. A "no open PR" result is cached for
+  only 10 seconds, so a PR opened right after its branch was pushed is not
+  missed for long. Because of the lookup, events GitHub sends without PR
+  numbers, notably for fork PRs, now reach their PRs: an opted-in failed-CI
+  follow-up can now fire for them, as it already could for `status` events.
+  The retry sweep runs in both the API server and the daemon. It reads an
+  index of pending retries and deferred reviews instead of scanning the whole
+  keyspace every minute. A deferred step taken by a process that stopped before
+  scheduling it, including a permitted final fix, resumes after a restart. A
+  step job that fails after all its attempts leaves a retry, so its loop is
+  re-armed. A loop stranded right after its final permitted fix still gets its
+  verifying review. A re-arm now also waits for any other job on the PR, such
+  as a manual `/fix`, to finish.
 - **Ultrafix no longer stalls on non-blocking checks**: Ultrafix review
   readiness now honours the repository's `nonBlockingChecks` patterns, so a
   failing or still-pending check such as `Validate unsigned *` no longer defers

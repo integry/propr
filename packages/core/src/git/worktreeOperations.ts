@@ -55,15 +55,17 @@ export async function cleanupWorktree(localRepoPath: string, worktreePath: strin
         return;
     }
 
-    if (!success && retentionStrategy === 'keep_on_failure') {
+    if (!success && (retentionStrategy === 'keep_on_failure' || retentionStrategy === 'keep_for_hours')) {
         logger.info({ worktreePath, branchName, retentionStrategy }, 'Keeping worktree due to failure and retention strategy');
+        // Preserve staged/untracked work while freeing the PR branch for a retry.
+        // Never force this checkout: if detaching fails, keep the only copy anyway.
+        try {
+            await createHooklessGit(worktreePath).raw(['checkout', '--detach']);
+        } catch (error) {
+            logger.warn({ worktreePath, error: (error as Error).message }, 'Failed to detach retained worktree');
+        }
         await createRetentionMarker(worktreePath, retentionHours);
         return;
-    }
-
-    if (!success && retentionStrategy === 'keep_for_hours') {
-        logger.info({ worktreePath, retentionHours }, `Scheduling worktree cleanup in ${retentionHours} hours`);
-        await createRetentionMarker(worktreePath, retentionHours);
     }
 
     const git: SimpleGit = createHooklessGit(localRepoPath);

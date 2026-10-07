@@ -31,17 +31,34 @@ const UI_DIR_BONUS = 10;
 /** UI-related directory patterns */
 const UI_DIRECTORIES = ['templates', 'components', 'views', 'pages', 'screens', 'css', 'styles', 'less', 'scss'];
 
-export async function scorePaths(repoPath: string, keywords: string[]): Promise<FileScore[]> {
+/**
+ * Lists tracked file paths. With a revision, lists the files in that commit's
+ * tree instead of the index, so results do not depend on the checkout.
+ */
+export async function listTrackedFiles(repoPath: string, revision?: string): Promise<string[]> {
+  const git = simpleGit(repoPath);
+  if (!revision) {
+    const result = await git.raw(['ls-files']);
+    return result.split('\n').filter(f => f.trim().length > 0);
+  }
+  const result = await git.raw(['ls-tree', '-r', '-z', '--name-only', '--full-tree', revision]);
+  return result.split('\0').filter(f => f.length > 0);
+}
+
+/**
+ * Scores tracked paths against `keywords`. `trackedFiles` may supply an
+ * already started listing of the same revision so callers that also need the
+ * tree list it only once.
+ */
+export async function scorePaths(repoPath: string, keywords: string[], revision?: string, trackedFiles?: Promise<string[]>): Promise<FileScore[]> {
   if (keywords.length === 0) {
     return [];
   }
 
-  const git = simpleGit(repoPath);
   let allFiles: string[];
 
   try {
-    const result = await git.raw(['ls-files']);
-    allFiles = result.split('\n').filter(f => f.trim().length > 0);
+    allFiles = await (trackedFiles ?? listTrackedFiles(repoPath, revision));
   } catch (error) {
     logger.warn({ repoPath, error: (error as Error).message }, 'Failed to list files from git');
     return [];

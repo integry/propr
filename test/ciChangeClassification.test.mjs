@@ -800,6 +800,28 @@ describe('workflow wiring', () => {
         assert.ok(action.includes('scripts/ci-change-classification.mjs'));
     });
 
+    test('the API reference gate runs for every input of the OpenAPI spec and client contract', () => {
+        const gate = buildCheck.split('\n').find(line => line.includes('API Reference: OpenAPI Spec & Client Contract'));
+        assert.ok(gate, 'the build check has an API reference block');
+        const condition = buildCheck.slice(0, buildCheck.indexOf(gate)).split('\n').reverse()
+            .find(line => line.trim().startsWith('if ['));
+        const gating = [...condition.matchAll(/FILTER_([A-Z]+)/g)].map(([, name]) => name.toLowerCase());
+        assert.deepEqual(gating.sort(), ['api', 'docs', 'ui']);
+        for (const path of [
+            'packages/api/openapi/routeDocs.ts',
+            'packages/api/routeRegistry.ts',
+            'packages/client/src/client.ts',
+            'packages/client/src/generated/apiTypes.ts',
+            'docs/static/openapi/propr-api.yaml',
+            'scripts/generate-openapi.ts',
+            'scripts/check-client-contract.ts',
+        ]) {
+            const surfaces = selected(classifyPaths([path]));
+            assert.ok(gating.some(surface => surfaces.includes(surface)),
+                `${path} selects ${surfaces.join(', ')}, none of which runs check:client-contract`);
+        }
+    });
+
     test('desktop checks run on demand: the label request and the nightly run call them', () => {
         // The unsigned validation includes scheduled and manually dispatched nightly runs.
         for (const job of ['validation-version', 'renderer-axe-boundary', 'package', 'finalize']) {

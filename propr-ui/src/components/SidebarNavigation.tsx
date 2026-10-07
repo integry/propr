@@ -242,7 +242,10 @@ function NavigationGroup({ group, state }: { group: NavGroup; state: NavigationS
         aria-controls={panelId}
         // The header carries the active treatment of its children, so a
         // collapsed group still shows that the current page is inside it.
-        className={`flex w-full items-center justify-between text-left text-[13px] leading-5 transition-colors duration-150 ${getNavigationItemClassName(state.desktop, childActive)}`}
+        // Like the links, it takes its width from the column's stretch: a
+        // w-full here would add the desktop mx-2 inset to the full scrollport
+        // width and overflow the navigation horizontally.
+        className={`flex items-center justify-between text-left text-[13px] leading-5 transition-colors duration-150 ${getNavigationItemClassName(state.desktop, childActive)}`}
       >
         <span className="flex min-w-0 items-center">
           <group.icon className={`${SIDEBAR_ICON_STROKE_CLASS} mr-2.5 h-4 w-4 flex-none`} strokeWidth={SIDEBAR_ICON_STROKE_WIDTH} aria-hidden="true" />

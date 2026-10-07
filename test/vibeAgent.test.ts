@@ -408,7 +408,7 @@ describe('VibeAgent Docker args', () => {
             assert.strictEqual(args[envFileIndex + 1], '/tmp/propr-vibe-agent.env');
             assert.ok(args.includes('PROPR_AGENT_TYPE=vibe'));
             assert.ok(args.includes('PROPR_WORKSPACE=/home/node/workspace'));
-            assert.ok(args.includes('PROPR_CACHE_DIR=/tmp/git-processor/propr-cache/vibe'));
+            assert.ok(args.includes('PROPR_CACHE_DIR=/tmp/propr-setup-cache/vibe'));
             assert.ok(args.includes('VIBE_MAX_TURNS=12'));
             assert.ok(!args.some(arg => arg.includes('propr-vibe-prompt.md')));
 

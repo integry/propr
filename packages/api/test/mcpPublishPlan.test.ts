@@ -22,7 +22,17 @@ const tasks = ['First', 'Second', 'Third'].map(title => ({ title, body: `${title
 after(async () => closeConnection());
 
 async function setup(t: { after: (fn: () => Promise<void>) => void }, id: string, plan: unknown = tasks, filename = ':memory:'): Promise<Knex> {
-  const db = knex({ client: 'better-sqlite3', connection: { filename }, useNullAsDefault: true });
+  // A file-backed fixture otherwise fsyncs every migration transaction, which
+  // alone can consume a timed test's budget on a busy disk. Skipping fsync is
+  // safe here: the database is throwaway, and a killed process's committed
+  // writes still reach the shared OS page cache.
+  const pool = filename === ':memory:' ? undefined : {
+    afterCreate: (connection: { pragma: (source: string) => unknown }, done: (error: Error | null, connection: unknown) => void) => {
+      connection.pragma('synchronous = OFF');
+      done(null, connection);
+    },
+  };
+  const db = knex({ client: 'better-sqlite3', connection: { filename }, useNullAsDefault: true, pool });
   t.after(() => db.destroy());
   await db.migrate.latest({ directory: fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url)) });
   await db('task_drafts').insert({ draft_id: id, user_id: userId, repository, status: 'review', plan_json: JSON.stringify(plan) });
@@ -770,7 +780,8 @@ test('invalid plans and non-partial resume requests fail before claiming or cont
 
 
 for (const resume of [false, true]) {
-  test(`process death during ${resume ? 'resumed' : 'initial'} publication permits marker recovery`, { timeout: 30000 }, async t => {
+  // The owner child cold-compiles the MCP tool graph through tsx: ~8s idle, well over 30s on a loaded CI shard.
+  test(`process death during ${resume ? 'resumed' : 'initial'} publication permits marker recovery`, { timeout: 120_000 }, async t => {
     const root = await mkdtemp(path.join(tmpdir(), 'publication-owner-'));
     t.after(() => rm(root, { recursive: true, force: true }));
     const filename = path.join(root, 'db.sqlite');
