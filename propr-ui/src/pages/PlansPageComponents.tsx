@@ -220,6 +220,11 @@ export const PaginationControls: React.FC<PaginationControlsProps> = ({
 
 interface PlansListProps {
   drafts: DraftListItem[];
+  /**
+   * Every repository with plans (the filter's list). Deciding owner display from it rather than the
+   * current page keeps one short name meaning the same repository on every page.
+   */
+  repositories?: string[];
   abortingId: string | null;
   onDelete: (id: string, e: React.MouseEvent) => void;
   onAbort: (id: string, e: React.MouseEvent) => void;
@@ -227,11 +232,12 @@ interface PlansListProps {
 
 export const PlansList: React.FC<PlansListProps> = ({
   drafts,
+  repositories = [],
   abortingId,
   onDelete,
   onAbort
 }) => {
-  const showRepositoryOwner = hasMultipleRepositoryOwners(drafts.map(draft => draft.repository));
+  const showRepositoryOwner = hasMultipleRepositoryOwners([...repositories, ...drafts.map(draft => draft.repository)]);
   return (
     <div className="flex flex-col h-full bg-white w-full overflow-hidden">
       <div className="flex-1 overflow-y-auto w-full">

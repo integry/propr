@@ -150,6 +150,7 @@ const studioDrafts: Record<string, Record<string, unknown>> = {
 
 export const implementRequests: string[] = [];
 export const queueRequests: string[] = [];
+export const executionSettingsRequests: Array<Record<string, unknown>> = [];
 const executionQueues: Record<string, unknown> = {};
 
 // Answers a studio draft's own endpoints; undefined lets the request fall through to the shared responses.
@@ -165,6 +166,12 @@ function fulfillDraftRoute(route: Route, draftId: string, suffix: string | undef
     const queued = issues.filter(issue => issue.status === 'pending').map(issue => issue.issue_number);
     return route.fulfill({ json: { queued, alreadyQueued: false, queue: executionQueues[draftId] } });
   }
+  if (suffix === '/execution-settings' && route.request().method() === 'PATCH') {
+    const update = route.request().postDataJSON() as Record<string, unknown>;
+    executionSettingsRequests.push(update);
+    const contextConfig = (studioDrafts[draftId].context_config ?? {}) as Record<string, unknown>;
+    return route.fulfill({ json: { success: true, ...contextConfig, ...update } });
+  }
   if (suffix === '/execution-queue') return route.fulfill({ json: { queue: executionQueues[draftId] ?? null } });
   const issueMatch = suffix.match(/^\/issues\/(\d+)$/);
   if (issueMatch && route.request().method() === 'PATCH') {
@@ -178,6 +185,7 @@ function fulfillDraftRoute(route: Route, draftId: string, suffix: string | undef
 export async function fixture(page: Page) {
   implementRequests.length = 0;
   queueRequests.length = 0;
+  executionSettingsRequests.length = 0;
   for (const draftId of Object.keys(executionQueues)) delete executionQueues[draftId];
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', async route => {

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { capture, fixture, implementRequests, queueRequests } from './planner-studio.fixture';
+import { capture, executionSettingsRequests, fixture, implementRequests, queueRequests } from './planner-studio.fixture';
 
 test.beforeEach(async ({ page }) => {
   await fixture(page);
@@ -366,3 +366,71 @@ test('execution popovers stay inside the viewport near its bottom edge', async (
   await expect(config.getByLabel('Max Loops')).toBeInViewport();
   await capture(page, 'execution-config-short-viewport');
 });
+
+test('an edited Max Loops value is saved when the config popover is dismissed', async ({ page }) => {
+  await page.goto('/studio/plan-mcp-exec');
+  const configButton = page.getByTestId('execution-config-button');
+  const config = page.getByRole('dialog', { name: 'Execution config' });
+
+  // Clicking outside unmounts the focused input; the typed limit must still be committed.
+  await configButton.click();
+  await config.getByLabel('Max Loops').fill('7');
+  await page.mouse.click(700, 700);
+  await expect(config).toHaveCount(0);
+  await expect.poll(() => executionSettingsRequests).toEqual([{ ultrafixMaxCycles: 7 }]);
+  await configButton.click();
+  await expect(config.getByLabel('Max Loops')).toHaveValue('7');
+
+  // Escape commits too, and hands focus back to the trigger.
+  await config.getByLabel('Max Loops').fill('3');
+  await page.keyboard.press('Escape');
+  await expect(config).toHaveCount(0);
+  await expect.poll(() => executionSettingsRequests).toEqual([{ ultrafixMaxCycles: 7 }, { ultrafixMaxCycles: 3 }]);
+  await expect(configButton).toBeFocused();
+});
+
+for (const width of [768, 1024]) {
+  test(`the review step shows its phase indicator at ${width}px`, async ({ page }) => {
+    // The mobile stepper hides at md (768px), so the desktop editor must carry the phase switcher from there up.
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/studio/plan-agents');
+    await expect(page.getByRole('navigation', { name: 'Plan phase' })).toBeVisible();
+  });
+}
+
+test('the plan overflow menu is keyboard operable', async ({ page }) => {
+  await page.goto('/studio/plan-agents-exec');
+  const trigger = page.getByRole('button', { name: 'More plan actions' });
+  await trigger.click();
+  const menu = page.getByRole('menu', { name: 'More plan actions' });
+  await expect(menu.getByRole('menuitem', { name: 'Delete plan' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+const overlaps = (left: { x: number; y: number; width: number; height: number }, right: typeof left) =>
+  left.x < right.x + right.width && right.x < left.x + left.width && left.y < right.y + right.height && right.y < left.y + left.height;
+
+for (const width of [768, 1024, 1280]) {
+  test(`the execution header keeps every action reachable without overlap at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/studio/plan-agents-exec');
+    const actions = [
+      page.getByRole('button', { name: 'More plan actions' }),
+      page.getByRole('link', { name: 'View issues on GitHub' }),
+      page.getByRole('button', { name: /Revise/ }),
+      page.getByRole('button', { name: /Pause/ }),
+    ];
+    for (const action of actions) await expect(action).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole('navigation', { name: 'Plan phase' })).toBeInViewport({ ratio: 1 });
+    const title = (await page.getByRole('heading', { level: 1 }).boundingBox())!;
+    expect(title.width).toBeGreaterThanOrEqual(150);
+    const summary = [title, (await page.getByRole('navigation', { name: 'Plan phase' }).boundingBox())!];
+    for (const action of actions) {
+      const box = (await action.boundingBox())!;
+      for (const item of summary) expect(overlaps(item, box)).toBe(false);
+    }
+    await capture(page, `execution-header-${width}`);
+  });
+}

@@ -65,12 +65,16 @@ const buildDefaultOption = (planDefault: string | null | undefined, instanceDefa
   };
 };
 
-/** True when an explicit "agent:model" pick is the same model the default row already runs. */
+/**
+ * True when an explicit "agent:model" pick is the same model the default row already runs.
+ * A bare-label default does not say which agent serves it, so it never hides any agent's entry.
+ */
 const isSameAsDefault = (value: string, resolvedDefault: string | null): boolean => {
   if (!resolvedDefault) return false;
   const defaultParts = splitModelValue(resolvedDefault);
+  if (!defaultParts.agent) return false;
   const parts = splitModelValue(value);
-  return parts.model === defaultParts.model && (!defaultParts.agent || parts.agent === defaultParts.agent);
+  return parts.model === defaultParts.model && parts.agent === defaultParts.agent;
 };
 
 /**
@@ -153,7 +157,8 @@ export const ModelSelector: React.FC<{
   /** Drops the "Model:" label when the surrounding settings row already labels it. */
   hideLabel?: boolean;
 }> = ({ agents, generationModel, onModelChange, defaultModel, disabled = false, fullWidth, hideLabel }) => {
-  const instanceDefaultModel = useInstanceDefaultModel();
+  // A plan-level default wins over the instance default, so the catalog is only needed without one.
+  const instanceDefaultModel = useInstanceDefaultModel(!defaultModel);
   const { open, position, toggle, close, containerRef, popoverRef } = useAnchoredPopover();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listboxId = useId();
@@ -176,7 +181,9 @@ export const ModelSelector: React.FC<{
   const choose = (value: string) => {
     close();
     triggerRef.current?.focus();
-    if (value !== selectedValue) onModelChange(value || null);
+    // Compare with what is persisted, not the displayed row: an explicit pick of the default model
+    // reads as the default row, yet choosing Default must still clear that override.
+    if (value !== (generationModel ?? '')) onModelChange(value || null);
   };
 
   const focusOption = (from: HTMLElement, step: number) => {

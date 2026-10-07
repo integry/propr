@@ -26,7 +26,8 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
   onReorderTasks,
   hideNotes = false,
 }) => {
-  const isMobile = useIsMobile();
+  // Same breakpoint as the editor layout, so the phone editor never hosts the desktop outline rail.
+  const isMobile = useIsMobile(768);
   const [activeTaskIndex, setActiveTaskIndex] = useState<number>(0);
   const [isOutlineCollapsed, setIsOutlineCollapsed] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);

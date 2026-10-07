@@ -99,6 +99,16 @@ function buildExecutionIntentDetails(options: {
 const BATCH_MIN_ISSUES = 2;
 const showRowImplementButton = (useEpic: boolean | undefined, issueCount: number) => !useEpic || issueCount < BATCH_MIN_ISSUES;
 
+/**
+ * The server heads a chained batch with the earliest pending issue (by creation order) and lets
+ * closed predecessors fall out of the sequence, so the batch must not wait on the first unmerged row.
+ */
+function findBatchHeadIssue(issues: PlanIssue[]): PlanIssue | null {
+  return issues
+    .filter(issue => issue.status === 'pending')
+    .reduce<PlanIssue | null>((head, issue) => (head === null || issue.id < head.id ? issue : head), null);
+}
+
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
   repository,
@@ -202,6 +212,15 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     readOnly: isReadOnly,
   }), [intentIssue, isReadOnly, isSavingExecutionSettings, issueMultiModeMap, issueSelectedModelsMap]);
 
+  const batchHeadIssue = useMemo(() => findBatchHeadIssue(activeIssues), [activeIssues]);
+  const batchIntent = useMemo(() => buildExecutionIntentDetails({
+    issue: batchHeadIssue,
+    multiMode: batchHeadIssue ? Boolean(issueMultiModeMap[batchHeadIssue.issue_number]) : false,
+    selectedModels: batchHeadIssue ? issueSelectedModelsMap[batchHeadIssue.issue_number] ?? [] : [],
+    settingsSaving: isSavingExecutionSettings,
+    readOnly: isReadOnly,
+  }), [batchHeadIssue, isReadOnly, isSavingExecutionSettings, issueMultiModeMap, issueSelectedModelsMap]);
+
   useEffect(() => {
     if (loading || notificationIntent !== 'approve_execute') return;
     setShowExecutionIntentDialog(true);
@@ -209,7 +228,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   }, [loading, notificationIntent, onNotificationIntentConsumed]);
 
   const { hasInFlightIssues, handleExecuteAll, batchLocked, batchBusy } = useExecuteAll({
-    issues, executionIntent, isReadOnly, isSavingExecutionSettings, implementingIssue, queueingRemaining,
+    issues, executionIntent: batchIntent, isReadOnly, isSavingExecutionSettings, implementingIssue, queueingRemaining,
     handleImplementIssue, handleQueueRemaining,
   });
 
@@ -335,6 +354,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
               isQueued={queuedIssueNumbers.has(issue.issue_number)}
               defaultSelection={planDefaultSelection}
               showImplementButton={showRowImplementButton(useEpic, issueCount) && !queuedIssueNumbers.has(issue.issue_number)}
+              implementButtonLabel={useEpic ? 'Implement Epic' : 'Implement'}
               onImplementWithWarning={handleImplementWithWarning}
               inheritedIsMulti={issueMultiModeMap[issue.issue_number]}
               inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
@@ -353,9 +373,10 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         useEpic={useEpic}
         autoMerge={autoMerge}
         hasRunningIssues={hasInFlightIssues}
-        canExecute={executionIntent.canExecute}
-        readOnly={batchLocked}
-        unavailableReason={executionIntent.unavailableReason}
+        canExecute={batchIntent.canExecute}
+        readOnly={isReadOnly}
+        locked={batchLocked}
+        unavailableReason={batchIntent.unavailableReason}
         executing={batchBusy}
         onExecuteAll={handleExecuteAll}
       />

@@ -17,11 +17,13 @@ export function resolveInstanceDefaultModel(catalog: Pick<InstanceCatalogRespons
 
 /**
  * Loads the instance-wide planner default model (`agent:model`, or a bare label).
- * Undefined while the catalog loads; null when the instance names no default.
+ * Undefined while the catalog loads (or when not `enabled`); null when the instance names no default.
+ * Callers that already know the plan's own default pass `enabled: false` and skip the catalog request.
  */
-export function useInstanceDefaultModel(): string | null | undefined {
+export function useInstanceDefaultModel(enabled = true): string | null | undefined {
   const [model, setModel] = useState<string | null | undefined>(undefined);
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     getInstanceCatalog()
       .then(catalog => { if (!cancelled) setModel(resolveInstanceDefaultModel(catalog)); })
@@ -30,6 +32,6 @@ export function useInstanceDefaultModel(): string | null | undefined {
         if (!cancelled) setModel(null);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [enabled]);
   return model;
 }

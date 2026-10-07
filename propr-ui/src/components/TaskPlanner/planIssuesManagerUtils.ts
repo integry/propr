@@ -8,9 +8,24 @@ export interface IssueCreationProgress {
   totalCount: number;
   failedCount: number;
   lastCreatedIssue?: { number: number; url: string; title: string };
-  /** Every issue created by this run so far, in creation order (events only carry the latest one). */
-  createdIssues?: Array<{ number: number; url: string; title: string }>;
+  /**
+   * The issues this client saw being created, in arrival order (events only carry the latest one).
+   * A client that connects mid-run misses the earlier events, so this can be incomplete; each entry
+   * keeps the index of the task that created it instead of relying on its array position.
+   */
+  createdIssues?: CreatedIssue[];
   error?: string;
+}
+
+export interface CreatedIssue {
+  number: number;
+  url: string;
+  title: string;
+  /**
+   * Index of the plan task that created this issue. The server creates issues one task at a time and
+   * counts every settled task as created or failed, so it is the event's createdCount + failedCount - 1.
+   */
+  taskIndex: number;
 }
 
 /** Data payload for execution step updates */
@@ -43,7 +58,9 @@ export function createProgressState(
 export function withCreatedIssues(next: IssueCreationProgress, previous: IssueCreationProgress): IssueCreationProgress {
   const prior = next.createdCount === 0 ? [] : previous.createdIssues ?? [];
   const latest = next.lastCreatedIssue;
-  const createdIssues = latest && !prior.some(issue => issue.number === latest.number) ? [...prior, latest] : prior;
+  const createdIssues = latest && next.createdCount > 0 && !prior.some(issue => issue.number === latest.number)
+    ? [...prior, { ...latest, taskIndex: next.createdCount + next.failedCount - 1 }]
+    : prior;
   return { ...next, createdIssues };
 }
 

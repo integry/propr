@@ -28,6 +28,12 @@ describe('withCreatedIssues', () => {
     expect(state.createdIssues?.map(issue => issue.number)).toEqual([2900, 2901, 2902]);
   });
 
+  it('records which task created each issue, counting failed tasks', () => {
+    let state = withCreatedIssues(progress(1, 0, 2900), IDLE_PROGRESS);
+    state = withCreatedIssues(progress(2, 2, 2901), state);
+    expect(state.createdIssues?.map(issue => [issue.number, issue.taskIndex])).toEqual([[2900, 0], [2901, 3]]);
+  });
+
   it('starts over when a fresh run reports zero created issues', () => {
     const earlier = withCreatedIssues(progress(1, 0, 2900), IDLE_PROGRESS);
     expect(withCreatedIssues(progress(0), earlier).createdIssues).toEqual([]);

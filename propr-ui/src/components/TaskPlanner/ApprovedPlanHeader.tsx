@@ -86,7 +86,7 @@ const HEADER_GHOST_BUTTON_CLASS = 'flex items-center gap-1.5 rounded-md px-2.5 p
 const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl, onPauseResume, onRevise, onDelete, isReadOnly = false, isCreatingIssues = false }) => {
   const showPauseResume = isPauseResumeAvailable(draftStatus);
   return (
-    <div className="flex flex-shrink-0 items-center justify-end gap-1">
+    <div className="ml-auto flex flex-shrink-0 items-center justify-end gap-1">
       {showPauseResume && (
         <button
           onClick={onPauseResume}
@@ -146,7 +146,9 @@ interface PlanHeaderSummaryProps {
   initialPrompt?: string | null;
 }
 const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftStatus, isPaused, repository, baseBranch, initialPrompt }) => (
-  <div className="flex items-center gap-x-4 min-w-0 flex-1">
+  // No min-w-0: the summary never shrinks below its content, so a header too narrow for both clusters
+  // wraps the actions onto their own line instead of letting the summary slide underneath them.
+  <div className="flex items-center gap-x-4 flex-1">
     {/* Compact repository chip anchors the git context without a full breadcrumb row; owner and branch are in the tooltip. */}
     {repository && (
       <span
@@ -158,8 +160,10 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
         <span className="truncate">{repository.split('/').pop() || repository}</span>
       </span>
     )}
-    {/* The title grows into free header space (wider on widescreens) and keeps at least 320px before the controls squeeze it. */}
-    <h1 className="text-lg font-semibold text-gray-900 truncate flex-1 min-w-[320px] max-w-xl 2xl:max-w-3xl" title={planName}>
+    {/* The title grows into free header space (wider on widescreens) and keeps a readable floor; below
+        it the actions wrap to a second line rather than squeezing the title away. Inline-size containment
+        keeps the full title text out of the summary's minimum width, so only the floor counts. */}
+    <h1 className="text-lg font-semibold text-gray-900 truncate flex-1 min-w-[12rem] max-w-xl 2xl:max-w-3xl [contain:inline-size]" title={planName}>
       {planName}
     </h1>
     <PlanStatusBadges draftStatus={draftStatus} isPaused={isPaused} />
@@ -240,7 +244,7 @@ export const ApprovedPlanHeader: React.FC<ApprovedPlanHeaderProps> = (props) => 
   if (isMobile) return <MobilePlanHeader {...props} />;
   const { planName, draftStatus, isPaused, repository, baseBranch, initialPrompt, ...actions } = props;
   return (
-    <div className="flex items-center justify-between gap-4 border-b border-gray-200 bg-gray-100 px-6 py-2 flex-shrink-0">
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-gray-200 bg-gray-100 px-6 py-2 flex-shrink-0">
       <PlanHeaderSummary planName={planName} draftStatus={draftStatus} isPaused={isPaused} repository={repository} baseBranch={baseBranch} initialPrompt={initialPrompt} />
       <PlanHeaderActions draftStatus={draftStatus} isPaused={isPaused} {...actions} />
     </div>

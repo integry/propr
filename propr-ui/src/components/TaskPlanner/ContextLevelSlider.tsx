@@ -36,6 +36,9 @@ interface ContextLevelConfig {
   latencyEstimate: string;
 }
 
+// The scan times are fixed typical ranges, not measurements of the selected repository.
+const LATENCY_ESTIMATE_NOTE = 'Typical scan time for this scope; not measured for this repository';
+
 const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
   focused: {
     label: 'Focused',
@@ -102,7 +105,7 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
           aria-valuetext={`${value}% (${config.label})`}
           className="context-slider w-full h-1.5 rounded-lg cursor-pointer"
         />
-        <p className="text-[11px] font-mono text-slate-500" data-testid="context-scope-estimate">
+        <p className="text-[11px] font-mono text-slate-500" data-testid="context-scope-estimate" title={LATENCY_ESTIMATE_NOTE}>
           {config.scanName} · {estimate}
         </p>
       </div>
@@ -122,7 +125,7 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
             {value}%
           </span>
         </div>
-        <span className="text-xs font-mono text-slate-500 whitespace-nowrap" data-testid="context-scope-estimate">
+        <span className="text-xs font-mono text-slate-500 whitespace-nowrap" data-testid="context-scope-estimate" title={LATENCY_ESTIMATE_NOTE}>
           {estimate}
         </span>
       </div>

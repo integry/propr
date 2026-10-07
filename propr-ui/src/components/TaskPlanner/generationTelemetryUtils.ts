@@ -34,6 +34,17 @@ export function collectTelemetryFiles(trace: GenerationTrace | undefined, previe
     .concat(extra);
 }
 
+/** True once the run's relevance step has reported its own candidates (not the last preview's). */
+export function hasReportedCandidates(trace: GenerationTrace | undefined): boolean {
+  const candidates = findStep(trace, 'relevance')?.data?.candidates;
+  return Array.isArray(candidates) && candidates.length > 0;
+}
+
+/** True while the listed files are the last preview's selection rather than anything the run reported. */
+export function isPreviewDerived(trace: GenerationTrace | undefined, fileCount: number, contextDone: boolean): boolean {
+  return fileCount > 0 && !contextDone && !hasReportedCandidates(trace);
+}
+
 /** How far discovery has got, 0-1: relevance ranking is the first 40%, compiling context the rest. */
 export function getDiscoveryFraction(trace: GenerationTrace | undefined, now: number): number {
   const relevance = findStep(trace, 'relevance');

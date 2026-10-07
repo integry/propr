@@ -20,11 +20,11 @@ describe('ExecuteAllBar', () => {
     expect(onExecuteAll).toHaveBeenCalledTimes(1);
   });
 
-  it('explains why individual tasks cannot be chained without auto-merge', () => {
+  it('shows a quiet hint instead of a dead button when no chaining mode is on', () => {
     render(<ExecuteAllBar {...baseProps} onExecuteAll={vi.fn()} />);
 
-    expect(screen.getByRole('button', { name: /Queue Remaining/ })).toBeDisabled();
-    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('auto-merge');
+    expect(screen.queryByRole('button', { name: /Queue Remaining/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('Enable auto-merge or Epic PR to queue the remaining tasks.');
   });
 
   it('describes the immediate head start instead of promising slot-based dispatch', () => {
@@ -59,6 +59,21 @@ describe('ExecuteAllBar', () => {
   });
   it('is disabled for read-only viewers even while issues run', () => {
     render(<ExecuteAllBar {...baseProps} autoMerge hasRunningIssues readOnly onExecuteAll={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: /Queue Remaining/ })).toBeDisabled();
+  });
+
+  it('explains the demo lock on an idle epic batch', () => {
+    render(<ExecuteAllBar {...baseProps} useEpic readOnly locked onExecuteAll={vi.fn()} />);
+
+    const button = screen.getByRole('button', { name: /Queue Remaining/ });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', 'Demo mode is read-only');
+    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('Demo mode is read-only.');
+  });
+
+  it('is disabled while execution settings are saving', () => {
+    render(<ExecuteAllBar {...baseProps} useEpic locked onExecuteAll={vi.fn()} />);
 
     expect(screen.getByRole('button', { name: /Queue Remaining/ })).toBeDisabled();
   });

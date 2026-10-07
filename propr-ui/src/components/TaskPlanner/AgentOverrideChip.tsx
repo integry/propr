@@ -39,7 +39,7 @@ export const AgentOverrideChip: React.FC<AgentOverrideChipProps> = ({
 }) => {
   // The popover is portalled with fixed, viewport-aware coordinates so neither the row's overflow
   // clipping nor the viewport edge can cut it off.
-  const { open, position, toggle, close, containerRef, popoverRef } = useAnchoredPopover();
+  const { open, position, toggle, close, containerRef, popoverRef } = useAnchoredPopover({ focusOnOpen: true });
   const issueNumber = issue.issue_number;
   const label = getAgentChipLabel(issue, isMultiMode, selectedModels);
   const canReset = !isMultiMode && isOverriddenFromDefault(issue, defaultSelection);
@@ -76,8 +76,9 @@ export const AgentOverrideChip: React.FC<AgentOverrideChipProps> = ({
           ref={popoverRef}
           role="dialog"
           aria-label={`Agent override for #${issueNumber}`}
+          tabIndex={-1}
           style={position}
-          className="fixed z-50 w-max max-w-[calc(100vw-2rem)] overflow-y-auto rounded-md border border-slate-200 bg-white p-3 shadow-lg"
+          className="fixed z-50 focus:outline-none w-max max-w-[calc(100vw-2rem)] overflow-y-auto rounded-md border border-slate-200 bg-white p-3 shadow-lg"
         >
           <div className="mb-2 flex items-baseline justify-between gap-4">
             <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Agent for #{issueNumber}</span>

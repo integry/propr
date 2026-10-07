@@ -15,7 +15,7 @@ interface ExecutionConfigPopoverProps {
 export const ExecutionConfigPopover: React.FC<ExecutionConfigPopoverProps> = ({ summary, children }) => {
   // Portalled with fixed, viewport-aware coordinates so neither the surrounding layout nor a
   // short viewport can clip it.
-  const { open, position, toggle, containerRef, popoverRef } = useAnchoredPopover();
+  const { open, position, toggle, containerRef, popoverRef } = useAnchoredPopover({ focusOnOpen: true });
 
   return (
     <div ref={containerRef} className="relative min-w-0">
@@ -39,8 +39,9 @@ export const ExecutionConfigPopover: React.FC<ExecutionConfigPopoverProps> = ({ 
           ref={popoverRef}
           role="dialog"
           aria-label="Execution config"
+          tabIndex={-1}
           style={position}
-          className="fixed z-50 w-max max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-slate-200 bg-white p-3 shadow-lg"
+          className="fixed z-50 focus:outline-none w-max max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-slate-200 bg-white p-3 shadow-lg"
         >
           {children}
         </div>,

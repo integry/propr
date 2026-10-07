@@ -10,35 +10,32 @@ import { getExecutionConfigSummary } from './planIssueRowUtils';
 import { getOutlineTitle } from './planDisplayName';
 
 type CreatedIssueRef = { number: number; url?: string; title?: string };
+type ReceivedIssueRef = CreatedIssueRef & { taskIndex: number };
 
 /**
- * The issue a task became. Matches the run's created issues by title first; position only
- * lines up while nothing has failed, because a failed task is skipped without an issue.
+ * The issue a task became: the persisted link, else the received event that names this task.
+ * Issues created before this client connected stay unresolved rather than borrowing a neighbour's link.
  */
-const findCreatedIssue = (task: PlanTask, index: number, createdIssues: CreatedIssueRef[], failedCount: number): CreatedIssueRef | null => {
+const findCreatedIssue = (task: PlanTask, index: number, createdIssues: ReceivedIssueRef[]): CreatedIssueRef | null => {
   if (task.issue_number) return { number: task.issue_number, url: task.issue_url };
-  const byTitle = createdIssues.find(issue => issue.title === task.title);
-  if (byTitle) return byTitle;
-  return failedCount === 0 ? createdIssues[index] ?? null : null;
+  return createdIssues.find(issue => issue.taskIndex === index) ?? null;
 };
 
 /** Issue creation renders inside the same execution matrix the created issues will occupy. */
 export const TasksBeingCreated: React.FC<{
   tasks: PlanTask[];
-  issueCreationProgress: { createdCount: number; failedCount?: number; lastCreatedIssue?: CreatedIssueRef | null; createdIssues?: CreatedIssueRef[] };
+  issueCreationProgress: { createdCount: number; failedCount?: number; lastCreatedIssue?: CreatedIssueRef | null; createdIssues?: ReceivedIssueRef[] };
   spinnerRotationDegrees?: number;
 }> = ({ tasks, issueCreationProgress, spinnerRotationDegrees }) => {
   const { createdCount, failedCount = 0, lastCreatedIssue } = issueCreationProgress;
-  const createdIssues = issueCreationProgress.createdIssues ?? [];
+  const createdIssues = issueCreationProgress.createdIssues
+    ?? (lastCreatedIssue && createdCount > 0 ? [{ ...lastCreatedIssue, taskIndex: createdCount + failedCount - 1 }] : []);
   return (
     <div className="divide-y divide-slate-100 rounded-md border border-slate-200 bg-white">
       {tasks.map((task, index) => {
-        const isCreated = index < createdCount;
-        const isCreating = index === createdCount;
-        const created = isCreated
-          ? findCreatedIssue(task, index, createdIssues, failedCount)
-            ?? (lastCreatedIssue && index === createdCount - 1 ? lastCreatedIssue : null)
-          : null;
+        const created = findCreatedIssue(task, index, createdIssues);
+        const isCreated = created !== null || index < createdCount;
+        const isCreating = !isCreated && index === createdCount;
 
         return (
           <div key={task.id || index} className="flex items-center gap-3 px-3 sm:px-4 py-2" data-testid="issue-creation-row">

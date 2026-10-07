@@ -64,6 +64,46 @@ describe('ModelSelector', () => {
     expect(screen.getAllByRole('option')).toHaveLength(2);
   });
 
+  it('clears an explicit override of the default model when Default is chosen', async () => {
+    const onModelChange = vi.fn();
+    render(<ModelSelector agents={agents} generationModel="claude:claude-opus-5-5" onModelChange={onModelChange} />);
+    const trigger = screen.getByTestId('planner-model-selector');
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 5.5 (Default)'));
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('option', { name: /Claude Opus 5\.5 \(Default\)/ }));
+    expect(onModelChange).toHaveBeenCalledWith(null);
+  });
+
+  it('does not re-save Default when no model is persisted', async () => {
+    const onModelChange = vi.fn();
+    render(<ModelSelector agents={agents} generationModel={null} onModelChange={onModelChange} />);
+    const trigger = screen.getByTestId('planner-model-selector');
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 5.5 (Default)'));
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('option', { name: /Claude Opus 5\.5 \(Default\)/ }));
+    expect(onModelChange).not.toHaveBeenCalled();
+  });
+
+  it('skips the catalog request when the plan supplies its own default', () => {
+    vi.mocked(getInstanceCatalog).mockClear();
+    render(<ModelSelector agents={agents} generationModel={null} onModelChange={vi.fn()} defaultModel="claude:claude-sonnet-5-5" />);
+    expect(getInstanceCatalog).not.toHaveBeenCalled();
+  });
+
+  it('keeps every agent entry when the default is a bare model label', async () => {
+    const twoAgents: InstanceCatalogAgent[] = [
+      ...agents,
+      { alias: 'bedrock', enabled: true, supportedModels: ['claude-opus-5-5'], defaultModel: 'claude-opus-5-5' },
+    ];
+    vi.mocked(getInstanceCatalog).mockResolvedValue({ agents: twoAgents, repositories: [], defaultAgentAlias: 'claude', plannerGenerationModel: 'claude-opus-5-5' });
+    render(<ModelSelector agents={twoAgents} generationModel={null} onModelChange={vi.fn()} />);
+    const trigger = screen.getByTestId('planner-model-selector');
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 5.5 (Default)'));
+    fireEvent.click(trigger);
+    expect(screen.getByRole('option', { name: /Claude Opus 5\.5\s*claude$/ })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Claude Opus 5\.5\s*bedrock$/ })).toBeInTheDocument();
+  });
+
   it('shows the explicit model without the default suffix once one is chosen', () => {
     render(<ModelSelector agents={agents} generationModel="claude:claude-sonnet-5-5" onModelChange={vi.fn()} />);
     expect(screen.getByTestId('planner-model-selector')).toHaveTextContent(/^Claude Sonnet 5\.5$/);

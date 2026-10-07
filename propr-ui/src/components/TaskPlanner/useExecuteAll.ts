@@ -18,22 +18,23 @@ export function useExecuteAll(options: {
   handleImplementIssue: (issueNumber: number, models?: AgentModelPair[]) => Promise<void>;
   handleQueueRemaining: () => Promise<void>;
 }) {
-  const { issues, executionIntent, isReadOnly, handleImplementIssue, handleQueueRemaining } = options;
+  const { issues, executionIntent, isReadOnly, isSavingExecutionSettings, handleImplementIssue, handleQueueRemaining } = options;
   // Running or in-review issues hold the plan's sequence; pending work queues behind them.
   const hasInFlightIssues = useMemo(() => issues.some(issue => !IDLE_STATUSES.has(issue.status)), [issues]);
   const handleExecuteAll = useCallback(() => {
-    if (isReadOnly) return;
+    // Demo viewers cannot mutate, and an in-flight settings save would dispatch a mode that is not persisted yet.
+    if (isReadOnly || isSavingExecutionSettings) return;
     if (hasInFlightIssues) {
       void handleQueueRemaining();
       return;
     }
     if (!executionIntent.canExecute || !executionIntent.issue) return;
     void handleImplementIssue(executionIntent.issue.issue_number, executionIntent.models);
-  }, [executionIntent, handleImplementIssue, handleQueueRemaining, hasInFlightIssues, isReadOnly]);
+  }, [executionIntent, handleImplementIssue, handleQueueRemaining, hasInFlightIssues, isReadOnly, isSavingExecutionSettings]);
   return {
     hasInFlightIssues,
     handleExecuteAll,
-    batchLocked: isReadOnly || options.isSavingExecutionSettings,
+    batchLocked: isReadOnly || isSavingExecutionSettings,
     batchBusy: options.implementingIssue !== null || options.queueingRemaining,
   };
 }

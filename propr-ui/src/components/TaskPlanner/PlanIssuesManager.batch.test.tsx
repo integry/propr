@@ -58,8 +58,10 @@ vi.mock('./usePlanIssuesManager', () => ({
   },
 }));
 vi.mock('./PlanIssueRow', () => ({
-  default: ({ issue, showImplementButton, isQueued }: { issue: PlanIssue; showImplementButton?: boolean; isQueued?: boolean }) => (
-    <div data-testid="row">#{issue.issue_number}{showImplementButton !== false && issue.status === 'pending' ? ' Implement' : ''}{isQueued ? ' Queued' : ''}</div>
+  default: ({ issue, showImplementButton, implementButtonLabel = 'Implement', isQueued }: {
+    issue: PlanIssue; showImplementButton?: boolean; implementButtonLabel?: string; isQueued?: boolean;
+  }) => (
+    <div data-testid="row">#{issue.issue_number}{showImplementButton !== false && issue.status === 'pending' ? ` ${implementButtonLabel}` : ''}{isQueued ? ' Queued' : ''}</div>
   ),
 }));
 vi.mock('./PlanIssuesManagerToolbar', () => ({
@@ -83,10 +85,13 @@ const issue = (issueNumber: number, status: PlanIssue['status']): PlanIssue => (
 });
 const tasks = (count: number) => Array.from({ length: count }, (_, index) => ({ id: `t${index}`, title: `Task ${index}` })) as PlanTask[];
 
-function renderManager(options: { useEpic?: boolean; autoMerge?: boolean; taskCount?: number } = {}) {
+function renderManager(options: {
+  useEpic?: boolean; autoMerge?: boolean; taskCount?: number; isReadOnly?: boolean; isSavingExecutionSettings?: boolean;
+} = {}) {
   return render(
     <PlanIssuesManager draftId="draft-1" repository="integry/propr" tasks={tasks(options.taskCount ?? state.issues.length)}
-      useEpic={options.useEpic} autoMerge={options.autoMerge} />,
+      useEpic={options.useEpic} autoMerge={options.autoMerge} isReadOnly={options.isReadOnly}
+      isSavingExecutionSettings={options.isSavingExecutionSettings} />,
   );
 }
 
@@ -160,10 +165,48 @@ describe('PlanIssuesManager batch queue', () => {
     expect(screen.queryByText(/Implement/)).not.toBeInTheDocument();
   });
 
-  test('falls back to the row button when an epic has a single issue', () => {
+  test('falls back to an "Implement Epic" row button when an epic has a single issue', () => {
     state.issues = [issue(1, 'pending')];
     renderManager({ useEpic: true, taskCount: 0 });
     expect(screen.queryByRole('button', { name: /Queue Remaining/ })).not.toBeInTheDocument();
-    expect(screen.getByTestId('row')).toHaveTextContent('#1 Implement');
+    expect(screen.getByTestId('row')).toHaveTextContent('#1 Implement Epic');
+  });
+
+  test('starts the remaining epic after a closed predecessor', () => {
+    state.issues = [issue(1, 'closed'), issue(2, 'pending'), issue(3, 'pending')];
+    renderManager({ useEpic: true });
+    const button = screen.getByRole('button', { name: 'Queue Remaining (2 tasks)' });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(state.handleImplementIssue).toHaveBeenCalledWith(2, undefined);
+  });
+
+  test('heads the batch with the earliest-created pending issue, matching the server', () => {
+    state.issues = [{ ...issue(5, 'pending'), id: 10 }, { ...issue(7, 'pending'), id: 3 }, issue(1, 'merged')];
+    renderManager({ autoMerge: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Queue Remaining (2 tasks)' }));
+    expect(state.handleImplementIssue).toHaveBeenCalledWith(7, undefined);
+  });
+
+  test.each([
+    ['demo mode', { isReadOnly: true }],
+    ['an execution-settings save', { isSavingExecutionSettings: true }],
+  ])('locks the idle epic batch during %s', (_label, flags) => {
+    state.issues = [issue(1, 'pending'), issue(2, 'pending'), issue(3, 'pending')];
+    renderManager({ useEpic: true, ...flags });
+    const button = screen.getByRole('button', { name: 'Queue Remaining (3 tasks)' });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(state.handleImplementIssue).not.toHaveBeenCalled();
+    expect(state.handleQueueRemaining).not.toHaveBeenCalled();
+  });
+
+  test('does not queue behind running work while settings are saving', () => {
+    state.issues = [issue(1, 'processing'), issue(2, 'pending'), issue(3, 'pending')];
+    renderManager({ autoMerge: true, isSavingExecutionSettings: true });
+    const button = screen.getByRole('button', { name: 'Queue Remaining (2 tasks)' });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(state.handleQueueRemaining).not.toHaveBeenCalled();
   });
 });
