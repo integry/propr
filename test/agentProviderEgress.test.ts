@@ -32,8 +32,13 @@ const codexTransport = (transport: 'websocket' | 'sse') => buildCodexStreamConfi
     .map(arg => `'${arg.replaceAll("'", `'\\''`)}'`).join(' ');
 
 /** One invocation per supported transport, each with a credential the provider rejects. */
-const CASES: Array<{ name: string; agent: AgentType; env: string[]; command: string }> = [
-    { name: 'Claude Code', agent: 'claude', env: ['ANTHROPIC_API_KEY=sk-ant-propr-egress-invalid'], command: `claude -p '${PROMPT}' --max-turns 1` },
+const CASES: Array<{ name: string; agent: AgentType; env: string[]; setup?: string; command: string }> = [
+    {
+        // stream-json carries the provider's error (text mode only prints "Execution error"); the
+        // non-essential traffic (telemetry, error reporting, auto-update) is denied by the proxy anyway.
+        name: 'Claude Code', agent: 'claude', env: ['ANTHROPIC_API_KEY=sk-ant-propr-egress-invalid', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1'],
+        command: `claude -p '${PROMPT}' --max-turns 1 --output-format stream-json --verbose`,
+    },
     {
         name: 'Codex (WebSocket stream)', agent: 'codex', env: ['OPENAI_API_KEY=sk-propr-egress-invalid', 'CODEX_API_KEY=sk-propr-egress-invalid'],
         command: `codex exec --ephemeral --skip-git-repo-check ${codexTransport('websocket')} '${PROMPT}'`,
@@ -44,8 +49,11 @@ const CASES: Array<{ name: string; agent: AgentType; env: string[]; command: str
     },
     { name: 'OpenCode', agent: 'opencode', env: ['ANTHROPIC_API_KEY=sk-ant-propr-egress-invalid'], command: `opencode run --model anthropic/claude-sonnet-4-5 '${PROMPT}'` },
     {
+        // The entrypoint only rewrites `--prompt-file` when vibe is the container command, so call the
+        // prompt-file runner it would exec, the way VibeAgent's runs reach Vibe.
         name: 'Vibe', agent: 'vibe', env: ['MISTRAL_API_KEY=propr-egress-invalid'],
-        command: `printf '%s' '${PROMPT}' > /tmp/propr-egress-prompt.txt && vibe --output json --prompt-file /tmp/propr-egress-prompt.txt`,
+        setup: `printf '%s' '${PROMPT}' > /tmp/propr-egress-prompt.txt && export PROPR_VIBE_PROMPT_FILE=/tmp/propr-egress-prompt.txt`,
+        command: 'propr-vibe-prompt-file --output json',
     },
 ];
 
@@ -71,15 +79,16 @@ for (const entry of CASES) {
             ], image!, entry.agent);
             const { result, report } = await executeWithNetworkPolicy(
                 { mode: 'restricted', source: 'workflow', allow: [] },
-                () => executeDockerCommand('docker', [...args, '/bin/bash', '-c', `timeout 150 ${entry.command} 2>&1; echo "propr-exit=$?"`], { timeout: 240_000 }),
+                () => executeDockerCommand('docker', [...args, '/bin/bash', '-c', `${entry.setup ? `${entry.setup} && ` : ''}timeout 150 ${entry.command} 2>&1; echo "propr-exit=$?"`], { timeout: 240_000 }),
             );
             const output = `${result.stdout}\n${result.stderr}`;
+            const details = `${output.slice(-4000)}\nproxy report: ${JSON.stringify(report)}`;
             assert.equal(report.restrictedContainers, 1);
-            assert.doesNotMatch(output, /propr-exit=124\b/, `${entry.name} hung instead of finishing:\n${output.slice(-4000)}`);
-            assert.doesNotMatch(output, BYPASSED_PROXY, `${entry.name} tried to reach the network without the proxy:\n${output.slice(-4000)}`);
-            assert.ok(report.allowedConnections >= 1, `${entry.name} opened no connection through the proxy:\n${output.slice(-4000)}`);
-            assert.equal(report.failedConnections, 0, `allowed provider hosts must be reachable: ${JSON.stringify(report.failedHosts)}`);
-            assert.match(output, PROVIDER_REJECTED, `${entry.name} got no answer from its provider:\n${output.slice(-4000)}`);
+            assert.doesNotMatch(output, /propr-exit=124\b/, `${entry.name} hung instead of finishing:\n${details}`);
+            assert.doesNotMatch(output, BYPASSED_PROXY, `${entry.name} tried to reach the network without the proxy:\n${details}`);
+            assert.ok(report.allowedConnections >= 1, `${entry.name} opened no connection through the proxy:\n${details}`);
+            assert.equal(report.failedConnections, 0, `allowed provider hosts must be reachable:\n${details}`);
+            assert.match(output, PROVIDER_REJECTED, `${entry.name} got no answer from its provider:\n${details}`);
         } finally {
             if (previous === undefined) delete process.env.PROPR_EGRESS_SOCKET_DIR; else process.env.PROPR_EGRESS_SOCKET_DIR = previous;
             await rm(socketRoot, { recursive: true, force: true });
