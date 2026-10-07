@@ -21,13 +21,18 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const MEMBER = { canManageAgents: false, canManageMembers: false, canReadMcpLog: false };
 const ADMINISTRATOR = { canManageAgents: true, canManageMembers: true, canReadMcpLog: true };
 
+// Chromium drops ::-webkit-scrollbar sizing while scrollbar-width or
+// scrollbar-color is set, so the fixture resets both and sizes the scrollbar
+// explicitly instead of relying on the OS default.
+const CLASSIC_SCROLLBAR = 20;
+
 const cases = [
   { name: 'desktop administrator', desktop: true, viewport: { width: 1280, height: 900 }, permissions: ADMINISTRATOR },
   { name: 'desktop member', desktop: true, viewport: { width: 1280, height: 900 }, permissions: MEMBER },
   // Short windows scroll the navigation vertically with the shipped thin
   // scrollbar, which takes layout width from the scrollport.
   { name: 'desktop narrow, scrolling', desktop: true, viewport: { width: 1024, height: 380 }, permissions: ADMINISTRATOR, scrolls: true },
-  // An OS-default classic scrollbar is wider than the shipped thin one.
+  // A classic scrollbar wider than the shipped 8px one (see CLASSIC_SCROLLBAR).
   { name: 'desktop narrow, classic scrollbar', desktop: true, viewport: { width: 800, height: 380 }, permissions: ADMINISTRATOR, scrolls: true, classicScrollbar: true },
   { name: 'mobile 320 administrator', desktop: false, viewport: { width: 320, height: 640 }, permissions: ADMINISTRATOR },
   { name: 'mobile 390 member', desktop: false, viewport: { width: 390, height: 844 }, permissions: MEMBER },
@@ -95,7 +100,10 @@ it('fits desktop and mobile navigation rows, including group headers, inside the
     await page.goto('http://navigation.test/');
     await page.addStyleTag({ content: base.css });
     await page.addStyleTag({ path: join(directory, 'renderer.css') });
-    await page.addStyleTag({ content: '.desktop-app.classic-scrollbar nav { scrollbar-width: auto; }' });
+    await page.addStyleTag({ content: `
+      .desktop-app.classic-scrollbar nav { scrollbar-width: auto; scrollbar-color: auto; }
+      .desktop-app.classic-scrollbar nav::-webkit-scrollbar { width: ${CLASSIC_SCROLLBAR}px; }
+    ` });
     await page.addScriptTag({ path: join(directory, 'renderer.js') });
 
     const measure = () => page.evaluate(() => {
@@ -180,7 +188,11 @@ it('fits desktop and mobile navigation rows, including group headers, inside the
       assertFits(state, collapsed, 'collapsed');
       if (state.scrolls) {
         assert.ok(collapsed.scrollHeight > collapsed.clientHeight, `${state.name} scrolls vertically`);
-        assert.ok(collapsed.scrollbarWidth > (state.classicScrollbar ? 8 : 0), `${state.name} has a classic scrollbar taking layout width: ${collapsed.scrollbarWidth}`);
+        if (state.classicScrollbar) {
+          assert.equal(collapsed.scrollbarWidth, CLASSIC_SCROLLBAR, `${state.name} has the configured classic scrollbar taking layout width`);
+        } else {
+          assert.ok(collapsed.scrollbarWidth > 0, `${state.name} has a scrollbar taking layout width: ${collapsed.scrollbarWidth}`);
+        }
       }
 
       // Keyboard: Tab from the preceding link reaches the header, which shows
