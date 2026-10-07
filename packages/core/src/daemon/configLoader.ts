@@ -15,6 +15,8 @@ let primaryProcessingLabels: string[] = [];
 let monitoredRepos: string[] = [];
 let GITHUB_USER_WHITELIST: string[] = (process.env.GITHUB_USER_WHITELIST ?? '').split(',').filter(u => u);
 let GITHUB_BOT_USERNAME: string | undefined = process.env.GITHUB_BOT_USERNAME;
+/** False while GITHUB_BOT_USERNAME holds the default used after a failed detection. */
+let botUsernameVerified = !!GITHUB_BOT_USERNAME;
 
 export function getReposFromEnv(environment: NodeJS.ProcessEnv = process.env): string[] {
     const configuredRepos = environment.GITHUB_REPOS_TO_MONITOR;
@@ -187,21 +189,39 @@ export function getBotUsername(): string | undefined {
     return GITHUB_BOT_USERNAME;
 }
 
+async function detectInstallationBotUsername(): Promise<string> {
+    const octokit = await getAuthenticatedOctokit();
+    const { data: installation } = await octokit.request('GET /installation');
+    const appSlug = (installation as { app_slug?: unknown }).app_slug;
+    if (typeof appSlug !== 'string' || !appSlug) throw new Error('GitHub did not report the installation App slug');
+    GITHUB_BOT_USERNAME = `${appSlug}[bot]`;
+    botUsernameVerified = true;
+    logger.info({ botUsername: GITHUB_BOT_USERNAME }, 'Auto-detected bot username');
+    return GITHUB_BOT_USERNAME;
+}
+
 export async function detectBotUsername(): Promise<string> {
     if (GITHUB_BOT_USERNAME) return GITHUB_BOT_USERNAME;
 
     try {
-        const octokit = await getAuthenticatedOctokit();
-        const { data: installation } = await octokit.request('GET /installation');
-        GITHUB_BOT_USERNAME = `${(installation as { app_slug: string }).app_slug}[bot]`;
-        logger.info({ botUsername: GITHUB_BOT_USERNAME }, 'Auto-detected bot username');
-        return GITHUB_BOT_USERNAME;
+        return await detectInstallationBotUsername();
     } catch (error) {
         const err = error as Error;
         logger.warn({ error: err.message }, 'Failed to auto-detect bot username, will use default');
         GITHUB_BOT_USERNAME = 'propr-dev[bot]';
         return GITHUB_BOT_USERNAME;
     }
+}
+
+/**
+ * ProPR's bot login as configured or reported by GitHub, never the default that
+ * `detectBotUsername` falls back to. Decisions about what ProPR owns need the real
+ * identity: when only the fallback is cached, detection is retried, and a failure
+ * throws instead of guessing.
+ */
+export async function detectVerifiedBotUsername(): Promise<string> {
+    if (GITHUB_BOT_USERNAME && botUsernameVerified) return GITHUB_BOT_USERNAME;
+    return detectInstallationBotUsername();
 }
 
 export async function loadReposFromConfig(): Promise<void> {

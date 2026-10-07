@@ -9,6 +9,7 @@ import {
   REVIEW_LEGACY_MAX_CONTEXT_TOKENS_MIN,
   isValidLegacyReviewMaxContextTokens,
   isValidReviewContextBudgetPercent,
+  MAX_PROVIDER_REPLACEMENTS_LIMIT,
   normalizeLegacyReviewMaxContextTokens,
   normalizeReviewContextBudgetPercent,
 } from '@propr/shared';
@@ -179,6 +180,12 @@ function isPlainSettingsObject(value: unknown): value is Record<string, unknown>
 }
 
 async function normalizePrReviewContextSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if ('max_provider_replacements' in settings) {
+    const value = settings.max_provider_replacements;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > MAX_PROVIDER_REPLACEMENTS_LIMIT) {
+      throw new ConfigRouteError(400, { error: `max_provider_replacements must be an integer from 0 to ${MAX_PROVIDER_REPLACEMENTS_LIMIT}` });
+    }
+  }
   if ('pr_review_context_enabled' in settings && typeof settings.pr_review_context_enabled !== 'boolean') {
     throw new ConfigRouteError(400, { error: 'pr_review_context_enabled must be a boolean' });
   }

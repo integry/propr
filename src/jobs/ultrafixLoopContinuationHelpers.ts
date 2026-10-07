@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import {
     findPlanIssueByRepoAndPR,
+    gateAutoMergeArming,
     generateCorrelationId,
     getAuthenticatedOctokit,
     getIssueQueue,
@@ -137,7 +138,15 @@ export async function maybeEnableAutoMerge(
             .map((label) => typeof label === 'string' ? label : (label.name || ''));
         if (!labels.includes('auto-merge')) return;
 
-        const result = await enableAutoMerge({ owner, repoName: repo, prNumber: pullRequestNumber });
+        const gate = await gateAutoMergeArming({
+            owner, repo, prNumber: pullRequestNumber, opportunity: 'ultrafix_goal', issueNumber: planIssue.issue_number, log: correlatedLogger,
+        });
+        if (!gate.arm || !gate.pullRequest) return;
+        // Arm only the head the policy evaluated; a newer head needs its own decision.
+        const result = await enableAutoMerge({
+            owner, repoName: repo, prNumber: pullRequestNumber, mergeMethod: gate.mergeMethod,
+            expectedHead: { headSha: gate.pullRequest.headSha, baseRef: gate.pullRequest.baseRef },
+        });
         if (!result.success) {
             correlatedLogger.warn({ pullRequestNumber, error: result.error }, 'Failed to enable auto-merge after ultrafix success');
         }

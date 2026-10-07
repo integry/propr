@@ -12,12 +12,20 @@ export interface EnableAutoMergeOptions {
     mergeMethod?: AutoMergeMethod;
     commitHeadline?: string;
     commitBody?: string;
+    /**
+     * The head and base the auto-merge policy evaluated. When set, auto-merge is
+     * armed only while the PR still has exactly this head and base, so a decision
+     * made for an earlier head is never applied to a newer one.
+     */
+    expectedHead?: { headSha: string; baseRef: string };
 }
 
 export interface EnableAutoMergeResult {
     success: boolean;
     error?: string;
     autoMergeEnabled?: boolean;
+    /** True when the PR's head or base moved since the evaluated snapshot; nothing was armed. */
+    headChanged?: boolean;
 }
 
 export interface DisableAutoMergeOptions {
@@ -71,7 +79,8 @@ export async function enableAutoMerge(options: EnableAutoMergeOptions): Promise<
         prNumber,
         mergeMethod = 'SQUASH',
         commitHeadline,
-        commitBody
+        commitBody,
+        expectedHead
     } = options;
 
     try {
@@ -93,14 +102,33 @@ export async function enableAutoMerge(options: EnableAutoMergeOptions): Promise<
 
         const pullRequestId = prResponse.data.node_id;
 
-        // Build the GraphQL mutation
+        if (expectedHead && (prResponse.data.head.sha !== expectedHead.headSha || prResponse.data.base.ref !== expectedHead.baseRef)) {
+            logger.warn({
+                owner,
+                repoName,
+                prNumber,
+                evaluatedHeadSha: expectedHead.headSha,
+                currentHeadSha: prResponse.data.head.sha,
+                evaluatedBaseRef: expectedHead.baseRef,
+                currentBaseRef: prResponse.data.base.ref
+            }, 'PR changed since the auto-merge policy evaluated it; not enabling auto-merge');
+            return {
+                success: false,
+                headChanged: true,
+                error: 'Pull request head or base changed since the auto-merge policy was evaluated'
+            };
+        }
+
+        // Build the GraphQL mutation. GitHub rejects the request if the head
+        // moved after the check above (expectedHeadOid).
         const mutation = `
-            mutation EnableAutoMerge($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!, $commitHeadline: String, $commitBody: String) {
+            mutation EnableAutoMerge($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!, $commitHeadline: String, $commitBody: String, $expectedHeadOid: GitObjectID) {
                 enablePullRequestAutoMerge(input: {
                     pullRequestId: $pullRequestId
                     mergeMethod: $mergeMethod
                     commitHeadline: $commitHeadline
                     commitBody: $commitBody
+                    expectedHeadOid: $expectedHeadOid
                 }) {
                     pullRequest {
                         autoMergeRequest {
@@ -120,7 +148,8 @@ export async function enableAutoMerge(options: EnableAutoMergeOptions): Promise<
             pullRequestId,
             mergeMethod,
             commitHeadline: commitHeadline || null,
-            commitBody: commitBody || null
+            commitBody: commitBody || null,
+            expectedHeadOid: expectedHead?.headSha ?? null
         });
 
         const autoMergeRequest = result.enablePullRequestAutoMerge?.pullRequest?.autoMergeRequest;

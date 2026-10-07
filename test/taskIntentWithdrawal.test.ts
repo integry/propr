@@ -121,6 +121,7 @@ await mock.module('../packages/core/src/webhook/closedPullRequestCi.js', { named
 await mock.module('../packages/core/src/webhook/mergeConflictDetector.js', { namedExports: {
     handlePullRequestConflictDetection: async () => {}, handlePushConflictDetection: async () => {},
 } });
+await mock.module('../packages/core/src/services/autoMergeGate.js', { namedExports: { handleAutoMergePolicyPullRequestEvent: async () => {} } });
 const { initializeWebhookHandler, processWebhookEvent } = await import('../packages/core/src/webhook/webhookHandler.js');
 const discovered: any[] = [];
 await initializeWebhookHandler({

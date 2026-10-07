@@ -6,6 +6,8 @@ import {
 import { formatUsd, RUN_COST_CAP_SOURCE_LABELS } from '@propr/shared';
 import type { CommentJobData, IssueJobData, RecordedSpend, SubmissionPayload, RunCostCap, RunCostSnapshot, RunUsagePricer } from '@propr/core';
 import type { Job } from 'bullmq';
+import type { Knex } from 'knex';
+import { recordLineageCostCap } from '../taskReplacement/store.js';
 
 export type CommentOctokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -82,6 +84,20 @@ export async function withRunCostCap<T>(target: RunCostCapTarget, operation: (gu
     }
 }
 
+/** Issue runs also record their effective cap on the task, so its replacements are budgeted from it. */
+export function issueRunCostCapDeps(database: Knex = db, base: RunCostCapDeps = defaultRunCostCapDeps): RunCostCapDeps {
+    return {
+        ...base,
+        async storeCap(taskId, cap, budgetTaskIds) {
+            try {
+                await recordLineageCostCap(database, taskId, cap?.capUsd ?? null);
+            } finally {
+                await base.storeCap(taskId, cap, budgetTaskIds);
+            }
+        },
+    };
+}
+
 /** Applies `limits.max_cost_usd` from the run's repository workflow once it is known, and returns the workflow. */
 export async function applyWorkflowCostCap<T extends { config?: { limits?: { max_cost_usd?: unknown } } } | null | undefined>(workflow: T): Promise<T> {
     await getActiveRunCostGuard()?.setWorkflowCap(workflow?.config?.limits?.max_cost_usd);
@@ -105,7 +121,8 @@ export function pullRequestRunCostCapTarget(job: Pick<Job<CommentJobData>, 'id' 
 
 /**
  * An issue implementation: its spend cap inputs are the task override (job,
- * submission or `propr issue implement --max-cost`) and the workflow file. A
+ * submission or `propr issue implement --max-cost`) and the workflow file; a
+ * replacement attempt also counts what its earlier attempts spent. A
  * failed override lookup is thrown: the override may be the cap, so the run
  * must not start without it.
  */
@@ -129,6 +146,7 @@ export async function issueRunCostCapTarget(
     return {
         taskId, repoOwner: data.repoOwner, repoName: data.repoName, number: data.number, kind: 'issue',
         modelName, override, workflowCap: context.repositoryWorkflow?.config.limits?.max_cost_usd,
+        ...(data.costBudgetTaskIds?.length ? { budgetTaskIds: data.costBudgetTaskIds } : {}),
         getOctokit, logger: correlatedLogger,
     };
 }

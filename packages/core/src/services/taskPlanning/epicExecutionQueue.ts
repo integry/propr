@@ -8,6 +8,7 @@ import { PlanIssueStatus, type PlanIssue } from '../../config/planIssueManager.j
 import { isTerminalStatus, isInProgressStatus } from '../../webhook/statusMachine.js';
 import { labelPlanIssueForProcessing, finalizeEpicPlanIfComplete, reconcileTerminalInProgressIssues } from '../../webhook/planIssueTrigger.js';
 import { queuedModelLabel } from './epicQueueModelLabel.js';
+import { isAwaitingHumanMergeReason } from './epicQueueHumanMerge.js';
 
 export type EpicAdvancePolicy = 'merged' | 'terminal';
 export type EpicQueueStatus = 'active' | 'completed' | 'cancelled';
@@ -296,8 +297,9 @@ export async function startEpicQueueHead(draftId: string, deps: EpicQueueDepende
   }
   const draft = await database('task_drafts').where({ draft_id: draftId }).first('paused', 'context_config');
   if (!draft || draft.paused) return;
-  // Clear the explanation if a blocked issue has been reopened.
-  if (queue.blockedReason && issue.status !== PlanIssueStatus.PENDING) {
+  // Clear the explanation if a blocked issue has been reopened. A head waiting for a
+  // human merge keeps its explanation until the merge advances the queue.
+  if (queue.blockedReason && issue.status !== PlanIssueStatus.PENDING && !isAwaitingHumanMergeReason(queue.blockedReason)) {
     await database('epic_execution_queues').where({ draft_id: draftId, execution_id: queue.executionId, status: 'active', cursor: queue.cursor })
       .update({ blocked_reason: null });
   }

@@ -3,6 +3,7 @@ import TaskStatusTable from './TaskStatusTable';
 import RunTimeline from './RunTimeline';
 import ExecutionRail from './ExecutionRail';
 import LiveFileChips from './LiveFileChips';
+import { TaskReviewScoreHistory } from './ReviewScoreHistory';
 import type { HistoryItem, HistoryItemMetadata, TaskInfo, LiveDetails } from './types';
 import { RefreshCw } from 'lucide-react';
 import type { TaskRunEntry } from '../TaskList/rowModel';
@@ -98,6 +99,8 @@ const RunNotes: React.FC<RunNotesProps> = ({ history, taskInfo, currentStatus, p
           )}
         </div>
       )}
+
+      <TaskReviewScoreHistory taskInfo={taskInfo} prInfo={prInfo} />
 
       {taskInfo?.commandMode === 'review' && currentStatus === 'COMPLETED' && !prInfo && (
         <div className="bg-indigo-50 border border-indigo-100 rounded-md px-3 py-2 text-xs text-indigo-700">

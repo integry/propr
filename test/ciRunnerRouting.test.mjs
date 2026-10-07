@@ -880,6 +880,54 @@ describe('PR check routing', () => {
             assert.doesNotMatch(block, /--with-deps/, name);
         }
     });
+
+    test('retries a timed-out CLI compatibility install under the Actions errexit shell', () => {
+        const install = extractRunBlock(jobBlock(readWorkflow('cli-node-compatibility.yml'), 'project-options'), 'Install dependencies');
+        const runInstall = statuses => {
+            const root = freshDirectory('npm-ci-retry');
+            // Each `timeout` call consumes the next scripted exit status.
+            writeFileSync(join(root, 'statuses'), `${statuses.join('\n')}\n`);
+            writeFileSync(join(root, 'timeout'), [
+                '#!/usr/bin/env bash',
+                `echo "$*" >> '${join(root, 'calls')}'`,
+                `status=$(head -n 1 '${join(root, 'statuses')}')`,
+                `sed -i 1d '${join(root, 'statuses')}'`,
+                'exit "$status"',
+                '',
+            ].join('\n'));
+            chmodSync(join(root, 'timeout'), 0o755);
+            // GitHub Actions runs Linux `run` steps as `bash -e {0}`.
+            const result = spawnSync('bash', ['--noprofile', '--norc', '-e', '-c', install], {
+                encoding: 'utf8',
+                env: { PATH: `${root}:${process.env.PATH}` },
+            });
+            const calls = existsSync(join(root, 'calls')) ? readFileSync(join(root, 'calls'), 'utf8').trim().split('\n') : [];
+            return { ...result, attempts: calls.length, calls };
+        };
+
+        const clean = runInstall([0]);
+        assert.equal(clean.status, 0);
+        assert.equal(clean.attempts, 1);
+        assert.deepEqual(clean.calls, ['--kill-after=30s 10m npm ci']);
+
+        for (const timedOut of [124, 137]) {
+            const recovered = runInstall([timedOut, 0]);
+            assert.equal(recovered.status, 0, `retry recovers after exit ${timedOut}`);
+            assert.equal(recovered.attempts, 2);
+            assert.match(recovered.stdout, new RegExp(`::warning::npm ci attempt 1 timed out \\(exit ${timedOut}\\)`));
+
+            const exhausted = runInstall([timedOut, timedOut]);
+            assert.equal(exhausted.status, 1);
+            assert.equal(exhausted.attempts, 2);
+            assert.match(exhausted.stdout, /::error::npm ci timed out on every attempt\./);
+        }
+
+        // Any other failure ends the step at once with that status.
+        const failed = runInstall([1, 0]);
+        assert.equal(failed.status, 1);
+        assert.equal(failed.attempts, 1);
+        assert.doesNotMatch(failed.stdout, /::warning::/);
+    });
 });
 
 describe('rootless runner prerequisites', () => {

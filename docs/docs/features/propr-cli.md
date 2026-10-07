@@ -406,6 +406,7 @@ propr repo toggle owner/repo --no-auto-ci-followup  # Disable failed-CI follow-u
 propr repo toggle owner/repo --visual-previews --preview-types image,video
 propr repo toggle owner/repo --no-visual-previews
 propr repo toggle owner/repo --no-github-pr-template  # Don't append the GitHub PR template
+propr repo toggle owner/repo --auto-resolve-conflicts on       # Always auto-resolve merge conflicts (off, inherit)
 propr repo index owner/repo                  # Full reindex
 propr repo index owner/repo --incremental    # Incremental reindex
 propr repo status                            # Indexing status for all repos
@@ -471,6 +472,7 @@ propr log list --agent my-claude --draft <draft-id> --page 2 -l 100
 
 propr remote-status     # Backend health check (daemon, workers, Redis, GitHub auth)
 propr queue             # Queue statistics
+propr stats review-scores --period 30d [--repository owner/repo] [--json]  # Review quality per implementer model
 ```
 
 Settings keys:

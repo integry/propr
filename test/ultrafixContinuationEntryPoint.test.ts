@@ -28,6 +28,10 @@ const mockGetPendingReviewState = mock.fn(async () => ({
     isPartial: false,
 }));
 let labelTransitionActive = false;
+const evaluatedPullRequest = { headSha: 'evaluated-head', baseRef: 'main' };
+const mockGateAutoMergeArming = mock.fn(async (_input: Record<string, unknown>) => ({
+    arm: true, reason: 'armed', mergeMethod: 'SQUASH', pullRequest: evaluatedPullRequest,
+}));
 let escalationEnabled = false;
 
 await mock.module('@propr/core', {
@@ -43,6 +47,7 @@ await mock.module('@propr/core', {
         resolveLlmLabel: async (model: string) => ({ agentAlias: model.split(':')[0], model: model.split(':')[1] }),
     resolveConfiguredModel: async (model: string) => model,
         findPlanIssueByRepoAndPR: mockFindPlanIssueByRepoAndPR,
+        gateAutoMergeArming: mockGateAutoMergeArming,
         generateCorrelationId: mock.fn(() => 'next-correlation-id'),
         getAuthenticatedOctokit: mock.fn(async () => ({ request: mockOctokitRequest })),
         getIssueQueue: mockGetIssueQueue,
@@ -235,6 +240,36 @@ describe('Ultrafix continuation entry point', () => {
         assert.equal(result.continued, false);
         assert.equal(mockEnableAutoMerge.mock.callCount(), 1);
         assert.equal(labelTransitionActive, false);
+        const gateInput = mockGateAutoMergeArming.mock.calls.at(-1)?.arguments[0];
+        assert.equal(gateInput?.opportunity, 'ultrafix_goal');
+        assert.equal(gateInput?.prNumber, 44);
+        // Auto-merge is armed only for the head and base the policy evaluated.
+        const enableInput = (mockEnableAutoMerge.mock.calls.at(-1)?.arguments as unknown as [Record<string, unknown>])[0];
+        assert.deepEqual(enableInput.expectedHead, evaluatedPullRequest);
+    });
+
+    test('a goal-reaching Ultrafix does not arm auto-merge when the repository policy skips it', async () => {
+        const redis = createMockRedis();
+        await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 46, goal: 8 }, false);
+        mockGetPendingReviewState.mock.mockImplementation(async () => ({
+            latestScore: 9, reviewStatus: 'valid_clean', hasPendingReview: false, unprocessedComments: [], isPartial: false,
+        }));
+        mockFindPlanIssueByRepoAndPR.mock.mockImplementation(async () => ({ issue_number: 99 }));
+        mockOctokitRequest.mock.mockImplementation(async (_route: string, options: Record<string, unknown>) => ({
+            data: { labels: [{ name: options.issue_number === 99 ? 'auto-merge' : 'ultrafix' }] },
+        }));
+        mockGateAutoMergeArming.mock.mockImplementationOnce(async () => ({ arm: false, reason: 'skipped_protected_path' }) as never);
+        const enableCalls = mockEnableAutoMerge.mock.callCount();
+
+        await continueUltrafixLoop({
+            owner: 'acme', repo: 'web', pullRequestNumber: 46, completedAction: 'review',
+            ultrafixMeta: { mode: 'ultrafix', goal: 8, instructions: '' }, redisClient: redis as never, correlatedLogger: logger as never,
+            correlationId: 'policy-skip-correlation-id', currentJobId: 'completed-policy-skip-review-job',
+            currentReviewCommentIds: [204], currentReviewResultCount: 1,
+        });
+
+        assert.equal(mockGateAutoMergeArming.mock.calls.at(-1)?.arguments[0]?.prNumber, 46);
+        assert.equal(mockEnableAutoMerge.mock.callCount(), enableCalls);
     });
 
     test('a partial clean review cannot complete Ultrafix or re-enable auto-merge', async () => {

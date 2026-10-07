@@ -4,8 +4,7 @@ import 'dotenv/config';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager, runMigrations } from '@propr/core';
-import { logger, reconcileEpicExecutionQueues } from '@propr/core';
-import { generateCorrelationId } from '@propr/core';
+import { generateCorrelationId, logger, reconcileEpicExecutionQueues } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatusForRepo } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings, loadSettingsFromConfig } from '@propr/core';
 import { setUltrafixDeps } from '@propr/core';
@@ -38,6 +37,7 @@ import {
     type PRCommentTaskStateFinalizers,
 } from './jobs/prCommentTaskStateFinalizers.js';
 import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
+import { getTaskReplacementService } from './taskReplacement/index.js';
 import { recoverNonterminalGoals } from './goalRecovery.js';
 import { reconcileFollowupCiSuspensions } from './jobs/followupCiSuspension.js';
 import { cancelClosedPullRequestValidation } from './jobs/closedPullRequestCiCancellation.js';
@@ -399,7 +399,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     if (!taskStateFinalizers) throw new Error('PR comment task state finalizers were not attached');
     const attachedTaskStateFinalizers = taskStateFinalizers;
     const taskStateRecovery = await startWorkerTaskStateRecovery({
-        stateManager,
+        stateManager, replacement: getTaskReplacementService(),
         recoverGoals: () => recoverNonterminalGoals(),
         reconcileCiSuspensions: async () => ({
             ...await reconcileFollowupCiSuspensions(),

@@ -37,6 +37,7 @@ import {
     type PushSubscriptionInput
 } from '@propr/shared';
 import { db } from '../db/connection.js';
+import { recordPullRequestOutcome, type PullRequestOutcomeEvent } from './reviewScoreStore.js';
 import logger from '../utils/logger.js';
 import {
     decodeNotificationCursor,
@@ -1159,6 +1160,15 @@ export class NotificationService {
         this.announceDismissedReceipts(receipts);
         await this.flushAnnouncements(announcements);
         return receipts.length;
+    }
+
+    /**
+     * Record a PR's merged/closed outcome on its state row (cleared again on
+     * reopen), so review-score analytics can join scores with outcomes.
+     */
+    async recordPullRequestOutcome(event: PullRequestOutcomeEvent): Promise<void> {
+        this.assertPullRequestIdentity(event.repository, event.prNumber);
+        await recordPullRequestOutcome(this.database, event);
     }
 
     /** Persist a merged marker and close all existing PR receipts atomically. */

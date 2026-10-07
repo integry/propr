@@ -1,4 +1,7 @@
 node_modules
+# Workspace trees too: COPY packages/<name> must not replace the builder's
+# installed and pruned packages/<name>/node_modules with host files.
+**/node_modules
 npm-debug.log
 .git
 .gitignore
