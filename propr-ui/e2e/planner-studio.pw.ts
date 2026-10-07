@@ -84,6 +84,20 @@ const runningFor = (estimatedDuration: number, elapsedSeconds: number) => ({
   get startedAt() { return new Date(Date.now() - elapsedSeconds * 1_000).toISOString(); },
 });
 
+// The last context preview a generating draft carries: the ranked files and the context size the run reuses.
+const discoveredFiles = [
+  'packages/core/src/services/taskPlanningService.ts', 'packages/core/src/services/planning/previewService.ts', 'packages/core/src/agents/AgentRegistry.ts',
+  'packages/api/routes/plannerRoutes.ts', 'packages/shared/src/events.ts', 'packages/worker/src/jobs/index.ts', 'packages/daemon/src/scheduler.ts',
+  'packages/core/src/db/migrations/0041_task_drafts.sql', 'packages/api/mcp/plannerTools.ts', 'packages/cli/src/commands/plan.ts',
+  'propr-ui/src/pages/PlanStudioPage.tsx', 'propr-ui/src/components/TaskPlanner/SetupWizard.tsx', 'packages/core/src/services/relevanceService.ts',
+  'packages/core/src/utils/eventPublisher.ts', 'packages/worker/src/toolGate.ts', 'packages/shared/src/cron.ts', 'docs/planner.md', 'docs/api.md',
+];
+const lastPreview = {
+  success: true, warnings: [],
+  stats: { totalTokens: 842_496, costEstimate: 2.4, contextLength: 3_100_000, fileCount: discoveredFiles.length, modelMaxContextTokens: 1_000_000 },
+  smartSelection: discoveredFiles.map((path, index) => ({ path, reason: 'Matched prompt keywords', source: 'auto', score: 94 - index * 4 })),
+};
+
 const studioDrafts: Record<string, Record<string, unknown>> = {
   'plan-agents-exec': {
     draft_id: 'plan-agents-exec', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
@@ -106,7 +120,7 @@ const studioDrafts: Record<string, Record<string, unknown>> = {
   // Active states: generation underway (gathering context, then the LLM call) and GitHub issues being created.
   'plan-gathering': {
     draft_id: 'plan-gathering', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
-    status: 'generating', plan_json: [], context_config: { baseBranch: 'main', contextLevel: 100, granularity: 'granular' }, created_at: ago(5), updated_at: ago(0),
+    status: 'generating', plan_json: [], context_config: { baseBranch: 'main', contextLevel: 100, granularity: 'granular', lastPreview }, created_at: ago(5), updated_at: ago(0),
     generation_trace: { runId: 'run-gathering', steps: [
       { name: 'relevance', status: 'completed', data: runningFor(20_000, 18) },
       { name: 'context', status: 'in_progress', data: runningFor(30_000, 11) },
@@ -115,10 +129,10 @@ const studioDrafts: Record<string, Record<string, unknown>> = {
   },
   'plan-generating': {
     draft_id: 'plan-generating', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
-    status: 'generating', plan_json: [], context_config: { baseBranch: 'main', contextLevel: 100, granularity: 'granular' }, created_at: ago(5), updated_at: ago(0),
+    status: 'generating', plan_json: [], context_config: { baseBranch: 'main', contextLevel: 100, granularity: 'granular', lastPreview }, created_at: ago(5), updated_at: ago(0),
     generation_trace: { runId: 'run-generating', steps: [
       { name: 'relevance', status: 'completed', data: runningFor(60_000, 55) },
-      { name: 'context', status: 'completed', data: runningFor(60_000, 45) },
+      { name: 'context', status: 'completed', data: { ...runningFor(60_000, 45), includedFiles: discoveredFiles, tokenCount: 842_496 } },
       { name: 'llm', status: 'in_progress', data: runningFor(180_000, 40) },
     ] },
   },
@@ -438,6 +452,10 @@ test('execution step for a 17-issue plan keeps the title readable and queues the
   await expect(repoChip).toHaveAttribute('title', 'integry/propr / main');
   expect((await repoChip.boundingBox())!.x).toBeLessThan((await title.boundingBox())!.x);
   await expect(page.getByRole('link', { name: 'View issues on GitHub' })).toHaveText('GitHub');
+  // Header clusters are spaced by gaps, with no drawn or typed pipe dividers.
+  const header = page.getByTestId('plan-repo-chip').locator('xpath=../..');
+  await expect(header.locator('.w-px')).toHaveCount(0);
+  expect(await header.innerText()).not.toContain('|');
   await expect(page.getByTitle('Delete Plan')).toHaveCount(0);
   await page.getByRole('button', { name: 'More plan actions' }).click();
   await expect(page.getByRole('menuitem', { name: 'Delete plan' })).toBeVisible();
@@ -610,6 +628,12 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await expect(page.getByText(/remaining$/)).toHaveCount(1);
     await expect(page.getByText('In Progress')).toHaveCount(1);
     await expect(page.getByText('Will analyze context and generate implementation plan')).toBeVisible();
+    // The canvas below the steps streams what discovery has found so far.
+    const telemetry = page.getByTestId('generation-telemetry');
+    await expect(telemetry.getByText('packages/core/src/services/taskPlanningService.ts')).toBeVisible();
+    await expect(telemetry.getByText('(100% match)')).toBeVisible();
+    await expect(telemetry.getByTestId('telemetry-tokens')).toContainText(/Accumulating context: ≈\d+k tokens/);
+    await expect(telemetry.getByTestId('telemetry-files')).toContainText(/^\d+\/18 files scanned$/);
     expect(await overflow()).toBeLessThanOrEqual(0);
     await page.waitForTimeout(600);
     await capture(page, `active-gathering-context-${viewport.name}`);
@@ -618,6 +642,14 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await expect(page.getByText('Generating Plan')).toBeVisible();
     await expect(page.getByText(/remaining$/)).toHaveCount(1);
     await expect(page.getByText(/^Will /)).toHaveCount(0);
+    await expect(page.getByTestId('telemetry-files')).toHaveText('18/18 files scanned');
+    await expect(page.getByTestId('telemetry-tokens')).toHaveText('Context assembled: 842k tokens');
+    await expect(page.getByText('Prompting the model with 842k tokens…')).toBeVisible();
+    if (viewport.name === 'desktop') {
+      // The telemetry fills the canvas under the steps instead of leaving it blank.
+      const box = (await page.getByTestId('generation-telemetry').boundingBox())!;
+      expect(box.y + box.height).toBeGreaterThan(viewport.height - 40);
+    }
     expect(await overflow()).toBeLessThanOrEqual(0);
     await page.waitForTimeout(600);
     await capture(page, `active-generating-plan-${viewport.name}`);
@@ -641,9 +673,22 @@ test('planner screens on a mobile viewport', async ({ page }) => {
   await capture(page, 'mobile-plans-index');
 
   await page.goto('/studio/plan-setup');
-  await expect(page.getByRole('button', { name: /Generate Plan/ })).toBeVisible();
+  const generate = page.getByRole('button', { name: /Generate Plan/ });
+  await expect(generate).toBeVisible();
   expect(await overflow()).toBeLessThanOrEqual(0);
+  // The action bar ends the input flow: scope slider and context repos come before it.
+  const generateTop = (await generate.boundingBox())!.y;
+  expect((await page.getByTestId('context-scope-descriptor').boundingBox())!.y).toBeLessThan(generateTop);
+  expect((await page.getByRole('button', { name: 'Context Repos (optional)' }).boundingBox())!.y).toBeLessThan(generateTop);
+  expect((await page.getByText('Break plan:').boundingBox())!.y).toBeLessThan(generateTop);
+  // The model picker names the model on a phone too, rather than collapsing to its logo.
+  const mobileModel = page.getByTestId('composer-footer').getByTestId('planner-model-selector');
+  await expect(mobileModel).toHaveText('Claude Opus 5.5 (Default)');
+  expect(await mobileModel.locator('span').last().evaluate(label => label.scrollWidth <= label.clientWidth)).toBe(true);
+  await expect(page.getByTestId('composer-footer').getByText('Model:')).toBeVisible();
   await capture(page, 'mobile-define');
+  await page.getByTestId('composer-footer').scrollIntoViewIfNeeded();
+  await capture(page, 'mobile-define-action-bar');
 
   await page.goto('/studio/plan-agents');
   await expect(page.locator('[data-task-index="0"]')).toBeVisible();
@@ -666,6 +711,10 @@ test('planner screens on a mobile viewport', async ({ page }) => {
 
   await page.goto('/studio/plan-agents-exec');
   const queue = page.getByRole('button', { name: 'Queue Remaining (10 tasks)' });
-  await queue.scrollIntoViewIfNeeded();
+  // The batch action stays pinned above the footer without scrolling past every row.
+  await expect(queue).toBeInViewport();
+  const queueBox = (await queue.boundingBox())!;
+  expect(queueBox.width).toBeGreaterThan(390 - 64);
+  await page.waitForTimeout(500);
   await capture(page, 'mobile-execution-17-issues-queue');
 });

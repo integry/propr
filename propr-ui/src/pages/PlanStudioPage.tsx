@@ -8,6 +8,8 @@ import SetupWizard from '../components/TaskPlanner/SetupWizard';
 import PlanEditor from '../components/TaskPlanner/PlanEditor';
 import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import { GenerationProgress } from '../components/TaskPlanner/GenerationProgress';
+import { GenerationTelemetry } from '../components/TaskPlanner/GenerationTelemetry';
+import { getDraftContextConfig } from '../components/TaskPlanner/setupWizardDraftConfig';
 import { StudioPhaseSwitcher } from '../components/TaskPlanner/StudioStepper';
 import { StudioStageContext, type StudioStage } from '../components/TaskPlanner/studioStageContext';
 import { PlannerDraft, DraftWithPlan } from '../api/plannerApi';
@@ -118,7 +120,7 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft;
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        className="h-full"
+        className="h-full flex flex-col"
       >
         <div className="flex items-center justify-between gap-2 px-4 md:px-6 py-3 border-b border-gray-100">
           <div className="flex items-center gap-2 md:gap-4 min-w-0">
@@ -135,8 +137,10 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft;
           <StudioPhaseSwitcher />
         </div>
 
-        <div className="px-6 py-4">
+        <div className="flex min-h-0 flex-1 flex-col px-4 py-4 md:px-6">
           <GenerationProgress trace={displayTrace} hideCompletedSteps={false} />
+          {/* The scan takes minutes; the rest of the canvas shows what it is finding as it goes. */}
+          <GenerationTelemetry trace={displayTrace} preview={getDraftContextConfig(draft)?.lastPreview} className="mt-4 min-h-[240px] flex-1" />
         </div>
       </motion.div>
     </StudioShell>

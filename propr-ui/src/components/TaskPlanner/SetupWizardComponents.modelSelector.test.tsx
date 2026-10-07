@@ -55,4 +55,15 @@ describe('ModelSelector', () => {
     render(<ModelSelector agents={agents} generationModel="claude:claude-sonnet-5-5" onModelChange={vi.fn()} />);
     expect(screen.getByTestId('planner-model-selector')).toHaveTextContent(/^Claude Sonnet 5\.5$/);
   });
+
+  it('never falls back to a bare "Default" while the catalog loads or when it names no default', async () => {
+    let resolveCatalog: (value: Awaited<ReturnType<typeof getInstanceCatalog>>) => void = () => {};
+    vi.mocked(getInstanceCatalog).mockReturnValue(new Promise(resolve => { resolveCatalog = resolve; }));
+    render(<ModelSelector agents={agents} generationModel={null} onModelChange={vi.fn()} fullWidth />);
+    const trigger = screen.getByTestId('planner-model-selector');
+    expect(trigger).toHaveTextContent(/^Resolving model…$/);
+    resolveCatalog({ agents, repositories: [] });
+    await waitFor(() => expect(trigger).toHaveTextContent(/^Configured Default$/));
+    expect(trigger).not.toHaveTextContent(/^Default$/);
+  });
 });

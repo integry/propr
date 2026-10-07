@@ -77,7 +77,8 @@ export const ExecuteAllBar: React.FC<ExecuteAllBarProps> = ({
   }
 
   return (
-    <div className="flex flex-col gap-2 border-t border-slate-200 pt-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+    // On a phone the matrix runs past the fold, so the batch action pins to the bottom of the scroll area.
+    <div className="sticky -bottom-4 z-10 -mx-4 flex flex-col gap-2 border-t border-slate-200 bg-white px-4 py-3 shadow-[0_-4px_8px_-6px_rgba(15,23,42,0.15)] sm:static sm:mx-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-0 sm:pb-0 sm:shadow-none" data-testid="execute-all-bar">
       <p className="text-xs text-slate-500" data-testid="execute-all-hint">
         {blockedReason ?? summary}
       </p>
@@ -85,7 +86,7 @@ export const ExecuteAllBar: React.FC<ExecuteAllBarProps> = ({
         type="button"
         onClick={onExecuteAll}
         disabled={disabled}
-        className="inline-flex flex-shrink-0 items-center justify-center gap-2 rounded-md bg-primary-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+        className="inline-flex w-full flex-shrink-0 items-center justify-center gap-2 rounded-md bg-primary-600 px-4 py-2.5 text-sm sm:w-auto sm:py-2 font-medium text-white shadow-sm transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-slate-300"
       >
         {executing ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
         Queue Remaining ({taskLabel})

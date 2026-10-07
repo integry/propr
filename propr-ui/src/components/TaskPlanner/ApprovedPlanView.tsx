@@ -233,11 +233,9 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
         <Pause size={12} /><span className="hidden sm:inline">Paused</span>
       </span>
     )}
+    {/* Clusters are separated by the row's flex gap alone; no drawn or typed dividers between them. */}
     {initialPrompt && (
-      <>
-        <div className="h-4 w-px bg-gray-300 flex-shrink-0 hidden lg:block" />
-        <div className="hidden lg:block"><OriginalPromptPopover prompt={initialPrompt} /></div>
-      </>
+      <div className="hidden lg:block"><OriginalPromptPopover prompt={initialPrompt} /></div>
     )}
     {/* The phase pill replaces the old stepper band on phones too, so it shares the title row. */}
     <StudioPhaseSwitcher className="ml-auto md:ml-0" />

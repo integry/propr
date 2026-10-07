@@ -1,6 +1,5 @@
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Download, Loader2 } from 'lucide-react';
 import { PlannerDraft, createDraft, GenerationTrace, getRepoBranches } from '../../api/proprApi';
 import { getPlannerSettings } from '../../hooks/usePlannerSettings';
 import { useGenerationPolling } from '../../hooks/useGenerationPolling';
@@ -11,7 +10,7 @@ import { useToast } from '../ui/useToast';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
-import { GranularityPills } from './ComposerControls';
+import { SetupComposerFooter } from './SetupComposerFooter';
 import { GenerateButtonContent, ModelSelector } from './SetupWizardComponents';
 import { getEstimatedIssueText } from './setupWizardUtils';
 import type { RepoSelection } from '../RepositorySelector';
@@ -108,48 +107,20 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const isGenerating = generationPolling.isGenerating || generationHandlers.isStartingGeneration;
   const isMobile = useIsMobile(768);
   const showPreviewProgress = shouldShowPreviewProgress(isGenerating, isMobile);
-  // Plan shape, model and Generate are docked to the prompt box rather than a page-wide footer
   const composerFooter = (
-    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3 md:flex-nowrap">
-      <div className="flex min-w-0 max-w-full items-center gap-2 overflow-x-auto md:flex-shrink-0">
-        <span className="text-xs text-gray-500 whitespace-nowrap">Break plan:</span>
-        <GranularityPills
-          value={config.granularity}
-          onChange={setGranularity}
-          hideEstimate
-          compact
-        />
-      </div>
-      <ModelSelector
-        agents={agents}
-        generationModel={config.generationModel}
-        onModelChange={handleModelChange}
-        disabled={isGenerating}
-      />
-      <div className="ml-auto flex flex-shrink-0 items-center gap-1 sm:gap-2">
-        <button
-          onClick={handleExportContext}
-          disabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
-          className="hidden md:flex items-center p-1.5 text-gray-500 hover:text-gray-700 hover:bg-white rounded-md disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          title="Export context as XML"
-          aria-label="Export Context"
-        >
-          {contextExport.isExporting ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Download className="w-4 h-4" />
-          )}
-        </button>
-        <button
-          onClick={isDemoMode ? undefined : handleGenerate}
-          disabled={isGenerateDisabled}
-          title={isDemoMode ? 'Demo mode is read-only' : undefined}
-          className="flex max-w-full items-center justify-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-white text-xs font-medium rounded-md bg-[rgb(29,138,138)] hover:bg-[rgb(24,118,118)] disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex-shrink-0"
-        >
-          {isDemoMode ? 'Read-only demo' : <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />}
-        </button>
-      </div>
-    </div>
+    <SetupComposerFooter
+      stacked={isMobile}
+      granularity={config.granularity}
+      onGranularityChange={setGranularity}
+      modelSelector={<ModelSelector agents={agents} generationModel={config.generationModel} onModelChange={handleModelChange} disabled={isGenerating} fullWidth={isMobile} />}
+      onExport={handleExportContext}
+      isExporting={contextExport.isExporting}
+      exportDisabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
+      onGenerate={isDemoMode ? undefined : handleGenerate}
+      generateDisabled={isGenerateDisabled}
+      generateLabel={isDemoMode ? 'Read-only demo' : <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />}
+      generateTitle={isDemoMode ? 'Demo mode is read-only' : undefined}
+    />
   );
   return (
     <div className="h-full flex flex-col bg-white">
@@ -189,7 +160,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           manualFiles={config.manualFiles}
           onAddManualFile={handleAddManualFile}
           onRemoveManualFile={handleRemoveManualFile}
-          composerFooter={composerFooter}
+          composerFooter={isMobile ? undefined : composerFooter}
         />
         <SetupWizardRightPane
           contextLevel={config.contextLevel}
@@ -209,6 +180,11 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           showPreviewProgress={showPreviewProgress}
           onExcludeFile={handleExcludeFile}
         />
+        {isMobile && (
+          <div data-testid="composer-footer" className="border-t border-slate-200 bg-slate-50 px-3 py-3">
+            {composerFooter}
+          </div>
+        )}
       </div>
     </div>
   );

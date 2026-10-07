@@ -54,7 +54,7 @@ interface ModelMenuOption {
 }
 
 /** The "no explicit model" choice, named after the model it resolves to. */
-const buildDefaultOption = (planDefault: string | null | undefined, instanceDefault: string | null): { option: ModelMenuOption; name: string | null } => {
+const buildDefaultOption = (planDefault: string | null | undefined, instanceDefault: string | null | undefined): { option: ModelMenuOption; name: string | null } => {
   const resolved = planDefault || instanceDefault;
   const parts = resolved ? splitModelValue(resolved) : null;
   const name = parts ? modelDisplayName(parts.model) : null;
@@ -64,6 +64,20 @@ const buildDefaultOption = (planDefault: string | null | undefined, instanceDefa
     option: { value: '', agent: parts?.agent ?? null, label: name ? `${name} (${source})` : source, secondary: parts?.agent ?? undefined },
   };
 };
+
+/**
+ * The closed button says "(Default)"; the menu spells out where that default comes from.
+ * It never shows a bare "Default": while the instance default loads it says so instead.
+ */
+const getButtonLabel = (selectedModel: string | null, defaultName: string | null, isResolvingDefault: boolean): string => {
+  if (selectedModel) return modelDisplayName(selectedModel);
+  if (defaultName) return `${defaultName} (Default)`;
+  return isResolvingDefault ? 'Resolving model…' : 'Configured Default';
+};
+
+// A full-width selector keeps the "Model:" label at every width and lets the name use the whole row.
+const FULL_WIDTH_LAYOUT = { row: 'w-full', label: '', trigger: 'flex-1' };
+const INLINE_LAYOUT = { row: 'flex-1 sm:flex-initial', label: 'hidden sm:inline', trigger: 'max-w-[240px]' };
 
 const ModelMenuOptions: React.FC<{
   options: ModelMenuOption[];
@@ -107,7 +121,9 @@ export const ModelSelector: React.FC<{
   /** Plan-level model used when nothing is selected; falls back to the instance default. */
   defaultModel?: string | null;
   disabled?: boolean;
-}> = ({ agents, generationModel, onModelChange, defaultModel, disabled = false }) => {
+  /** Fills its row with the "Model:" label visible at every width, for stacked (mobile) layouts. */
+  fullWidth?: boolean;
+}> = ({ agents, generationModel, onModelChange, defaultModel, disabled = false, fullWidth }) => {
   const instanceDefaultModel = useInstanceDefaultModel();
   const { open, position, toggle, close, containerRef, popoverRef } = useAnchoredPopover();
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -134,10 +150,8 @@ export const ModelSelector: React.FC<{
   const selectedValue = generationModel || '';
   const selectedParts = generationModel ? splitModelValue(generationModel) : null;
   const buttonAgent = selectedParts ? selectedParts.agent : defaultOption.agent;
-  // The closed button says "(Default)"; the menu spells out where that default comes from.
-  const buttonLabel = selectedParts
-    ? modelDisplayName(selectedParts.model)
-    : defaultName ? `${defaultName} (Default)` : 'Default';
+  const layout = fullWidth ? FULL_WIDTH_LAYOUT : INLINE_LAYOUT;
+  const buttonLabel = getButtonLabel(selectedParts?.model ?? null, defaultName, !defaultModel && instanceDefaultModel === undefined);
 
   const choose = (value: string) => {
     close();
@@ -163,9 +177,9 @@ export const ModelSelector: React.FC<{
   };
 
   return (
-    <div className={`flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm min-w-0 flex-1 sm:flex-initial ${disabled ? 'text-gray-400' : 'text-gray-600'}`}>
-      <span className={`${disabled ? 'text-gray-400' : 'text-gray-500'} hidden sm:inline text-xs`}>Model:</span>
-      <div ref={containerRef} className="relative inline-flex min-w-0 max-w-[240px] items-center">
+    <div className={`flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm min-w-0 ${layout.row} ${disabled ? 'text-gray-400' : 'text-gray-600'}`}>
+      <span className={`${disabled ? 'text-gray-400' : 'text-gray-500'} ${layout.label} text-xs`}>Model:</span>
+      <div ref={containerRef} className={`relative inline-flex min-w-0 items-center ${layout.trigger}`}>
         <button
           ref={triggerRef}
           type="button"

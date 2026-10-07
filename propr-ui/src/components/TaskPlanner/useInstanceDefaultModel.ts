@@ -15,14 +15,20 @@ export function resolveInstanceDefaultModel(catalog: Pick<InstanceCatalogRespons
   return agent && model ? `${agent.alias}:${model}` : null;
 }
 
-/** Loads the instance-wide planner default model (`agent:model`, or a bare label); null until known. */
-export function useInstanceDefaultModel(): string | null {
-  const [model, setModel] = useState<string | null>(null);
+/**
+ * Loads the instance-wide planner default model (`agent:model`, or a bare label).
+ * Undefined while the catalog loads; null when the instance names no default.
+ */
+export function useInstanceDefaultModel(): string | null | undefined {
+  const [model, setModel] = useState<string | null | undefined>(undefined);
   useEffect(() => {
     let cancelled = false;
     getInstanceCatalog()
       .then(catalog => { if (!cancelled) setModel(resolveInstanceDefaultModel(catalog)); })
-      .catch(err => console.error('Failed to load the default model:', err));
+      .catch(err => {
+        console.error('Failed to load the default model:', err);
+        if (!cancelled) setModel(null);
+      });
     return () => { cancelled = true; };
   }, []);
   return model;
