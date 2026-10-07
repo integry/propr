@@ -188,13 +188,14 @@ docker run --rm --entrypoint node "$APP_TAG" -e '
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   const appPackage = JSON.parse(fs.readFileSync("/usr/src/app/package.json", "utf8"));
   const apiPackage = JSON.parse(fs.readFileSync("/usr/src/app/packages/api/package.json", "utf8"));
-  const sharp = require("sharp");
-  if (!sharp.versions?.vips) throw new Error("sharp did not load its native image-processing runtime");
   if (manifest.version !== appPackage.version || manifest.version !== apiPackage.version) {
     throw new Error(`docs manifest version ${manifest.version} does not match app ${appPackage.version} and API ${apiPackage.version}`);
   }
 ' >/dev/null
 echo "✓ app contains version-matched MCP documentation"
+
+# Resolve sharp from every shipped importer and run a real image operation.
+"$REPO_ROOT/scripts/smoke-check-app-sharp.sh" "$APP_TAG"
 
 wait_for_http() {
   local label="$1" url="$2" body

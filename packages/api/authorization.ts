@@ -1,4 +1,4 @@
-import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import type { Knex } from 'knex';
 import { db } from '@propr/core';
 import {
@@ -103,23 +103,8 @@ export async function resolveAuthorization(req: Request, res: Response, next: Ne
     }
 }
 
-export function hasPermission(req: Request, permission: InstancePermission): boolean {
-    return req.authorization?.permissions.includes(permission) === true;
-}
-
-export function requirePermission(permission: InstancePermission): RequestHandler {
-    return (req, res, next) => {
-        if (hasPermission(req, permission)) {
-            next();
-            return;
-        }
-        res.status(403).json({
-            error: 'Forbidden',
-            code: 'INSUFFICIENT_INSTANCE_PERMISSION',
-            message: `This action requires the ${permission} permission.`
-        });
-    };
-}
+// Permission checks stay importable without the database (route tables, OpenAPI generation).
+export { hasPermission, requirePermission } from './permissionCheck.js';
 
 export type AuthenticatedUserResponse = AuthenticatedInstanceUser;
 

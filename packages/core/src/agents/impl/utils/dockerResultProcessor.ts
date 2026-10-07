@@ -116,7 +116,14 @@ export function processDockerResult(
         watchdogTrip: result.watchdogTrip,
         subtype: claudeOutput.finalResult?.subtype,
         error: executionError
-    });
+    }) ?? (
+        // Only recover an actual runtime crash after the agent started. Setup
+        // failures and ordinary tool errors must not become partial successes.
+        !claudeOutput.finalResult && [132, 134, 139].includes(result.exitCode ?? 0)
+        && /(?:^|\n)oh no: Bun has crashed\./.test(result.stderr || '')
+        && claudeOutput.conversationLog.some(entry => entry.type === 'assistant')
+            ? 'runtime_crash' as const : undefined
+    );
     const summary = claudeOutput.finalResult?.result
         ?? (terminationReason ? getClaudeAnalysisText(claudeOutput) || undefined : undefined);
     const commitMessage = extractCommitMessage(summary);
@@ -136,7 +143,8 @@ export function processDockerResult(
         modifiedFiles: [],
         commitMessage,
         summary,
-        error: executionError || (terminationReason ? describeAgentTermination(terminationReason) : undefined),
+        error: terminationReason === 'runtime_crash' ? describeAgentTermination(terminationReason)
+            : executionError || (terminationReason ? describeAgentTermination(terminationReason) : undefined),
         terminationReason,
         prompt,
         conversationLog: fullConversationLog,

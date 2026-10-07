@@ -307,8 +307,31 @@ describe('preview runtime artifact and immutable publication scope', () => {
     assert.ok(workerStart < workerLiveness, 'the real worker process must be covered by the final liveness gate');
   });
 
+  test('runs the shared real sharp operation on the exact app image before any service starts', () => {
+    const sharpCheck = readFileSync('scripts/smoke-check-app-sharp.sh', 'utf8');
+    const generalSmoke = readFileSync('scripts/smoke-test-images.sh', 'utf8');
+    const invocation = '"$REPO_ROOT/scripts/smoke-check-app-sharp.sh" "$APP_IMAGE"';
+    const check = smoke.indexOf(invocation);
+    assert.ok(check !== -1, 'the preview smoke must call the shared sharp check');
+    assert.ok(smoke.indexOf('docker image inspect "$APP_IMAGE"') < check);
+    assert.ok(check < smoke.indexOf('docker network create'), 'the sharp check must precede service startup');
+    assert.ok(workflow.indexOf('smoke-test-preview-runtime-images.sh') < workflow.indexOf('preview-runtime-images.mjs package'));
+    assert.match(generalSmoke, /"\$REPO_ROOT\/scripts\/smoke-check-app-sharp\.sh" "\$APP_TAG"/);
+    assert.doesNotMatch(generalSmoke, /createRequire\(importer\)/, 'the general smoke must not keep a diverging copy');
+    for (const importer of [
+      '/usr/src/app/packages/core/dist/services/attachmentService.js',
+      '/usr/src/app/dist/packages/core/src/services/attachmentService.js',
+      '/usr/src/app/dist/packages/api/mcp/toolsPreviews.js',
+    ]) assert.ok(sharpCheck.includes(`"${importer}"`), importer);
+    assert.match(sharpCheck, /versions\?\.vips/);
+    assert.match(sharpCheck, /resize\(2, 2\)/);
+    assert.match(sharpCheck, /info\.width !== 2 \|\| info\.height !== 2 \|\| data\[0\] !== 0x33 \|\| data\[2\] !== 0x99/);
+    assert.match(sharpCheck, /docker run --rm --network none --entrypoint node/);
+    assert.doesNotMatch(sharpCheck, /npm (?:install|i |ci)|--privileged|docker\.sock/);
+  });
+
   test('shell entry points are syntactically executable', () => {
-    for (const path of ['scripts/build-images.sh', 'scripts/smoke-test-preview-runtime-images.sh']) {
+    for (const path of ['scripts/build-images.sh', 'scripts/smoke-check-app-sharp.sh', 'scripts/smoke-test-preview-runtime-images.sh']) {
       const result = spawnSync('bash', ['-n', path], { encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr);
     }

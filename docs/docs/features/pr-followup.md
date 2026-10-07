@@ -81,6 +81,8 @@ for reason codes and issue state labels.
 
 **Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Enable it only where CI failures are trustworthy signals.
 
+While Ultrafix is waiting for CI, its periodic check also recovers failed-CI follow-ups whose webhook was missed, such as during a restart. Recovery respects this setting and the repository's non-blocking checks, ignores replaced commits and closed PRs, and shares duplicate protection with webhook delivery.
+
 ## Automatic Merge-Conflict Resolution
 
 When the base branch of a ProPR pull request moves on (typically because another
@@ -155,6 +157,7 @@ Every decision not to act is logged at `info` (`warn` for
 | `attempt_limit` | 3 automatic attempts in the last 24 hours. |
 
 Queued jobs are logged with their job ID, head and base.
+
 
 ## Cancelling Obsolete Checks During Follow-Up
 

@@ -27,16 +27,17 @@ import {
   parseDesktopDiscovery,
   parseDesktopPairingStart,
   parseDesktopPairingActivationReceipt,
+  pairingTicket,
   type ProprDesktopDiscovery,
   type ProprDesktopPairingComplete,
-  type ProprDesktopPairingActivationReceipt,
   type ProprDesktopPairingOptions,
-  type ProprDesktopPairingStart,
 } from './desktopPairing.js';
 import {
   requestPairingProtocol,
   type PairingProtocolRequestOptions,
 } from './pairingProtocol.js';
+import { operationMethod, operationPath, withQuery } from './operations.js';
+import type * as ProprApi from './generated/apiTypes.js';
 
 export interface ProprClientOptions extends NormalizeApiBaseUrlOptions {
   baseUrl?: string | null;
@@ -60,6 +61,30 @@ export interface ProprCompatibilityOptions {
   path?: string;
   timeoutMs?: number;
 }
+
+export interface ProprTaskSubmissionOptions extends ProprFetchOptions {
+  /**
+   * Client-chosen identity of the submission (up to 255 characters on one
+   * line), for example a UUID. `.` and `..` are refused because they cannot
+   * address the submission in a URL path. Repeating a request with the same key and content returns
+   * the existing submission instead of opening a second issue.
+   */
+  idempotencyKey: string;
+}
+
+const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
+
+/** The trimmed key, or a configuration error when it cannot create and later address a submission. */
+const submissionKey = (value: string | undefined): string => {
+  const key = value?.trim();
+  if (!key || key.length > MAX_IDEMPOTENCY_KEY_LENGTH || /\r|\n/.test(key) || key === '.' || key === '..') {
+    throw new ProprClientError(
+      `Task submissions need an idempotency key of 1 to ${MAX_IDEMPOTENCY_KEY_LENGTH} characters on one line, other than "." or "..".`,
+      { kind: 'configuration' },
+    );
+  }
+  return key;
+};
 
 const responseErrorBody = async (response: Response): Promise<unknown> => {
   const contentType = response.headers.get('content-type') ?? '';
@@ -304,7 +329,8 @@ export class ProprClient {
   async negotiateCompatibility(
     options: ProprCompatibilityOptions = {}
   ): Promise<ProprApiCompatibilityResult> {
-    const response = await this.fetch(this.url(options.path ?? '/api/compatibility'), {
+    const response = await this.fetch(this.url(options.path ?? operationPath('getCompatibility')), {
+      method: operationMethod('getCompatibility'),
       credentials: this.authentication.type === 'session'
         ? (this.authentication.credentials ?? 'include')
         : undefined,
@@ -360,7 +386,8 @@ export class ProprClient {
     let response: Response;
     try {
       response = await deadline.race(
-        this.fetchImplementation(this.resolveRequestTarget(this.url('/api/desktop/discovery')), {
+        this.fetchImplementation(this.resolveRequestTarget(this.url(operationPath('getDesktopDiscovery'))), {
+          method: operationMethod('getDesktopDiscovery'),
           cache: 'no-store',
           credentials: 'omit',
           headers: { Accept: 'application/json' },
@@ -476,13 +503,14 @@ export class ProprClient {
   async startDesktopPairing(
     clientName: string,
     options: Pick<ProprDesktopPairingOptions, 'signal' | 'now' | 'binding'>,
-  ): Promise<ProprDesktopPairingStart> {
-    const path = '/api/desktop/pairings';
+  ): Promise<ProprApi.DesktopPairingStart> {
+    const path = operationPath('startDesktopPairing');
     const expectedOrigin = this.resolveRequestOrigin(this.url(path));
+    const body: ProprApi.DesktopPairingStartRequest = { clientName, ...options.binding };
     return parseDesktopPairingStart(await this.requestDesktopPairing(path, {
-      method: 'POST',
+      method: operationMethod('startDesktopPairing'),
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientName, ...options.binding }),
+      body: JSON.stringify(body),
       redirect: 'manual',
       signal: options.signal,
     }), expectedOrigin, options.now);
@@ -499,20 +527,14 @@ export class ProprClient {
   async activateDesktopPairing(
     pairing: ProprDesktopPairingComplete,
     signal?: AbortSignal,
-  ): Promise<ProprDesktopPairingActivationReceipt> {
+  ): Promise<ProprApi.DesktopPairingActivationReceipt> {
+    const body: ProprApi.DesktopPairingTicket = pairingTicket(pairing);
     return parseDesktopPairingActivationReceipt(await this.requestDesktopPairing(
-      `/api/desktop/pairings/${encodeURIComponent(pairing.pairingId)}/activate`,
+      operationPath('activateDesktopPairing', { pairingId: pairing.pairingId }),
       {
-        method: 'POST',
+        method: operationMethod('activateDesktopPairing'),
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceSecret: pairing.deviceSecret,
-          activationTicket: pairing.activationTicket,
-          instanceId: pairing.instanceId,
-          origin: pairing.origin,
-          scope: pairing.scope,
-          credentialGeneration: pairing.credentialGeneration,
-        }),
+        body: JSON.stringify(body),
         redirect: 'manual',
         signal,
       },
@@ -522,20 +544,14 @@ export class ProprClient {
   async cancelDesktopPairing(
     pairing: ProprDesktopPairingComplete,
     signal?: AbortSignal,
-  ): Promise<{ status: 'cancelled'; cancelledAt: string }> {
+  ): Promise<ProprApi.DesktopPairingCancellation> {
+    const body: ProprApi.DesktopPairingTicket = pairingTicket(pairing);
     const value = await this.requestDesktopPairing(
-      `/api/desktop/pairings/${encodeURIComponent(pairing.pairingId)}/cancel`,
+      operationPath('cancelDesktopPairing', { pairingId: pairing.pairingId }),
       {
-        method: 'POST',
+        method: operationMethod('cancelDesktopPairing'),
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceSecret: pairing.deviceSecret,
-          activationTicket: pairing.activationTicket,
-          instanceId: pairing.instanceId,
-          origin: pairing.origin,
-          scope: pairing.scope,
-          credentialGeneration: pairing.credentialGeneration,
-        }),
+        body: JSON.stringify(body),
         redirect: 'manual',
         signal,
       },
@@ -554,6 +570,55 @@ export class ProprClient {
       });
     }
     return receipt as unknown as { status: 'cancelled'; cancelledAt: string };
+  }
+
+  /** List task runs, newest first (`GET /api/tasks`). */
+  async listTasks(
+    query: ProprApi.ListTasksQuery = {},
+    options: ProprFetchOptions = {},
+  ): Promise<ProprApi.TaskPage> {
+    return this.request<ProprApi.TaskPage>(withQuery(operationPath('listTasks'), query), {
+      method: operationMethod('listTasks'),
+    }, options);
+  }
+
+  /** Get a task with its lifecycle events, oldest first (`GET /api/task/{taskId}/history`). */
+  async getTaskHistory(taskId: string, options: ProprFetchOptions = {}): Promise<ProprApi.TaskHistory> {
+    return this.request<ProprApi.TaskHistory>(operationPath('getTaskHistory', { taskId }), {
+      method: operationMethod('getTaskHistory'),
+    }, options);
+  }
+
+  /**
+   * Open a GitHub issue with the instruction and start an implementation run
+   * (`POST /api/task-submissions`). Safe to retry with the same idempotency key.
+   */
+  async createTaskSubmission(
+    submission: ProprApi.TaskSubmissionRequest,
+    { idempotencyKey, ...options }: ProprTaskSubmissionOptions,
+  ): Promise<ProprApi.TaskSubmission> {
+    const key = submissionKey(idempotencyKey);
+    return this.request<ProprApi.TaskSubmission>(operationPath('createTaskSubmission'), {
+      method: operationMethod('createTaskSubmission'),
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      body: JSON.stringify(submission),
+    }, options);
+  }
+
+  /** Get a task submission by its idempotency key (`GET /api/task-submissions/{key}`). */
+  async getTaskSubmission(key: string, options: ProprFetchOptions = {}): Promise<ProprApi.TaskSubmission> {
+    return this.request<ProprApi.TaskSubmission>(operationPath('getTaskSubmission', { key: submissionKey(key) }), {
+      method: operationMethod('getTaskSubmission'),
+    }, options);
+  }
+
+  /** Resume a task submission that stopped part way (`POST /api/task-submissions/{key}/retry`). */
+  async retryTaskSubmission(key: string, options: ProprFetchOptions = {}): Promise<ProprApi.TaskSubmission> {
+    return this.request<ProprApi.TaskSubmission>(
+      operationPath('retryTaskSubmission', { key: submissionKey(key) }),
+      { method: operationMethod('retryTaskSubmission') },
+      options,
+    );
   }
 
   /** @internal Pairing keeps transport ownership through the complete body. */
