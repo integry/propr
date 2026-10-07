@@ -1,7 +1,9 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { validateAgentNetworkSetting } from '../packages/core/src/network/networkPolicy.js';
 await mock.module('@propr/core', { namedExports: {
     validateModelReasoningLevel: () => ({ valid: true, value: '' }),
+    validateAgentNetworkSetting,
     validatePrReviewModelValue: async (model: string) => ({ valid: model !== 'missing', error: model === 'missing' ? 'pr_review_model is unavailable' : undefined }),
 } });
 const { extractSettingSaves } = await import('../packages/api/routes/configSettings.js');

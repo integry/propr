@@ -59,6 +59,24 @@ export interface PushFailure {
   recoveryInstruction: string;
 }
 
+export interface NetworkEgressSummary {
+  mode: 'open' | 'restricted';
+  source?: 'instance' | 'workflow' | 'instance_enforced';
+  note?: string;
+  allow?: string[];
+  restrictedContainers?: number;
+  fallbacks?: Array<{ agentType: string; reason: string }>;
+  refusals?: Array<{ agentType: string; reason: string }>;
+  allowedConnections?: number;
+  deniedConnections: number;
+  deniedHosts: Array<{ host: string; count: number }>;
+  omittedDeniedHosts?: number;
+  omittedDeniedAttempts?: number;
+  /** Allowed connections that could not be reached upstream. */
+  failedConnections?: number;
+  failedHosts?: Array<{ host: string; count: number }>;
+}
+
 export interface HistoryItemMetadata {
   repositoryWorkflow?: { path: string; baseBranch: string; revision: string; fileRevision: string; maxParallelTasks: number; timeoutMs: number };
   /** Admission refusals so far for a task waiting on repository workflow capacity. */
@@ -69,6 +87,8 @@ export interface HistoryItemMetadata {
   /** Timeline event that repeats the current state, e.g. `budget.exceeded` or `replacement.dispatched`. */
   event?: 'budget.exceeded' | 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted' | string;
   budget?: { capUsd: number; spentUsd: number; priorSpentUsd?: number; percent?: number; source?: 'override' | 'workflow' | 'instance_default' };
+  /** `network.egress`: one run's network mode and every host its egress proxy denied. */
+  networkEgress?: NetworkEgressSummary;
   pushFailure?: PushFailure;
   pushSalvage?: PushSalvageEvent;
   model?: string;

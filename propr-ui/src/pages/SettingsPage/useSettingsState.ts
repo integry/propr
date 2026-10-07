@@ -12,7 +12,7 @@ import {
 } from '../../api/proprApi';
 import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, DEFAULT_REVIEW_CONTEXT_BUDGET_PERCENT, type InstanceCatalogAgent } from '@propr/shared';
 import { getAgentTankSettings } from '../../api/revertApi';
-import { Settings, type AgentWatchdogSettingName } from './types';
+import { Settings, type AgentNetworkSettingName, type AgentNetworkValues, type AgentWatchdogSettingName } from './types';
 import { parseLoadedData, runLimitSettingsToSave } from './parseLoadedData';
 import { useAgentTankSettings } from './useAgentTankSettings';
 import { useListManagement } from './useListManagement';
@@ -78,7 +78,8 @@ export function useSettingsState() {
     default_max_cost_usd: '',
     agent_stall_timeout_ms: null,
     agent_tool_stall_timeout_ms: null,
-    agent_degenerate_output_limit: null
+    agent_degenerate_output_limit: null,
+    agent_network_mode: null, agent_network_mode_enforced: null, agent_network_allow: null, agent_network_ignore_repository_allow: null
   });
   const [prLabel, setPrLabel] = useState('');
   const [agents, setAgents] = useState<AgentConfig[]>([]);
@@ -316,7 +317,8 @@ export function useSettingsState() {
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
 
-  const handleAgentWatchdogChange = useCallback((name: AgentWatchdogSettingName, value: number | null) => {
+  // Saves one agent run override (watchdog or network) immediately.
+  const handleAgentRunSettingChange = useCallback((name: AgentWatchdogSettingName | AgentNetworkSettingName, value: number | null | AgentNetworkValues[AgentNetworkSettingName]) => {
     const newSettings = { ...settings, [name]: value };
     setSettings(newSettings);
     saveSettingsOnly(newSettings);
@@ -430,7 +432,7 @@ export function useSettingsState() {
     summarizationSettings, isReindexing, agentTankSettings,
     agentTankAvailable, agentTankCheckingStatus,
     setSettings, setPrLabel,
-    triggerSettingsSave, handleModelSelectionChange, handleEscalationModelsChange, handleAgentWatchdogChange, handleReviewContextEnabledChange,
+    triggerSettingsSave, handleModelSelectionChange, handleEscalationModelsChange, handleAgentRunSettingChange, handleReviewContextEnabledChange,
     handleReviewContextBudgetPercentCommit, handleRemoveLegacyReviewCap,
     handleSummarizationChange, handleSummarizationModelChange,
     handleSummarizationFallbackModelChange,

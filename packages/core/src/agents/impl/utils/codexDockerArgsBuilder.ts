@@ -63,7 +63,7 @@ export function resolveCodexStreamConfig(
     };
 }
 
-function buildCodexStreamConfigArgs(config: CodexStreamConfig): string[] {
+export function buildCodexStreamConfigArgs(config: CodexStreamConfig): string[] {
     if (config.transport === 'inherit') return [];
 
     return [

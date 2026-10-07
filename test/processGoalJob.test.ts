@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
-import { after, mock, test } from 'node:test';
+import { after, before, mock, test } from 'node:test';
 import { executePreparedGoal, processGoalJob } from '../src/jobs/processGoalJob.ts';
 import type { GoalJobData } from '../packages/core/src/goalExports.ts';
 import type { AgentTaskOptions } from '../packages/core/src/agents/types.ts';
 import { assertProviderIdentityMatches } from '../src/jobs/goalAttemptState.ts';
 import { labelCompletedGoalPullRequest } from '../src/jobs/goalPullRequestLabel.ts';
+
+// Goal attempts read the instance network policy, which fails closed without its table.
+before(async () => {
+  const { runMigrations } = await import('../packages/core/src/db/connection.ts');
+  await runMigrations();
+});
 
 after(async () => {
   const { closeConnection } = await import('../packages/core/src/db/connection.ts');

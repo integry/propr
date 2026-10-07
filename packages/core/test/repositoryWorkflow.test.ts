@@ -59,6 +59,23 @@ test('rejects malformed and privilege-expanding policy with actionable field err
     assert.throws(() => parseRepositoryWorkflow('a'.repeat(128 * 1024 + 1)), /exceeds 128 KiB/);
 });
 
+test('validates the network block: mode and allowlist hostnames', () => {
+    assert.deepEqual(parseRepositoryWorkflow('network:\n  mode: restricted\n  allow:\n    - "registry.npmjs.org"\n    - "*.internal.example.com"\n').network,
+        { mode: 'restricted', allow: ['registry.npmjs.org', '*.internal.example.com'] });
+    assert.deepEqual(parseRepositoryWorkflow('network: { mode: open }').network, { mode: 'open' });
+    assert.deepEqual(parseRepositoryWorkflow('network: { allow: ["git.example.com:8443", "10.0.0.5"] }').network, { allow: ['git.example.com:8443', '10.0.0.5'] });
+    for (const [source, message] of [
+        ['network: { mode: closed }', /network\.mode must be "open" or "restricted"/],
+        ['network: { mode: restricted, proxy: x }', /unknown field network\.proxy/],
+        ['network: { allow: registry.npmjs.org }', /network\.allow must be an array/],
+        ['network: { allow: ["*"] }', /network\.allow\[0\]/],
+        ['network: { allow: ["*.com"] }', /network\.allow\[0\]/],
+        ['network: { allow: ["ok.example.com", "bad host.example.com"] }', /network\.allow\[1\]/],
+        ['network: { allow: ["example.com:70000"] }', /invalid port/],
+        ['network: []', /network must be a mapping/],
+    ] as const) assert.throws(() => parseRepositoryWorkflow(source), message, source);
+});
+
 test('pins branch-specific policy and instructions to the same base revision and caps instance limits', async () => {
     const reads: string[] = [];
     const source = {
@@ -102,6 +119,12 @@ test('published editor schema agrees with runtime on supported fields and reject
         { limits: { max_parallel_tasks: 8 }, previews: { types: [] }, validation: ['echo ok'] },
         { limits: { max_cost_usd: 5 } }, { limits: { max_cost_usd: 2.5, max_parallel_tasks: 2 } }, { limits: { max_cost_usd: 0 } },
         { limits: { max_cost: 5 } },
+        { network: { mode: 'restricted', allow: ['registry.npmjs.org', '*.internal.example.com', 'git.example.com:8443'] } }, { network: { mode: 'open' } }, { network: {} },
+        { network: { mode: 'closed' } }, { network: { allow: ['*'] } }, { network: { allow: ['*.com'] } }, { network: { allow: 'registry.npmjs.org' } }, { network: { proxy: 'x' } },
+        // Hostname entries the runtime rejects are flagged in the editor too.
+        ...['example', 'localhost', '-bad.example.com', 'bad-.example.com', 'example.com:70000', 'example.com:0', 'a*.example.com', 'bad_host.example.com',
+            'example..com', `${'a'.repeat(64)}.example.com`, '[::1]:70000', ':::'].map(entry => ({ network: { allow: [entry] } })),
+        ...['10.0.0.5', '[::1]:8080', 'fe80::1', 'Example.COM.', 'example.com:65535', '*.example.com:8443', ' registry.example.com '].map(entry => ({ network: { allow: [entry] } })),
         { network: 'host' }, { hooks: { timeout_ms: -1 } }, { instructions: '../oops' }, { instructions: 'a//b' },
         { validation: [null] }, { limits: { max_parallel_tasks: 1.5 } }, { previews: { types: ['image', 'image'] } },
         // Path checks must cross embedded newlines like the runtime check does.
