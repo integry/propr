@@ -81,6 +81,8 @@ await mock.module('@propr/core', {
         resolveLlmLabel: async (model: string) => ({ agentAlias: model.split(':')[0], model: model.split(':')[1] }),
         resolveConfiguredModel: async (model: string) => model,
         findPlanIssueByRepoAndPR: async () => null,
+        gateAutoMergeArming: async () => ({ arm: false }),
+        recoverCiFailureFollowups: async () => undefined,
         generateCorrelationId: () => 'recovery-correlation-id',
         getAuthenticatedOctokit: async () => ({ request: mockOctokitRequest }),
         getIssueQueue: mockGetIssueQueue,

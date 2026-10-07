@@ -50,6 +50,7 @@ await mock.module('@propr/core', {
     resolveConfiguredModel: async (model: string) => model,
         findPlanIssueByRepoAndPR: mockFindPlanIssueByRepoAndPR,
         gateAutoMergeArming: mockGateAutoMergeArming,
+        recoverCiFailureFollowups: async () => undefined,
         generateCorrelationId: mock.fn(() => 'next-correlation-id'),
         getAuthenticatedOctokit: mock.fn(async () => ({ request: mockOctokitRequest })),
         getIssueQueue: mockGetIssueQueue,

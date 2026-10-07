@@ -67,6 +67,8 @@ await mock.module('@propr/core', {
         resolveLlmLabel: async (model: string) => ({ agentAlias: model, model }),
         resolveConfiguredModel: async (model: string) => model,
         findPlanIssueByRepoAndPR: async () => null,
+        gateAutoMergeArming: async () => ({ arm: false }),
+        recoverCiFailureFollowups: async () => undefined,
         generateCorrelationId: () => randomUUID(),
         getAuthenticatedOctokit: async () => ({ request: mockOctokitRequest }),
         getIssueQueue: async () => queue,
