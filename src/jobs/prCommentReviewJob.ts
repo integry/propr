@@ -239,29 +239,31 @@ async function handleSkippedPRValidation(
 }
 
 /**
- * Reviews do not run the repository workflow, but its spend cap still applies.
- * A missing or invalid workflow leaves the task and instance caps in force; a
- * workflow that cannot be read fails the review before any agent starts, unless
- * the task override (which outranks it) already sets the cap.
+ * Reviews do not run the repository workflow, but its spend cap and its
+ * `network` block apply. A missing or invalid workflow leaves the task and
+ * instance caps and the instance network policy in force; a workflow that
+ * cannot be read fails the review before any agent starts, since it may
+ * restrict the review's network or cap its spend.
  */
-export async function applyReviewWorkflowCostCap(
+export async function prepareReviewRepositoryWorkflow(
     octokit: Parameters<typeof prepareRepositoryWorkflow>[0]['octokit'],
     prData: { data: object },
     context: Pick<PRJobContext, 'repoOwner' | 'repoName' | 'correlationId' | 'correlatedLogger'>,
     loadWorkflow: typeof prepareRepositoryWorkflow = prepareRepositoryWorkflow,
-): Promise<void> {
-    const guard = getActiveRunCostGuard();
-    if (!guard || guard.cap?.source === 'override') return;
+): Promise<ResolvedRepositoryWorkflow | undefined> {
     const baseBranch = (prData.data as { base?: { ref?: string } }).base?.ref ?? null;
     let workflow: Awaited<ReturnType<typeof prepareRepositoryWorkflow>>;
     try {
         workflow = await loadWorkflow({ octokit, repoOwner: context.repoOwner, repoName: context.repoName, baseBranch, correlationId: context.correlationId });
     } catch (error) {
         if (!(error instanceof RepositoryWorkflowPolicyError)) throw error;
-        context.correlatedLogger.warn({ error: error.message }, 'Ignoring the invalid repository workflow spend cap for this review');
-        return;
+        context.correlatedLogger.warn({ error: error.message }, 'Ignoring the invalid repository workflow (spend cap and network block) for this review');
+        return undefined;
     }
-    await applyWorkflowCostCap(workflow);
+    // A task override outranks the workflow cap.
+    const guard = getActiveRunCostGuard();
+    if (guard && guard.cap?.source !== 'override') await applyWorkflowCostCap(workflow);
+    return workflow;
 }
 
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {
@@ -276,7 +278,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;
     state.unprocessedComments = validUnprocessed!;
     llm = resolvedLlm;
-    await applyReviewWorkflowCostCap(state.octokit, prData!, context);
+    state.repositoryWorkflow = await prepareReviewRepositoryWorkflow(state.octokit, prData!, context);
     const { combinedCommentBody, commentAuthors } = buildCombinedComment(state.unprocessedComments);
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
     const taskUrl = getWebUiTaskUrl(taskId);

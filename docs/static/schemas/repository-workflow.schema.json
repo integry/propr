@@ -143,7 +143,7 @@
         "allow": {
           "type": "array",
           "maxItems": 500,
-          "description": "Extra hosts restricted runs may reach: an exact hostname, *.example.com for its subdomains (not the apex), an IP literal, each optionally with :port (otherwise ports 80 and 443).",
+          "description": "Extra hosts restricted runs may reach: an exact hostname, *.example.com for its subdomains (not the apex), an IP literal, each optionally with :port (otherwise ports 80 and 443). Only public addresses: a loopback, private or link-local address needs an instance allowlist entry. An instance that enforces restricted mode may ignore these hosts.",
           "items": {
             "type": "string",
             "minLength": 1,

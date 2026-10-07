@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { AgentNetworkSettingsSection } from './AgentNetworkSettingsSection';
 
-const unset = { agent_network_mode: null, agent_network_mode_enforced: null, agent_network_allow: null };
+const unset = { agent_network_mode: null, agent_network_mode_enforced: null, agent_network_allow: null, agent_network_ignore_repository_allow: null };
 
 describe('AgentNetworkSettingsSection', () => {
   it('shows the environment defaults and saves a chosen mode', () => {
@@ -13,6 +13,10 @@ describe('AgentNetworkSettingsSection', () => {
     expect(onCommit).toHaveBeenCalledWith('agent_network_mode', 'open');
     fireEvent.change(screen.getByLabelText('Enforce restricted mode'), { target: { value: 'true' } });
     expect(onCommit).toHaveBeenCalledWith('agent_network_mode_enforced', true);
+    fireEvent.change(screen.getByLabelText('Repository allowed hosts'), { target: { value: 'true' } });
+    expect(onCommit).toHaveBeenCalledWith('agent_network_ignore_repository_allow', true);
+    fireEvent.change(screen.getByLabelText('Repository allowed hosts'), { target: { value: '' } });
+    expect(onCommit).toHaveBeenLastCalledWith('agent_network_ignore_repository_allow', null);
   });
 
   it('commits the edited allowlist on blur, normalized, and an empty list as the default', () => {

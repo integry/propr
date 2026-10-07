@@ -111,7 +111,7 @@ await mock.module('@propr/core', { namedExports: {
     issueQueue: {}, getPendingPrCommentsKey,
     // Open network: no egress proxy and no timeline event.
     executeWithNetworkPolicy, networkEgressReportFromError, resolveNetworkPolicy,
-    loadInstanceNetworkPolicy: async () => ({ mode: 'open', enforced: false, allow: [] }),
+    loadInstanceNetworkPolicy: async () => ({ mode: 'open', enforced: false, allow: [], ignoreRepositoryAllow: false }),
     db: () => { throw new Error('no database in this test'); },
 } });
 // Real helpers for re-entry tests; the rest of the suite keeps their fakes.

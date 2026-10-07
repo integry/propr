@@ -3,7 +3,7 @@ import { after, describe, test } from 'node:test';
 import { closeConnection, getActiveRunCostGuard, RepositoryWorkflowPolicyError, runCostCapTerminalReason } from '@propr/core';
 import type { RunCostSnapshot } from '@propr/core';
 import { budgetExceededEvent, issueRunCostCapTarget, postCostCapNotice, pullRequestRunCostCapTarget, withRunCostCap, type RunCostCapDeps, type RunCostCapTarget } from '../src/jobs/runCostCap.js';
-import { applyReviewWorkflowCostCap } from '../src/jobs/prCommentReviewJob.js';
+import { prepareReviewRepositoryWorkflow } from '../src/jobs/prCommentReviewJob.js';
 import type { CommentJobData, IssueJobData } from '@propr/core';
 
 after(async () => { await closeConnection(); });
@@ -146,33 +146,34 @@ test('a task override that sets the cap lets the run proceed when the default ca
 describe('review workflow spend cap', () => {
     const prData = { data: { base: { ref: 'main' } } };
     const reviewContext = { repoOwner: 'acme', repoName: 'app', correlationId: 'corr', correlatedLogger: { warn: () => undefined } as never };
-    const noOctokit = {} as Parameters<typeof applyReviewWorkflowCostCap>[0];
+    const noOctokit = {} as Parameters<typeof prepareReviewRepositoryWorkflow>[0];
     const none = harness({ instanceDefault: 'none' }).deps;
 
     test('a workflow that cannot be read fails the review instead of running it uncapped', async () => {
         await withRunCostCap(target, async guard => {
-            await assert.rejects(applyReviewWorkflowCostCap(noOctokit, prData, reviewContext, async () => { throw Object.assign(new Error('GitHub 502'), { status: 502 }); }), /GitHub 502/);
+            await assert.rejects(prepareReviewRepositoryWorkflow(noOctokit, prData, reviewContext, async () => { throw Object.assign(new Error('GitHub 502'), { status: 502 }); }), /GitHub 502/);
             assert.equal(guard.cap, null);
         }, none);
     });
 
     test('the workflow cap applies when the workflow is read', async () => {
         await withRunCostCap(target, async guard => {
-            await applyReviewWorkflowCostCap(noOctokit, prData, reviewContext, async () => ({ config: { limits: { max_cost_usd: 5 } } }) as never);
+            await prepareReviewRepositoryWorkflow(noOctokit, prData, reviewContext, async () => ({ config: { limits: { max_cost_usd: 5 } } }) as never);
             assert.deepEqual(guard.cap, { capUsd: 5, source: 'workflow' });
         }, none);
     });
 
     test('an invalid workflow file leaves the other caps in force', async () => {
         await withRunCostCap(target, async guard => {
-            await applyReviewWorkflowCostCap(noOctokit, prData, reviewContext, async () => { throw new RepositoryWorkflowPolicyError('Invalid .propr/workflow.yml: bad'); });
+            await prepareReviewRepositoryWorkflow(noOctokit, prData, reviewContext, async () => { throw new RepositoryWorkflowPolicyError('Invalid .propr/workflow.yml: bad'); });
             assert.equal(guard.cap, null);
         }, none);
     });
 
-    test('a task override skips the workflow read it outranks', async () => {
+    test('a task override outranks the workflow cap; the workflow is still read for its network block', async () => {
+        const workflow = { config: { limits: { max_cost_usd: 5 }, network: { mode: 'restricted' } } } as never;
         await withRunCostCap({ ...target, override: 2 }, async guard => {
-            await applyReviewWorkflowCostCap(noOctokit, prData, reviewContext, async () => assert.fail('the workflow is not read'));
+            assert.equal(await prepareReviewRepositoryWorkflow(noOctokit, prData, reviewContext, async () => workflow), workflow);
             assert.deepEqual(guard.cap, { capUsd: 2, source: 'override' });
         }, none);
     });

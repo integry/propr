@@ -58,8 +58,14 @@ export async function agentNetworkSettingsResponse(configStore: typeof configMan
   const defaults = configManager.resolveInstanceNetworkPolicyEnvDefault();
   return {
     ...Object.fromEntries(AGENT_NETWORK_SETTING_NAMES.map(name => [name, stored[name] ?? null])),
-    agent_network_defaults: { agent_network_mode: defaults.mode, agent_network_mode_enforced: defaults.enforced, agent_network_allow: defaults.allow },
-    agent_network_effective: { agent_network_mode: effective.mode, agent_network_mode_enforced: effective.enforced, agent_network_allow: effective.allow },
+    agent_network_defaults: {
+      agent_network_mode: defaults.mode, agent_network_mode_enforced: defaults.enforced, agent_network_allow: defaults.allow,
+      agent_network_ignore_repository_allow: defaults.ignoreRepositoryAllow,
+    },
+    agent_network_effective: {
+      agent_network_mode: effective.mode, agent_network_mode_enforced: effective.enforced, agent_network_allow: effective.allow,
+      agent_network_ignore_repository_allow: effective.ignoreRepositoryAllow,
+    },
   };
 }
 
@@ -266,6 +272,7 @@ async function saveNormalizedSettingsWithRollback({
     agent_network_mode,
     agent_network_mode_enforced,
     agent_network_allow,
+    agent_network_ignore_repository_allow,
     ...otherSettings
   } = settings;
 
@@ -291,7 +298,8 @@ async function saveNormalizedSettingsWithRollback({
     agent_degenerate_output_limit,
     agent_network_mode,
     agent_network_mode_enforced,
-    agent_network_allow
+    agent_network_allow,
+    agent_network_ignore_repository_allow
   });
 
   if (extracted.error) {

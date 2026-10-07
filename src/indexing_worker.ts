@@ -6,6 +6,7 @@ import { createWorker, INDEXING_QUEUE_NAME, indexingQueue, runMigrations } from 
 import type { IndexingJobData, JobResult } from '@propr/core';
 import { logger, startEgressProxySweeper } from '@propr/core';
 import { runWithNetworkPolicy } from './jobs/networkEgress.js';
+import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
 import { indexRepo, updateRepositoryStatus } from '@propr/core';
@@ -387,6 +388,7 @@ async function startIndexingWorker(): Promise<Worker<IndexingJobData, IndexingRe
 
     // Summarization agents run under the instance network policy, with per-run proxies like the worker's.
     const egressProxySweeper = startEgressProxySweeper();
+    enforceInstanceNetworkPolicyOutsideRuns();
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         process.on(signal, async () => {
             logger.info(`Indexing Worker received ${signal}, shutting down gracefully...`);

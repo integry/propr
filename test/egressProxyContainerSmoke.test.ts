@@ -40,7 +40,8 @@ test('a restricted container reaches an allowed host only through the proxy and 
         ].join('; ');
         const args = wrapDockerRunArgsWithRepoSetup(['run', '--rm', '--network', 'bridge', '--user', '0:0', image!], image!, 'claude');
         const { result, report } = await executeWithNetworkPolicy(
-            { mode: 'restricted', source: 'workflow', allow: [`127.0.0.1:${port}`] },
+            // A loopback stand-in for the allowed host: only an instance IP-literal entry opens a private address.
+            { mode: 'restricted', source: 'workflow', allow: [`127.0.0.1:${port}`], instanceAllow: [`127.0.0.1:${port}`] },
             () => executeDockerCommand('docker', [...args, '/bin/bash', '-c', probe], { timeout: 240_000 }),
         );
         assert.equal(result.exitCode, 0, result.stderr);

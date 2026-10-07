@@ -24,6 +24,7 @@ interface SettingFields {
   agent_network_mode?: unknown;
   agent_network_mode_enforced?: unknown;
   agent_network_allow?: unknown;
+  agent_network_ignore_repository_allow?: unknown;
 }
 
 export type SettingSaveName =
@@ -48,7 +49,7 @@ export type SettingSaveName =
 
 export const AGENT_WATCHDOG_SETTING_NAMES = ['agent_stall_timeout_ms', 'agent_tool_stall_timeout_ms', 'agent_degenerate_output_limit'] as const;
 export type AgentWatchdogSettingName = typeof AGENT_WATCHDOG_SETTING_NAMES[number];
-export const AGENT_NETWORK_SETTING_NAMES = ['agent_network_mode', 'agent_network_mode_enforced', 'agent_network_allow'] as const;
+export const AGENT_NETWORK_SETTING_NAMES = ['agent_network_mode', 'agent_network_mode_enforced', 'agent_network_allow', 'agent_network_ignore_repository_allow'] as const;
 export type AgentNetworkSettingName = typeof AGENT_NETWORK_SETTING_NAMES[number];
 
 export interface LabeledSaveDescriptor {

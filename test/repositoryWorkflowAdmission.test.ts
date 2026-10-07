@@ -22,7 +22,7 @@ await mock.module('@propr/core', { namedExports: {
     retryConfigs: { githubApi: { maxAttempts: 3, baseDelay: 1, maxDelay: 1, exponentialBase: 1, retryableErrors: [] } },
     TaskStates: { CANCELLED: 'cancelled', FAILED: 'failed', COMPLETED: 'completed' },
     executeWithNetworkPolicy, networkEgressReportFromError, resolveNetworkPolicy,
-    loadInstanceNetworkPolicy: async () => ({ mode: 'open', enforced: false, allow: [] }),
+    loadInstanceNetworkPolicy: async () => ({ mode: 'open', enforced: false, allow: [], ignoreRepositoryAllow: false }),
     db: () => { throw new Error('no database in this test'); }, getStateManager: () => { throw new Error('no state manager in this test'); },
 } });
 const {

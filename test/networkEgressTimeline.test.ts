@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { closeConnection, prepareDockerRunNetwork, type NetworkEgressReport } from '@propr/core';
+import { closeConnection, prepareDockerRunNetwork, resolveNetworkPolicy, type NetworkEgressReport, type ResolvedRepositoryWorkflow } from '@propr/core';
 import { networkEgressEvent, runWithNetworkPolicy, shouldRecordNetworkEgress } from '../src/jobs/networkEgress.js';
+import { prepareReviewRepositoryWorkflow } from '../src/jobs/prCommentReviewJob.js';
 
 after(closeConnection);
 
@@ -66,4 +67,19 @@ test('the aggregated report is recorded once per run, after success and after fa
     assert.equal(await runWithNetworkPolicy(options, async () => 'done'), 'done');
     await assert.rejects(runWithNetworkPolicy(options, async () => { throw new Error('agent failed'); }), /agent failed/);
     assert.deepEqual(recorded.map(entry => [entry.taskId, entry.report.mode]), [['task-1', 'restricted'], ['task-1', 'restricted']]);
+});
+
+test('a review reads the repository network block and runs under it', async () => {
+    const workflow = { config: { network: { mode: 'restricted', allow: ['cache.example.com'] } } } as unknown as ResolvedRepositoryWorkflow;
+    const context = { repoOwner: 'acme', repoName: 'app', correlationId: 'corr', correlatedLogger: { warn() {} } as never };
+    // No spend cap is active: the workflow is still read, for its network block.
+    const read = await prepareReviewRepositoryWorkflow({} as never, { data: { base: { ref: 'main' } } }, context, async () => workflow);
+    assert.equal(read, workflow);
+    const recorded: NetworkEgressReport[] = [];
+    await runWithNetworkPolicy({
+        workflow: read, taskId: 'review-task', correlatedLogger: { warn() {} },
+        resolvePolicy: async policyWorkflow => resolveNetworkPolicy({ mode: 'open', enforced: false, allow: [], ignoreRepositoryAllow: false }, policyWorkflow?.config.network),
+        record: async (_taskId, report) => { recorded.push(report); },
+    }, async () => undefined);
+    assert.deepEqual(recorded.map(report => [report.mode, report.source, report.allow]), [['restricted', 'workflow', ['cache.example.com']]]);
 });

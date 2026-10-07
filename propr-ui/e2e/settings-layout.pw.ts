@@ -55,7 +55,8 @@ async function installSettingsFixture(page: Page): Promise<void> {
         agent_network_mode: 'restricted',
         agent_network_mode_enforced: null,
         agent_network_allow: ['registry.example.com', '*.internal.example.com'],
-        agent_network_defaults: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [] },
+        agent_network_ignore_repository_allow: true,
+        agent_network_defaults: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [], agent_network_ignore_repository_allow: false },
       },
       '/api/config/followup-keywords': { followup_keywords: ['PROPR', 'FIXIT'] },
       '/api/config/followup-ignore-keywords': { followup_ignore_keywords: ['Deployment In Progress'] },
@@ -143,6 +144,7 @@ test('lays settings out as one contained, single-column form', async ({ page }) 
   const network = page.getByRole('region', { name: 'Agent network' });
   await expect(network.getByLabel('Network mode')).toHaveValue('restricted');
   await expect(network.getByLabel('Additional allowed hosts')).toHaveValue('registry.example.com\n*.internal.example.com');
+  await expect(network.getByLabel('Repository allowed hosts')).toHaveValue('true');
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
     await mkdir(path.resolve('../.propr/previews'), { recursive: true });
     await network.scrollIntoViewIfNeeded();

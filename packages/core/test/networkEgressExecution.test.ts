@@ -4,13 +4,13 @@ import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import fsPromises from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { resolveInstanceNetworkPolicy, resolveNetworkPolicy, validateAgentNetworkSetting, type ResolvedNetworkPolicy } from '../src/network/networkPolicy.js';
 import {
     EGRESS_BRIDGE_PRELUDE, EGRESS_ORPHAN_MAX_AGE_MS, NetworkPolicyError, dockerRunNeedsNetworkPolicy, executeWithNetworkPolicy, networkEgressReportFromError,
-    prepareDockerRunNetwork, sweepOrphanedEgressProxies,
+    egressProcessNamespace, prepareDockerRunNetwork, sweepOrphanedEgressProxies,
 } from '../src/network/egressExecution.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../src/claude/docker/repoSetupWrapper.js';
 import { spawnWithNetworkPolicy } from '../src/claude/docker/dockerNetworkPolicy.js';
@@ -48,28 +48,30 @@ function agentRunArgs(agentType: AgentType = 'claude'): string[] {
 const envOf = (args: string[], key: string): string[] => args.flatMap((arg, index) => args[index - 1] === '-e' && arg.startsWith(`${key}=`) ? [arg.slice(key.length + 1)] : []);
 
 test('the repository may tighten or relax a non-enforced instance mode but cannot open an enforced one', () => {
-    const open = { mode: 'open' as const, enforced: false, allow: ['mirror.example.com'] };
-    assert.deepEqual(resolveNetworkPolicy(open), { mode: 'open', source: 'instance', allow: ['mirror.example.com'] });
+    const open = { mode: 'open' as const, enforced: false, allow: ['mirror.example.com'], ignoreRepositoryAllow: false };
+    assert.deepEqual(resolveNetworkPolicy(open), { mode: 'open', source: 'instance', allow: ['mirror.example.com'], instanceAllow: ['mirror.example.com'] });
     assert.deepEqual(resolveNetworkPolicy(open, { mode: 'restricted', allow: ['Registry.NPMJS.org'] }),
-        { mode: 'restricted', source: 'workflow', allow: ['mirror.example.com', 'registry.npmjs.org'] });
-    const restrictedDefault = { mode: 'restricted' as const, enforced: false, allow: [] };
+        { mode: 'restricted', source: 'workflow', allow: ['mirror.example.com', 'registry.npmjs.org'], instanceAllow: ['mirror.example.com'] });
+    const restrictedDefault = { mode: 'restricted' as const, enforced: false, allow: [], ignoreRepositoryAllow: false };
     assert.equal(resolveNetworkPolicy(restrictedDefault, { mode: 'open' }).mode, 'open');
     assert.equal(resolveNetworkPolicy(restrictedDefault).source, 'instance');
-    const enforced = resolveNetworkPolicy({ mode: 'restricted', enforced: true, allow: [] }, { mode: 'open', allow: ['cache.example.com'] });
+    const enforced = resolveNetworkPolicy({ mode: 'restricted', enforced: true, allow: [], ignoreRepositoryAllow: false }, { mode: 'open', allow: ['cache.example.com'] });
     assert.equal(enforced.mode, 'restricted');
     assert.equal(enforced.source, 'instance_enforced');
     assert.deepEqual(enforced.allow, ['cache.example.com'], 'repository hosts still apply under an enforced policy');
+    assert.deepEqual(enforced.instanceAllow, [], 'but they are not the administrator\'s own entries');
     assert.match(enforced.note!, /requested network\.mode: open/);
     // Enforcement only means something with restricted mode.
-    assert.equal(resolveNetworkPolicy({ mode: 'open', enforced: true, allow: [] }, { mode: 'open' }).mode, 'open');
+    assert.equal(resolveNetworkPolicy({ mode: 'open', enforced: true, allow: [], ignoreRepositoryAllow: false }, { mode: 'open' }).mode, 'open');
 });
 
 test('instance settings override environment defaults; invalid values fall back', () => {
     const env = { AGENT_NETWORK_MODE: 'restricted', AGENT_NETWORK_MODE_ENFORCED: 'true', AGENT_NETWORK_ALLOW: 'a.example.com, *.b.example.com' };
-    assert.deepEqual(resolveInstanceNetworkPolicy({}, env), { mode: 'restricted', enforced: true, allow: ['a.example.com', '*.b.example.com'] });
-    assert.deepEqual(resolveInstanceNetworkPolicy({ agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [] }, env), { mode: 'open', enforced: false, allow: [] });
+    assert.deepEqual(resolveInstanceNetworkPolicy({}, env), { mode: 'restricted', enforced: true, allow: ['a.example.com', '*.b.example.com'], ignoreRepositoryAllow: false });
+    assert.deepEqual(resolveInstanceNetworkPolicy({ agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [] }, env),
+        { mode: 'open', enforced: false, allow: [], ignoreRepositoryAllow: false });
     assert.deepEqual(resolveInstanceNetworkPolicy({ agent_network_mode: 'sideways', agent_network_allow: ['*'] }, env).mode, 'restricted');
-    assert.deepEqual(resolveInstanceNetworkPolicy({}, {}), { mode: 'open', enforced: false, allow: [] });
+    assert.deepEqual(resolveInstanceNetworkPolicy({}, {}), { mode: 'open', enforced: false, allow: [], ignoreRepositoryAllow: false });
     assert.equal(validateAgentNetworkSetting('agent_network_mode', 'closed'), 'agent_network_mode must be "open" or "restricted"');
     assert.equal(validateAgentNetworkSetting('agent_network_mode_enforced', 'yes'), 'agent_network_mode_enforced must be a boolean');
     assert.equal(validateAgentNetworkSetting('agent_network_allow', null), undefined);
@@ -143,15 +145,45 @@ test('the sweep removes directories left by dead or forgotten owners and keeps l
         if (ageMs) { const when = new Date(Date.now() - ageMs); await utimes(directory, when, when); }
         return directory;
     };
-    const dead = await make('dead', { hostname: hostname(), pid: 2 ** 22 + 4321 });
-    const forgotten = await make('forgotten', { hostname: hostname(), pid: process.pid });
-    const live = await make('live', { hostname: hostname(), pid: process.ppid });
-    const otherHost = await make('other-host', { hostname: 'another-worker', pid: 1 });
-    const stale = await make('stale', { hostname: 'another-worker', pid: 1 }, EGRESS_ORPHAN_MAX_AGE_MS + 60_000);
+    const namespace = await egressProcessNamespace();
+    const dead = await make('dead', { namespace, hostname: hostname(), pid: 2 ** 22 + 4321 });
+    // An earlier process with this PID (a restarted container's PID 1) is gone.
+    const reused = await make('reused-pid', { instanceId: 'earlier-process', namespace, hostname: hostname(), pid: process.pid });
+    const live = await make('live', { namespace, hostname: hostname(), pid: process.ppid });
+    const otherHost = await make('other-host', { namespace: 'another-boot:pid:[1]', hostname: 'another-worker', pid: 1 });
+    const stale = await make('stale', { namespace: 'another-boot:pid:[1]', hostname: 'another-worker', pid: 1 }, EGRESS_ORPHAN_MAX_AGE_MS + 60_000);
     const { removed } = await sweepOrphanedEgressProxies({ root });
     assert.equal(removed, 3);
-    assert.ok(!existsSync(dead) && !existsSync(forgotten) && !existsSync(stale));
+    assert.ok(!existsSync(dead) && !existsSync(reused) && !existsSync(stale));
     assert.ok(existsSync(live) && existsSync(otherHost));
+});
+
+test('a container sharing this hostname but not this PID namespace never has its live directory removed', async () => {
+    const directory = path.join(root, 'same-hostname');
+    await mkdir(directory, { recursive: true });
+    // Another container (the indexing worker, say) given the same hostname: its PID means nothing here.
+    await writeFile(path.join(directory, 'owner.json'), JSON.stringify({ instanceId: 'indexing-worker', namespace: 'same-boot:pid:[4026532999]', hostname: hostname(), pid: 2 ** 22 + 77 }));
+    assert.equal((await sweepOrphanedEgressProxies({ root })).removed, 0);
+    assert.ok(existsSync(directory));
+    await rm(directory, { recursive: true, force: true });
+});
+
+test('a directory this process wrote and no longer serves is removed', async () => {
+    await executeWithNetworkPolicy(restricted(), async () => {
+        const before = new Set(await readdir(root));
+        const run = await prepareDockerRunNetwork('docker', agentRunArgs());
+        assert.ok(run);
+        const id = (await readdir(root)).find(entry => !before.has(entry))!;
+        const owner = JSON.parse(await readFile(path.join(root, id, 'owner.json'), 'utf8'));
+        assert.equal(owner.namespace, await egressProcessNamespace());
+        assert.equal(typeof owner.instanceId, 'string');
+        const copy = path.join(root, 'forgotten');
+        await mkdir(copy);
+        await writeFile(path.join(copy, 'owner.json'), JSON.stringify(owner));
+        assert.equal((await sweepOrphanedEgressProxies({ root })).removed, 1, 'only the forgotten copy goes; the served directory stays');
+        assert.ok(!existsSync(copy) && existsSync(path.join(root, id)));
+        await run.release();
+    });
 });
 
 test('the sweep never removes a directory whose proxy is still serving, however long the run lasts', async () => {

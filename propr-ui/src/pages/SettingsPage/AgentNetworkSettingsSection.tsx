@@ -30,6 +30,7 @@ export function AgentNetworkSettingsSection({ values, defaults, onCommit }: Agen
 
   const defaultMode = defaults?.agent_network_mode ?? 'open';
   const defaultEnforced = defaults?.agent_network_mode_enforced ?? false;
+  const defaultIgnoreRepositoryAllow = defaults?.agent_network_ignore_repository_allow ?? false;
 
   return (
     <SettingsSection
@@ -68,6 +69,23 @@ export function AgentNetworkSettingsSection({ values, defaults, onCommit }: Agen
           <option value={DEFAULT_OPTION}>{`Default (${defaultEnforced ? 'enforced' : 'not enforced'})`}</option>
           <option value="true">Enforced</option>
           <option value="false">Not enforced</option>
+        </select>
+      </SettingsField>
+      <SettingsField
+        label="Repository allowed hosts"
+        htmlFor="agent_network_ignore_repository_allow"
+        helperText="With enforced restricted mode, choose whether a repository's network.allow can add hosts. Ignoring them limits every run to the hosts below and the built-in list."
+      >
+        <select
+          id="agent_network_ignore_repository_allow"
+          name="agent_network_ignore_repository_allow"
+          value={values.agent_network_ignore_repository_allow === null ? DEFAULT_OPTION : String(values.agent_network_ignore_repository_allow)}
+          onChange={event => onCommit('agent_network_ignore_repository_allow', event.target.value === DEFAULT_OPTION ? null : event.target.value === 'true')}
+          className={SETTINGS_CONTROL}
+        >
+          <option value={DEFAULT_OPTION}>{`Default (${defaultIgnoreRepositoryAllow ? 'ignored' : 'added'})`}</option>
+          <option value="false">Added</option>
+          <option value="true">Ignored when enforced</option>
         </select>
       </SettingsField>
       <SettingsField

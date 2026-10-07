@@ -27,8 +27,9 @@ const DEFAULT_WATCHDOG_SETTINGS_RESPONSE = {
     agent_network_mode: null,
     agent_network_mode_enforced: null,
     agent_network_allow: null,
-    agent_network_defaults: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [] },
-    agent_network_effective: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [] },
+    agent_network_ignore_repository_allow: null,
+    agent_network_defaults: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [], agent_network_ignore_repository_allow: false },
+    agent_network_effective: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [], agent_network_ignore_repository_allow: false },
 };
 
 after(async () => {

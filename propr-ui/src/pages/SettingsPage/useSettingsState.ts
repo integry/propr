@@ -79,7 +79,7 @@ export function useSettingsState() {
     agent_stall_timeout_ms: null,
     agent_tool_stall_timeout_ms: null,
     agent_degenerate_output_limit: null,
-    agent_network_mode: null, agent_network_mode_enforced: null, agent_network_allow: null
+    agent_network_mode: null, agent_network_mode_enforced: null, agent_network_allow: null, agent_network_ignore_repository_allow: null
   });
   const [prLabel, setPrLabel] = useState('');
   const [agents, setAgents] = useState<AgentConfig[]>([]);

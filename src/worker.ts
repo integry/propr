@@ -1,4 +1,5 @@
 import { preventWithdrawnJob } from '@propr/core';
+import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
 import { startUsageTipsSelectionRunner } from './usageTipsSelectionRunner.js';
 import 'dotenv/config';
 import { Queue, Worker } from 'bullmq';
@@ -410,6 +411,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
 
     const usageTipsRunner = await startUsageTipsSelectionRunner();
     const egressProxySweeper = startEgressProxySweeper();
+    enforceInstanceNetworkPolicyOutsideRuns();
 
     const close = async (): Promise<void> => {
         clearInterval(heartbeatInterval);

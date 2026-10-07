@@ -72,6 +72,7 @@ services:
       AGENT_NETWORK_MODE: ${AGENT_NETWORK_MODE:-open}
       AGENT_NETWORK_MODE_ENFORCED: ${AGENT_NETWORK_MODE_ENFORCED:-false}
       AGENT_NETWORK_ALLOW: ${AGENT_NETWORK_ALLOW:-}
+      AGENT_NETWORK_IGNORE_REPOSITORY_ALLOW: ${AGENT_NETWORK_IGNORE_REPOSITORY_ALLOW:-false}
     volumes:
       - propr-sqlite-data:/app/data
       # The API starts short-lived sibling containers for agent image builds,
@@ -146,6 +147,7 @@ services:
       AGENT_NETWORK_MODE: ${AGENT_NETWORK_MODE:-open}
       AGENT_NETWORK_MODE_ENFORCED: ${AGENT_NETWORK_MODE_ENFORCED:-false}
       AGENT_NETWORK_ALLOW: ${AGENT_NETWORK_ALLOW:-}
+      AGENT_NETWORK_IGNORE_REPOSITORY_ALLOW: ${AGENT_NETWORK_IGNORE_REPOSITORY_ALLOW:-false}
       # Vibe prompt cache — active with sane defaults so setting MISTRAL_API_KEY
       # is sufficient for API-key auth. PREFLIGHT: create the host directory
       # before starting (mkdir -p /tmp/propr-vibe-prompts && chown to your

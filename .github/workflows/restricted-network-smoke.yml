@@ -21,9 +21,11 @@ on:
     paths:
       - 'packages/core/src/network/**'
       - 'packages/core/src/claude/docker/dockerNetworkPolicy.ts'
+      - 'packages/core/src/claude/docker/dockerExecutor.ts'
       - 'packages/core/src/claude/docker/repoSetupWrapper.ts'
       - 'packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts'
       - 'scripts/*-entrypoint.sh'
+      - 'Dockerfile.agent'
       - 'test/egressProxyContainerSmoke.test.ts'
       - 'test/agentProviderEgress.test.ts'
       - '.github/workflows/restricted-network-smoke.yml'

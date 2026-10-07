@@ -80,6 +80,7 @@ function getSettingDescription(key: SettingKey): string {
     agent_network_mode: "Agent container network: open or restricted (\"default\" = env AGENT_NETWORK_MODE)",
     agent_network_mode_enforced: "With restricted mode, stop repositories choosing open (true/false; \"default\" = env AGENT_NETWORK_MODE_ENFORCED)",
     agent_network_allow: "Comma-separated hosts every restricted run may reach (\"default\" = env AGENT_NETWORK_ALLOW)",
+    agent_network_ignore_repository_allow: "With enforced restricted mode, ignore hosts repositories add in network.allow (true/false; \"default\" = env AGENT_NETWORK_IGNORE_REPOSITORY_ALLOW)",
   };
   return descriptions[key];
 }

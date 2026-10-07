@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { compileEgressAllowlist, parseEgressAllowEntry, baseEgressAllowlist, validateEgressAllowlist } from '../src/network/egressAllowlist.js';
-import { EgressDenialRecorder, bypassesUpstreamProxy, parseAuthority, startEgressProxy, upstreamProxiesFromEnv } from '../src/network/egressProxy.js';
+import { EgressDenialRecorder, bypassesUpstreamProxy, isNonPublicAddress, parseAuthority, startEgressProxy, upstreamProxiesFromEnv } from '../src/network/egressProxy.js';
 
 const directories: string[] = [];
 after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true }))); });
@@ -16,6 +16,10 @@ async function socketPath(): Promise<string> {
     directories.push(directory);
     return path.join(directory, 'proxy.sock');
 }
+
+/** Every name resolves to a public documentation address; `connect` then reaches the local stand-in. */
+const PUBLIC_ADDRESS = '203.0.113.10';
+const publicLookup = async () => [{ address: PUBLIC_ADDRESS, family: 4 }];
 
 /** A local TCP server standing in for an allowed upstream host. */
 async function upstreamServer(handler: (socket: net.Socket) => void): Promise<{ port: number; close(): Promise<void> }> {
@@ -107,6 +111,7 @@ test('an allowed host is tunnelled; a denied host gets 403 and is recorded', asy
         allowlist: compileEgressAllowlist([`allowed.example.com:${upstream.port}`]),
         // Resolve the allowed name to the local stand-in instead of DNS.
         connect: (port, host) => { connected.push(`${host}:${port}`); return net.connect({ port, host: '127.0.0.1' }); },
+        lookup: publicLookup,
     });
     try {
         const allowed = await connectThrough(proxy.socketPath, `allowed.example.com:${upstream.port}`);
@@ -125,7 +130,7 @@ test('an allowed host is tunnelled; a denied host gets 403 and is recorded', asy
         assert.equal(ipLiteral.status, 'HTTP/1.1 403 Forbidden', 'an IP literal outside the allowlist is denied');
         ipLiteral.socket.destroy();
 
-        assert.deepEqual(connected, [`allowed.example.com:${upstream.port}`], 'denied targets are never connected');
+        assert.deepEqual(connected, [`${PUBLIC_ADDRESS}:${upstream.port}`], 'denied targets are never connected; allowed ones go to the vetted address');
         const stats = proxy.stats();
         assert.equal(stats.allowedConnections, 1);
         assert.equal(stats.deniedConnections, 3);
@@ -149,6 +154,7 @@ test('plain HTTP requests in absolute form are forwarded only to allowed hosts',
         socketPath: await socketPath(),
         allowlist: compileEgressAllowlist([`mirror.example.com:${port}`]),
         connect: (targetPort) => net.connect({ port: targetPort, host: '127.0.0.1' }),
+        lookup: publicLookup,
     });
     const request = (url: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
         const outgoing = http.request({ socketPath: proxy.socketPath, path: url, headers: { 'Proxy-Authorization': 'Basic secret' } }, response => {
@@ -189,6 +195,7 @@ test('plain HTTP requests carry the target URL authority as Host, whatever Host 
         socketPath: await socketPath(),
         allowlist: compileEgressAllowlist(['vhost.example.com', `vhost.example.com:${port}`]),
         connect: () => net.connect({ port, host: '127.0.0.1' }),
+        lookup: publicLookup,
     });
     const request = (url: string, host: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
         const outgoing = http.request({ socketPath: proxy.socketPath, path: url, headers: { Host: host } }, response => {
@@ -227,6 +234,7 @@ test('an unfinished plain HTTP response ends its upstream when the client leaves
         socketPath: await socketPath(),
         allowlist: compileEgressAllowlist([`stream.example.com:${port}`]),
         connect: (targetPort) => net.connect({ port: targetPort, host: '127.0.0.1' }),
+        lookup: publicLookup,
     });
     const streaming = () => new Promise<http.ClientRequest>((resolve, reject) => {
         const outgoing = http.request({ socketPath: proxy.socketPath, path: `http://stream.example.com:${port}/events` }, response => {
@@ -265,6 +273,7 @@ test('a plain HTTP response the upstream drops mid-body ends the client response
             socketPath: await socketPath(),
             allowlist: compileEgressAllowlist([`flaky.example.com:${upstream.port}`]),
             connect: (targetPort) => net.connect({ port: targetPort, host: '127.0.0.1' }),
+            lookup: publicLookup,
         });
         try {
             const outcome = await Promise.race([
@@ -339,6 +348,7 @@ test('allowed connections chain through the worker proxy, honouring NO_PROXY, an
         socketPath: await socketPath(),
         allowlist: compileEgressAllowlist(['api.example.com', 'direct.example.com:' + upstream.port, 'plain.example.com']),
         connect: (port, host) => { connected.push(`${host}:${port}`); return net.connect({ port, host: '127.0.0.1' }); },
+        lookup: publicLookup,
         upstreamProxies: { http: new URL(`http://user:secret@127.0.0.1:${proxyPort}`), https: new URL(`http://user:secret@127.0.0.1:${proxyPort}`), noProxy: ['direct.example.com'] },
     });
     const proxy = await start(workerProxy.port);
@@ -356,7 +366,7 @@ test('allowed connections chain through the worker proxy, honouring NO_PROXY, an
         assert.equal(direct.status, 'HTTP/1.1 200 Connection Established');
         direct.socket.destroy();
         assert.equal(workerProxy.seen.length, 1, 'a NO_PROXY host is reached directly');
-        assert.deepEqual(connected, [`127.0.0.1:${workerProxy.port}`, `direct.example.com:${upstream.port}`]);
+        assert.deepEqual(connected, [`127.0.0.1:${workerProxy.port}`, `${PUBLIC_ADDRESS}:${upstream.port}`]);
 
         const plain = await new Promise<{ status: number; body: string }>((resolve, reject) => {
             const outgoing = http.request({ socketPath: proxy.socketPath, path: 'http://plain.example.com/simple/' }, response => {
@@ -394,6 +404,7 @@ test('an allowed host that cannot be reached is answered 502 and recorded as a f
         socketPath: await socketPath(),
         allowlist: compileEgressAllowlist([`down.example.com:${closed.port}`]),
         connect: (port) => net.connect({ port, host: '127.0.0.1' }),
+        lookup: publicLookup,
     });
     try {
         const tunnel = await connectThrough(proxy.socketPath, `down.example.com:${closed.port}`);

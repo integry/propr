@@ -13,7 +13,7 @@ function serviceBlock(name) {
 }
 
 test('production Compose forwards the agent network policy to the worker and the API', () => {
-  const expectedDefaults = { AGENT_NETWORK_MODE: 'open', AGENT_NETWORK_MODE_ENFORCED: 'false', AGENT_NETWORK_ALLOW: '' };
+  const expectedDefaults = { AGENT_NETWORK_MODE: 'open', AGENT_NETWORK_MODE_ENFORCED: 'false', AGENT_NETWORK_ALLOW: '', AGENT_NETWORK_IGNORE_REPOSITORY_ALLOW: 'false' };
   for (const service of ['worker', 'api']) {
     const block = serviceBlock(service);
     for (const [name, defaultValue] of Object.entries(expectedDefaults)) {

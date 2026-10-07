@@ -92,31 +92,59 @@ export function networkEgressReportFromError(error: unknown): NetworkEgressRepor
     return (error as { networkEgressReport?: NetworkEgressReport } | undefined)?.networkEgressReport;
 }
 
-function envValue(args: string[], key: string): string | undefined {
-    for (let index = 0; index < args.length - 1; index++) {
-        if (['-e', '--env'].includes(args[index]) && args[index + 1].startsWith(`${key}=`)) return args[index + 1].slice(key.length + 1);
+interface DockerEnvOption { index: number; length: 1 | 2; key: string; value?: string }
+
+/**
+ * Every `-e`/`--env` option: `-e K=V`, `--env K=V`, `--env=K=V`, `-eK=V`, and
+ * the `-e K` form that copies the variable from the environment `docker`
+ * itself runs in (the worker's).
+ */
+function dockerEnvOptions(args: string[]): DockerEnvOption[] {
+    const options: DockerEnvOption[] = [];
+    for (let index = 0; index < args.length; index++) {
+        const arg = args[index];
+        const separate = arg === '-e' || arg === '--env';
+        const entry = separate ? args[index + 1]
+            : arg.startsWith('--env=') ? arg.slice('--env='.length)
+            : /^-e[^-]/.test(arg) ? arg.slice(arg.startsWith('-e=') ? 3 : 2)
+            : undefined;
+        if (entry === undefined) continue;
+        const equals = entry.indexOf('=');
+        options.push({ index, length: separate ? 2 : 1, key: equals < 0 ? entry : entry.slice(0, equals), ...(equals < 0 ? {} : { value: entry.slice(equals + 1) }) });
+        if (separate) index++;
     }
-    return undefined;
+    return options;
 }
 
-/** Drops caller-supplied proxy variables so the run's proxy is the only one. */
+/** The options before the wrapper's `--entrypoint` (all arguments without one), so the agent's own command is never read as options. */
+function containerOptions(args: string[]): string[] {
+    const entrypointIndex = args.indexOf('--entrypoint');
+    return entrypointIndex < 0 ? args : args.slice(0, entrypointIndex);
+}
+
+/** A variable's value in the container: set explicitly, or copied from the worker's environment. */
+function envValue(args: string[], key: string): string | undefined {
+    const option = dockerEnvOptions(args).find(entry => entry.key === key);
+    return option && (option.value ?? process.env[key]);
+}
+
+function withoutEnvOptions(args: string[], drop: (option: DockerEnvOption) => boolean): string[] {
+    const removed = new Set(dockerEnvOptions(args).filter(drop).flatMap(option => option.length === 2 ? [option.index, option.index + 1] : [option.index]));
+    return args.filter((_arg, index) => !removed.has(index));
+}
+
+/** Drops caller-supplied (or inherited) proxy variables so the run's proxy is the only one. */
 function withoutProxyEnv(args: string[]): string[] {
-    const result: string[] = [];
-    for (let index = 0; index < args.length; index++) {
-        if (['-e', '--env'].includes(args[index]) && PROXY_ENV_KEYS.has((args[index + 1] ?? '').split('=')[0])) { index++; continue; }
-        result.push(args[index]);
-    }
-    return result;
+    return withoutEnvOptions(args, option => PROXY_ENV_KEYS.has(option.key));
 }
 
 /** `git` reads http.proxy from GIT_CONFIG_* as well as from https_proxy. */
 function withGitProxyConfig(args: string[]): string[] {
-    const countIndex = args.findIndex((arg, index) => arg.startsWith('GIT_CONFIG_COUNT=') && ['-e', '--env'].includes(args[index - 1]));
-    const count = countIndex >= 0 ? Number(args[countIndex].slice('GIT_CONFIG_COUNT='.length)) : 0;
+    const counts = dockerEnvOptions(args).filter(option => option.key === 'GIT_CONFIG_COUNT');
+    const count = counts.length ? Number(counts.at(-1)!.value ?? process.env.GIT_CONFIG_COUNT ?? 0) : 0;
     if (!Number.isSafeInteger(count) || count < 0) return args;
-    const result = [...args];
-    if (countIndex >= 0) result.splice(countIndex - 1, 2);
-    return [...result, '-e', `GIT_CONFIG_COUNT=${count + 1}`, '-e', `GIT_CONFIG_KEY_${count}=http.proxy`, '-e', `GIT_CONFIG_VALUE_${count}=${PROXY_URL}`];
+    return [...withoutEnvOptions(args, option => option.key === 'GIT_CONFIG_COUNT'),
+        '-e', `GIT_CONFIG_COUNT=${count + 1}`, '-e', `GIT_CONFIG_KEY_${count}=http.proxy`, '-e', `GIT_CONFIG_VALUE_${count}=${PROXY_URL}`];
 }
 
 /**
@@ -147,6 +175,13 @@ function dockerRunNetworkOptions(args: string[]): Array<{ index: number; value: 
     });
 }
 
+/** A `docker run` with a network: the default network, `bridge`, `host` and custom networks all reach the internet. */
+function isNetworkedDockerRun(command: string, args: string[]): boolean {
+    if (!/(?:^|\/)docker$/.test(command) || args[0] !== 'run') return false;
+    const networks = dockerRunNetworkOptions(args);
+    return !(networks.length > 0 && networks.every(option => option.value === 'none'));
+}
+
 /**
  * Synchronous check, so commands outside a restricted run start exactly as
  * before. Inside one, every `docker run` is subject to the policy unless it
@@ -156,14 +191,43 @@ function dockerRunNetworkOptions(args: string[]): Array<{ index: number; value: 
  */
 export function dockerRunNeedsNetworkPolicy(command: string, args: string[], exemptReason?: string): boolean {
     const context = networkEgressExecution.getStore();
-    if (!context || context.policy.mode !== 'restricted' || !/(?:^|\/)docker$/.test(command) || args[0] !== 'run') return false;
-    const networks = dockerRunNetworkOptions(args);
-    if (networks.length > 0 && networks.every(option => option.value === 'none')) return false;
+    if (!context || context.policy.mode !== 'restricted' || !isNetworkedDockerRun(command, args)) return false;
     if (exemptReason) {
         logger.debug({ reason: exemptReason }, 'Container exempt from the restricted network policy');
         return false;
     }
     return true;
+}
+
+let unscopedPolicyResolver: (() => Promise<ResolvedNetworkPolicy>) | undefined;
+
+/**
+ * Registers how this process reads the instance policy (a worker does, at
+ * startup). An agent container started outside any run's policy, by a code
+ * path that never called {@link executeWithNetworkPolicy}, then runs under the
+ * instance policy when it enforces restricted mode, instead of silently open.
+ * `undefined` unregisters it.
+ */
+export function setUnscopedNetworkPolicyResolver(resolver: (() => Promise<ResolvedNetworkPolicy>) | undefined): void {
+    unscopedPolicyResolver = resolver;
+}
+
+/** Synchronous pre-check for {@link resolveUnscopedNetworkPolicy}: only agent containers started outside any policy qualify. */
+export function mayNeedUnscopedNetworkPolicy(command: string, args: string[], exemptReason?: string): boolean {
+    return !!unscopedPolicyResolver && !exemptReason && !networkEgressExecution.getStore()
+        && isNetworkedDockerRun(command, args) && envValue(containerOptions(args), 'PROPR_AGENT_TYPE') !== undefined;
+}
+
+/**
+ * The enforced instance policy for an agent container started outside any
+ * run's policy, or undefined when none applies. Reading the policy is strict:
+ * an unreadable policy fails the container rather than opening it.
+ */
+export async function resolveUnscopedNetworkPolicy(command: string, args: string[], exemptReason?: string): Promise<ResolvedNetworkPolicy | undefined> {
+    const resolver = unscopedPolicyResolver;
+    if (!resolver || !mayNeedUnscopedNetworkPolicy(command, args, exemptReason)) return undefined;
+    const policy = await resolver();
+    return policy.mode === 'restricted' && policy.source === 'instance_enforced' ? policy : undefined;
 }
 
 export interface PreparedEgressRun { args: string[]; release(): Promise<void> }
@@ -176,8 +240,8 @@ export interface PreparedEgressRun { args: string[]; release(): Promise<void> }
 export async function prepareDockerRunNetwork(command: string, args: string[], exemptReason?: string): Promise<PreparedEgressRun | undefined> {
     const context = networkEgressExecution.getStore();
     if (!context || !dockerRunNeedsNetworkPolicy(command, args, exemptReason)) return undefined;
-    const agentType = envValue(args, 'PROPR_AGENT_TYPE');
     const entrypointIndex = args.indexOf('--entrypoint');
+    const agentType = envValue(containerOptions(args), 'PROPR_AGENT_TYPE');
     const scriptIndex = entrypointIndex < 0 ? 0 : args.indexOf('-lc', entrypointIndex) + 1;
     const support = agentType ? AGENT_EGRESS_PROXY_SUPPORT[agentType as AgentType] : undefined;
     const fallbackReason = !support ? 'container does not identify a supported agent'
@@ -205,10 +269,14 @@ export async function prepareDockerRunNetwork(command: string, args: string[], e
         await fs.mkdir(directory, { recursive: true, mode: 0o711 });
         await fs.chmod(roots.local, 0o711).catch(() => undefined);
         await fs.chmod(directory, 0o711);
-        await fs.writeFile(path.join(directory, OWNER_FILE), JSON.stringify({ hostname: os.hostname(), pid: process.pid, createdAt: new Date().toISOString() }));
+        await fs.writeFile(path.join(directory, OWNER_FILE), JSON.stringify({
+            instanceId: PROCESS_INSTANCE_ID, namespace: await egressProcessNamespace(), hostname: os.hostname(), pid: process.pid, createdAt: new Date().toISOString(),
+        }));
         proxy = await startEgressProxy({
             socketPath: path.join(directory, SOCKET_NAME),
             allowlist: compileEgressAllowlist([...baseEgressAllowlist(agentType as AgentType), ...context.policy.allow]),
+            // Only the administrator's own IP literals open loopback, private or link-local addresses.
+            addressAllowlist: compileEgressAllowlist(context.policy.instanceAllow ?? []),
             recorder: context.recorder,
             // A worker that reaches the internet only through its own proxy chains through it.
             upstreamProxies: upstreamProxiesFromEnv(),
@@ -260,13 +328,28 @@ export async function closeAllEgressProxies(): Promise<void> {
     }));
 }
 
+/** This process exactly: a directory it wrote is its own, whatever its PID namespace or hostname. */
+const PROCESS_INSTANCE_ID = randomUUID();
+let processNamespace: Promise<string> | undefined;
+
+/**
+ * The PID namespace this process lives in, so the sweeper judges only PIDs it
+ * can see: two containers (the worker and the indexing worker) may share a
+ * hostname. On Linux that is the boot plus the PID namespace inode; elsewhere
+ * one host is one namespace.
+ */
+export function egressProcessNamespace(): Promise<string> {
+    return processNamespace ??= Promise.all([fs.readFile('/proc/sys/kernel/random/boot_id', 'utf8'), fs.readlink('/proc/self/ns/pid')])
+        .then(([boot, pidNamespace]) => `${boot.trim()}:${pidNamespace}`, () => `host:${os.hostname()}`);
+}
+
 function processAlive(pid: number): boolean {
     try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
 }
 
 /**
  * Removes egress proxy directories whose owner is gone: one left by a dead
- * process on this host, one this process no longer serves, or any directory
+ * process in this PID namespace, one this process no longer serves, or any directory
  * not refreshed for {@link EGRESS_ORPHAN_MAX_AGE_MS}. Each sweep first touches
  * the directories this process still serves, so a live worker on another host
  * sharing the same root keeps its directories fresh however long its runs last,
@@ -277,6 +360,7 @@ export async function sweepOrphanedEgressProxies(options: { now?: number; root?:
     const now = options.now ?? Date.now();
     let entries: string[];
     try { entries = await fs.readdir(root); } catch { return { removed: 0 }; }
+    const namespace = await egressProcessNamespace();
     const touched = new Date(now);
     await Promise.all([...ownedDirectories].map(id => fs.utimes(path.join(root, id), touched, touched).catch(() => undefined)));
     let removed = 0;
@@ -286,11 +370,14 @@ export async function sweepOrphanedEgressProxies(options: { now?: number; root?:
         try {
             const stat = await fs.stat(directory);
             if (!stat.isDirectory()) continue;
-            let owner: { hostname?: string; pid?: number } = {};
+            let owner: { instanceId?: string; namespace?: string; pid?: number } = {};
             try { owner = JSON.parse(await fs.readFile(path.join(directory, OWNER_FILE), 'utf8')); } catch { /* incomplete directory */ }
-            const local = owner.hostname === os.hostname();
+            const own = owner.instanceId === PROCESS_INSTANCE_ID;
+            // A PID means something only in the namespace it came from; a matching hostname is not enough.
+            const sameNamespace = typeof owner.namespace === 'string' && owner.namespace === namespace;
             const orphaned = now - stat.mtimeMs > EGRESS_ORPHAN_MAX_AGE_MS
-                || (local && typeof owner.pid === 'number' && (owner.pid === process.pid ? !ownedDirectories.has(id) : !processAlive(owner.pid)));
+                || (own ? !ownedDirectories.has(id)
+                    : sameNamespace && typeof owner.pid === 'number' && (owner.pid === process.pid || !processAlive(owner.pid)));
             if (!orphaned) continue;
             await fs.rm(directory, { recursive: true, force: true });
             removed++;

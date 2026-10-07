@@ -47,6 +47,7 @@ interface SettingsApiData {
   agent_network_mode?: unknown;
   agent_network_mode_enforced?: unknown;
   agent_network_allow?: unknown;
+  agent_network_ignore_repository_allow?: unknown;
   agent_network_defaults?: Settings['agent_network_defaults'];
 }
 
@@ -65,14 +66,17 @@ export function parseAllowlistDraft(draft: string): string[] | null {
   return hosts.length ? hosts : null;
 }
 
+type AgentNetworkOverrideName = 'agent_network_mode' | 'agent_network_mode_enforced' | 'agent_network_allow' | 'agent_network_ignore_repository_allow';
+
 /** Stored network overrides; anything unexpected reads as "use the default". */
-export function networkOverrides(data: Pick<SettingsApiData, 'agent_network_mode' | 'agent_network_mode_enforced' | 'agent_network_allow'>): Pick<Settings, 'agent_network_mode' | 'agent_network_mode_enforced' | 'agent_network_allow'> {
+export function networkOverrides(data: Pick<SettingsApiData, AgentNetworkOverrideName>): Pick<Settings, AgentNetworkOverrideName> {
   const mode = data.agent_network_mode;
   const allow = data.agent_network_allow;
   return {
     agent_network_mode: mode === 'open' || mode === 'restricted' ? mode : null,
     agent_network_mode_enforced: typeof data.agent_network_mode_enforced === 'boolean' ? data.agent_network_mode_enforced : null,
     agent_network_allow: Array.isArray(allow) && allow.every(host => typeof host === 'string') ? allow as string[] : null,
+    agent_network_ignore_repository_allow: typeof data.agent_network_ignore_repository_allow === 'boolean' ? data.agent_network_ignore_repository_allow : null,
   };
 }
 
@@ -97,7 +101,8 @@ export function runLimitSettingsToSave(settings: Settings) {
     agent_degenerate_output_limit: settings.agent_degenerate_output_limit,
     agent_network_mode: settings.agent_network_mode,
     agent_network_mode_enforced: settings.agent_network_mode_enforced,
-    agent_network_allow: settings.agent_network_allow
+    agent_network_allow: settings.agent_network_allow,
+    agent_network_ignore_repository_allow: settings.agent_network_ignore_repository_allow
   };
 }
 

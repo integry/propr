@@ -36,6 +36,7 @@ export interface Settings {
   agent_network_mode: 'open' | 'restricted' | null;
   agent_network_mode_enforced: boolean | null;
   agent_network_allow: string[] | null;
+  agent_network_ignore_repository_allow: boolean | null;
   /** Environment defaults reported by the server (read-only). */
   agent_network_defaults?: AgentNetworkDefaults;
   // github_user_whitelist is now handled as string[] in main state
@@ -43,16 +44,18 @@ export interface Settings {
 
 export type AgentWatchdogSettingName = 'agent_stall_timeout_ms' | 'agent_tool_stall_timeout_ms' | 'agent_degenerate_output_limit';
 export type AgentWatchdogValues = Record<AgentWatchdogSettingName, number | null>;
-export type AgentNetworkSettingName = 'agent_network_mode' | 'agent_network_mode_enforced' | 'agent_network_allow';
+export type AgentNetworkSettingName = 'agent_network_mode' | 'agent_network_mode_enforced' | 'agent_network_allow' | 'agent_network_ignore_repository_allow';
 export interface AgentNetworkValues {
   agent_network_mode: 'open' | 'restricted' | null;
   agent_network_mode_enforced: boolean | null;
   agent_network_allow: string[] | null;
+  agent_network_ignore_repository_allow: boolean | null;
 }
 export interface AgentNetworkDefaults {
   agent_network_mode?: 'open' | 'restricted';
   agent_network_mode_enforced?: boolean;
   agent_network_allow?: string[];
+  agent_network_ignore_repository_allow?: boolean;
 }
 
 export interface AlertProps {

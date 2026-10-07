@@ -118,8 +118,8 @@ network:
 ```
 
 - `mode: restricted` starts the agent container with no network interface. Its only route out is a per-run proxy on the worker that allows the agent's provider API, GitHub, npm and PyPI, the instance's `agent_network_allow` hosts and the hosts in `allow`. `mode: open` gives the container ordinary outbound access. Without `mode`, the instance default (`agent_network_mode`, default `open`) applies.
-- `allow` lists extra hosts: exact hostnames, `*.domain` wildcards (subdomains only, not the apex), or IP literals, each optionally with `:port`. Without a port, only ports 80 and 443 are allowed. A bare `*` or one-label wildcard such as `*.com` fails validation.
-- When the instance enforces restricted mode (`agent_network_mode_enforced`), `mode: open` is ignored and the timeline records that it was overridden; `allow` still applies. A repository can always choose `restricted`.
+- `allow` lists extra hosts: exact hostnames, `*.domain` wildcards (subdomains only, not the apex), or IP literals, each optionally with `:port`. Without a port, only ports 80 and 443 are allowed. A bare `*` or one-label wildcard such as `*.com` fails validation. Repository entries reach public addresses only: a host that resolves to a loopback, private or link-local address, or such an IP literal, is refused unless the instance's own `agent_network_allow` lists that address.
+- When the instance enforces restricted mode (`agent_network_mode_enforced`), `mode: open` is ignored and the timeline records that it was overridden; `allow` still applies unless the instance also sets `agent_network_ignore_repository_allow`, in which case it is ignored and the timeline says so. A repository can always choose `restricted`.
 
 At the end of each restricted run the task timeline lists every denied host with its attempt count. See [Restricted network mode](./execution-safety.md#restricted-network-mode) for the mechanism, the per-agent compatibility (Antigravity falls back to `open`) and its limitations.
 

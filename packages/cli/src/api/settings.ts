@@ -148,6 +148,7 @@ export interface SystemSettings {
   agent_network_mode?: "open" | "restricted" | null;
   agent_network_mode_enforced?: boolean | null;
   agent_network_allow?: string[] | null;
+  agent_network_ignore_repository_allow?: boolean | null;
   agent_network_defaults?: Record<string, unknown>;
   agent_network_effective?: Record<string, unknown>;
 
@@ -318,6 +319,7 @@ export interface UpdateSettingsOptions {
   agent_network_mode?: "open" | "restricted" | null;
   agent_network_mode_enforced?: boolean | null;
   agent_network_allow?: string[] | null;
+  agent_network_ignore_repository_allow?: boolean | null;
 }
 
 /**
@@ -382,6 +384,7 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "agent_network_mode",
   "agent_network_mode_enforced",
   "agent_network_allow",
+  "agent_network_ignore_repository_allow",
 ];
 
 /**
@@ -426,7 +429,8 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return mode;
     }
-    case "agent_network_mode_enforced": {
+    case "agent_network_mode_enforced":
+    case "agent_network_ignore_repository_allow": {
       if (/^(default|null)$/i.test(value.trim())) return null;
       const lower = value.trim().toLowerCase();
       if (lower !== "true" && lower !== "false") {
