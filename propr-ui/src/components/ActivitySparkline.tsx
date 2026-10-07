@@ -185,6 +185,9 @@ const AnchoredTooltip: React.FC<{ x: number; y: number; minX: number; maxX: numb
     <div
       ref={box}
       data-testid="activity-tooltip"
+      // The card hangs over its neighbours' columns: the pointer passes
+      // straight through it to the day beneath rather than catching on it.
+      className="pointer-events-none select-none"
       style={{
         ...tooltipStyle,
         position: 'absolute',
@@ -301,6 +304,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
               <Tooltip
                 cursor={{ fill: COLUMN_TRACK_FILL }}
                 position={{ x: 0, y: 0 }}
+                wrapperStyle={{ pointerEvents: 'none' }}
                 isAnimationActive={false}
                 content={({ active, payload }) => {
                   if (!active || !payload || payload.length === 0) return null;

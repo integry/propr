@@ -382,6 +382,16 @@ test('runs and tasks share one chart: each day pairs its runs and tasks side by 
   const legendBox = (await legend.boundingBox())!;
   expect((await tooltip.boundingBox())!.y).toBeGreaterThanOrEqual(chartBox.y);
   expect((await tooltip.boundingBox())!.y).toBeGreaterThanOrEqual(legendBox.y + legendBox.height);
+  // The card hangs over Monday's column, but the pointer passes straight
+  // through it: sweeping left across the card hovers Monday, not the card.
+  await expect(tooltip).toHaveCSS('pointer-events', 'none');
+  await expect(tooltip).toHaveCSS('user-select', 'none');
+  const hanging = (await tooltip.boundingBox())!;
+  const sweepY = hanging.y + hanging.height / 2;
+  expect(hanging.x).toBeLessThan(pairCentre(4) + innerBoxes[4].width);
+  for (let x = card.x; x >= pairCentre(4); x -= 4) await page.mouse.move(x, sweepY);
+  expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-testid="activity-tooltip"]') ?? null, [pairCentre(4), sweepY])).toBeNull();
+  await expect(page.getByText('Sep 21:')).toBeVisible();
   // At the edges the card slides to stay over the plot, but the caret keeps to its day.
   const plot = (await chart.boundingBox())!;
   for (const index of [0, 6]) {
