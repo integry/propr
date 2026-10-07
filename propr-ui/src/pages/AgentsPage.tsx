@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, GripVertical, X } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import type { AgentRunState, InstanceCatalogAgent } from '@propr/shared';
+import { TERMINAL_AGENT_RUN_STATES, type AgentRunState, type InstanceCatalogAgent } from '@propr/shared';
 import { getInstanceCatalog } from '../api/proprApi';
 import { listAgentDefinitions, listAgentRuns, type AgentDefinitionRecord } from '../api/agentDefinitionsApi';
 import { AgentList } from '../components/Agents/AgentList';
@@ -68,11 +68,67 @@ async function listAllAgentDefinitions(isActive: () => boolean): Promise<AgentDe
   }
 }
 
+/** How often the latest run of an agent whose run is still in progress is read again. */
+const RUN_STATE_REFRESH_MS = 5_000;
+
+const isTerminalRunState = (state: AgentRunState) => (TERMINAL_AGENT_RUN_STATES as readonly AgentRunState[]).includes(state);
+
+/**
+ * The latest run state of each listed agent. Runs move on after they start,
+ * so while an agent's latest run is unfinished it is read again every
+ * RUN_STATE_REFRESH_MS until it settles. A read is applied only if nothing
+ * newer was recorded for that agent after it was sent: a run started from the
+ * editor in the meantime must not be overwritten by the run before it.
+ */
+function useLastRunStates(definitions: AgentDefinitionRecord[] | null) {
+  const [lastRunStates, setLastRunStates] = useState<Record<string, AgentRunState>>({});
+  /** Bumped per agent whenever its state is recorded, so an older read in flight is discarded. */
+  const versions = useRef(new Map<string, number>());
+  const inFlight = useRef(new Set<string>());
+  const activeRef = useRef(true);
+  useEffect(() => {
+    activeRef.current = true;
+    return () => { activeRef.current = false; };
+  }, []);
+
+  const record = useCallback((definitionId: string, state: AgentRunState) => {
+    versions.current.set(definitionId, (versions.current.get(definitionId) ?? 0) + 1);
+    setLastRunStates(current => ({ ...current, [definitionId]: state }));
+  }, []);
+
+  // A failed read just leaves the row as it was ("Never run" until a state is known).
+  const refresh = useCallback((definitionId: string) => {
+    if (inFlight.current.has(definitionId)) return;
+    inFlight.current.add(definitionId);
+    const sentAt = versions.current.get(definitionId) ?? 0;
+    void listAgentRuns(definitionId, { limit: 1 })
+      .then(runs => {
+        const latest = runs.runs[0];
+        if (activeRef.current && latest && (versions.current.get(definitionId) ?? 0) === sentAt) record(definitionId, latest.state);
+      })
+      .catch(() => undefined)
+      .finally(() => { inFlight.current.delete(definitionId); });
+  }, [record]);
+
+  const unfinished = definitions
+    ?.filter(definition => lastRunStates[definition.id] && !isTerminalRunState(lastRunStates[definition.id]))
+    .map(definition => definition.id)
+    .join(',') ?? '';
+  useEffect(() => {
+    if (!unfinished) return;
+    const ids = unfinished.split(',');
+    const timer = window.setInterval(() => ids.forEach(refresh), RUN_STATE_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [refresh, unfinished]);
+
+  return { lastRunStates, recordRun: record, refresh };
+}
+
 /** Saved agents plus the latest run state of each, for the list. */
 function useAgentDefinitions() {
   const [definitions, setDefinitions] = useState<AgentDefinitionRecord[] | null>(null);
-  const [lastRunStates, setLastRunStates] = useState<Record<string, AgentRunState>>({});
   const [error, setError] = useState<string | null>(null);
+  const { lastRunStates, recordRun, refresh: refreshRunState } = useLastRunStates(definitions);
 
   useEffect(() => {
     let active = true;
@@ -80,19 +136,12 @@ function useAgentDefinitions() {
       .then(loaded => {
         if (!active) return;
         setDefinitions(loaded);
-        // Last run states fill in as they arrive; a failed read just leaves the row at "Never run".
-        loaded.forEach(definition => {
-          void listAgentRuns(definition.id, { limit: 1 })
-            .then(runs => {
-              const latest = runs.runs[0];
-              if (active && latest) setLastRunStates(current => ({ ...current, [definition.id]: latest.state }));
-            })
-            .catch(() => undefined);
-        });
+        // Last run states fill in as they arrive.
+        loaded.forEach(definition => refreshRunState(definition.id));
       })
       .catch(loadError => { if (active) setError((loadError as Error).message); });
     return () => { active = false; };
-  }, []);
+  }, [refreshRunState]);
 
   const upsert = useCallback((definition: AgentDefinitionRecord) => {
     setDefinitions(current => {
@@ -105,10 +154,6 @@ function useAgentDefinitions() {
 
   const remove = useCallback((definitionId: string) => {
     setDefinitions(current => current?.filter(candidate => candidate.id !== definitionId) ?? current);
-  }, []);
-
-  const recordRun = useCallback((definitionId: string, state: AgentRunState) => {
-    setLastRunStates(current => ({ ...current, [definitionId]: state }));
   }, []);
 
   return { definitions, lastRunStates, error, upsert, remove, recordRun };

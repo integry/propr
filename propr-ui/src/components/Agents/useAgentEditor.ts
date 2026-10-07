@@ -61,8 +61,19 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [attachmentsPending, setAttachmentsPending] = useState(0);
   /** Set synchronously while a save is in flight, so a run cannot start on the configuration being replaced. */
   const savingRef = useRef(false);
+  /**
+   * Set synchronously when a save finds the agent changed elsewhere, and
+   * cleared only once the replacement has loaded: until then the form shows a
+   * configuration the server no longer holds, so a run would start another.
+   */
+  const conflictRef = useRef(false);
+  /** Set synchronously while the definition is (re)loading, for the same reason. */
+  const loadingRef = useRef(definitionId !== null);
+  /** Input file uploads and removals still awaiting a response; a run waits for them to settle. */
+  const attachmentsPendingRef = useRef(0);
   /** False once this editor unmounts, so a late response no longer acts for it. */
   const openRef = useRef(true);
   useEffect(() => {
@@ -71,6 +82,7 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
   }, []);
 
   const load = useCallback(async (id: string, isActive: () => boolean = () => true) => {
+    loadingRef.current = true;
     setLoading(true);
     setLoadError(null);
     try {
@@ -78,12 +90,16 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
       if (!isActive()) return;
       setDefinition(loaded);
       setForm(formFromDefinition(loaded));
+      conflictRef.current = false;
       setConflict(false);
       setError(null);
     } catch (loadFailure) {
       if (isActive()) setLoadError((loadFailure as Error).message);
     } finally {
-      if (isActive()) setLoading(false);
+      if (isActive()) {
+        loadingRef.current = false;
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -140,7 +156,10 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
       onSaved(saved, !definition, true);
     } catch (saveFailure) {
       if (!openRef.current) return;
-      if (isAgentConflictError(saveFailure)) setConflict(true);
+      if (isAgentConflictError(saveFailure)) {
+        conflictRef.current = true;
+        setConflict(true);
+      }
       else setError((saveFailure as Error).message);
     } finally {
       savingRef.current = false;
@@ -169,18 +188,31 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
     setDefinition(current => (current ? { ...current, attachments: changed.attachments } : current));
   }, []);
 
+  /** Counts an attachment change as outstanding until its response arrives, whatever the outcome. */
+  const trackAttachments = useCallback(async (change: () => Promise<AgentDefinitionRecord>) => {
+    attachmentsPendingRef.current += 1;
+    setAttachmentsPending(count => count + 1);
+    try {
+      applyAttachments(await change());
+    } finally {
+      attachmentsPendingRef.current -= 1;
+      setAttachmentsPending(count => count - 1);
+    }
+  }, [applyAttachments]);
+
   const upload = useCallback(async (files: File[]) => {
     if (!definition) return;
-    applyAttachments((await uploadAgentAttachment(definition.id, files)).definition);
-  }, [applyAttachments, definition]);
+    await trackAttachments(async () => (await uploadAgentAttachment(definition.id, files)).definition);
+  }, [definition, trackAttachments]);
 
   const removeAttachment = useCallback(async (attachmentId: string) => {
     if (!definition) return;
-    applyAttachments(await deleteAgentAttachment(definition.id, attachmentId));
-  }, [applyAttachments, definition]);
+    await trackAttachments(() => deleteAgentAttachment(definition.id, attachmentId));
+  }, [definition, trackAttachments]);
 
   const run = useCallback(async () => {
-    if (!definition || savingRef.current || dirty) return;
+    const blocked = savingRef.current || conflictRef.current || loadingRef.current || attachmentsPendingRef.current > 0;
+    if (!definition || blocked || dirty) return;
     setRunning(true);
     setError(null);
     try {
@@ -198,6 +230,7 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
 
   return {
     definition, form, agents, loading, loadError, saving, deleting, running, error, conflict, notice, dirty,
+    attachmentsPending: attachmentsPending > 0,
     proprMcpSupport, agentType, update, changeAgent, save, remove, upload, removeAttachment, run, reload,
   };
 }

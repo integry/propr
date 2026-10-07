@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import AgentsPage from './AgentsPage';
 import { listAgentDefinitions, listAgentRuns, type AgentDefinitionRecord } from '../api/agentDefinitionsApi';
@@ -74,6 +74,7 @@ describe('AgentsPage', () => {
     cleanup();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+    vi.useRealTimers();
     editorCallbacks.clear();
   });
 
@@ -202,5 +203,66 @@ describe('AgentsPage', () => {
     renderAt('/agents');
     expect(await screen.findByText('No agents yet')).toBeInTheDocument();
     expect(screen.getByText(/runs on demand or on a schedule/)).toBeInTheDocument();
+  });
+  it('refreshes an unfinished run until it settles, including a run started from the editor', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setViewport(true);
+    const states: Record<string, string> = { a1: 'completed', a2: 'running' };
+    vi.mocked(listAgentRuns).mockImplementation(async id => ({ runs: [{ id: `r-${id}`, state: states[id] } as never], total: 1, limit: 1, offset: 0 }));
+    renderAt('/agents/a1');
+
+    const triage = await screen.findByRole('link', { name: /Issue triage/ });
+    expect(await within(triage).findByText('Running')).toBeInTheDocument();
+    states.a2 = 'awaiting_approval';
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(within(triage).getByText('Awaiting approval')).toBeInTheDocument();
+    states.a2 = 'completed';
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(within(triage).getByText('Completed')).toBeInTheDocument();
+
+    // Settled agents are no longer read.
+    vi.mocked(listAgentRuns).mockClear();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(listAgentRuns).not.toHaveBeenCalled();
+
+    const review = screen.getByRole('link', { name: /Dependency review/ });
+    states.a1 = 'queued';
+    act(() => editorCallbacks.get('a1')!.onRunStarted!({ id: 'r-new', definitionId: 'a1', state: 'queued' } as never));
+    expect(within(review).getByText('Queued')).toBeInTheDocument();
+    states.a1 = 'failed';
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(within(review).getByText('Failed')).toBeInTheDocument();
+    expect(listAgentRuns).toHaveBeenCalledWith('a1', { limit: 1 });
+  });
+
+  it('does not let a read sent before a run started overwrite that run', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setViewport(true);
+    let finishRead: () => void = () => undefined;
+    vi.mocked(listAgentRuns).mockImplementation(async id => {
+      if (id === 'a1') await new Promise<void>(resolve => { finishRead = resolve; });
+      return { runs: id === 'a1' ? [{ id: 'old', state: 'completed' } as never] : [], total: 1, limit: 1, offset: 0 };
+    });
+    renderAt('/agents/a1');
+    const review = await screen.findByRole('link', { name: /Dependency review/ });
+    await waitFor(() => expect(listAgentRuns).toHaveBeenCalledWith('a1', { limit: 1 }));
+
+    act(() => editorCallbacks.get('a1')!.onRunStarted!({ id: 'new', definitionId: 'a1', state: 'queued' } as never));
+    await act(async () => { finishRead(); });
+    expect(within(review).getByText('Queued')).toBeInTheDocument();
+  });
+
+  it('stops refreshing run states when the page unmounts', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setViewport(true);
+    vi.mocked(listAgentRuns).mockResolvedValue({ runs: [{ id: 'r', state: 'running' } as never], total: 1, limit: 1, offset: 0 });
+    const { unmount } = renderAt('/agents');
+    const triage = await screen.findByRole('link', { name: /Issue triage/ });
+    await within(triage).findByText('Running');
+
+    unmount();
+    vi.mocked(listAgentRuns).mockClear();
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    expect(listAgentRuns).not.toHaveBeenCalled();
   });
 });

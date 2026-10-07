@@ -70,14 +70,18 @@ const AgentEditorHeader: React.FC<AgentEditorHeaderProps> = ({
   </header>
 );
 
+interface RunGate { running: boolean; saving: boolean; dirty: boolean; conflict: boolean; loading: boolean; attachmentsPending: boolean }
+
 /**
- * Run now starts the saved definition, so it is held back while a save is
- * replacing it and while the form shows changes that are not saved yet.
+ * Run now starts the definition the server holds, so it is held back while a
+ * save is replacing it, while the form shows changes that are not saved yet,
+ * while the agent changed elsewhere and its replacement has not loaded, and
+ * while input files are still being added or removed.
  */
-function runAvailability(isDemoMode: boolean, { running, saving, dirty }: { running: boolean; saving: boolean; dirty: boolean }) {
+function runAvailability(isDemoMode: boolean, { running, saving, dirty, conflict, loading, attachmentsPending }: RunGate) {
   return {
-    runDisabled: isDemoMode || running || saving || dirty,
-    runHint: !isDemoMode && dirty && !saving ? RUN_NEEDS_SAVE_MESSAGE : null,
+    runDisabled: isDemoMode || running || saving || dirty || conflict || loading || attachmentsPending,
+    runHint: !isDemoMode && dirty && !saving && !conflict ? RUN_NEEDS_SAVE_MESSAGE : null,
   };
 }
 

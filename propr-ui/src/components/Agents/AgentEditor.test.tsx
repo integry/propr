@@ -5,10 +5,12 @@ import { AgentEditor } from './AgentEditor';
 import {
   AgentApiError,
   createAgentDefinition,
+  deleteAgentAttachment,
   deleteAgentDefinition,
   getAgentDefinition,
   triggerAgentRun,
   updateAgentDefinition,
+  uploadAgentAttachment,
   type AgentDefinitionRecord,
 } from '../../api/agentDefinitionsApi';
 import { getInstanceCatalog } from '../../api/proprApi';
@@ -295,5 +297,106 @@ describe('AgentEditor', () => {
     });
     await act(async () => { await result.current.run(); });
     expect(triggerAgentRun).toHaveBeenCalledWith('agent-1');
+  });
+  it('blocks Run now after a conflict until the replacement definition has loaded', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    vi.mocked(updateAgentDefinition).mockRejectedValue(new AgentApiError('Agent definition was changed', 409));
+    vi.mocked(triggerAgentRun).mockResolvedValue({ created: true, run: { id: 'run-1' } } as unknown as Awaited<ReturnType<typeof triggerAgentRun>>);
+    renderEditor('agent-1');
+
+    // The form is unchanged, so only the conflict says the server holds something else.
+    await screen.findByLabelText('Name');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Changed elsewhere — reload');
+    expect(screen.getByRole('button', { name: 'Run now' })).toBeDisabled();
+    expect(screen.queryByText('Save your changes to run them')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
+    expect(triggerAgentRun).not.toHaveBeenCalled();
+
+    let finishReload: (loaded: AgentDefinitionRecord) => void = () => undefined;
+    vi.mocked(getAgentDefinition).mockReturnValue(new Promise(resolve => { finishReload = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+    await waitFor(() => expect(getAgentDefinition).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: 'Run now' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
+    expect(triggerAgentRun).not.toHaveBeenCalled();
+
+    await act(async () => { finishReload({ ...definition, autonomyMode: 'auto', revision: 4 }); });
+    expect(screen.getByRole('radio', { name: /^Auto/ })).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
+    await waitFor(() => expect(triggerAgentRun).toHaveBeenCalledWith('agent-1'));
+  });
+
+  it('keeps Run now blocked when reloading after a conflict fails', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    vi.mocked(updateAgentDefinition).mockRejectedValue(new AgentApiError('Agent definition was changed', 409));
+    const { result } = renderHook(() => useAgentEditor('agent-1', { onSaved: vi.fn(), onDeleted: vi.fn() }));
+    await waitFor(() => expect(result.current.definition).not.toBeNull());
+
+    await act(async () => { await result.current.save(); });
+    expect(result.current.conflict).toBe(true);
+    vi.mocked(getAgentDefinition).mockRejectedValue(new Error('Network down'));
+    await act(async () => { await result.current.reload(); });
+    await act(async () => { await result.current.run(); });
+    expect(triggerAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('ignores a run requested from the render before a conflict was reported', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    vi.mocked(updateAgentDefinition).mockRejectedValue(new AgentApiError('Agent definition was changed', 409));
+    const { result } = renderHook(() => useAgentEditor('agent-1', { onSaved: vi.fn(), onDeleted: vi.fn() }));
+    await waitFor(() => expect(result.current.definition).not.toBeNull());
+
+    const { save, run } = result.current;
+    await act(async () => { await save(); });
+    await act(async () => { await run(); });
+    expect(triggerAgentRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['uploading an input file', 'upload'],
+    ['removing an input file', 'remove'],
+  ] as const)('holds Run now back while %s, even before the button re-renders', async (_label, change) => {
+    const attachment = { id: 'file-1', originalName: 'notes.md', size: 10 } as AgentDefinitionRecord['attachments'][number];
+    vi.mocked(getAgentDefinition).mockResolvedValue({ ...definition, attachments: change === 'remove' ? [attachment] : [] });
+    let finish: () => void = () => undefined;
+    const settled = new Promise<void>(resolve => { finish = resolve; });
+    vi.mocked(uploadAgentAttachment).mockImplementation(async () => {
+      await settled;
+      return { definition: { ...definition, attachments: [attachment] }, attachments: [attachment] };
+    });
+    vi.mocked(deleteAgentAttachment).mockImplementation(async () => { await settled; return { ...definition, attachments: [] }; });
+    vi.mocked(triggerAgentRun).mockResolvedValue({ created: true, run: { id: 'run-1' } } as unknown as Awaited<ReturnType<typeof triggerAgentRun>>);
+    const { result } = renderHook(() => useAgentEditor('agent-1', { onSaved: vi.fn(), onDeleted: vi.fn() }));
+    await waitFor(() => expect(result.current.definition).not.toBeNull());
+
+    const { upload, removeAttachment, run } = result.current;
+    let pending: Promise<void> = Promise.resolve();
+    await act(async () => {
+      pending = change === 'upload' ? upload([new File(['x'], 'notes.md')]) : removeAttachment('file-1');
+      await run();
+    });
+    expect(triggerAgentRun).not.toHaveBeenCalled();
+    expect(result.current.attachmentsPending).toBe(true);
+
+    await act(async () => { finish(); await pending; });
+    expect(result.current.attachmentsPending).toBe(false);
+    await act(async () => { await result.current.run(); });
+    expect(triggerAgentRun).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('disables Run now while an input file upload is in flight and re-enables it if the upload fails', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    let fail: (error: Error) => void = () => undefined;
+    vi.mocked(uploadAgentAttachment).mockReturnValue(new Promise((_resolve, reject) => { fail = reject; }));
+    renderEditor('agent-1');
+
+    const runButton = await screen.findByRole('button', { name: 'Run now' });
+    fireEvent.change(screen.getByTestId('agent-attachment-input'), { target: { files: [new File(['x'], 'notes.md')] } });
+    await waitFor(() => expect(runButton).toBeDisabled());
+
+    await act(async () => { fail(new Error('Upload failed')); });
+    expect(await screen.findByText('Upload failed')).toBeInTheDocument();
+    expect(runButton).toBeEnabled();
   });
 });
