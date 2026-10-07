@@ -197,6 +197,74 @@ describe('AgentsPage', () => {
     expect(screen.queryByRole('link', { name: /Dependency review/ })).not.toBeInTheDocument();
   });
 
+  /** Holds the first list read until `finish` is called, answering it with the collection as it was when sent. */
+  const delayListRead = () => {
+    let finish: () => void = () => undefined;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    vi.mocked(listAgentDefinitions).mockImplementationOnce(async () => {
+      await gate;
+      return { definitions: [agent('a1', 'Dependency review'), agent('a2', 'Issue triage')], total: 2, limit: 200, offset: 0 };
+    });
+    return () => act(async () => { finish(); });
+  };
+
+  it('keeps an agent created while the first list read was in flight', async () => {
+    setViewport(true);
+    const finishRead = delayListRead();
+    renderAt('/agents/new');
+
+    act(() => editorCallbacks.get('new')!.onSaved(agent('a3', 'Fresh agent'), true, true));
+    expect(screen.getByTestId('location')).toHaveTextContent('/agents/a3');
+    await finishRead();
+
+    expect(await screen.findByRole('link', { name: /Issue triage/ })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Fresh agent/ })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Dependency review/ })).toBeInTheDocument();
+  });
+
+  it('keeps an edit saved while the first list read was in flight', async () => {
+    setViewport(true);
+    const finishRead = delayListRead();
+    renderAt('/agents/a1');
+
+    act(() => editorCallbacks.get('a1')!.onSaved(agent('a1', 'Renamed review', { revision: 1 }), false, true));
+    await finishRead();
+
+    expect(await screen.findByRole('link', { name: /Renamed review/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Dependency review/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: /Renamed review|Issue triage/ })).toHaveLength(2);
+  });
+
+  it('does not restore an agent deleted while the first list read was in flight', async () => {
+    setViewport(true);
+    const finishRead = delayListRead();
+    renderAt('/agents/a1');
+
+    act(() => editorCallbacks.get('a1')!.onDeleted('a1', true));
+    expect(screen.getByTestId('location')).toHaveTextContent(/^\/agents$/);
+    await finishRead();
+
+    expect(await screen.findByRole('link', { name: /Issue triage/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Dependency review/ })).not.toBeInTheDocument();
+  });
+
+  it('moves the next run on once a page left open passes the stored one', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-10-07T08:00:00Z'));
+    setViewport(true);
+    vi.mocked(listAgentDefinitions).mockResolvedValue({
+      definitions: [agent('a1', 'Dependency review', { scheduleCron: '0 9 * * *', scheduleEnabled: true, nextRunAt: Date.parse('2026-10-07T09:00:00Z') })],
+      total: 1, limit: 200, offset: 0,
+    });
+    renderAt('/agents');
+    const review = await screen.findByRole('link', { name: /Dependency review/ });
+    expect(review).toHaveTextContent('Daily 09:00 UTC · next in 1h');
+
+    // The 09:00 run happens while the page stays open; run polling renders the row again at 11:00.
+    await act(async () => { await vi.advanceTimersByTimeAsync(3 * 3_600_000); });
+    expect(review).toHaveTextContent('Daily 09:00 UTC · next in 22h');
+  });
+
   it('explains what an agent is when there are none', async () => {
     setViewport(true);
     vi.mocked(listAgentDefinitions).mockResolvedValue({ definitions: [], total: 0, limit: 200, offset: 0 });

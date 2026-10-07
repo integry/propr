@@ -103,12 +103,17 @@ export const nextScheduledRun = (expression: string, now: Date): Date | null => 
   }
 };
 
-/** "Daily 09:00 UTC · next in 3h", or "Manual" when the agent has no active schedule. */
+/**
+ * "Daily 09:00 UTC · next in 3h", or "Manual" when the agent has no active schedule.
+ * The stored next run is read when the list loads, so once a page left open
+ * passes it, the next occurrence is worked out from the schedule instead.
+ */
 export const scheduleSummary = (definition: Pick<AgentDefinitionRecord, 'scheduleCron' | 'scheduleEnabled' | 'nextRunAt' | 'enabled'>, now: number): string => {
   if (!definition.scheduleCron || !definition.scheduleEnabled) return 'Manual';
   const name = describeCron(definition.scheduleCron);
   if (!definition.enabled) return `${name} · paused`;
-  const next = definition.nextRunAt ?? nextScheduledRun(definition.scheduleCron, new Date(now))?.getTime() ?? null;
+  const stored = definition.nextRunAt !== null && definition.nextRunAt > now ? definition.nextRunAt : null;
+  const next = stored ?? nextScheduledRun(definition.scheduleCron, new Date(now))?.getTime() ?? null;
   return next === null ? name : `${name} · next in ${formatDuration(next - now)}`;
 };
 

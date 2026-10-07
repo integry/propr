@@ -139,17 +139,44 @@ function useLastRunStates(definitions: AgentDefinitionRecord[] | null) {
   return { lastRunStates, recordRun: record, refresh };
 }
 
+/** Saves and deletions made in an editor while the list's first read was in flight. */
+interface PendingChanges {
+  saved: Map<string, AgentDefinitionRecord>;
+  deleted: Set<string>;
+}
+
+/**
+ * The first read of the list with the saves and deletions made while it was
+ * in flight laid over it: the read may have been answered before they
+ * happened. A save replaces the row it read unless the row read is a later
+ * revision, and a save of an agent the read did not include is listed first.
+ */
+function reconcileLoadedDefinitions(loaded: AgentDefinitionRecord[], pending: PendingChanges): AgentDefinitionRecord[] {
+  const kept = loaded
+    .filter(definition => !pending.deleted.has(definition.id))
+    .map(definition => {
+      const saved = pending.saved.get(definition.id);
+      return saved && saved.revision >= definition.revision ? saved : definition;
+    });
+  const created = [...pending.saved.values()].filter(saved => !loaded.some(definition => definition.id === saved.id)).reverse();
+  return [...created, ...kept];
+}
+
 /** Saved agents plus the latest run state of each, for the list. */
 function useAgentDefinitions() {
   const [definitions, setDefinitions] = useState<AgentDefinitionRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { lastRunStates, recordRun, refresh: refreshRunState } = useLastRunStates(definitions);
+  /** Recorded until the first read is applied; null afterwards, when changes apply to the list directly. */
+  const pending = useRef<PendingChanges | null>({ saved: new Map(), deleted: new Set() });
 
   useEffect(() => {
     let active = true;
     listAllAgentDefinitions(() => active)
-      .then(loaded => {
+      .then(read => {
         if (!active) return;
+        const loaded = pending.current ? reconcileLoadedDefinitions(read, pending.current) : read;
+        pending.current = null;
         setDefinitions(loaded);
         // Last run states fill in as they arrive.
         loaded.forEach(definition => refreshRunState(definition.id));
@@ -159,6 +186,7 @@ function useAgentDefinitions() {
   }, [refreshRunState]);
 
   const upsert = useCallback((definition: AgentDefinitionRecord) => {
+    pending.current?.saved.set(definition.id, definition);
     setDefinitions(current => {
       const list = current ?? [];
       return list.some(candidate => candidate.id === definition.id)
@@ -168,6 +196,8 @@ function useAgentDefinitions() {
   }, []);
 
   const remove = useCallback((definitionId: string) => {
+    pending.current?.saved.delete(definitionId);
+    pending.current?.deleted.add(definitionId);
     setDefinitions(current => current?.filter(candidate => candidate.id !== definitionId) ?? current);
   }, []);
 
