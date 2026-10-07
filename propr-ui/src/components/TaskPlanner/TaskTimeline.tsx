@@ -64,9 +64,16 @@ const OutlineItem: React.FC<OutlineItemProps> = ({
     itemRef.current = el;
   }, [setNodeRef]);
 
-  // Keep the active entry visible while the specification pane scrolls
+  // Keep the active entry visible while the specification pane scrolls. Only the outline list
+  // scrolls: scrollIntoView would also scroll every ancestor and shift the page layout.
   useEffect(() => {
-    if (isActive) itemRef.current?.scrollIntoView?.({ block: 'nearest' });
+    const item = itemRef.current;
+    const list = item?.parentElement;
+    if (!isActive || !item || !list) return;
+    const itemRect = item.getBoundingClientRect();
+    const listRect = list.getBoundingClientRect();
+    if (itemRect.top < listRect.top) list.scrollTop += itemRect.top - listRect.top;
+    else if (itemRect.bottom > listRect.bottom) list.scrollTop += itemRect.bottom - listRect.bottom;
   }, [isActive]);
 
   return (

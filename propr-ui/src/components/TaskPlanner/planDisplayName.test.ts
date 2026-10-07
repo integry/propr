@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getDraftDisplayName, getTabLabel, isStalePromptDerivedName } from './planDisplayName';
+import { getDraftDisplayName, getOutlineTitle, getTabLabel, isStalePromptDerivedName } from './planDisplayName';
 
 describe('isStalePromptDerivedName', () => {
   it('detects a name derived from an earlier, shorter version of the prompt', () => {
@@ -77,5 +77,19 @@ describe('getTabLabel', () => {
   it('drops the leading verb and caps the label at three words', () => {
     expect(getTabLabel('Implement Core Repository Retrieval Engine for Semantic and Literal File Matching')).toBe('Core Repo Retrieval');
     expect(getTabLabel('Add Rate Limits and Audit Logging for Repository Retrieval Tools')).toBe('Rate Limits');
+  });
+});
+
+describe('getOutlineTitle', () => {
+  it('drops the repeated plan name and step counter', () => {
+    expect(getOutlineTitle('Agents v1 (3/17): Agent run store')).toBe('Agent run store');
+    expect(getOutlineTitle('(2/4) - Database migration')).toBe('Database migration');
+  });
+
+  it('keeps titles whose counter-like text belongs to the step itself', () => {
+    expect(getOutlineTitle('Retries: handle (1/2): fallback path')).toBe('Retries: handle (1/2): fallback path');
+    expect(getOutlineTitle('Handle (1/2) retries: fallback path')).toBe('Handle (1/2) retries: fallback path');
+    expect(getOutlineTitle('Split ratio (3/2): rebalance shards')).toBe('Split ratio (3/2): rebalance shards');
+    expect(getOutlineTitle(`${'Very long subject '.repeat(6)}(1/2): tail`)).toBe(`${'Very long subject '.repeat(6)}(1/2): tail`);
   });
 });

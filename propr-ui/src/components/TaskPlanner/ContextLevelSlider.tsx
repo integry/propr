@@ -1,5 +1,7 @@
 import React, { useCallback } from 'react';
 import { Layers } from 'lucide-react';
+import { DEFAULT_MODEL_MAX_TOKENS, getContextTokenBudget } from '../../hooks/contextRefreshUtils';
+import { formatTokenAmount } from './tokenFormat';
 
 interface ContextLevelSliderProps {
   value: number;
@@ -7,6 +9,8 @@ interface ContextLevelSliderProps {
   compress?: boolean;
   onCompressChange?: (compress: boolean) => void;
   hideCostLabels?: boolean;
+  /** The planning model's context window, when the preview has reported it. */
+  modelMaxTokens?: number;
 }
 
 // Level thresholds for determining which config to use
@@ -19,14 +23,14 @@ const getLevelType = (value: number): LevelType => {
   return 'fullscan';
 };
 
-// Context level configuration: technical descriptors with approximate token / latency estimates
+// Context level configuration: technical descriptors with approximate latency estimates.
+// The token estimate is derived from the model's context window, as the preview's budget is.
 interface ContextLevelConfig {
   label: string;
   subtitle: string;
   scanName: string;
   analysis: string;
   costLabel: string;
-  tokenEstimate: string;
   latencyEstimate: string;
 }
 
@@ -37,7 +41,6 @@ const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
     scanName: 'Targeted File Scan',
     analysis: 'Direct References',
     costLabel: 'Lowest Cost',
-    tokenEstimate: '~50-150k tokens',
     latencyEstimate: '<1m scan',
   },
   expanded: {
@@ -46,7 +49,6 @@ const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
     scanName: 'Dependency Graph Scan',
     analysis: 'Imports & Related Modules',
     costLabel: 'Moderate Cost',
-    tokenEstimate: '~300-600k tokens',
     latencyEstimate: '~1-2m scan',
   },
   fullscan: {
@@ -55,17 +57,17 @@ const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
     scanName: 'Full Repository Scan',
     analysis: 'Deep AST Analysis',
     costLabel: 'Higher Cost',
-    tokenEstimate: '~1.2M tokens',
     latencyEstimate: '~3-5m scan',
   },
 };
 
-export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange, hideCostLabels }) => {
+export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange, hideCostLabels, modelMaxTokens }) => {
   // Get the current level type and config
   const levelType = getLevelType(value);
   const config = LEVEL_CONFIGS[levelType];
   const analysisDetail = hideCostLabels ? config.analysis : `${config.analysis} · ${config.costLabel}`;
-  const estimate = hideCostLabels ? config.latencyEstimate : `${config.tokenEstimate} · ${config.latencyEstimate}`;
+  const tokenEstimate = `≤${formatTokenAmount(getContextTokenBudget(value, modelMaxTokens || DEFAULT_MODEL_MAX_TOKENS))} tokens`;
+  const estimate = hideCostLabels ? config.latencyEstimate : `${tokenEstimate} · ${config.latencyEstimate}`;
 
   // Handle slider change - no snapping, moves at 10% increments
   const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {

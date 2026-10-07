@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React from 'react';
 import { createPortal } from 'react-dom';
 import { PlanIssue, AgentModelPair } from '../../api/planIssuesApi';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import AgentModelSelector from './AgentModelSelector';
 import { getModelName, getShortModelName } from './planIssueRowUtils';
+import { useAnchoredPopover } from './useAnchoredPopover';
 
 const getAgentChipLabel = (issue: PlanIssue, isMultiMode: boolean, selectedModels: AgentModelPair[]): string => {
   if (isMultiMode) return selectedModels.length > 0 ? `${selectedModels.length} models` : 'Choose models';
@@ -33,42 +34,12 @@ export const AgentOverrideChip: React.FC<AgentOverrideChipProps> = ({
   agents, issue, disabled, isMultiMode, selectedModels,
   onAgentChange, onModelChange, handleMultiToggle, handleMultiModelChange, handleImplementClick,
 }) => {
-  // The popover is portalled with fixed coordinates so the row's overflow clipping cannot cut it off.
-  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
-  const open = anchor !== null;
-  const containerRef = useRef<HTMLDivElement>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const close = () => setAnchor(null);
-  const toggle = () => {
-    if (open) { close(); return; }
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (rect) setAnchor({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
-  };
+  // The popover is portalled with fixed, viewport-aware coordinates so neither the row's overflow
+  // clipping nor the viewport edge can cut it off.
+  const { open, position, toggle, close, containerRef, popoverRef } = useAnchoredPopover();
   const issueNumber = issue.issue_number;
   const label = getAgentChipLabel(issue, isMultiMode, selectedModels);
   const agentTitle = issue.agent_alias ? `${issue.agent_alias} / ${getModelName(issue.model_name) || 'default model'}` : 'No agent selected';
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!containerRef.current?.contains(target) && !popoverRef.current?.contains(target)) close();
-    };
-    const handleKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    const handleScroll = (event: Event) => {
-      if (!popoverRef.current?.contains(event.target as Node)) close();
-    };
-    window.addEventListener('resize', close);
-    window.addEventListener('scroll', handleScroll, true);
-    return () => {
-      window.removeEventListener('scroll', handleScroll, true);
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('resize', close);
-    };
-  }, [open]);
 
   return (
     <div ref={containerRef} className="relative flex-shrink-0">
@@ -89,13 +60,13 @@ export const AgentOverrideChip: React.FC<AgentOverrideChipProps> = ({
         {!isMultiMode && issue.agent_alias && <ProviderLogo provider={issue.agent_alias} className="w-3 h-3 flex-shrink-0" />}
         <span className="truncate">{label}</span>
       </button>
-      {anchor && createPortal(
+      {position && createPortal(
         <div
           ref={popoverRef}
           role="dialog"
           aria-label={`Agent override for #${issueNumber}`}
-          style={{ top: anchor.top, right: anchor.right }}
-          className="fixed z-50 w-max max-w-[calc(100vw-2rem)] rounded-md border border-slate-200 bg-white p-3 shadow-lg"
+          style={position}
+          className="fixed z-50 w-max max-w-[calc(100vw-2rem)] overflow-y-auto rounded-md border border-slate-200 bg-white p-3 shadow-lg"
         >
           <div className="mb-2 text-[11px] font-bold uppercase tracking-widest text-slate-500">Agent for #{issueNumber}</div>
           <AgentModelSelector

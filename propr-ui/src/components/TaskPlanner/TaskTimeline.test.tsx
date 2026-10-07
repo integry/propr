@@ -29,4 +29,19 @@ describe('TaskTimeline plan outline', () => {
     fireEvent.click(screen.getByRole('button', { name: /Agent run store with state machine/ }));
     expect(onScrollToTask).toHaveBeenCalledWith('c', 2);
   });
+
+  it('keeps the active entry visible by scrolling only the outline list', () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const titles = ['One', 'Two', 'Three'];
+    const view = render(<TaskTimeline taskCount={3} activeIndex={0} onStepClick={vi.fn()} taskTitles={titles} taskIds={['a', 'b', 'c']} />);
+    const list = screen.getByRole('list');
+    const items = screen.getAllByRole('listitem');
+    list.getBoundingClientRect = () => ({ top: 0, bottom: 100 }) as DOMRect;
+    items.forEach((item, index) => { item.getBoundingClientRect = () => ({ top: index * 80, bottom: index * 80 + 30 }) as DOMRect; });
+
+    view.rerender(<TaskTimeline taskCount={3} activeIndex={2} onStepClick={vi.fn()} taskTitles={titles} taskIds={['a', 'b', 'c']} />);
+    expect(list.scrollTop).toBe(90);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
 });

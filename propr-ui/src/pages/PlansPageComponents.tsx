@@ -8,6 +8,7 @@ import {
   renderStatusStrip,
   formatRelativeTime,
   getRepositoryShortName,
+  hasMultipleRepositoryOwners,
   toSingleLinePlainText
 } from './PlansPageUtils';
 
@@ -87,16 +88,19 @@ interface PlansListItemProps {
   abortingId: string | null;
   onDelete: (id: string, e: React.MouseEvent) => void;
   onAbort: (id: string, e: React.MouseEvent) => void;
+  /** Show "owner/repo" because the listed plans span more than one owner. */
+  showRepositoryOwner?: boolean;
 }
 
 export const PlansListItem: React.FC<PlansListItemProps> = ({
   draft,
   abortingId,
   onDelete,
-  onAbort
+  onAbort,
+  showRepositoryOwner = false
 }) => {
   const effectiveStatus = getEffectiveStatus(draft.status, draft.issue_summary);
-  const repoName = getRepositoryShortName(draft.repository);
+  const repoName = getRepositoryShortName(draft.repository, showRepositoryOwner);
   const title = toSingleLinePlainText(getDraftDisplayName(draft, draft.initial_prompt)) || 'Untitled Plan';
 
   return (
@@ -227,6 +231,7 @@ export const PlansList: React.FC<PlansListProps> = ({
   onDelete,
   onAbort
 }) => {
+  const showRepositoryOwner = hasMultipleRepositoryOwners(drafts.map(draft => draft.repository));
   return (
     <div className="flex flex-col h-full bg-white w-full overflow-hidden">
       <div className="flex-1 overflow-y-auto w-full">
@@ -237,6 +242,7 @@ export const PlansList: React.FC<PlansListProps> = ({
             abortingId={abortingId}
             onDelete={onDelete}
             onAbort={onAbort}
+            showRepositoryOwner={showRepositoryOwner}
           />
         ))}
       </div>

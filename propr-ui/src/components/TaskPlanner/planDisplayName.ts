@@ -34,14 +34,22 @@ export function getDraftDisplayName(draft: DraftDisplayNameSource | null | undef
   return name;
 }
 
+// "<plan name> (n/m): " — the plan name is a short prefix without its own colon or parentheses.
+const STEP_COUNTER_PREFIX = /^([^:()]{0,80}?)\(\s*(\d+)\s*\/\s*(\d+)\s*\)\s*[:\-–—]\s*/;
+
 /**
  * Generated step titles often repeat the plan name with a counter
  * ("Agents v1 (3/17): Agent run store"). The outline already shows the
- * step number, so only the distinguishing part of the title is kept.
+ * step number, so only the distinguishing part of the title is kept. Only a
+ * leading plan-name prefix with a valid counter is removed, so a title that
+ * merely contains "(n/m):" after its own subject keeps its text.
  */
 export const getOutlineTitle = (title: string): string => {
-  const stripped = title.replace(/^.*?\(\s*\d+\s*\/\s*\d+\s*\)\s*[:\-–—]\s*/, '').trim();
-  return stripped || title.trim();
+  const match = title.match(STEP_COUNTER_PREFIX);
+  if (!match) return title.trim();
+  const [prefix, , step, total] = match;
+  if (Number(step) < 1 || Number(step) > Number(total)) return title.trim();
+  return title.slice(prefix.length).trim() || title.trim();
 };
 
 const TAB_LABEL_MAX_WORDS = 3;

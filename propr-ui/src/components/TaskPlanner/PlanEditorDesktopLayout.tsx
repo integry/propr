@@ -50,7 +50,7 @@ interface PlanEditorPanelsProps {
   isAssistantOpen: boolean;
 }
 
-const PlanEditorPanels: React.FC<PlanEditorPanelsProps> = ({
+export const PlanEditorPanels: React.FC<PlanEditorPanelsProps> = ({
   plan,
   highlightedIds,
   draftId,
@@ -80,19 +80,24 @@ const PlanEditorPanels: React.FC<PlanEditorPanelsProps> = ({
       />
     </div>
 
-    {isAssistantOpen && (
-      <div id="plan-assistant" data-testid="plan-assistant" className="h-full w-[340px] flex-shrink-0 border-l border-slate-200 bg-slate-50">
-        <RefinementChat
-          onSendMessage={onRefine}
-          initialMessages={chatHistory}
-          onMessagesChange={onChatMessagesChange}
-          refinementProgress={refinementProgress}
-          defaultModel={defaultModel}
-          onStop={onStopRefinement}
-          focusComposerRequest={focusComposerRequest}
-        />
-      </div>
-    )}
+    {/* Hidden rather than unmounted, so an unsent message and the chosen model survive closing the Assistant. */}
+    <div
+      id="plan-assistant"
+      data-testid="plan-assistant"
+      hidden={!isAssistantOpen}
+      className={`h-full w-[340px] flex-shrink-0 border-l border-slate-200 bg-slate-50 ${isAssistantOpen ? '' : 'hidden'}`}
+    >
+      <RefinementChat
+        onSendMessage={onRefine}
+        initialMessages={chatHistory}
+        onMessagesChange={onChatMessagesChange}
+        refinementProgress={refinementProgress}
+        defaultModel={defaultModel}
+        onStop={onStopRefinement}
+        // A hidden composer cannot take focus; the request is delivered once the Assistant is shown.
+        focusComposerRequest={isAssistantOpen ? focusComposerRequest : 0}
+      />
+    </div>
   </div>
 );
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getIssueSummaryTokens, getRepositoryShortName, getStatusBadge, getStatusLabel, toSingleLinePlainText } from './PlansPageUtils';
+import { getIssueSummaryTokens, getRepositoryShortName, getStatusBadge, getStatusLabel, hasMultipleRepositoryOwners, toSingleLinePlainText } from './PlansPageUtils';
 
 describe('toSingleLinePlainText', () => {
   it('strips markdown headings and line breaks from prompt-derived titles', () => {
@@ -44,5 +44,11 @@ describe('getRepositoryShortName', () => {
   it('drops the organization prefix', () => {
     expect(getRepositoryShortName('integry/propr')).toBe('propr');
     expect(getRepositoryShortName('digvin')).toBe('digvin');
+  });
+
+  it('keeps the organization when the list spans owners', () => {
+    expect(hasMultipleRepositoryOwners(['integry/propr', 'integry/digvin'])).toBe(false);
+    expect(hasMultipleRepositoryOwners(['integry/propr', 'fork-owner/propr'])).toBe(true);
+    expect(getRepositoryShortName('fork-owner/propr', true)).toBe('fork-owner/propr');
   });
 });

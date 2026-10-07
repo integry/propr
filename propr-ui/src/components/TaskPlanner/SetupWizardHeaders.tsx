@@ -25,23 +25,34 @@ const soleConfiguredBranch = (repos: Repo[], repository: string): string | undef
   return matches.length === 1 ? matches[0].baseBranch : undefined;
 };
 
-// Target branch as a code chip. When the branch could not be confirmed, the
-// configured name stays visible with a warning instead of a bare "Unavailable".
-export const BranchBadge: React.FC<{ baseBranch: string; fallbackBranch?: string }> = ({ baseBranch, fallbackBranch }) => {
+const BRANCH_CHIP_CLASSES = {
+  resolved: 'border-slate-200 bg-slate-50 text-slate-700',
+  verifying: 'border-slate-200 bg-slate-50 text-slate-400',
+  failed: 'border-amber-200 bg-amber-50 text-amber-800',
+} as const;
+
+// Target branch as a code chip, in one of three states: resolved, still verifying (the lookup has
+// not finished, or not started yet), or failed. Only a failed lookup shows the amber warning; the
+// configured name stays visible so the user can see which branch could not be confirmed.
+export const BranchBadge: React.FC<{ baseBranch: string; fallbackBranch?: string; failed?: boolean }> = ({ baseBranch, fallbackBranch, failed = false }) => {
   const branchName = baseBranch || fallbackBranch || '';
-  const isUnverified = !baseBranch;
-  const label = isUnverified ? `${branchName || 'branch'} (unverified)` : branchName;
+  const status = baseBranch ? 'resolved' : failed ? 'failed' : 'verifying';
+  const label = status === 'failed' ? `${branchName || 'branch'} (unverified)` : branchName || 'branch';
+  const titles = {
+    resolved: `${baseBranch}\n\n${BRANCH_TOOLTIP}`,
+    verifying: `Verifying ${branchName || 'the branch'}…\n\n${BRANCH_TOOLTIP}`,
+    failed: `Branch status unavailable. Plans can only be generated against a verified branch.\n\n${BRANCH_TOOLTIP}`,
+  };
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-mono max-w-full ${
-        isUnverified ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-slate-200 bg-slate-50 text-slate-700'
-      }`}
-      title={isUnverified ? `Branch status unavailable\n\n${BRANCH_TOOLTIP}` : `${baseBranch}\n\n${BRANCH_TOOLTIP}`}
+      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-mono max-w-full ${BRANCH_CHIP_CLASSES[status]}`}
+      title={titles[status]}
       data-testid="branch-chip"
+      data-status={status}
     >
       <GitBranch className="h-3 w-3 flex-shrink-0" />
       <span className="truncate">{label}</span>
-      {isUnverified && <AlertTriangle className="h-3 w-3 flex-shrink-0 text-amber-500" aria-label="Branch status unavailable" />}
+      {status === 'failed' && <AlertTriangle className="h-3 w-3 flex-shrink-0 text-amber-500" aria-label="Branch status unavailable" />}
     </span>
   );
 };
@@ -80,7 +91,7 @@ export const NewModeHeader: React.FC<{
             {isLoadingBranches ? (
               <span className="text-gray-400 text-sm">Loading...</span>
             ) : (
-              <BranchBadge baseBranch={baseBranch} fallbackBranch={selectedBaseBranch || soleConfiguredBranch(repos, selectedRepo)} />
+              <BranchBadge baseBranch={baseBranch} fallbackBranch={selectedBaseBranch || soleConfiguredBranch(repos, selectedRepo)} failed={!!branchError} />
             )}
           </div>
         </>
@@ -141,7 +152,7 @@ export const EditModeHeader: React.FC<{
         {isRepoLoading ? (
           <span className="text-gray-400 text-sm">Loading...</span>
         ) : (
-          <BranchBadge baseBranch={baseBranch} fallbackBranch={selectorBaseBranch || soleConfiguredBranch(finalRepoOptions, repository)} />
+          <BranchBadge baseBranch={baseBranch} fallbackBranch={selectorBaseBranch || soleConfiguredBranch(finalRepoOptions, repository)} failed={!!(branchError || repoError)} />
         )}
       </div>
       {(branchError || repoError) && (

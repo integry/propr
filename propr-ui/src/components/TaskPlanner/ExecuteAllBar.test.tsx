@@ -27,15 +27,38 @@ describe('ExecuteAllBar', () => {
     expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('auto-merge');
   });
 
-  it('queues the remaining tasks while other issues are still running', () => {
+  it('describes the immediate head start instead of promising slot-based dispatch', () => {
+    render(<ExecuteAllBar {...baseProps} remainingCount={10} autoMerge onExecuteAll={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'Queue Remaining (10 tasks)' })).toBeEnabled();
+    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('Starts the first of 10 tasks now');
+    expect(screen.getByTestId('execute-all-hint')).not.toHaveTextContent('concurrency slots');
+  });
+
+  it('does not bypass an active auto-merge queue while issues are running', () => {
     const onExecuteAll = vi.fn();
     render(<ExecuteAllBar {...baseProps} remainingCount={10} autoMerge hasRunningIssues onExecuteAll={onExecuteAll} />);
 
     const button = screen.getByRole('button', { name: 'Queue Remaining (10 tasks)' });
-    expect(button).toBeEnabled();
-    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('10 tasks will be dispatched automatically as concurrency slots become available.');
+    expect(button).toBeDisabled();
+    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('Issues are running.');
     fireEvent.click(button);
-    expect(onExecuteAll).toHaveBeenCalledTimes(1);
+    expect(onExecuteAll).not.toHaveBeenCalled();
+  });
+
+  it('blocks the epic batch while issues are running, as the epic endpoint refuses it', () => {
+    render(<ExecuteAllBar {...baseProps} useEpic hasRunningIssues onExecuteAll={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: /Queue Remaining/ })).toBeDisabled();
+    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('Wait for the running issues to finish before queueing the remaining epic.');
+  });
+
+  it('shows why the batch cannot start when an earlier issue is unfinished', () => {
+    const reason = 'There is no eligible pending issue to start. Resolve active or out-of-sequence work first.';
+    render(<ExecuteAllBar {...baseProps} autoMerge canExecute={false} unavailableReason={reason} onExecuteAll={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: /Queue Remaining/ })).toBeDisabled();
+    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent(reason);
   });
 
   it('is hidden for single-task plans', () => {

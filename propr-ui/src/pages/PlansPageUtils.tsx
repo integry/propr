@@ -105,8 +105,18 @@ export const getStatusIcon = (status: string): React.ReactNode => {
   }
 };
 
-/** "integry/propr" reads as "propr": the organization is the same on every row. */
-export const getRepositoryShortName = (repository: string): string => repository.split('/').pop() || repository;
+const getRepositoryOwner = (repository: string): string | null => (repository.includes('/') ? repository.split('/')[0] : null);
+
+/** Whether the listed repositories span more than one owner, so short names could collide. */
+export const hasMultipleRepositoryOwners = (repositories: string[]): boolean =>
+  new Set(repositories.map(getRepositoryOwner).filter(Boolean)).size > 1;
+
+/**
+ * "integry/propr" reads as "propr" when every listed row shares the organization. Lists that
+ * span owners keep it, so same-named forks or mirrors stay distinguishable.
+ */
+export const getRepositoryShortName = (repository: string, keepOwner = false): string =>
+  keepOwner ? repository : repository.split('/').pop() || repository;
 
 /**
  * Collapses a plan title (which may fall back to a raw markdown prompt) into a

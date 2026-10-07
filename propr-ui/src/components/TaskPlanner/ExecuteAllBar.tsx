@@ -6,7 +6,7 @@ interface ExecuteAllBarProps {
   taskCount: number;
   useEpic?: boolean;
   autoMerge?: boolean;
-  /** Issues already running; the queue does not wait for them before it is accepted. */
+  /** Issues already running. A running issue may belong to a queue that already owns the remaining tasks. */
   hasRunningIssues: boolean;
   canExecute: boolean;
   unavailableReason: string | null;
@@ -18,16 +18,23 @@ interface ExecuteAllBarProps {
  * Returns why the batch cannot be queued, or null when the server will chain every remaining issue.
  * The epic queue and the auto-merge queue are the two server paths that advance through the plan
  * on their own; individual tasks without auto-merge must be dispatched one row at a time.
- * Running issues never block the batch: queueing hands the remaining tasks to the orchestrator
- * so nobody has to wait at the screen for the current ones to finish.
+ * Running issues block the batch: the epic endpoint refuses while issues run, and a running
+ * auto-merge issue usually heads an active queue that already owns the pending tasks, so a new
+ * request would start a successor before its predecessor finishes.
  */
 function getBatchBlockedReason(options: {
   useEpic: boolean;
   autoMerge: boolean;
+  hasRunningIssues: boolean;
   unavailableReason: string | null;
 }): string | null {
   if (!options.useEpic && !options.autoMerge) {
     return 'Individual tasks only chain automatically when auto-merge is enabled. Enable auto-merge or implement each task from its row.';
+  }
+  if (options.hasRunningIssues) {
+    return options.useEpic
+      ? 'Wait for the running issues to finish before queueing the remaining epic.'
+      : 'Issues are running. An active queue starts the next task when they finish; queue the rest here only once nothing is running.';
   }
   return options.unavailableReason;
 }
@@ -45,13 +52,12 @@ export const ExecuteAllBar: React.FC<ExecuteAllBarProps> = ({
 }) => {
   // Single-task plans run from their row; the batch control only applies to multi-issue plans
   if (remainingCount === 0 || taskCount < 2) return null;
-  const blockedReason = getBatchBlockedReason({ useEpic, autoMerge, unavailableReason });
+  const blockedReason = getBatchBlockedReason({ useEpic, autoMerge, hasRunningIssues, unavailableReason });
   const disabled = executing || !canExecute || blockedReason !== null;
   const taskLabel = `${remainingCount} ${remainingCount === 1 ? 'task' : 'tasks'}`;
-  let summary = useEpic
-    ? 'Runs each remaining issue in order and collects the PRs into one Epic PR.'
-    : 'Runs each remaining issue in order, starting the next once the previous one finishes.';
-  if (hasRunningIssues) summary = `${taskLabel} will be dispatched automatically as concurrency slots become available.`;
+  const summary = useEpic
+    ? `Starts the first of ${taskLabel} now and runs the rest in order, collecting the PRs into one Epic PR.`
+    : `Starts the first of ${taskLabel} now and starts each next one once the previous one finishes.`;
 
   return (
     <div className="flex flex-col gap-2 border-t border-slate-200 pt-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">

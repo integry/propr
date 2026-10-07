@@ -100,7 +100,7 @@ describe('SetupWizardHeaders', () => {
     expect(screen.getByText('branch (unverified)')).toBeInTheDocument();
   });
 
-  it('keeps the configured branch name visible with a warning when its status is unavailable', () => {
+  it('shows a neutral verifying chip, not a warning, before the branch lookup resolves', () => {
     render(
       <NewModeHeader
         reposLoading={false}
@@ -113,7 +113,32 @@ describe('SetupWizardHeaders', () => {
       />
     );
 
-    expect(screen.getByTestId('branch-chip')).toHaveTextContent('main (unverified)');
+    const chip = screen.getByTestId('branch-chip');
+    expect(chip).toHaveTextContent('main');
+    expect(chip).not.toHaveTextContent('unverified');
+    expect(chip).toHaveAttribute('data-status', 'verifying');
+    expect(chip).not.toHaveClass('bg-amber-50');
+    expect(screen.queryByLabelText('Branch status unavailable')).not.toBeInTheDocument();
+  });
+
+  it('keeps the configured branch name visible with a warning when its lookup failed', () => {
+    render(
+      <EditModeHeader
+        repository="integry/propr"
+        isRepoLoading={false}
+        baseBranch=""
+        selectedBaseBranch="main"
+        branchError={null}
+        repoError="GitHub unavailable"
+        repos={duplicateRepos}
+        onRepoChange={vi.fn()}
+        reposLoading={false}
+      />
+    );
+
+    const chip = screen.getByTestId('branch-chip');
+    expect(chip).toHaveTextContent('main (unverified)');
+    expect(chip.getAttribute('title')).toContain('Plans can only be generated against a verified branch.');
     expect(screen.getByLabelText('Branch status unavailable')).toBeInTheDocument();
   });
 });

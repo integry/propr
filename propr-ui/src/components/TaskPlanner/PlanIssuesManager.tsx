@@ -88,6 +88,11 @@ function buildExecutionIntentDetails(options: {
   };
 }
 
+// The batch bar follows the created issues, not plan_json: a revised or unparsable plan must not
+// leave an epic without any start affordance once the row buttons are hidden.
+const BATCH_MIN_ISSUES = 2;
+const showRowImplementButton = (useEpic: boolean | undefined, issueCount: number) => !useEpic || issueCount < BATCH_MIN_ISSUES;
+
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
   repository,
@@ -198,23 +203,15 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     [issues]
   );
 
-  // The batch heads the queue with the earliest pending issue, even while earlier issues are
-  // still running; the server chains the rest behind it.
-  const batchIssue = useMemo(() => intentIssue ?? [...activeIssues]
-    .filter(issue => issue.status === 'pending')
-    .sort((left, right) => left.issue_number - right.issue_number)[0] ?? null, [activeIssues, intentIssue]);
-  const batchIntent = useMemo(() => buildExecutionIntentDetails({
-    issue: batchIssue,
-    multiMode: batchIssue ? Boolean(issueMultiModeMap[batchIssue.issue_number]) : false,
-    selectedModels: batchIssue ? issueSelectedModelsMap[batchIssue.issue_number] ?? [] : [],
-    settingsSaving: isSavingExecutionSettings,
-    readOnly: isReadOnly,
-  }), [batchIssue, isReadOnly, isSavingExecutionSettings, issueMultiModeMap, issueSelectedModelsMap]);
-
+  // The batch only starts from the earliest unmerged issue, and only while nothing runs. The client
+  // cannot see the server's execution queue, so a running issue or an unfinished predecessor may
+  // belong to a queue that already owns the pending tasks; starting a successor would bypass it.
   const handleExecuteAll = useCallback(() => {
-    if (!batchIntent.canExecute || !batchIntent.issue) return;
-    void handleImplementIssue(batchIntent.issue.issue_number, batchIntent.models);
-  }, [batchIntent, handleImplementIssue]);
+    if (hasRunningIssues || !executionIntent.canExecute || !executionIntent.issue) return;
+    void handleImplementIssue(executionIntent.issue.issue_number, executionIntent.models);
+  }, [executionIntent, handleImplementIssue, hasRunningIssues]);
+
+  const issueCount = activeIssues.length + mergedIssues.length;
 
   const handleConfirmExecutionIntent = useCallback(() => {
     if (!executionIntent.canExecute || !executionIntent.issue) return;
@@ -328,7 +325,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
               implementing={implementingIssue === issue.issue_number}
               disableImplementation={isSavingExecutionSettings || isReadOnly}
               isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
-              showImplementButton={!useEpic}
+              showImplementButton={showRowImplementButton(useEpic, issueCount)}
               onImplementWithWarning={handleImplementWithWarning}
               inheritedIsMulti={issueMultiModeMap[issue.issue_number]}
               inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
@@ -342,12 +339,12 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
       )}
       <ExecuteAllBar
         remainingCount={pendingCount}
-        taskCount={tasks.length}
+        taskCount={issueCount}
         useEpic={useEpic}
         autoMerge={autoMerge}
         hasRunningIssues={hasRunningIssues}
-        canExecute={batchIntent.canExecute}
-        unavailableReason={batchIntent.unavailableReason}
+        canExecute={executionIntent.canExecute}
+        unavailableReason={executionIntent.unavailableReason}
         executing={implementingIssue !== null}
         onExecuteAll={handleExecuteAll}
       />

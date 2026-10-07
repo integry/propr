@@ -102,11 +102,15 @@ const studioDrafts: Record<string, Record<string, unknown>> = {
   },
 };
 
+const implementRequests: string[] = [];
+
 async function fixture(page: Page) {
+  implementRequests.length = 0;
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     const path = url.pathname;
+    if (route.request().method() === 'POST' && path.endsWith('/implement')) implementRequests.push(path);
     const draftMatch = path.match(/^\/api\/planner\/drafts\/([^/]+)(\/.*)?$/);
     if (path === '/api/planner/drafts') return route.fulfill({ json: { drafts, total: drafts.length, page: 1, limit: 20, hasMore: false } });
     if (path === '/api/planner/drafts/repositories') return route.fulfill({ json: { repositories: [{ repo: repository, count: 6 }, { repo: 'integry/digvin', count: 1 }], total: 7 } });
@@ -208,7 +212,9 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
   const tabs = page.getByRole('navigation', { name: 'Plan steps' });
   await expect(tabs).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Plan outline' })).toHaveCount(0);
-  await expect(tabs.getByRole('button')).toHaveCount(3);
+  // Step tabs, not the reorder handles beside them.
+  const stepTabs = tabs.getByRole('button', { name: /^\d+\. / });
+  await expect(stepTabs).toHaveCount(3);
   await expect(tabs.getByRole('button', { name: '1. Shared Contracts' })).toHaveAttribute('aria-current', 'step');
   await expect(tabs.getByRole('button', { name: '3. Agent Run Store' })).toBeVisible();
   // Tabs share the bar instead of stopping at a fixed width and leaving the right side empty.
@@ -256,8 +262,8 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
   const tabTop = tabBox.y;
   await page.mouse.move(tabBox.x + 200, tabBox.y + 300);
   await page.mouse.wheel(0, 600);
-  await tabs.getByRole('button').nth(2).click();
-  await expect(tabs.getByRole('button').nth(2)).toHaveAttribute('aria-current', 'step');
+  await stepTabs.nth(2).click();
+  await expect(stepTabs.nth(2)).toHaveAttribute('aria-current', 'step');
   await page.waitForTimeout(800);
   expect((await tabs.boundingBox())!.y).toBe(tabTop);
   const listTop = (await page.locator('[data-task-list]').boundingBox())!.y;
@@ -270,10 +276,10 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
     return container.scrollTop + card.getBoundingClientRect().top - container.getBoundingClientRect().top;
   });
   await list.evaluate((element, top) => { element.scrollTop = top; }, task2Top);
-  await expect(tabs.getByRole('button').nth(1)).toHaveAttribute('aria-current', 'step');
+  await expect(stepTabs.nth(1)).toHaveAttribute('aria-current', 'step');
   await capture(page, 'review-plan-tabs-scroll-spy');
   await list.evaluate(element => { element.scrollTop = 0; });
-  await expect(tabs.getByRole('button').nth(0)).toHaveAttribute('aria-current', 'step');
+  await expect(stepTabs.nth(0)).toHaveAttribute('aria-current', 'step');
   await page.locator('[data-task-list]').evaluate(element => { element.scrollTop = 0; });
   await notes.scrollIntoViewIfNeeded();
   await capture(page, 'review-plan-user-notes');
@@ -309,7 +315,8 @@ test('execution step renders one matrix with batch controls and labelled ultrafi
   const matrix = page.getByTestId('plan-execution-matrix');
   await expect(matrix.getByRole('combobox')).toHaveCount(0);
   await expect(matrix.getByTestId('agent-override-chip').first()).toHaveText('Opus 5.5');
-  await expect(page.getByRole('button', { name: 'Queue Remaining (2 tasks)' })).toBeEnabled();
+  // #2798 is running and may head an active queue, so the batch must not start its successors.
+  await expect(page.getByRole('button', { name: 'Queue Remaining (2 tasks)' })).toBeDisabled();
   await capture(page, 'execution-config-popover');
   await page.keyboard.press('Escape');
   await matrix.getByTestId('agent-override-chip').first().click();
@@ -317,7 +324,7 @@ test('execution step renders one matrix with batch controls and labelled ultrafi
   await capture(page, 'execution-agent-override');
 });
 
-test('execution step for a 17-issue plan keeps the title readable and queues remaining tasks while others run', async ({ page }) => {
+test('execution step for a 17-issue plan keeps the title readable and holds the queue while others run', async ({ page }) => {
   await page.goto('/studio/plan-agents-exec');
   const matrix = page.getByTestId('plan-execution-matrix');
   await expect(matrix.getByTestId('plan-execution-row')).toHaveCount(12);
@@ -333,10 +340,12 @@ test('execution step for a 17-issue plan keeps the title readable and queues rem
   // Rows lead with the step, not "Agents v1 (6/17):".
   await expect(matrix.getByText('Report-run prompt builder with previous reports and input files', { exact: true })).toBeVisible();
   await expect(matrix.getByText(/Agents v1 \(/)).toHaveCount(0);
-  // Running issues don't block queueing the rest.
+  // Running issues may belong to an active queue that already owns the rest, so the batch waits.
   const queue = page.getByRole('button', { name: 'Queue Remaining (10 tasks)' });
-  await expect(queue).toBeEnabled();
-  await expect(page.getByTestId('execute-all-hint')).toHaveText('10 tasks will be dispatched automatically as concurrency slots become available.');
+  await expect(queue).toBeDisabled();
+  await expect(page.getByTestId('execute-all-hint')).toContainText('Issues are running.');
+  await queue.click({ force: true });
+  expect(implementRequests).toEqual([]);
   await page.waitForTimeout(500);
   await capture(page, 'execution-17-issues');
   await queue.scrollIntoViewIfNeeded();
@@ -359,3 +368,83 @@ test('define step shows technical scope estimates and consistent token units', a
   await expect(page.getByRole('navigation', { name: 'Plan phase' })).toContainText('Define');
   await capture(page, 'define-context-scope');
 });
+
+test('short plans can still be reordered from the tab bar', async ({ page }) => {
+  await page.goto('/studio/plan-short');
+  const tabs = page.getByRole('navigation', { name: 'Plan steps' });
+  const stepTabs = tabs.getByRole('button', { name: /^\d+\. / });
+  await expect(stepTabs.first()).toHaveAccessibleName('1. Shared Contracts');
+  await tabs.getByRole('listitem').nth(2).hover();
+  const handle = (await tabs.getByLabel('Reorder step 3').boundingBox())!;
+  const firstTab = (await tabs.getByRole('listitem').first().boundingBox())!;
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x - 40, handle.y + handle.height / 2, { steps: 5 });
+  await page.mouse.move(firstTab.x + 20, firstTab.y + firstTab.height / 2, { steps: 15 });
+  await page.mouse.up();
+  await expect(stepTabs.first()).toHaveAccessibleName('1. Agent Run Store');
+  await expect(stepTabs.nth(1)).toHaveAccessibleName('2. Shared Contracts');
+  await expect(page.locator('[data-task-index="0"]')).toContainText('Agent run store');
+  // Let the reordered cards finish their layout animation before capturing.
+  await page.waitForTimeout(600);
+  await capture(page, 'review-plan-tabs-reordered');
+});
+
+test('execution popovers stay inside the viewport near its bottom edge', async ({ page }) => {
+  // A laptop-height window, so the matrix scrolls and a pending row can sit at the bottom edge.
+  await page.setViewportSize({ width: 1440, height: 600 });
+  await page.goto('/studio/plan-agents-exec');
+  const matrix = page.getByTestId('plan-execution-matrix');
+  // The fifth pending row sits at the bottom of the scrolled matrix, with too little room below for the popover.
+  const chip = matrix.getByTestId('agent-override-chip').nth(4);
+  const chipBox = (await chip.boundingBox())!;
+  expect(chipBox.y + chipBox.height).toBeGreaterThan(600 - 70);
+  await chip.click();
+  const dialog = page.getByRole('dialog', { name: /Agent override for #\d+/ });
+  await expect(dialog).toBeVisible();
+  const box = (await dialog.boundingBox())!;
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(600);
+  // Flipped above the chip rather than running off the bottom of the screen.
+  expect(box.y + box.height).toBeLessThanOrEqual(chipBox.y);
+  await expect(dialog.getByRole('combobox').first()).toBeInViewport();
+  await capture(page, 'execution-agent-override-flipped');
+  await page.keyboard.press('Escape');
+
+  // On a short viewport the config popover scrolls internally instead of overflowing.
+  await page.setViewportSize({ width: 1440, height: 420 });
+  await page.getByTestId('execution-config-button').scrollIntoViewIfNeeded();
+  await page.getByTestId('execution-config-button').click();
+  const config = page.getByRole('dialog', { name: 'Execution config' });
+  await expect(config).toBeVisible();
+  const configBox = (await config.boundingBox())!;
+  expect(configBox.y).toBeGreaterThanOrEqual(0);
+  expect(configBox.y + configBox.height).toBeLessThanOrEqual(420);
+  await expect(config).toHaveCSS('overflow-y', 'auto');
+  await config.getByLabel('Max Loops').scrollIntoViewIfNeeded();
+  await expect(config.getByLabel('Max Loops')).toBeInViewport();
+  await capture(page, 'execution-config-short-viewport');
+});
+
+for (const viewport of [{ name: 'mobile', width: 390, height: 844 }, { name: 'laptop', width: 1024, height: 768 }]) {
+  test(`planner screens fit a ${viewport.name} viewport without horizontal overflow`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+
+    await page.goto('/studio/plan-short');
+    await expect(page.locator('[data-task-index="0"]')).toBeVisible();
+    expect(await overflow()).toBeLessThanOrEqual(0);
+    await capture(page, `review-plan-${viewport.name}`);
+
+    await page.goto('/studio/plan-agents-exec');
+    const matrix = page.getByTestId('plan-execution-matrix');
+    await expect(matrix.getByTestId('plan-execution-row')).toHaveCount(12);
+    expect(await overflow()).toBeLessThanOrEqual(0);
+    await expect(page.getByTestId('execution-config-button')).toBeInViewport();
+    // Each row keeps its title and action visible inside the matrix.
+    const matrixBox = (await matrix.boundingBox())!;
+    const action = (await matrix.getByTestId('action-column').first().boundingBox())!;
+    expect(action.x + action.width).toBeLessThanOrEqual(matrixBox.x + matrixBox.width + 1);
+    await capture(page, `execution-${viewport.name}`);
+  });
+}
