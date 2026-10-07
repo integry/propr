@@ -185,8 +185,21 @@ export const triggerAgentRun = (id: string, options: { idempotencyKey?: string }
     headers: { 'Idempotency-Key': options.idempotencyKey ?? crypto.randomUUID() },
   });
 
-export const listAgentRuns = (id: string, page?: Page) =>
-  request<{ runs: AgentRunRecord[]; total: number; limit: number; offset: number }>(`${definitionPath(id)}/runs${query(page)}`);
+export interface AgentRunPage {
+  runs: AgentRunRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** Where the next page starts, or null when this page reaches the end. */
+  nextOffset: number | null;
+}
+
+/** Runs newest first. */
+export const listAgentRuns = async (id: string, page?: Page): Promise<AgentRunPage> => {
+  const body = await request<Omit<AgentRunPage, 'nextOffset'> & { nextOffset?: number | null }>(`${definitionPath(id)}/runs${query(page)}`);
+  const end = body.offset + body.runs.length;
+  return { ...body, nextOffset: body.nextOffset !== undefined ? body.nextOffset : (body.runs.length > 0 && end < body.total ? end : null) };
+};
 
 export const getAgentRun = async (runId: string) =>
   (await request<{ run: AgentRunRecord }>(runPath(runId))).run;

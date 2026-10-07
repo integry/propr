@@ -237,8 +237,8 @@ const PANE_ACTION_CLASSES = 'inline-flex h-7 w-7 items-center justify-center rou
  * the list and an agent are separate pages with a "Back to list" link. The
  * selection is the URL path, so a reload or a shared link restores it.
  */
-const AgentsPage: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => {
-  const { definitionId = null } = useParams();
+const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> = ({ isNew = false, section = 'settings' }) => {
+  const { definitionId = null, runId = null } = useParams();
   const navigate = useNavigate();
   const split = useSplitViewport();
   const { isDemoMode } = useDemoMode();
@@ -282,6 +282,8 @@ const AgentsPage: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => {
     <AgentEditor
       key={definitionId ?? 'new'}
       definitionId={isNew ? null : definitionId}
+      section={runId ? 'run' : section}
+      runId={runId}
       headerControls={split ? (
         <button type="button" onClick={close} aria-label="Close agent" title="Close (Esc)" className={PANE_ACTION_CLASSES}>
           <X className="h-4 w-4" aria-hidden="true" />

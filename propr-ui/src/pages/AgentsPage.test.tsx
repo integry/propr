@@ -62,7 +62,7 @@ describe('AgentsPage', () => {
       total: 2, limit: 200, offset: 0,
     });
     vi.mocked(listAgentRuns).mockImplementation(async id => ({
-      runs: id === 'a1' ? [{ id: 'r1', state: 'completed' } as never] : [], total: 0, limit: 1, offset: 0,
+      runs: id === 'a1' ? [{ id: 'r1', state: 'completed' } as never] : [], total: 0, limit: 1, offset: 0, nextOffset: null,
     }));
     vi.mocked(getInstanceCatalog).mockResolvedValue({
       agents: [{ alias: 'claude-main', type: 'claude', enabled: true, supportedModels: ['claude-opus-4-5'] }],
@@ -316,14 +316,14 @@ describe('AgentsPage', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     setViewport(true);
     const states: Record<string, string> = { a1: 'completed', a2: 'running' };
-    vi.mocked(listAgentRuns).mockImplementation(async id => ({ runs: [{ id: `r-${id}`, state: states[id] } as never], total: 1, limit: 1, offset: 0 }));
+    vi.mocked(listAgentRuns).mockImplementation(async id => ({ runs: [{ id: `r-${id}`, state: states[id] } as never], total: 1, limit: 1, offset: 0, nextOffset: null }));
     renderAt('/agents/a1');
 
     const triage = await screen.findByRole('link', { name: /Issue triage/ });
     expect(await within(triage).findByText('Running')).toBeInTheDocument();
     states.a2 = 'awaiting_approval';
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-    expect(within(triage).getByText('Awaiting approval')).toBeInTheDocument();
+    expect(within(triage).getByText('Needs review')).toBeInTheDocument();
     states.a2 = 'completed';
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(within(triage).getByText('Completed')).toBeInTheDocument();
@@ -353,7 +353,7 @@ describe('AgentsPage', () => {
     const states: Record<string, string | null> = { a1: 'completed', a2: null };
     vi.mocked(listAgentRuns).mockImplementation(async id => {
       if (id === 'a3' && !states.a3) throw new Error('Network down');
-      return { runs: states[id] ? [{ id: `r-${id}`, state: states[id] } as never] : [], total: 1, limit: 1, offset: 0 };
+      return { runs: states[id] ? [{ id: `r-${id}`, state: states[id] } as never] : [], total: 1, limit: 1, offset: 0, nextOffset: null };
     });
     renderAt('/agents');
 
@@ -369,14 +369,14 @@ describe('AgentsPage', () => {
     Object.assign(states, { a1: 'failed', a2: 'awaiting_approval', a3: 'running' });
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(within(review).getByText('Failed')).toBeInTheDocument();
-    expect(within(triage).getByText('Awaiting approval')).toBeInTheDocument();
+    expect(within(triage).getByText('Needs review')).toBeInTheDocument();
     expect(within(docs).getByText('Running')).toBeInTheDocument();
   });
 
   it('does not let a discovery read sent before a run started overwrite that run', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     setViewport(true);
-    vi.mocked(listAgentRuns).mockResolvedValue({ runs: [{ id: 'old', state: 'completed' } as never], total: 1, limit: 1, offset: 0 });
+    vi.mocked(listAgentRuns).mockResolvedValue({ runs: [{ id: 'old', state: 'completed' } as never], total: 1, limit: 1, offset: 0, nextOffset: null });
     renderAt('/agents/a1');
     const review = await screen.findByRole('link', { name: /Dependency review/ });
     expect(await within(review).findByText('Completed')).toBeInTheDocument();
@@ -385,7 +385,7 @@ describe('AgentsPage', () => {
     vi.mocked(listAgentRuns).mockClear();
     vi.mocked(listAgentRuns).mockImplementation(async id => {
       if (id === 'a1') await new Promise<void>(resolve => { finishRead = resolve; });
-      return { runs: [{ id: 'old', state: 'completed' } as never], total: 1, limit: 1, offset: 0 };
+      return { runs: [{ id: 'old', state: 'completed' } as never], total: 1, limit: 1, offset: 0, nextOffset: null };
     });
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(listAgentRuns).toHaveBeenCalledWith('a1', { limit: 1 });
@@ -400,7 +400,7 @@ describe('AgentsPage', () => {
     let finishRead: () => void = () => undefined;
     vi.mocked(listAgentRuns).mockImplementation(async id => {
       if (id === 'a1') await new Promise<void>(resolve => { finishRead = resolve; });
-      return { runs: id === 'a1' ? [{ id: 'old', state: 'completed' } as never] : [], total: 1, limit: 1, offset: 0 };
+      return { runs: id === 'a1' ? [{ id: 'old', state: 'completed' } as never] : [], total: 1, limit: 1, offset: 0, nextOffset: null };
     });
     renderAt('/agents/a1');
     const review = await screen.findByRole('link', { name: /Dependency review/ });
@@ -414,7 +414,7 @@ describe('AgentsPage', () => {
   it('stops refreshing run states when the page unmounts', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     setViewport(true);
-    vi.mocked(listAgentRuns).mockResolvedValue({ runs: [{ id: 'r', state: 'running' } as never], total: 1, limit: 1, offset: 0 });
+    vi.mocked(listAgentRuns).mockResolvedValue({ runs: [{ id: 'r', state: 'running' } as never], total: 1, limit: 1, offset: 0, nextOffset: null });
     const { unmount } = renderAt('/agents');
     const triage = await screen.findByRole('link', { name: /Issue triage/ });
     await within(triage).findByText('Running');
