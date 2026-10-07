@@ -76,6 +76,14 @@ const agentExecutionIssues = agentExecutionPlan.map((task, index) => issue(index
 }));
 const planIssues: Record<string, unknown[]> = { 'plan-mcp-exec': executionIssues, 'plan-agents-exec': agentExecutionIssues };
 
+// Step timing for a generation trace. `startedAt` is read when the fixture is served, so a step
+// stays partway through its estimate however long the suite has been running. Completed steps
+// finish inside their estimate, or their bar turns amber as an overrun.
+const runningFor = (estimatedDuration: number, elapsedSeconds: number) => ({
+  estimatedDuration,
+  get startedAt() { return new Date(Date.now() - elapsedSeconds * 1_000).toISOString(); },
+});
+
 const studioDrafts: Record<string, Record<string, unknown>> = {
   'plan-agents-exec': {
     draft_id: 'plan-agents-exec', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
@@ -94,6 +102,30 @@ const studioDrafts: Record<string, Record<string, unknown>> = {
     draft_id: 'plan-mcp-exec', repository, name: 'Repository Search and Read MCP Tools Implementation', initial_prompt: longPrompt,
     status: 'executed', plan_json: executionPlan, context_config: { baseBranch: 'main', useEpic: false, autoMerge: true, runUltrafix: true, ultrafixGoal: 8, ultrafixMaxCycles: 5 },
     created_at: ago(5), updated_at: ago(1),
+  },
+  // Active states: generation underway (gathering context, then the LLM call) and GitHub issues being created.
+  'plan-gathering': {
+    draft_id: 'plan-gathering', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
+    status: 'generating', plan_json: [], context_config: { baseBranch: 'main', contextLevel: 100, granularity: 'granular' }, created_at: ago(5), updated_at: ago(0),
+    generation_trace: { runId: 'run-gathering', steps: [
+      { name: 'relevance', status: 'completed', data: runningFor(20_000, 18) },
+      { name: 'context', status: 'in_progress', data: runningFor(30_000, 11) },
+      { name: 'llm', status: 'pending' },
+    ] },
+  },
+  'plan-generating': {
+    draft_id: 'plan-generating', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
+    status: 'generating', plan_json: [], context_config: { baseBranch: 'main', contextLevel: 100, granularity: 'granular' }, created_at: ago(5), updated_at: ago(0),
+    generation_trace: { runId: 'run-generating', steps: [
+      { name: 'relevance', status: 'completed', data: runningFor(60_000, 55) },
+      { name: 'context', status: 'completed', data: runningFor(60_000, 45) },
+      { name: 'llm', status: 'in_progress', data: runningFor(180_000, 40) },
+    ] },
+  },
+  'plan-creating': {
+    draft_id: 'plan-creating', repository, name: 'Add an "Agents" feature to ProPR, scoped to a deliberately small v1', initial_prompt: 'Add an "Agents" feature to ProPR.',
+    status: 'executing', plan_json: agentPlan, context_config: { baseBranch: 'main', useEpic: false, autoMerge: true, runUltrafix: true, ultrafixGoal: 8, ultrafixMaxCycles: 5 },
+    created_at: ago(5), updated_at: ago(0),
   },
   'plan-setup': {
     draft_id: 'plan-setup', repository, name: 'Implement the ProPR fleet orchestration', initial_prompt: 'Implement the entire ProPR fleet orchestration as described in the plan documents. Prefer the same stack as ProPR whenever applicable.',
@@ -150,6 +182,29 @@ async function fixture(page: Page) {
       '/api/notifications/preferences': { preferences: {}, quietHours: {}, badgeEnabled: false },
     };
     return route.fulfill(path in responses ? { json: responses[path] } : { status: 503, json: { error: 'Unavailable in planner studio fixture' } });
+  });
+}
+
+/**
+ * Stands in for the socket.io server: completes the engine.io handshake and answers each
+ * `subscribe:draft` with the given `draft:update` payloads, so live progress renders without a backend.
+ */
+async function liveDraftUpdates(page: Page, updates: Record<string, Array<Record<string, unknown>>>) {
+  await page.routeWebSocket('**/socket.io/**', socket => {
+    const timers: ReturnType<typeof setInterval>[] = [];
+    socket.send(`0${JSON.stringify({ sid: 'preview', upgrades: [], pingInterval: 300_000, pingTimeout: 300_000, maxPayload: 1_000_000 })}`);
+    socket.onMessage(message => {
+      const text = String(message);
+      if (text.startsWith('40')) socket.send('40{"sid":"preview-socket"}');
+      if (!text.startsWith('42')) return;
+      const [event, draftId] = JSON.parse(text.slice(2)) as [string, string];
+      if (event !== 'subscribe:draft' || !updates[draftId]) return;
+      // Repeat like a live server does, so an update that lands before the page starts listening is not lost.
+      const send = () => { for (const payload of updates[draftId]) socket.send(`42${JSON.stringify(['draft:update', { eventType: 'draft:update', draftId, timestamp: new Date().toISOString(), ...payload }])}`); };
+      send();
+      timers.push(setInterval(send, 1_000));
+    });
+    socket.onClose(() => timers.forEach(clearInterval));
   });
 }
 
@@ -532,3 +587,85 @@ for (const viewport of [{ name: 'mobile', width: 390, height: 844 }, { name: 'la
     await capture(page, `execution-${viewport.name}`);
   });
 }
+
+const creatingIssueUpdate = {
+  step: 'execution', status: 'in_progress',
+  data: { createdCount: 6, totalCount: 17, failedCount: 0, lastCreatedIssue: { number: 2905, url: 'https://github.com/integry/propr/issues/2905', title: agentPlan[5].title } },
+};
+
+// The live trace the server pushes while a plan generates; the page starts from a placeholder trace until it arrives.
+const generationUpdate = (draftId: string) => {
+  const trace = studioDrafts[draftId].generation_trace as { runId: string; steps: Array<{ name: string; status: string }> };
+  return { step: trace.steps.find(step => step.status === 'in_progress')!.name, status: 'in_progress', runId: trace.runId, draftStatus: 'generating', generationTrace: trace };
+};
+
+for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: 'mobile', width: 390, height: 844 }]) {
+  test(`active planner states render their live progress on ${viewport.name}`, async ({ page }) => {
+    await liveDraftUpdates(page, { 'plan-gathering': [generationUpdate('plan-gathering')], 'plan-generating': [generationUpdate('plan-generating')], 'plan-creating': [creatingIssueUpdate] });
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+
+    await page.goto('/studio/plan-gathering');
+    await expect(page.getByText('Gathering Context')).toBeVisible();
+    await expect(page.getByText(/remaining$/)).toHaveCount(1);
+    await expect(page.getByText('In Progress')).toHaveCount(1);
+    await expect(page.getByText('Will analyze context and generate implementation plan')).toBeVisible();
+    expect(await overflow()).toBeLessThanOrEqual(0);
+    await page.waitForTimeout(600);
+    await capture(page, `active-gathering-context-${viewport.name}`);
+
+    await page.goto('/studio/plan-generating');
+    await expect(page.getByText('Generating Plan')).toBeVisible();
+    await expect(page.getByText(/remaining$/)).toHaveCount(1);
+    await expect(page.getByText(/^Will /)).toHaveCount(0);
+    expect(await overflow()).toBeLessThanOrEqual(0);
+    await page.waitForTimeout(600);
+    await capture(page, `active-generating-plan-${viewport.name}`);
+
+    await page.goto('/studio/plan-creating');
+    await expect(page.getByText('6/17', { exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: '#2905' })).toBeVisible();
+    expect(await overflow()).toBeLessThanOrEqual(0);
+    await page.waitForTimeout(600);
+    await capture(page, `active-creating-issues-${viewport.name}`);
+  });
+}
+
+test('planner screens on a mobile viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+
+  await page.goto('/plans');
+  await expect(page.getByText(/^Expose the repository retrieval/)).toBeVisible();
+  expect(await overflow()).toBeLessThanOrEqual(0);
+  await capture(page, 'mobile-plans-index');
+
+  await page.goto('/studio/plan-setup');
+  await expect(page.getByRole('button', { name: /Generate Plan/ })).toBeVisible();
+  expect(await overflow()).toBeLessThanOrEqual(0);
+  await capture(page, 'mobile-define');
+
+  await page.goto('/studio/plan-agents');
+  await expect(page.locator('[data-task-index="0"]')).toBeVisible();
+  expect(await overflow()).toBeLessThanOrEqual(0);
+  await capture(page, 'mobile-review-17-steps');
+
+  await page.goto('/studio/plan-mcp-exec');
+  await expect(page.getByTestId('plan-execution-matrix').getByTestId('plan-execution-row')).toHaveCount(3);
+  expect(await overflow()).toBeLessThanOrEqual(0);
+  await page.waitForTimeout(500);
+  await capture(page, 'mobile-execution-4-issues');
+  await page.getByTestId('execution-config-button').click();
+  const config = page.getByRole('dialog', { name: 'Execution config' });
+  await expect(config).toBeVisible();
+  const box = (await config.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  await capture(page, 'mobile-execution-config');
+  await page.keyboard.press('Escape');
+
+  await page.goto('/studio/plan-agents-exec');
+  const queue = page.getByRole('button', { name: 'Queue Remaining (10 tasks)' });
+  await queue.scrollIntoViewIfNeeded();
+  await capture(page, 'mobile-execution-17-issues-queue');
+});
