@@ -138,6 +138,29 @@ describe('network egress events', () => {
     expect(screen.getByText('Restricted Network')).toBeInTheDocument();
     expect(screen.getByTestId('network-egress')).toHaveTextContent('antigravity ran with open network: not verified');
   });
+
+  it('labels a run by its final outcome when a refused agent was followed by one behind the proxy', () => {
+    render(<TaskStatusTable history={[networkEvent({ source: 'instance_enforced', restrictedContainers: 1, refusals: [{ agentType: 'antigravity', reason: 'not verified' }] })]} />);
+    expect(screen.getByText('Restricted Network')).toBeInTheDocument();
+    expect(screen.queryByText('Restricted Network: Agent Refused')).not.toBeInTheDocument();
+    expect(screen.getByTestId('network-egress')).toHaveTextContent('antigravity refused (restricted mode is enforced): not verified');
+  });
+
+  it('flags allowed connections that failed upstream', () => {
+    render(<TaskStatusTable history={[networkEvent({ restrictedContainers: 1, failedConnections: 2, failedHosts: [{ host: 'api.example.com', count: 2 }] })]} />);
+    expect(screen.getByTestId('network-egress')).toHaveTextContent('2 allowed connections failed upstream: api.example.com × 2');
+    expect(screen.getByLabelText('Network policy needs attention')).toBeInTheDocument();
+  });
+
+  it('says so when no agent container started', () => {
+    render(<TaskStatusTable history={[networkEvent({ restrictedContainers: 0 })]} />);
+    expect(screen.getByText('Restricted Network: No Agent Container Started')).toBeInTheDocument();
+  });
+
+  it('still labels a run whose only agent was refused', () => {
+    render(<TaskStatusTable history={[networkEvent({ source: 'instance_enforced', restrictedContainers: 0, refusals: [{ agentType: 'antigravity', reason: 'not verified' }] })]} />);
+    expect(screen.getByText('Restricted Network: Agent Refused')).toBeInTheDocument();
+  });
 });
 
 describe('TaskStatusTable replacement events', () => {

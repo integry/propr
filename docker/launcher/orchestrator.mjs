@@ -1058,6 +1058,8 @@ export function buildServiceSpec(cfg, service) {
         case 'indexing-worker':
             return appSpec(cfg, ['dist/src/indexing_worker.js'], [
                 '-v', '/tmp/claude-logs:/tmp/claude-logs',
+                // Summarization containers follow the restricted network policy too.
+                '-v', '/tmp/propr-egress:/tmp/propr-egress',
                 '-e', `INDEXING_SCAN_INTERVAL_MS=${cfg.indexingScanInterval}`,
                 '-e', `INDEXING_REINDEX_INTERVAL_MS=${cfg.indexingReindexInterval}`,
                 ...managedCredentialArgs(cfg),

@@ -37,6 +37,12 @@ export const NetworkEgressDetail: React.FC<{ metadata?: HistoryItem['metadata'] 
         </ul>
       )}
       {otherHosts > 0 && <div className="text-red-700">{`+${otherHosts} more ${otherHosts === 1 ? 'host' : 'hosts'} (${otherAttempts} ${otherAttempts === 1 ? 'attempt' : 'attempts'})`}</div>}
+      {!!network.failedConnections && (
+        <div className="text-amber-700">
+          {`${network.failedConnections} allowed ${network.failedConnections === 1 ? 'connection' : 'connections'} failed upstream`}
+          {network.failedHosts?.length ? `: ${network.failedHosts.slice(0, NETWORK_DENIED_HOSTS_SHOWN).map(entry => `${entry.host} × ${entry.count}`).join(', ')}` : ''}
+        </div>
+      )}
     </div>
   );
 };

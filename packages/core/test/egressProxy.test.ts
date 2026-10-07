@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { compileEgressAllowlist, parseEgressAllowEntry, baseEgressAllowlist, validateEgressAllowlist } from '../src/network/egressAllowlist.js';
-import { EgressDenialRecorder, parseAuthority, startEgressProxy } from '../src/network/egressProxy.js';
+import { EgressDenialRecorder, bypassesUpstreamProxy, parseAuthority, startEgressProxy, upstreamProxiesFromEnv } from '../src/network/egressProxy.js';
 
 const directories: string[] = [];
 after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true }))); });
@@ -251,6 +251,163 @@ test('an unfinished plain HTTP response ends its upstream when the client leaves
         await proxy.close();
         server.closeAllConnections();
         await new Promise(resolve => server.close(resolve));
+    }
+});
+
+test('a plain HTTP response the upstream drops mid-body ends the client response as interrupted', async () => {
+    const closeRequests = await Promise.all(['length', 'chunked'].map(async framing => {
+        const upstream = await upstreamServer(socket => socket.once('data', () => {
+            const head = framing === 'length' ? 'Content-Length: 1000\r\n' : 'Transfer-Encoding: chunked\r\n';
+            const body = framing === 'length' ? 'partial body' : 'c\r\npartial body\r\n';
+            socket.write(`HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n${head}\r\n${body}`, () => setTimeout(() => socket.destroy(), 50));
+        }));
+        const proxy = await startEgressProxy({
+            socketPath: await socketPath(),
+            allowlist: compileEgressAllowlist([`flaky.example.com:${upstream.port}`]),
+            connect: (targetPort) => net.connect({ port: targetPort, host: '127.0.0.1' }),
+        });
+        try {
+            const outcome = await Promise.race([
+                new Promise<string>(resolve => {
+                    const outgoing = http.request({ socketPath: proxy.socketPath, path: `http://flaky.example.com:${upstream.port}/download` }, response => {
+                        let body = '';
+                        response.on('data', chunk => { body += chunk; });
+                        response.on('end', () => resolve(`completed:${body}`));
+                        response.on('error', () => resolve(`interrupted:${body}`));
+                    });
+                    outgoing.on('error', () => resolve('interrupted:'));
+                    outgoing.end();
+                }),
+                new Promise<string>(resolve => setTimeout(() => resolve('hung'), 2000).unref()),
+            ]);
+            assert.match(outcome, /^interrupted:/, `${framing}: the client must see the transfer fail promptly, got ${outcome}`);
+        } finally {
+            await proxy.close();
+        }
+        return upstream.close;
+    }));
+    await Promise.all(closeRequests.map(close => close()));
+});
+
+test('the worker proxy variables and NO_PROXY decide which allowed connections chain through the worker proxy', () => {
+    const proxies = upstreamProxiesFromEnv({ HTTPS_PROXY: 'http://user:p%40ss@corp.example.com:3128', http_proxy: 'corp-http.example.com:8080', NO_PROXY: 'internal.example.com, .svc.local,mirror.example.com:8443,' });
+    assert.equal(proxies.https?.href, 'http://user:p%40ss@corp.example.com:3128/');
+    assert.equal(proxies.http?.href, 'http://corp-http.example.com:8080/', 'a scheme-less value is an http proxy');
+    assert.deepEqual(proxies.noProxy, ['internal.example.com', '.svc.local', 'mirror.example.com:8443']);
+    assert.equal(upstreamProxiesFromEnv({ HTTP_PROXY: 'http://only-http.example.com:3128' }).https?.hostname, 'only-http.example.com', 'tunnels fall back to the HTTP proxy');
+    assert.deepEqual(upstreamProxiesFromEnv({ HTTPS_PROXY: 'socks5://x:1080' }), { http: undefined, https: undefined, noProxy: [] }, 'only HTTP(S) proxies can carry CONNECT');
+    assert.ok(bypassesUpstreamProxy('internal.example.com', 443, proxies.noProxy));
+    assert.ok(bypassesUpstreamProxy('git.internal.example.com', 443, proxies.noProxy));
+    assert.ok(bypassesUpstreamProxy('api.svc.local', 80, proxies.noProxy));
+    assert.ok(bypassesUpstreamProxy('mirror.example.com', 8443, proxies.noProxy));
+    assert.ok(!bypassesUpstreamProxy('mirror.example.com', 443, proxies.noProxy), 'an entry with a port bypasses only that port');
+    assert.ok(!bypassesUpstreamProxy('notinternal.example.com', 443, proxies.noProxy));
+    assert.ok(bypassesUpstreamProxy('anything.example.org', 443, ['*']));
+});
+
+/** A worker-side proxy that accepts CONNECT (checking credentials) and absolute-form HTTP, recording what it saw. */
+async function workerProxyServer(targetPort: number, options: { refuse?: boolean } = {}) {
+    const seen: string[] = [];
+    const server = http.createServer((request, response) => {
+        seen.push(`${request.method} ${request.url} ${request.headers['proxy-authorization'] ?? 'no-auth'}`);
+        response.writeHead(200, { 'Content-Type': 'text/plain' }).end('via-worker-proxy');
+    });
+    server.on('connect', (request: http.IncomingMessage, socket: net.Socket) => {
+        seen.push(`CONNECT ${request.url} ${request.headers['proxy-authorization'] ?? 'no-auth'}`);
+        if (options.refuse) { socket.end('HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n'); return; }
+        const target = net.connect({ port: targetPort, host: '127.0.0.1' }, () => {
+            socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            target.pipe(socket);
+            socket.pipe(target);
+        });
+        target.on('error', () => socket.destroy());
+        socket.on('error', () => target.destroy());
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    return {
+        seen, port: (server.address() as net.AddressInfo).port,
+        close: () => { server.closeAllConnections(); return new Promise<void>(resolve => server.close(() => resolve())); },
+    };
+}
+
+test('allowed connections chain through the worker proxy, honouring NO_PROXY, and its refusals are recorded as failures', async () => {
+    const upstream = await upstreamServer(socket => socket.on('data', () => socket.write('upstream-reply')));
+    const workerProxy = await workerProxyServer(upstream.port);
+    const refusingProxy = await workerProxyServer(upstream.port, { refuse: true });
+    const connected: string[] = [];
+    const start = async (proxyPort: number) => startEgressProxy({
+        socketPath: await socketPath(),
+        allowlist: compileEgressAllowlist(['api.example.com', 'direct.example.com:' + upstream.port, 'plain.example.com']),
+        connect: (port, host) => { connected.push(`${host}:${port}`); return net.connect({ port, host: '127.0.0.1' }); },
+        upstreamProxies: { http: new URL(`http://user:secret@127.0.0.1:${proxyPort}`), https: new URL(`http://user:secret@127.0.0.1:${proxyPort}`), noProxy: ['direct.example.com'] },
+    });
+    const proxy = await start(workerProxy.port);
+    const refused = await start(refusingProxy.port);
+    const basic = `Basic ${Buffer.from('user:secret').toString('base64')}`;
+    try {
+        const chained = await connectThrough(proxy.socketPath, 'api.example.com:443');
+        assert.equal(chained.status, 'HTTP/1.1 200 Connection Established');
+        chained.socket.write('hello');
+        assert.match(await readMore(chained.socket, chained.rest, 'upstream-reply'), /upstream-reply/);
+        chained.socket.destroy();
+        assert.deepEqual(workerProxy.seen, [`CONNECT api.example.com:443 ${basic}`], 'the worker proxy receives the allowed authority with its credentials');
+
+        const direct = await connectThrough(proxy.socketPath, `direct.example.com:${upstream.port}`);
+        assert.equal(direct.status, 'HTTP/1.1 200 Connection Established');
+        direct.socket.destroy();
+        assert.equal(workerProxy.seen.length, 1, 'a NO_PROXY host is reached directly');
+        assert.deepEqual(connected, [`127.0.0.1:${workerProxy.port}`, `direct.example.com:${upstream.port}`]);
+
+        const plain = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+            const outgoing = http.request({ socketPath: proxy.socketPath, path: 'http://plain.example.com/simple/' }, response => {
+                let body = '';
+                response.on('data', chunk => { body += chunk; });
+                response.on('end', () => resolve({ status: response.statusCode ?? 0, body }));
+            });
+            outgoing.on('error', reject);
+            outgoing.end();
+        });
+        assert.deepEqual(plain, { status: 200, body: 'via-worker-proxy' });
+        assert.equal(workerProxy.seen[1], `GET http://plain.example.com/simple/ ${basic}`, 'plain HTTP keeps its absolute form through the worker proxy');
+        assert.equal(proxy.stats().failedConnections, 0);
+
+        const blocked = await connectThrough(refused.socketPath, 'api.example.com:443');
+        assert.equal(blocked.status, 'HTTP/1.1 502 Bad Gateway');
+        blocked.socket.destroy();
+        const stats = refused.stats();
+        assert.equal(stats.allowedConnections, 1);
+        assert.equal(stats.failedConnections, 1, 'an allowed connection the worker proxy refused is not silently counted as a success');
+        assert.deepEqual(stats.failedHosts, [{ host: 'api.example.com', count: 1 }]);
+    } finally {
+        await proxy.close();
+        await refused.close();
+        await workerProxy.close();
+        await refusingProxy.close();
+        await upstream.close();
+    }
+});
+
+test('an allowed host that cannot be reached is answered 502 and recorded as a failed connection', async () => {
+    const closed = await upstreamServer(socket => socket.destroy());
+    await closed.close();
+    const proxy = await startEgressProxy({
+        socketPath: await socketPath(),
+        allowlist: compileEgressAllowlist([`down.example.com:${closed.port}`]),
+        connect: (port) => net.connect({ port, host: '127.0.0.1' }),
+    });
+    try {
+        const tunnel = await connectThrough(proxy.socketPath, `down.example.com:${closed.port}`);
+        assert.equal(tunnel.status, 'HTTP/1.1 502 Bad Gateway');
+        tunnel.socket.destroy();
+        const status = await new Promise<number>((resolve, reject) => {
+            const outgoing = http.request({ socketPath: proxy.socketPath, path: `http://down.example.com:${closed.port}/` }, response => { response.resume(); resolve(response.statusCode ?? 0); });
+            outgoing.on('error', reject);
+            outgoing.end();
+        });
+        assert.equal(status, 502);
+        assert.deepEqual(proxy.stats().failedHosts, [{ host: `down.example.com:${closed.port}`, count: 2 }]);
+    } finally {
+        await proxy.close();
     }
 });
 

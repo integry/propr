@@ -72,6 +72,9 @@ export interface NetworkEgressSummary {
   deniedHosts: Array<{ host: string; count: number }>;
   omittedDeniedHosts?: number;
   omittedDeniedAttempts?: number;
+  /** Allowed connections that could not be reached upstream. */
+  failedConnections?: number;
+  failedHosts?: Array<{ host: string; count: number }>;
 }
 
 export interface HistoryItemMetadata {

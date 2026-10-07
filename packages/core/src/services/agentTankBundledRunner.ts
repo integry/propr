@@ -398,7 +398,11 @@ async function runBundledAgentTank(): Promise<BundledRunResult | undefined> {
                 'sh', '-c', CONFIG_BOOTSTRAP, 'propr-agent-tank', CONTAINER_CONFIG_FILE,
                 // A usage probe runs around agent calls, possibly inside a capped
                 // run, but spends nothing: a run stopped at its cap still reads usage.
-            ], { timeout: timeoutMs(), costCapExempt: true });
+            ], {
+                timeout: timeoutMs(), costCapExempt: true,
+                // Read-only credential mounts and ProPR's own probe, never repository or agent code.
+                networkPolicyExempt: 'Agent Tank usage probe runs only ProPR code and reads provider usage APIs',
+            });
 
             if (result.exitCode === 0) {
                 return { agents: parseBundledAgentTankOutput(result.stdout || ''), aliases };

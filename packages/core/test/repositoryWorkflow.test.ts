@@ -121,6 +121,10 @@ test('published editor schema agrees with runtime on supported fields and reject
         { limits: { max_cost: 5 } },
         { network: { mode: 'restricted', allow: ['registry.npmjs.org', '*.internal.example.com', 'git.example.com:8443'] } }, { network: { mode: 'open' } }, { network: {} },
         { network: { mode: 'closed' } }, { network: { allow: ['*'] } }, { network: { allow: ['*.com'] } }, { network: { allow: 'registry.npmjs.org' } }, { network: { proxy: 'x' } },
+        // Hostname entries the runtime rejects are flagged in the editor too.
+        ...['example', 'localhost', '-bad.example.com', 'bad-.example.com', 'example.com:70000', 'example.com:0', 'a*.example.com', 'bad_host.example.com',
+            'example..com', `${'a'.repeat(64)}.example.com`, '[::1]:70000', ':::'].map(entry => ({ network: { allow: [entry] } })),
+        ...['10.0.0.5', '[::1]:8080', 'fe80::1', 'Example.COM.', 'example.com:65535', '*.example.com:8443', ' registry.example.com '].map(entry => ({ network: { allow: [entry] } })),
         { network: 'host' }, { hooks: { timeout_ms: -1 } }, { instructions: '../oops' }, { instructions: 'a//b' },
         { validation: [null] }, { limits: { max_parallel_tasks: 1.5 } }, { previews: { types: ['image', 'image'] } },
         // Path checks must cross embedded newlines like the runtime check does.

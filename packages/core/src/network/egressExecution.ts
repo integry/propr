@@ -6,7 +6,7 @@ import path from 'node:path';
 import logger from '../utils/logger.js';
 import type { AgentType } from '../agents/types.js';
 import { AGENT_EGRESS_PROXY_SUPPORT, baseEgressAllowlist, compileEgressAllowlist } from './egressAllowlist.js';
-import { EgressDenialRecorder, startEgressProxy, type EgressProxy, type EgressProxyStats } from './egressProxy.js';
+import { EgressDenialRecorder, startEgressProxy, upstreamProxiesFromEnv, type EgressProxy, type EgressProxyStats } from './egressProxy.js';
 import type { AgentNetworkMode, ResolvedNetworkPolicy } from './networkPolicy.js';
 
 /**
@@ -138,25 +138,44 @@ else
 fi
 `.trim();
 
-/** Synchronous check, so commands outside a restricted run start exactly as before. */
-export function dockerRunNeedsNetworkPolicy(command: string, args: string[]): boolean {
+/** Indices of every `--network`/`--net` option (either `--network x` or `--network=x`) and their values. */
+function dockerRunNetworkOptions(args: string[]): Array<{ index: number; value: string; inline: boolean }> {
+    return args.flatMap((arg, index) => {
+        const match = /^--net(?:work)?(?:=(.*))?$/.exec(arg);
+        if (!match) return [];
+        return [match[1] !== undefined ? { index, value: match[1], inline: true } : { index, value: args[index + 1] ?? '', inline: false }];
+    });
+}
+
+/**
+ * Synchronous check, so commands outside a restricted run start exactly as
+ * before. Inside one, every `docker run` is subject to the policy unless it
+ * already has no network (`--network none`) or its caller exempts it with a
+ * reason: the default network, `bridge`, `host` and custom networks all reach
+ * the internet. `exemptReason` is for containers that run only ProPR's own code.
+ */
+export function dockerRunNeedsNetworkPolicy(command: string, args: string[], exemptReason?: string): boolean {
     const context = networkEgressExecution.getStore();
     if (!context || context.policy.mode !== 'restricted' || !/(?:^|\/)docker$/.test(command) || args[0] !== 'run') return false;
-    const networkIndex = args.indexOf('--network');
-    return networkIndex >= 0 && args[networkIndex + 1] === 'bridge';
+    const networks = dockerRunNetworkOptions(args);
+    if (networks.length > 0 && networks.every(option => option.value === 'none')) return false;
+    if (exemptReason) {
+        logger.debug({ reason: exemptReason }, 'Container exempt from the restricted network policy');
+        return false;
+    }
+    return true;
 }
 
 export interface PreparedEgressRun { args: string[]; release(): Promise<void> }
 
 /**
  * Applies the current run's network policy to one `docker run` of an agent
- * container. Returns undefined when nothing changes (open mode, no policy, or
- * a container that is not an agent container on the bridge network).
+ * container. Returns undefined when nothing changes (open mode, no policy, a
+ * container already without a network, or one exempted with a reason).
  */
-export async function prepareDockerRunNetwork(command: string, args: string[]): Promise<PreparedEgressRun | undefined> {
+export async function prepareDockerRunNetwork(command: string, args: string[], exemptReason?: string): Promise<PreparedEgressRun | undefined> {
     const context = networkEgressExecution.getStore();
-    if (!context || !dockerRunNeedsNetworkPolicy(command, args)) return undefined;
-    const networkIndex = args.indexOf('--network');
+    if (!context || !dockerRunNeedsNetworkPolicy(command, args, exemptReason)) return undefined;
     const agentType = envValue(args, 'PROPR_AGENT_TYPE');
     const entrypointIndex = args.indexOf('--entrypoint');
     const scriptIndex = entrypointIndex < 0 ? 0 : args.indexOf('-lc', entrypointIndex) + 1;
@@ -181,13 +200,18 @@ export async function prepareDockerRunNetwork(command: string, args: string[]): 
     ownedDirectories.add(id);
     let proxy: EgressProxy;
     try {
-        await fs.mkdir(directory, { recursive: true, mode: 0o755 });
-        await fs.chmod(directory, 0o755);
+        // Traversable but not listable, so other local accounts cannot enumerate
+        // run sockets; the container's own user only needs to reach a known path.
+        await fs.mkdir(directory, { recursive: true, mode: 0o711 });
+        await fs.chmod(roots.local, 0o711).catch(() => undefined);
+        await fs.chmod(directory, 0o711);
         await fs.writeFile(path.join(directory, OWNER_FILE), JSON.stringify({ hostname: os.hostname(), pid: process.pid, createdAt: new Date().toISOString() }));
         proxy = await startEgressProxy({
             socketPath: path.join(directory, SOCKET_NAME),
             allowlist: compileEgressAllowlist([...baseEgressAllowlist(agentType as AgentType), ...context.policy.allow]),
             recorder: context.recorder,
+            // A worker that reaches the internet only through its own proxy chains through it.
+            upstreamProxies: upstreamProxiesFromEnv(),
         });
     } catch (error) {
         await fs.rm(directory, { recursive: true, force: true });
@@ -198,11 +222,13 @@ export async function prepareDockerRunNetwork(command: string, args: string[]): 
     context.restrictedContainers++;
 
     let rewritten = [...args];
-    rewritten[networkIndex + 1] = 'none';
     rewritten[scriptIndex] = `${EGRESS_BRIDGE_PRELUDE}\n${rewritten[scriptIndex]}`;
-    const [, ...options] = withGitProxyConfig(withoutProxyEnv(rewritten.slice(0, entrypointIndex)));
+    // Whatever network the caller named (or the default it left implicit) is replaced by none.
+    const networkArgs = new Set(dockerRunNetworkOptions(rewritten.slice(0, entrypointIndex)).flatMap(option => option.inline ? [option.index] : [option.index, option.index + 1]));
+    const [, ...options] = withGitProxyConfig(withoutProxyEnv(rewritten.slice(0, entrypointIndex).filter((_arg, index) => !networkArgs.has(index))));
     rewritten = [
         'run', ...options,
+        '--network', 'none',
         '-v', `${path.join(roots.host, id)}:${EGRESS_CONTAINER_SOCKET_DIR}:ro`,
         '-e', 'PROPR_NETWORK_MODE=restricted',
         ...[['HTTP_PROXY', PROXY_URL], ['HTTPS_PROXY', PROXY_URL], ['http_proxy', PROXY_URL], ['https_proxy', PROXY_URL], ['NO_PROXY', NO_PROXY], ['no_proxy', NO_PROXY]]
@@ -215,7 +241,9 @@ export async function prepareDockerRunNetwork(command: string, args: string[]): 
         release: () => released ??= proxy.close()
             .catch(error => logger.warn({ error: (error as Error).message }, 'Failed to close egress proxy'))
             .finally(() => { activeProxies.delete(id); })
+            // Cleanup never replaces the container's own result; the sweeper removes what is left.
             .then(() => fs.rm(directory, { recursive: true, force: true }))
+            .catch(error => logger.warn({ directory, error: (error as Error).message }, 'Failed to remove egress proxy directory'))
             .finally(() => { ownedDirectories.delete(id); }),
     };
 }

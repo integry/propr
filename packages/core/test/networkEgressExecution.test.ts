@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
-import { after, before, test } from 'node:test';
+import { after, before, mock, test } from 'node:test';
+import { EventEmitter } from 'node:events';
+import type { ChildProcess } from 'node:child_process';
+import fsPromises from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { resolveInstanceNetworkPolicy, resolveNetworkPolicy, validateAgentNetworkSetting, type ResolvedNetworkPolicy } from '../src/network/networkPolicy.js';
 import {
-    EGRESS_BRIDGE_PRELUDE, EGRESS_ORPHAN_MAX_AGE_MS, NetworkPolicyError, executeWithNetworkPolicy, networkEgressReportFromError,
+    EGRESS_BRIDGE_PRELUDE, EGRESS_ORPHAN_MAX_AGE_MS, NetworkPolicyError, dockerRunNeedsNetworkPolicy, executeWithNetworkPolicy, networkEgressReportFromError,
     prepareDockerRunNetwork, sweepOrphanedEgressProxies,
 } from '../src/network/egressExecution.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../src/claude/docker/repoSetupWrapper.js';
+import { spawnWithNetworkPolicy } from '../src/claude/docker/dockerNetworkPolicy.js';
+import { runWithExecutionAbortSignal } from '../src/claude/docker/dockerExecutionOwnership.js';
 import { buildAgentGitCredentialArgs } from '../src/agents/agentGitAccess.js';
 import type { AgentType } from '../src/agents/types.js';
 import { closeConnection } from '../src/db/connection.js';
@@ -78,6 +83,8 @@ test('a restricted run starts its agent container without a network, behind its 
         const directories = (await import('node:fs/promises')).readdir(root);
         const [id] = await directories;
         assert.ok(existsSync(path.join(root, id, 'proxy.sock')), 'the proxy listens while the container runs');
+        assert.equal((await stat(path.join(root, id))).mode & 0o777, 0o711, 'other local accounts cannot list the run directory');
+        assert.equal((await stat(root)).mode & 0o777, 0o711, 'nor enumerate run directories');
         await run.release();
         assert.ok(!existsSync(path.join(root, id)), 'the proxy and its directory go with the container');
         return run;
@@ -164,5 +171,75 @@ test('the sweep never removes a directory whose proxy is still serving, however 
             await run.release();
         }
         assert.ok(!existsSync(directory));
+    });
+});
+
+test('every docker run in a restricted run is policy-bearing unless it has no network or is exempted with a reason', async () => {
+    const withoutNetwork = agentRunArgs().filter((arg, index, all) => arg !== '--network' && all[index - 1] !== '--network');
+    const inline = agentRunArgs().map(arg => arg === '--network' ? '--network=bridge' : arg).filter((arg, index, all) => all[index - 1] !== '--network=bridge');
+    const host = agentRunArgs().map((arg, index, all) => all[index - 1] === '--network' ? 'host' : arg);
+    const { report } = await executeWithNetworkPolicy(restricted(), async () => {
+        for (const args of [withoutNetwork, inline, host]) {
+            assert.ok(dockerRunNeedsNetworkPolicy('docker', args), args.join(' '));
+            const run = await prepareDockerRunNetwork('docker', args);
+            assert.ok(run, 'the container is started behind the proxy');
+            await run.release();
+            const networks = run.args.flatMap((arg, index) => arg === '--network' ? [run.args[index + 1]] : arg.startsWith('--network=') || arg.startsWith('--net=') ? [arg] : []);
+            assert.deepEqual(networks, ['none'], 'whatever network was named (or implied) is replaced by none');
+        }
+        assert.ok(!dockerRunNeedsNetworkPolicy('docker', ['run', '--rm', '--network=none', 'img']));
+        // A trusted probe keeps its network deliberately and is neither proxied nor reported.
+        const probe = ['run', '--rm', '-e', 'PROPR_AGENT_TYPE=agent-tank', 'img', 'sh', '-c', 'probe'];
+        assert.ok(!dockerRunNeedsNetworkPolicy('docker', probe, 'usage probe runs only ProPR code'));
+        assert.equal(await prepareDockerRunNetwork('docker', probe, 'usage probe runs only ProPR code'), undefined);
+        // Without that reason the same container is no longer silently open.
+        assert.equal(await prepareDockerRunNetwork('docker', probe), undefined);
+    });
+    assert.equal(report.restrictedContainers, 3);
+    assert.deepEqual(report.fallbacks, [{ agentType: 'agent-tank', reason: 'container does not identify a supported agent' }]);
+    const refused = await executeWithNetworkPolicy(restricted({ source: 'instance_enforced' }), () => prepareDockerRunNetwork('docker', ['run', '--rm', 'img']))
+        .then(() => assert.fail('expected refusal'), (caught: unknown) => caught);
+    assert.ok(refused instanceof NetworkPolicyError, 'an enforced run refuses a container on the default network');
+});
+
+test('a failed directory removal on release is logged, never replacing the container result', async () => {
+    await executeWithNetworkPolicy(restricted(), async () => {
+        const before = new Set(await readdir(root));
+        const run = await prepareDockerRunNetwork('docker', agentRunArgs());
+        assert.ok(run);
+        const id = (await readdir(root)).find(entry => !before.has(entry))!;
+        const rm = mock.method(fsPromises, 'rm', async () => { throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' }); });
+        try {
+            await run.release();
+        } finally {
+            rm.mock.restore();
+        }
+        assert.equal(rm.mock.callCount() >= 1, true);
+        // The sweeper owns what is left once the run no longer serves it.
+        assert.equal((await sweepOrphanedEgressProxies({ root })).removed, 1);
+        assert.ok(!existsSync(path.join(root, id)));
+    });
+});
+
+test('a directly spawned agent container keeps its proxy until the process closes', async () => {
+    const spawned: string[][] = [];
+    const fakeChild = () => Object.assign(new EventEmitter(), { kill() { return true; } }) as unknown as ChildProcess;
+    await executeWithNetworkPolicy(restricted(), async () => {
+        const before = new Set(await readdir(root));
+        let child: ChildProcess | undefined;
+        child = await spawnWithNetworkPolicy(agentRunArgs(), args => { spawned.push(args); return child = fakeChild(); });
+        const id = (await readdir(root)).find(entry => !before.has(entry))!;
+        assert.ok(spawned[0].includes('none') && spawned[0].some(arg => arg.endsWith(':/run/propr-egress:ro')), 'spawned with the rewritten arguments');
+        assert.ok(existsSync(path.join(root, id, 'proxy.sock')));
+        child.emit('close', 0);
+        for (let attempt = 0; attempt < 50 && existsSync(path.join(root, id)); attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+        assert.ok(!existsSync(path.join(root, id)), 'the proxy goes with the process');
+
+        const controller = new AbortController();
+        const pending = runWithExecutionAbortSignal(controller.signal,
+            () => spawnWithNetworkPolicy(agentRunArgs(), () => { throw new Error('must not spawn after cancellation'); }));
+        controller.abort(new Error('aborted by user'));
+        await assert.rejects(pending);
+        assert.deepEqual(new Set(await readdir(root)), before, 'a cancelled spawn releases its proxy');
     });
 });

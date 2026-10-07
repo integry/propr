@@ -1,0 +1,73 @@
+name: Restricted Network Container Smoke
+
+# Runs the Docker-gated restricted-network tests that the regular suites skip:
+# a real agent container behind its per-run egress proxy (socket mount, bridge
+# startup, allow/deny), and each supported agent CLI reaching its provider
+# through that proxy. Hosted Linux runners have Docker; the published agent
+# image carries the entrypoints, and the wrapper and bridge come from this
+# checkout at run time.
+
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+    inputs:
+      agent_image:
+        description: 'Agent image to test'
+        required: true
+        default: 'propr/agent:latest'
+        type: string
+  pull_request:
+    paths:
+      - 'packages/core/src/network/**'
+      - 'packages/core/src/claude/docker/dockerNetworkPolicy.ts'
+      - 'packages/core/src/claude/docker/repoSetupWrapper.ts'
+      - 'packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts'
+      - 'scripts/*-entrypoint.sh'
+      - 'test/egressProxyContainerSmoke.test.ts'
+      - 'test/agentProviderEgress.test.ts'
+      - '.github/workflows/restricted-network-smoke.yml'
+
+concurrency:
+  group: restricted-network-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  container-smoke:
+    name: Restricted network container smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_ENV: test
+      PROPR_TEST_AGENT_IMAGE: ${{ inputs.agent_image || 'propr/agent:latest' }}
+      # Missing Docker or image is a failure here, not a skipped test.
+      PROPR_TEST_REQUIRE_DOCKER: '1'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build workspace packages
+        run: npm run test:prepare
+
+      - name: Pull agent image
+        run: docker pull "$PROPR_TEST_AGENT_IMAGE"
+
+      - name: Proxy, socket mount and bridge in a real container
+        run: npx tsx --test test/egressProxyContainerSmoke.test.ts
+
+      - name: Agent provider transports through the proxy
+        run: npx tsx --test test/agentProviderEgress.test.ts

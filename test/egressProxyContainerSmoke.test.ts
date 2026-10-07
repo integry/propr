@@ -13,14 +13,17 @@ import { closeConnection } from '../packages/core/src/db/connection.js';
 
 // Runs a real agent image in restricted mode, so it needs Docker on this host
 // (the socket directory must be a path the Docker daemon can bind-mount) and an
-// image name, e.g. PROPR_TEST_AGENT_IMAGE=propr-agent:latest. Otherwise skipped.
+// image name, e.g. PROPR_TEST_AGENT_IMAGE=propr-agent:latest. Otherwise skipped,
+// unless PROPR_TEST_REQUIRE_DOCKER=1 (the CI job), which makes that a failure.
 const image = process.env.PROPR_TEST_AGENT_IMAGE;
-const skip = !image ? 'set PROPR_TEST_AGENT_IMAGE to a supported agent image'
-    : spawnSync('docker', ['version'], { stdio: 'ignore' }).status !== 0 ? 'docker is needed for the container smoke test' : false;
+const missing = !image ? 'set PROPR_TEST_AGENT_IMAGE to a supported agent image'
+    : spawnSync('docker', ['version'], { stdio: 'ignore' }).status !== 0 ? 'docker is needed for the container smoke test' : undefined;
+const skip = missing && process.env.PROPR_TEST_REQUIRE_DOCKER !== '1' ? missing : false;
 
 after(closeConnection);
 
 test('a restricted container reaches an allowed host only through the proxy and nothing else', { skip, timeout: 300_000 }, async () => {
+    assert.ok(!missing, missing);
     const socketRoot = await mkdtemp(path.join(tmpdir(), 'propr-egress-smoke-'));
     const previous = process.env.PROPR_EGRESS_SOCKET_DIR;
     process.env.PROPR_EGRESS_SOCKET_DIR = socketRoot;

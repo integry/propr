@@ -6,13 +6,20 @@ import type { Logger } from 'pino';
 export function networkEgressEvent(report: NetworkEgressReport): { reason: string; metadata: Record<string, unknown> } {
     const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
     const deniedHosts = report.deniedHosts.length + report.omittedDeniedHosts;
+    const agents = (entries: NetworkEgressReport['fallbacks']) => [...new Set(entries.map(entry => entry.agentType))].join(', ');
     let reason: string;
+    // A run is labelled by what its containers finally did: a refusal or fallback
+    // followed by a container behind the proxy is listed in the details instead.
     if (report.mode === 'open') reason = 'Open network';
-    else if (report.refusals?.length) reason = `Restricted network enforced: refused ${[...new Set(report.refusals.map(entry => entry.agentType))].join(', ')}`;
-    else if (report.restrictedContainers === 0 && report.fallbacks.length) {
-        reason = `Restricted network unavailable for ${[...new Set(report.fallbacks.map(entry => entry.agentType))].join(', ')}; ran with open network`;
-    } else if (report.deniedConnections) reason = `Restricted network: denied ${plural(report.deniedConnections, 'connection')} to ${plural(deniedHosts, 'host')}`;
-    else reason = 'Restricted network: no connections denied';
+    else if (report.restrictedContainers > 0) {
+        reason = report.deniedConnections
+            ? `Restricted network: denied ${plural(report.deniedConnections, 'connection')} to ${plural(deniedHosts, 'host')}`
+            : 'Restricted network: no connections denied';
+        // Allowed but unreachable (for example through a worker proxy that refused them).
+        if (report.failedConnections) reason += `; ${plural(report.failedConnections, 'allowed connection')} failed`;
+    } else if (report.refusals?.length) reason = `Restricted network enforced: refused ${agents(report.refusals)}`;
+    else if (report.fallbacks.length) reason = `Restricted network unavailable for ${agents(report.fallbacks)}; ran with open network`;
+    else reason = 'Restricted network: no agent container started';
     return { reason, metadata: { event: 'network.egress', networkEgress: report } };
 }
 
@@ -48,22 +55,28 @@ export async function resolveRunNetworkPolicy(workflow?: ResolvedRepositoryWorkf
 /**
  * Runs one execution under its network policy and records the aggregated
  * result (mode, fallbacks and every denied host) once the containers are gone,
- * whether the execution succeeded or failed.
+ * whether the execution succeeded or failed. Work without a task (indexing)
+ * has no timeline, so a report that needs attention is logged instead.
  */
 export async function runWithNetworkPolicy<T>(options: {
-    workflow?: ResolvedRepositoryWorkflow; taskId: string; correlatedLogger: Pick<Logger, 'warn'>;
+    workflow?: ResolvedRepositoryWorkflow; taskId?: string; correlatedLogger: Pick<Logger, 'warn'>;
     record?: typeof recordNetworkEgressEvent;
     resolvePolicy?: typeof resolveRunNetworkPolicy;
 }, execute: () => Promise<T>): Promise<T> {
     const policy = await (options.resolvePolicy ?? resolveRunNetworkPolicy)(options.workflow);
-    const record = options.record ?? recordNetworkEgressEvent;
+    const taskId = options.taskId;
+    const record = taskId
+        ? (report: NetworkEgressReport) => (options.record ?? recordNetworkEgressEvent)(taskId, report, options.correlatedLogger)
+        : async (report: NetworkEgressReport) => {
+            if (report.deniedConnections || report.fallbacks.length || report.refusals.length) options.correlatedLogger.warn({ networkEgress: report }, networkEgressEvent(report).reason);
+        };
     try {
         const { result, report } = await executeWithNetworkPolicy(policy, execute);
-        await record(options.taskId, report, options.correlatedLogger);
+        await record(report);
         return result;
     } catch (error) {
         const report = networkEgressReportFromError(error);
-        if (report) await record(options.taskId, report, options.correlatedLogger);
+        if (report) await record(report);
         throw error;
     }
 }

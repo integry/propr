@@ -32,6 +32,7 @@ import {
     validateGoalArtifacts,
 } from '@propr/core';
 import { createContainerIdCallback } from './issueJobCallbacks.js';
+import { runWithNetworkPolicy } from './networkEgress.js';
 import {
     claimGoalAttempt,
     closeAttemptBlockers,
@@ -353,7 +354,8 @@ async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt)
     const executionController = new AbortController();
     return runWithExecutionAbortSignal(
         executionController.signal,
-        () => agent.executeTask({
+        // Goals follow the instance network policy; the repository workflow file is not read for goals.
+        () => runWithNetworkPolicy({ taskId: goal.current_task_id, correlatedLogger: logger }, () => agent.executeTask({
             worktreePath: worktree.worktreePath,
             issueRef: { number: 0, repoOwner: data.repoOwner, repoName: data.repoName },
             prompt,
@@ -401,7 +403,7 @@ async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt)
             onContainerId: createContainerIdCallback(
                 goal.current_task_id, getStateManager(), logger as never, worktree.worktreePath,
             ),
-        }),
+        })),
         goalAttemptLabel(data.generation, data.claimId),
     );
 }

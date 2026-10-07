@@ -148,6 +148,8 @@ services:
       # Vibe prompt cache — mounted by default so indexing summarization can
       # pass large prompts to sibling Vibe containers via the host Docker daemon.
       - /tmp/propr-vibe-prompts:/tmp/propr-vibe-prompts
+      # Restricted agent networking: per-run egress proxy sockets for summarization containers.
+      - /tmp/propr-egress:/tmp/propr-egress
     env_file:
       - .env
     environment:
