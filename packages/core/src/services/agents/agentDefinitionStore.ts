@@ -60,6 +60,10 @@ export interface AgentDefinitionRow {
   schedule_cron: string | null; schedule_timezone: string | null; schedule_enabled: boolean | number;
   next_run_at: number | null; autonomy_mode: string; enabled: boolean | number; revision: number;
   created_at: number; updated_at: number;
+  /** Claimed schedule slot without a run receipt yet; only the scheduler reads it. */
+  pending_schedule_slot?: number | string | null;
+  /** When a sweep last tried to record the pending slot's run; only the scheduler reads it. */
+  pending_schedule_attempted_at?: number | string | null;
 }
 
 export interface CreateAgentDefinitionInput {
@@ -300,6 +304,124 @@ export async function deleteAgentDefinition(
 ): Promise<boolean> {
   const deleted = await database(TABLE).where({ id, owner_id: ownerId }).delete();
   return deleted > 0;
+}
+
+/** A definition the scheduler should act on, with the slot it claimed but has not recorded yet. */
+export interface DueScheduledAgentDefinition {
+  definition: StoredAgentDefinition;
+  /** A claimed slot (epoch ms) whose run receipt does not exist yet; null when there is none. */
+  pendingSlot: number | null;
+}
+
+function pendingScheduleSlot(row: AgentDefinitionRow): number | null {
+  return row.pending_schedule_slot == null ? null : Number(row.pending_schedule_slot);
+}
+
+/**
+ * Definitions the scheduler should act on: those with a claimed slot still
+ * waiting for its run receipt, least recently attempted first, and those
+ * enabled, scheduled and due at `now`, oldest due first. Not owner-scoped;
+ * only the daemon calls it.
+ *
+ * Pending slots and fresh due definitions share the batch: when both kinds
+ * are waiting, each gets at least half of it, and either takes the space the
+ * other leaves. Pending slots whose trigger keeps failing therefore never fill
+ * every batch and starve due definitions, and since each attempt moves a slot
+ * behind the others (`admitAgentDefinitionScheduleSlot`), they never starve
+ * other pending slots either.
+ */
+export async function listDueScheduledAgentDefinitions(
+  now: number,
+  limit: number,
+  { database = db }: AgentDefinitionStoreDependencies = {},
+): Promise<DueScheduledAgentDefinition[]> {
+  const size = Math.max(Math.trunc(limit), 1);
+  const pending = await database(TABLE).whereNotNull('pending_schedule_slot')
+    .orderByRaw('CASE WHEN pending_schedule_attempted_at IS NULL THEN 0 ELSE 1 END')
+    .orderBy([{ column: 'pending_schedule_attempted_at', order: 'asc' }, { column: 'id', order: 'asc' }])
+    .limit(size).select<AgentDefinitionRow[]>();
+  const due = await database(TABLE).whereNull('pending_schedule_slot')
+    .where({ schedule_enabled: true, enabled: true }).where('next_run_at', '<=', now)
+    .orderBy([{ column: 'next_run_at', order: 'asc' }, { column: 'id', order: 'asc' }])
+    .limit(size).select<AgentDefinitionRow[]>();
+  const pendingCount = Math.min(pending.length, Math.max(Math.ceil(size / 2), size - due.length));
+  const rows = [...pending.slice(0, pendingCount), ...due.slice(0, size - pendingCount)];
+  return rows.map(row => ({ definition: rowToAgentDefinition(row), pendingSlot: pendingScheduleSlot(row) }));
+}
+
+/**
+ * Claims one schedule slot by moving `next_run_at` from the value the caller
+ * read (`claimedNextRunAt`) to `nextRunAt` and recording `slot` as pending in
+ * the same update. Only one of several concurrent sweeps gets the definition
+ * back; the others get null and must not fire. A definition with a pending slot cannot be claimed
+ * again until `releaseAgentDefinitionScheduleSlot` clears it. The returned
+ * definition is the row as of the claim, so a schedule or agent disabled
+ * since the sweep read it is never fired. The claim is not a user edit, so
+ * `revision` and `updated_at` are left alone.
+ */
+export async function claimAgentDefinitionScheduleSlot(
+  id: string,
+  { claimedNextRunAt, nextRunAt, slot }: { claimedNextRunAt: number; nextRunAt: number; slot: number },
+  { database = db }: AgentDefinitionStoreDependencies = {},
+): Promise<StoredAgentDefinition | null> {
+  const [updated] = await database(TABLE)
+    .where({ id, next_run_at: claimedNextRunAt, schedule_enabled: true, enabled: true })
+    .whereNull('pending_schedule_slot')
+    .update({ next_run_at: nextRunAt, pending_schedule_slot: slot })
+    .returning('*') as AgentDefinitionRow[];
+  return updated ? rowToAgentDefinition(updated) : null;
+}
+
+/**
+ * Admits a pending slot for one attempt: returns the definition as stored
+ * now, so a schedule or agent disabled since the sweep read its batch is
+ * seen before the slot starts work, and records the attempt so the slot is
+ * retried behind other pending slots. Returns null once the slot is no longer
+ * pending (another sweep recorded it, or the schedule was turned off on the
+ * system's behalf).
+ */
+export async function admitAgentDefinitionScheduleSlot(
+  id: string,
+  slot: number,
+  { database = db, now = Date.now }: AgentDefinitionStoreDependencies = {},
+): Promise<StoredAgentDefinition | null> {
+  const [updated] = await database(TABLE).where({ id, pending_schedule_slot: slot })
+    .update({ pending_schedule_attempted_at: now() })
+    .returning('*') as AgentDefinitionRow[];
+  return updated ? rowToAgentDefinition(updated) : null;
+}
+
+/**
+ * Clears a pending slot once its run receipt exists. Only clears `slot`, so a
+ * slower sweep never releases a slot claimed after it read the row.
+ */
+export async function releaseAgentDefinitionScheduleSlot(
+  id: string,
+  slot: number,
+  { database = db }: AgentDefinitionStoreDependencies = {},
+): Promise<boolean> {
+  const updated = await database(TABLE).where({ id, pending_schedule_slot: slot })
+    .update({ pending_schedule_slot: null, pending_schedule_attempted_at: null });
+  return Number(updated) > 0;
+}
+
+/**
+ * Turns a definition's schedule off on the system's behalf (e.g. its owner
+ * left the instance), dropping any pending slot with it. Counts as an edit, so
+ * a stale editor gets a 409 instead of silently re-enabling it. Returns false
+ * when the schedule was already off.
+ */
+export async function disableAgentDefinitionSchedule(
+  id: string,
+  { database = db, now = Date.now }: AgentDefinitionStoreDependencies = {},
+): Promise<boolean> {
+  return database.transaction(async trx => {
+    await trx(TABLE).where({ id }).whereNotNull('pending_schedule_slot')
+      .update({ pending_schedule_slot: null, pending_schedule_attempted_at: null });
+    const updated = await trx(TABLE).where({ id, schedule_enabled: true })
+      .update({ schedule_enabled: false, next_run_at: null, revision: trx.raw('revision + 1'), updated_at: now() });
+    return Number(updated) > 0;
+  });
 }
 
 export type DeleteAgentDefinitionResult = 'deleted' | 'not_found' | 'run_active';

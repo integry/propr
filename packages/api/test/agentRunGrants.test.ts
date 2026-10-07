@@ -236,6 +236,54 @@ test('stale cleanup overlapping a replacement never deletes the replacement reco
   await assert.rejects(policy.authenticate(b.accessToken));
 });
 
+test('an expiry-fenced cleanup revokes an expired grant but not its fresh replacement', async () => {
+  const input = { ownerId: OWNER, definitionName: 'Nightly triage', runId: 'run-1', phase: 'report' as const, repositories: ['acme/repo'] };
+  const first = await issueAgentRunGrant(input, grantDeps);
+  // The sweep judged the first grant expired, then the phase was retried before it revoked.
+  const evaluatedAt = first.expiresAt;
+  const replacement = await issueAgentRunGrant(input, grantDeps);
+  const store = new McpStore(db, config.encryptionKey);
+  await db('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: 'run-1:report' })
+    .update({ value: store.seal({ ...await store.get<Record<string, unknown>>(AGENT_RUN_GRANT_RECORD_KIND, 'run-1:report'), expiresAt: evaluatedAt + 60_000 }) });
+  const fenced = await post('/revoke', { ...signed('report'), expiredBy: evaluatedAt });
+  assert.equal(fenced.status, 200);
+  assert.equal(fenced.body.revoked, false);
+  await policy.authenticate(replacement.accessToken);
+
+  // Once the current grant has itself expired by the cutoff, the fence lets it go.
+  assert.equal((await post('/revoke', { ...signed('report'), expiredBy: evaluatedAt + 60_000 })).body.revoked, true);
+  await assert.rejects(policy.authenticate(replacement.accessToken));
+  assert.equal((await post('/revoke', { ...signed('report'), expiredBy: 'soon' })).status, 400);
+});
+
+test('cleanup revokes and deletes a phase record whose stored expiry has passed', async () => {
+  const input = { ownerId: OWNER, definitionName: 'Nightly triage', runId: 'run-1', phase: 'report' as const, repositories: ['acme/repo'] };
+  const issued = await issueAgentRunGrant(input, grantDeps);
+  const store = new McpStore(db, config.encryptionKey);
+  const expiredAt = Date.now() - 60_000;
+  // Both the database expiry and the encoded record expiry have passed.
+  await db('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: 'run-1:report' }).update({
+    expires_at: expiredAt,
+    value: store.seal({ runId: 'run-1', phase: 'report', grantId: issued.grantId, ownerId: OWNER, expiresAt: expiredAt }),
+  });
+  assert.equal(await store.get(AGENT_RUN_GRANT_RECORD_KIND, 'run-1:report'), undefined, 'The store hides the expired record');
+
+  const response = await post('/revoke', { ...signed('report'), expiredBy: Date.now() });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.revoked, true);
+  await assert.rejects(policy.authenticate(issued.accessToken));
+  assert.equal(await db('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: 'run-1:report' }).first(), undefined);
+  // The next pass finds nothing left to revoke.
+  assert.equal((await post('/revoke', { ...signed('report'), expiredBy: Date.now() })).body.revoked, false);
+});
+
+test('an ended run\'s expired phase record is deleted without an expiry fence', async () => {
+  const issued = await issueAgentRunGrant({ ownerId: OWNER, definitionName: 'Nightly triage', runId: 'run-1', phase: 'action', repositories: ['acme/repo'] }, grantDeps);
+  await db('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: 'run-1:action' }).update({ expires_at: Date.now() - 1 });
+  assert.equal(await revokeAgentRunPhaseGrant('run-1', 'action', grantDeps), issued.grantId);
+  assert.equal(await db('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: 'run-1:action' }).first(), undefined);
+});
+
 test('issuance requires MCP and a stored GitHub user grant for the owner', async () => {
   const input = { ownerId: OWNER, definitionName: 'Nightly triage', runId: 'run-1', phase: 'report' as const, repositories: ['acme/repo'] };
   await assert.rejects(issueAgentRunGrant(input, { ...grantDeps, resolveConfig: async () => null }), { code: 'MCP_DISABLED' });

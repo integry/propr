@@ -38,6 +38,9 @@ test('grant requests are signed over run id, phase and timestamp', async () => {
   await revokeAgentRunMcpGrant('run/1', grant, { environment, fetchImpl, now: () => NOW });
   assert.equal(calls[1].url, 'http://propr-api:4000/api/internal/agent-runs/run%2F1/mcp-grants/revoke');
   assert.deepEqual(calls[1].body, { phase: 'action', grantId: 'g-1', ts: NOW, signature: signAgentRunGrantRequest('secret', 'run/1', 'action', NOW) });
+
+  await revokeAgentRunMcpGrant('run/1', { phase: 'report', expiredBy: NOW - 1 }, { environment, fetchImpl, now: () => NOW });
+  assert.deepEqual(calls[2].body, { phase: 'report', expiredBy: NOW - 1, ts: NOW, signature: signAgentRunGrantRequest('secret', 'run/1', 'report', NOW) });
 });
 
 test('API rejections and a missing secret surface as typed errors without the token', async () => {

@@ -42,7 +42,7 @@ export function agentContainerMcpUrl(environment: NodeJS.ProcessEnv = process.en
   return `${base}/api/mcp`;
 }
 
-type SignedBody = { phase: AgentRunGrantPhase; grantId?: string };
+type SignedBody = { phase: AgentRunGrantPhase; grantId?: string; expiredBy?: number };
 
 function sendError(res: Response, status: number, code: string, message: string): void {
   res.status(status).json({ error: code, message });
@@ -64,10 +64,11 @@ export function createAgentRunInternalRoutes(deps: AgentRunInternalRouteDependen
       return null;
     }
     const runId = req.params.runId;
-    const { phase, ts, signature, grantId } = (req.body ?? {}) as Record<string, unknown>;
+    const { phase, ts, signature, grantId, expiredBy } = (req.body ?? {}) as Record<string, unknown>;
     if (typeof runId !== 'string' || !runId || typeof phase !== 'string' || !AGENT_RUN_GRANT_PHASES.includes(phase as AgentRunGrantPhase)
       || typeof ts !== 'number' || !Number.isSafeInteger(ts) || typeof signature !== 'string' || !/^[0-9a-f]{64}$/.test(signature)
-      || (grantId !== undefined && typeof grantId !== 'string')) {
+      || (grantId !== undefined && typeof grantId !== 'string')
+      || (expiredBy !== undefined && (typeof expiredBy !== 'number' || !Number.isSafeInteger(expiredBy)))) {
       sendError(res, 400, 'INVALID_REQUEST', 'phase, ts and signature are required.');
       return null;
     }
@@ -80,7 +81,11 @@ export function createAgentRunInternalRoutes(deps: AgentRunInternalRouteDependen
       sendError(res, 401, 'SIGNATURE_EXPIRED', 'The request signature has expired.');
       return null;
     }
-    return { phase: phase as AgentRunGrantPhase, ...(typeof grantId === 'string' ? { grantId } : {}) };
+    return {
+      phase: phase as AgentRunGrantPhase,
+      ...(typeof grantId === 'string' ? { grantId } : {}),
+      ...(typeof expiredBy === 'number' ? { expiredBy } : {}),
+    };
   }
 
   function sendGrantError(res: Response, error: unknown, action: string, runId: string): void {
@@ -121,7 +126,7 @@ export function createAgentRunInternalRoutes(deps: AgentRunInternalRouteDependen
     if (!body) return;
     const runId = req.params.runId as string;
     try {
-      const revoked = await revokeAgentRunPhaseGrant(runId, body.phase, { ...grantDeps, grantId: body.grantId });
+      const revoked = await revokeAgentRunPhaseGrant(runId, body.phase, { ...grantDeps, grantId: body.grantId, expiredBy: body.expiredBy });
       res.json({ revoked: revoked !== null, grantId: revoked });
     } catch (error) {
       sendGrantError(res, error, 'revoke', runId);

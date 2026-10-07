@@ -114,6 +114,17 @@ async function lockPhaseRecord(store: McpStore, tx: Knex.Transaction, recordId: 
   throw new Error(`Could not lock the agent run grant record ${recordId}`);
 }
 
+/**
+ * Reads the locked phase record, including one past its `expires_at`:
+ * `McpStore.get` hides expired rows, but cleanup must still revoke and delete
+ * them. Returns null for the placeholder or a row that cannot be decoded.
+ */
+async function readPhaseRecord(store: McpStore, tx: Knex.Transaction, recordId: string): Promise<AgentRunGrantRecord | null> {
+  const row = await tx('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: recordId }).first('value');
+  if (!row) return null;
+  try { return store.unseal<AgentRunGrantRecord | null>(row.value); } catch { return null; }
+}
+
 export async function issueAgentRunGrant(
   input: { ownerId: string; definitionName: string; runId: string; phase: AgentRunGrantPhase; repositories: readonly string[] },
   deps: AgentRunGrantDependencies = {},
@@ -161,10 +172,12 @@ export async function revokeAgentRunGrant(grantId: string, deps: AgentRunGrantDe
  * Revokes the grant recorded for one run phase and forgets it. Returns the
  * revoked grant id, or null when that phase holds no grant. With `grantId`,
  * only that grant is revoked: a newer grant recorded by a retried phase is
- * left alone (the older one was revoked when it was replaced).
+ * left alone (the older one was revoked when it was replaced). With
+ * `expiredBy`, only a grant that expired by that time is revoked, so a cleanup
+ * that judged an earlier record expired never revokes its fresh replacement.
  */
 export async function revokeAgentRunPhaseGrant(
-  runId: string, phase: AgentRunGrantPhase, deps: AgentRunGrantDependencies & { grantId?: string } = {},
+  runId: string, phase: AgentRunGrantPhase, deps: AgentRunGrantDependencies & { grantId?: string; expiredBy?: number } = {},
 ): Promise<string | null> {
   const oauth = await provider(deps);
   const recordId = agentRunGrantRecordId(runId, phase);
@@ -172,8 +185,9 @@ export async function revokeAgentRunPhaseGrant(
   // one deleted, never a replacement recorded meanwhile.
   return oauth.store.db.transaction(async tx => {
     if (!await tx('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: recordId }).forUpdate().first('id')) return null;
-    const record = await oauth.store.get<AgentRunGrantRecord | null>(AGENT_RUN_GRANT_RECORD_KIND, recordId, tx);
+    const record = await readPhaseRecord(oauth.store, tx, recordId);
     if (!record || (deps.grantId !== undefined && record.grantId !== deps.grantId)) return null;
+    if (deps.expiredBy !== undefined && record.expiresAt > deps.expiredBy) return null;
     await oauth.revokeGrant(record.grantId, undefined, tx);
     await tx('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: recordId }).delete();
     return record.grantId;

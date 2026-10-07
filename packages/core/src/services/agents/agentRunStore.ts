@@ -235,6 +235,18 @@ export async function createAgentRun(
   return { run: rowToAgentRun(stored), created: false };
 }
 
+/**
+ * Records a run that was never started, so the history shows why nothing ran
+ * (e.g. a scheduled slot whose definition no longer validates). With an
+ * idempotency key, a replay returns the run already recorded.
+ */
+export async function recordSkippedRun(
+  input: Omit<CreateAgentRunInput, 'initialState' | 'deferredUntil' | 'skipReason'> & { skipReason: string },
+  deps: AgentRunStoreDependencies = {},
+): Promise<CreateAgentRunResult> {
+  return createAgentRun({ ...input, initialState: 'skipped' }, deps);
+}
+
 export interface AgentRunTransitionPatch {
   reportTaskId?: string | null;
   actionTaskId?: string | null;

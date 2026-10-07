@@ -207,6 +207,20 @@ describe('triggerAgentRun', () => {
     assert.match(runs[0].failureReason ?? '', /Redis connection refused/);
     assert.ok(runs[0].finishedAt);
   });
+
+  test('with keepQueuedOnEnqueueFailure an enqueue failure leaves the run queued and rethrows', async () => {
+    const definition = await define();
+    const failure = new Error('Redis connection refused');
+    await assert.rejects(
+      triggerAgentRun({ definition, trigger: 'schedule', idempotencyKey: 'schedule:slot', keepQueuedOnEnqueueFailure: true },
+        deps({ enqueue: async () => { throw failure; } })),
+      failure,
+    );
+    const { runs } = await listAgentRuns(definition.id, 'alice', {}, { database });
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].state, 'queued');
+    assert.equal(runs[0].failureReason, null);
+  });
 });
 
 describe('enqueueAgentRunPhase', () => {
