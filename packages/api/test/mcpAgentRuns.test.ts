@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import knex from 'knex';
 import { z } from 'zod';
-import { closeConnection, createAgentDefinition, transitionAgentRun, triggerAgentRun, type AgentRunGate, type StoredAgentRun } from '@propr/core';
+import { closeConnection, createAgentDefinition, transitionAgentRun, triggerAgentRun, updateAgentDefinition, type AgentRunGate, type StoredAgentRun } from '@propr/core';
 import { AGENT_DEFINITION_CONTRACT } from '@propr/shared';
 import { createToolCatalog, executeTool, type ToolDeps } from '../mcp/tools.js';
 import { McpPolicy, type McpPrincipal } from '../mcp/policy.js';
@@ -177,6 +177,79 @@ test('a grant without one of the definition repositories can neither read nor tr
     const detail = (await f.call('get_agent_definition', { definitionId: visible.id })).data as { definition: { prompt: string; repositories: string[] } };
     assert.equal(detail.definition.prompt, 'Scan competitors.');
     assert.deepEqual((await f.call('get_agent_definition_contract', {})).data, JSON.parse(JSON.stringify(AGENT_DEFINITION_CONTRACT)));
+  } finally { await f.db.destroy(); }
+});
+
+test('runs that captured a repository the grant lacks stay hidden after the definition drops it', async () => {
+  const f = await fixture();
+  try {
+    const grant = (id: string, repositories: string[]) => ({ ...f.principal, grant: { ...f.principal.grant, id, repositories } }) as McpPrincipal;
+    const wide = grant('grant-wide', ['acme/app', 'acme/secret']);
+    const narrow = grant('grant-narrow', ['acme/app']);
+    const definition = await f.define(['acme/app', 'acme/secret']);
+    const historic = (await f.call('trigger_agent_run', { definitionId: definition.id, idempotencyKey: 'historic-run-1' }, wide)).data as Receipt;
+    await transitionAgentRun(historic.result.runId, ['queued'], 'failed', { failureReason: 'Leaked acme/secret detail' }, { database: f.db });
+    await updateAgentDefinition(definition.id, 'alice', { repositories: ['acme/app'] }, { database: f.db });
+    const current = (await f.call('trigger_agent_run', { definitionId: definition.id, idempotencyKey: 'current-run-1' }, narrow)).data as Receipt;
+
+    const listed = (await f.call('list_agent_runs', { definitionId: definition.id }, narrow)).data as { runs: Array<{ id: string }>; total: number; nextOffset: number | null };
+    assert.deepEqual(listed.runs.map(run => run.id), [current.result.runId]);
+    assert.equal(listed.total, 1);
+    assert.equal(listed.nextOffset, null);
+    const paged = (await f.call('list_agent_runs', { definitionId: definition.id, offset: 1 }, narrow)).data as { runs: unknown[]; total: number };
+    assert.deepEqual(paged.runs, []);
+    assert.equal(paged.total, 1);
+    assert.equal(((await f.call('list_agent_runs', { definitionId: definition.id }, wide)).data as { total: number }).total, 2);
+
+    // Another grant replaying the key reaches the trigger's own idempotency lookup.
+    await assert.rejects(f.call('trigger_agent_run', { definitionId: definition.id, idempotencyKey: 'historic-run-1' }, narrow),
+      (error: McpError) => error.code === 'REPOSITORY_FORBIDDEN');
+    // The original grant, after losing the repository, replays its stored MCP receipt.
+    await assert.rejects(f.call('trigger_agent_run', { definitionId: definition.id, idempotencyKey: 'historic-run-1' }, grant('grant-wide', ['acme/app'])),
+      (error: McpError) => error.code === 'REPOSITORY_FORBIDDEN');
+    await assert.rejects(f.call('get_agent_run', { runId: historic.result.runId }, narrow), (error: McpError) => error.code === 'REPOSITORY_FORBIDDEN');
+    assert.equal((await f.db('agent_runs')).length, 2);
+  } finally { await f.db.destroy(); }
+});
+
+test('trigger_agent_run authorizes the definition it triggers, not the one the early check read', async () => {
+  const f = await fixture();
+  try {
+    const definition = await f.define(['acme/app']);
+    const authorize = f.deps.policy.repository.bind(f.deps.policy);
+    // Runs once, after the given number of authorizations: the hook authorizes
+    // acme/app first and the mutation callback authorizes it again.
+    let interleave: { after: number; step: () => Promise<void> } | null = null;
+    let calls = 0;
+    f.deps.policy.repository = async (principal, repository, write = false) => {
+      await authorize(principal, repository, write);
+      if (interleave && ++calls === interleave.after) {
+        const { step } = interleave;
+        interleave = null;
+        await step();
+      }
+    };
+
+    interleave = { after: 1, step: async () => { await updateAgentDefinition(definition.id, 'alice', { repositories: ['acme/app', 'acme/secret'] }, { database: f.db }); } };
+    const widened = (await f.call('trigger_agent_run', { definitionId: definition.id, idempotencyKey: 'race-widened-1' })).data as Receipt;
+    assert.equal(widened.state, 'failed');
+    assert.equal(widened.result.error?.code, 'REPOSITORY_FORBIDDEN');
+    assert.equal((await f.db('agent_runs')).length, 0);
+    assert.deepEqual(f.enqueued, []);
+
+    // A run with a wider snapshot created under the same key in that window is not replayed either.
+    await updateAgentDefinition(definition.id, 'alice', { repositories: ['acme/app'] }, { database: f.db });
+    calls = 0;
+    interleave = { after: 2, step: async () => {
+      const wider = await updateAgentDefinition(definition.id, 'alice', { repositories: ['acme/app', 'acme/secret'] }, { database: f.db });
+      await triggerAgentRun({ definition: wider!, trigger: 'mcp', idempotencyKey: 'mcp:race-replayed-1', gate: () => null },
+        { database: f.db, enqueue: async () => undefined, loadRepos: async () => ['acme/app', 'acme/secret'].map(name => ({ name, enabled: true }) as never) });
+      await updateAgentDefinition(definition.id, 'alice', { repositories: ['acme/app'] }, { database: f.db });
+    } };
+    const replayed = (await f.call('trigger_agent_run', { definitionId: definition.id, idempotencyKey: 'race-replayed-1' })).data as Receipt;
+    assert.equal(replayed.state, 'failed');
+    assert.equal(replayed.result.error?.code, 'REPOSITORY_FORBIDDEN');
+    assert.equal(replayed.result.runId, undefined);
   } finally { await f.db.destroy(); }
 });
 

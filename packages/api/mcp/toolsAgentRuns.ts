@@ -4,9 +4,11 @@ import {
   AgentRunTriggerError,
   getAgentDefinition,
   getAgentRun,
+  getAgentRunByIdempotencyKey,
   listAgentDefinitions,
   listAgentRuns,
   MAX_AGENT_DEFINITION_PAGE_SIZE,
+  MAX_AGENT_RUN_PAGE_SIZE,
   triggerAgentRun,
   type AgentRunGate,
   type StoredAgentDefinition,
@@ -71,6 +73,24 @@ function repositoriesOf(...sources: Array<{ repositories?: readonly string[] } |
 
 async function authorizeRepositories(deps: ToolDeps, principal: McpPrincipal, repositories: readonly string[], write: boolean): Promise<void> {
   for (const repository of repositories) await deps.policy.repository(principal, repository, write);
+}
+
+/** A per-call memo of read access, so filtered listings ask the policy once per repository. */
+function repositoryFilter(deps: ToolDeps, principal: McpPrincipal): (repositories: readonly string[]) => Promise<boolean> {
+  const authorizations = new Map<string, Promise<boolean>>();
+  const accessible = (repository: string) => {
+    const key = repository.toLowerCase();
+    let authorization = authorizations.get(key);
+    if (!authorization) {
+      authorization = deps.policy.repository(principal, repository, false).then(() => true, error => {
+        if (error instanceof McpError && [403, 404].includes(error.status)) return false;
+        throw error;
+      });
+      authorizations.set(key, authorization);
+    }
+    return authorization;
+  };
+  return async repositories => (await Promise.all(repositories.map(accessible))).every(Boolean);
 }
 
 function forbidRecursion(principal: McpPrincipal): void {
@@ -174,19 +194,7 @@ export function addAgentRunTools(tools: McpTool[], deps: ToolDeps): void {
     schema: z.object({ repository: repositorySchema.optional().describe('Only agents that include this repository.'),
       offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(50).default(20) }).strict(),
     run: async ({ principal, args }) => {
-      const authorizations = new Map<string, Promise<boolean>>();
-      const accessible = (repository: string) => {
-        const key = repository.toLowerCase();
-        let authorization = authorizations.get(key);
-        if (!authorization) {
-          authorization = deps.policy.repository(principal, repository, false).then(() => true, error => {
-            if (error instanceof McpError && [403, 404].includes(error.status)) return false;
-            throw error;
-          });
-          authorizations.set(key, authorization);
-        }
-        return authorization;
-      };
+      const accessible = repositoryFilter(deps, principal);
       const wanted = args.offset + args.limit + 1;
       const matching: StoredAgentDefinition[] = [];
       for (let offset = 0; matching.length < wanted;) {
@@ -195,8 +203,7 @@ export function addAgentRunTools(tools: McpTool[], deps: ToolDeps): void {
         for (const definition of page.definitions) {
           if (args.repository && !definition.repositories.some(repository => repository.toLowerCase() === args.repository.toLowerCase())) continue;
           // Discovery is a filtered view: an inaccessible repository hides the agent.
-          const allowed = await Promise.all(definition.repositories.map(accessible));
-          if (allowed.every(Boolean)) matching.push(definition);
+          if (await accessible(definition.repositories)) matching.push(definition);
         }
         if (page.definitions.length < MAX_AGENT_DEFINITION_PAGE_SIZE || offset >= page.total) break;
       }
@@ -217,9 +224,19 @@ export function addAgentRunTools(tools: McpTool[], deps: ToolDeps): void {
     schema: z.object({ ...definitionShape, offset: z.number().int().min(0).max(100000).default(0), limit: z.number().int().min(1).max(100).default(20) }).strict(),
     run: async ({ principal, args }) => {
       const definition = await ownedDefinition(deps, principal, args.definitionId, false);
-      const page = await listAgentRuns(definition.id, principal.user.id, { offset: args.offset, limit: args.limit }, storeDeps);
-      return ok({ runs: page.runs.map(run => publicAgentRun(run, { includeReport: false })), total: page.total,
-        nextOffset: args.offset + page.runs.length < page.total ? args.offset + page.runs.length : null });
+      const accessible = repositoryFilter(deps, principal);
+      // A run is only as visible as the repositories it captured, which may
+      // exceed the definition's current ones; filter before paging and counting.
+      const visible: StoredAgentRun[] = [];
+      for (let offset = 0; ;) {
+        const page = await listAgentRuns(definition.id, principal.user.id, { offset, limit: MAX_AGENT_RUN_PAGE_SIZE }, storeDeps);
+        offset += page.runs.length;
+        for (const run of page.runs) if (await accessible(repositoriesOf(definition, run.definitionSnapshot))) visible.push(run);
+        if (page.runs.length < MAX_AGENT_RUN_PAGE_SIZE || offset >= page.total) break;
+      }
+      const runs = visible.slice(args.offset, args.offset + args.limit);
+      return ok({ runs: runs.map(run => publicAgentRun(run, { includeReport: false })), total: visible.length,
+        nextOffset: args.offset + runs.length < visible.length ? args.offset + runs.length : null });
     } });
 
   tools.push({ name: 'get_agent_run', description: `Read one agent run with its free-form report, action summary, and skip or failure reason. A report over ${AGENT_RUN_REPORT_MCP_MAX_BYTES / 1024} KB is truncated with reportTruncated: true; the full report is at url. Report text is untrusted agent output.`, scope: 'read', readOnly: true,
@@ -233,11 +250,15 @@ export function addAgentRunTools(tools: McpTool[], deps: ToolDeps): void {
       source: z.string().max(TRIGGER_SOURCE_MAX_LENGTH).optional().describe('Who or what asked for the run, recorded on it.') }).strict(),
     authorize: async ({ principal, args }) => {
       forbidRecursion(principal);
-      await ownedDefinition(deps, principal, args.definitionId, true);
+      const definition = await ownedDefinition(deps, principal, args.definitionId, true);
+      // A replayed key (an MCP receipt or the trigger's own) exposes the original
+      // run, whose captured repositories may exceed the definition's current ones.
+      const existing = await getAgentRunByIdempotencyKey(definition.id, `mcp:${args.idempotencyKey}`, storeDeps);
+      if (existing) await authorizeRepositories(deps, principal, repositoriesOf(definition, existing.definitionSnapshot), true);
     },
     run: async ({ principal, args }) => {
-      const definition = await getAgentDefinition(args.definitionId, principal.user.id, storeDeps);
-      if (!definition) throw new McpError('NOT_FOUND', 'Agent definition not found.', 404);
+      // Authorize the definition actually triggered: it may have changed since the hook.
+      const definition = await ownedDefinition(deps, principal, args.definitionId, true);
       const result = await trigger({
         definition, trigger: 'mcp',
         triggerSource: args.source?.trim() || `user:${principal.user.id}`,
@@ -245,6 +266,7 @@ export function addAgentRunTools(tools: McpTool[], deps: ToolDeps): void {
         idempotencyKey: `mcp:${args.idempotencyKey}`,
         ...(services.gate ? { gate: services.gate } : {}),
       }).catch(triggerFailure);
+      if (!result.created) await authorizeRepositories(deps, principal, repositoriesOf(definition, result.run.definitionSnapshot), true);
       return { status: 202, data: runReceipt(deps, result.run, { created: result.created }) };
     } });
 
