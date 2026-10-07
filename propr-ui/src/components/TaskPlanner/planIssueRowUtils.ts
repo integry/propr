@@ -1,4 +1,5 @@
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
+import type { AgentModelPair } from '../../api/planIssuesApi';
 
 export const getModelName = (modelId: string | null): string => {
   if (!modelId) return '';
@@ -6,19 +7,22 @@ export const getModelName = (modelId: string | null): string => {
   return modelInfo?.name || modelId;
 };
 
+/** Short model label for the in-row chip: "Claude Opus 5.5" reads as "Opus 5.5". */
+export const getShortModelName = (modelId: string | null): string => getModelName(modelId).replace(/^Claude\s+/, '');
+
 export const getContainerClassName = (isMerged: boolean): string =>
-  isMerged ? 'bg-gray-50 border-gray-200' : 'bg-white border-gray-200';
+  isMerged ? 'bg-slate-50/60' : 'bg-white hover:bg-slate-50/60 transition-colors';
 
 export const getTitleClassName = (isMerged: boolean): string =>
-  isMerged ? 'text-gray-500' : 'text-gray-600';
+  isMerged ? 'text-slate-500' : 'text-slate-800';
 
 export const getImplementButtonClassName = (implementing: boolean, hasAgent: boolean, isFirstPending: boolean): string => {
   if (implementing || !hasAgent) {
     return 'bg-gray-100 text-gray-400 cursor-not-allowed';
   }
   if (!isFirstPending) {
-    // Cautionary state: Amber outline button for dependency-blocked but clickable state
-    return 'bg-white border border-amber-400 text-amber-700 hover:bg-amber-50';
+    // Out-of-order run: still a normal run trigger, so a neutral outline rather than warning amber
+    return 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50';
   }
   return 'bg-primary-600 text-white hover:bg-primary-700';
 };
@@ -27,4 +31,29 @@ export const getImplementButtonTitle = (hasAgent: boolean, isFirstPending: boole
   if (!hasAgent) return 'Select an agent first';
   if (!isFirstPending) return 'Previous tasks not yet merged - click to implement anyway';
   return 'Start AI implementation';
+};
+
+export interface ExecutionConfigSummaryInput {
+  showAgent: boolean;
+  globalAgent: string | null;
+  globalModel: string | null;
+  globalIsMulti: boolean;
+  globalSelectedModels: AgentModelPair[];
+  autoMerge?: boolean;
+  runUltrafix?: boolean;
+  ultrafixGoal?: number | null;
+}
+
+/** One-line digest of the active execution settings, e.g. "Opus 5.5 · Ultrafix (8/10) · Auto-merge". */
+export const getExecutionConfigSummary = ({
+  showAgent, globalAgent, globalModel, globalIsMulti, globalSelectedModels, autoMerge, runUltrafix, ultrafixGoal,
+}: ExecutionConfigSummaryInput): string => {
+  const parts: string[] = [];
+  if (showAgent) {
+    if (globalIsMulti) parts.push(globalSelectedModels.length > 0 ? `${globalSelectedModels.length} models` : 'Choose models');
+    else parts.push(getShortModelName(globalModel) || globalAgent || 'Default agent');
+  }
+  if (runUltrafix) parts.push(ultrafixGoal ? `Ultrafix (${ultrafixGoal}/10)` : 'Ultrafix');
+  if (autoMerge) parts.push('Auto-merge');
+  return parts.length > 0 ? parts.join(' · ') : 'Defaults';
 };

@@ -2,6 +2,7 @@ import React from 'react';
 import { Loader2, Info, BookOpen, RefreshCw, Clock, Pause, Play } from 'lucide-react';
 import { PreviewResult, ContextRepository, GenerationTrace } from '../../api/proprApi';
 import { GenerationProgress } from './GenerationProgress';
+import { formatTokenAmount } from './tokenFormat';
 
 interface PreviewState {
   isLoading: boolean;
@@ -239,12 +240,15 @@ interface CostPreviewContentProps {
 
 interface CostStatsHeaderProps {
   stats: PreviewResult['stats'];
+  maxTokens: number;
+  actualPercentage: number;
 }
 
-const CostStatsHeader: React.FC<CostStatsHeaderProps> = ({ stats }) => (
+const CostStatsHeader: React.FC<CostStatsHeaderProps> = ({ stats, maxTokens, actualPercentage }) => (
   <div className="flex items-baseline justify-between gap-3 text-xs">
-    <span className="text-slate-500">
-      <span className="font-semibold text-slate-700">{stats.totalTokens.toLocaleString()}</span> tokens
+    <span className="text-slate-500 tabular-nums" title={`${stats.totalTokens.toLocaleString()} of ${maxTokens.toLocaleString()} tokens`}>
+      <span className="font-semibold text-slate-700">{formatTokenAmount(stats.totalTokens)}</span>
+      {' / '}{formatTokenAmount(maxTokens)} tokens ({actualPercentage.toFixed(1)}%)
     </span>
     <span className="font-semibold tabular-nums text-slate-800">
       ${stats.costEstimate.toFixed(3)}
@@ -255,20 +259,14 @@ const CostStatsHeader: React.FC<CostStatsHeaderProps> = ({ stats }) => (
 interface TokenUsageBarProps {
   usagePercentage: number;
   usageColor: string;
-  maxTokens: number;
 }
 
-const TokenUsageBar: React.FC<TokenUsageBarProps> = ({ usagePercentage, usageColor, maxTokens }) => (
-  <div className="space-y-1.5">
-    <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
-      <div
-        className={`h-full rounded-full transition-all duration-300 ${usageColor}`}
-        style={{ width: `${usagePercentage}%` }}
-      />
-    </div>
-    <div className="text-right text-[11px] leading-none text-slate-500 tabular-nums">
-      {usagePercentage.toFixed(1)}% of {(maxTokens / 1000).toFixed(0)}k max
-    </div>
+const TokenUsageBar: React.FC<TokenUsageBarProps> = ({ usagePercentage, usageColor }) => (
+  <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+    <div
+      className={`h-full rounded-full transition-all duration-300 ${usageColor}`}
+      style={{ width: `${usagePercentage}%` }}
+    />
   </div>
 );
 
@@ -295,8 +293,8 @@ const CostPreviewContent: React.FC<CostPreviewContentProps> = ({
     <div className="pt-3 border-t border-gray-200 space-y-3">
       {!hideCostsAndTokens && (
         <div className="space-y-1.5">
-          <CostStatsHeader stats={stats} />
-          <TokenUsageBar usagePercentage={usagePercentage} usageColor={usageColor} maxTokens={maxTokens} />
+          <CostStatsHeader stats={stats} maxTokens={maxTokens} actualPercentage={actualPercentage} />
+          <TokenUsageBar usagePercentage={usagePercentage} usageColor={usageColor} />
         </div>
       )}
       {contextRepositories && contextRepositories.length > 0 && (

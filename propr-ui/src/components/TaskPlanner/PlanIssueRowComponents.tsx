@@ -3,18 +3,27 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ExternalLink, GitPullRequest, MessageSquare, Play, Loader2, Eye, ChevronDown, StickyNote } from 'lucide-react';
 import { PlanIssue, PlanIssueStatus, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
+import { AgentOverrideChip, type AgentOverrideChipProps } from './AgentOverrideChip';
 import { getAttachmentUrl } from '../../api/proprApi';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import { PlanTask } from '../../api/plannerApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
-import AgentModelSelector from './AgentModelSelector';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
-import { getModelName, getImplementButtonClassName, getImplementButtonTitle } from './planIssueRowUtils';
+import { getModelName, getShortModelName, getImplementButtonClassName, getImplementButtonTitle } from './planIssueRowUtils';
 import { AuthenticatedAttachmentImage } from './AuthenticatedAttachmentImage';
 
-interface UltrafixSettingsControlsProps { enabled: boolean; goal: number | null | undefined; maxCycles: number | null | undefined; onGoalChange: (value: number | null) => void; onMaxCyclesChange: (value: number | null) => void; goalPlaceholder: string; maxPlaceholder: string; inputClassName: string; goalInputWidthClassName: string; maxInputWidthClassName: string; containerClassName?: string; errorClassName?: string; }
+interface UltrafixSettingsControlsProps { enabled: boolean; goal: number | null | undefined; maxCycles: number | null | undefined; onGoalChange: (value: number | null) => void; onMaxCyclesChange: (value: number | null) => void; goalPlaceholder: string; maxPlaceholder: string; inputClassName: string; goalInputWidthClassName: string; maxInputWidthClassName: string; containerClassName?: string; errorClassName?: string; goalLabel?: string; maxLabel?: string; }
 
-const ULTRAFIX_GOAL_OPTIONS = [5, 6, 7, 8, 9, 10];
+// Each goal reads as the score pill it targets: same shape tiers as ScoreBadge, out of 10.
+const ULTRAFIX_GOAL_OPTIONS: { value: number; label: string }[] = [
+  { value: 10, label: '● 10/10 (Perfect)' },
+  { value: 9, label: '● 9/10 (Strict)' },
+  { value: 8, label: '◆ 8/10 (Standard)' },
+  { value: 7, label: '◆ 7/10 (Lenient)' },
+  { value: 6, label: '■ 6/10 (Needs review)' },
+  { value: 5, label: '■ 5/10 (Needs review)' },
+];
+const isUltrafixGoalOption = (goal: number | null | undefined) => ULTRAFIX_GOAL_OPTIONS.some((option) => option.value === goal);
 
 function parseUltrafixIntegerInput(
   rawValue: string,
@@ -44,6 +53,8 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
   maxInputWidthClassName,
   containerClassName = 'flex flex-col gap-1',
   errorClassName = 'text-[11px] text-amber-700',
+  goalLabel = 'Min Review Score',
+  maxLabel = 'Max Loops',
 }) => {
   const [maxCyclesInput, setMaxCyclesInput] = useState(maxCycles?.toString() ?? '');
   const [maxCyclesError, setMaxCyclesError] = useState<string | null>(null);
@@ -51,64 +62,66 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
   useEffect(() => { if (!enabled) setMaxCyclesError(null); }, [enabled]);
 
   const commitMaxCycles = () => {
-    const result = parseUltrafixIntegerInput(maxCyclesInput, { minimum: 1, label: 'Max turns' });
+    const result = parseUltrafixIntegerInput(maxCyclesInput, { minimum: 1, label: maxLabel });
     if (result.error) { setMaxCyclesError(result.error); return; }
     setMaxCyclesError(null); if (result.value !== maxCycles) onMaxCyclesChange(result.value);
   };
 
   return (
     <div className={containerClassName}>
-      <div className="flex items-center gap-1.5">
-        <select
-          value={ULTRAFIX_GOAL_OPTIONS.includes(goal ?? 0) ? goal?.toString() : ''}
-          disabled={!enabled}
-          onChange={(e) => {
-            const value = Number(e.target.value);
-            if (Number.isInteger(value)) onGoalChange(value);
-          }}
-          className={`${goalInputWidthClassName} ${inputClassName}`}
-          aria-label={goalPlaceholder}
-        >
-          {!ULTRAFIX_GOAL_OPTIONS.includes(goal ?? 0) && <option value="" disabled>{goalPlaceholder}</option>}
-          {ULTRAFIX_GOAL_OPTIONS.map((option) => (
-            <option key={option} value={option}>{option}</option>
-          ))}
-        </select>
-        <input
-          type="number"
-          min={1}
-          value={maxCyclesInput}
-          disabled={!enabled}
-          onChange={(e) => {
-            setMaxCyclesInput(e.target.value);
-            if (maxCyclesError) setMaxCyclesError(null);
-          }}
-          onBlur={commitMaxCycles}
-          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-          placeholder={maxPlaceholder}
-          aria-label={maxPlaceholder}
-          className={`${maxInputWidthClassName} ${inputClassName}`}
-        />
+      <div className="flex items-center gap-3">
+        <label className="flex items-center gap-1.5">
+          <span className="text-xs text-slate-500 whitespace-nowrap">{goalLabel}</span>
+          <select
+            value={isUltrafixGoalOption(goal) ? goal?.toString() : ''}
+            disabled={!enabled}
+            onChange={(e) => {
+              const value = Number(e.target.value);
+              if (Number.isInteger(value)) onGoalChange(value);
+            }}
+            className={`${goalInputWidthClassName} ${inputClassName}`}
+          >
+            {!isUltrafixGoalOption(goal) && <option value="" disabled>{goalPlaceholder}</option>}
+            {ULTRAFIX_GOAL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5">
+          <span className="text-xs text-slate-500 whitespace-nowrap">{maxLabel}</span>
+          <input
+            type="number"
+            min={1}
+            value={maxCyclesInput}
+            disabled={!enabled}
+            onChange={(e) => {
+              setMaxCyclesInput(e.target.value);
+              if (maxCyclesError) setMaxCyclesError(null);
+            }}
+            onBlur={commitMaxCycles}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+            placeholder={maxPlaceholder}
+            className={`${maxInputWidthClassName} ${inputClassName}`}
+          />
+        </label>
       </div>
       {maxCyclesError && <p className={errorClassName}>{maxCyclesError}</p>}
     </div>
   );
 };
 
-export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) => {
-  const config = STATUS_CONFIG[status];
+/** A queued issue is still pending on the server; the label tells the user it will start on its own. */
+const QUEUED_STATUS = { ...STATUS_CONFIG.pending, label: 'Queued', bgColor: 'bg-slate-50', dotColor: 'bg-slate-400' };
+
+export const StatusBadge: React.FC<{ status: PlanIssueStatus; queued?: boolean }> = ({ status, queued = false }) => {
+  const config = queued && status === 'pending' ? QUEUED_STATUS : STATUS_CONFIG[status];
 
   return (
-    <span
-      className={`
-        inline-flex items-center gap-1.5
-        px-2 py-0.5
-        text-xs font-medium
-        rounded-full border
-        ${config.color} ${config.bgColor} ${config.borderColor}
-      `}
-    >
-      {config.isActive && <span className="relative flex h-2 w-2"><span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${config.bgColor} opacity-75`}></span><span className={`relative inline-flex rounded-full h-2 w-2 ${config.bgColor.replace('100', '500')}`}></span></span>}
+    <span className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 text-xs font-medium rounded border ${config.color} ${config.bgColor} ${config.borderColor}`}>
+      <span className="relative flex h-1.5 w-1.5">
+        {config.isActive && <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${config.dotColor} opacity-60`} />}
+        <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${config.dotColor}`} />
+      </span>
       {config.label}
     </span>
   );
@@ -128,7 +141,7 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
       ${pressed && !implementing && hasAgent
         ? isFirstPending
           ? 'bg-primary-700 text-white shadow-inner'
-          : 'bg-amber-100 border border-amber-600 text-amber-900'
+          : 'bg-slate-100 border border-slate-400 text-slate-800 shadow-inner'
         : getImplementButtonClassName(implementing, hasAgent, isFirstPending)}
     `}
     title={getImplementButtonTitle(hasAgent, isFirstPending)}
@@ -149,15 +162,19 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
 
 export interface AgentModelInfoProps { agentAlias: string; modelName: string | null; }
 export const AgentModelInfo: React.FC<AgentModelInfoProps> = ({ agentAlias, modelName }) => (
-  <span className="flex items-center gap-1.5 text-gray-500">
-    <ProviderLogo provider={agentAlias} className="w-3 h-3" />
-    <span>{agentAlias}</span>
-    {modelName && <><span className="text-gray-300">/</span><span>{getModelName(modelName)}</span></>}
+  // Same chip geometry as AgentOverrideChip so the agent column keeps its shape once a run starts.
+  <span
+    className="inline-flex max-w-[160px] items-center gap-1.5 rounded bg-slate-100 px-2 py-1 text-xs text-slate-600"
+    title={`${agentAlias} / ${getModelName(modelName) || 'default model'}`}
+    data-testid="agent-chip"
+  >
+    <ProviderLogo provider={agentAlias} className="w-3 h-3 flex-shrink-0" />
+    <span className="truncate">{getShortModelName(modelName) || agentAlias}</span>
   </span>
 );
 
 export interface PrLinkProps { prUrl: string; prNumber: number; }
-export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (<a href={prUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-purple-50 border border-purple-200 rounded-sm text-purple-700 hover:bg-purple-100 hover:border-purple-300 transition-colors" onClick={(e) => e.stopPropagation()}><GitPullRequest size={12} /><span>PR #{prNumber}</span><ExternalLink size={10} className="opacity-50" /></a>);
+export const PrLink: React.FC<PrLinkProps> = ({ prUrl, prNumber }) => (<a href={prUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-mono text-xs text-slate-600 hover:text-slate-900 hover:underline transition-colors" onClick={(e) => e.stopPropagation()}><GitPullRequest size={12} /><span>PR #{prNumber}</span><ExternalLink size={10} className="opacity-50" /></a>);
 
 export interface FollowupCountProps { count: number; }
 export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
@@ -168,7 +185,7 @@ export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
 );
 
 export interface ViewProgressLinkProps { taskId: string; }
-export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (<Link to={`/tasks/${encodeURIComponent(taskId)}`} className="inline-flex items-center gap-1 font-mono text-xs px-1.5 py-0.5 bg-blue-50 border border-blue-200 rounded-sm text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors" onClick={(e) => e.stopPropagation()}><Eye size={12} />View Progress</Link>);
+export const ViewProgressLink: React.FC<ViewProgressLinkProps> = ({ taskId }) => (<Link to={`/tasks/${encodeURIComponent(taskId)}`} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 sm:px-3 py-1.5 text-xs sm:text-sm font-medium text-teal-700 hover:bg-slate-50 hover:text-teal-800 transition-colors" onClick={(e) => e.stopPropagation()}><Eye size={14} />View Progress</Link>);
 
 export interface RowActionsProps {
   isPending: boolean;
@@ -183,6 +200,8 @@ export interface RowActionsProps {
   issue: PlanIssue;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
+  /** Plan default agent/model; lets the override popover offer "Reset to default". */
+  defaultSelection?: AgentOverrideChipProps['defaultSelection'];
   disableImplementation?: boolean;
   implementButtonPressed?: boolean;
   showImplementButton?: boolean;
@@ -206,6 +225,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
   issue,
   onAgentChange,
   onModelChange,
+  defaultSelection,
   disableImplementation = false,
   implementButtonPressed = false,
   showImplementButton = true,
@@ -215,38 +235,51 @@ export const RowActions: React.FC<RowActionsProps> = ({
   handleImplementClick,
   handleToggleExpand
 }) => {
-  const issueNumber = issue.issue_number;
+  const showProgressLink = (issue.status === 'processing' || issue.status === 'refinement_processing') && !!issue.task_id;
+  const showMultiAgentInfo = !isPending && selectedModels.length > 0;
 
+  // Fixed columns, same order in every state: agent on the left, the row's action on the far
+  // right. Running rows swap "Implement" for "View Progress" in place, so neither column moves.
   return (
-    <div className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:w-auto lg:flex-1 lg:justify-end lg:gap-3">
-      {isPending && (
-        <AgentModelSelector
-          agents={agents}
-          selectedAgent={issue.agent_alias}
-          selectedModel={issue.model_name}
-          onAgentChange={(agent) => onAgentChange(issueNumber, agent)}
-          onModelChange={(model) => onModelChange(issueNumber, model)}
-          disabled={implementing}
-          compact
-          isMulti={isMultiMode}
-          onMultiToggle={handleMultiToggle}
-          selectedModels={selectedModels}
-          onMultiModelChange={handleMultiModelChange}
-          onMultiConfirm={handleImplementClick}
-        />
-      )}
-      {isPending && showImplementButton && (
-        <ImplementButton
-          implementing={implementing}
-          disabled={disableImplementation}
-          hasAgent={hasAgent}
-          isFirstPending={isFirstPending}
-          pressed={implementButtonPressed}
-          label={implementButtonLabel}
-          onClick={handleImplementClick}
-        />
-      )}
-      {hasExpandableContent && <button onClick={handleToggleExpand} className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors" title={isExpanded ? 'Collapse details' : 'Expand details'}><motion.div animate={{ rotate: isExpanded ? 180 : 0 }} transition={{ duration: 0.2 }}><ChevronDown size={16} /></motion.div></button>}
+    <div className="flex min-w-0 items-center gap-2 lg:flex-none lg:gap-3">
+      <div data-testid="agent-column" className="flex w-36 min-w-0 justify-start">
+        {isPending ? (
+          <AgentOverrideChip
+            agents={agents}
+            issue={issue}
+            disabled={implementing}
+            isMultiMode={isMultiMode}
+            selectedModels={selectedModels}
+            onAgentChange={onAgentChange}
+            onModelChange={onModelChange}
+            defaultSelection={defaultSelection}
+            handleMultiToggle={handleMultiToggle}
+            handleMultiModelChange={handleMultiModelChange}
+            handleImplementClick={handleImplementClick}
+          />
+        ) : showMultiAgentInfo ? (
+          <MultiAgentInfo selectedModels={selectedModels} />
+        ) : issue.agent_alias ? (
+          <AgentModelInfo agentAlias={issue.agent_alias} modelName={issue.model_name} />
+        ) : null}
+      </div>
+      <div data-testid="action-column" className="flex w-32 justify-end">
+        {isPending && showImplementButton && (
+          <ImplementButton
+            implementing={implementing}
+            disabled={disableImplementation}
+            hasAgent={hasAgent}
+            isFirstPending={isFirstPending}
+            pressed={implementButtonPressed}
+            label={implementButtonLabel}
+            onClick={handleImplementClick}
+          />
+        )}
+        {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
+      </div>
+      <div className="flex w-7 justify-end">
+        {hasExpandableContent && <button onClick={handleToggleExpand} className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors" title={isExpanded ? 'Collapse details' : 'Expand details'}><motion.div animate={{ rotate: isExpanded ? 180 : 0 }} transition={{ duration: 0.2 }}><ChevronDown size={16} /></motion.div></button>}
+      </div>
     </div>
   );
 };
@@ -328,27 +361,28 @@ export const ExpandedContent: React.FC<ExpandedContentProps> = ({ task, draftId 
   );
 };
 
-export interface IssueMetadataProps { issue: PlanIssue; isPending: boolean; isProcessing: boolean; selectedModels?: AgentModelPair[]; }
-export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, isProcessing, selectedModels }) => {
+const MultiAgentInfo: React.FC<{ selectedModels: AgentModelPair[] }> = ({ selectedModels }) => (
+  <span
+    className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded bg-slate-100 px-2 py-1 text-xs text-slate-600"
+    title={selectedModels.map(m => `${m.agent_alias} / ${getModelName(m.model_name)}`).join('\n')}
+    data-testid="agent-chip"
+  >
+    <ProviderLogo provider={selectedModels[0].agent_alias} className="w-3 h-3 flex-shrink-0" />
+    <span className="truncate">{getShortModelName(selectedModels[0].model_name) || selectedModels[0].agent_alias}</span>
+    {selectedModels.length > 1 && <span className="flex-shrink-0 tabular-nums text-slate-500">+{selectedModels.length - 1}</span>}
+  </span>
+);
+
+/** Secondary row facts (PR link, follow-ups). Agent and action live in RowActions' fixed columns. */
+export interface IssueMetadataProps { issue: PlanIssue; }
+export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue }) => {
   const prUrl = issue.pr_number ? `https://github.com/${issue.repository}/pull/${issue.pr_number}` : null;
-  const showProgressLink = isProcessing && issue.task_id;
-  const showMultiAgentInfo = !isPending && selectedModels && selectedModels.length > 0;
-  const showAgentInfo = !isPending && !showMultiAgentInfo && issue.agent_alias;
-  if (!prUrl && !showProgressLink && issue.followup_count <= 0 && !showMultiAgentInfo && !showAgentInfo) return null;
+  if (!prUrl && issue.followup_count <= 0) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs sm:gap-3">
       {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
-      {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
       {issue.followup_count > 0 && <span className="hidden sm:block"><FollowupCount count={issue.followup_count} /></span>}
-      {showMultiAgentInfo && (
-        <div className="hidden sm:flex items-center gap-1 flex-wrap">
-          {selectedModels.map((m, idx) => (
-            <span key={`${m.agent_alias}-${m.model_name}`} className="flex items-center gap-1 text-gray-500">{idx > 0 && <span className="text-gray-300 mx-1">|</span>}<ProviderLogo provider={m.agent_alias} className="w-3 h-3" /><span>{getModelName(m.model_name)}</span></span>
-          ))}
-        </div>
-      )}
-      {showAgentInfo && <span className="hidden sm:block"><AgentModelInfo agentAlias={issue.agent_alias!} modelName={issue.model_name} /></span>}
     </div>
   );
 };

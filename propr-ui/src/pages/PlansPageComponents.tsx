@@ -6,7 +6,10 @@ import { getDraftDisplayName } from '../components/TaskPlanner/planDisplayName';
 import {
   getEffectiveStatus,
   renderStatusStrip,
-  formatRelativeTime
+  formatRelativeTime,
+  getRepositoryShortName,
+  hasMultipleRepositoryOwners,
+  toSingleLinePlainText
 } from './PlansPageUtils';
 
 interface EmptyStateProps {
@@ -85,40 +88,39 @@ interface PlansListItemProps {
   abortingId: string | null;
   onDelete: (id: string, e: React.MouseEvent) => void;
   onAbort: (id: string, e: React.MouseEvent) => void;
+  /** Show "owner/repo" because the listed plans span more than one owner. */
+  showRepositoryOwner?: boolean;
 }
 
 export const PlansListItem: React.FC<PlansListItemProps> = ({
   draft,
   abortingId,
   onDelete,
-  onAbort
+  onAbort,
+  showRepositoryOwner = false
 }) => {
   const effectiveStatus = getEffectiveStatus(draft.status, draft.issue_summary);
+  const repoName = getRepositoryShortName(draft.repository, showRepositoryOwner);
+  const title = toSingleLinePlainText(getDraftDisplayName(draft, draft.initial_prompt)) || 'Untitled Plan';
 
   return (
     <div className="hover:bg-gray-50 group border-b border-slate-100 flex items-center px-2 sm:px-4 py-3 gap-2 sm:gap-4">
       {/* Repository column - hidden on mobile, fixed width on desktop */}
       <div className="hidden sm:block flex-shrink-0 w-[140px]">
-        <Link to={`/studio/${draft.draft_id}`} className="block">
-          <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
-            {draft.repository}
-          </span>
+        <Link to={`/studio/${draft.draft_id}`} className="block truncate text-xs font-mono text-slate-600" title={draft.repository}>
+          {repoName}
         </Link>
       </div>
       {/* Plan title and status - takes all remaining space */}
       <div className="flex-1 min-w-0">
         <Link to={`/studio/${draft.draft_id}`} className="block">
-          {/* Repository badge - shown inline on mobile only */}
-          <div className="sm:hidden mb-1">
-            <span className="inline-flex items-center px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-700 rounded truncate max-w-full">
-              {draft.repository}
-            </span>
+          {/* Repository - shown inline on mobile only */}
+          <div className="sm:hidden mb-1 truncate text-xs font-mono text-slate-600">
+            {repoName}
           </div>
-          {/* Plan Title */}
-          <div className="mb-1">
-            <span className="text-sm font-medium text-gray-900 break-words">
-              {getDraftDisplayName(draft, draft.initial_prompt)}
-            </span>
+          {/* Plan Title - always a single plain-text line */}
+          <div className="mb-1 truncate max-w-2xl text-sm font-medium text-gray-900" title={title}>
+            {title}
           </div>
           {/* Bottom line: Unified Status Strip */}
           <div className="flex flex-wrap items-center text-xs gap-1">
@@ -218,6 +220,11 @@ export const PaginationControls: React.FC<PaginationControlsProps> = ({
 
 interface PlansListProps {
   drafts: DraftListItem[];
+  /**
+   * Every repository with plans (the filter's list). Deciding owner display from it rather than the
+   * current page keeps one short name meaning the same repository on every page.
+   */
+  repositories?: string[];
   abortingId: string | null;
   onDelete: (id: string, e: React.MouseEvent) => void;
   onAbort: (id: string, e: React.MouseEvent) => void;
@@ -225,10 +232,12 @@ interface PlansListProps {
 
 export const PlansList: React.FC<PlansListProps> = ({
   drafts,
+  repositories = [],
   abortingId,
   onDelete,
   onAbort
 }) => {
+  const showRepositoryOwner = hasMultipleRepositoryOwners([...repositories, ...drafts.map(draft => draft.repository)]);
   return (
     <div className="flex flex-col h-full bg-white w-full overflow-hidden">
       <div className="flex-1 overflow-y-auto w-full">
@@ -239,6 +248,7 @@ export const PlansList: React.FC<PlansListProps> = ({
             abortingId={abortingId}
             onDelete={onDelete}
             onAbort={onAbort}
+            showRepositoryOwner={showRepositoryOwner}
           />
         ))}
       </div>

@@ -116,6 +116,7 @@ vi.mock('./SetupWizardLeftPane', () => ({
     return (
       <div data-testid="setup-wizard-left-pane">
         {props.isGenerating ? <div data-testid="generation-progress">generation progress</div> : null}
+        {props.composerFooter as import('react').ReactNode}
       </div>
     );
   },
@@ -384,14 +385,15 @@ describe('SetupWizard', () => {
     };
     renderSetupWizard({ status: 'generating', generation_trace: previewTrace, context_config: {} });
     const leftPane = within(screen.getByTestId('setup-wizard-left-pane'));
-    const rightPane = within(screen.getByTestId('setup-wizard-right-pane'));
+    // Phones fold the context pane into rows of the settings group under the prompt.
+    expect(screen.queryByTestId('setup-wizard-right-pane')).not.toBeInTheDocument();
+    const costRow = within(screen.getByTestId('setup-cost-row'));
     expect(leftPane.getByTestId('generation-progress')).toBeInTheDocument();
-    expect(rightPane.queryByTestId('generation-progress')).not.toBeInTheDocument();
     expect(screen.getAllByTestId('generation-progress')).toHaveLength(1);
-    expect(rightPane.queryByText('Analyzing context...')).not.toBeInTheDocument();
-    expect(rightPane.queryByText('Enter prompt for cost')).not.toBeInTheDocument();
-    expect(rightPane.queryByText('$1.234')).not.toBeInTheDocument();
-    expect(rightPane.getByText('Cost after context analysis')).toBeInTheDocument();
+    expect(costRow.queryByText('Analyzing context...')).not.toBeInTheDocument();
+    expect(costRow.queryByText('Enter prompt for cost')).not.toBeInTheDocument();
+    expect(costRow.queryByText('$1.234')).not.toBeInTheDocument();
+    expect(costRow.getByText('Cost after context analysis')).toBeInTheDocument();
   });
 
   it('preserves right-pane preview progress on desktop while generating', () => {

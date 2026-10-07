@@ -6,14 +6,19 @@ import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
 import { ListSkeleton } from '../ui/Skeleton';
 import SequentialWarningDialog from './SequentialWarningDialog';
-import { usePlanIssuesManager } from './usePlanIssuesManager';
+import { usePlanIssuesManager, type IssueCreationProgress } from './usePlanIssuesManager';
 import { IssueCreationProgressIndicator } from './IssueCreationProgressIndicator';
 import { ExecutionOptionsToolbar, TasksBeingCreated } from './PlanIssuesManagerToolbar';
 import PlanIntentConfirmationDialog from './PlanIntentConfirmationDialog';
+import ExecuteAllBar from './ExecuteAllBar';
+import { useExecuteAll } from './useExecuteAll';
 import {
   describePlanPrBehavior,
   type PlanNotificationIntent,
 } from '../../utils/notificationIntents';
+
+// Phones get one edge-to-edge stream of hairline-separated rows; wider screens keep the bordered matrix.
+const ISSUE_LIST_CLASS_NAME = '-mx-4 divide-y divide-slate-100 border-y border-slate-100 md:mx-0 md:rounded-md md:border md:border-slate-200';
 
 interface PlanIssuesManagerProps {
   draftId: string;
@@ -35,6 +40,8 @@ interface PlanIssuesManagerProps {
   onUltrafixMaxCyclesChange?: (value: number | null) => void;
   draftStatus?: string;
   onCreationComplete?: (createdCount: number, failedCount: number) => void;
+  /** Reports live issue-creation progress so the surrounding view can summarise and guard it. */
+  onCreationProgressChange?: (progress: IssueCreationProgress) => void;
   isSavingExecutionSettings?: boolean;
   isReadOnly?: boolean;
   notificationIntent?: PlanNotificationIntent | null;
@@ -87,6 +94,21 @@ function buildExecutionIntentDetails(options: {
   };
 }
 
+// The batch bar follows the created issues, not plan_json: a revised or unparsable plan must not
+// leave an epic without any start affordance once the row buttons are hidden.
+const BATCH_MIN_ISSUES = 2;
+const showRowImplementButton = (useEpic: boolean | undefined, issueCount: number) => !useEpic || issueCount < BATCH_MIN_ISSUES;
+
+/**
+ * The server heads a chained batch with the earliest pending issue (by creation order) and lets
+ * closed predecessors fall out of the sequence, so the batch must not wait on the first unmerged row.
+ */
+function findBatchHeadIssue(issues: PlanIssue[]): PlanIssue | null {
+  return issues
+    .filter(issue => issue.status === 'pending')
+    .reduce<PlanIssue | null>((head, issue) => (head === null || issue.id < head.id ? issue : head), null);
+}
+
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
   repository,
@@ -107,6 +129,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   onUltrafixMaxCyclesChange,
   draftStatus,
   onCreationComplete,
+  onCreationProgressChange,
   isSavingExecutionSettings = false,
   isReadOnly = false,
   notificationIntent = null,
@@ -121,6 +144,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   const {
     issues, agents, loading, error, clearError, implementingIssue,
+    queuedIssueNumbers, queueingRemaining, handleQueueRemaining,
     issueTitles, issueTaskMap, activeIssues, mergedIssues,
     pendingCount, firstPendingIssueNumber,
     globalAgent, globalModel, globalIsMulti, globalSelectedModels, applyingGlobal,
@@ -132,6 +156,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     handleIssueMultiToggle, handleIssueMultiModelChange,
     handleRefresh, getUnmergedIssuesBefore,
   } = usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge, draftStatus, onCreationComplete });
+
+  useEffect(() => { onCreationProgressChange?.(issueCreationProgress); }, [issueCreationProgress, onCreationProgressChange]);
 
   const handleImplementWithWarning = useCallback((issueNumber: number, models?: AgentModelPair[]) => {
     if (isReadOnly) return;
@@ -174,21 +200,6 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     }
   }, [loading, issues.length, activeIssues.length, mergedIssues.length]);
 
-  const firstVisiblePendingIssueNumber = useMemo(
-    () => activeIssues.find(issue => issue.status === 'pending')?.issue_number ?? null,
-    [activeIssues]
-  );
-
-  const firstEpicIssueNumber = useMemo(
-    () => issues.reduce<number | null>(
-      (firstIssueNumber, issue) => firstIssueNumber === null
-        ? issue.issue_number
-        : Math.min(firstIssueNumber, issue.issue_number),
-      null
-    ),
-    [issues]
-  );
-
   const intentIssue = useMemo(
     () => activeIssues.find(issue => issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber) ?? null,
     [activeIssues, firstPendingIssueNumber],
@@ -201,11 +212,32 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     readOnly: isReadOnly,
   }), [intentIssue, isReadOnly, isSavingExecutionSettings, issueMultiModeMap, issueSelectedModelsMap]);
 
+  const batchHeadIssue = useMemo(() => findBatchHeadIssue(activeIssues), [activeIssues]);
+  const batchIntent = useMemo(() => buildExecutionIntentDetails({
+    issue: batchHeadIssue,
+    multiMode: batchHeadIssue ? Boolean(issueMultiModeMap[batchHeadIssue.issue_number]) : false,
+    selectedModels: batchHeadIssue ? issueSelectedModelsMap[batchHeadIssue.issue_number] ?? [] : [],
+    settingsSaving: isSavingExecutionSettings,
+    readOnly: isReadOnly,
+  }), [batchHeadIssue, isReadOnly, isSavingExecutionSettings, issueMultiModeMap, issueSelectedModelsMap]);
+
   useEffect(() => {
     if (loading || notificationIntent !== 'approve_execute') return;
     setShowExecutionIntentDialog(true);
     onNotificationIntentConsumed?.();
   }, [loading, notificationIntent, onNotificationIntentConsumed]);
+
+  const { hasInFlightIssues, handleExecuteAll, batchLocked, batchBusy } = useExecuteAll({
+    issues, executionIntent: batchIntent, isReadOnly, isSavingExecutionSettings, implementingIssue, queueingRemaining,
+    handleImplementIssue, handleQueueRemaining,
+  });
+
+  const issueCount = activeIssues.length + mergedIssues.length;
+  // The toolbar selection starts at the catalog default and is what "Reset to default" restores.
+  const planDefaultSelection = useMemo(
+    () => ({ agentAlias: globalAgent, modelName: globalModel }),
+    [globalAgent, globalModel],
+  );
 
   const handleConfirmExecutionIntent = useCallback(() => {
     if (!executionIntent.canExecute || !executionIntent.issue) return;
@@ -305,39 +337,57 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
           disableImplementation={isSavingExecutionSettings || isReadOnly}
         />
       )}
-      <div className="space-y-1.5">
-        {activeIssues.map(issue => (
-          <PlanIssueRow
-            key={issue.id}
-            issue={issue}
-            issueTitle={issueTitles[issue.issue_number]}
-            agents={agents}
-            onImplement={handleImplementIssue}
-            onAgentChange={handleAgentChange}
-            onModelChange={handleModelChange}
-            implementing={implementingIssue === issue.issue_number}
-            disableImplementation={isSavingExecutionSettings || isReadOnly}
-            isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
-            showImplementButton={!useEpic || issue.issue_number === firstVisiblePendingIssueNumber}
-            implementButtonLabel={useEpic && issue.issue_number === firstEpicIssueNumber ? 'Implement Epic' : 'Implement'}
-            onImplementWithWarning={handleImplementWithWarning}
-            inheritedIsMulti={issueMultiModeMap[issue.issue_number]}
-            inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
-            onMultiToggle={(isMulti) => handleIssueMultiToggle(issue.issue_number, isMulti)}
-            onMultiModelChange={(models) => handleIssueMultiModelChange(issue.issue_number, models)}
-            task={issueTaskMap[issue.issue_number]}
-            draftId={draftId}
-          />
-        ))}
-      </div>
+      {activeIssues.length > 0 && (
+        <div className={ISSUE_LIST_CLASS_NAME} data-testid="plan-execution-matrix">
+          {activeIssues.map(issue => (
+            <PlanIssueRow
+              key={issue.id}
+              issue={issue}
+              issueTitle={issueTitles[issue.issue_number]}
+              agents={agents}
+              onImplement={handleImplementIssue}
+              onAgentChange={handleAgentChange}
+              onModelChange={handleModelChange}
+              implementing={implementingIssue === issue.issue_number}
+              disableImplementation={isSavingExecutionSettings || isReadOnly}
+              isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
+              isQueued={queuedIssueNumbers.has(issue.issue_number)}
+              defaultSelection={planDefaultSelection}
+              showImplementButton={showRowImplementButton(useEpic, issueCount) && !queuedIssueNumbers.has(issue.issue_number)}
+              implementButtonLabel={useEpic ? 'Implement Epic' : 'Implement'}
+              onImplementWithWarning={handleImplementWithWarning}
+              inheritedIsMulti={issueMultiModeMap[issue.issue_number]}
+              inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
+              onMultiToggle={(isMulti) => handleIssueMultiToggle(issue.issue_number, isMulti)}
+              onMultiModelChange={(models) => handleIssueMultiModelChange(issue.issue_number, models)}
+              task={issueTaskMap[issue.issue_number]}
+              draftId={draftId}
+            />
+          ))}
+        </div>
+      )}
+      <ExecuteAllBar
+        remainingCount={pendingCount - queuedIssueNumbers.size}
+        queuedCount={queuedIssueNumbers.size}
+        taskCount={issueCount}
+        useEpic={useEpic}
+        autoMerge={autoMerge}
+        hasRunningIssues={hasInFlightIssues}
+        canExecute={batchIntent.canExecute}
+        readOnly={isReadOnly}
+        locked={batchLocked}
+        unavailableReason={batchIntent.unavailableReason}
+        executing={batchBusy}
+        onExecuteAll={handleExecuteAll}
+      />
       {mergedIssues.length > 0 && (
         <div className="border-t border-gray-200 pt-4 mt-4">
           <button
             onClick={() => setShowMerged(!showMerged)}
             className="flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-800 transition-colors"
           >
-            <CheckCircle size={16} className="text-green-600" />
-            <span>Merged Issues ({mergedIssues.length})</span>
+            <CheckCircle size={16} className="text-slate-400" />
+            <span>Completed Issues ({mergedIssues.length})</span>
             {showMerged ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
           </button>
 
@@ -348,7 +398,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ duration: 0.2 }}
-                className="mt-3 space-y-2"
+                className={`mt-3 overflow-hidden ${ISSUE_LIST_CLASS_NAME}`}
               >
                 {mergedIssues.map(issue => (
                   <PlanIssueRow

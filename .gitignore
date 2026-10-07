@@ -47,3 +47,6 @@ apps/desktop/out/
 
 # Generated when producing the MCP-readable documentation bundle.
 docs/docs-manifest.json
+
+# Runtime scratch storage for uploaded attachments (multer uploadDir).
+temp_uploads/

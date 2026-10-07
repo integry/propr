@@ -48,6 +48,8 @@ interface RepositorySelectorProps {
   labelLayout?: 'inline' | 'stacked';
   /** Drops the selected repository's count from the trigger below `sm`; the open list still shows every count. */
   hideCountOnMobile?: boolean;
+  /** Breadcrumb only: appended to the repository label, e.g. a `/main` branch suffix on phones. */
+  labelSuffix?: React.ReactNode;
 }
 
 const FormatRepoName: React.FC<{ name: string }> = ({ name }) => {
@@ -122,7 +124,7 @@ const getBreadcrumbLabel = (
   reposCount: number
 ) => {
   if (selectedRepoData?.displayName) return selectedRepoData.displayName;
-  if (selectedRepoData?.baseBranch) return `${selectedRepo.split('/')[1] || selectedRepo} (${selectedRepoData.baseBranch})`;
+  // The breadcrumb sits next to a branch chip (or carries a branch suffix on phones), so the label is the repository alone; the title keeps the branch.
   if (selectedRepo) return selectedRepo.split('/')[1] || selectedRepo;
   return reposCount === 0 ? 'No repositories' : placeholder;
 };
@@ -147,11 +149,12 @@ const BreadcrumbTrigger: React.FC<{
   disabled: boolean;
   isOpen: boolean;
   onClick: () => void;
-}> = ({ selectedRepoData, selectedRepo, placeholder, reposCount, disabled, isOpen, onClick }) => (
+  labelSuffix?: React.ReactNode;
+}> = ({ selectedRepoData, selectedRepo, placeholder, reposCount, disabled, isOpen, onClick, labelSuffix }) => (
   <>
     <button type="button" onClick={onClick} disabled={disabled || reposCount === 0} className="appearance-none bg-transparent border-none text-sm pr-5 py-0.5 font-mono text-gray-700 hover:text-indigo-600 focus:outline-none cursor-pointer transition-colors truncate max-w-full min-w-0 flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50" title={getBreadcrumbTitle(selectedRepoData, selectedRepo, placeholder, reposCount)}>
       {selectedRepoData ? <RepositoryIcon repository={selectedRepoData.name} iconPath={selectedRepoData.iconPath} revision={selectedRepoData.iconRevision || selectedRepoData.baseBranch} /> : <Github className="w-4 h-4 text-gray-500 flex-shrink-0" />}
-      <span className="truncate">{getBreadcrumbLabel(selectedRepoData, selectedRepo, placeholder, reposCount)}</span>
+      <span className="truncate">{getBreadcrumbLabel(selectedRepoData, selectedRepo, placeholder, reposCount)}{labelSuffix}</span>
     </button>
     <ChevronDown className={`w-3.5 h-3.5 text-gray-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none transition-transform ${isOpen ? 'rotate-180' : ''}`} />
   </>
@@ -228,7 +231,8 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   appearance = 'field',
   className = '',
   labelLayout = 'inline',
-  hideCountOnMobile = false
+  hideCountOnMobile = false,
+  labelSuffix
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [filter, setFilter] = useState('');
@@ -350,7 +354,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   if (variant === 'breadcrumb') {
     return (
       <div ref={containerRef} className={`relative inline-flex min-w-0 items-center ${className}`}>
-        <BreadcrumbTrigger selectedRepoData={selectedRepoData} selectedRepo={selectedRepo} placeholder={placeholder} reposCount={repos.length} disabled={disabled} isOpen={isOpen} onClick={handleToggle} />
+        <BreadcrumbTrigger selectedRepoData={selectedRepoData} selectedRepo={selectedRepo} placeholder={placeholder} reposCount={repos.length} disabled={disabled} isOpen={isOpen} onClick={handleToggle} labelSuffix={labelSuffix} />
         {dropdownContent}
       </div>
     );
