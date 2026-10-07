@@ -10,6 +10,7 @@ import {
   loadCacheUsage,
   loadRecordedSpend,
   loadRunVolume,
+  loadDailyRuns,
   loadTaskSummary,
   type CachePriceLookup,
 } from './analyticsAggregates.js';
@@ -96,7 +97,8 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
       // Volume comes from the aggregation the dashboard widget shares. With a
       // period every day in the window is listed, including empty ones;
       // without one, totals are all-time and the days are the last 30.
-      const summary = await loadTaskSummary(db, analyticsWindow);
+      // Runs beside tasks, per day: the compute behind each day's deliverables.
+      const [summary, dailyRuns] = await Promise.all([loadTaskSummary(db, analyticsWindow), loadDailyRuns(db, analyticsWindow)]);
       const dailyCounts: DailyCountRow[] = analyticsWindow
         ? summary.dailyCounts
         : summary.dailyCounts.filter(day => day.date >= thirtyDaysAgoStr.slice(0, 10));
@@ -149,7 +151,8 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
       res.json({
         dailyCounts: dailyCounts.map((row) => ({
           date: String(row.date),
-          count: Number(row.count)
+          count: Number(row.count),
+          runs: dailyRuns.get(String(row.date)) ?? 0,
         })),
         statusDistribution: statusDistribution.map((row) => ({
           status: String(row.state),

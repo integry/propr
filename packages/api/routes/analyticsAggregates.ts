@@ -134,6 +134,22 @@ export async function loadRunVolume(db: Knex, window: AnalyticsWindow | null): P
   };
 }
 
+/**
+ * Runs started per UTC day, keyed by day; days without a run are absent.
+ *
+ * The same executions `loadRunVolume` totals, bucketed by when each started,
+ * so the activity chart's daily runs sum to the delivery band's run count.
+ */
+export async function loadDailyRuns(db: Knex, window: AnalyticsWindow | null): Promise<Map<string, number>> {
+  const query = db('llm_executions')
+    .select(db.raw('date(start_time) as date'))
+    .count('* as runs')
+    .groupByRaw('date(start_time)');
+  whereCreatedWithin(query, 'start_time', window);
+  const rows = await query as unknown as Array<{ date: string | null; runs: number | string }>;
+  return new Map(rows.filter(row => row.date).map(row => [String(row.date), Number(row.runs)]));
+}
+
 /** Prompt and cache-read prices per token for a recorded model name, or null when unknown. */
 export type CachePriceLookup = (model: string) => { prompt: number; cacheRead?: number } | null;
 

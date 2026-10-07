@@ -1,5 +1,13 @@
 /**
- * Tasks created per day, as one bar per day.
+ * Runs against tasks per day, layered in one bar per day.
+ *
+ * Each day's outer bar is the compute spent that day (agent runs started), and
+ * the narrower bar inside it is the deliverables (tasks created). Reading the
+ * two on one scale is the point: an outer bar towering over its inner one is
+ * an agent iterating on the same work, and one that hugs it is work landing
+ * in a run or two. Two separate charts would make the reader carry one day's
+ * height across to the other, and would cost the pane its height again.
+ * Against a server that reports no runs, the chart draws tasks alone.
  *
  * Discrete bars, not a smoothed area: the buckets are whole UTC days, and a
  * monotone curve between them invents values for the hours in between and
@@ -7,12 +15,16 @@
  * is exactly one day's count, flat on the zero baseline.
  *
  * History is quiet: a day that has closed is a neutral slate bar, and only
- * today's bar, still accumulating, is brand teal — the dashboard's rule.
+ * today's bar, still accumulating, is brand teal — the dashboard's rule. In
+ * the layered chart the closed days' runs are a light slate behind a dark
+ * slate task bar, and today's are a light teal behind a teal one.
  *
  * The scale is the window's own maximum and zero, both always labelled, with
  * a lighter dashed midline between them, so a bar's height can be read to
- * within a task or two without hovering it; the exact figure is still one
- * hover away. The heading belongs to the pane that holds the chart.
+ * within a task or two without hovering it; the exact figures, and the day's
+ * runs per task, are still one hover away. The heading belongs to the pane
+ * that holds the chart, and the legend with the window's totals sits in it
+ * (`ActivityLegend`), so the chart takes no more height than before.
  *
  * Every bar that has room gets its own date, directly under it: a week reads
  * as weekdays over days, and a longer window steps at an even stride counted
@@ -26,13 +38,22 @@ import React, { useMemo, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { ChartNoAxesColumn, Slash } from 'lucide-react';
 import { midlineTick, tooltipStyle } from './chartConstants';
-import { dailyBarFill, utcToday } from './Dashboard/chartPalette';
+import { CURRENT_DAY_FILL, dailyBarFill, utcToday } from './Dashboard/chartPalette';
 import { planActivityAxis, type ActivityAxisLabel } from './Analytics/activityAxis';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
+interface ActivityDay {
+  date: string;
+  displayDate: string;
+  /** Tasks created that day. */
+  count: number;
+  /** Runs started that day; absent when the server does not report runs. */
+  runs?: number;
+}
+
 interface ActivitySparklineProps {
-  data: Array<{ date: string; displayDate: string; count: number }>;
+  data: ActivityDay[];
   isLoading?: boolean;
 }
 
@@ -47,6 +68,68 @@ const Y_AXIS_WIDTH = 28;
 
 /** The hover track behind a day's bar (slate-100: slate-50 vanishes on the white canvas). */
 const COLUMN_TRACK_FILL = '#F1F5F9';
+
+/**
+ * Runs, the outer bar: a closed day (slate-300, the settled-day slate) and
+ * today (teal-200). Any paler and a bar melts into the slate-100 hover track.
+ */
+const RUNS_FILL = '#CBD5E1';
+const CURRENT_RUNS_FILL = '#99F6E4';
+/** Tasks, the inner bar, on a closed day (slate-700); today's is brand teal. */
+const TASKS_FILL = '#334155';
+/** The inner bar's share of the outer bar's width. */
+const INNER_BAR_SHARE = 0.5;
+
+/** Whether the days carry runs, so the chart can layer them behind tasks. */
+const hasRuns = (data: ActivityDay[]): boolean => data.some(day => day.runs !== undefined);
+
+const formatRatio = (runs: number, tasks: number): string | null =>
+  tasks > 0 ? `${(runs / tasks).toFixed(1)}× runs per task` : null;
+
+/**
+ * The key to the layered chart, with each series' total over the window, for
+ * the pane heading. Nothing without runs: a single series needs no key.
+ */
+export const ActivityLegend: React.FC<{ data: ActivityDay[] }> = ({ data }) => {
+  if (!hasRuns(data)) return null;
+  const runs = data.reduce((sum, day) => sum + (day.runs ?? 0), 0);
+  const tasks = data.reduce((sum, day) => sum + day.count, 0);
+  const swatch = (fill: string) => (
+    <span className="inline-block h-2.5 w-2.5 flex-none rounded-sm" style={{ backgroundColor: fill }} aria-hidden="true" />
+  );
+  return (
+    <ul className="flex items-center gap-3 text-[11px] text-slate-500" aria-label="Activity legend" data-testid="activity-legend">
+      <li className="flex items-center gap-1.5" title="Agent runs started: the compute spent">
+        {swatch(RUNS_FILL)}Runs <span className="font-semibold tabular-nums text-slate-700">{runs.toLocaleString()}</span>
+      </li>
+      <li className="flex items-center gap-1.5" title="Tasks created: the deliverables">
+        {swatch(TASKS_FILL)}Tasks <span className="font-semibold tabular-nums text-slate-700">{tasks.toLocaleString()}</span>
+      </li>
+    </ul>
+  );
+};
+
+/**
+ * The tasks bar, narrowed and centred in the slot recharts gives it, so it
+ * sits inside that day's runs bar on the hidden twin axis.
+ */
+const InnerBar: React.FC<{ x?: number; y?: number; width?: number; height?: number; payload?: ActivityDay; today: string }> = ({
+  x = 0, y = 0, width = 0, height = 0, payload, today,
+}) => {
+  if (!payload || height <= 0) return null;
+  const inner = Math.max(2, width * INNER_BAR_SHARE);
+  return (
+    <rect
+      x={x + (width - inner) / 2}
+      y={y}
+      width={inner}
+      height={height}
+      rx={1.5}
+      fill={payload.date === today ? CURRENT_DAY_FILL : TASKS_FILL}
+      data-testid={`activity-tasks-bar-${payload.date}`}
+    />
+  );
+};
 
 /** One day's date under its bar: the weekday or day on top, the date, month or year beneath. */
 const DateTick: React.FC<{ x?: number; y?: number; payload?: { value: string }; labels: Map<string, ActivityAxisLabel> }> = ({
@@ -63,8 +146,9 @@ const DateTick: React.FC<{ x?: number; y?: number; payload?: { value: string }; 
 };
 
 const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false }) => {
+  const layered = hasRuns(data);
   // Never a rounded-up invention: the top rule is a count the window reached.
-  const max = Math.max(1, ...data.map(point => point.count));
+  const max = Math.max(1, ...data.map(point => Math.max(point.count, point.runs ?? 0)));
   const mid = midlineTick(max);
   const today = utcToday();
   const [plotWidth, setPlotWidth] = useState(0);
@@ -117,22 +201,55 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
                 allowDecimals={false}
                 tick={{ fill: '#94A3B8', fontSize: 10 }}
               />
+              {/*
+                The tasks bar lives on a hidden twin of the date axis, so
+                recharts lays it over the runs bar instead of beside it.
+              */}
+              {layered && <XAxis xAxisId="inner" dataKey="date" hide />}
               {/* The cursor is the day's whole column, ceiling to baseline. */}
               <Tooltip
                 cursor={{ fill: COLUMN_TRACK_FILL }}
-                content={({ active, payload }) =>
-                  active && payload && payload.length ? (
+                content={({ active, payload }) => {
+                  if (!active || !payload || payload.length === 0) return null;
+                  const day = payload[0].payload as ActivityDay;
+                  const ratio = layered ? formatRatio(day.runs ?? 0, day.count) : null;
+                  return (
                     <div style={{ ...tooltipStyle, padding: '6px 10px', fontSize: '12px' }}>
-                      {(payload[0].payload as ActivitySparklineProps['data'][number]).displayDate}: {payload[0].value} tasks
+                      {layered
+                        ? <>{day.displayDate}: {(day.runs ?? 0).toLocaleString()} runs · {day.count.toLocaleString()} tasks</>
+                        : <>{day.displayDate}: {day.count} tasks</>}
+                      {ratio && <div className="text-slate-500">{ratio}</div>}
                     </div>
-                  ) : null
-                }
+                  );
+                }}
               />
-              <Bar dataKey="count" radius={[2, 2, 0, 0]} maxBarSize={40} isAnimationActive={false}>
-                {data.map(point => (
-                  <Cell key={point.date} fill={dailyBarFill(point.date, today)} data-testid={`activity-bar-${point.date}`} />
-                ))}
-              </Bar>
+              {layered ? (
+                <Bar dataKey="runs" name="Runs" radius={[2, 2, 0, 0]} maxBarSize={40} isAnimationActive={false}>
+                  {data.map(point => (
+                    <Cell
+                      key={point.date}
+                      fill={point.date === today ? CURRENT_RUNS_FILL : RUNS_FILL}
+                      data-testid={`activity-runs-bar-${point.date}`}
+                    />
+                  ))}
+                </Bar>
+              ) : (
+                <Bar dataKey="count" radius={[2, 2, 0, 0]} maxBarSize={40} isAnimationActive={false}>
+                  {data.map(point => (
+                    <Cell key={point.date} fill={dailyBarFill(point.date, today)} data-testid={`activity-bar-${point.date}`} />
+                  ))}
+                </Bar>
+              )}
+              {layered && (
+                <Bar
+                  dataKey="count"
+                  name="Tasks"
+                  xAxisId="inner"
+                  maxBarSize={40}
+                  isAnimationActive={false}
+                  shape={<InnerBar today={today} />}
+                />
+              )}
             </BarChart>
           </ResponsiveContainer>
         ) : (

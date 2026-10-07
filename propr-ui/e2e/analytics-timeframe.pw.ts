@@ -296,3 +296,56 @@ test('the agent efficacy matrix shows one figure per cell, denominators on hover
   await captureTarget(pane, 'analytics-review-quality');
   await captureSettled(page, 'analytics-review-quality-page');
 });
+
+test('runs and tasks share one chart: each day layers its tasks inside its runs', async ({ page }) => {
+  await fixture(page, { width: 1440, height: 900 });
+  await stubAnalytics(page);
+  // A week where Tuesday thrashed: 571 runs to deliver 210 tasks.
+  const runs = [96, 120, 70, 52, 140, 571, 31];
+  const tasks = [44, 61, 30, 25, 66, 210, 14];
+  await page.route('**/api/stats/tasks*', route => route.fulfill({ json: {
+    dailyCounts: dayKeys(7).map((date, index) => ({ date, count: tasks[index], runs: runs[index] })),
+    statusDistribution: [{ status: 'completed', count: 400 }, { status: 'failed', count: 50 }],
+    avgProcessingTime: [],
+    summary: { total: 450, completed: 400, failed: 50 },
+  } }));
+  await page.goto('/analytics?period=7d');
+  await expect(page.getByText('design-system')).toBeVisible();
+
+  // The key sits in the pane heading with each series' total, so the chart is no taller.
+  const legend = page.getByTestId('activity-legend');
+  await expect(legend).toHaveText(/Runs\s*1,080\s*Tasks\s*450/);
+
+  const chart = page.getByTestId('activity-chart');
+  await expect(chart.locator('[data-testid^="activity-runs-bar-"]')).toHaveCount(7);
+  const inner = chart.locator('[data-testid^="activity-tasks-bar-"]');
+  await expect(inner).toHaveCount(7);
+  const fills = await inner.evaluateAll(rects => rects.map(rect => rect.getAttribute('fill')));
+  expect(fills.slice(0, -1).every(fill => fill === '#334155')).toBe(true);
+  expect(fills.at(-1)).toBe('#14B8A6');
+
+  // Each tasks bar is centred inside its runs bar, narrower, and on the same baseline.
+  const outerBoxes = await chart.locator('.recharts-bar-rectangle path').evaluateAll(paths =>
+    paths.map(path => path.getBoundingClientRect()).map(box => ({ x: box.x, width: box.width, top: box.top, bottom: box.bottom })));
+  const innerBoxes = await inner.evaluateAll(rects =>
+    rects.map(rect => rect.getBoundingClientRect()).map(box => ({ x: box.x, width: box.width, bottom: box.bottom })));
+  expect(outerBoxes).toHaveLength(7);
+  outerBoxes.forEach((outer, index) => {
+    const box = innerBoxes[index];
+    expect(box.width).toBeLessThan(outer.width);
+    expect(Math.abs((box.x + box.width / 2) - (outer.x + outer.width / 2))).toBeLessThan(1);
+    expect(Math.abs(box.bottom - outer.bottom)).toBeLessThan(1);
+  });
+
+  // One scale for both: the top rule is the busiest day's runs.
+  const ticks = chart.locator('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value');
+  expect(Math.max(...(await ticks.allTextContents()).map(text => Number(text.trim())))).toBe(571);
+
+  // Hovering a day reads both series and the ratio between them.
+  const tuesday = outerBoxes[5];
+  await page.mouse.move(tuesday.x + tuesday.width / 2, tuesday.top + 8);
+  await expect(page.getByText('Sep 22: 571 runs · 210 tasks')).toBeVisible();
+  await expect(page.getByText('2.7× runs per task')).toBeVisible();
+  await page.clock.runFor(2_000);
+  await captureTarget(page.locator('[aria-labelledby="analytics-activity-heading"]'), 'analytics-activity-runs-vs-tasks');
+});

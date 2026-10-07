@@ -8,7 +8,10 @@ const periodQuery = (period?: AnalyticsTimeframe): string =>
 
 export interface DailyCount {
   date: string;
+  /** Tasks created that day. */
   count: number;
+  /** Agent runs started that day; absent from servers that predate it. */
+  runs?: number;
 }
 
 export interface StatusDistribution {

@@ -39,6 +39,8 @@ The Analytics page reports task volume (the deliverables) and run volume (the co
 
 A figure with nothing behind it is shown as "—", never as zero.
 
+The Activity chart plots the same two volumes day by day on one scale: each day's runs as a light outer bar, with that day's tasks as a narrower dark bar inside it (teal for today). An outer bar that towers over its inner one is an agent iterating on the same work; one that hugs it is work landing in a run or two. The pane heading carries the legend with each series' total for the period, and hovering a day shows its runs, tasks and runs per task. `GET /api/stats/tasks` reports a `runs` count beside each day's task `count`.
+
 ### Breakdowns the product provides
 
 - **Per repository** — the Repository Breakdown panel on `/analytics` (and `GET /api/stats/repositories`) splits totals, completed, failed, in-progress, and success rate per repository.

@@ -30,7 +30,7 @@ import {
 } from '@propr/shared';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import TaskStatsChart from '../components/TaskStatsChart';
-import ActivitySparkline from '../components/ActivitySparkline';
+import ActivitySparkline, { ActivityLegend } from '../components/ActivitySparkline';
 import RepositoryBreakdown from '../components/RepositoryBreakdown';
 import TopModels from '../components/TopModels';
 import TokenConsumption from '../components/Analytics/TokenConsumption';
@@ -63,11 +63,13 @@ const formatDate = (dateStr: string): string =>
   new Date(`${dateStr}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 
 /** A pane of the console: a heading bar and its content, ruled off from the pane above. */
-const Pane: React.FC<{ id: string; title: string; count?: number | null; first?: boolean; children: React.ReactNode }> = ({
-  id, title, count, first = false, children,
+const Pane: React.FC<{
+  id: string; title: string; count?: number | null; first?: boolean; actions?: React.ReactNode; children: React.ReactNode;
+}> = ({
+  id, title, count, first = false, actions, children,
 }) => (
   <section aria-labelledby={id} className={`min-w-0 ${first ? '' : 'border-t border-slate-200'}`}>
-    <SectionHeading id={id} title={title} count={count} />
+    <SectionHeading id={id} title={title} count={count}>{actions}</SectionHeading>
     {children}
   </section>
 );
@@ -173,6 +175,7 @@ const AnalyticsPage: React.FC = () => {
     date: item.date,
     displayDate: formatDate(item.date),
     count: item.count,
+    ...(item.runs === undefined ? {} : { runs: item.runs }),
   }));
 
   return (
@@ -202,7 +205,12 @@ const AnalyticsPage: React.FC = () => {
 
         <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]" data-testid="analytics-split">
           <div className="min-w-0 lg:border-r lg:border-slate-200" data-testid="analytics-primary-pane">
-            <Pane id="analytics-activity-heading" title={`Activity · ${timeframeLabel}`} first>
+            <Pane
+              id="analytics-activity-heading"
+              title={`Activity · ${timeframeLabel}`}
+              first
+              actions={tasks.loading || tasks.error ? undefined : <ActivityLegend data={sparklineData} />}
+            >
               <div className="px-3 py-3 sm:px-4">
                 {tasks.error
                   ? <SystemAlert>{tasks.error}</SystemAlert>

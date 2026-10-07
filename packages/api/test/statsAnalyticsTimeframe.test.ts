@@ -141,6 +141,11 @@ test('a day period zero-fills one daily count per UTC day, today and the days be
   assert.equal(days.find(day => day.date === daysAgo(2).slice(0, 10))?.count, 1);
   assert.equal(days.find(day => day.date === NOW.toISOString().slice(0, 10))?.count, 1);
   assert.equal(days.reduce((total, day) => total + day.count, 0), 2);
+  // Each day carries the runs started on it, and they sum to the delivery band's runs.
+  const weekOverview = await call(stats.getOverview, { period: '7d' });
+  const dailyRuns = (days as Array<{ runs: number }>).reduce((total, day) => total + day.runs, 0);
+  assert.equal(dailyRuns, (weekOverview.body.runs as { total: number }).total);
+  assert.ok(dailyRuns > 0);
 
   // All time starts at the earliest matching task.
   const allTime = await call(stats.getTaskStats, { period: 'all' });
@@ -194,7 +199,9 @@ test('the dashboard widget and the Analytics page report the same figures for th
     assert.equal(widget.body.completed, summary.completed, period);
     assert.equal(widget.body.failed, summary.failed, period);
     assert.equal(widget.body.recordedSpend, (overview.body.usage as { total_cost_usd: number }).total_cost_usd, period);
-    assert.deepEqual(widget.body.dailyTasks, tasks.body.dailyCounts, period);
+    // The page also layers each day's runs behind its tasks; the widget draws tasks only.
+    const pageDays = (tasks.body.dailyCounts as Array<{ date: string; count: number }>).map(({ date, count }) => ({ date, count }));
+    assert.deepEqual(widget.body.dailyTasks, pageDays, period);
   }
   const week = await call(stats.getDashboardStats, { repository: 'all', period: '7d' });
   assert.equal(week.body.tasks, 3);

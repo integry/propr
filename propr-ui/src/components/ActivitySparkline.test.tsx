@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import ActivitySparkline from './ActivitySparkline';
+import ActivitySparkline, { ActivityLegend } from './ActivitySparkline';
 import { midlineTick } from './chartConstants';
 
 const barHeights = (container: HTMLElement) =>
@@ -31,5 +31,20 @@ describe('ActivitySparkline', () => {
     expect(midlineTick(2)).toBe(1);
     // Too small a range has no distinct midline.
     expect(midlineTick(1)).toBeNull();
+  });
+
+  it('keys the layered chart with each series total over the window', () => {
+    render(<ActivityLegend data={[
+      { date: '2026-10-06', displayDate: 'Oct 6', count: 210, runs: 571 },
+      { date: '2026-10-07', displayDate: 'Oct 7', count: 60, runs: 180 },
+    ]} />);
+    const legend = screen.getByTestId('activity-legend');
+    expect(legend).toHaveTextContent('Runs 751');
+    expect(legend).toHaveTextContent('Tasks 270');
+  });
+
+  it('draws no key when the server reports no runs, since tasks are the only series', () => {
+    const { container } = render(<ActivityLegend data={[{ date: '2026-10-07', displayDate: 'Oct 7', count: 4 }]} />);
+    expect(container).toBeEmptyDOMElement();
   });
 });
