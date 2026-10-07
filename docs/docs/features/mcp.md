@@ -28,6 +28,7 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Plans by status | `list_plans` with `status`: `active`, an exact persisted status, or `all` (default) |
 | Ideas for what to work on next (the **Improve** tab) | `generate_repository_improvements`, then `get_operation` for `result.suggestions` |
 | Start a bounded change | `create_task`, then `get_operation` or `get_task_submission` |
+| Run a saved [agent](./agents.md) and read its report | `list_agent_definitions`, `trigger_agent_run`, then `get_operation` or `get_agent_run`; `approve_agent_run`/`reject_agent_run` for runs awaiting approval (preview runs, and auto runs the cost gate paused) |
 | Find what you started and whether it finished | `list_operations`, then `get_operation` |
 | PR inventory and review fixes | `list_pull_requests`, `fix_review_findings` with `findingIds` and/or `suggestionIds` |
 | Visual previews published for a task or PR (images; videos are metadata only) | `list_visual_previews`, `get_visual_preview` |

@@ -10,7 +10,8 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import logger from '../../../utils/logger.js';
-import { AgentConfig } from '../../types.js';
+import type { AgentConfig, AgentToolPolicy } from '../../types.js';
+import { claudeToolPolicyArgs } from '../../agentToolPolicy.js';
 import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
@@ -61,6 +62,8 @@ export interface DockerArgsParams {
     systemPrompt?: string;
     /** Optional tools configuration */
     tools?: string;
+    /** Per-run web/MCP policy; its tokens must reach the docker process through `extraEnvVars`. */
+    toolPolicy?: AgentToolPolicy;
     /** Per-execution environment variables to inject into the agent container. */
     environment?: Record<string, string>;
     /** Optional task ID for container naming */
@@ -169,6 +172,26 @@ function buildBaseDockerArgs(options: {
 }
 
 /**
+ * Turns the per-run tool policy into Claude CLI switches plus name-only `-e`
+ * flags; docker copies the token values from its own environment.
+ */
+function resolveClaudeToolPolicy(
+    toolPolicy: AgentToolPolicy | undefined,
+    issueNumber: DockerArgsParams['issueNumber'],
+    agentAlias: string,
+): { cliArgs: string[]; envArgs: string[] } {
+    if (!toolPolicy) return { cliArgs: [], envArgs: [] };
+    const { cliArgs, env } = claudeToolPolicyArgs(toolPolicy);
+    logger.info({
+        issueNumber,
+        allowWeb: toolPolicy.allowWeb,
+        mcpServers: toolPolicy.mcpServers?.map(server => server.name) ?? [],
+        agentAlias
+    }, 'Applying tool policy to Claude agent');
+    return { cliArgs, envArgs: Object.keys(env).flatMap(name => ['-e', name]) };
+}
+
+/**
  * Builds Docker arguments for running Claude in a container.
  *
  * This function constructs the full `docker run` command arguments including:
@@ -190,7 +213,7 @@ export function buildDockerArgs(
     const {
         worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment,
         taskId, executionType, reasoningLevel, readOnlyWorkspace = false, repositoryInspection = false,
-        executionMode = 'task', resumeSessionId, sessionId,
+        executionMode = 'task', resumeSessionId, sessionId, toolPolicy,
     } = params;
     const configPath = resolveConfigPath(config.configPath);
     if (repositoryInspection && !readOnlyWorkspace) {
@@ -203,10 +226,8 @@ export function buildDockerArgs(
         ? REPOSITORY_SCOUT_CONTAINER_ROOT
         : '/home/node/workspace';
     const workerOwnedGit = !agentOwnsGit(params);
-    const envVars = buildEnvironmentVariableArgs(
-        [config.envVars, environment],
-        true,
-    );
+    const policyArgs = resolveClaudeToolPolicy(toolPolicy, issueNumber, config.alias);
+    const envVars = [...buildEnvironmentVariableArgs([config.envVars, environment], true), ...policyArgs.envArgs];
     const dockerArgs = buildBaseDockerArgs({
         config,
         maxTurns,
@@ -266,6 +287,8 @@ export function buildDockerArgs(
             agentAlias: config.alias
         }, 'Using custom tools configuration');
     }
+
+    dockerArgs.push(...policyArgs.cliArgs);
 
     logger.info({
         issueNumber,

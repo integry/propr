@@ -149,6 +149,7 @@ async function runTool({ tool, raw, principal, deps, access, signal }: ToolInvoc
     ? await new McpOperations(deps.db).replay(principal, tool.name, args) : undefined;
   if (tool.name === 'send_task_followup' && /^\s*\/(?:merge|review|fix|ultrafix|deploy)\b/im.test(args.message)) throw new McpError('USE_EXPLICIT_TOOL', 'Use the dedicated PR lifecycle tool for slash commands so its scope and head preconditions can be checked.');
   if (tool.target && !deletedReplay) await authorizeTarget(tool, args, principal, deps);
+  if (tool.authorize) await tool.authorize({ principal, args });
   let operationRepository = args.repository;
   let cancellationReplay: Record<string, unknown> | undefined;
   if (tool.name === 'cancel_operation') {

@@ -23,6 +23,17 @@ export function resolveContextRepositories(repository: string, setting: unknown)
     return [...new Set(repositories.map(name => name.toLowerCase()))].sort();
 }
 
+/**
+ * The repositories an agent working on `repository` may read, lowercased, or
+ * undefined when its settings allow all of them. Every monitored entry for the
+ * repository applies; conflicting branch entries never broaden the policy.
+ */
+export async function resolveEffectiveContextRepositories(repository: string): Promise<string[] | undefined> {
+    const entries = (await loadMonitoredReposStrict()).filter(repo => repo.name.toLowerCase() === repository.toLowerCase());
+    const policies = entries.map(entry => resolveContextRepositories(repository, entry.contextRepositories)).filter(value => value !== undefined);
+    return policies.length ? policies.reduce((a, b) => a.filter(name => b.includes(name))) : undefined;
+}
+
 export function agentOwnsGit(options: Pick<AgentTaskOptions, 'executionMode' | 'environment'>): boolean {
     return options.executionMode === 'goal' && options.environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'orchestrate';
 }
@@ -146,12 +157,11 @@ async function taskGitMetadataMount(worktreePath: string, clones: string[], writ
 
 /** Called at the adapter boundary, including follow-ups, fixes and native goal resumes. */
 export async function prepareAgentGitAccess(options: AgentTaskOptions, readOnlyWorkspace = false): Promise<AgentTaskOptions> {
+    // No token is minted and no clone is mounted, whatever the repository settings.
+    if (options.repositoryAccess === 'none') return { ...options, githubToken: '', gitMountArgs: [] };
     const writable = agentOwnsGit(options);
     const repository = `${options.issueRef.repoOwner}/${options.issueRef.repoName}`;
-    const entries = (await loadMonitoredReposStrict()).filter(repo => repo.name.toLowerCase() === repository.toLowerCase());
-    // Conflicting branch entries must never silently broaden the policy.
-    const policies = entries.map(entry => resolveContextRepositories(repository, entry.contextRepositories)).filter(value => value !== undefined);
-    const repositories = policies.length ? policies.reduce((a, b) => a.filter(name => b.includes(name))) : undefined;
+    const repositories = await resolveEffectiveContextRepositories(repository);
     const octokit = await getAuthenticatedOctokit();
     const repositoryIds = repositories ? [...new Set(await Promise.all(repositories.map(async name => {
         const [owner, repo] = name.split('/');

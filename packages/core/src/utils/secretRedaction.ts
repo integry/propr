@@ -1,4 +1,5 @@
 import { redactVisualPreviewPaths } from '../services/visualPreviewPaths.js';
+import { PROPR_MCP_BEARER_TOKEN_ENV } from '../agents/agentToolPolicy.js';
 
 // Free of service dependencies so lightweight modules can redact without loading log or pricing services.
 interface SecretPattern {
@@ -7,6 +8,9 @@ interface SecretPattern {
     /** When set, the replacement callback is used instead of a literal string substitution. */
     dynamicReplacement?: 'bearer';
 }
+
+/** Container env vars that carry per-run MCP bearer tokens. */
+const TOOL_POLICY_BEARER_ENV_NAMES = [PROPR_MCP_BEARER_TOKEN_ENV];
 
 const SECRET_PATTERNS: SecretPattern[] = [
     // =====================================================================
@@ -68,6 +72,10 @@ const SECRET_PATTERNS: SecretPattern[] = [
     // matters: provider-specific rules above take precedence.
     // =====================================================================
 
+    // Authorization headers — the header name is signal enough to redact a token of any length.
+    { pattern: /(?<=\bAuthorization['"]?\s*[:=]\s*['"]?Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, replacement: '[REDACTED_BEARER_TOKEN]' },
+    // Per-run MCP bearer token env vars, e.g. PROPR_MCP_BEARER_TOKEN=...
+    { pattern: new RegExp(`(?<=\\b(?:${TOOL_POLICY_BEARER_ENV_NAMES.join('|')})\\s*[=:]\\s*['"]?)[^\\s'"]+`, 'g'), replacement: '[REDACTED_SECRET]' },
     // Bearer tokens — require at least 20 chars to avoid matching prose
     { pattern: /Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi, replacement: '', dynamicReplacement: 'bearer' },
     // Secret/token assignment patterns (catches env vars like SECRET_KEY=..., GITHUB_TOKEN=..., NPM_TOKEN=..., etc.)

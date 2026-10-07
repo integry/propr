@@ -208,7 +208,21 @@ export interface MergeConflictJobData {
     systemGenerated: true;    // Distinguishes from user-authored follow-up comments
 }
 
-export type JobData = IssueJobData | CommentJobData | TaskImportJobData | GoalJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData;
+/** Agent run phase names; each maps to its own job name on the issue queue. */
+export type AgentRunPhase = 'report' | 'action';
+
+/** One phase of an agent run: `processAgentRun` (report) or `processAgentAction` (action). */
+export interface AgentRunJobData {
+    runId: string;
+    definitionId: string;
+    ownerId: string;
+    phase: AgentRunPhase;
+    correlationId: string;
+    /** Action phase only: guidance the approver added, appended to the acting prompt. */
+    operatorNote?: string;
+}
+
+export type JobData = IssueJobData | CommentJobData | TaskImportJobData | GoalJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData | AgentRunJobData;
 
 export interface ClaudeOutputResult {
     type?: string;

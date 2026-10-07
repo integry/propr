@@ -348,6 +348,34 @@ done
 
 Failures exit 1. With `--json` they print a `goal-error` document to stdout whose `error.code` is one of `invalid_arguments`, `validation_failed`, `unauthorized`, `forbidden`, `not_found`, `idempotency_conflict`, `agent_not_goal_capable`, `state_conflict`, `outcome_uncertain`, `invalid_cursor`, `cursor_expired`, `wait_limit`, `boundary_not_established`, `server_error`, `network_error` or `request_failed`, plus the server message, HTTP status, idempotency key and recovery hint where relevant. Another user's goal reads as `not_found`.
 
+## Agents (saved automations)
+
+Agents, the saved automations on the **Agents** page of the Web UI, are driven by `propr automation` (alias `propr automations`). The group is separate from `propr agent`, which manages coding-agent configurations. See [Agents](./agents.md) for what a run does, autonomy and the cost gate.
+
+```bash
+propr automation list                          # Your agents (--limit, --offset)
+propr automation show <agent-id>               # Prompt, schedule, autonomy, repositories
+propr automation run <agent-id>                # Trigger a run (--idempotency-key, --source, --wait, --timeout)
+propr automation runs <agent-id> --limit 5     # Run history, newest first
+propr automation report <run-id> > report.md   # Report Markdown on stdout, metadata on stderr
+propr automation approve <run-id> --note "Only the top finding"   # Preview runs
+propr automation reject <run-id>
+propr automation cancel <run-id>
+```
+
+`run` sends an `Idempotency-Key` with `{ "trigger": "cli", "source": ... }`. Without `--idempotency-key` the CLI generates `cli-<uuid>` and prints it. Transient failures are retried with the same key, so running the command again with that key returns the first run (`created: false`) instead of starting another. CLI triggers go through the usage gate: a run deferred or skipped for low provider capacity prints the reason on stderr.
+
+With `--wait`, the CLI polls the run every 5 seconds until it reaches a terminal state, is deferred, or awaits approval, for up to `--timeout` seconds (default 1800). Run metadata and state changes go to stderr and the report goes to stdout. **Exit codes:** `0` completed (without `--wait`: accepted), `2` timed out (the run continues), `3` skipped or deferred, `4` awaiting approval, `1` failed, rejected, cancelled or error.
+
+The trigger works from your own cron or a GitHub Actions step:
+
+```yaml
+- name: Run the weekly triage agent
+  run: npx propr-cli automation run "$AGENT_ID" --idempotency-key "$GITHUB_RUN_ID" --source github-actions --wait > report.md
+```
+
+With `--json`, every command prints a `{ "version": 1, "kind": ... }` document with one of the kinds `automation-list`, `automation`, `automation-runs` or `automation-run`. Failures print `automation-error`. A missing or another user's agent prints `Agent not found`.
+
 ## Tasks
 
 ```bash

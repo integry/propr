@@ -16,6 +16,8 @@ export interface TaskQuery {
   search?: string;
   forReview?: boolean;
   excludeMerged?: boolean;
+  /** Clock for the attention projection's lookback window; defaults to the current time. */
+  now?: Date;
   /**
    * Page by task (the pull request or issue every run of it belongs to)
    * rather than by run. `limit` and `offset` then count tasks, `total` is the
@@ -27,8 +29,6 @@ export interface TaskQuery {
    * runs, whatever the status and search filters would list.
    */
   containsTask?: string;
-  /** Clock for the attention filter's failure lookback; defaults to the current time. */
-  now?: Date;
 }
 
 export interface TaskPage {

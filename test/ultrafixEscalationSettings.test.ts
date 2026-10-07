@@ -2,6 +2,8 @@ import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateAgentNetworkSetting } from '../packages/core/src/network/networkPolicy.js';
 await mock.module('@propr/core', { namedExports: {
+    AGENT_RUN_USAGE_PAUSE_PERCENT_MIN: 50,
+    AGENT_RUN_USAGE_PAUSE_PERCENT_MAX: 100,
     validateModelReasoningLevel: () => ({ valid: true, value: '' }),
     validateAgentNetworkSetting,
     validatePrReviewModelValue: async (model: string) => ({ valid: model !== 'missing', error: model === 'missing' ? 'pr_review_model is unavailable' : undefined }),

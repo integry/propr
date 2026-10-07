@@ -25,6 +25,7 @@ const SKELETON_USERS: Record<string, 'ListSkeleton' | 'SectionSkeleton'> = {
   'pages/LlmLogsPageComponents.tsx': 'ListSkeleton',
   'pages/McpLogsPageComponents.tsx': 'ListSkeleton',
   'pages/AccessManagementPage.tsx': 'ListSkeleton',
+  'components/Agents/AgentList.tsx': 'ListSkeleton',
 };
 
 /** Files that render a list on screen while a background read is in flight. */
