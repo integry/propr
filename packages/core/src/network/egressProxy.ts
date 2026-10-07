@@ -146,9 +146,9 @@ const NAT64_PREFIX = (() => {
 
 /** The IPv4 address in an IPv6 address's last 32 bits, written either as hex groups or dotted. */
 function embeddedIpv4(address: string): string {
-    const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(address);
-    if (dotted) return dotted[1];
     const groups = address.split(':');
+    const last = groups[groups.length - 1];
+    if (last.includes('.')) return last;
     const [high, low] = groups.slice(-2).map(group => Number.parseInt(group || '0', 16));
     return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
 }
