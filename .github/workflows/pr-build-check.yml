@@ -602,7 +602,9 @@ jobs:
           {
             echo
             echo "--- Dependency installation ---"
-            npm ci
+            # Retry interrupted registry downloads (ECONNRESET, timeouts, 5xx);
+            # lockfile and other permanent install errors still fail at once.
+            node apps/desktop/scripts/retry-transient-download.mjs -- npm ci
           } > >(tee -a build_log.txt) 2>&1
 
       - name: Verify release-candidate metadata
