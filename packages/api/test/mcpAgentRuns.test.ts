@@ -309,6 +309,44 @@ test('approve and reject decide preview runs once and approval receipts follow t
   } finally { await f.db.destroy(); }
 });
 
+test('approve and reject return compact receipts for runs whose report exceeds the adapter result bound', async () => {
+  const f = await fixture();
+  try {
+    const definition = await f.define(['acme/app'], { autonomyMode: 'preview' });
+    // Control characters triple in size when JSON-encoded: well over 256 KiB.
+    const report = '\u0001'.repeat(100_000);
+    const ready = async (key: string) => {
+      const receipt = (await f.call('trigger_agent_run', { definitionId: definition.id, idempotencyKey: key })).data as Receipt;
+      const id = receipt.result.runId;
+      await transitionAgentRun(id, ['queued'], 'running', {}, { database: f.db });
+      await transitionAgentRun(id, ['running'], 'report_ready', { report: 'short' }, { database: f.db });
+      await transitionAgentRun(id, ['report_ready'], 'awaiting_approval', {}, { database: f.db });
+      await f.db('agent_runs').where({ id }).update({ report });
+      return id;
+    };
+    const approvedId = await ready('large-preview-1');
+    const approval = (await f.call('approve_agent_run', { runId: approvedId, idempotencyKey: 'approve-large-1' })).data as Receipt;
+    assert.equal(approval.state, 'accepted');
+    assert.equal(approval.result.state, 'acting');
+    assert.deepEqual(approval.result.continuation, { agentRunId: approvedId });
+    const tracked = (await f.call('get_operation', { operationId: approval.operationId })).data as Receipt;
+    assert.equal(tracked.lifecycle.state, 'running');
+    assert.equal(tracked.targetState?.state, 'acting');
+    assert.ok(Buffer.byteLength(JSON.stringify(approval)) < 16 * 1024);
+    assert.deepEqual(f.acting, [{ runId: approvedId, note: null }]);
+    assert.equal((await f.db('agent_runs').where({ id: approvedId }).first()).state, 'acting');
+
+    const rejectedId = await ready('large-preview-2');
+    const rejection = (await f.call('reject_agent_run', { runId: rejectedId, idempotencyKey: 'reject-large-2' })).data as Receipt;
+    assert.equal(rejection.state, 'completed');
+    assert.equal(rejection.result.state, 'rejected');
+    assert.ok(Buffer.byteLength(JSON.stringify(rejection)) < 16 * 1024);
+    const stored = await f.db('agent_runs').where({ id: rejectedId }).first();
+    assert.equal(stored.state, 'rejected');
+    assert.equal(stored.report, report);
+  } finally { await f.db.destroy(); }
+});
+
 test('runs are listed without reports and a large report is truncated under the MCP result bound', async () => {
   const f = await fixture();
   try {

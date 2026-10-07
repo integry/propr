@@ -182,6 +182,9 @@ export function addAgentRunTools(tools: McpTool[], deps: ToolDeps): void {
   const routes = createAgentDefinitionRoutes({ db: deps.db,
     services: { now, gate: services.gate, ...(services.startActing ? { startActing: services.startActing } : {}) } });
   const handle = (route: RequestHandler): WorkflowHandler => (req, res) => route(req as Request, res, () => undefined);
+  // The route answers with the full run (report and snapshot); the receipt is
+  // rebuilt from storage, so drop that body before the adapter's size check.
+  const discardResult = () => ({});
   const decidedRun = async (principal: McpPrincipal, runId: string) => {
     const run = await getAgentRun(runId, principal.user.id, storeDeps);
     if (!run) throw new McpError('NOT_FOUND', 'Agent run not found.', 404);
@@ -279,7 +282,7 @@ export function addAgentRunTools(tools: McpTool[], deps: ToolDeps): void {
       if (run.autonomyMode !== 'preview') throw new McpError('AGENT_RUN_NOT_PREVIEW', 'Only preview-mode runs wait for approval.', 409);
     },
     run: async ({ principal, args }) => {
-      await callWorkflow(handle(routes.approveRun), principal, { params: { runId: args.runId }, body: { note: args.note } });
+      await callWorkflow(handle(routes.approveRun), principal, { params: { runId: args.runId }, body: { note: args.note }, projectResult: discardResult });
       return { status: 202, data: runReceipt(deps, await decidedRun(principal, args.runId)) };
     } });
 
@@ -290,7 +293,7 @@ export function addAgentRunTools(tools: McpTool[], deps: ToolDeps): void {
       await ownedRun(deps, principal, args.runId, true);
     },
     run: async ({ principal, args }) => {
-      await callWorkflow(handle(routes.rejectRun), principal, { params: { runId: args.runId } });
+      await callWorkflow(handle(routes.rejectRun), principal, { params: { runId: args.runId }, projectResult: discardResult });
       return ok(runReceipt(deps, await decidedRun(principal, args.runId)));
     } });
 }
