@@ -1,5 +1,6 @@
 import type { Job, Worker } from 'bullmq';
 import type {
+    AgentRunJobData,
     CommentJobData,
     GoalJobData,
     IssueJobData,
@@ -9,7 +10,7 @@ import type {
     TaskImportJobData,
 } from '@propr/core';
 
-export type MainJobData = IssueJobData | CommentJobData | GoalJobData | TaskImportJobData | SystemTaskJobData | MergeConflictJobData;
+export type MainJobData = IssueJobData | CommentJobData | GoalJobData | TaskImportJobData | SystemTaskJobData | MergeConflictJobData | AgentRunJobData;
 export type MainWorker = Worker<MainJobData, JobResult>;
 
 export interface MainJobProcessors {
@@ -19,6 +20,8 @@ export interface MainJobProcessors {
     processSystemTaskJob: (job: Job<SystemTaskJobData>) => Promise<JobResult>;
     processMergeConflictJob: (job: Job<MergeConflictJobData>) => Promise<JobResult>;
     processGoalJob: (job: Job<GoalJobData>) => Promise<JobResult>;
+    processAgentRunJob: (job: Job<AgentRunJobData>) => Promise<JobResult>;
+    processAgentActionJob: (job: Job<AgentRunJobData>) => Promise<JobResult>;
 }
 
 export type MainWorkerFactory = (
@@ -44,6 +47,10 @@ export function createMainJobProcessor(processors: MainJobProcessors, beforeProc
                 return processors.processMergeConflictJob(job as Job<MergeConflictJobData>);
             case 'processGoal':
                 return processors.processGoalJob(job as Job<GoalJobData>);
+            case 'processAgentRun':
+                return processors.processAgentRunJob(job as Job<AgentRunJobData>);
+            case 'processAgentAction':
+                return processors.processAgentActionJob(job as Job<AgentRunJobData>);
             default:
                 throw new Error(`Unknown job type: ${job.name}`);
         }

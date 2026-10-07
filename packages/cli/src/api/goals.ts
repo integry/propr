@@ -248,7 +248,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-interface MutationOptions {
+export interface MutationOptions {
   method: "POST" | "PATCH";
   endpoint: string;
   body?: unknown;
@@ -263,7 +263,7 @@ interface MutationOptions {
  * transient failures become {@link GoalMutationUncertainError}, as does an
  * access refusal that follows an unconfirmed attempt.
  */
-async function mutate<T>(
+export async function mutate<T>(
   client: ApiClient,
   options: MutationOptions,
 ): Promise<{ data: T; status: number; attempts: number }> {

@@ -25,6 +25,7 @@ const loadSettingsPage = preloadable(() => import('./pages/SettingsPage'));
 const loadSummaryBrowserPage = preloadable(() => import('./pages/SummaryBrowserPage'));
 const loadTasksPage = preloadable(() => import('./pages/TasksPage'));
 const loadGoalsPage = preloadable(() => import('./pages/GoalsPage'));
+const loadAgentsPage = preloadable(() => import('./pages/AgentsPage'));
 
 export const AiAgentsPage = lazy(loadAiAgentsPage);
 export const AccessManagementPage = lazy(loadAccessManagementPage);
@@ -43,6 +44,7 @@ export const SettingsPage = lazy(loadSettingsPage);
 export const SummaryBrowserPage = lazy(loadSummaryBrowserPage);
 export const TasksPage = lazy(loadTasksPage);
 export const GoalsPage = lazy(loadGoalsPage);
+export const AgentsPage = lazy(loadAgentsPage);
 
 const initialRouteChunks: Array<{
   matches: (pathname: string) => boolean;
@@ -56,6 +58,7 @@ const initialRouteChunks: Array<{
   { matches: pathname => pathname === '/repositories', load: loadRepositoriesPage },
   { matches: pathname => pathname === '/tasks' || pathname.startsWith('/tasks/'), load: loadTasksPage },
   { matches: pathname => pathname === '/goals' || pathname.startsWith('/goals/'), load: loadGoalsPage },
+  { matches: pathname => pathname === '/agents' || pathname.startsWith('/agents/'), load: loadAgentsPage },
   { matches: pathname => pathname === '/studio/new' || pathname.startsWith('/studio/'), load: loadPlanStudioPage },
   { matches: pathname => pathname === '/plans', load: loadPlansPage },
   { matches: pathname => pathname === '/ai-agents', load: loadAiAgentsPage },

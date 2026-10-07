@@ -8,6 +8,7 @@ export { createIssueCommand } from "./implementCommands.js";
 export { createPlanCommand } from "./planCommands.js";
 export { createTaskCommand } from "./taskCommands.js";
 export { createGoalCommand } from "./goalCommands.js";
+export { createAutomationCommand } from "./automationCommands.js";
 export { createRepoCommand } from "./repoCommands.js";
 export { createAgentCommand } from "./agentCommands.js";
 export { createSettingCommand } from "./settingCommands.js";

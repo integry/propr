@@ -213,6 +213,18 @@ Retries share the budget. When ProPR re-queues a task (a provider usage-limit re
 
 Spend is an estimate from token counts and model pricing (see [Cost Tracking](../operations/metrics.md#cost-tracking)), so a run can overshoot the cap by the usage reported between two checks. `LLM_COST_THRESHOLD_USD` is separate: it only records a high-cost alert and never stops a run.
 
+## Agent runs
+
+[Agents](./agents.md) reuse the task boundaries above, with a few differences:
+
+- **Nothing is committed or pushed.** An agent's report run and its acting step are analysis runs. The workspace and its throwaway worktree branch are deleted when the step ends, whatever the agent changed. Changes only come from the tasks the acting step creates, which then run the normal three-phase workflow.
+- **No repository code without `repository_read`.** With the capability, the primary repository is checked out and the other definition repositories are shallow read-only copies under `.propr/context/`, with the usual read-only GitHub token. Without it, the container gets an empty git directory with only the input files: no clone mounts and no repository token.
+- **Web access** follows the `web` capability. Claude Code and Codex enforce it with native CLI switches. Antigravity, OpenCode and Vibe only receive a prompt instruction, so it is best effort there.
+- **Delegated MCP grants.** A report run with `propr_mcp` and every acting step get a run-scoped ProPR MCP grant that acts as the agent's owner. It is limited to the definition's repositories and to `read` scope (report) or `read`, `plan` and `execute` (acting step), and is never `merge`, `deploy`, `review`, `publish` or `manage`. The token reaches the container only through its environment (`PROPR_MCP_BEARER_TOKEN`) and is never written to the worktree, logged or stored. Membership and GitHub access are re-checked on every call. Agent-issued grants cannot trigger, approve or reject agent runs.
+- **Grant lifetime and revocation.** The worker revokes the grant as soon as its step ends, successfully or not. Expiry after two hours is only a backstop. Every 10 minutes the daemon also revokes grants left by finished runs or past their expiry, which covers a crashed worker. The grants are listed with the internal client **ProPR Agent** under connected apps, and their calls appear in the MCP access log.
+- **Signed grant requests.** The worker asks the API for grants over `POST /api/internal/agent-runs/:runId/mcp-grants`. Each request is signed with `SYSTEM_TASK_SECRET` and valid for five minutes, and the run must be in the matching state. `SYSTEM_TASK_SECRET` must therefore be set, and identical, on the API and worker for any agent that uses `propr_mcp` or acts. The worker reaches the API at `PROPR_INTERNAL_API_URL` (default `http://api:4000`). Agent containers reach MCP at `PROPR_AGENT_MCP_URL` (default `$PROPR_INTERNAL_API_URL/api/mcp`).
+- **Spend and stalls.** Each step runs under the per-run spend cap and the activity watchdog like any task. Unattended runs are additionally [cost-gated](./agents.md#cost-control) on provider usage. A run whose worker died before storing its result is failed by the daemon 10 minutes after its task ended.
+
 ## Failure Handling And Recovery
 
 Safe runs are also about what happens when something fails:
@@ -222,7 +234,7 @@ Safe runs are also about what happens when something fails:
 - Task records capture where the failure happened; logs and streamed output remain available for inspection.
 - Failed runs update the issue's state label (`<trigger>-failed-*`) instead of leaving it ambiguous.
 - A hung or degenerate agent run is stopped by the activity watchdog and finishes with `terminalReason` `stalled` or `degenerate_output`. Its partial work is published like a timed-out run's, a comment on the issue or PR explains the stop, the Inbox notifies you, and the task timeline records which rule tripped. Tune or disable the thresholds in **Settings → Automation → Agent watchdog**; see [Worker architecture](../architecture/worker.md#stall-and-degenerate-output-watchdog).
-- Revert operations run as signed system tasks: requests are authorized with `SYSTEM_TASK_SECRET`, so a revert cannot be injected through normal intake paths.
+- Revert operations run as signed system tasks: requests are authorized with `SYSTEM_TASK_SECRET`, so a revert cannot be injected through normal intake paths. The same secret signs the worker's requests for [agent run MCP grants](#agent-runs).
 
 For operational details, see [Observability And Control](./observability.md) and the architecture pages.
 

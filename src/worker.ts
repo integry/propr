@@ -5,11 +5,9 @@ import 'dotenv/config';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager, runMigrations } from '@propr/core';
-import { logger, reconcileEpicExecutionQueues, startEgressProxySweeper } from '@propr/core';
-import { generateCorrelationId } from '@propr/core';
+import { generateCorrelationId, logger, reconcileEpicExecutionQueues, startEgressProxySweeper } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatusForRepo } from '@propr/core';
-import { loadAiPrimaryTag, loadSettings } from '@propr/core';
-import { loadSettingsFromConfig } from '@propr/core';
+import { loadAiPrimaryTag, loadSettings, loadSettingsFromConfig } from '@propr/core';
 import { setUltrafixDeps } from '@propr/core';
 import { validateAttachmentBaseUrlConfig } from '@propr/core';
 import {
@@ -31,6 +29,8 @@ import { processTaskImportJob } from './jobs/processTaskImportJob.js';
 import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
 import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
 import { processGoalJob } from './jobs/processGoalJob.js';
+import { processAgentRunJob } from './jobs/processAgentRunJob.js';
+import { processAgentActionJob } from './jobs/processAgentActionJob.js';
 import { createConfiguredMainWorker } from './workerFactory.js';
 import type { MainWorker } from './workerFactory.js';
 import { attachPRCommentTaskStateFinalizers, type PRCommentTaskStateFinalizers } from './jobs/prCommentTaskStateFinalizers.js';
@@ -385,7 +385,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             processTaskImportJob,
             processSystemTaskJob,
             processMergeConflictJob,
-            processGoalJob,
+            processGoalJob, processAgentRunJob, processAgentActionJob,
         },
         beforeProcess: async job => {
             const reason = await preventWithdrawnJob(job);

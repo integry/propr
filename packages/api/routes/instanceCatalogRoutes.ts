@@ -33,6 +33,7 @@ function catalogAgent(agent: AgentConfig): InstanceCatalogAgent {
     id: agent.id,
     kind: 'direct',
     alias: agent.alias,
+    type: agent.type,
     enabled: true,
     supportedModels: [...agent.supportedModels],
     ...(agent.defaultModel ? { defaultModel: agent.defaultModel } : {}),

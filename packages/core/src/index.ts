@@ -28,6 +28,7 @@ export { estimateTokens, countTokens, getUsageStats, getDetailedUsageStats, getC
 export type { DetailedUsageStats, CachePricingMultipliers } from './utils/tokenCalculation.js';
 export { buildAnalysisSafetySuffix } from './agents/impl/utils/analysisPromptSafety.js';
 export { sanitizeAgentReport } from './agents/agentReportSanitizer.js';
+export { resolveEffectiveContextRepositories } from './agents/agentGitAccess.js';
 export { formatResetTime, addModelSpecificDelay, parseResetTimeFromMessage, calculateNextRoundHourPlus2Minutes, formatRetryTime, hoursUntil } from './utils/scheduling.js';
 export { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from './utils/commentFilters.js';
 export { ensureGitRepository } from './utils/git/gitValidation.js';
@@ -39,7 +40,7 @@ export type { SubscriptionUsageRecord, SubscriptionUsageMetrics } from './utils/
 
 export { getGitHubInstallationToken, getAuthenticatedOctokit, validateGithubIntakePrerequisites } from './auth/githubAuth.js';
 export type { PaginatedOctokitInstance } from './auth/githubAuth.js';
-export { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS, AUTH_TOKEN_MAX_CLOCK_SKEW_MS } from './auth/systemTaskAuth.js';
+export { buildAuthPayload, generateAuthToken, verifyAuthToken, AUTH_TOKEN_MAX_AGE_MS, AUTH_TOKEN_MAX_CLOCK_SKEW_MS, signAgentRunGrantRequest } from './auth/systemTaskAuth.js';
 
 export * from './config/configManager.js';
 // Note: loadUltrafixRatingGoal, loadUltrafixMaxCycles, loadUltrafixPauseSeconds, loadPrReviewModel
@@ -91,7 +92,7 @@ export type { BranchConfiguration } from './git/branchConfig.js';
 export { createHooklessGit, DISABLED_GIT_HOOKS_PATH } from './git/hooklessGit.js';
 export { AI_COMMIT_AUTHOR, InvalidCheckpointScopeError, commitChanges } from './git/commitOperations.js';
 export type { CommitResult } from './git/commitOperations.js';
-export { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './git/repoBranching.js';
+export { configureGitAuthentication, setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './git/repoBranching.js';
 export { ensureRepoCloned, createWorktreeForIssue, getRepoUrl, fetchLatestChanges } from './git/repoManager.js';
 export type { WorktreeResult, WorktreeInfo, FetchLatestChangesOptions, FetchLatestChangesResult } from './git/repoManager.js';
 export { cleanupExistingBranch, createWorktreeFromExistingBranch } from './git/worktreeCreation.js';
@@ -128,6 +129,8 @@ export type {
     SystemTaskJobData,
     IndexingJobData,
     MergeConflictJobData,
+    AgentRunJobData,
+    AgentRunPhase,
     JobData,
     JobResult,
     ClaudeResult,
@@ -468,6 +471,8 @@ export type {
     Agent,
     AgentConfig,
     AgentTaskOptions,
+    AgentToolPolicy,
+    AgentToolPolicyMcpServer,
     AgentExecutionResult,
     AgentTerminationReason,
     AgentType,
@@ -476,6 +481,15 @@ export type {
     AnalyzeOptions
 } from './agents/types.js';
 export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
+export {
+    claudeToolPolicyArgs,
+    codexToolPolicyArgs,
+    promptOnlyToolPolicyNotice,
+    withPromptOnlyToolPolicy,
+    PROPR_MCP_SERVER_NAME,
+    PROPR_MCP_BEARER_TOKEN_ENV,
+    type ToolPolicyLaunchArgs
+} from './agents/agentToolPolicy.js';
 export { DEFAULT_CONFIG_PATHS, resolveConfigPath, getDefaultConfigPath, loadAgents, loadEffectiveAgentBaseImages, migrateAgentConfigs } from './config/configManager.js';
 
 // Agent version management
@@ -585,5 +599,11 @@ export { withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, reconcileRep
 export * from './services/taskCancellation.js';
 export * from './services/taskIntent.js';
 export * from './services/taskPlanning/epicExecutionQueue.js';
+export * from './services/agents/agentDefinitionStore.js';
+export * from './services/agents/agentRunStore.js';
+export * from './services/agents/agentRunReports.js';
+export * from './services/agents/agentRunTrigger.js';
+export * from './services/agents/agentRunCostGate.js';
+export * from './services/agents/agentRunDeferredRetry.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/reviewScoreStore.js';

@@ -19,6 +19,7 @@ import {
   createPlanCommand,
   createTaskCommand,
   createGoalCommand,
+  createAutomationCommand,
   createRepoCommand,
   createAgentCommand,
   createSettingCommand,
@@ -235,6 +236,7 @@ Examples:
   $ propr task inspect <task-id>       # Current state and full run history
   $ propr goal create "Add audit logging" --agent codex   # Create and start a goal
   $ propr goal inspect <goal-id>       # Goal state, progress and pull requests
+  $ propr automation run <agent-id> --wait   # Run a saved agent and print its report
   $ propr remote-status
 
 Command Groups:
@@ -244,9 +246,10 @@ Command Groups:
   Plans:          plan [create|list|get|delete|abort]
   Implementation: issue [implement]
   Goals:          goal [capabilities|create|list|inspect|input|inputs|pause|resume|cancel|model]
+  Automations:    automation [list|show|run|runs|report|approve|reject|cancel]   (Agents: saved automations)
   Tasks:          task [inspect|list|get|stop|delete|followup|import|revert]
   Repositories:   repo [list|add|remove|toggle|index|status]
-  Agents:         agent [list|add|enable|disable|delete|pool]
+  Agents:         agent [list|add|enable|disable|delete|pool]   (coding-agent configurations)
   Settings:       setting [get|update|reindex-summaries]
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
@@ -432,6 +435,7 @@ program.addCommand(createPlanCommand());
 program.addCommand(createIssueCommand());
 program.addCommand(createTaskCommand());
 program.addCommand(createGoalCommand());
+program.addCommand(createAutomationCommand());
 program.addCommand(createRepoCommand());
 program.addCommand(createAgentCommand());
 program.addCommand(createSettingCommand());

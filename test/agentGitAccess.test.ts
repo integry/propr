@@ -44,7 +44,7 @@ await mock.module('../packages/core/src/auth/githubAuth.js', {
         },
     }) },
 });
-const { prepareAgentGitAccess, prepareAnalysisGitAccess, resolveContextRepositories, AGENT_READ_PERMISSIONS } = await import('../packages/core/src/agents/agentGitAccess.js');
+const { prepareAgentGitAccess, prepareAnalysisGitAccess, resolveContextRepositories, resolveEffectiveContextRepositories, AGENT_READ_PERMISSIONS } = await import('../packages/core/src/agents/agentGitAccess.js');
 const options = {
     prompt: 'Implement task', worktreePath: '/tmp/worktree', githubToken: 'worker-write-token',
     issueRef: { repoOwner: 'owner', repoName: 'task', number: 1 },
@@ -134,6 +134,17 @@ test('implementation and direct goals replace the worker token with installation
     }
 });
 
+test('launches without repository access mint no token and mount no clones, even without a context policy', async () => {
+    await fs.mkdir(path.join(root, 'owner', 'task', '.git'), { recursive: true });
+    await fs.mkdir(path.join(legacyRoot, 'retained-owner', 'repo', '.git'), { recursive: true });
+    for (const extra of [{}, { executionMode: 'goal' as const, environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate' } }]) {
+        const result = await prepareAgentGitAccess({ ...options, ...extra, repositoryAccess: 'none' });
+        assert.equal(result.githubToken, '');
+        assert.deepEqual(result.gitMountArgs, []);
+    }
+    assert.deepEqual(requests, []);
+});
+
 test('only explicit orchestrated goals retain full permissions and writable git', async () => {
     const result = await prepareAgentGitAccess({ ...options, executionMode: 'goal', environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'orchestrate' } });
     assert.deepEqual(requests[0], { type: 'installation', refresh: true });
@@ -163,6 +174,15 @@ test('none keeps task repository and branch policies intersect instead of broade
     assert.deepEqual(resolveContextRepositories('owner/task', 'none'), ['owner/task']);
     assert.throws(() => resolveContextRepositories('owner/task', ['../secret']), /Invalid/);
     assert.throws(() => resolveContextRepositories('owner/task', 'typo'), /Context repositories/);
+});
+
+test('the effective context policy that report workspaces check matches the token scope', async () => {
+    repositories = [{ name: 'Owner/Task', contextRepositories: ['owner/library', 'owner/api'] }, { name: 'owner/task', contextRepositories: ['Owner/API'] }, { name: 'owner/other' }];
+    assert.deepEqual(await resolveEffectiveContextRepositories('owner/task'), ['owner/api', 'owner/task']);
+    repositories = [{ name: 'owner/task', contextRepositories: 'none' }];
+    assert.deepEqual(await resolveEffectiveContextRepositories('owner/task'), ['owner/task']);
+    repositories = [{ name: 'owner/task', contextRepositories: 'all' }, { name: 'owner/task' }];
+    assert.equal(await resolveEffectiveContextRepositories('owner/task'), undefined);
 });
 
 test('a broad or incomplete mint response fails closed', async () => {

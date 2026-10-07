@@ -19,6 +19,7 @@ import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/ind
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { buildCodexDockerArgs, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
+import { assertToolPolicySupported, codexToolPolicyArgs } from '../agentToolPolicy.js';
 import { executeCodexAppServerGoal } from './codexAppServer.js';
 
 // Re-export UsageLimitError for convenience
@@ -44,11 +45,12 @@ export class CodexAgent implements Agent {
     }
 
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        assertToolPolicySupported(options);
         if (options.executionMode === 'goal') return this.executeNativeGoal(options);
         const { worktreePath, issueRef, prompt: customPrompt, model, systemPrompt,
             isRetry = false, retryReason, branchName, issueDetails,
             onSessionId, onContainerId, environment, taskId, prNumber, reasoningLevel,
-            executionMode = 'task', resumeSessionId, metadata } = options;
+            executionMode = 'task', resumeSessionId, metadata, toolPolicy } = options;
 
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -70,7 +72,7 @@ export class CodexAgent implements Agent {
             const dockerArgs = this.buildDockerArgs({
                 worktreePath, githubToken, gitMountArgs, modelName: effectiveModel,
                 issueNumber: issueRef.number, environment, taskId,
-                reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId
+                reasoningLevel: effectiveReasoningLevel, executionMode, resumeSessionId, toolPolicy
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -85,7 +87,8 @@ export class CodexAgent implements Agent {
                     taskId,
                     streamToRedis: true,
                     preserveOutputOnTimeout: true,
-                    model: effectiveModel
+                    model: effectiveModel,
+                    ...(toolPolicy && { extraEnvVars: codexToolPolicyArgs(toolPolicy).env })
                 }),
                 undefined,
                 this.config.alias

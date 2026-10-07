@@ -37,6 +37,7 @@ const TAGS: { name: string; description: string; prefixes: string[] }[] = [
   { name: 'Desktop', description: 'Desktop and CLI discovery, pairing and instance tokens.', prefixes: ['/api/desktop'] },
   { name: 'Configuration', description: 'Instance settings. Most routes require a management permission.', prefixes: ['/api/config', '/api/catalog', '/api/instance'] },
   { name: 'Agents', description: 'Agent login, images, runtime packages and health.', prefixes: ['/api/agents', '/api/agent-runtime'] },
+  { name: 'Agent definitions', description: 'Saved agent definitions, their runs, reports and approvals.', prefixes: ['/api/agent-definitions', '/api/agent-runs', '/api/internal/agent-runs'] },
   { name: 'Administration', description: 'Instance members and MCP administration.', prefixes: ['/api/admin'] },
   { name: 'MCP', description: 'The Model Context Protocol endpoint, its OAuth 2.1 authorization server and its browser pages.', prefixes: ['/api/mcp', '/mcp', '/.well-known', '/authorize', '/token', '/register', '/revoke'] },
   { name: 'Webhooks', description: 'GitHub webhook intake.', prefixes: ['/webhook'] },

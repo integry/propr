@@ -51,7 +51,12 @@ through `c2de30509`.
   trigger other automations. Acting and ProPR tool access need Claude
   Code or Codex. Unattended runs are skipped or deferred when Agent Tank reports
   usage at or above `agent_run_usage_pause_percent` (default 90%); missed
-  schedule slots coalesce into one run.
+  schedule slots coalesce into one run. New MCP tools: `list_agent_definitions`,
+  `get_agent_definition`, `get_agent_definition_contract`, `list_agent_runs`,
+  `get_agent_run`, `trigger_agent_run`, `approve_agent_run` and
+  `reject_agent_run`; new optional environment variables
+  `PROPR_INTERNAL_API_URL` and `PROPR_AGENT_MCP_URL`. See the
+  [Agents guide](docs/docs/features/agents.md).
 - **New Task**: launch a single instruction against a repository without planning
   a multi-issue project. New Task and New Goal share one dialog with a **Prompt**
   field, docked attachments and collapsed **Advanced Options**; New Task

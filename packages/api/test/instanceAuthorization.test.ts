@@ -279,6 +279,7 @@ describe('instance catalog', () => {
                 id: 'agent-1',
                 kind: 'direct',
                 alias: 'default',
+                type: 'codex',
                 enabled: true,
                 supportedModels: ['gpt-5.4'],
                 defaultModel: 'gpt-5.4'
