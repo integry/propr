@@ -14,7 +14,11 @@ interface ContextRepositoriesSectionProps {
   onAdd: (repo: ContextRepository) => void;
   onRemove: (repository: string) => void;
   isLoading?: boolean;
+  /** One settings-group row for phones: a "Context repos" label beside a small "N selected" picker. */
+  compact?: boolean;
 }
+
+const CONTEXT_REPOS_HELP = 'Include indexed repositories as reference context. Content from these repos will be used as reference only — all implementation will be done in the target repository.';
 
 // Helper to check if branch is a default branch (main, master, HEAD)
 const isDefaultBranch = (branch: string): boolean => {
@@ -26,7 +30,8 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
   availableRepos,
   onAdd,
   onRemove,
-  isLoading = false
+  isLoading = false,
+  compact = false
 }) => {
   // Section is expanded by default only if repos are already selected
   const [isSectionExpanded, setIsSectionExpanded] = useState(repositories.length > 0);
@@ -74,6 +79,121 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
 
   const selectedCount = repositories.length;
 
+  const renderMenu = (widthClassName: string) => isOpen && availableRepos.length > 0 && (
+    <div className={`absolute z-10 mt-1 ${widthClassName} bg-white border border-gray-200 rounded-md shadow-lg`}>
+        {/* Search filter input */}
+        <div className="p-2 border-b border-gray-200">
+          <input
+            ref={filterInputRef}
+            type="text"
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+            placeholder="Filter repositories..."
+            className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+          />
+        </div>
+        {/* Repository list */}
+        <div className="max-h-80 overflow-auto">
+          {filteredRepos.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-gray-500">
+              No repositories match your filter
+            </div>
+          ) : (
+            filteredRepos.map((repo) => {
+              const isSelected = repositories.some(r => r.repository === repo.full_name);
+              const showBranch = !isDefaultBranch(repo.branch);
+              const isIndexing = repo.indexing_status === 'indexing';
+              return (
+                <button
+                  key={`${repo.full_name}:${repo.branch}`}
+                  type="button"
+                  onClick={() => handleToggleRepo(repo)}
+                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-gray-50 ${
+                    isSelected ? 'bg-indigo-50' : ''
+                  }`}
+                >
+                  <div className={`w-4 h-4 flex-shrink-0 flex items-center justify-center rounded border ${
+                    isSelected ? 'bg-indigo-600 border-indigo-600' : 'border-gray-300'
+                  }`}>
+                    {isSelected && <Check className="w-3 h-3 text-white" />}
+                  </div>
+                  <span className="font-mono text-gray-900 truncate">
+                    {repo.full_name}
+                  </span>
+                  {showBranch && (
+                    <span className="text-xs text-gray-500 flex-shrink-0">
+                      @{repo.branch}
+                    </span>
+                  )}
+                  {isIndexing && (
+                    <span className="text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded flex items-center gap-1 flex-shrink-0">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      indexing
+                    </span>
+                  )}
+                </button>
+              );
+            })
+          )}
+        </div>
+    </div>
+  );
+
+  const chips = repositories.length > 0 && (
+    <div className="flex flex-wrap gap-2">
+        {repositories.map((repo) => {
+          const showBranch = repo.branch && !isDefaultBranch(repo.branch);
+          return (
+            <div
+              key={repo.repository}
+              className="inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-50 border border-indigo-200 rounded-full text-sm"
+            >
+              <BookOpen className="w-3 h-3 text-indigo-500" />
+              <span className="font-mono text-indigo-700">
+                {repo.repository}
+                {showBranch && (
+                  <span className="text-indigo-500 ml-1">@{repo.branch}</span>
+                )}
+              </span>
+              <button
+                onClick={() => onRemove(repo.repository)}
+                className="p-0.5 text-indigo-400 hover:text-red-500 hover:bg-red-50 rounded-full"
+                title="Remove"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          );
+        })}
+    </div>
+  );
+
+  if (compact) {
+    const triggerLabel = isLoading ? 'Loading…' : availableRepos.length === 0 ? 'None indexed' : `${selectedCount} selected`;
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs text-slate-500" title={CONTEXT_REPOS_HELP}>Context repos</span>
+          <div className="relative min-w-0" ref={dropdownRef}>
+            <button
+              type="button"
+              onClick={() => setIsOpen(!isOpen)}
+              disabled={isLoading || availableRepos.length === 0}
+              aria-label={`Context repos: ${triggerLabel}`}
+              aria-expanded={isOpen}
+              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white py-1 pl-2 pr-1.5 text-xs text-slate-700 hover:border-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+            >
+              <span className="whitespace-nowrap">{triggerLabel}</span>
+              <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {renderMenu('right-0 w-72 max-w-[calc(100vw-2rem)]')}
+          </div>
+        </div>
+        {chips}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-2 sm:space-y-4">
       {/* Collapsible header */}
@@ -96,7 +216,7 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
         {/* Info tooltip on mobile */}
         <span
           className="sm:hidden relative group"
-          title="Include indexed repositories as reference context. Content from these repos will be used as reference only — all implementation will be done in the target repository."
+          title={CONTEXT_REPOS_HELP}
         >
           <Info className="w-4 h-4 text-blue-500 cursor-help" />
         </span>
@@ -137,97 +257,10 @@ export const ContextRepositoriesSection: React.FC<ContextRepositoriesSectionProp
               <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
             </button>
 
-            {/* Dropdown menu */}
-            {isOpen && availableRepos.length > 0 && (
-              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg">
-                {/* Search filter input */}
-                <div className="p-2 border-b border-gray-200">
-                  <input
-                    ref={filterInputRef}
-                    type="text"
-                    value={filterText}
-                    onChange={(e) => setFilterText(e.target.value)}
-                    placeholder="Filter repositories..."
-                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-                  />
-                </div>
-                {/* Repository list */}
-                <div className="max-h-80 overflow-auto">
-                  {filteredRepos.length === 0 ? (
-                    <div className="px-3 py-2 text-sm text-gray-500">
-                      No repositories match your filter
-                    </div>
-                  ) : (
-                    filteredRepos.map((repo) => {
-                      const isSelected = repositories.some(r => r.repository === repo.full_name);
-                      const showBranch = !isDefaultBranch(repo.branch);
-                      const isIndexing = repo.indexing_status === 'indexing';
-                      return (
-                        <button
-                          key={`${repo.full_name}:${repo.branch}`}
-                          type="button"
-                          onClick={() => handleToggleRepo(repo)}
-                          className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-gray-50 ${
-                            isSelected ? 'bg-indigo-50' : ''
-                          }`}
-                        >
-                          <div className={`w-4 h-4 flex-shrink-0 flex items-center justify-center rounded border ${
-                            isSelected ? 'bg-indigo-600 border-indigo-600' : 'border-gray-300'
-                          }`}>
-                            {isSelected && <Check className="w-3 h-3 text-white" />}
-                          </div>
-                          <span className="font-mono text-gray-900 truncate">
-                            {repo.full_name}
-                          </span>
-                          {showBranch && (
-                            <span className="text-xs text-gray-500 flex-shrink-0">
-                              @{repo.branch}
-                            </span>
-                          )}
-                          {isIndexing && (
-                            <span className="text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded flex items-center gap-1 flex-shrink-0">
-                              <Loader2 className="w-3 h-3 animate-spin" />
-                              indexing
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            )}
+            {renderMenu('w-full')}
           </div>
 
-          {/* Selected repositories chips */}
-          {repositories.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {repositories.map((repo) => {
-                const showBranch = repo.branch && !isDefaultBranch(repo.branch);
-                return (
-                  <div
-                    key={repo.repository}
-                    className="inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-50 border border-indigo-200 rounded-full text-sm"
-                  >
-                    <BookOpen className="w-3 h-3 text-indigo-500" />
-                    <span className="font-mono text-indigo-700">
-                      {repo.repository}
-                      {showBranch && (
-                        <span className="text-indigo-500 ml-1">@{repo.branch}</span>
-                      )}
-                    </span>
-                    <button
-                      onClick={() => onRemove(repo.repository)}
-                      className="p-0.5 text-indigo-400 hover:text-red-500 hover:bg-red-50 rounded-full"
-                      title="Remove"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          {chips}
         </>
       )}
     </div>

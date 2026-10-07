@@ -17,6 +17,9 @@ import {
   type PlanNotificationIntent,
 } from '../../utils/notificationIntents';
 
+// Phones get one edge-to-edge stream of hairline-separated rows; wider screens keep the bordered matrix.
+const ISSUE_LIST_CLASS_NAME = '-mx-4 divide-y divide-slate-100 border-y border-slate-100 md:mx-0 md:rounded-md md:border md:border-slate-200';
+
 interface PlanIssuesManagerProps {
   draftId: string;
   repository: string;
@@ -311,7 +314,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         />
       )}
       {activeIssues.length > 0 && (
-        <div className="divide-y divide-slate-100 rounded-md border border-slate-200" data-testid="plan-execution-matrix">
+        <div className={ISSUE_LIST_CLASS_NAME} data-testid="plan-execution-matrix">
           {activeIssues.map(issue => (
             <PlanIssueRow
               key={issue.id}
@@ -369,7 +372,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ duration: 0.2 }}
-                className="mt-3 divide-y divide-slate-100 rounded-md border border-slate-200 overflow-hidden"
+                className={`mt-3 overflow-hidden ${ISSUE_LIST_CLASS_NAME}`}
               >
                 {mergedIssues.map(issue => (
                   <PlanIssueRow

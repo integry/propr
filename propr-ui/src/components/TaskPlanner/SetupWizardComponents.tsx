@@ -79,6 +79,10 @@ const getButtonLabel = (selectedModel: string | null, defaultName: string | null
 const FULL_WIDTH_LAYOUT = { row: 'w-full', label: '', trigger: 'flex-1' };
 const INLINE_LAYOUT = { row: 'flex-1 sm:flex-initial', label: 'hidden sm:inline', trigger: 'max-w-[240px]' };
 
+const ModelLabel: React.FC<{ disabled: boolean; className: string }> = ({ disabled, className }) => (
+  <span className={`${disabled ? 'text-gray-400' : 'text-gray-500'} ${className} text-xs`}>Model:</span>
+);
+
 const ModelMenuOptions: React.FC<{
   options: ModelMenuOption[];
   selectedValue: string;
@@ -123,7 +127,9 @@ export const ModelSelector: React.FC<{
   disabled?: boolean;
   /** Fills its row with the "Model:" label visible at every width, for stacked (mobile) layouts. */
   fullWidth?: boolean;
-}> = ({ agents, generationModel, onModelChange, defaultModel, disabled = false, fullWidth }) => {
+  /** Drops the "Model:" label when the surrounding settings row already labels it. */
+  hideLabel?: boolean;
+}> = ({ agents, generationModel, onModelChange, defaultModel, disabled = false, fullWidth, hideLabel }) => {
   const instanceDefaultModel = useInstanceDefaultModel();
   const { open, position, toggle, close, containerRef, popoverRef } = useAnchoredPopover();
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -178,7 +184,7 @@ export const ModelSelector: React.FC<{
 
   return (
     <div className={`flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm min-w-0 ${layout.row} ${disabled ? 'text-gray-400' : 'text-gray-600'}`}>
-      <span className={`${disabled ? 'text-gray-400' : 'text-gray-500'} ${layout.label} text-xs`}>Model:</span>
+      {!hideLabel && <ModelLabel disabled={disabled} className={layout.label} />}
       <div ref={containerRef} className={`relative inline-flex min-w-0 items-center ${layout.trigger}`}>
         <button
           ref={triggerRef}

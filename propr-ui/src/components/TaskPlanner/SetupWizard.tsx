@@ -11,6 +11,10 @@ import { useDemoMode } from '../../contexts/DemoModeContext';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
 import { SetupComposerFooter } from './SetupComposerFooter';
+import { ContextLevelSlider } from './ContextLevelSlider';
+import { ContextRepositoriesSection } from './ContextRepositoriesSection';
+import { CostPreview } from './CostPreview';
+import { SmartFileSelection } from './SmartFileSelection';
 import { GenerateButtonContent, ModelSelector } from './SetupWizardComponents';
 import { getEstimatedIssueText } from './setupWizardUtils';
 import type { RepoSelection } from '../RepositorySelector';
@@ -107,12 +111,32 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const isGenerating = generationPolling.isGenerating || generationHandlers.isStartingGeneration;
   const isMobile = useIsMobile(768);
   const showPreviewProgress = shouldShowPreviewProgress(isGenerating, isMobile);
+  const smartSelection = contextRefresh.preview.data?.smartSelection;
+  // On a phone the context pane's controls become rows of the one settings group under the prompt.
+  const mobileSettingsRows = isMobile ? [
+    <ContextLevelSlider key="scope" compact value={config.contextLevel} onChange={setContextLevel} modelMaxTokens={contextRefresh.preview.data?.stats.modelMaxContextTokens} />,
+    <ContextRepositoriesSection key="repos" compact repositories={config.contextRepositories} availableRepos={availableRepos} onAdd={handleAddContextRepo} onRemove={handleRemoveContextRepo} />,
+    // The cost states draw their own top rule for the desktop pane; the group's divider replaces it here.
+    <div key="cost" data-testid="setup-cost-row" className="text-xs [&>div:first-child]:border-t-0 [&>div:first-child]:pt-0">
+      <CostPreview
+        preview={contextRefresh.preview}
+        contextRepositories={config.contextRepositories}
+        isContextStale={contextRefresh.isContextStale}
+        timeUntilRefresh={contextRefresh.timeUntilRefresh}
+        onManualRefresh={promptTrimmed ? handleManualRefresh : undefined}
+        isNewMode={isNewMode}
+        previewTrace={previewTrace}
+        showPreviewProgress={showPreviewProgress}
+      />
+    </div>,
+  ] : [];
   const composerFooter = (
     <SetupComposerFooter
       stacked={isMobile}
+      extraSettingsRows={mobileSettingsRows}
       granularity={config.granularity}
       onGranularityChange={setGranularity}
-      modelSelector={<ModelSelector agents={agents} generationModel={config.generationModel} onModelChange={handleModelChange} disabled={isGenerating} fullWidth={isMobile} />}
+      modelSelector={<ModelSelector agents={agents} generationModel={config.generationModel} onModelChange={handleModelChange} disabled={isGenerating} fullWidth={isMobile} hideLabel={isMobile} />}
       onExport={handleExportContext}
       isExporting={contextExport.isExporting}
       exportDisabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
@@ -162,10 +186,10 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           onRemoveManualFile={handleRemoveManualFile}
           composerFooter={isMobile ? undefined : composerFooter}
         />
-        <SetupWizardRightPane
+        {!isMobile && <SetupWizardRightPane
           contextLevel={config.contextLevel}
           onContextLevelChange={setContextLevel}
-          smartSelection={contextRefresh.preview.data?.smartSelection}
+          smartSelection={smartSelection}
           isPreviewLoading={contextRefresh.preview.isLoading}
           contextRepositories={config.contextRepositories}
           availableRepos={availableRepos}
@@ -179,9 +203,14 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           previewTrace={previewTrace}
           showPreviewProgress={showPreviewProgress}
           onExcludeFile={handleExcludeFile}
-        />
+        />}
+        {isMobile && !!smartSelection?.length && (
+          <div className="mx-3 mb-3 overflow-hidden rounded-lg border border-slate-200">
+            <SmartFileSelection smartSelection={smartSelection} onExcludeFile={handleExcludeFile} />
+          </div>
+        )}
         {isMobile && (
-          <div data-testid="composer-footer" className="border-t border-slate-200 bg-slate-50 px-3 py-3">
+          <div data-testid="composer-footer" className="bg-white px-3 pb-4">
             {composerFooter}
           </div>
         )}

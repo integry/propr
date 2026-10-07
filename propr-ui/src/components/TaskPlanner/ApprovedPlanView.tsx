@@ -219,8 +219,8 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
         <span className="truncate">{repository.split('/').pop() || repository}</span>
       </span>
     )}
-    {/* The title keeps at least 320px before the header controls are allowed to squeeze it. */}
-    <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 md:min-w-[320px] max-w-lg flex-shrink" title={planName}>
+    {/* The title grows into free header space (wider on widescreens) and keeps at least 320px before the controls squeeze it. */}
+    <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate flex-1 min-w-0 md:min-w-[320px] max-w-xl 2xl:max-w-3xl" title={planName}>
       {planName}
     </h1>
     {draftStatus === 'merged' && (

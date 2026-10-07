@@ -4,8 +4,10 @@ import type { Granularity } from '../../api/proprApi';
 import { GranularityPills } from './ComposerControls';
 
 interface SetupComposerFooterProps {
-  /** Phone layout: one control per row, ending with a full-width Generate button. */
+  /** Phone layout: one settings group with a row per control, ending with a full-width Generate button. */
   stacked: boolean;
+  /** Extra stacked-group rows (scope, context repos, cost) that the desktop shows in the context pane instead. */
+  extraSettingsRows?: React.ReactNode[];
   granularity: Granularity;
   onGranularityChange: (granularity: Granularity) => void;
   modelSelector: React.ReactNode;
@@ -18,13 +20,25 @@ interface SetupComposerFooterProps {
   generateTitle?: string;
 }
 
+/** A labelled row puts its control on the right; an unlabelled row lays out its own label and control. */
+const SettingsRow: React.FC<{ label?: string; children: React.ReactNode }> = ({ label, children }) => (
+  label ? (
+    <div className="flex min-w-0 items-center justify-between gap-3 px-3 py-2.5">
+      <span className="flex-shrink-0 text-xs text-slate-500">{label}</span>
+      <div className="flex min-w-0 justify-end">{children}</div>
+    </div>
+  ) : (
+    <div className="min-w-0 px-3 py-2.5">{children}</div>
+  )
+);
+
 /**
- * Plan shape, model and Generate. Desktop docks them in one row on the prompt box; on a phone the
- * scope slider and context repos stack below the prompt, so this renders after them as the
- * stacked action bar that ends the input flow.
+ * Plan shape, model and Generate. Desktop docks them in one row on the prompt box; on a phone they
+ * join the scope slider and context repos in one divided settings group under the prompt, followed
+ * by the Generate button that ends the input flow.
  */
 export const SetupComposerFooter: React.FC<SetupComposerFooterProps> = ({
-  stacked, granularity, onGranularityChange, modelSelector, onExport, isExporting, exportDisabled, onGenerate, generateDisabled, generateLabel, generateTitle,
+  stacked, extraSettingsRows = [], granularity, onGranularityChange, modelSelector, onExport, isExporting, exportDisabled, onGenerate, generateDisabled, generateLabel, generateTitle,
 }) => {
   const breakPlan = (
     <div className="flex min-w-0 max-w-full items-center gap-2 overflow-x-auto md:flex-shrink-0">
@@ -46,8 +60,17 @@ export const SetupComposerFooter: React.FC<SetupComposerFooterProps> = ({
   if (stacked) {
     return (
       <div className="flex min-w-0 flex-col gap-3">
-        {breakPlan}
-        {modelSelector}
+        <div data-testid="setup-settings-group" className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+          <SettingsRow label="Break into">
+            <GranularityPills value={granularity} onChange={onGranularityChange} hideEstimate compact />
+          </SettingsRow>
+          <SettingsRow label="Model">
+            <div className="flex w-56 min-w-0 max-w-full">{modelSelector}</div>
+          </SettingsRow>
+          {extraSettingsRows.filter(Boolean).map((row, index) => (
+            <SettingsRow key={index}>{row}</SettingsRow>
+          ))}
+        </div>
         {generateButton}
       </div>
     );

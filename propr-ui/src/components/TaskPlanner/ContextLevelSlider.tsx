@@ -11,6 +11,8 @@ interface ContextLevelSliderProps {
   hideCostLabels?: boolean;
   /** The planning model's context window, when the preview has reported it. */
   modelMaxTokens?: number;
+  /** One settings-group row for phones: "Scope  100% (Full Scan)" over a thin slider, without the level shortcuts. */
+  compact?: boolean;
 }
 
 // Level thresholds for determining which config to use
@@ -61,7 +63,7 @@ const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
   },
 };
 
-export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange, hideCostLabels, modelMaxTokens }) => {
+export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange, hideCostLabels, modelMaxTokens, compact }) => {
   // Get the current level type and config
   const levelType = getLevelType(value);
   const config = LEVEL_CONFIGS[levelType];
@@ -79,6 +81,33 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
   const handleLabelClick = useCallback((targetValue: number) => {
     onChange(targetValue);
   }, [onChange]);
+
+  if (compact) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <label htmlFor="context-scope-range" className="text-xs text-slate-500">Scope</label>
+          <span className="text-xs font-medium tabular-nums text-slate-800" data-testid="context-scope-descriptor">
+            {value}% <span className="font-normal text-slate-500">({config.label})</span>
+          </span>
+        </div>
+        <input
+          id="context-scope-range"
+          type="range"
+          min={10}
+          max={100}
+          step={10}
+          value={value}
+          onChange={handleSliderChange}
+          aria-valuetext={`${value}% (${config.label})`}
+          className="context-slider w-full h-1.5 rounded-lg cursor-pointer"
+        />
+        <p className="text-[11px] font-mono text-slate-500" data-testid="context-scope-estimate">
+          {config.scanName} · {estimate}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-2 sm:space-y-3">

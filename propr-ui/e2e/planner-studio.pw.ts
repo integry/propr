@@ -482,6 +482,16 @@ test('execution step for a 17-issue plan keeps the title readable and queues the
   await capture(page, 'execution-17-issues-queued');
 });
 
+test('execution title renders in full on a widescreen header', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.goto('/studio/plan-agents-exec');
+  const title = page.getByRole('heading', { level: 1 });
+  await expect(title).toHaveText('Add an "Agents" feature to ProPR, scoped to a deliberately small v1');
+  expect(await title.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await page.waitForTimeout(500);
+  await capture(page, 'execution-widescreen-title');
+});
+
 test('define step shows technical scope estimates and consistent token units', async ({ page }) => {
   await page.goto('/studio/plan-setup');
   await expect(page.getByTestId('context-scope-descriptor')).toContainText('Full Repository Scan');
@@ -676,16 +686,22 @@ test('planner screens on a mobile viewport', async ({ page }) => {
   const generate = page.getByRole('button', { name: /Generate Plan/ });
   await expect(generate).toBeVisible();
   expect(await overflow()).toBeLessThanOrEqual(0);
-  // The action bar ends the input flow: scope slider and context repos come before it.
-  const generateTop = (await generate.boundingBox())!.y;
-  expect((await page.getByTestId('context-scope-descriptor').boundingBox())!.y).toBeLessThan(generateTop);
-  expect((await page.getByRole('button', { name: 'Context Repos (optional)' }).boundingBox())!.y).toBeLessThan(generateTop);
-  expect((await page.getByText('Break plan:').boundingBox())!.y).toBeLessThan(generateTop);
+  // Every setting under the prompt is a row of one divided group, not a stack of separate cards.
+  const settings = page.getByTestId('setup-settings-group');
+  await expect(settings.locator(':scope > div')).toHaveCount(5);
+  await expect(settings.getByText('Break into', { exact: true })).toBeVisible();
+  await expect(settings.getByText('Model', { exact: true })).toBeVisible();
+  await expect(settings.getByTestId('context-scope-descriptor')).toHaveText('100% (Full Scan)');
+  await expect(settings.getByRole('button', { name: /^Context repos:/ })).toBeVisible();
+  await expect(settings.getByTestId('setup-cost-row')).toBeVisible();
+  await expect(page.getByTestId('setup-wizard-right-pane')).toHaveCount(0);
+  // Generate ends the input flow, right after the group.
+  const settingsBox = (await settings.boundingBox())!;
+  expect((await generate.boundingBox())!.y).toBeGreaterThan(settingsBox.y + settingsBox.height);
   // The model picker names the model on a phone too, rather than collapsing to its logo.
-  const mobileModel = page.getByTestId('composer-footer').getByTestId('planner-model-selector');
+  const mobileModel = settings.getByTestId('planner-model-selector');
   await expect(mobileModel).toHaveText('Claude Opus 5.5 (Default)');
   expect(await mobileModel.locator('span').last().evaluate(label => label.scrollWidth <= label.clientWidth)).toBe(true);
-  await expect(page.getByTestId('composer-footer').getByText('Model:')).toBeVisible();
   await capture(page, 'mobile-define');
   await page.getByTestId('composer-footer').scrollIntoViewIfNeeded();
   await capture(page, 'mobile-define-action-bar');
@@ -710,6 +726,13 @@ test('planner screens on a mobile viewport', async ({ page }) => {
   await page.keyboard.press('Escape');
 
   await page.goto('/studio/plan-agents-exec');
+  // Issues stream edge to edge with hairline separators instead of sitting in an inset, rounded card.
+  const mobileMatrix = page.getByTestId('plan-execution-matrix');
+  await expect(mobileMatrix.getByTestId('plan-execution-row')).toHaveCount(12);
+  const matrixBox = (await mobileMatrix.boundingBox())!;
+  expect(matrixBox.x).toBe(0);
+  expect(matrixBox.width).toBe(390);
+  expect(await mobileMatrix.evaluate(el => getComputedStyle(el).borderTopLeftRadius)).toBe('0px');
   const queue = page.getByRole('button', { name: 'Queue Remaining (10 tasks)' });
   // The batch action stays pinned above the footer without scrolling past every row.
   await expect(queue).toBeInViewport();
