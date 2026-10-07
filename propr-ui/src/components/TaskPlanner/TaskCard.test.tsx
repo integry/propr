@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import TaskCard from './TaskCard';
 import type { PlanTask } from '../../api/proprApi';
@@ -22,5 +22,37 @@ describe('TaskCard heading', () => {
   it('keeps titles without a step counter unchanged', () => {
     render(<TaskCard task={{ ...task, title: 'Agent run store (v2): phase one' }} isHighlighted={false} stepNumber={2} draftId="draft" onChange={vi.fn()} onDelete={vi.fn()} />);
     expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent('Agent run store (v2): phase one');
+  });
+});
+
+describe('TaskCard delete', () => {
+  const renderCard = (isMobile: boolean) => {
+    const onDelete = vi.fn();
+    render(<TaskCard task={task} isHighlighted={false} stepNumber={3} draftId="draft" onChange={vi.fn()} onDelete={onDelete} isMobile={isMobile} />);
+    return onDelete;
+  };
+
+  it('asks for confirmation before the desktop heading icon deletes the task', () => {
+    const onDelete = renderCard(false);
+    fireEvent.click(screen.getByTitle('Delete task'));
+    expect(onDelete).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('Delete task 3?');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onDelete).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTitle('Delete task'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps only the pencil in the phone heading and moves a guarded Delete into edit mode', () => {
+    const onDelete = renderCard(true);
+    expect(screen.queryByTitle('Delete task')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete task' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('Edit task'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete task' }));
+    expect(onDelete).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
+    expect(onDelete).toHaveBeenCalledTimes(1);
   });
 });

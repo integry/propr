@@ -183,10 +183,28 @@ test('planner screens on a mobile viewport', async ({ page }) => {
   await expect(page.getByText('17 tasks', { exact: true })).toHaveCount(0);
   await capture(page, 'mobile-review-17-steps');
   await page.getByRole('button', { name: 'More plan actions' }).click();
-  await expect(page.getByRole('menuitem')).toHaveText(['Undo', 'Redo', 'Plan history', 'Delete plan']);
+  // "…" opens a bottom action sheet, like "Jump to task", not a popover over the first heading.
+  const actionSheet = page.getByRole('dialog', { name: 'Plan actions' });
+  await expect(actionSheet.getByRole('menuitem')).toHaveText(['Undo', 'Redo', 'Plan history', 'Delete plan']);
+  const actionSheetBox = (await actionSheet.boundingBox())!;
+  expect(actionSheetBox.x).toBe(0);
+  expect(actionSheetBox.width).toBe(390);
+  expect(Math.abs(actionSheetBox.y + actionSheetBox.height - 844)).toBeLessThanOrEqual(1);
   await capture(page, 'mobile-review-overflow-menu');
-  await page.getByRole('button', { name: 'More plan actions' }).click({ force: true });
-  await page.mouse.click(10, 400);
+  await page.mouse.click(10, 100);
+  await expect(actionSheet).toBeHidden();
+  // The phone heading carries only the pencil; Delete lives behind edit mode and a confirmation.
+  const firstTask = page.locator('[data-task-index="0"]');
+  await expect(firstTask.getByTitle('Delete task')).toHaveCount(0);
+  await firstTask.getByTitle('Edit task').click();
+  await capture(page, 'mobile-review-edit-mode-delete');
+  await firstTask.getByRole('button', { name: 'Delete task' }).click();
+  const confirmDelete = page.getByRole('dialog', { name: 'Delete task 1?' });
+  await expect(confirmDelete).toBeVisible();
+  await capture(page, 'mobile-review-delete-task-confirm');
+  await confirmDelete.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.locator('[data-task-index]')).toHaveCount(17);
+  await firstTask.getByTitle('Done editing').click();
   // The task jumper reaches a late task without scrolling through the whole specification.
   const jumper = page.getByTestId('mobile-task-jumper');
   await expect(jumper).toContainText('Task 1 of 17');
@@ -199,6 +217,18 @@ test('planner screens on a mobile viewport', async ({ page }) => {
   await expect(page.locator('[data-task-index="13"]')).toBeInViewport();
   await expect(jumper).toContainText('Task 14 of 17');
   await capture(page, 'mobile-review-jumped-task-14');
+  // Reading down to Task 14's notes keeps the jumper pinned at the top, ready to switch tasks.
+  const jumperBar = page.getByTestId('mobile-task-jumper-bar');
+  const pinnedY = (await jumperBar.boundingBox())!.y;
+  await page.locator('[data-task-index="13"]').getByText('User Notes').scrollIntoViewIfNeeded();
+  await page.mouse.move(195, 500);
+  await page.mouse.wheel(0, 400);
+  await page.waitForTimeout(300);
+  await expect(jumperBar).toBeInViewport();
+  expect((await jumperBar.boundingBox())!.y).toBe(pinnedY);
+  await expect(jumperBar).toHaveCSS('position', 'sticky');
+  await expect(jumper).toContainText(/Task 1[45] of 17/);
+  await capture(page, 'mobile-review-scrolled-notes-pinned-jumper');
   // On a 360px Android phone the two footer buttons still sit side by side without wrapping or overlapping.
   await page.setViewportSize({ width: 360, height: 780 });
   const refineBox = (await page.getByRole('button', { name: 'Refine' }).boundingBox())!;

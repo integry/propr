@@ -29,3 +29,26 @@ describe('PlanOverflowMenu keyboard behaviour', () => {
     expect(trigger).toHaveFocus();
   });
 });
+
+describe('PlanOverflowMenu sheet variant', () => {
+  it('opens the actions in a bottom sheet instead of a popover anchored to the trigger', () => {
+    const onDelete = vi.fn();
+    render(
+      <PlanOverflowMenu isDeleting={false} deleteDisabled={false} deleteTitle="Delete Plan" onDelete={onDelete} variant="sheet"
+        items={[{ label: 'Undo', icon: <Edit3 size={14} />, onSelect: vi.fn() }]} />,
+    );
+    const trigger = screen.getByRole('button', { name: 'More plan actions' });
+    expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
+    fireEvent.click(trigger);
+    const sheet = screen.getByRole('dialog', { name: 'Plan actions' });
+    expect(sheet.className).toContain('rounded-t-xl');
+    expect(sheet.parentElement!.className).toContain('fixed inset-0');
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Undo', 'Delete plan']);
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete plan' }));
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+});

@@ -51,6 +51,7 @@ export const PlanEditorMobileHeader: React.FC<PlanEditorHeaderProps> = (props) =
           deleteTitle={getReadOnlyTitle(isReadOnly, 'Delete Plan')}
           onDelete={onDelete}
           items={buildMobileEditorMenuItems(props)}
+          variant="sheet"
         />
       </div>
     </div>

@@ -25,7 +25,9 @@ export const MobileTaskJumper: React.FC<MobileTaskJumperProps> = ({ taskTitles, 
 
   return (
     <>
-      <div className="flex-shrink-0 border-b border-slate-200 bg-white px-3 py-1.5">
+      {/* Pinned at every scroll position: it sits outside the specification's scroller, and is sticky
+          too, so it holds the top edge even if the page around the editor scrolls. */}
+      <div data-testid="mobile-task-jumper-bar" className="sticky top-0 z-10 flex-shrink-0 border-b border-slate-200 bg-white/95 px-4 py-2 backdrop-blur">
         <button
           type="button"
           data-testid="mobile-task-jumper"

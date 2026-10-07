@@ -233,6 +233,7 @@ const MobilePlanHeader: React.FC<ApprovedPlanHeaderProps> = (props) => {
           deleteTitle={isReadOnly ? 'Demo mode is read-only' : 'Delete Plan'}
           onDelete={onDelete}
           items={buildMobileMenuItems(props)}
+          variant="sheet"
         />
       </div>
     </div>

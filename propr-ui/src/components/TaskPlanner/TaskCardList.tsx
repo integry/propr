@@ -226,6 +226,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                       stepNumber={index + 1}
                       draftId={draftId}
                       hideNotes={hideNotes}
+                      isMobile={isMobile}
                       onChange={(updatedTask) => onTaskChange(task.id, updatedTask)}
                       onDelete={() => {
                         // Explicitly capture and log the task.id for debugging

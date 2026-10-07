@@ -5,6 +5,7 @@ import { PlanTask, uploadAttachment, removeAttachment } from '../../api/proprApi
 import { AttachmentUploader } from './AttachmentUploader';
 import { resizeImage } from './imageUtils';
 import { ClearImplementationDialog } from './ClearImplementationDialog';
+import { DeleteTaskDialog } from './DeleteTaskDialog';
 import { extractFilePaths } from './taskCardUtils';
 import { getOutlineTitle } from './planDisplayName';
 import { RenderEditableContent, CollapsedImplementationPreview, EditableField, ViewMode } from './TaskCardComponents';
@@ -21,6 +22,8 @@ interface TaskCardProps {
   onDelete: () => void;
   id?: string;
   hideNotes?: boolean;
+  /** Phones drop the heading trash icon, which sat a thumb's width from the pencil; Delete moves into edit mode. */
+  isMobile?: boolean;
 }
 
 export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
@@ -32,12 +35,14 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
   onDelete,
   id,
   hideNotes = false,
+  isMobile = false,
 }, ref) => {
   const [editingField, setEditingField] = useState<EditableField>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
   const [isImplementationCollapsed, setIsImplementationCollapsed] = useState(true);
   const [isCodeExpanded, setIsCodeExpanded] = useState(false);
   const [showClearDialog, setShowClearDialog] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const notesTextareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -140,7 +145,7 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         {/* SECTION 1: ISSUE CONTENT (Title & Specification) */}
         <div className="pb-4">
           <div className="flex flex-col gap-3">
-            {/* Title Row with Step Number, Title, Edit Icon, and Delete */}
+            {/* Title Row with Step Number, Title and Edit Icon (plus a desktop hover Delete) */}
             <div className="flex items-start gap-3">
               <span className="text-xl font-semibold flex-shrink-0 mt-0.5" style={{ color: 'rgb(29, 138, 138)' }}>{stepNumber}.</span>
               <div className="flex-1 min-w-0">
@@ -166,28 +171,12 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                   </h3>
                 )}
               </div>
-              <div className="flex items-center gap-1 flex-shrink-0">
-                {/* Edit Toggle Icon */}
-                <button
-                  onClick={() => setViewMode(viewMode === 'edit' ? 'preview' : 'edit')}
-                  className={`p-1.5 rounded-md transition-colors ${
-                    viewMode === 'edit'
-                      ? 'text-teal-600 bg-teal-50 hover:bg-teal-100'
-                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
-                  }`}
-                  title={viewMode === 'edit' ? 'Done editing' : 'Edit task'}
-                >
-                  <Pencil size={14} />
-                </button>
-                {/* Delete Button */}
-                <button
-                  onClick={onDelete}
-                  className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors opacity-0 group-hover:opacity-100"
-                  title="Delete task"
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
+              <TaskHeadingActions
+                isEditing={viewMode === 'edit'}
+                showDelete={!isMobile}
+                onToggleEdit={() => setViewMode(viewMode === 'edit' ? 'preview' : 'edit')}
+                onDelete={() => setShowDeleteDialog(true)}
+              />
             </div>
             <div className="mt-1">
               <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Specification</span>
@@ -200,6 +189,19 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                 markdownClassName="w-full mt-1.5 text-gray-700 leading-relaxed text-sm"
               />
             </div>
+            {/* Edit mode holds the deliberate Delete action, well away from the pencil in the heading. */}
+            {viewMode === 'edit' && (
+              <div className="flex">
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteDialog(true)}
+                  className="flex items-center gap-1.5 rounded-md border border-red-200 bg-white px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  <Trash2 size={14} />
+                  Delete task
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -327,10 +329,54 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
         }}
         fileCount={fileCount || 1}
       />
+
+      <DeleteTaskDialog
+        isOpen={showDeleteDialog}
+        onClose={() => setShowDeleteDialog(false)}
+        onConfirm={() => {
+          setShowDeleteDialog(false);
+          onDelete();
+        }}
+        stepNumber={stepNumber}
+        taskTitle={getHeadingTitle(task.title)}
+      />
     </div>
   );
 });
 
 TaskCard.displayName = 'TaskCard';
+
+interface TaskHeadingActionsProps {
+  isEditing: boolean;
+  showDelete: boolean;
+  onToggleEdit: () => void;
+  onDelete: () => void;
+}
+
+/** The pencil, plus a desktop-only hover Delete that, like the edit-mode button, only opens the confirmation. */
+const TaskHeadingActions: React.FC<TaskHeadingActionsProps> = ({ isEditing, showDelete, onToggleEdit, onDelete }) => (
+  <div className="flex items-center gap-1 flex-shrink-0">
+    <button
+      onClick={onToggleEdit}
+      className={`p-1.5 rounded-md transition-colors ${
+        isEditing
+          ? 'text-teal-600 bg-teal-50 hover:bg-teal-100'
+          : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+      }`}
+      title={isEditing ? 'Done editing' : 'Edit task'}
+    >
+      <Pencil size={14} />
+    </button>
+    {showDelete && (
+      <button
+        onClick={onDelete}
+        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors opacity-0 group-hover:opacity-100"
+        title="Delete task"
+      >
+        <Trash2 size={14} />
+      </button>
+    )}
+  </div>
+);
 
 export default TaskCard;
