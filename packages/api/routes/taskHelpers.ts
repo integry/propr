@@ -16,6 +16,8 @@ export interface TaskQuery {
   search?: string;
   forReview?: boolean;
   excludeMerged?: boolean;
+  /** Clock for the attention projection's lookback window; defaults to the current time. */
+  now?: Date;
   /**
    * Page by task (the pull request or issue every run of it belongs to)
    * rather than by run. `limit` and `offset` then count tasks, `total` is the
@@ -195,7 +197,7 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
     // plan reviews awaiting a decision and the runs behind decisions that
     // recorded no task link, and excluding failures under recovery.
     attentionTaskIds = await timeApiStage('sql.tasks.attention', () =>
-      loadAttentionTaskIds(db, repository));
+      loadAttentionTaskIds(db, repository, { now: query.now }));
     if (attentionTaskIds.length === 0) return { tasks: [], total: 0, offset, limit, ...(groupByTask ? { totalRuns: 0 } : {}) };
   }
   const filters: SelectionFilters = {

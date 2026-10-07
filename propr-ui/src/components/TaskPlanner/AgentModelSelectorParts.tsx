@@ -3,6 +3,7 @@ import { ChevronDown, Users, Check } from 'lucide-react';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import { AgentModelPair } from '../../api/planIssuesApi';
 import { ProviderLogo } from '../ui/ProviderLogo';
+import { formatModelName } from '../../utils/modelDisplay';
 import {
   AgentModelPairWithDisplay,
   getModelDisplayName,
@@ -182,6 +183,7 @@ interface SingleSelectModeProps {
   onAgentChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   onModelChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   showMultiOption: boolean;
+  formatAgentLabel?: (agent: InstanceCatalogAgent) => string;
 }
 
 export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
@@ -194,7 +196,8 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
   availableModels,
   onAgentChange,
   onModelChange,
-  showMultiOption
+  showMultiOption,
+  formatAgentLabel = agent => agent.alias
 }) => {
   const selectClass = getSelectClass(compact);
   const agentPadding = selectedAgent ? (compact ? 'pl-6' : 'pl-8') : '';
@@ -220,7 +223,7 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
           <option value="">Select Agent</option>
           {enabledAgents.map(agent => (
             <option key={agent.alias} value={agent.alias}>
-              {agent.alias}
+              {formatAgentLabel(agent)}
             </option>
           ))}
           {showMultiOption && (
@@ -244,7 +247,7 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
             <option value="">Select Model</option>
             {availableModels.map(modelId => (
               <option key={modelId} value={modelId}>
-                {getModelDisplayName(modelId)}
+                {formatModelName(modelId)}
               </option>
             ))}
           </select>

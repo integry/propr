@@ -90,12 +90,15 @@ function startStandIn(captured: Captured): Promise<Server> {
     return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
 
-function runCli(command: string, args: string[], env: Record<string, string>, stdin: string): Promise<void> {
+/** Resolves with the tail of stderr so a run that never reaches the stand-in explains why. */
+function runCli(command: string, args: string[], env: Record<string, string>, stdin: string): Promise<string> {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, { env, stdio: ['pipe', 'ignore', 'ignore'] });
+        const child = spawn(command, args, { env, stdio: ['pipe', 'ignore', 'pipe'] });
+        let stderr = '';
+        child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-2000); });
         const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${command} did not finish`)); }, 90_000);
         child.on('error', reject);
-        child.on('exit', () => { clearTimeout(timer); resolve(); });
+        child.on('close', () => { clearTimeout(timer); resolve(stderr.trim()); });
         child.stdin.end(stdin);
     });
 }
@@ -137,8 +140,8 @@ function runtimeHarness(build: (policy: AgentToolPolicy) => ToolPolicyLaunchArgs
         const launchArgs = build(withMcp);
         assert.ok(!launchArgs.cliArgs.some(arg => arg.includes(TOKEN)), 'the token never appears in the arguments');
         const { command, args, env } = launch({ baseUrl, home, launchArgs });
-        await runCli(command, args, { PATH: process.env.PATH ?? '', HOME: home, ...env, ...launchArgs.env }, 'Reply with OK.');
-        assert.ok(captured.modelBodies.length > 0, `${command} reached the model stand-in`);
+        const stderr = await runCli(command, args, { PATH: process.env.PATH ?? '', HOME: home, ...env, ...launchArgs.env }, 'Reply with OK.');
+        assert.ok(captured.modelBodies.length > 0, `${command} reached the model stand-in${stderr ? `; stderr: ${stderr}` : ''}`);
         return { ...captured, tools: toolNames(captured.modelBodies[0]) };
     };
 }
@@ -149,7 +152,8 @@ describe('Claude Code runtime honours the tool policy', { skip: skipUnlessPinned
         // Mirrors buildDockerArgs for task mode; the policy switches come last.
         args: ['-p', '-', '--no-session-persistence', '--max-turns', '1', '--output-format', 'stream-json', '--verbose',
             '--dangerously-skip-permissions', ...launchArgs.cliArgs],
-        env: { ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: 'stand-in-key', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
+        // IS_SANDBOX lets --dangerously-skip-permissions run when the CI runner executes tests as root.
+        env: { ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: 'stand-in-key', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', IS_SANDBOX: '1' },
     }));
 
     test('without a restriction the web tools are offered', { timeout: 120_000 }, async () => {

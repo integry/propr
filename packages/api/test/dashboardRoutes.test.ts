@@ -53,7 +53,7 @@ test('summary returns four integer counts that match the active endpoint for the
 /** The task page behind a dashboard count. */
 async function taskPage(status: string, repository: string, limit = 0): Promise<{ total: number; ids: string[] }> {
   const page = await getTasksFromDb({
-    db: database, status, repository, limit, offset: 0,
+    db: database, status, repository, limit, offset: 0, now: NOW,
     previewReader: { project: async (rows: unknown[]) => rows.map(() => ({ previews: [] })) } as never,
   });
   return { total: page.total, ids: (page.tasks as Array<{ id: string }>).map(task => task.id) };
