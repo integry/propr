@@ -350,7 +350,7 @@ Failures exit 1. With `--json` they print a `goal-error` document to stdout whos
 
 ## Agents (saved automations)
 
-Agents, the saved automations on the **Agents** page of the Web UI, are driven by `propr automation` (alias `propr automations`). The group is separate from `propr agent`, which manages coding-agent configurations.
+Agents, the saved automations on the **Agents** page of the Web UI, are driven by `propr automation` (alias `propr automations`). The group is separate from `propr agent`, which manages coding-agent configurations. See [Agents](./agents.md) for what a run does, autonomy and the cost gate.
 
 ```bash
 propr automation list                          # Your agents (--limit, --offset)
