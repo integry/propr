@@ -22,13 +22,13 @@ export interface TaskQuery {
    * number of tasks, and a page returns every matching run of its tasks.
    */
   groupByTask?: boolean;
-  /** Clock for the attention filter's lookback window; defaults to the current time. */
-  now?: Date;
   /**
    * With `groupByTask`: list only the task this run belongs to, with all of its
    * runs, whatever the status and search filters would list.
    */
   containsTask?: string;
+  /** Clock for the attention filter's failure lookback; defaults to the current time. */
+  now?: Date;
 }
 
 export interface TaskPage {
