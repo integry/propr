@@ -43,7 +43,15 @@ const RECENCY_DECAY_FACTOR = 0.95;
 const MAX_COMMIT_LOG_CHARS = 200000;
 const INITIAL_COMMIT_LIMIT = 1000;
 
-export async function getCommitHistory(repoPath: string, limit: number = INITIAL_COMMIT_LIMIT): Promise<CommitInfo[]> {
+/**
+ * Reads recent non-merge commits. With a revision, only that commit's history
+ * is walked; otherwise the checked-out HEAD is used.
+ */
+export async function getCommitHistory(
+  repoPath: string,
+  limit: number = INITIAL_COMMIT_LIMIT,
+  revision?: string
+): Promise<CommitInfo[]> {
   const git: SimpleGit = simpleGit(repoPath);
   const commits: CommitInfo[] = [];
 
@@ -53,7 +61,8 @@ export async function getCommitHistory(repoPath: string, limit: number = INITIAL
       '--no-merges',
       '--pretty=format:%h|%s|%b---END_BODY---',
       '--name-only',
-      '-n', String(limit)
+      '-n', String(limit),
+      ...(revision ? [revision, '--'] : [])
     ]);
 
     if (!logs.trim()) {
@@ -178,14 +187,15 @@ function parseSemanticResponse(response: string): SemanticMinerResponse {
 export async function mineGitHistoryWithLLM(
   repoPath: string,
   userPrompt: string,
-  options: SemanticMiningOptions
+  options: SemanticMiningOptions,
+  revision?: string
 ): Promise<FileScore[]> {
   const correlatedLogger = options.correlationId 
     ? logger.withCorrelation(options.correlationId) 
     : logger;
 
   try {
-    const commits = await getCommitHistory(repoPath);
+    const commits = await getCommitHistory(repoPath, INITIAL_COMMIT_LIMIT, revision);
     
     if (commits.length === 0) {
       correlatedLogger.debug('No commit history found, skipping semantic mining');
@@ -247,7 +257,13 @@ export async function mineGitHistoryWithLLM(
   }
 }
 
-export async function mineGitHistory(repoPath: string, keywords: string[]): Promise<FileScore[]> {
+/**
+ * Scores files by how often they appear in commits whose messages mention a
+ * keyword. With a revision, only that commit's history is walked. Paths are
+ * read NUL-terminated (`-z`), so names git would quote (non-ASCII, quotes,
+ * control characters) come back verbatim and match `ls-tree -z` listings.
+ */
+export async function mineGitHistory(repoPath: string, keywords: string[], revision?: string): Promise<FileScore[]> {
   if (keywords.length === 0) {
     return [];
   }
@@ -261,20 +277,23 @@ export async function mineGitHistory(repoPath: string, keywords: string[]): Prom
         'log',
         '--no-merges',
         '--name-only',
+        '-z',
         '--pretty=format:---COMMIT_BOUNDARY---',
         `--grep=${keyword}`,
         '-i',
-        '-n', String(MAX_COMMITS_PER_KEYWORD)
+        '-n', String(MAX_COMMITS_PER_KEYWORD),
+        ...(revision ? [revision, '--'] : [])
       ]);
 
       if (!logs.trim()) {
         return;
       }
 
-      const commits = logs.split('---COMMIT_BOUNDARY---').filter(c => c.trim());
-      
+      const commits = logs.split('---COMMIT_BOUNDARY---').filter(c => /[^\n\0]/.test(c));
+
       commits.forEach((commitBlock, commitIndex) => {
-        const files = commitBlock.split('\n').filter(f => f.trim().length > 0);
+        // Each block is the header's newline, then NUL-terminated paths.
+        const files = commitBlock.replace(/^\n/, '').split('\0').filter(f => f.length > 0);
         const recencyWeight = Math.pow(RECENCY_DECAY_FACTOR, commitIndex);
         
         files.forEach(f => {

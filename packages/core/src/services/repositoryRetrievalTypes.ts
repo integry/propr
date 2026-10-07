@@ -1,0 +1,163 @@
+/**
+ * Public types for the repository retrieval service.
+ */
+
+export type RepositorySearchMode = 'semantic' | 'literal';
+export type RepositoryMatchReason = 'semantic' | 'path-match' | 'git-history';
+export type RepositoryIndexingState = 'idle' | 'indexing' | 'completed' | 'failed';
+
+/**
+ * What a client-facing retrieval failure was about, so callers can classify it
+ * without parsing the message. Absent for failures `status` alone describes.
+ */
+export type RepositoryRetrievalErrorKind = 'invalid_path' | 'invalid_ref' | 'binary_file' | 'file_not_found' | 'ref_not_found';
+
+/** Error carrying an HTTP-style status (and a `kind` where useful) so API/MCP layers can map it directly. */
+export class RepositoryRetrievalError extends Error {
+  readonly status: number;
+  readonly kind?: RepositoryRetrievalErrorKind;
+
+  constructor(message: string, status: number, kind?: RepositoryRetrievalErrorKind) {
+    super(message);
+    this.name = 'RepositoryRetrievalError';
+    this.status = status;
+    if (kind) this.kind = kind;
+  }
+}
+
+export interface RepositoryTargetOptions {
+  /** Repository full name, e.g. "owner/repo". */
+  repository: string;
+  /** Branch name; used as the ref when `ref` is absent and as the index branch. */
+  branch?: string;
+  /** Any git ref or commit SHA. Takes precedence over `branch` for git lookups. */
+  ref?: string;
+  /** Use an existing local clone instead of resolving/cloning one. */
+  repoPath?: string;
+  /** Fallback token used when no GitHub App installation token is available. */
+  authToken?: string;
+  correlationId?: string;
+}
+
+export interface SearchRepositoryFilesOptions extends RepositoryTargetOptions {
+  query: string;
+  mode?: RepositorySearchMode;
+  /** Restrict results to repository paths starting with this prefix. */
+  path?: string;
+  /** Literal mode only. Defaults to false. */
+  caseSensitive?: boolean;
+  offset?: number;
+  limit?: number;
+  /**
+   * Literal mode only: line matches returned per file. Counts are complete
+   * except for a match flagged `countTruncated`, the file a truncated scan
+   * stopped inside.
+   */
+  maxLineMatchesPerFile?: number;
+}
+
+export interface RepositoryLineMatch {
+  lineNumber: number;
+  text: string;
+}
+
+export interface RepositorySearchMatch {
+  path: string;
+  /** Relevance score 0-100 (semantic mode). */
+  score?: number;
+  /** Signals that contributed to the score (semantic mode). */
+  reasons?: RepositoryMatchReason[];
+  /** Number of matching lines in the file (literal mode); a lower bound when `countTruncated`. */
+  matchCount?: number;
+  /**
+   * Literal mode: present when the scan stopped inside this file (see
+   * `scanTruncated`), so it may have more matching lines than `matchCount`.
+   * Every other returned file's count is complete.
+   */
+  countTruncated?: boolean;
+  /** First matching lines (literal mode). */
+  lineMatches?: RepositoryLineMatch[];
+}
+
+export interface RepositorySearchFreshness {
+  /** Branch whose index was consulted. */
+  indexBranch: string;
+  indexingStatus: RepositoryIndexingState | null;
+  lastIndexedAt: string | null;
+  lastIndexedHash: string | null;
+  /** True when file summaries contributed to the ranking. */
+  usedIndex: boolean;
+  /** True when the index is missing, incomplete, or older than the searched commit. */
+  stale: boolean;
+  caveat?: string;
+}
+
+export interface RepositorySearchPagination {
+  offset: number;
+  limit: number;
+  nextOffset: number | null;
+  totalMatches: number;
+}
+
+export interface SearchRepositoryFilesResult {
+  repository: string;
+  mode: RepositorySearchMode;
+  query: string;
+  ref: string;
+  commit: string | null;
+  pathPrefix: string | null;
+  matches: RepositorySearchMatch[];
+  pagination: RepositorySearchPagination;
+  /** Present in semantic mode. */
+  freshness?: RepositorySearchFreshness;
+  /** Keywords the relevance engine extracted (semantic mode). */
+  keywordsDetected?: string[];
+  /**
+   * Literal mode: the grep stopped at its output or file budget, so
+   * `totalMatches` is a lower bound and later files may also match. The file
+   * the scan stopped inside, if returned, is flagged `countTruncated` because
+   * its `matchCount` is a lower bound too. Narrow the query or path.
+   */
+  scanTruncated?: boolean;
+  /** Present when the ref could not be refreshed from origin and a cached commit answered. */
+  refCaveat?: string;
+}
+
+export interface ReadRepositoryFileOptions extends RepositoryTargetOptions {
+  path: string;
+  /** 1-based, inclusive. Defaults to 1. */
+  startLine?: number;
+  /** 1-based, inclusive. Defaults to the last line. */
+  endLine?: number;
+  maxLines?: number;
+  /** Lines are never split; a first line larger than this is rejected with a 413. */
+  maxBytes?: number;
+  /** Largest `maxBytes` the caller can request (defaults to the service's hard limit); used to clamp and in hints. */
+  maxBytesLimit?: number;
+  /**
+   * Ceiling on the content's size once JSON-encoded (escapes included), for
+   * callers that serialize the result into a bounded response. Reads stop
+   * before it like `maxBytes`, and a first line that cannot fit is a 413.
+   */
+  encodedByteLimit?: number;
+}
+
+export interface ReadRepositoryFileResult {
+  repository: string;
+  path: string;
+  ref: string;
+  commit: string;
+  content: string;
+  /** First line returned (1-based). */
+  startLine: number;
+  /** Last line returned (1-based); `startLine - 1` when nothing was returned. */
+  endLine: number;
+  totalLines: number;
+  totalBytes: number;
+  returnedBytes: number;
+  truncated: boolean;
+  /** Line to request next to continue reading, or null when the range was fully returned. */
+  nextStartLine: number | null;
+  /** Present when the ref could not be refreshed from origin and a cached commit answered. */
+  refCaveat?: string;
+}

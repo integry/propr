@@ -36,6 +36,9 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpConfig |
   return config;
 }
 
+/** Largest serialized tool result (`data`) the executor returns; larger results are RESULT_TOO_LARGE. */
+export const MAX_TOOL_RESULT_BYTES = 256 * 1024;
+
 export class McpError extends Error {
   readonly stage: McpErrorStage | null;
   readonly retryable: boolean;
