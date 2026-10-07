@@ -149,6 +149,7 @@ const sidebars: SidebarsConfig = {
         'operations/configuration-reference',
         'operations/settings-locations',
         'operations/metrics',
+        'operations/api-reference',
         'operations/agent-tank',
         'operations/maintenance',
         'operations/troubleshooting',

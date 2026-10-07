@@ -67,6 +67,7 @@ await mock.module('@propr/core', {
             }
         },
         withRetry: async (operation: () => Promise<unknown>) => operation(),
+        recoverCiFailureFollowups: async () => undefined,
     },
 });
 
