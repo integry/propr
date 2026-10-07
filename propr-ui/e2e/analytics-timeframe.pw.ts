@@ -342,6 +342,15 @@ test('runs and tasks share one chart: each day pairs its runs and tasks side by 
     expect(Math.abs(task.bottom - run.bottom)).toBeLessThan(1);
   });
 
+  // Each date sits dead centre under its whole pair, not under the runs bar.
+  const labelCentres = await chart.getByTestId('activity-date-label').evaluateAll(nodes =>
+    nodes.map(node => { const box = node.getBoundingClientRect(); return box.x + box.width / 2; }));
+  expect(labelCentres).toHaveLength(7);
+  labelCentres.forEach((centre, index) => {
+    const pairCentre = (outerBoxes[index].x + innerBoxes[index].x + innerBoxes[index].width) / 2;
+    expect(Math.abs(centre - pairCentre)).toBeLessThan(1);
+  });
+
   // One scale for both: the top rule is the busiest day's runs.
   const ticks = chart.locator('.recharts-yAxis-tick-labels .recharts-cartesian-axis-tick-value');
   expect(Math.max(...(await ticks.allTextContents()).map(text => Number(text.trim())))).toBe(571);
@@ -352,5 +361,31 @@ test('runs and tasks share one chart: each day pairs its runs and tasks side by 
   await expect(page.getByText('Sep 22: 571 runs · 210 tasks')).toBeVisible();
   await expect(page.getByText('2.7× runs per task')).toBeVisible();
   await page.clock.runFor(2_000);
+  // The card stands over Tuesday, its caret on the pair's centre just above the taller bar.
+  const tooltip = page.getByTestId('activity-tooltip');
+  const caret = page.getByTestId('activity-tooltip-caret');
+  const pairCentre = (index: number) => (outerBoxes[index].x + innerBoxes[index].x + innerBoxes[index].width) / 2;
+  const centreOf = async (locator: typeof tooltip) => {
+    const box = (await locator.boundingBox())!;
+    return { x: box.x + box.width / 2, bottom: box.y + box.height, left: box.x, right: box.x + box.width };
+  };
+  const card = await centreOf(tooltip);
+  expect(Math.abs(card.x - pairCentre(5))).toBeLessThan(1.5);
+  const tip = await centreOf(caret);
+  expect(Math.abs(tip.x - pairCentre(5))).toBeLessThan(1.5);
+  expect(tip.bottom).toBeLessThanOrEqual(tuesday.top);
+  expect(tuesday.top - tip.bottom).toBeLessThan(6);
+  // At the edges the card slides to stay over the plot, but the caret keeps to its day.
+  const plot = (await chart.boundingBox())!;
+  for (const index of [0, 6]) {
+    await page.mouse.move(pairCentre(index), outerBoxes[index].top - 4);
+    await expect(page.getByText(`${index === 0 ? 'Sep 17' : 'Sep 23'}:`)).toBeVisible();
+    const edge = await centreOf(tooltip);
+    expect(edge.left).toBeGreaterThanOrEqual(plot.x);
+    expect(edge.right).toBeLessThanOrEqual(plot.x + plot.width + 0.5);
+    expect(Math.abs((await centreOf(caret)).x - pairCentre(index))).toBeLessThan(1.5);
+  }
+  await page.mouse.move(tuesday.x + tuesday.width / 2, tuesday.top + 8);
+  await expect(page.getByText('Sep 22: 571 runs · 210 tasks')).toBeVisible();
   await captureTarget(page.locator('[aria-labelledby="analytics-activity-heading"]'), 'analytics-activity-runs-vs-tasks-paired');
 });

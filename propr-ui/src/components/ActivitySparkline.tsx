@@ -33,10 +33,12 @@
  * back from today (see `planActivityAxis`). Each day owns its whole column:
  * hovering anywhere in it lights a ceiling-to-baseline track behind the bar
  * and opens that day's count, so the hover target is the day's slot, not a
- * thin bar inside it.
+ * thin bar inside it. The count stands over the day it describes, centred on
+ * the column with a caret down to its tallest bar, rather than flipping to
+ * whichever side of the pointer has room and floating over a neighbour.
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { ChartNoAxesColumn, Slash } from 'lucide-react';
 import { midlineTick, tooltipStyle } from './chartConstants';
@@ -67,6 +69,11 @@ const PLACEHOLDER_BAR_HEIGHTS = [45, 30, 60, 40, 75, 55, 35, 65, 50, 80, 40, 60,
 
 /** The y-axis gutter, which the plot and the skeleton are both inset by. */
 const Y_AXIS_WIDTH = 28;
+/** The space above the plot, and the date axis beneath it. */
+const PLOT_TOP = 6;
+const X_AXIS_HEIGHT = 28;
+/** How far the tooltip's caret stands off the top of the bar it points at. */
+const CARET_SIZE = 6;
 
 /** The hover track behind a day's bar (slate-100: slate-50 vanishes on the white canvas). */
 const COLUMN_TRACK_FILL = '#F1F5F9';
@@ -120,6 +127,58 @@ export const ActivityLegend: React.FC<{ data: ActivityDay[] }> = ({ data }) => {
   );
 };
 
+/**
+ * A day's figures, centred over its column with a caret down to the top of
+ * its taller bar. Recharts pins its wrapper at the chart's corner (`position`
+ * below), so `x` and `y` are the anchor in chart pixels. Near either edge the
+ * box slides to stay over the plot; the caret stays on the column.
+ */
+const AnchoredTooltip: React.FC<{ x: number; y: number; minX: number; maxX: number; children: React.ReactNode }> = ({
+  x, y, minX, maxX, children,
+}) => {
+  const box = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    if (box.current) setWidth(box.current.offsetWidth);
+  }, [children]);
+  const left = Math.max(minX, Math.min(x - width / 2, maxX - width));
+  return (
+    <div
+      ref={box}
+      data-testid="activity-tooltip"
+      style={{
+        ...tooltipStyle,
+        position: 'absolute',
+        left,
+        top: y - CARET_SIZE,
+        transform: 'translateY(-100%)',
+        whiteSpace: 'nowrap',
+        padding: '6px 10px',
+        fontSize: '12px',
+        visibility: width > 0 ? 'visible' : 'hidden',
+      }}
+    >
+      {children}
+      {/* The caret: a square turned on its corner, its lower half below the box. */}
+      <span
+        aria-hidden="true"
+        data-testid="activity-tooltip-caret"
+        style={{
+          position: 'absolute',
+          left: x - left - CARET_SIZE / Math.SQRT2,
+          bottom: -CARET_SIZE / Math.SQRT2 - 1,
+          width: CARET_SIZE * Math.SQRT2,
+          height: CARET_SIZE * Math.SQRT2,
+          backgroundColor: tooltipStyle.backgroundColor,
+          borderRight: tooltipStyle.border,
+          borderBottom: tooltipStyle.border,
+          transform: 'rotate(45deg)',
+        }}
+      />
+    </div>
+  );
+};
+
 /** One day's date under its bar: the weekday or day on top, the date, month or year beneath. */
 const DateTick: React.FC<{ x?: number; y?: number; payload?: { value: string }; labels: Map<string, ActivityAxisLabel> }> = ({
   x = 0, y = 0, payload, labels,
@@ -140,13 +199,13 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
   const max = Math.max(1, ...data.map(point => Math.max(point.count, point.runs ?? 0)));
   const mid = midlineTick(max);
   const today = utcToday();
-  const [plotWidth, setPlotWidth] = useState(0);
-  const labels = useMemo(
-    () => planActivityAxis(data.map(point => point.date), data.length > 0 ? plotWidth / data.length : 0),
-    [data, plotWidth],
-  );
-  const barSize = pairedBarSize(data.length > 0 ? plotWidth / data.length : 0);
-  const onResize = (width: number) => setPlotWidth(Math.max(0, width - Y_AXIS_WIDTH));
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const plotWidth = Math.max(0, size.width - Y_AXIS_WIDTH);
+  const plotHeight = Math.max(0, size.height - PLOT_TOP - X_AXIS_HEIGHT);
+  const slot = data.length > 0 ? plotWidth / data.length : 0;
+  const labels = useMemo(() => planActivityAxis(data.map(point => point.date), slot), [data, slot]);
+  const barSize = pairedBarSize(slot);
+  const onResize = (width: number, height: number) => setSize({ width, height });
 
   return (
     <div data-testid="activity-chart">
@@ -161,7 +220,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
           </SkeletonRegion>
         ) : data.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%" onResize={onResize}>
-            <BarChart data={data} margin={{ top: 6, right: 0, left: 0, bottom: 0 }} barCategoryGap="15%" barGap={PAIRED_BAR_GAP}>
+            <BarChart data={data} margin={{ top: PLOT_TOP, right: 0, left: 0, bottom: 0 }} barCategoryGap="15%" barGap={PAIRED_BAR_GAP}>
               {/*
                 The baseline and maximum rules, then a lighter midline that reads
                 as a guide. Both are grids, so they sit behind the bars.
@@ -176,7 +235,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
                 tickLine={false}
                 // Every day is a tick; the plan decides which ones carry a date.
                 interval={0}
-                height={28}
+                height={X_AXIS_HEIGHT}
                 tick={<DateTick labels={labels} />}
               />
               <YAxis
@@ -192,19 +251,32 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
                 tick={{ fill: '#94A3B8', fontSize: 10 }}
               />
               {/* The cursor is the day's whole column, ceiling to baseline. */}
+              {/*
+                Pinned to the chart's corner so the card can place itself over
+                its day: recharts would otherwise push it beside the pointer.
+              */}
               <Tooltip
                 cursor={{ fill: COLUMN_TRACK_FILL }}
+                position={{ x: 0, y: 0 }}
+                isAnimationActive={false}
                 content={({ active, payload }) => {
                   if (!active || !payload || payload.length === 0) return null;
                   const day = payload[0].payload as ActivityDay;
+                  const index = data.findIndex(point => point.date === day.date);
+                  const top = Math.max(day.count, day.runs ?? 0);
                   const ratio = paired ? formatRatio(day.runs ?? 0, day.count) : null;
                   return (
-                    <div style={{ ...tooltipStyle, padding: '6px 10px', fontSize: '12px' }}>
+                    <AnchoredTooltip
+                      x={Y_AXIS_WIDTH + (index + 0.5) * slot}
+                      y={PLOT_TOP + plotHeight * (1 - top / max)}
+                      minX={Y_AXIS_WIDTH}
+                      maxX={size.width}
+                    >
                       {paired
                         ? <>{day.displayDate}: {(day.runs ?? 0).toLocaleString()} runs · {day.count.toLocaleString()} tasks</>
                         : <>{day.displayDate}: {day.count} tasks</>}
                       {ratio && <div className="text-slate-500">{ratio}</div>}
-                    </div>
+                    </AnchoredTooltip>
                   );
                 }}
               />
