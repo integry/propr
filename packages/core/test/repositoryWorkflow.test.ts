@@ -484,14 +484,16 @@ test('the transport time limit reaches only this execution\'s docker run wrapper
 });
 
 test('post-agent validation stops before the execution time limit instead of turning a finished agent into a timeout', async () => {
-    // 31 s limit minus the 30 s reserve leaves one second for validation.
+    // The limit leaves two seconds for validation after the reserve. The wrapper's deadline
+    // uses whole-second SECONDS, which can tick within milliseconds of the wrapper starting,
+    // so a one-second budget could already be spent before the first command.
     const workflow = policy('validation: ["sleep 10", "echo second >> \\"$TRACE\\""]\nhooks: { before_remove: "echo remove >> \\"$TRACE\\"" }');
     workflow.timeoutMs = 4000;
     const reserve = 30 + 4 + 5;
     const started = Date.now();
     const result = await executeWithRepositoryWorkflow(workflow, async () => {
         const { marker } = repositoryWorkflowExecution.getStore()!;
-        const execution = await runWrapper(workflow, 'echo agent >> "$TRACE"; exit 0', undefined, marker, {}, [`PROPR_EXECUTION_TIMEOUT_MS=${(reserve + 1) * 1000}`]);
+        const execution = await runWrapper(workflow, 'echo agent >> "$TRACE"; exit 0', undefined, marker, {}, [`PROPR_EXECUTION_TIMEOUT_MS=${(reserve + 2) * 1000}`]);
         assert.equal(execution.exitCode, 0, 'the agent exit code is preserved');
         assert.equal(execution.trace, 'agent\nremove\n', 'later commands are skipped, cleanup hooks still run');
         assert.match(execution.stderr, /skipped validation command 2: execution time limit reached/);
