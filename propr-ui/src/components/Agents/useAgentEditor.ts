@@ -203,13 +203,14 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
     }
   }, [applyAttachments]);
 
+  // A reload answered after the change would bring back the file list from before it.
   const upload = useCallback(async (files: File[]) => {
-    if (!definition || savingRef.current) return;
+    if (!definition || savingRef.current || loadingRef.current) return;
     await trackAttachments(async () => (await uploadAgentAttachment(definition.id, files)).definition);
   }, [definition, trackAttachments]);
 
   const removeAttachment = useCallback(async (attachmentId: string) => {
-    if (!definition || savingRef.current) return;
+    if (!definition || savingRef.current || loadingRef.current) return;
     await trackAttachments(() => deleteAgentAttachment(definition.id, attachmentId));
   }, [definition, trackAttachments]);
 
@@ -229,7 +230,11 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
     }
   }, [definition, dirty, onRunStarted]);
 
-  const reload = useCallback(() => (definition ? load(definition.id) : Promise.resolve()), [definition, load]);
+  /** Waits out attachment changes: a read taken before one commits would replace the file list it produced. */
+  const reload = useCallback(() => {
+    if (!definition || loadingRef.current || attachmentsPendingRef.current > 0) return Promise.resolve();
+    return load(definition.id);
+  }, [definition, load]);
 
   return {
     definition, form, agents, loading, loadError, saving, deleting, running, error, conflict, notice, dirty,
