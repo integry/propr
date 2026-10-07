@@ -22,6 +22,8 @@ export interface TaskQuery {
    * number of tasks, and a page returns every matching run of its tasks.
    */
   groupByTask?: boolean;
+  /** Clock for the attention filter's lookback window; defaults to the current time. */
+  now?: Date;
   /**
    * With `groupByTask`: list only the task this run belongs to, with all of its
    * runs, whatever the status and search filters would list.
@@ -147,7 +149,7 @@ async function narrowToRunPage(
 }
 
 export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
-  const { db, repository, limit, offset, excludeMerged, groupByTask } = query;
+  const { db, repository, limit, offset, excludeMerged, groupByTask, now } = query;
   const { containsTask, status, search, forReview } = listFilters(query);
   // Resolve one history row per task with an indexed lookup. The former global
   // ROW_NUMBER window materialized and sorted all task_history rows for every
@@ -195,7 +197,7 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
     // plan reviews awaiting a decision and the runs behind decisions that
     // recorded no task link, and excluding failures under recovery.
     attentionTaskIds = await timeApiStage('sql.tasks.attention', () =>
-      loadAttentionTaskIds(db, repository));
+      loadAttentionTaskIds(db, repository, { now }));
     if (attentionTaskIds.length === 0) return { tasks: [], total: 0, offset, limit, ...(groupByTask ? { totalRuns: 0 } : {}) };
   }
   const filters: SelectionFilters = {
