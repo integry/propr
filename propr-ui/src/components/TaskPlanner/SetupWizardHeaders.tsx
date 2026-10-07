@@ -57,6 +57,16 @@ export const BranchBadge: React.FC<{ baseBranch: string; fallbackBranch?: string
   );
 };
 
+// Phones have no room for a separate branch chip, so the repo pill reads `propr/main` instead.
+const MobileBranchSuffix: React.FC<{ branch: string; failed: boolean }> = ({ branch, failed }) => (
+  branch ? (
+    <span data-testid="scope-pill-branch" className={`md:hidden ${failed ? 'text-amber-700' : 'text-slate-500'}`}>/{branch}</span>
+  ) : null
+);
+
+// On a phone the repo trigger is the one scope pill; from md up it is a breadcrumb beside the branch chip.
+const SCOPE_PILL_CLASS = 'relative inline-flex min-w-0 items-center whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 py-0.5 pl-2 pr-1.5 md:shrink-0 md:max-w-[50%] md:border-0 md:bg-transparent md:p-0';
+
 // Header for new mode (repository selector) - IDE-style breadcrumb layout
 export const NewModeHeader: React.FC<{
   reposLoading: boolean;
@@ -71,10 +81,11 @@ export const NewModeHeader: React.FC<{
   if (reposLoading) {
     return <span className="text-gray-400 text-sm">Loading repositories...</span>;
   }
+  const fallbackBranch = selectedBaseBranch || soleConfiguredBranch(repos, selectedRepo);
 
   return (
     <>
-      <div className="relative inline-flex shrink-0 items-center whitespace-nowrap max-w-[12rem] sm:max-w-[50%]">
+      <div className={SCOPE_PILL_CLASS} data-testid="scope-pill">
         <RepositorySelector
           repos={repos as RepoOption[]}
           selectedRepo={selectedRepo}
@@ -83,15 +94,16 @@ export const NewModeHeader: React.FC<{
           disabled={repos.length === 0}
           variant="breadcrumb"
           placeholder="Select repository"
+          labelSuffix={selectedRepo && !isLoadingBranches ? <MobileBranchSuffix branch={baseBranch || fallbackBranch || ''} failed={!!branchError} /> : undefined}
         />
       </div>
       {selectedRepo && (
         <>
-          <div className="inline-flex min-w-0 items-center sm:max-w-[50%]">
+          <div className="hidden md:inline-flex min-w-0 items-center md:max-w-[50%]">
             {isLoadingBranches ? (
               <span className="text-gray-400 text-sm">Loading...</span>
             ) : (
-              <BranchBadge baseBranch={baseBranch} fallbackBranch={selectedBaseBranch || soleConfiguredBranch(repos, selectedRepo)} failed={!!branchError} />
+              <BranchBadge baseBranch={baseBranch} fallbackBranch={fallbackBranch} failed={!!branchError} />
             )}
           </div>
         </>
@@ -134,9 +146,11 @@ export const EditModeHeader: React.FC<{
       : undefined;
   }, [configuredBaseBranch, finalRepoOptions, repository, selectedBaseBranch]);
 
+  const fallbackBranch = selectorBaseBranch || soleConfiguredBranch(finalRepoOptions, repository);
+
   return (
     <>
-      <div className="relative inline-flex shrink-0 items-center whitespace-nowrap max-w-[12rem] sm:max-w-[50%]">
+      <div className={SCOPE_PILL_CLASS} data-testid="scope-pill">
         <RepositorySelector
           repos={finalRepoOptions as RepoOption[]}
           selectedRepo={repository}
@@ -146,13 +160,14 @@ export const EditModeHeader: React.FC<{
           isLoading={reposLoading}
           variant="breadcrumb"
           placeholder="Select repository"
+          labelSuffix={isRepoLoading ? undefined : <MobileBranchSuffix branch={baseBranch || fallbackBranch || ''} failed={!!(branchError || repoError)} />}
         />
       </div>
-      <div className="inline-flex min-w-0 items-center sm:max-w-[50%]">
+      <div className="hidden md:inline-flex min-w-0 items-center md:max-w-[50%]">
         {isRepoLoading ? (
           <span className="text-gray-400 text-sm">Loading...</span>
         ) : (
-          <BranchBadge baseBranch={baseBranch} fallbackBranch={selectorBaseBranch || soleConfiguredBranch(finalRepoOptions, repository)} failed={!!(branchError || repoError)} />
+          <BranchBadge baseBranch={baseBranch} fallbackBranch={fallbackBranch} failed={!!(branchError || repoError)} />
         )}
       </div>
       {(branchError || repoError) && (

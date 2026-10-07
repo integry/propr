@@ -1,14 +1,12 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, Loader2, Edit3, Pause, Play } from 'lucide-react';
+import { motion } from 'framer-motion';
 import { DraftWithPlan, deleteDraft } from '../../api/proprApi';
 import DeletePlanDialog from './DeletePlanDialog';
 import RevisePlanDialog from './RevisePlanDialog';
 import PlanIssuesManager from './PlanIssuesManager';
 import { getDraftDisplayName } from './planDisplayName';
-import { StudioPhaseSwitcher } from './StudioStepper';
-import { PlanOverflowMenu } from './PlanEditorComponents';
+import { ApprovedPlanHeader } from './ApprovedPlanHeader';
 import { PlanTask, reviseDraft, pauseDraft, resumeDraft, updateExecutionSettings } from '../../api/plannerApi';
 import { PlanIssue } from '../../api/planIssuesApi';
 import { PlanFooterStats } from './ApprovedPlanFooter';
@@ -24,63 +22,6 @@ interface ApprovedPlanViewProps {
   notificationIntent?: PlanNotificationIntent | null;
   onNotificationIntentConsumed?: () => void;
 }
-const OriginalPromptPopover: React.FC<{ prompt: string }> = ({ prompt }) => {
-  const [isOpen, setIsOpen] = useState(false);
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors"
-        style={{ color: 'rgb(29, 138, 138)' }}
-        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(29, 138, 138, 0.1)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
-        title="View original prompt"
-      >
-        <FileQuestion size={14} />
-        <span className="hidden sm:inline font-medium">Prompt</span>
-      </button>
-      <AnimatePresence>
-        {isOpen && (
-          <>
-            <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
-            <motion.div
-              initial={{ opacity: 0, y: -10, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -10, scale: 0.95 }}
-              transition={{ duration: 0.15 }}
-              className="absolute top-full left-0 mt-2 z-50 w-80 max-w-[calc(100vw-2rem)] bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
-            >
-              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Original Prompt</span>
-                <button onClick={() => setIsOpen(false)} className="p-1 hover:bg-gray-200 rounded transition-colors">
-                  <X size={14} className="text-gray-400" />
-                </button>
-              </div>
-              <div className="p-3 max-h-60 overflow-y-auto">
-                <p className="text-sm text-gray-700 whitespace-pre-wrap">{prompt}</p>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-};
-
-interface PlanHeaderActionsProps {
-  draftStatus: string;
-  isPaused: boolean;
-  isPauseLoading: boolean;
-  isRevising: boolean;
-  isDeleting: boolean;
-  repoUrl: string | null;
-  onPauseResume: () => void;
-  onRevise: () => void;
-  onDelete: () => void;
-  isReadOnly?: boolean;
-  /** Issues are being written to GitHub; revising now would race the run and orphan issues. */
-  isCreatingIssues?: boolean;
-}
 function parsePlanTasks(planJson: DraftWithPlan['plan_json']): PlanTask[] {
   if (typeof planJson === 'string') {
     try {
@@ -94,108 +35,6 @@ function parsePlanTasks(planJson: DraftWithPlan['plan_json']): PlanTask[] {
 async function persistExecutionSetting(draftId: string, update: Parameters<typeof updateExecutionSettings>[1]): Promise<Awaited<ReturnType<typeof updateExecutionSettings>>> {
   return updateExecutionSettings(draftId, update);
 }
-
-const HEADER_GHOST_BUTTON_CLASS = 'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-200 hover:text-slate-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
-
-/** Pause/Revise as quiet ghost buttons, a compact GitHub link, and Delete behind "…" so the title keeps its room. */
-const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl, onPauseResume, onRevise, onDelete, isReadOnly = false, isCreatingIssues = false }) => {
-  const showPauseResume = draftStatus === 'executed' || draftStatus === 'pr_created';
-  return (
-    <div className="flex w-full flex-wrap items-center gap-1 md:w-auto md:flex-shrink-0 md:flex-nowrap md:justify-end">
-      {showPauseResume && (
-        <button
-          onClick={onPauseResume}
-          disabled={isPauseLoading || isReadOnly}
-          className={HEADER_GHOST_BUTTON_CLASS}
-          title={isReadOnly ? 'Demo mode is read-only' : isPaused ? 'Resume plan execution' : 'Pause plan execution'}
-        >
-          {isPauseLoading ? (
-            <Loader2 size={15} className="animate-spin" />
-          ) : isPaused ? (
-            <Play size={15} />
-          ) : (
-            <Pause size={15} />
-          )}
-          <span>{isPaused ? 'Resume' : 'Pause'}</span>
-        </button>
-      )}
-      <button
-        onClick={onRevise}
-        disabled={isRevising || isReadOnly || isCreatingIssues}
-        className={HEADER_GHOST_BUTTON_CLASS}
-        title={isReadOnly ? 'Demo mode is read-only' : isCreatingIssues ? 'Revise is unavailable while issues are being created on GitHub' : 'Revise Plan'}
-      >
-        {isRevising ? <Loader2 size={15} className="animate-spin" /> : <Edit3 size={15} />}
-        <span>Revise</span>
-      </button>
-      {repoUrl && (
-        <a
-          href={repoUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="View issues on GitHub"
-          title="View issues on GitHub"
-          className="ml-1 flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors"
-        >
-          <Github size={15} />
-          <span>GitHub</span>
-          <ExternalLink size={12} className="text-slate-400" />
-        </a>
-      )}
-      <PlanOverflowMenu
-        isDeleting={isDeleting}
-        deleteDisabled={isDeleting || isReadOnly}
-        deleteTitle={isReadOnly ? 'Demo mode is read-only' : 'Delete Plan'}
-        onDelete={onDelete}
-      />
-    </div>
-  );
-};
-
-interface PlanHeaderSummaryProps {
-  planName: string;
-  draftStatus: string;
-  isPaused: boolean;
-  repository: string;
-  baseBranch: string;
-  initialPrompt?: string | null;
-}
-const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftStatus, isPaused, repository, baseBranch, initialPrompt }) => (
-  // Phones stack the title under the repo chip and phase pill so it gets the full width; md+ keeps one row.
-  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 sm:gap-x-4 min-w-0 flex-1 md:flex-nowrap">
-    {/* Compact repository chip anchors the git context without a full breadcrumb row; owner and branch are in the tooltip. */}
-    {repository && (
-      <span
-        data-testid="plan-repo-chip"
-        className="inline-flex max-w-[96px] sm:max-w-[140px] flex-shrink-0 items-center gap-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-xs text-slate-700"
-        title={`${repository} / ${baseBranch}`}
-      >
-        <GitBranch size={12} className="flex-shrink-0 text-slate-500" />
-        <span className="truncate">{repository.split('/').pop() || repository}</span>
-      </span>
-    )}
-    {/* The title grows into free header space (wider on widescreens) and keeps at least 320px before the controls squeeze it. */}
-    <h1 className="order-last w-full text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 md:order-none md:w-auto md:flex-1 md:min-w-[320px] md:max-w-xl 2xl:max-w-3xl" title={planName}>
-      {planName}
-    </h1>
-    {draftStatus === 'merged' && (
-      <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-600 flex items-center gap-1 flex-shrink-0">
-        <GitMerge size={12} /><span className="hidden sm:inline">Merged</span>
-      </span>
-    )}
-    {isPaused && (
-      <span className="px-2 py-1 rounded text-xs font-medium bg-orange-100 text-orange-700 flex items-center gap-1 flex-shrink-0">
-        <Pause size={12} /><span className="hidden sm:inline">Paused</span>
-      </span>
-    )}
-    {/* Clusters are separated by the row's flex gap alone; no drawn or typed dividers between them. */}
-    {initialPrompt && (
-      <div className="hidden lg:block"><OriginalPromptPopover prompt={initialPrompt} /></div>
-    )}
-    {/* The phase pill replaces the old stepper band on phones too, so it shares the title row. */}
-    <StudioPhaseSwitcher className="ml-auto md:ml-0" />
-  </div>
-);
 
 export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({
   draft,
@@ -358,10 +197,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
-      <div className="flex flex-col gap-2 border-b border-gray-200 bg-gray-100 px-4 py-2 flex-shrink-0 sm:px-6 md:flex-row md:items-center md:justify-between md:gap-4">
-        <PlanHeaderSummary planName={planName} draftStatus={draft.status} isPaused={isPaused} repository={repository} baseBranch={baseBranch} initialPrompt={draft.initial_prompt} />
-        <PlanHeaderActions draftStatus={draft.status} isPaused={isPaused} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => { if (!isDemoMode && !isCreatingIssues) setShowReviseDialog(true); }} onDelete={() => { if (!isDemoMode) setShowDeleteDialog(true); }} isReadOnly={isDemoMode} isCreatingIssues={isCreatingIssues} />
-      </div>
+      <ApprovedPlanHeader planName={planName} draftStatus={draft.status} isPaused={isPaused} repository={repository} baseBranch={baseBranch} initialPrompt={draft.initial_prompt} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => { if (!isDemoMode && !isCreatingIssues) setShowReviseDialog(true); }} onDelete={() => { if (!isDemoMode) setShowDeleteDialog(true); }} isReadOnly={isDemoMode} isCreatingIssues={isCreatingIssues} />
       <div className="flex-1 overflow-auto p-4">
         <PlanIssuesManager draftId={draft.draft_id} repository={repository} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} onCreationProgressChange={setCreationProgress} isSavingExecutionSettings={isSavingExecutionSettings} isReadOnly={isDemoMode} notificationIntent={notificationIntent} onNotificationIntentConsumed={onNotificationIntentConsumed} />
       </div>

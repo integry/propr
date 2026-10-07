@@ -47,10 +47,12 @@ describe('SetupWizardHeaders', () => {
       />
     );
 
-    // The branch chip beside it shows the branch, so the trigger reads just "propr"; its tooltip keeps the branch.
-    const trigger = screen.getByRole('button', { name: /^propr$/i });
+    // One scope pill on a phone ("propr/develop"); from md up the suffix hides and the branch chip beside it shows the branch.
+    const trigger = screen.getByRole('button', { name: /^propr\/develop$/i });
     expect(trigger).toHaveAttribute('title', 'integry/propr (develop)');
+    expect(screen.getByTestId('scope-pill-branch')).toHaveClass('md:hidden');
     expect(screen.getByTestId('branch-chip')).toHaveTextContent('develop');
+    expect(screen.getByTestId('branch-chip').parentElement).toHaveClass('hidden', 'md:inline-flex');
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
 
     fireEvent.click(trigger);
@@ -80,7 +82,7 @@ describe('SetupWizardHeaders', () => {
       />
     );
 
-    expect(screen.getByRole('button', { name: /propr$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^propr\/main$/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /propr \(main\)/i })).not.toBeInTheDocument();
   });
 

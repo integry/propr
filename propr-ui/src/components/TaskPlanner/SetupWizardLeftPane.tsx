@@ -204,9 +204,10 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
       </div>
     </div>
 
-    {/* One composer: prompt, attachments and generation settings in a single bordered box */}
-    <div className="flex-1 min-h-0 overflow-auto p-3 md:p-4">
-      <div className="flex flex-col rounded-lg border border-slate-200 bg-white focus-within:border-slate-300 focus-within:ring-1 focus-within:ring-slate-200">
+    {/* One composer: prompt, attachments and generation settings. Desktop draws it as one bordered box;
+        a phone runs it edge to edge as part of the white page, divided by hairlines. */}
+    <div className="md:flex-1 md:min-h-0 md:overflow-auto md:p-4">
+      <div data-testid="setup-composer" className="flex flex-col border-b border-slate-100 bg-white md:rounded-lg md:border md:border-slate-200 md:focus-within:border-slate-300 md:focus-within:ring-1 md:focus-within:ring-slate-200">
         <textarea
           ref={textareaRef}
           value={prompt}
@@ -215,7 +216,7 @@ export const SetupWizardLeftPane: React.FC<SetupWizardLeftPaneProps> = ({
           onPaste={onPaste}
           disabled={isGenerating || isUploading}
           placeholder="Describe the feature, bug fix, or improvement you want to implement..."
-          className={`w-full rounded-t-lg text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 focus:outline-none min-h-[320px] md:min-h-[160px] max-h-[60vh] ${
+          className={`w-full md:rounded-t-lg text-base text-gray-900 placeholder-gray-400 resize-none leading-relaxed p-4 focus:outline-none min-h-[320px] md:min-h-[160px] max-h-[60vh] ${
             isGenerating || isUploading ? 'opacity-70 cursor-not-allowed bg-gray-50' : ''
           }`}
         />

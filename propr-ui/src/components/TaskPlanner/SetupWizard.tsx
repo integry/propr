@@ -10,7 +10,7 @@ import { useToast } from '../ui/useToast';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { SetupWizardLeftPane } from './SetupWizardLeftPane';
 import { SetupWizardRightPane } from './SetupWizardRightPane';
-import { SetupComposerFooter } from './SetupComposerFooter';
+import { SetupComposerFooter, MobileGenerateDock } from './SetupComposerFooter';
 import { ContextLevelSlider } from './ContextLevelSlider';
 import { ContextRepositoriesSection } from './ContextRepositoriesSection';
 import { CostPreview } from './CostPreview';
@@ -130,6 +130,12 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
       />
     </div>,
   ] : [];
+  const generateAction = {
+    onGenerate: isDemoMode ? undefined : handleGenerate,
+    generateDisabled: isGenerateDisabled,
+    generateLabel: isDemoMode ? 'Read-only demo' : <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />,
+    generateTitle: isDemoMode ? 'Demo mode is read-only' : undefined,
+  };
   const composerFooter = (
     <SetupComposerFooter
       stacked={isMobile}
@@ -140,10 +146,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
       onExport={handleExportContext}
       isExporting={contextExport.isExporting}
       exportDisabled={contextExport.isExporting || contextRefresh.preview.isLoading || !canExport}
-      onGenerate={isDemoMode ? undefined : handleGenerate}
-      generateDisabled={isGenerateDisabled}
-      generateLabel={isDemoMode ? 'Read-only demo' : <GenerateButtonContent isNewMode={isNewMode} isCreating={isCreating} isGenerating={isGenerating} issueCountText={getEstimatedIssueText(config.granularity)} />}
-      generateTitle={isDemoMode ? 'Demo mode is read-only' : undefined}
+      {...generateAction}
     />
   );
   return (
@@ -204,17 +207,15 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
           showPreviewProgress={showPreviewProgress}
           onExcludeFile={handleExcludeFile}
         />}
+        {/* A phone runs the form edge to edge on the white page: prompt, settings rows, then the files found. */}
+        {isMobile && <div data-testid="composer-footer">{composerFooter}</div>}
         {isMobile && !!smartSelection?.length && (
-          <div className="mx-3 mb-3 overflow-hidden rounded-lg border border-slate-200">
+          <div className="border-b border-slate-100">
             <SmartFileSelection smartSelection={smartSelection} onExcludeFile={handleExcludeFile} />
           </div>
         )}
-        {isMobile && (
-          <div data-testid="composer-footer" className="bg-white px-3 pb-4">
-            {composerFooter}
-          </div>
-        )}
       </div>
+      {isMobile && <MobileGenerateDock {...generateAction} />}
     </div>
   );
 };

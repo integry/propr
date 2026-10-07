@@ -24,16 +24,17 @@ describe('StudioPhaseSwitcher', () => {
     expect(phases).toHaveTextContent('3Execute');
   });
 
-  it('keeps only the current phase label visible below md so the pill fits a phone title row', () => {
+  it('collapses to a step badge below md so it fits beside the scope pill on a phone', () => {
     render(
       <StudioStageContext.Provider value="execute">
         <StudioPhaseSwitcher />
       </StudioStageContext.Provider>
     );
 
-    expect(screen.getAllByLabelText('Done')).toHaveLength(2);
-    expect(screen.getByText('Define')).toHaveClass('sr-only', 'md:not-sr-only');
-    expect(screen.getByText('Review')).toHaveClass('sr-only', 'md:not-sr-only');
-    expect(screen.getByText('Execute')).not.toHaveClass('sr-only');
+    const badge = screen.getByTestId('phase-step-badge');
+    expect(badge).toHaveTextContent('Step 3/3');
+    expect(badge).toHaveAttribute('aria-label', 'Step 3 of 3: Execute');
+    expect(badge).toHaveClass('md:hidden');
+    expect(screen.getByRole('list')).toHaveClass('hidden', 'md:flex');
   });
 });

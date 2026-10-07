@@ -84,13 +84,21 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 900 }, { name: '
     await expect(rows.filter({ hasText: 'Agents v1 (' })).toHaveCount(0);
     await expect(page.getByTestId('plan-footer-stats')).toHaveText(/^6 of 17 Issues Created\s*\(1 Creating · 10 Queued\)$/);
     // Revising mid-creation would race the run, so it is locked until creation finishes.
-    await expect(page.getByRole('button', { name: 'Revise' })).toBeDisabled();
     if (viewport.name === 'mobile') {
-      // The title gets its own full-width line under the repo chip and phase pill.
+      // Tier 1 is the scope pill and step badge; tier 2 gives the title its own line next to GitHub and "…".
+      const scope = page.getByTestId('studio-scope-pill');
+      await expect(scope).toHaveText('propr/main');
+      await expect(page.getByTestId('phase-step-badge')).toHaveText('Step 3/3');
       const title = (await page.getByRole('heading', { level: 1 }).boundingBox())!;
-      const chip = (await page.getByTestId('plan-repo-chip').boundingBox())!;
-      expect(title.y).toBeGreaterThan(chip.y + chip.height - 1);
-      expect(title.width).toBeGreaterThan(300);
+      const scopeBox = (await scope.boundingBox())!;
+      expect(title.y).toBeGreaterThan(scopeBox.y + scopeBox.height - 1);
+      expect(title.width).toBeGreaterThan(240);
+      await expect(page.getByRole('link', { name: 'View issues on GitHub' })).toBeVisible();
+      await page.getByRole('button', { name: 'More plan actions' }).click();
+      await expect(page.getByRole('menuitem', { name: 'Revise' })).toBeDisabled();
+      await page.mouse.click(5, 300);
+    } else {
+      await expect(page.getByRole('button', { name: 'Revise' })).toBeDisabled();
     }
     expect(await overflow()).toBeLessThanOrEqual(0);
     await page.waitForTimeout(600);
@@ -111,11 +119,20 @@ test('planner screens on a mobile viewport', async ({ page }) => {
   const generate = page.getByRole('button', { name: /Generate Plan/ });
   await expect(generate).toBeVisible();
   expect(await overflow()).toBeLessThanOrEqual(0);
-  // The header repo slug renders whole next to the branch chip and phase pill; the branch lives in the chip.
-  const repoTrigger = page.getByRole('button', { name: 'propr', exact: true });
+  // The header is one `propr/main` scope pill plus a step badge, not repo picker + branch chip + breadcrumb.
+  const repoTrigger = page.getByRole('button', { name: 'propr/main', exact: true });
   await expect(repoTrigger).toBeVisible();
   expect(await repoTrigger.locator('span').last().evaluate(label => label.scrollWidth <= label.clientWidth)).toBe(true);
-  // Every setting under the prompt is a row of one divided group, not a stack of separate cards.
+  await expect(page.getByTestId('branch-chip')).toBeHidden();
+  await expect(page.getByTestId('phase-step-badge')).toHaveText('Step 1/3');
+  // Prompt and settings run edge to edge on the white page: no inset, rounded, bordered cards.
+  for (const surface of [page.getByTestId('setup-composer'), page.getByTestId('setup-settings-group')]) {
+    const box = (await surface.boundingBox())!;
+    expect(box.x).toBe(0);
+    expect(box.width).toBe(390);
+    expect(await surface.evaluate(el => getComputedStyle(el).borderTopLeftRadius)).toBe('0px');
+  }
+  // Every setting is a full-width row of one divided list.
   const settings = page.getByTestId('setup-settings-group');
   await expect(settings.locator(':scope > div')).toHaveCount(5);
   await expect(settings.getByText('Break into', { exact: true })).toBeVisible();
@@ -124,20 +141,34 @@ test('planner screens on a mobile viewport', async ({ page }) => {
   await expect(settings.getByRole('button', { name: /^Context repos:/ })).toBeVisible();
   await expect(settings.getByTestId('setup-cost-row')).toBeVisible();
   await expect(page.getByTestId('setup-wizard-right-pane')).toHaveCount(0);
-  // Generate ends the input flow, right after the group.
-  const settingsBox = (await settings.boundingBox())!;
-  expect((await generate.boundingBox())!.y).toBeGreaterThan(settingsBox.y + settingsBox.height);
+  // Generate is docked in the thumb zone, directly above the bottom navigation, without scrolling.
+  const dock = page.getByTestId('mobile-generate-dock');
+  await expect(dock).toContainText('Generate Plan');
+  await expect(generate).toBeInViewport();
+  const dockBox = (await dock.boundingBox())!;
+  const navBox = (await page.locator('.mobile-bottom-navigation').boundingBox())!;
+  expect(Math.abs(dockBox.y + dockBox.height - navBox.y)).toBeLessThanOrEqual(1);
+  expect(dockBox.width).toBe(390);
   // The model picker names the model on a phone too, rather than collapsing to its logo.
   const mobileModel = settings.getByTestId('planner-model-selector');
   await expect(mobileModel).toHaveText('Claude Opus 5.5 (Default)');
   expect(await mobileModel.locator('span').last().evaluate(label => label.scrollWidth <= label.clientWidth)).toBe(true);
   await capture(page, 'mobile-define');
-  await page.getByTestId('composer-footer').scrollIntoViewIfNeeded();
-  await capture(page, 'mobile-define-action-bar');
+  await page.getByTestId('setup-cost-row').scrollIntoViewIfNeeded();
+  // Scrolled to the end of the settings, Generate is still in the same docked spot.
+  expect((await dock.boundingBox())!.y).toBe(dockBox.y);
+  await capture(page, 'mobile-define-scrolled');
 
   await page.goto('/studio/plan-agents');
   await expect(page.locator('[data-task-index="0"]')).toBeVisible();
   expect(await overflow()).toBeLessThanOrEqual(0);
+  // Scope pill and step badge lead; the plan title gets its own line beneath them.
+  const reviewScope = page.getByTestId('studio-scope-pill');
+  await expect(reviewScope).toHaveText('propr/main');
+  await expect(page.getByTestId('phase-step-badge')).toHaveText('Step 2/3');
+  const reviewTitle = (await page.getByRole('heading', { level: 1 }).boundingBox())!;
+  const reviewScopeBox = (await reviewScope.boundingBox())!;
+  expect(reviewTitle.y).toBeGreaterThan(reviewScopeBox.y + reviewScopeBox.height - 1);
   await capture(page, 'mobile-review-17-steps');
 
   await page.goto('/studio/plan-mcp-exec');
