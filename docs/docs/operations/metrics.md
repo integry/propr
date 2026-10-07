@@ -39,7 +39,7 @@ The Analytics page reports task volume (the deliverables) and run volume (the co
 
 A figure with nothing behind it is shown as "—", never as zero.
 
-The Activity chart plots the same two volumes day by day on one scale: each day's runs as a light outer bar, with that day's tasks as a narrower dark bar inside it (teal for today). An outer bar that towers over its inner one is an agent iterating on the same work; one that hugs it is work landing in a run or two. The pane heading carries the legend with each series' total for the period, and hovering a day shows its runs, tasks and runs per task. `GET /api/stats/tasks` reports a `runs` count beside each day's task `count`.
+The Activity chart plots the same two volumes day by day on one scale: each day has a pair of bars of equal width side by side, its runs in light slate and its tasks in dark slate (teal for today's tasks). A runs bar that towers over its tasks bar is an agent iterating on the same work; one level with it is work landing in a run or two. The pane heading carries the legend with each series' total for the period, and hovering a day shows its runs, tasks and runs per task. `GET /api/stats/tasks` reports a `runs` count beside each day's task `count`.
 
 ### Breakdowns the product provides
 

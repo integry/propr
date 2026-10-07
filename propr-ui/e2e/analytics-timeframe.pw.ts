@@ -297,7 +297,7 @@ test('the agent efficacy matrix shows one figure per cell, denominators on hover
   await captureSettled(page, 'analytics-review-quality-page');
 });
 
-test('runs and tasks share one chart: each day layers its tasks inside its runs', async ({ page }) => {
+test('runs and tasks share one chart: each day pairs its runs and tasks side by side', async ({ page }) => {
   await fixture(page, { width: 1440, height: 900 });
   await stubAnalytics(page);
   // A week where Tuesday thrashed: 571 runs to deliver 210 tasks.
@@ -317,24 +317,29 @@ test('runs and tasks share one chart: each day layers its tasks inside its runs'
   await expect(legend).toHaveText(/Runs\s*1,080\s*Tasks\s*450/);
 
   const chart = page.getByTestId('activity-chart');
-  await expect(chart.locator('[data-testid^="activity-runs-bar-"]')).toHaveCount(7);
-  const inner = chart.locator('[data-testid^="activity-tasks-bar-"]');
-  await expect(inner).toHaveCount(7);
-  const fills = await inner.evaluateAll(rects => rects.map(rect => rect.getAttribute('fill')));
-  expect(fills.slice(0, -1).every(fill => fill === '#334155')).toBe(true);
-  expect(fills.at(-1)).toBe('#14B8A6');
+  const runBars = chart.locator('path[data-testid^="activity-runs-bar-"]');
+  const taskBars = chart.locator('path[data-testid^="activity-tasks-bar-"]');
+  await expect(runBars).toHaveCount(7);
+  await expect(taskBars).toHaveCount(7);
+  // Runs are one slate every day, as the legend says; only today's tasks are teal.
+  const runFills = await runBars.evaluateAll(paths => paths.map(path => path.getAttribute('fill')));
+  expect(runFills.every(fill => fill === '#CBD5E1')).toBe(true);
+  const taskFills = await taskBars.evaluateAll(paths => paths.map(path => path.getAttribute('fill')));
+  expect(taskFills.slice(0, -1).every(fill => fill === '#334155')).toBe(true);
+  expect(taskFills.at(-1)).toBe('#14B8A6');
 
-  // Each tasks bar is centred inside its runs bar, narrower, and on the same baseline.
-  const outerBoxes = await chart.locator('.recharts-bar-rectangle path').evaluateAll(paths =>
+  // Each day's pair stands side by side: equal widths, runs left of tasks, one baseline.
+  const boxes = (locator: typeof runBars) => locator.evaluateAll(paths =>
     paths.map(path => path.getBoundingClientRect()).map(box => ({ x: box.x, width: box.width, top: box.top, bottom: box.bottom })));
-  const innerBoxes = await inner.evaluateAll(rects =>
-    rects.map(rect => rect.getBoundingClientRect()).map(box => ({ x: box.x, width: box.width, bottom: box.bottom })));
-  expect(outerBoxes).toHaveLength(7);
-  outerBoxes.forEach((outer, index) => {
-    const box = innerBoxes[index];
-    expect(box.width).toBeLessThan(outer.width);
-    expect(Math.abs((box.x + box.width / 2) - (outer.x + outer.width / 2))).toBeLessThan(1);
-    expect(Math.abs(box.bottom - outer.bottom)).toBeLessThan(1);
+  const outerBoxes = await boxes(runBars);
+  const innerBoxes = await boxes(taskBars);
+  outerBoxes.forEach((run, index) => {
+    const task = innerBoxes[index];
+    expect(Math.abs(task.width - run.width)).toBeLessThan(1);
+    expect(run.width).toBeLessThanOrEqual(14.5);
+    expect(task.x).toBeGreaterThanOrEqual(run.x + run.width);
+    expect(task.x - (run.x + run.width)).toBeLessThan(4);
+    expect(Math.abs(task.bottom - run.bottom)).toBeLessThan(1);
   });
 
   // One scale for both: the top rule is the busiest day's runs.
@@ -347,5 +352,5 @@ test('runs and tasks share one chart: each day layers its tasks inside its runs'
   await expect(page.getByText('Sep 22: 571 runs · 210 tasks')).toBeVisible();
   await expect(page.getByText('2.7× runs per task')).toBeVisible();
   await page.clock.runFor(2_000);
-  await captureTarget(page.locator('[aria-labelledby="analytics-activity-heading"]'), 'analytics-activity-runs-vs-tasks');
+  await captureTarget(page.locator('[aria-labelledby="analytics-activity-heading"]'), 'analytics-activity-runs-vs-tasks-paired');
 });

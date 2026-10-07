@@ -199,7 +199,7 @@ test('the dashboard widget and the Analytics page report the same figures for th
     assert.equal(widget.body.completed, summary.completed, period);
     assert.equal(widget.body.failed, summary.failed, period);
     assert.equal(widget.body.recordedSpend, (overview.body.usage as { total_cost_usd: number }).total_cost_usd, period);
-    // The page also layers each day's runs behind its tasks; the widget draws tasks only.
+    // The page also pairs each day's runs with its tasks; the widget draws tasks only.
     const pageDays = (tasks.body.dailyCounts as Array<{ date: string; count: number }>).map(({ date, count }) => ({ date, count }));
     assert.deepEqual(widget.body.dailyTasks, pageDays, period);
   }
