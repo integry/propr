@@ -8,6 +8,8 @@ export interface IssueCreationProgress {
   totalCount: number;
   failedCount: number;
   lastCreatedIssue?: { number: number; url: string; title: string };
+  /** Every issue created by this run so far, in creation order (events only carry the latest one). */
+  createdIssues?: Array<{ number: number; url: string; title: string }>;
   error?: string;
 }
 
@@ -35,6 +37,14 @@ export function createProgressState(
     lastCreatedIssue: status === 'in_progress' ? data?.lastCreatedIssue : undefined,
     error: status === 'failed' ? (data?.error || 'Issue creation failed') : undefined
   };
+}
+
+/** Carries the issues created earlier in the same run forward into the next progress state. */
+export function withCreatedIssues(next: IssueCreationProgress, previous: IssueCreationProgress): IssueCreationProgress {
+  const prior = next.createdCount === 0 ? [] : previous.createdIssues ?? [];
+  const latest = next.lastCreatedIssue;
+  const createdIssues = latest && !prior.some(issue => issue.number === latest.number) ? [...prior, latest] : prior;
+  return { ...next, createdIssues };
 }
 
 interface DraftCompletionOptions {

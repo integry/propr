@@ -122,7 +122,7 @@ const getBreadcrumbLabel = (
   reposCount: number
 ) => {
   if (selectedRepoData?.displayName) return selectedRepoData.displayName;
-  if (selectedRepoData?.baseBranch) return `${selectedRepo.split('/')[1] || selectedRepo} (${selectedRepoData.baseBranch})`;
+  // The breadcrumb always sits next to a branch chip, so the label is the repository alone; the title keeps the branch.
   if (selectedRepo) return selectedRepo.split('/')[1] || selectedRepo;
   return reposCount === 0 ? 'No repositories' : placeholder;
 };

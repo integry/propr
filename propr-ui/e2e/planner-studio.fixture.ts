@@ -220,7 +220,8 @@ export async function liveDraftUpdates(page: Page, updates: Record<string, Array
       const [event, draftId] = JSON.parse(text.slice(2)) as [string, string];
       if (event !== 'subscribe:draft' || !updates[draftId]) return;
       // Repeat like a live server does, so an update that lands before the page starts listening is not lost.
-      const send = () => { for (const payload of updates[draftId]) socket.send(`42${JSON.stringify(['draft:update', { eventType: 'draft:update', draftId, timestamp: new Date().toISOString(), ...payload }])}`); };
+      // Each payload gets its own timestamp: the page drops an event that repeats the previous one's.
+      const send = () => { const now = Date.now(); updates[draftId].forEach((payload, index) => socket.send(`42${JSON.stringify(['draft:update', { eventType: 'draft:update', draftId, timestamp: new Date(now + index).toISOString(), ...payload }])}`)); };
       send();
       timers.push(setInterval(send, 1_000));
     });
@@ -234,10 +235,11 @@ export async function capture(page: Page, name: string) {
   await page.screenshot({ animations: 'disabled', path: `../.propr/previews/${name}.png` });
 }
 
-export const creatingIssueUpdate = {
+// One event per issue, as the server emits them: six of the 17 issues are created so far (#2900–#2905).
+export const creatingIssueUpdates = agentPlan.slice(0, 6).map((task, index) => ({
   step: 'execution', status: 'in_progress',
-  data: { createdCount: 6, totalCount: 17, failedCount: 0, lastCreatedIssue: { number: 2905, url: 'https://github.com/integry/propr/issues/2905', title: agentPlan[5].title } },
-};
+  data: { createdCount: index + 1, totalCount: 17, failedCount: 0, lastCreatedIssue: { number: 2900 + index, url: `https://github.com/integry/propr/issues/${2900 + index}`, title: task.title } },
+}));
 
 // The live trace the server pushes while a plan generates; the page starts from a placeholder trace until it arrives.
 export const generationUpdate = (draftId: string) => {

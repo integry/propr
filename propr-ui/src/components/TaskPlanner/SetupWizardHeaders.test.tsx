@@ -47,8 +47,10 @@ describe('SetupWizardHeaders', () => {
       />
     );
 
-    const trigger = screen.getByRole('button', { name: /propr \(develop\)/i });
-    expect(trigger).toBeInTheDocument();
+    // The branch chip beside it shows the branch, so the trigger reads just "propr"; its tooltip keeps the branch.
+    const trigger = screen.getByRole('button', { name: /^propr$/i });
+    expect(trigger).toHaveAttribute('title', 'integry/propr (develop)');
+    expect(screen.getByTestId('branch-chip')).toHaveTextContent('develop');
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
 
     fireEvent.click(trigger);

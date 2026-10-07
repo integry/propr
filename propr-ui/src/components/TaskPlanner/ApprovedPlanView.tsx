@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, RefreshCw, Loader2, Edit3, Pause, Play } from 'lucide-react';
+import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, Loader2, Edit3, Pause, Play } from 'lucide-react';
 import { DraftWithPlan, deleteDraft } from '../../api/proprApi';
 import DeletePlanDialog from './DeletePlanDialog';
 import RevisePlanDialog from './RevisePlanDialog';
@@ -11,6 +11,9 @@ import { StudioPhaseSwitcher } from './StudioStepper';
 import { PlanOverflowMenu } from './PlanEditorComponents';
 import { PlanTask, reviseDraft, pauseDraft, resumeDraft, updateExecutionSettings } from '../../api/plannerApi';
 import { PlanIssue } from '../../api/planIssuesApi';
+import { PlanFooterStats } from './ApprovedPlanFooter';
+import { buildFooterStats, buildCreationFooterStats } from './approvedPlanFooterStats';
+import { IDLE_PROGRESS, type IssueCreationProgress } from './planIssuesManagerUtils';
 import { useToast } from '../ui/useToast';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import type { PlanNotificationIntent } from '../../utils/notificationIntents';
@@ -64,46 +67,6 @@ const OriginalPromptPopover: React.FC<{ prompt: string }> = ({ prompt }) => {
   );
 };
 
-interface FooterStats {
-  total: number;
-  merged: number;
-  underReview: number;
-  pending: number;
-  processing: number;
-}
-const PlanFooterStats: React.FC<{ stats: FooterStats; onRefresh: () => void }> = ({ stats, onRefresh }) => (
-  <div className="mobile-safe-action-area flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
-    <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs sm:text-sm text-gray-600">
-      <span className="font-medium">{stats.total} {stats.total === 1 ? 'Issue' : 'Issues'}</span>
-      {stats.merged > 0 && (
-        <>
-          <span className="text-gray-400">·</span>
-          <span className="text-slate-500">{stats.merged} Merged</span>
-        </>
-      )}
-      {stats.processing > 0 && (
-        <>
-          <span className="text-gray-400">·</span>
-          <span className="text-teal-700">{stats.processing} Running</span>
-        </>
-      )}
-      {stats.pending > 0 && (
-        <>
-          <span className="text-gray-400">·</span>
-          <span className="text-gray-500">{stats.pending} Pending</span>
-        </>
-      )}
-    </div>
-    <button
-      onClick={onRefresh}
-      className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors flex-shrink-0"
-      title="Refresh issues"
-    >
-      <RefreshCw size={16} />
-    </button>
-  </div>
-);
-
 interface PlanHeaderActionsProps {
   draftStatus: string;
   isPaused: boolean;
@@ -115,6 +78,8 @@ interface PlanHeaderActionsProps {
   onRevise: () => void;
   onDelete: () => void;
   isReadOnly?: boolean;
+  /** Issues are being written to GitHub; revising now would race the run and orphan issues. */
+  isCreatingIssues?: boolean;
 }
 function parsePlanTasks(planJson: DraftWithPlan['plan_json']): PlanTask[] {
   if (typeof planJson === 'string') {
@@ -126,17 +91,6 @@ function parsePlanTasks(planJson: DraftWithPlan['plan_json']): PlanTask[] {
   return Array.isArray(planJson) ? planJson : [];
 }
 
-function buildFooterStats(issues: PlanIssue[]): FooterStats {
-  const underReviewStatuses = new Set(['under_review', 'in_refinement', 'pr_open', 'pr_review']);
-  return {
-    total: issues.length,
-    merged: issues.filter(i => i.status === 'merged').length,
-    underReview: issues.filter(i => underReviewStatuses.has(i.status as string)).length,
-    pending: issues.filter(i => i.status === 'pending').length,
-    processing: issues.filter(i => i.status === 'processing' || i.status === 'refinement_processing').length,
-  };
-}
-
 async function persistExecutionSetting(draftId: string, update: Parameters<typeof updateExecutionSettings>[1]): Promise<Awaited<ReturnType<typeof updateExecutionSettings>>> {
   return updateExecutionSettings(draftId, update);
 }
@@ -144,7 +98,7 @@ async function persistExecutionSetting(draftId: string, update: Parameters<typeo
 const HEADER_GHOST_BUTTON_CLASS = 'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-200 hover:text-slate-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
 
 /** Pause/Revise as quiet ghost buttons, a compact GitHub link, and Delete behind "…" so the title keeps its room. */
-const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl, onPauseResume, onRevise, onDelete, isReadOnly = false }) => {
+const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl, onPauseResume, onRevise, onDelete, isReadOnly = false, isCreatingIssues = false }) => {
   const showPauseResume = draftStatus === 'executed' || draftStatus === 'pr_created';
   return (
     <div className="flex w-full flex-wrap items-center gap-1 md:w-auto md:flex-shrink-0 md:flex-nowrap md:justify-end">
@@ -167,9 +121,9 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPa
       )}
       <button
         onClick={onRevise}
-        disabled={isRevising || isReadOnly}
+        disabled={isRevising || isReadOnly || isCreatingIssues}
         className={HEADER_GHOST_BUTTON_CLASS}
-        title={isReadOnly ? 'Demo mode is read-only' : 'Revise Plan'}
+        title={isReadOnly ? 'Demo mode is read-only' : isCreatingIssues ? 'Revise is unavailable while issues are being created on GitHub' : 'Revise Plan'}
       >
         {isRevising ? <Loader2 size={15} className="animate-spin" /> : <Edit3 size={15} />}
         <span>Revise</span>
@@ -207,7 +161,8 @@ interface PlanHeaderSummaryProps {
   initialPrompt?: string | null;
 }
 const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftStatus, isPaused, repository, baseBranch, initialPrompt }) => (
-  <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
+  // Phones stack the title under the repo chip and phase pill so it gets the full width; md+ keeps one row.
+  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 sm:gap-x-4 min-w-0 flex-1 md:flex-nowrap">
     {/* Compact repository chip anchors the git context without a full breadcrumb row; owner and branch are in the tooltip. */}
     {repository && (
       <span
@@ -220,7 +175,7 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
       </span>
     )}
     {/* The title grows into free header space (wider on widescreens) and keeps at least 320px before the controls squeeze it. */}
-    <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate flex-1 min-w-0 md:min-w-[320px] max-w-xl 2xl:max-w-3xl" title={planName}>
+    <h1 className="order-last w-full text-base sm:text-lg font-semibold text-gray-900 truncate min-w-0 md:order-none md:w-auto md:flex-1 md:min-w-[320px] md:max-w-xl 2xl:max-w-3xl" title={planName}>
       {planName}
     </h1>
     {draftStatus === 'merged' && (
@@ -273,6 +228,12 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({
   const repoUrl = draft.repository ? `https://github.com/${draft.repository}/issues` : null;
   const tasks: PlanTask[] = useMemo(() => parsePlanTasks(draft.plan_json), [draft.plan_json]);
   const footerStats = useMemo(() => buildFooterStats(issues), [issues]);
+  const [creationProgress, setCreationProgress] = useState<IssueCreationProgress>(IDLE_PROGRESS);
+  const isCreatingIssues = draft.status === 'executing' || creationProgress.status === 'in_progress';
+  const creationStats = useMemo(
+    () => (isCreatingIssues ? buildCreationFooterStats(creationProgress, tasks.length) : null),
+    [creationProgress, isCreatingIssues, tasks.length],
+  );
 
   const handleDeletePlanConfirm = useCallback(async () => {
     if (isDemoMode) {
@@ -399,12 +360,12 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
       <div className="flex flex-col gap-2 border-b border-gray-200 bg-gray-100 px-4 py-2 flex-shrink-0 sm:px-6 md:flex-row md:items-center md:justify-between md:gap-4">
         <PlanHeaderSummary planName={planName} draftStatus={draft.status} isPaused={isPaused} repository={repository} baseBranch={baseBranch} initialPrompt={draft.initial_prompt} />
-        <PlanHeaderActions draftStatus={draft.status} isPaused={isPaused} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => { if (!isDemoMode) setShowReviseDialog(true); }} onDelete={() => { if (!isDemoMode) setShowDeleteDialog(true); }} isReadOnly={isDemoMode} />
+        <PlanHeaderActions draftStatus={draft.status} isPaused={isPaused} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => { if (!isDemoMode && !isCreatingIssues) setShowReviseDialog(true); }} onDelete={() => { if (!isDemoMode) setShowDeleteDialog(true); }} isReadOnly={isDemoMode} isCreatingIssues={isCreatingIssues} />
       </div>
       <div className="flex-1 overflow-auto p-4">
-        <PlanIssuesManager draftId={draft.draft_id} repository={repository} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} isSavingExecutionSettings={isSavingExecutionSettings} isReadOnly={isDemoMode} notificationIntent={notificationIntent} onNotificationIntentConsumed={onNotificationIntentConsumed} />
+        <PlanIssuesManager draftId={draft.draft_id} repository={repository} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} onCreationProgressChange={setCreationProgress} isSavingExecutionSettings={isSavingExecutionSettings} isReadOnly={isDemoMode} notificationIntent={notificationIntent} onNotificationIntentConsumed={onNotificationIntentConsumed} />
       </div>
-      <PlanFooterStats stats={footerStats} onRefresh={handleRefresh} />
+      <PlanFooterStats stats={footerStats} creation={creationStats} onRefresh={handleRefresh} />
       <DeletePlanDialog isOpen={showDeleteDialog} onClose={() => setShowDeleteDialog(false)} onConfirm={handleDeletePlanConfirm} isLoading={isDeleting} />
       <RevisePlanDialog isOpen={showReviseDialog} onClose={() => setShowReviseDialog(false)} onConfirm={handleRevisePlanConfirm} isLoading={isRevising} />
     </motion.div>

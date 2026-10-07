@@ -74,7 +74,7 @@ export const NewModeHeader: React.FC<{
 
   return (
     <>
-      <div className="relative inline-flex items-center max-w-[55%] sm:max-w-[50%]">
+      <div className="relative inline-flex shrink-0 items-center whitespace-nowrap max-w-[12rem] sm:max-w-[50%]">
         <RepositorySelector
           repos={repos as RepoOption[]}
           selectedRepo={selectedRepo}
@@ -87,7 +87,7 @@ export const NewModeHeader: React.FC<{
       </div>
       {selectedRepo && (
         <>
-          <div className="inline-flex items-center max-w-[40%] sm:max-w-[50%]">
+          <div className="inline-flex min-w-0 items-center sm:max-w-[50%]">
             {isLoadingBranches ? (
               <span className="text-gray-400 text-sm">Loading...</span>
             ) : (
@@ -136,7 +136,7 @@ export const EditModeHeader: React.FC<{
 
   return (
     <>
-      <div className="relative inline-flex items-center max-w-[55%] sm:max-w-[50%]">
+      <div className="relative inline-flex shrink-0 items-center whitespace-nowrap max-w-[12rem] sm:max-w-[50%]">
         <RepositorySelector
           repos={finalRepoOptions as RepoOption[]}
           selectedRepo={repository}
@@ -148,7 +148,7 @@ export const EditModeHeader: React.FC<{
           placeholder="Select repository"
         />
       </div>
-      <div className="inline-flex items-center max-w-[40%] sm:max-w-[50%]">
+      <div className="inline-flex min-w-0 items-center sm:max-w-[50%]">
         {isRepoLoading ? (
           <span className="text-gray-400 text-sm">Loading...</span>
         ) : (

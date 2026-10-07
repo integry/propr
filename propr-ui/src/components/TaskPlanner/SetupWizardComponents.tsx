@@ -54,26 +54,49 @@ interface ModelMenuOption {
 }
 
 /** The "no explicit model" choice, named after the model it resolves to. */
-const buildDefaultOption = (planDefault: string | null | undefined, instanceDefault: string | null | undefined): { option: ModelMenuOption; name: string | null } => {
-  const resolved = planDefault || instanceDefault;
+const buildDefaultOption = (planDefault: string | null | undefined, instanceDefault: string | null | undefined): { option: ModelMenuOption; name: string | null; resolved: string | null } => {
+  const resolved = planDefault || instanceDefault || null;
   const parts = resolved ? splitModelValue(resolved) : null;
   const name = parts ? modelDisplayName(parts.model) : null;
-  const source = planDefault ? 'Plan Default' : 'Configured Default';
   return {
     name,
-    option: { value: '', agent: parts?.agent ?? null, label: name ? `${name} (${source})` : source, secondary: parts?.agent ?? undefined },
+    resolved,
+    option: { value: '', agent: parts?.agent ?? null, label: name ? `${name} (Default)` : 'Configured Default', secondary: parts?.agent ?? undefined },
   };
 };
 
+/** True when an explicit "agent:model" pick is the same model the default row already runs. */
+const isSameAsDefault = (value: string, resolvedDefault: string | null): boolean => {
+  if (!resolvedDefault) return false;
+  const defaultParts = splitModelValue(resolvedDefault);
+  const parts = splitModelValue(value);
+  return parts.model === defaultParts.model && (!defaultParts.agent || parts.agent === defaultParts.agent);
+};
+
 /**
- * The closed button says "(Default)"; the menu spells out where that default comes from.
- * It never shows a bare "Default": while the instance default loads it says so instead.
+ * Both the button and the menu say "(Default)". It never shows a bare "Default": while the instance default loads it says so instead.
  */
 const getButtonLabel = (selectedModel: string | null, defaultName: string | null, isResolvingDefault: boolean): string => {
   if (selectedModel) return modelDisplayName(selectedModel);
   if (defaultName) return `${defaultName} (Default)`;
   return isResolvingDefault ? 'Resolving model…' : 'Configured Default';
 };
+
+/** The default row first, then every agent model except the default's own explicit twin, which would be a no-op duplicate. */
+const buildModelOptions = (defaultOption: ModelMenuOption, enabledAgents: ReturnType<typeof useAgentsLoader>, resolvedDefault: string | null): ModelMenuOption[] => [
+  defaultOption,
+  ...enabledAgents.flatMap(agent =>
+    (agent.supportedModels || []).map(modelId => ({
+      value: `${agent.alias}:${modelId}`,
+      agent: agent.alias,
+      label: modelDisplayName(modelId),
+      secondary: agent.alias,
+    }))
+  ).filter(option => !isSameAsDefault(option.value, resolvedDefault)),
+];
+
+const toSelectedValue = (generationModel: string | null, resolvedDefault: string | null): string =>
+  generationModel && !isSameAsDefault(generationModel, resolvedDefault) ? generationModel : '';
 
 // A full-width selector keeps the "Model:" label at every width and lets the name use the whole row.
 const FULL_WIDTH_LAYOUT = { row: 'w-full', label: '', trigger: 'flex-1' };
@@ -140,21 +163,12 @@ export const ModelSelector: React.FC<{
     return null;
   }
 
-  const { option: defaultOption, name: defaultName } = buildDefaultOption(defaultModel, instanceDefaultModel);
-  const options: ModelMenuOption[] = [
-    defaultOption,
-    ...enabledAgents.flatMap(agent =>
-      (agent.supportedModels || []).map(modelId => ({
-        value: `${agent.alias}:${modelId}`,
-        agent: agent.alias,
-        label: modelDisplayName(modelId),
-        secondary: agent.alias,
-      }))
-    ),
-  ];
+  const { option: defaultOption, name: defaultName, resolved: resolvedDefault } = buildDefaultOption(defaultModel, instanceDefaultModel);
+  const options = buildModelOptions(defaultOption, enabledAgents, resolvedDefault);
 
-  const selectedValue = generationModel || '';
-  const selectedParts = generationModel ? splitModelValue(generationModel) : null;
+  // Picking the default model explicitly still reads as the default row.
+  const selectedValue = toSelectedValue(generationModel, resolvedDefault);
+  const selectedParts = selectedValue ? splitModelValue(selectedValue) : null;
   const buttonAgent = selectedParts ? selectedParts.agent : defaultOption.agent;
   const layout = fullWidth ? FULL_WIDTH_LAYOUT : INLINE_LAYOUT;
   const buttonLabel = getButtonLabel(selectedParts?.model ?? null, defaultName, !defaultModel && instanceDefaultModel === undefined);

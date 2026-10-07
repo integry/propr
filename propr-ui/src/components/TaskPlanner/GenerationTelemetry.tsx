@@ -55,7 +55,7 @@ export const GenerationTelemetry: React.FC<{ trace?: GenerationTrace; preview?: 
           </span>
         )}
       </div>
-      <ol ref={logRef} className="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px] leading-5 text-slate-600" data-testid="telemetry-log">
+      <ol ref={logRef} className="max-h-56 min-h-0 flex-1 overflow-y-auto md:max-h-none px-3 py-2 font-mono text-[11px] leading-5 text-slate-600" data-testid="telemetry-log">
         {scanned.length === 0 && <li className="italic text-slate-400">Waiting for the first ranked files…</li>}
         {scanned.map(file => (
           <li key={file.path} className="flex min-w-0 gap-2">

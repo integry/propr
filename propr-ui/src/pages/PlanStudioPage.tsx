@@ -140,7 +140,7 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft;
         <div className="flex min-h-0 flex-1 flex-col px-4 py-4 md:px-6">
           <GenerationProgress trace={displayTrace} hideCompletedSteps={false} />
           {/* The scan takes minutes; the rest of the canvas shows what it is finding as it goes. */}
-          <GenerationTelemetry trace={displayTrace} preview={getDraftContextConfig(draft)?.lastPreview} className="mt-4 min-h-[240px] flex-1" />
+          <GenerationTelemetry trace={displayTrace} preview={getDraftContextConfig(draft)?.lastPreview} className="mt-4 md:min-h-[240px] md:flex-1" />
         </div>
       </motion.div>
     </StudioShell>

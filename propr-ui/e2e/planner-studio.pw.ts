@@ -290,8 +290,9 @@ test('model selectors name the default model instead of a bare "Default"', async
   expect(await defineModel.locator('span').last().evaluate(label => label.scrollWidth <= label.clientWidth)).toBe(true);
   await defineModel.click();
   const menu = page.getByRole('listbox', { name: 'Plan model' });
-  await expect(menu.getByRole('option', { selected: true })).toContainText('Claude Opus 5.5 (Configured Default)');
-  await expect(menu.getByRole('option')).toHaveCount(3);
+  await expect(menu.getByRole('option', { selected: true })).toContainText('Claude Opus 5.5 (Default)');
+  // The default row is Claude Opus 5.5, so the explicit Opus entry is not listed again.
+  await expect(menu.getByRole('option')).toHaveCount(2);
   await capture(page, 'define-model-default-menu');
   await menu.getByRole('option', { name: /Claude Sonnet 5\.5/ }).click();
   await expect(defineModel).toHaveText('Claude Sonnet 5.5');
@@ -303,7 +304,7 @@ test('model selectors name the default model instead of a bare "Default"', async
   const refineModel = assistant.getByTestId('planner-model-selector');
   await expect(refineModel).toHaveText('Claude Opus 5.5 (Default)');
   await refineModel.click();
-  await expect(page.getByRole('listbox', { name: 'Plan model' }).getByRole('option', { selected: true })).toContainText('Claude Opus 5.5 (Configured Default)');
+  await expect(page.getByRole('listbox', { name: 'Plan model' }).getByRole('option', { selected: true })).toContainText('Claude Opus 5.5 (Default)');
   await capture(page, 'review-assistant-model-menu');
   await page.keyboard.press('Escape');
   await expect(page.getByRole('listbox', { name: 'Plan model' })).toHaveCount(0);

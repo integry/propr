@@ -7,53 +7,81 @@ import AgentModelSelector from './AgentModelSelector';
 import { UltrafixSettingsControls } from './PlanIssueRowComponents';
 import { ExecutionConfigPopover } from './ExecutionConfigPopover';
 import { getExecutionConfigSummary } from './planIssueRowUtils';
+import { getOutlineTitle } from './planDisplayName';
+
+type CreatedIssueRef = { number: number; url?: string; title?: string };
+
+/**
+ * The issue a task became. Matches the run's created issues by title first; position only
+ * lines up while nothing has failed, because a failed task is skipped without an issue.
+ */
+const findCreatedIssue = (task: PlanTask, index: number, createdIssues: CreatedIssueRef[], failedCount: number): CreatedIssueRef | null => {
+  if (task.issue_number) return { number: task.issue_number, url: task.issue_url };
+  const byTitle = createdIssues.find(issue => issue.title === task.title);
+  if (byTitle) return byTitle;
+  return failedCount === 0 ? createdIssues[index] ?? null : null;
+};
 
 /** Issue creation renders inside the same execution matrix the created issues will occupy. */
 export const TasksBeingCreated: React.FC<{
   tasks: PlanTask[];
-  issueCreationProgress: { createdCount: number; lastCreatedIssue?: { number: number } | null };
+  issueCreationProgress: { createdCount: number; failedCount?: number; lastCreatedIssue?: CreatedIssueRef | null; createdIssues?: CreatedIssueRef[] };
   spinnerRotationDegrees?: number;
-}> = ({ tasks, issueCreationProgress, spinnerRotationDegrees }) => (
-  <div className="divide-y divide-slate-100 rounded-md border border-slate-200 bg-white">
-    {tasks.map((task, index) => {
-      const isCreated = index < issueCreationProgress.createdCount;
-      const isCreating = index === issueCreationProgress.createdCount;
-      const lastCreated = issueCreationProgress.lastCreatedIssue;
-      const issueNumber = isCreated && lastCreated && index === issueCreationProgress.createdCount - 1
-        ? lastCreated.number
-        : null;
+}> = ({ tasks, issueCreationProgress, spinnerRotationDegrees }) => {
+  const { createdCount, failedCount = 0, lastCreatedIssue } = issueCreationProgress;
+  const createdIssues = issueCreationProgress.createdIssues ?? [];
+  return (
+    <div className="divide-y divide-slate-100 rounded-md border border-slate-200 bg-white">
+      {tasks.map((task, index) => {
+        const isCreated = index < createdCount;
+        const isCreating = index === createdCount;
+        const created = isCreated
+          ? findCreatedIssue(task, index, createdIssues, failedCount)
+            ?? (lastCreatedIssue && index === createdCount - 1 ? lastCreatedIssue : null)
+          : null;
 
-      return (
-        <div key={task.id || index} className="flex items-center gap-3 px-3 sm:px-4 py-2">
-          <span className="w-16 flex-shrink-0 font-mono text-xs text-slate-500">
-            {issueNumber ? `#${issueNumber}` : '—'}
-          </span>
-          <span className="w-24 flex-shrink-0">
-            <span className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 text-xs font-medium rounded border ${
-              isCreated ? 'text-slate-500 bg-slate-50 border-slate-200'
-                : isCreating ? 'text-teal-700 bg-teal-50 border-teal-200'
-                : 'text-slate-600 bg-white border-slate-200'
-            }`}>
-              {isCreated ? (
-                <Check size={10} strokeWidth={3} />
-              ) : isCreating ? (
-                <Loader2
-                  size={10}
-                  className={spinnerRotationDegrees === undefined ? 'animate-spin' : ''}
-                  style={spinnerRotationDegrees === undefined ? undefined : { transform: `rotate(${spinnerRotationDegrees}deg)` }}
-                />
-              ) : null}
-              {isCreated ? 'Created' : isCreating ? 'Creating' : 'Queued'}
+        return (
+          <div key={task.id || index} className="flex items-center gap-3 px-3 sm:px-4 py-2" data-testid="issue-creation-row">
+            {created ? (
+              <a
+                href={created.url || undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-14 sm:w-16 flex-shrink-0 font-mono text-xs text-slate-600 hover:text-primary-600"
+              >
+                #{created.number}
+              </a>
+            ) : (
+              <span className="w-14 sm:w-16 flex-shrink-0 font-mono text-xs text-slate-400">{isCreated ? '#…' : '—'}</span>
+            )}
+            <span className="w-20 sm:w-24 flex-shrink-0">
+              <span className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 text-xs font-medium rounded border ${
+                isCreated ? 'text-slate-500 bg-slate-50 border-slate-200'
+                  : isCreating ? 'text-teal-700 bg-teal-50 border-teal-200'
+                  : 'text-slate-600 bg-white border-slate-200'
+              }`}>
+                {isCreated ? (
+                  <Check size={10} strokeWidth={3} />
+                ) : isCreating ? (
+                  <Loader2
+                    size={10}
+                    className={spinnerRotationDegrees === undefined ? 'animate-spin' : ''}
+                    style={spinnerRotationDegrees === undefined ? undefined : { transform: `rotate(${spinnerRotationDegrees}deg)` }}
+                  />
+                ) : null}
+                {isCreated ? 'Created' : isCreating ? 'Creating' : 'Queued'}
+              </span>
             </span>
-          </span>
-          <span className={`flex-1 min-w-0 text-sm truncate ${isCreated ? 'text-slate-500' : 'text-slate-800'}`}>
-            {task.title}
-          </span>
-        </div>
-      );
-    })}
-  </div>
-);
+            {/* The plan name and counter ("Agents v1 (6/17):") repeat on every row, so rows lead with the step itself. */}
+            <span className={`flex-1 min-w-0 text-sm truncate ${isCreated ? 'text-slate-500' : 'text-slate-800'}`} title={task.title}>
+              {index + 1}. {getOutlineTitle(task.title)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
 
 interface ExecutionOptionsToolbarProps {
   agents: InstanceCatalogAgent[];

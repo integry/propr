@@ -33,9 +33,11 @@ describe('ModelSelector', () => {
 
     fireEvent.click(trigger);
     const options = screen.getAllByRole('option');
-    expect(options[0]).toHaveTextContent('Claude Opus 5.5 (Configured Default)');
+    // The default row already is Claude Opus 5.5, so the menu doesn't list it a second time.
+    expect(options).toHaveLength(2);
+    expect(options[0]).toHaveTextContent('Claude Opus 5.5 (Default)');
     expect(options[0]).toHaveAttribute('aria-selected', 'true');
-    expect(options[2]).toHaveTextContent('Claude Sonnet 5.5');
+    expect(options[1]).toHaveTextContent('Claude Sonnet 5.5');
   });
 
   it('labels a plan-level default as the plan default and reports explicit picks', async () => {
@@ -45,10 +47,21 @@ describe('ModelSelector', () => {
     expect(trigger).toHaveTextContent('Claude Sonnet 5.5 (Default)');
 
     fireEvent.click(trigger);
-    expect(screen.getAllByRole('option')[0]).toHaveTextContent('Claude Sonnet 5.5 (Plan Default)');
+    const options = screen.getAllByRole('option');
+    expect(options).toHaveLength(2);
+    expect(options[0]).toHaveTextContent('Claude Sonnet 5.5 (Default)');
     fireEvent.click(screen.getByRole('option', { name: /Claude Opus 5\.5\s*claude$/ }));
     expect(onModelChange).toHaveBeenCalledWith('claude:claude-opus-5-5');
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+  });
+
+  it('treats an explicit pick of the default model as the default row', () => {
+    render(<ModelSelector agents={agents} generationModel="claude:claude-sonnet-5-5" defaultModel="claude:claude-sonnet-5-5" onModelChange={vi.fn()} />);
+    const trigger = screen.getByTestId('planner-model-selector');
+    expect(trigger).toHaveTextContent('Claude Sonnet 5.5 (Default)');
+    fireEvent.click(trigger);
+    expect(screen.getByRole('option', { selected: true })).toHaveTextContent('Claude Sonnet 5.5 (Default)');
+    expect(screen.getAllByRole('option')).toHaveLength(2);
   });
 
   it('shows the explicit model without the default suffix once one is chosen', () => {

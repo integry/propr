@@ -4,7 +4,7 @@ import { getInstanceCatalog } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
 import { useSocket } from '../../contexts/useSocket';
 import { DraftUpdatePayload, type InstanceCatalogAgent } from '@propr/shared';
-import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, ExecutionStepData, type IssueCreationProgress } from './planIssuesManagerUtils';
+import { IDLE_PROGRESS, createProgressState, handleDraftCompletion, withCreatedIssues, ExecutionStepData, type IssueCreationProgress } from './planIssuesManagerUtils';
 import { applyPlanIssueDefaults, resolvePlanIssueDefaultSelection } from './planIssueDefaultSelection';
 export type { IssueCreationProgress } from './planIssuesManagerUtils';
 
@@ -184,7 +184,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
       hasHandledCompletionRef.current = false;
     }
     if (status === 'in_progress') {
-      setIssueCreationProgress(createProgressState(status, data));
+      setIssueCreationProgress(previous => withCreatedIssues(createProgressState(status, data), previous));
     }
     if (status === 'completed' || status === 'failed') {
       await handleDraftCompletion({ data, status, hasHandledCompletionRef, fetchIssues, onRefresh, onCreationComplete });

@@ -6,7 +6,7 @@ import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
 import { ListSkeleton } from '../ui/Skeleton';
 import SequentialWarningDialog from './SequentialWarningDialog';
-import { usePlanIssuesManager } from './usePlanIssuesManager';
+import { usePlanIssuesManager, type IssueCreationProgress } from './usePlanIssuesManager';
 import { IssueCreationProgressIndicator } from './IssueCreationProgressIndicator';
 import { ExecutionOptionsToolbar, TasksBeingCreated } from './PlanIssuesManagerToolbar';
 import PlanIntentConfirmationDialog from './PlanIntentConfirmationDialog';
@@ -40,6 +40,8 @@ interface PlanIssuesManagerProps {
   onUltrafixMaxCyclesChange?: (value: number | null) => void;
   draftStatus?: string;
   onCreationComplete?: (createdCount: number, failedCount: number) => void;
+  /** Reports live issue-creation progress so the surrounding view can summarise and guard it. */
+  onCreationProgressChange?: (progress: IssueCreationProgress) => void;
   isSavingExecutionSettings?: boolean;
   isReadOnly?: boolean;
   notificationIntent?: PlanNotificationIntent | null;
@@ -117,6 +119,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   onUltrafixMaxCyclesChange,
   draftStatus,
   onCreationComplete,
+  onCreationProgressChange,
   isSavingExecutionSettings = false,
   isReadOnly = false,
   notificationIntent = null,
@@ -143,6 +146,8 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     handleIssueMultiToggle, handleIssueMultiModelChange,
     handleRefresh, getUnmergedIssuesBefore,
   } = usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoMerge, draftStatus, onCreationComplete });
+
+  useEffect(() => { onCreationProgressChange?.(issueCreationProgress); }, [issueCreationProgress, onCreationProgressChange]);
 
   const handleImplementWithWarning = useCallback((issueNumber: number, models?: AgentModelPair[]) => {
     if (isReadOnly) return;
