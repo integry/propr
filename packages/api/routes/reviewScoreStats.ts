@@ -42,6 +42,7 @@ interface CostRow {
   pull_request_number: number | null;
   cost: number | string | null;
   costed: number | string;
+  runs: number | string;
 }
 
 export interface MeanFigure { mean: number | null; n: number }
@@ -66,6 +67,13 @@ export interface ReviewScoreModelSummary {
   merge_rate: { value: number | null; merged: number; n: number };
   /** Recorded cost of merged PRs' implementation and follow-up tasks; n counts merged PRs with recorded cost. */
   cost_per_merged_pr: { usd: number | null; n: number };
+  /**
+   * Mean change from first to final score, over PRs that have both: did the
+   * model's follow-up work actually improve the code?
+   */
+  score_delta: MeanFigure;
+  /** Agent executions across merged PRs' implementation and follow-up tasks; n counts merged PRs with recorded runs. */
+  runs_to_merge: MeanFigure;
 }
 
 export interface ReviewScoreSummary {
@@ -85,6 +93,7 @@ interface PullRequestFacts {
   hadGoal: boolean;
   outcome: 'merged' | 'closed' | null;
   cost: number | null;
+  runs: number | null;
 }
 
 const round = (value: number, digits = 2): number => Number(value.toFixed(digits));
@@ -114,8 +123,10 @@ function cyclesToGoal(rows: ScoreRow[]): { hadGoal: boolean; cycles: number | nu
   return { hadGoal: true, cycles: reached.cycle_number ?? jobs.indexOf(reached.task_id) + 1 };
 }
 
-/** Recorded cost per pull request: its implementation task plus every task acting on it. */
-async function loadPullRequestCosts(db: Knex, repositories: string[]): Promise<Map<string, number>> {
+interface PullRequestSpend { cost: number | null; runs: number }
+
+/** Recorded cost and run count per pull request: its implementation task plus every task acting on it. */
+async function loadPullRequestCosts(db: Knex, repositories: string[]): Promise<Map<string, PullRequestSpend>> {
   if (!repositories.length) return new Map();
   const types = PULL_REQUEST_TASK_TYPES.map(() => '?').join(', ');
   const rows = await db('llm_executions as e')
@@ -127,11 +138,15 @@ async function loadPullRequestCosts(db: Knex, repositories: string[]): Promise<M
     [...PULL_REQUEST_TASK_TYPES]))
     .sum('e.cost_usd as cost')
     .count('e.cost_usd as costed')
+    .count('* as runs')
     .groupBy('t.repository', 'pull_request_number') as unknown as CostRow[];
-  const costs = new Map<string, number>();
+  const costs = new Map<string, PullRequestSpend>();
   for (const row of rows) {
-    if (row.pull_request_number === null || Number(row.costed) === 0) continue;
-    costs.set(prKey(row.repository, row.pull_request_number), Number(row.cost || 0));
+    if (row.pull_request_number === null) continue;
+    costs.set(prKey(row.repository, row.pull_request_number), {
+      cost: Number(row.costed) === 0 ? null : Number(row.cost || 0),
+      runs: Number(row.runs || 0),
+    });
   }
   return costs;
 }
@@ -176,7 +191,7 @@ async function loadPreMergeFinalScores(
 }
 
 function pullRequestFacts(
-  rows: ScoreRow[], outcome: OutcomeRow | undefined, cost: number | null, preMergeFinal: number | null,
+  rows: ScoreRow[], outcome: OutcomeRow | undefined, spend: PullRequestSpend | null, preMergeFinal: number | null,
 ): PullRequestFacts {
   const state = outcomeState(outcome);
   // A merged PR's final score is only ever a pre-merge score; without one it is unknown.
@@ -191,7 +206,8 @@ function pullRequestFacts(
     cyclesToGoal: goal.cycles,
     hadGoal: goal.hadGoal,
     outcome: state,
-    cost: state === 'merged' ? cost : null,
+    cost: state === 'merged' ? spend?.cost ?? null : null,
+    runs: state === 'merged' && spend && spend.runs > 0 ? spend.runs : null,
   };
 }
 
@@ -202,6 +218,8 @@ function summarizeModel(model: string | null, prs: PullRequestFacts[]): ReviewSc
   const resolved = prs.filter(pr => pr.outcome !== null);
   const merged = resolved.filter(pr => pr.outcome === 'merged');
   const costs = merged.flatMap(pr => pr.cost === null ? [] : [pr.cost]);
+  const deltas = prs.flatMap(pr => pr.final === null ? [] : [pr.final - pr.first]);
+  const runs = merged.flatMap(pr => pr.runs === null ? [] : [pr.runs]);
   const agents = [...new Set(prs.flatMap(pr => pr.agent ? [pr.agent] : []))];
   return {
     implementer_model: model,
@@ -215,6 +233,8 @@ function summarizeModel(model: string | null, prs: PullRequestFacts[]): ReviewSc
       usd: costs.length ? round(costs.reduce((sum, cost) => sum + cost, 0) / costs.length, 4) : null,
       n: costs.length,
     },
+    score_delta: { mean: mean(deltas), n: deltas.length },
+    runs_to_merge: { mean: mean(runs), n: runs.length },
   };
 }
 
@@ -291,6 +311,10 @@ const CSV_COLUMNS: Array<[string, (model: ReviewScoreModelSummary) => string | n
   ['merge_rate_n', model => model.merge_rate.n],
   ['cost_per_merged_pr_usd', model => model.cost_per_merged_pr.usd],
   ['cost_per_merged_pr_n', model => model.cost_per_merged_pr.n],
+  ['score_delta_mean', model => model.score_delta.mean],
+  ['score_delta_n', model => model.score_delta.n],
+  ['runs_to_merge_mean', model => model.runs_to_merge.mean],
+  ['runs_to_merge_n', model => model.runs_to_merge.n],
 ];
 
 /** RFC 4180 cell; unknown is an empty cell, and text cannot start a spreadsheet formula. */

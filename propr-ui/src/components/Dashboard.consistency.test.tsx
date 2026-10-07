@@ -183,7 +183,7 @@ describe('Dashboard consistency rules', () => {
     // enough to fit instead of being cut to fit; the qualification it carried
     // is a tooltip on the label.
     const stats = screen.getByTestId('historical-stats-section');
-    for (const label of ['Completed', 'Success', 'Spend']) {
+    for (const label of ['Tasks', 'Success', 'Spend']) {
       const node = within(stats).getByText(label);
       expect(node.className).not.toMatch(/truncate/);
     }

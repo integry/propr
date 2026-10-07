@@ -8,6 +8,7 @@ import { withModelScoreFigures } from './reviewScoreStats.js';
 
 interface ModelUsageRow {
   model_name: string | null;
+  runs?: number | string;
   tasks?: number | string;
   cost?: number | string | null;
   tokens?: number | string | null;
@@ -15,6 +16,9 @@ interface ModelUsageRow {
 
 export interface ModelUsage {
   model: string;
+  /** Agent executions on the model: the compute, not the deliverables. */
+  runs: number;
+  /** Distinct tasks with at least one execution on the model. */
   tasks: number;
   tokens: number;
   cost_usd: number;
@@ -25,17 +29,21 @@ export interface ModelUsage {
 }
 
 /**
- * Tasks, tokens and recorded cost for each model, most tasks first.
+ * Runs, tasks, tokens and recorded cost for each model, most runs first.
  *
- * Tasks are distinct tasks with at least one execution on the model, as in
- * the overview's `usage.models`; tokens and cost are summed over those
- * executions. A period bounds all three by when each execution started.
+ * A run is one agent execution. A task usually takes several — implement,
+ * review, fix — often on different models, so a model is credited with the
+ * runs it executed rather than with whole tasks. Tasks are still reported as
+ * distinct tasks with at least one execution on the model, as in the
+ * overview's `usage.models`; tokens and cost are summed over the executions.
+ * A period bounds every figure by when each execution started.
  * Each row also carries the review quality of the PRs the model implemented
  * (see `withModelScoreFigures`), bounded by when the scores were recorded.
  */
 export async function loadModelUsage(db: Knex, analyticsWindow: AnalyticsWindow | null): Promise<ModelUsage[]> {
   const runsQuery = db('llm_executions')
     .select('model_name')
+    .count('* as runs')
     .countDistinct('task_id as tasks')
     .sum('cost_usd as cost')
     .whereNotNull('model_name')
@@ -59,10 +67,11 @@ export async function loadModelUsage(db: Knex, analyticsWindow: AnalyticsWindow 
     .filter(row => row.model_name)
     .map(row => ({
       model: String(row.model_name),
+      runs: Number(row.runs || 0),
       tasks: Number(row.tasks || 0),
       tokens: tokensByModel.get(row.model_name) ?? 0,
       cost_usd: Number(Number(row.cost || 0).toFixed(2)),
     }))
-    .sort((left, right) => right.tasks - left.tasks || right.tokens - left.tokens || left.model.localeCompare(right.model));
+    .sort((left, right) => right.runs - left.runs || right.tokens - left.tokens || left.model.localeCompare(right.model));
   return withModelScoreFigures(db, analyticsWindow, usage);
 }

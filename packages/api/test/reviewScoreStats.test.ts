@@ -6,6 +6,7 @@ import { up as createPullRequestState } from '../../core/src/db/migrations/20260
 import { up as createReviewScores } from '../../core/src/db/migrations/20261006000000_create_review_scores.js';
 import { createReviewScoreRoutes, loadReviewScoreSummary, median, reviewScoreSummaryCsv } from '../routes/reviewScoreStats.js';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
+import { loadDeliveryMetrics } from '../routes/analyticsDelivery.js';
 import type { AnalyticsWindow } from '../routes/analyticsWindow.js';
 
 const NOW = new Date('2026-10-06T12:00:00.000Z');
@@ -171,6 +172,10 @@ test('summarizes review quality per implementer model with denominators', async 
     merge_rate: { value: 0.5, merged: 1, n: 2 },
     // Implementation (2.25) plus follow-up (0.75); the same-numbered issue task is not part of it.
     cost_per_merged_pr: { usd: 3, n: 1 },
+    // PR 1 rose from 5 to 8; PRs 2 and 3 ended where they started.
+    score_delta: { mean: 1, n: 3 },
+    // The implementation run plus the follow-up run.
+    runs_to_merge: { mean: 2, n: 1 },
   });
   assert.deepEqual(gpt, {
     implementer_model: GPT,
@@ -182,6 +187,9 @@ test('summarizes review quality per implementer model with denominators', async 
     merge_rate: { value: 1, merged: 2, n: 2 },
     // PR 10 recorded no cost, so it is left out of the denominator rather than counted as free.
     cost_per_merged_pr: { usd: 5, n: 1 },
+    score_delta: { mean: 1, n: 2 },
+    // A run that recorded no cost is still a run.
+    runs_to_merge: { mean: 1, n: 2 },
   });
   assert.deepEqual(unknown, {
     implementer_model: null,
@@ -192,6 +200,8 @@ test('summarizes review quality per implementer model with denominators', async 
     cycles_to_goal: { mean: null, n: 0, attempted: 0 },
     merge_rate: { value: null, merged: 0, n: 0 },
     cost_per_merged_pr: { usd: null, n: 0 },
+    score_delta: { mean: 0, n: 1 },
+    runs_to_merge: { mean: null, n: 0 },
   });
 });
 
@@ -219,10 +229,10 @@ test('exports the same summary as CSV, with unknown values as empty cells', asyn
   const lines = state.text!.trimEnd().split('\r\n');
   assert.equal(lines[0], 'implementer_model,implementer_agent,prs_scored,first_score_mean,first_score_median,first_score_n,'
     + 'final_score_mean,final_score_n,cycles_to_goal_mean,cycles_to_goal_n,cycles_to_goal_attempted,merge_rate,merged,merge_rate_n,'
-    + 'cost_per_merged_pr_usd,cost_per_merged_pr_n');
-  assert.equal(lines[1], `${OPUS},agent,3,5.33,5,3,6.33,3,2,1,2,0.5,1,2,3,1`);
-  assert.equal(lines[2], `${GPT},agent,2,7.5,7.5,2,8.5,2,,0,0,1,2,2,5,1`);
-  assert.equal(lines[3], ',,1,3,3,1,3,1,,0,0,,0,0,,0');
+    + 'cost_per_merged_pr_usd,cost_per_merged_pr_n,score_delta_mean,score_delta_n,runs_to_merge_mean,runs_to_merge_n');
+  assert.equal(lines[1], `${OPUS},agent,3,5.33,5,3,6.33,3,2,1,2,0.5,1,2,3,1,1,3,2,1`);
+  assert.equal(lines[2], `${GPT},agent,2,7.5,7.5,2,8.5,2,,0,0,1,2,2,5,1,1,2,1,2`);
+  assert.equal(lines[3], ',,1,3,3,1,3,1,,0,0,,0,0,,0,0,1,,0');
   assert.equal(lines.length, 4);
 });
 
@@ -233,7 +243,7 @@ test('CSV cells are quoted and cannot start a spreadsheet formula', () => {
       implementer_model: '=HYPERLINK("x")', implementer_agent: 'a,b', prs_scored: 1,
       first_score: { mean: 1, median: 1, n: 1 }, final_score: { mean: 1, n: 1 },
       cycles_to_goal: { mean: null, n: 0, attempted: 0 }, merge_rate: { value: null, merged: 0, n: 0 },
-      cost_per_merged_pr: { usd: null, n: 0 },
+      cost_per_merged_pr: { usd: null, n: 0 }, score_delta: { mean: 0, n: 1 }, runs_to_merge: { mean: null, n: 0 },
     }],
   });
   assert.ok(csv.split('\r\n')[1].startsWith(`"'=HYPERLINK(""x"")","a,b",1,`));
@@ -310,4 +320,19 @@ test('a clean reviewer does not pass an Ultrafix cycle a sibling reviewer blocke
 
   const summary = await loadReviewScoreSummary(database, null, repository);
   assert.deepEqual(summary.models.map(model => model.cycles_to_goal), [{ mean: 2, n: 1, attempted: 2 }]);
+});
+
+test('delivery metrics follow each opened PR to its merge', async () => {
+  const delivery = await loadDeliveryMetrics(database, null);
+  assert.deepEqual(delivery, {
+    // PRs 1, 10 and 11 were opened by tasks; the rest were only scored.
+    prs_opened: 3,
+    prs_merged: 3,
+    prs_closed: 0,
+    // PR 1 needed a follow-up fix and a second Ultrafix cycle; PRs 10 and 11 merged as first written.
+    first_time_pass: { rate: 0.6667, passed: 2, n: 3 },
+    // Each merged three days after its implementation task was created.
+    time_to_merge_minutes: { mean: 4320, median: 4320, n: 3 },
+    runs_per_merged_pr: { mean: 1.33, n: 3 },
+  });
 });

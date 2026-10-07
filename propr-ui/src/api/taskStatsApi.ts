@@ -84,15 +84,54 @@ export interface StatsOverviewUsage {
   output_tokens?: number;
   total_cost_usd: number;
   models: Record<string, number>;
+  /** Prompt cache effectiveness; null when no run reported a cache breakdown, absent from older servers. */
+  cache?: StatsOverviewCacheUsage | null;
+}
+
+export interface StatsOverviewCacheUsage {
+  input_tokens: number;
+  cache_read_tokens: number;
+  /** Share of prompt tokens served from the cache, 0–1. */
+  hit_rate: number;
+  /** Saved against the full prompt price; null when no model behind the reads has a known price. */
+  saved_usd: number | null;
+}
+
+/** Run volume: agent executions, the compute behind the deliverables. */
+export interface StatsOverviewRuns {
+  total: number;
+  tasks: number;
+  /** Runs per task, the iteration multiplier; null without any task runs. */
+  per_task: number | null;
+}
+
+/** Delivery: pull requests opened by tasks in the period, followed to their outcome. */
+export interface StatsOverviewDelivery {
+  prs_opened: number;
+  prs_merged: number;
+  prs_closed: number;
+  first_time_pass: { rate: number | null; passed: number; n: number };
+  time_to_merge_minutes: { mean: number | null; median: number | null; n: number };
+  runs_per_merged_pr: { mean: number | null; n: number };
+}
+
+/** Finished tasks that never failed or asked for an operator. */
+export interface StatsOverviewAutonomy {
+  rate: number | null;
+  autonomous: number;
+  operator: number;
+  n: number;
 }
 
 export interface StatsOverviewSystem {
   repos_indexed: number;
 }
 
-/** One model's share of the period: distinct tasks, tokens and recorded cost. */
+/** One model's share of the period: runs, distinct tasks, tokens and recorded cost. */
 export interface StatsOverviewModelUsage {
   model: string;
+  /** Agent executions on the model; absent from servers that predate it. */
+  runs?: number;
   tasks: number;
   tokens: number;
   cost_usd: number;
@@ -106,6 +145,10 @@ export interface StatsOverviewResponse {
   usage: StatsOverviewUsage;
   /** Absent from servers that predate the per-model breakdown. */
   model_usage?: StatsOverviewModelUsage[];
+  /** Absent from servers that predate run, delivery and autonomy metrics. */
+  runs?: StatsOverviewRuns;
+  delivery?: StatsOverviewDelivery;
+  autonomy?: StatsOverviewAutonomy;
   system: StatsOverviewSystem;
 }
 
@@ -137,6 +180,10 @@ export interface ReviewScoreModelSummary {
   cycles_to_goal: ReviewScoreMean & { attempted: number };
   merge_rate: { value: number | null; merged: number; n: number };
   cost_per_merged_pr: { usd: number | null; n: number };
+  /** Mean final minus first score; absent from servers that predate it. */
+  score_delta?: ReviewScoreMean;
+  /** Mean agent runs per merged PR; absent from servers that predate it. */
+  runs_to_merge?: ReviewScoreMean;
 }
 
 export interface ReviewScoreSummaryResponse {

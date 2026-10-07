@@ -42,10 +42,14 @@ test('success rate excludes queued, running and cancelled work and is null when 
   const mixed = await call(stats.getDashboardStats, { repository: 'acme/mixed', period: '7d' });
   // Three completed and one failed: cancelled, queued and running never reach the denominator.
   assert.equal(mixed.body.completed, 3);
+  assert.equal(mixed.body.failed, 1);
   assert.equal(mixed.body.successRate, 75);
-  assert.equal((mixed.body.dailyCompleted as unknown[]).length, 7);
-  assert.equal((mixed.body.dailyCompleted as Array<{ date: string; count: number }>)
-    .reduce((total, day) => total + day.count, 0), 3);
+  // Every task created in the window is volume, finished or not.
+  assert.equal(mixed.body.tasks, 6);
+  // A rolling seven days touches eight UTC days, exactly as the Analytics activity chart does.
+  assert.equal((mixed.body.dailyTasks as unknown[]).length, 8);
+  assert.equal((mixed.body.dailyTasks as Array<{ date: string; count: number }>)
+    .reduce((total, day) => total + day.count, 0), 6);
 });
 
 test('dashboard stats compare against the previous period and report recorded spend only when recorded', async () => {
@@ -64,12 +68,13 @@ test('dashboard stats compare against the previous period and report recorded sp
   assert.equal(current.body.completed, 1);
   assert.equal(current.body.successRate, 100);
   assert.equal(current.body.recordedSpend, 1.25);
-  assert.deepEqual(current.body.previous, { completed: 1, successRate: 50, recordedSpend: 0.5 });
+  assert.deepEqual(current.body.previous, { tasks: 2, completed: 1, successRate: 50, recordedSpend: 0.5 });
 
   const empty = await call(stats.getDashboardStats, { repository: 'acme/never-used', period: '30d' });
   assert.equal(empty.body.successRate, null);
   assert.equal(empty.body.recordedSpend, null);
-  assert.equal((empty.body.dailyCompleted as unknown[]).length, 30);
+  assert.equal(empty.body.tasks, 0);
+  assert.equal((empty.body.dailyTasks as unknown[]).length, 31);
 });
 
 test('historical stats keep a recorded failure once its retry starts', async () => {

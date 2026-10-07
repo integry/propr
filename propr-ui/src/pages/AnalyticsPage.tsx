@@ -10,9 +10,9 @@
  * so a view survives reload and back/forward and can be shared.
  *
  * The page is one console on a white canvas, not a grid of cards: a totals
- * band across the top, then a split pane — activity and repositories on the
- * left 60% (with review quality by model under them); models, task status
- * and token consumption on the right 40% —
+ * band across the top and a delivery band under it, then a split pane —
+ * activity and repositories on the left 60% (with the agent efficacy matrix
+ * under them); models, task status and token consumption on the right 40% —
  * divided by the same 1px rules the dashboard uses. Each pane is as tall as
  * its content, and the column rule runs to the bottom of the canvas, so there
  * is no card padded out to match its neighbour and no grey floor under the
@@ -39,7 +39,13 @@ import AnalyticsTimeframeSelector from '../components/Analytics/AnalyticsTimefra
 import { AnalyticsMetricStrip, UNAVAILABLE, type AnalyticsMetric } from '../components/Analytics/AnalyticsMetricStrip';
 import { LockedRepositoryScope } from '../components/Analytics/LockedRepositoryScope';
 import { useTimeframeRead } from '../components/Analytics/useTimeframeRead';
-import { formatCompactNumber, formatUsd, successRate } from '../components/Analytics/analyticsFormat';
+import {
+  formatCompactNumber,
+  formatDuration,
+  formatShare,
+  formatUsd,
+  successRate,
+} from '../components/Analytics/analyticsFormat';
 import { SectionHeading } from '../components/Dashboard/sectionPrimitives';
 import { useHeaderScopeSlot } from '../components/headerScopeSlot';
 import {
@@ -98,6 +104,48 @@ const buildMetrics = (
   ];
 };
 
+/**
+ * The delivery band: task volume against run volume, and the outcomes an
+ * engineering lead reads first — how often work merged on the first attempt,
+ * how long it took, and how often a human had to step in.
+ */
+const buildDeliveryMetrics = (overview: { data: StatsOverviewResponse | null; loading: boolean }): AnalyticsMetric[] => {
+  const { runs, delivery, autonomy } = overview.data ?? {};
+  const read = (value: string | undefined) => (overview.loading ? null : value ?? UNAVAILABLE);
+  const pass = delivery?.first_time_pass;
+  const merge = delivery?.time_to_merge_minutes;
+  return [
+    {
+      label: 'Runs per task',
+      testId: 'metric-runs-per-task',
+      hint: 'Agent runs per task: the iteration multiplier. A task often takes several runs — implement, review, fix',
+      value: read(runs?.per_task == null ? undefined : `${runs.per_task.toFixed(1)}×`),
+      detail: runs ? `${runs.total.toLocaleString()} runs` : undefined,
+    },
+    {
+      label: 'First-time pass',
+      testId: 'metric-first-time-pass',
+      hint: 'Merged pull requests that needed no fix: one implementation run, no follow-up fix and no Ultrafix retry',
+      value: read(pass?.rate == null ? undefined : formatShare(pass.rate)),
+      detail: pass && pass.n > 0 ? `${pass.passed.toLocaleString()} of ${pass.n.toLocaleString()} merged PRs` : undefined,
+    },
+    {
+      label: 'Time to merge',
+      testId: 'metric-time-to-merge',
+      hint: 'Mean wall-clock time from task submission to merge',
+      value: read(merge?.mean == null ? undefined : formatDuration(merge.mean)),
+      detail: merge?.median == null ? undefined : `median ${formatDuration(merge.median)}`,
+    },
+    {
+      label: 'Autonomy',
+      testId: 'metric-autonomy',
+      hint: 'Finished tasks that completed without failing or asking for an operator',
+      value: read(autonomy?.rate == null ? undefined : formatShare(autonomy.rate)),
+      detail: autonomy && autonomy.n > 0 ? `${formatShare(autonomy.operator / autonomy.n)} required operator` : undefined,
+    },
+  ];
+};
+
 const AnalyticsPage: React.FC = () => {
   useDocumentTitle('Analytics');
   const [searchParams, setSearchParams] = useSearchParams();
@@ -150,6 +198,7 @@ const AnalyticsPage: React.FC = () => {
       {/* The panes load side by side, so the page announces their wait once. */}
       <PageLoadingStatus label="Loading analytics…">
         <AnalyticsMetricStrip metrics={buildMetrics(tasks, overview)} />
+        <AnalyticsMetricStrip metrics={buildDeliveryMetrics(overview)} testId="analytics-delivery-strip" label="Delivery" />
 
         <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]" data-testid="analytics-split">
           <div className="min-w-0 lg:border-r lg:border-slate-200" data-testid="analytics-primary-pane">
@@ -173,7 +222,7 @@ const AnalyticsPage: React.FC = () => {
             </Pane>
             <Pane
               id="analytics-review-quality-heading"
-              title="Review quality by model"
+              title="Agent efficacy by model"
               count={reviewScores.data ? reviewScores.data.models.length : null}
             >
               <ReviewQualityByModel summary={reviewScores.data} loading={reviewScores.loading} error={reviewScores.error} />

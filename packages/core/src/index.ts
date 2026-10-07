@@ -193,7 +193,7 @@ export {
 } from './webhook/statusMachine.js';
 export type { PlanIssueStatus as StatusMachinePlanIssueStatus } from './webhook/statusMachine.js';
 
-export { getModelPricing } from './services/pricingService.js';
+export { getModelPricing, getOfficialModelPricing } from './services/pricingService.js';
 export { getWorktreeChanges, storeFileChanges, getStoredFileChanges, clearFileChanges, updateFileChangesFromWorktree, getCommitChanges, isValidCommitHash } from './services/worktreeMonitorService.js';
 export type { FileChange, FileChangesData } from './services/worktreeMonitorService.js';
 export { generateContext, generateAdditionalContext, ContextTokenLimitError, SecurityException } from './services/context/index.js';

@@ -99,11 +99,14 @@ test('without a period the endpoints keep their historical scope', async () => {
     output_tokens: 220,
     total_cost_usd: 2,
     models: { 'claude-opus-5-5': 1, 'gpt-5.6': 1 },
+    // This schema records no cache breakdown, so there is no hit rate to report.
+    cache: null,
   });
   assert.deepEqual(overview.body.model_usage, [
-    { model: 'gpt-5.6', tasks: 1, tokens: 1200, cost_usd: 0.5 },
-    { model: 'claude-opus-5-5', tasks: 1, tokens: 120, cost_usd: 1.5 },
+    { model: 'gpt-5.6', runs: 1, tasks: 1, tokens: 1200, cost_usd: 0.5 },
+    { model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 120, cost_usd: 1.5 },
   ]);
+  assert.deepEqual(overview.body.runs, { total: 2, tasks: 2, per_task: 1 });
 });
 
 test('a period bounds task counts to tasks created inside the window', async () => {
@@ -154,14 +157,43 @@ test('a period bounds overview usage by execution start but never the indexed re
 
   const lastDay = await call(stats.getOverview, { period: '24h' });
   assert.deepEqual(lastDay.body.usage, {
-    total_tokens: 120, input_tokens: 100, output_tokens: 20, total_cost_usd: 1.5, models: { 'claude-opus-5-5': 1 },
+    total_tokens: 120, input_tokens: 100, output_tokens: 20, total_cost_usd: 1.5, models: { 'claude-opus-5-5': 1 }, cache: null,
   });
   assert.equal((lastDay.body.tasks as { completed: number }).completed, 1);
   assert.deepEqual(lastDay.body.system, { repos_indexed: 1 });
-  assert.deepEqual(lastDay.body.model_usage, [{ model: 'claude-opus-5-5', tasks: 1, tokens: 120, cost_usd: 1.5 }]);
+  assert.deepEqual(lastDay.body.model_usage, [{ model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 120, cost_usd: 1.5 }]);
 
   const week = await call(stats.getOverview, { period: '7d' });
   assert.equal((week.body.usage as { total_tokens: number }).total_tokens, 1320);
+});
+
+test('the dashboard widget and the Analytics page report the same figures for the same period', async () => {
+  await seedTask(database, { taskId: 'today', issueNumber: 1, states: [{ state: 'completed', timestamp: daysAgo(0.1) }] });
+  await seedTask(database, { taskId: 'midweek', issueNumber: 2, states: [{ state: 'failed', timestamp: daysAgo(3), reason: 'nope' }] });
+  // Inside a rolling week, but before the widget's old whole-day window began.
+  await seedTask(database, { taskId: 'edge', issueNumber: 3, states: [{ state: 'completed', timestamp: daysAgo(6.9) }] });
+  await seedTask(database, { taskId: 'outside', issueNumber: 4, states: [{ state: 'completed', timestamp: daysAgo(8) }] });
+  await database('llm_executions').insert([
+    { task_id: 'today', start_time: daysAgo(0.1), cost_usd: 2 },
+    { task_id: 'edge', start_time: daysAgo(6.9), cost_usd: 0.75 },
+    { task_id: 'outside', start_time: daysAgo(8), cost_usd: 9 },
+  ]);
+
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  for (const period of ['7d', '30d']) {
+    const widget = await call(stats.getDashboardStats, { repository: 'all', period });
+    const tasks = await call(stats.getTaskStats, { period });
+    const overview = await call(stats.getOverview, { period });
+    const summary = tasks.body.summary as { total: number; completed: number; failed: number };
+    assert.equal(widget.body.tasks, summary.total, period);
+    assert.equal(widget.body.completed, summary.completed, period);
+    assert.equal(widget.body.failed, summary.failed, period);
+    assert.equal(widget.body.recordedSpend, (overview.body.usage as { total_cost_usd: number }).total_cost_usd, period);
+    assert.deepEqual(widget.body.dailyTasks, tasks.body.dailyCounts, period);
+  }
+  const week = await call(stats.getDashboardStats, { repository: 'all', period: '7d' });
+  assert.equal(week.body.tasks, 3);
+  assert.equal(week.body.recordedSpend, 2.75);
 });
 
 test('analytics day keys cover every UTC day from start to end inclusive', () => {

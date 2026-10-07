@@ -81,9 +81,9 @@ const dashboardResponses = (attentionItems: typeof attention): Record<string, un
   },
   '/api/dashboard/outcomes': { repository: 'all', limit: 50, items: outcomes },
   '/api/stats/dashboard': {
-    period: '7d', repository: 'all', completed: 34, successRate: 87.5, recordedSpend: 12.42,
-    dailyCompleted: [4, 7, 3, 6, 2, 8, 4].map((count, index) => ({ date: `2026-09-${17 + index}`, count })),
-    previous: { completed: 29, successRate: 81.2, recordedSpend: 9.8 },
+    period: '7d', repository: 'all', tasks: 40, completed: 34, failed: 5, successRate: 87.2, recordedSpend: 12.42,
+    dailyTasks: [4, 7, 3, 6, 2, 8, 4, 6].map((count, index) => ({ date: `2026-09-${17 + index}`, count })),
+    previous: { tasks: 33, completed: 29, successRate: 81.2, recordedSpend: 9.8 },
   },
 });
 

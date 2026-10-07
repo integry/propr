@@ -17,6 +17,8 @@ export interface AnalyticsMetric {
   /** Null while loading. */
   value: string | null;
   hint?: string;
+  /** A short qualifier under the figure: its denominator or its companion figure. */
+  detail?: string;
   testId: string;
 }
 
@@ -30,8 +32,10 @@ const CELL_RULES = [
 
 export const UNAVAILABLE = '—';
 
-export const AnalyticsMetricStrip: React.FC<{ metrics: AnalyticsMetric[] }> = ({ metrics }) => (
-  <dl className="grid flex-none grid-cols-2 border-b border-slate-200 lg:grid-cols-4" data-testid="analytics-metric-strip">
+export const AnalyticsMetricStrip: React.FC<{ metrics: AnalyticsMetric[]; testId?: string; label?: string }> = ({
+  metrics, testId = 'analytics-metric-strip', label,
+}) => (
+  <dl className="grid flex-none grid-cols-2 border-b border-slate-200 lg:grid-cols-4" data-testid={testId} aria-label={label}>
     {metrics.map((metric, index) => (
       <div key={metric.testId} className={`min-w-0 border-slate-200 px-4 py-3 sm:px-6 ${CELL_RULES[index] ?? ''}`}>
         <dt className="text-[10px] font-bold uppercase tracking-wider text-slate-500" title={metric.hint}>
@@ -43,6 +47,9 @@ export const AnalyticsMetricStrip: React.FC<{ metrics: AnalyticsMetric[] }> = ({
         >
           {metric.value === null ? <SkeletonBlock pulse className="h-8 w-20" /> : metric.value}
         </dd>
+        {metric.detail && metric.value !== null && (
+          <dd className="mt-0.5 truncate text-xs text-slate-500" data-testid={`${metric.testId}-detail`}>{metric.detail}</dd>
+        )}
       </div>
     ))}
   </dl>

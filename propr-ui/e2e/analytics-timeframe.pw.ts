@@ -47,6 +47,7 @@ async function stubAnalytics(page: Page, requests: string[] = []) {
         prs_scored: prs, first_score: { mean: first, median: Math.round(first), n: prs }, final_score: { mean: final, n: prs },
         cycles_to_goal: { mean: 1.8, n: Math.max(1, Math.round(prs / 2)), attempted: prs },
         merge_rate: { value: merged / prs, merged, n: prs }, cost_per_merged_pr: { usd: cost, n: cost === null ? 0 : merged },
+        score_delta: { mean: final - first, n: prs }, runs_to_merge: { mean: cost === null ? null : 2.4, n: cost === null ? 0 : merged },
       });
       return route.fulfill({ json: { period, repository: 'all', prs_scored: 6 * scale, scores_recorded: 14 * scale, models: [
         { implementer_model: 'claude-opus-5-5', implementer_agent: 'claude', ...figures(4 * scale, 6.4, 8.6, 3 * scale, 1.84) },
@@ -276,15 +277,19 @@ test('repository and model rows drill down to the filtered lists', async ({ page
   await expect(page).toHaveURL(/\/tasks\?repository=example%2Fworkspace$/);
 });
 
-test('review quality by model shows every figure with its denominator and unknowns as a dash', async ({ page }) => {
+test('the agent efficacy matrix shows one figure per cell, denominators on hover and unknowns as a dash', async ({ page }) => {
   await openAnalytics(page, 1440);
-  const pane = page.locator('section', { has: page.getByRole('heading', { name: /Review quality by model/ }) });
+  const pane = page.locator('section', { has: page.getByRole('heading', { name: /Agent efficacy by model/ }) });
   const rows = pane.getByTestId('review-quality-row');
   await expect(rows).toHaveCount(2);
   await expect(rows.first()).toContainText('Claude Opus 5.5');
-  await expect(rows.first()).toContainText('$1.84');
-  await expect(rows.nth(1)).toContainText('—');
-  await expect(pane.getByText('n=40').first()).toBeVisible();
+  await expect(rows.first().getByTestId('review-quality-delta')).toHaveText('+2.2 ▲');
+  await expect(rows.first().getByTestId('review-quality-final')).toHaveAttribute('title', 'Mean over 40 PRs');
+  await expect(rows.nth(1).getByTestId('review-quality-runs')).toHaveText('—');
+  await expect(pane.getByText(/n=\d/)).toHaveCount(0);
+  // Every column fits the pane: nothing scrolls sideways.
+  const table = pane.getByTestId('review-quality-table');
+  expect(await table.evaluate(node => node.parentElement!.scrollWidth - node.parentElement!.clientWidth)).toBeLessThanOrEqual(0);
   await captureTarget(pane, 'analytics-review-quality');
   await captureSettled(page, 'analytics-review-quality-page');
 });

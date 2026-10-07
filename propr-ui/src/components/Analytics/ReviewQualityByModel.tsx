@@ -1,9 +1,15 @@
 /**
- * Review quality by implementer model, from persisted review scores.
+ * The agent efficacy matrix: review quality by implementer model, from
+ * persisted review scores.
  *
  * Presentational, like the models table: the page reads the summary once per
- * timeframe. Every figure carries the number of pull requests behind it, and
- * a figure with nothing behind it reads as unknown, never as zero.
+ * timeframe. Each column is one plain figure — no `n=` under every cell and
+ * no bracketed second number — and the column the matrix exists for is the
+ * score delta: did the model's follow-up work actually improve the code?
+ *
+ * The number of pull requests behind each figure is still one hover away, in
+ * the cell's tooltip, so a mean over one PR never passes for one over fifty.
+ * A figure with nothing behind it reads as unknown, never as zero.
  */
 
 import React from 'react';
@@ -11,7 +17,6 @@ import type { ReviewScoreModelSummary, ReviewScoreSummaryResponse } from '../../
 import { formatModelName } from '../../utils/modelDisplay';
 import { SkeletonBlock, SkeletonRegion } from '../ui/Skeleton';
 import { SystemAlert } from '../ui/SystemAlert';
-import { formatUsd } from './analyticsFormat';
 
 interface ReviewQualityByModelProps {
   summary: ReviewScoreSummaryResponse | null;
@@ -19,33 +24,47 @@ interface ReviewQualityByModelProps {
   error?: string | null;
 }
 
-const HEAD = 'whitespace-nowrap px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 sm:px-4';
-const CELL = 'px-3 py-2 text-sm tabular-nums sm:px-4';
+/** Headers may wrap onto two lines, so seven columns fit the pane without scrolling sideways. */
+const HEAD = 'px-3 py-2 align-bottom text-[10px] font-bold uppercase leading-tight tracking-wider text-slate-500 sm:px-4';
+const CELL = 'whitespace-nowrap px-3 py-2 text-sm tabular-nums sm:px-4';
 const UNKNOWN = '—';
 
 const COLUMNS: Array<{ label: string; hint: string }> = [
-  { label: 'PRs', hint: 'Pull requests with at least one review score in the period' },
-  { label: 'First', hint: 'Mean first review score (median in brackets)' },
-  { label: 'Final', hint: 'Mean last score before merge, or latest score if not merged' },
-  { label: 'Cycles', hint: 'Mean Ultrafix cycles until a clean review met the goal' },
-  { label: 'Merged', hint: 'Merged pull requests among those merged or closed' },
-  { label: 'Cost / merged', hint: 'Recorded cost of implementation and follow-up tasks per merged pull request' },
+  { label: 'Evaluated PRs', hint: 'Pull requests with at least one review score in the period' },
+  { label: 'Initial score', hint: 'Mean first review score, out of 10' },
+  { label: 'Final score', hint: 'Mean last score before merge, or latest score if not merged, out of 10' },
+  { label: 'Score delta', hint: 'Mean change from first to final score: whether follow-up work improved the code' },
+  { label: 'Avg runs to merge', hint: 'Mean agent runs across a merged pull request\'s implementation and follow-up tasks' },
+  { label: 'Merge rate', hint: 'Merged pull requests among those merged or closed' },
 ];
 
-/** A value with its denominator underneath, so a mean over one PR never reads like one over fifty. */
-const Figure: React.FC<{ value: string | null; n: number; testId?: string }> = ({ value, n, testId }) => (
-  <td className={`${CELL} text-right`} data-testid={testId}>
-    <span className={value === null ? 'text-slate-400' : 'text-slate-800'}>{value ?? UNKNOWN}</span>
-    <span className="block text-[10px] text-slate-400">n={n}</span>
+const prs = (n: number): string => `${n.toLocaleString()} PR${n === 1 ? '' : 's'}`;
+
+/** One figure, with the pull requests behind it in the tooltip rather than under it. */
+const Figure: React.FC<{ value: string | null; basis: string; className?: string; testId?: string }> = ({
+  value, basis, className = 'text-slate-800', testId,
+}) => (
+  <td className={`${CELL} text-right`} title={value === null ? `No data (${basis})` : basis} data-testid={testId}>
+    <span className={value === null ? 'text-slate-400' : className}>{value ?? UNKNOWN}</span>
   </td>
 );
 
-const score = (value: number | null): string | null => (value === null ? null : value.toFixed(1));
+const score = (value: number | null | undefined): string | null =>
+  value === null || value === undefined ? null : value.toFixed(1);
+
+/** `+2.6 ▲` in green, `−2.0 ▼` in red, `0.0` in grey. */
+const Delta: React.FC<{ value: number | null | undefined; n: number }> = ({ value, n }) => {
+  if (value === null || value === undefined) return <Figure value={null} basis={`over ${prs(n)}`} testId="review-quality-delta" />;
+  const rounded = Math.round(value * 10) / 10;
+  const text = rounded > 0 ? `+${rounded.toFixed(1)} ▲` : rounded < 0 ? `−${Math.abs(rounded).toFixed(1)} ▼` : '0.0';
+  const tone = rounded > 0 ? 'font-medium text-emerald-700' : rounded < 0 ? 'font-medium text-red-600' : 'text-slate-500';
+  return <Figure value={text} basis={`Mean over ${prs(n)} with a first and final score`} className={tone} testId="review-quality-delta" />;
+};
 
 const ModelRow: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
   const label = row.implementer_model ? formatModelName(row.implementer_model) : 'Unknown model';
-  const first = score(row.first_score.mean);
-  const median = score(row.first_score.median);
+  const runs = row.runs_to_merge;
+  const rate = row.merge_rate.value;
   return (
     <tr className="border-b border-slate-100 last:border-b-0" data-testid="review-quality-row">
       <td className={`${CELL} min-w-0`}>
@@ -54,14 +73,14 @@ const ModelRow: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
         </span>
       </td>
       <td className={`${CELL} text-right text-slate-800`}>{row.prs_scored.toLocaleString()}</td>
-      <Figure value={first === null ? null : `${first}${median === null ? '' : ` (${median})`}`} n={row.first_score.n} />
-      <Figure value={score(row.final_score.mean)} n={row.final_score.n} testId="review-quality-final" />
-      <Figure value={score(row.cycles_to_goal.mean)} n={row.cycles_to_goal.n} />
+      <Figure value={score(row.first_score.mean)} basis={`Mean over ${prs(row.first_score.n)}`} />
+      <Figure value={score(row.final_score.mean)} basis={`Mean over ${prs(row.final_score.n)}`} testId="review-quality-final" />
+      <Delta value={row.score_delta?.mean} n={row.score_delta?.n ?? 0} />
+      <Figure value={score(runs?.mean)} basis={`Mean over ${prs(runs?.n ?? 0)} merged with recorded runs`} testId="review-quality-runs" />
       <Figure
-        value={row.merge_rate.value === null ? null : `${Math.round(row.merge_rate.value * 100)}%`}
-        n={row.merge_rate.n}
+        value={rate === null ? null : `${Math.round(rate * 100)}%`}
+        basis={`${row.merge_rate.merged.toLocaleString()} merged of ${prs(row.merge_rate.n)} merged or closed`}
       />
-      <Figure value={row.cost_per_merged_pr.usd === null ? null : formatUsd(row.cost_per_merged_pr.usd)} n={row.cost_per_merged_pr.n} />
     </tr>
   );
 };
@@ -69,7 +88,7 @@ const ModelRow: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
 const TableHead: React.FC = () => (
   <thead>
     <tr className="border-b border-slate-200">
-      <th className={`${HEAD} text-left`}>Implementer</th>
+      <th className={`${HEAD} text-left`}>Model</th>
       {COLUMNS.map(column => (
         <th key={column.label} className={`${HEAD} text-right`} title={column.hint}>{column.label}</th>
       ))}
@@ -80,7 +99,7 @@ const TableHead: React.FC = () => (
 const ReviewQualityByModel: React.FC<ReviewQualityByModelProps> = ({ summary, loading, error }) => {
   if (loading) {
     return (
-      <SkeletonRegion label="Loading review quality…">
+      <SkeletonRegion label="Loading agent efficacy…">
         <div className="space-y-2 px-3 py-3 sm:px-4" aria-hidden="true">
           {[...Array(3)].map((_, i) => <SkeletonBlock key={i} className="h-5 w-full" />)}
         </div>
@@ -93,12 +112,15 @@ const ReviewQualityByModel: React.FC<ReviewQualityByModelProps> = ({ summary, lo
   }
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[36rem]" data-testid="review-quality-table">
+      <table className="w-full min-w-[34rem]" data-testid="review-quality-table">
         <TableHead />
         <tbody>
           {summary.models.map(row => <ModelRow key={row.implementer_model ?? '(unknown)'} row={row} />)}
         </tbody>
       </table>
+      <p className="border-t border-slate-100 px-3 py-2 text-xs text-slate-500 sm:px-4" data-testid="review-quality-scope">
+        Covers the {prs(summary.prs_scored)} with a review score in this period; unreviewed work is not scored.
+      </p>
     </div>
   );
 };

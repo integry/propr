@@ -10,14 +10,14 @@ The dashboard reads its own endpoints, each of which accepts `repository=all` or
 - `GET /api/dashboard/attention` — blockers and pending decisions, oldest first, derived from task and plan-issue state and never from notification read or dismissal state
 - `GET /api/dashboard/active` — running work with its lifecycle phase and latest reported progress line, plus a queue summary with the reason work is waiting when the backend knows one
 - `GET /api/dashboard/outcomes` — recent terminal results, including merges and closes recorded after the run finished
-- `GET /api/stats/dashboard?period=7d|30d` — completed, success rate, recorded spend and daily completions, with a previous-period comparison
+- `GET /api/stats/dashboard?period=7d|30d` — tasks, success rate, recorded spend and daily task counts, with a previous-period comparison. It reads the same aggregation over the same rolling window as the Analytics page for that period, so the dashboard's Historical stats and `/analytics?period=7d` always agree
 
 The analytics page (`/analytics`) and the rest of the UI continue to read the aggregate endpoints:
 
 - `GET /api/queue/stats` — waiting, active, completed, failed, and delayed job counts from the BullMQ queue
 - `GET /api/stats/tasks` — daily task counts (last 30 days), status distribution, and average processing time from the SQLite task history
 - `GET /api/stats/repositories` — per-repository totals, completed, failed, and in-progress counts with success rates
-- `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens (with the input and output split), total cost, and task counts per model; each `model_usage` entry also carries `mean_final_score` and `n_scored` from [review scores](#review-scores)
+- `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens (with the input and output split and, as `usage.cache`, the prompt cache hit rate and estimated savings), total cost, and runs and tasks per model; each `model_usage` entry also carries `mean_final_score` and `n_scored` from [review scores](#review-scores). It also reports run volume (`runs`), delivery (`delivery`) and autonomy (`autonomy`) — see [Delivery metrics](#delivery-metrics)
 - `GET /api/stats/review-scores` — review quality per implementer model (see [Review scores](#review-scores))
 - `GET /api/status` — daemon heartbeat, active worker count, Redis connectivity, GitHub App configuration, per-agent health, and indexing state
 
@@ -25,10 +25,24 @@ The dashboard refreshes these on task updates over the WebSocket connection, so 
 
 ![Dashboard showing current activity, attention items and completed work](/img/screenshots/0.9.0/dashboard.png)
 
+### Delivery metrics
+
+The Analytics page reports task volume (the deliverables) and run volume (the compute) separately, in a delivery band under the totals:
+
+| Figure | How it is computed |
+|---|---|
+| Runs per task | Agent executions started in the period ÷ the distinct tasks they ran for: the iteration multiplier |
+| First-time pass | Of pull requests opened by tasks in the period and merged, those that needed no fix: one implementation run, no follow-up fix task on the PR (reviews do not count) and no Ultrafix cycle after the first |
+| Time to merge | Mean (and median) wall-clock time from the issue's first task to the merge |
+| Autonomy | Of tasks created in the period that finished, those that never failed and never entered an attention state; the rest required an operator. Cancelled work is left out |
+| Cache hit rate | Prompt tokens served from the prompt cache ÷ all prompt tokens, over runs that reported a cache breakdown. Savings price the cached reads at each model's official prompt price less its cache-read price; models without an official price are left out |
+
+A figure with nothing behind it is shown as "—", never as zero.
+
 ### Breakdowns the product provides
 
 - **Per repository** — the Repository Breakdown panel on `/analytics` (and `GET /api/stats/repositories`) splits totals, completed, failed, in-progress, and success rate per repository.
-- **Per model** — the Top Models panel on `/analytics` counts tasks per model; the aggregated metrics API adds requests, success rate, cost, turns, and execution time per model.
+- **Per model** — the Models panel on `/analytics` counts runs (agent executions) per model, not tasks: one task usually takes several runs, often on different models, so a task is never credited to every model that touched it. The aggregated metrics API adds requests, success rate, cost, turns, and execution time per model.
 - **Per call** — the LLM Log page filters by execution type, model, status, and work type, and records the agent alias for every call.
 
 Three overview numbers approximate outcome quality: success rate (completed tasks over total), average PR iterations (tasks per issue), and total follow-ups. Rising iterations and follow-ups mean humans are spending more effort steering each PR.
@@ -122,12 +136,14 @@ The pull request is the unit. Each per-model entry reports:
 | `cycles_to_goal.mean` | The Ultrafix cycle of the first review job that reached the goal (`goal_reached`); a clean reviewer does not pass a cycle another reviewer blocked | PRs that reached the goal; `attempted` counts PRs with an Ultrafix goal |
 | `merge_rate.value` | Merged ÷ (merged + closed). Open PRs have no outcome yet | PRs merged or closed |
 | `cost_per_merged_pr.usd` | Mean recorded cost per merged PR (see below) | Merged PRs with recorded cost |
+| `score_delta.mean` | Mean of each PR's final score minus its first score: whether follow-up work improved the code | PRs with a final score |
+| `runs_to_merge.mean` | Mean agent executions across a merged PR's implementation and follow-up tasks | Merged PRs with recorded runs |
 
 Every figure carries its own `n`. A figure with nothing behind it — no merged PRs, no recorded cost, no Ultrafix goal — is `null`, never `0`. PRs whose implementer is unknown are grouped under `implementer_model: null`.
 
 **Cost per merged PR** sums `llm_executions.cost_usd` over every task attached to the pull request: the implementation task and every task that acted on the PR afterwards (follow-ups, `/fix`, Ultrafix fixes and reviews, merge-conflict resolution). The cost is the PR's whole recorded spend, not only the spend inside the period. A merged PR none of whose executions recorded a cost is left out of the mean and of `n`, rather than counted as free.
 
-The Analytics page shows the summary as **Review quality by model**, using the page's `?period=` timeframe. Task details on a PR show its score history as a small sparkline and list. From the CLI, `propr stats review-scores [--period 30d] [--repository owner/repo] [--json]` prints the same summary, and the MCP `get_pull_request` tool includes the PR's `scoreHistory`.
+The Analytics page shows the summary as **Agent efficacy by model** — evaluated PRs, initial score, final score, score delta, average runs to merge and merge rate — using the page's `?period=` timeframe. Each cell shows one figure; the PRs behind it are in the cell's tooltip. Task details on a PR show its score history as a small sparkline and list. From the CLI, `propr stats review-scores [--period 30d] [--repository owner/repo] [--json]` prints the same summary, and the MCP `get_pull_request` tool includes the PR's `scoreHistory`.
 
 ## Cost Tracking
 
