@@ -1,0 +1,160 @@
+import {
+  DeleteTaskQuery,
+  JsonObject,
+  ListTasksQuery,
+  NotificationUnreadCount,
+  TaskFollowupRequest,
+  TaskFollowupResult,
+  TaskHistory,
+  TaskPage,
+  TaskSubmission,
+  TaskSubmissionRequest,
+} from './schemas.js';
+import type { RouteDoc } from './types.js';
+
+const TASK_ID = 'Task (run) identifier, as returned in `TaskSummary.id`.';
+const SUBMISSION_KEY = 'The `Idempotency-Key` the submission was created with.';
+
+export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
+  'GET /api/tasks': {
+    operationId: 'listTasks',
+    summary: 'List task runs',
+    description: 'Newest first. Filter by status, repository or search text, and page with `limit` and `offset`. With `groupBy=task`, paging counts tasks (the pull request or issue a run belongs to) and a page returns every matching run of its tasks.',
+    tags: ['Tasks'],
+    query: ListTasksQuery,
+    responses: {
+      200: { description: 'A page of task runs.', schema: TaskPage },
+      400: { description: 'A filter or paging parameter is invalid.' },
+    },
+  },
+  'GET /api/task/:taskId/history': {
+    operationId: 'getTaskHistory',
+    summary: 'Get a task with its lifecycle events',
+    description: 'Returns the task details and every recorded state change, oldest first, from the database, falling back to live worker state for runs that have not been persisted yet.',
+    tags: ['Tasks'],
+    pathParams: { taskId: TASK_ID },
+    responses: {
+      200: { description: 'The task and its events.', schema: TaskHistory },
+    },
+  },
+  'GET /api/task/:taskId/live-details': {
+    operationId: 'getTaskLiveDetails',
+    summary: 'Get live agent output of a running task',
+    tags: ['Tasks'],
+    pathParams: { taskId: TASK_ID },
+    responses: { 200: { description: 'Parsed agent conversation and execution progress.', schema: JsonObject } },
+  },
+  'GET /api/task/:taskId/file-changes': {
+    operationId: 'getTaskFileChanges',
+    summary: 'List the files a task changed',
+    tags: ['Tasks'],
+    pathParams: { taskId: TASK_ID },
+    responses: { 200: { description: 'Changed files with their diffs.', schema: JsonObject } },
+  },
+  'POST /api/tasks/:taskId/followup': {
+    operationId: 'postTaskFollowup',
+    summary: 'Post a follow-up instruction on a task',
+    description: 'Posts the comment on the task\'s pull request (or issue) and queues a follow-up run for it.',
+    tags: ['Tasks'],
+    pathParams: { taskId: TASK_ID },
+    requestBody: { schema: TaskFollowupRequest },
+    responses: {
+      202: { description: 'The comment was posted and the run queued (or the queue outcome is unknown).', schema: TaskFollowupResult },
+      400: { description: 'The comment body or target is invalid.' },
+      404: { description: 'Task not found.' },
+    },
+  },
+  'POST /api/task/:taskId/stop': {
+    operationId: 'stopTask',
+    summary: 'Stop a running task',
+    tags: ['Tasks'],
+    pathParams: { taskId: TASK_ID },
+    responses: { 200: { description: 'The task was stopped or was already finished.', schema: JsonObject } },
+  },
+  'POST /api/task/:taskId/cancel': {
+    operationId: 'cancelTask',
+    summary: 'Cancel a task (alias of stop)',
+    tags: ['Tasks'],
+    pathParams: { taskId: TASK_ID },
+    responses: { 200: { description: 'The task was stopped or was already finished.', schema: JsonObject } },
+  },
+  'DELETE /api/tasks/:taskId': {
+    operationId: 'deleteTask',
+    summary: 'Delete a task run and its history',
+    tags: ['Tasks'],
+    pathParams: { taskId: TASK_ID },
+    query: DeleteTaskQuery,
+    responses: {
+      204: { description: 'Deleted.' },
+      400: { description: 'The task is still active; retry with `force=true`.' },
+      404: { description: 'Task not found.' },
+    },
+  },
+  'DELETE /api/task/:taskId': {
+    operationId: 'deleteTaskLegacyPath',
+    summary: 'Delete a task run (legacy path)',
+    description: 'Same as `DELETE /api/tasks/{taskId}`.',
+    tags: ['Tasks'],
+    deprecated: true,
+    pathParams: { taskId: TASK_ID },
+    query: DeleteTaskQuery,
+    responses: {
+      204: { description: 'Deleted.' },
+      404: { description: 'Task not found.' },
+    },
+  },
+
+  'POST /api/task-submissions': {
+    operationId: 'createTaskSubmission',
+    summary: 'Submit a task',
+    description: [
+      'Opens a GitHub issue in the repository with the instruction, applies the routing labels and enqueues the implementation run.',
+      '',
+      'Submissions are idempotent per user and `Idempotency-Key`: repeating a request with the same key and content returns the existing submission and resumes it if it stopped part way. Reusing a key with different content is rejected with `409`.',
+      '',
+      'Send JSON, or `multipart/form-data` with the JSON in a `payload` field and up to 10 `files` attachments.',
+    ].join('\n'),
+    tags: ['Task submissions'],
+    headers: [{
+      name: 'Idempotency-Key',
+      required: true,
+      maxLength: 255,
+      description: 'Client-chosen identity of this submission, for example a UUID.',
+    }],
+    requestBody: { schema: TaskSubmissionRequest, multipartFiles: { maxFiles: 10 } },
+    responses: {
+      200: { description: 'The issue was created and the run is queued.', schema: TaskSubmission },
+      202: { description: 'The submission is in progress or stopped part way (`failed`); poll or retry it.', schema: TaskSubmission },
+      400: { description: 'Missing key, invalid body, or the repository, agent or model cannot be used.' },
+      403: { description: 'You lack write access to the repository, or the instance is in demo mode.' },
+      409: { description: 'The key was already used with different content.' },
+    },
+  },
+  'GET /api/task-submissions/:key': {
+    operationId: 'getTaskSubmission',
+    summary: 'Get a task submission',
+    tags: ['Task submissions'],
+    pathParams: { key: SUBMISSION_KEY },
+    responses: {
+      200: { description: 'The submission.', schema: TaskSubmission },
+      404: { description: 'No submission of yours has this key.' },
+    },
+  },
+  'POST /api/task-submissions/:key/retry': {
+    operationId: 'retryTaskSubmission',
+    summary: 'Resume a task submission that stopped part way',
+    tags: ['Task submissions'],
+    pathParams: { key: SUBMISSION_KEY },
+    responses: {
+      200: { description: 'The resumed submission.', schema: TaskSubmission },
+      404: { description: 'No submission of yours has this key.' },
+    },
+  },
+
+  'GET /api/notifications/unread-count': {
+    operationId: 'getNotificationUnreadCount',
+    summary: 'Count unread inbox notifications',
+    tags: ['Notifications'],
+    responses: { 200: { description: 'Unread notifications of the caller.', schema: NotificationUnreadCount } },
+  },
+};
