@@ -92,7 +92,8 @@ mock.method(registry, 'getAgentByAlias', (alias: string) => alias === 'test' ? {
 const issueHelpers = await import('../routes/planIssueHelpers.js');
 await mock.module('../routes/planIssueHelpers.js', { namedExports: { ...issueHelpers, getLlmLabel: async (model: string | null) => model ? `llm-${model}` : 'llm-old',
 } });
-const { createUpdateIssueHandler, createImplementIssueHandler, createQueueRemainingHandler } = await import('../routes/planIssueHandlers.js');
+const { createUpdateIssueHandler, createImplementIssueHandler } = await import('../routes/planIssueHandlers.js');
+const { createQueueRemainingHandler } = await import('../routes/planExecutionQueueHandlers.js');
 const realUpdateIssue = createUpdateIssueHandler({ verifyOwnership: async () => ({ authorized: true,
   draft: await core.db('task_drafts').where({ draft_id: planId }).first() }) });
 const { addPlanningTools, planEpicDispatch } = await import('../mcp/toolsPlanning.js');
