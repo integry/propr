@@ -190,14 +190,30 @@ async function claimDueSlot(
     return definition ? { definition, slot } : { outcome: 'lost' };
 }
 
-/** A `skipped` receipt for the slot; a replay returns the receipt already recorded. */
+/**
+ * Moves a receipt that is still `queued` to `skipped`, so it is never
+ * dispatched. A run the worker already advanced is left as it is. Returns the
+ * receipt's current state.
+ */
+async function skipQueuedReceipt(run: StoredAgentRun, skipReason: string, context: ScheduleContext): Promise<StoredAgentRun> {
+    if (run.state !== 'queued') return run;
+    const storeDeps = { database: context.database, now: context.clock };
+    const skipped = await transitionAgentRun(run.id, ['queued'], 'skipped', { skipReason }, storeDeps);
+    return skipped ?? await getAgentRunByIdempotencyKey(run.definitionId, run.idempotencyKey!, storeDeps) ?? run;
+}
+
+/**
+ * A `skipped` receipt for the slot. A replay returns the receipt already
+ * recorded, moved to `skipped` if it was still `queued`: the slot starts no new work.
+ */
 async function recordSkippedSlot(
     definition: StoredAgentDefinition,
     slot: { triggerSource: string; idempotencyKey: string },
     skipReason: string,
     context: ScheduleContext,
 ): Promise<{ run: StoredAgentRun; created: boolean }> {
-    return recordSkippedRun({ definition, trigger: 'schedule', ...slot, skipReason }, { database: context.database, now: context.clock });
+    const { run, created } = await recordSkippedRun({ definition, trigger: 'schedule', ...slot, skipReason }, { database: context.database, now: context.clock });
+    return { run: created ? run : await skipQueuedReceipt(run, skipReason, context), created };
 }
 
 /**
@@ -211,43 +227,42 @@ async function fireClaimedSlot(definition: StoredAgentDefinition, slot: number, 
     const slotIso = new Date(slot).toISOString();
     const slotKeys = { triggerSource: `schedule:${definition.scheduleCron}`, idempotencyKey: `schedule:${slotIso}` };
 
-    let receipt: { run: StoredAgentRun; enqueued: boolean };
+    // `redispatch`: the receipt may be `queued` without this call having enqueued it.
+    let receipt: { run: StoredAgentRun; redispatch: boolean };
     let outcome: ScheduleOutcome;
-    if (!definition.scheduleEnabled) {
-        // The schedule was turned off after the claim: the slot starts no new work.
-        const { run, created } = await recordSkippedSlot(definition, slotKeys,
-            'The scheduled run was skipped: the schedule was turned off', context);
-        logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: created ? 'skipped' : 'existing', reason: 'schedule_disabled' },
+    // The slot starts no new work, including a receipt an earlier sweep
+    // accepted but never dispatched (it would replay the enabled snapshot).
+    const skipSlot = async (reason: string, logReason: string): Promise<[typeof receipt, ScheduleOutcome]> => {
+        const { run, created } = await recordSkippedSlot(definition, slotKeys, `The scheduled run was skipped: ${reason}`, context);
+        logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: created ? 'skipped' : 'existing', reason: logReason },
             'Scheduled agent run');
-        receipt = { run, enqueued: false };
-        outcome = created ? 'invalid' : 'existing';
+        return [{ run, redispatch: false }, created ? 'invalid' : 'existing'];
+    };
+    if (!definition.scheduleEnabled) {
+        // The schedule was turned off after the claim.
+        [receipt, outcome] = await skipSlot('the schedule was turned off', 'schedule_disabled');
     } else if (!await context.isMember(definition.ownerId)) {
         // An offboarded owner's agent must stop running. A receipt an earlier
         // sweep accepted but may not have dispatched is skipped first, since
         // disabling drops the pending slot.
         const existing = await getAgentRunByIdempotencyKey(definition.id, slotKeys.idempotencyKey, { database: context.database });
-        if (existing?.state === 'queued') {
-            await transitionAgentRun(existing.id, ['queued'], 'skipped',
-                { skipReason: 'The scheduled run was skipped: the owner is no longer an instance member' },
-                { database: context.database, now: context.clock });
-        }
+        if (existing) await skipQueuedReceipt(existing, 'The scheduled run was skipped: the owner is no longer an instance member', context);
         return disableSchedule(definition, 'The owner is no longer an instance member', context);
+    } else if (!definition.enabled) {
+        // The agent was disabled after the claim. Checked here because the
+        // trigger returns a replayed receipt before it checks enablement.
+        [receipt, outcome] = await skipSlot('Agent is disabled', 'agent_disabled');
     } else {
         try {
             const { run, created, enqueued } = await context.trigger({ definition, trigger: 'schedule', ...slotKeys, gate: context.gate });
             logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: created ? run.state : 'existing' },
                 'Scheduled agent run');
-            receipt = { run, enqueued };
+            receipt = { run, redispatch: !enqueued };
             outcome = created ? 'created' : 'existing';
         } catch (error) {
-            // A slot claimed before the agent was disabled still gets a receipt.
             if (!(error instanceof AgentRunTriggerError) || (error.code !== 'AGENT_INVALID' && error.code !== 'AGENT_DISABLED')) throw error;
             // The history shows why the slot did not run.
-            const { run, created } = await recordSkippedSlot(definition, slotKeys, `The scheduled run was skipped: ${error.message}`, context);
-            logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: 'skipped', reason: error.message },
-                'Scheduled agent run');
-            receipt = { run, enqueued: false };
-            outcome = created ? 'invalid' : 'existing';
+            [receipt, outcome] = await skipSlot(error.message, error.message);
         }
     }
 
@@ -255,7 +270,7 @@ async function fireClaimedSlot(definition: StoredAgentDefinition, slot: number, 
     // created it stopped first). The job id is deterministic and the worker
     // skips a run that is no longer `queued`, so dispatching again is safe. A
     // failed dispatch throws and leaves the slot pending for the next sweep.
-    if (receipt.run.state === 'queued' && !receipt.enqueued) {
+    if (receipt.run.state === 'queued' && receipt.redispatch) {
         await context.dispatch(receipt.run);
         logger.info({ definitionId: definition.id, slot: slotIso, runId: receipt.run.id, decision: 'redispatched' },
             'Scheduled agent run');

@@ -114,6 +114,17 @@ async function lockPhaseRecord(store: McpStore, tx: Knex.Transaction, recordId: 
   throw new Error(`Could not lock the agent run grant record ${recordId}`);
 }
 
+/**
+ * Reads the locked phase record, including one past its `expires_at`:
+ * `McpStore.get` hides expired rows, but cleanup must still revoke and delete
+ * them. Returns null for the placeholder or a row that cannot be decoded.
+ */
+async function readPhaseRecord(store: McpStore, tx: Knex.Transaction, recordId: string): Promise<AgentRunGrantRecord | null> {
+  const row = await tx('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: recordId }).first('value');
+  if (!row) return null;
+  try { return store.unseal<AgentRunGrantRecord | null>(row.value); } catch { return null; }
+}
+
 export async function issueAgentRunGrant(
   input: { ownerId: string; definitionName: string; runId: string; phase: AgentRunGrantPhase; repositories: readonly string[] },
   deps: AgentRunGrantDependencies = {},
@@ -174,7 +185,7 @@ export async function revokeAgentRunPhaseGrant(
   // one deleted, never a replacement recorded meanwhile.
   return oauth.store.db.transaction(async tx => {
     if (!await tx('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: recordId }).forUpdate().first('id')) return null;
-    const record = await oauth.store.get<AgentRunGrantRecord | null>(AGENT_RUN_GRANT_RECORD_KIND, recordId, tx);
+    const record = await readPhaseRecord(oauth.store, tx, recordId);
     if (!record || (deps.grantId !== undefined && record.grantId !== deps.grantId)) return null;
     if (deps.expiredBy !== undefined && record.expiresAt > deps.expiredBy) return null;
     await oauth.revokeGrant(record.grantId, undefined, tx);

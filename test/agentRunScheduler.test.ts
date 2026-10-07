@@ -287,6 +287,41 @@ describe('agent run scheduler', () => {
       assert.equal((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot, null);
     });
 
+    for (const [label, change, reason] of [
+      ['a schedule turned off', { scheduleEnabled: false }, /schedule was turned off/],
+      ['an agent disabled', { enabled: false }, /Agent is disabled/],
+    ] as const) {
+      test(`${label} after the claim skips an undispatched queued receipt instead of dispatching it`, async () => {
+        const definition = await define();
+        // The daemon created the queued receipt and exited before enqueueing it.
+        await claimAgentDefinitionScheduleSlot(definition.id, { claimedNextRunAt: T0900, nextRunAt: T0900 + HOUR, slot: T0900 }, { database });
+        const { run } = await createAgentRun({ definition, trigger: 'schedule', idempotencyKey: `schedule:${new Date(T0900).toISOString()}` }, { database, now });
+        await updateAgentDefinition(definition.id, 'alice', change, { database, now });
+
+        const result = await runAgentScheduleSweep(deps());
+        assert.equal(result.existing, 1);
+        assert.deepEqual(enqueued, []);
+        const stored = await getAgentRunById(run.id, { database });
+        assert.equal(stored?.state, 'skipped');
+        assert.match(stored?.skipReason ?? '', reason);
+        assert.equal((await listAgentRuns(definition.id, 'alice', {}, { database })).total, 1);
+        assert.equal((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot, null);
+      });
+
+      test(`${label} after the claim leaves a receipt the worker already started`, async () => {
+        const definition = await define();
+        await claimAgentDefinitionScheduleSlot(definition.id, { claimedNextRunAt: T0900, nextRunAt: T0900 + HOUR, slot: T0900 }, { database });
+        const { run } = await createAgentRun({ definition, trigger: 'schedule', idempotencyKey: `schedule:${new Date(T0900).toISOString()}` }, { database, now });
+        await transitionAgentRun(run.id, ['queued'], 'running', {}, { database, now });
+        await updateAgentDefinition(definition.id, 'alice', change, { database, now });
+
+        assert.equal((await runAgentScheduleSweep(deps())).existing, 1);
+        assert.deepEqual(enqueued, []);
+        assert.equal((await getAgentRunById(run.id, { database }))?.state, 'running');
+        assert.equal((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot, null);
+      });
+    }
+
     test('an offboarded owner\'s undispatched queued receipt is skipped, not left queued', async () => {
       const definition = await define();
       await claimAgentDefinitionScheduleSlot(definition.id, { claimedNextRunAt: T0900, nextRunAt: T0900 + HOUR, slot: T0900 }, { database });
