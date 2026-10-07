@@ -109,6 +109,40 @@ describe('AgentRunDetail', () => {
     expect(screen.getByTestId('agent-run-reason').textContent).toBe(reason);
   });
 
+  it('explains why an automatic run stopped for approval before acting', async () => {
+    const reason = 'Acting paused: claude is at 93% of its session window (pause threshold 90%).';
+    serveRun({ ...baseRun, state: 'awaiting_approval', trigger: 'schedule', autonomyMode: 'auto', finishedAt: null, skipReason: reason });
+    renderDetail();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Automatic acting paused for approval');
+    expect(screen.getByTestId('agent-run-reason').textContent).toBe(reason);
+    expect(screen.getByTestId('agent-run-approval')).toBeInTheDocument();
+  });
+
+  it('moves focus into the confirmation, keeps Tab inside it and returns focus on dismissal', async () => {
+    serveRun({ ...baseRun, state: 'awaiting_approval', autonomyMode: 'preview', finishedAt: null });
+    const { container } = renderDetail();
+
+    const trigger = await screen.findByRole('button', { name: 'Approve and act' });
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const dialog = screen.getByRole('dialog');
+    const [cancel, confirm] = within(dialog).getAllByRole('button');
+    expect(cancel).toHaveFocus();
+    expect(container.inert).toBe(true);
+
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(confirm).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(cancel).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(container.inert).toBeFalsy();
+    expect(trigger).toHaveFocus();
+  });
+
   it('approves an awaiting run with a note, then hides the decision', async () => {
     const server = serveRun({ ...baseRun, state: 'awaiting_approval', autonomyMode: 'preview', finishedAt: null });
     renderDetail();

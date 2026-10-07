@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { AgentEditor } from './AgentEditor';
 import {
   getAgentCapacity,
   getAgentDefinition,
   triggerAgentRun,
+  updateAgentDefinition,
   type AgentCapacity,
   type AgentDefinitionRecord,
 } from '../../api/agentDefinitionsApi';
@@ -16,6 +17,7 @@ vi.mock('../../api/agentDefinitionsApi', async importOriginal => ({
   getAgentDefinition: vi.fn(),
   getAgentCapacity: vi.fn(),
   triggerAgentRun: vi.fn(),
+  updateAgentDefinition: vi.fn(),
 }));
 vi.mock('../../api/proprApi', () => ({ getInstanceCatalog: vi.fn() }));
 vi.mock('../../utils/repoHelpers', () => ({ fetchEnabledRepos: vi.fn().mockResolvedValue([]) }));
@@ -31,6 +33,15 @@ const definition: AgentDefinitionRecord = {
 };
 
 const nearLimit: AgentCapacity = { capacity: { status: 'near_limit', sessionPercent: 94, weeklyPercent: 40, provider: 'claude' }, threshold: 90 };
+
+const roomy: AgentCapacity = { capacity: { status: 'ok', sessionPercent: 20, provider: 'claude' }, threshold: 90 };
+
+/** A capacity check that stays pending until the test answers it. */
+function pendingCapacity() {
+  let answer: (capacity: AgentCapacity) => void = () => {};
+  vi.mocked(getAgentCapacity).mockReturnValue(new Promise(resolve => { answer = resolve; }));
+  return (capacity: AgentCapacity) => answer(capacity);
+}
 
 const LocationProbe = () => <output data-testid="location">{useLocation().pathname}</output>;
 
@@ -105,6 +116,40 @@ describe('AgentEditor Run now', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Run now' }));
     await waitFor(() => expect(triggerAgentRun).toHaveBeenCalledWith('agent-1'));
+  });
+
+  it('does not start the saved configuration when the form was edited while capacity was being checked', async () => {
+    const answer = pendingCapacity();
+    renderEditor();
+
+    const runNow = await screen.findByRole('button', { name: 'Run now' });
+    fireEvent.click(runNow);
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Something else' } });
+    answer(roomy);
+
+    await waitFor(() => expect(screen.getByText('Save your changes to run them')).toBeInTheDocument());
+    await act(async () => {});
+    expect(triggerAgentRun).not.toHaveBeenCalled();
+
+    // Undoing the edit offers Run now again: nothing was left marked as running.
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: definition.prompt } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run now' })).toBeEnabled());
+  });
+
+  it('offers Run now again when a save made during the capacity check refused the start', async () => {
+    const answer = pendingCapacity();
+    let finishSave: (saved: AgentDefinitionRecord) => void = () => {};
+    vi.mocked(updateAgentDefinition).mockReturnValue(new Promise(resolve => { finishSave = resolve; }));
+    renderEditor();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Run now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await act(async () => { answer(roomy); });
+    expect(triggerAgentRun).not.toHaveBeenCalled();
+
+    await act(async () => { finishSave({ ...definition, revision: 4 }); });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run now' })).toBeEnabled());
+    expect(triggerAgentRun).not.toHaveBeenCalled();
   });
 
   it('disables Run now for a disabled agent', async () => {

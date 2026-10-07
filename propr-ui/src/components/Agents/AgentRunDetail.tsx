@@ -30,6 +30,7 @@ const TASK_LINK = 'inline-flex items-center gap-1 text-sm font-medium text-teal-
 function runReason(run: AgentRunRecord): { title: string; message: string } | null {
   if (run.state === 'failed' && run.failureReason) return { title: 'Run failed', message: run.failureReason };
   if (run.state === 'skipped' && run.skipReason) return { title: 'Run skipped', message: run.skipReason };
+  if (run.state === 'awaiting_approval' && run.skipReason) return { title: 'Automatic acting paused for approval', message: run.skipReason };
   if (run.state === 'deferred') {
     const until = run.deferredUntil !== null ? ` until ${formatTimestamp(run.deferredUntil)}` : '';
     return { title: `Run deferred${until}`, message: run.skipReason ?? 'The run will be retried automatically.' };

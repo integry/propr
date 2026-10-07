@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { agentTypeSupportsProprMcp, validateAgentDefinitionInput, type InstanceCatalogAgent } from '@propr/shared';
 import { getInstanceCatalog } from '../../api/proprApi';
 import {
@@ -153,6 +153,17 @@ export function useAgentEditor(
   const { support: proprMcpSupport, agentType } = useMemo(() => proprMcpSupportFor(agents, form.agentId), [agents, form.agentId]);
   /** A run uses the saved definition, so it is offered only while the form shows exactly that. */
   const dirty = useMemo(() => Boolean(definition && formDiffersFrom(form, definition)), [definition, form]);
+  /**
+   * The definition and dirtiness as last rendered, for a run resuming after
+   * the capacity check: the form stays editable meanwhile, and the callback
+   * it resumes in still holds the values from when Run now was clicked.
+   */
+  const definitionRef = useRef(definition);
+  const dirtyRef = useRef(dirty);
+  useLayoutEffect(() => {
+    definitionRef.current = definition;
+    dirtyRef.current = dirty;
+  }, [definition, dirty]);
 
   const update = useCallback((patch: AgentEditorFormPatch) => {
     setForm(current => ({ ...current, ...patch }));
@@ -247,16 +258,18 @@ export function useAgentEditor(
   }, [definition, trackAttachments]);
 
   const runBlocked = useCallback(
-    () => savingRef.current || conflictRef.current || loadingRef.current || attachmentsPendingRef.current > 0,
+    () => !definitionRef.current || dirtyRef.current || savingRef.current || conflictRef.current || loadingRef.current || attachmentsPendingRef.current > 0,
     [],
   );
 
+  /** Judged on current state, as it may run after an await during which the form, a save or a file change moved on. */
   const startRun = useCallback(async () => {
-    if (!definition || runBlocked() || dirty) return;
+    const current = definitionRef.current;
+    if (!current || runBlocked()) return;
     setRunning(true);
     setError(null);
     try {
-      const result = await triggerAgentRun(definition.id);
+      const result = await triggerAgentRun(current.id);
       setNotice(result.created ? 'Run started' : 'A run is already in progress');
       onRunStarted?.(result.run);
       if (openRef.current) openRun?.(result.run);
@@ -265,31 +278,36 @@ export function useAgentEditor(
     } finally {
       setRunning(false);
     }
-  }, [definition, dirty, onRunStarted, openRun, runBlocked]);
+  }, [onRunStarted, openRun, runBlocked]);
 
   /**
    * Run now checks the agent's subscription first. Attended runs may go ahead
    * near the limit, but only once the user has confirmed it; when the usage
-   * cannot be read the run starts and the server's own gate decides.
+   * cannot be read the run starts and the server's own gate decides. However
+   * the check ends, including a start refused because something changed while
+   * it was pending, Run now is offered again afterwards.
    */
   const run = useCallback(async () => {
-    if (!definition || runBlocked() || dirty) return;
+    if (!definition || runBlocked()) return;
     setRunning(true);
     setError(null);
-    let warning: string | null = null;
     try {
-      warning = capacityWarning(await getAgentCapacity(definition.id));
-    } catch {
-      warning = null;
-    }
-    if (!openRef.current) return;
-    if (warning) {
+      let warning: string | null = null;
+      try {
+        warning = capacityWarning(await getAgentCapacity(definition.id));
+      } catch {
+        warning = null;
+      }
+      if (!openRef.current) return;
+      if (warning) {
+        setCapacityQuestion(warning);
+        return;
+      }
+      await startRun();
+    } finally {
       setRunning(false);
-      setCapacityQuestion(warning);
-      return;
     }
-    await startRun();
-  }, [definition, dirty, runBlocked, startRun]);
+  }, [definition, runBlocked, startRun]);
 
   const confirmRun = useCallback(async () => {
     setCapacityQuestion(null);
