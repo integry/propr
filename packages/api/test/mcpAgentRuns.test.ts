@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import knex from 'knex';
 import { z } from 'zod';
 import { closeConnection, createAgentDefinition, transitionAgentRun, triggerAgentRun, updateAgentDefinition, type AgentRunGate, type StoredAgentRun } from '@propr/core';
-import { AGENT_DEFINITION_CONTRACT } from '@propr/shared';
+import { AGENT_ACTION_OPERATOR_NOTE_MAX_CHARS, AGENT_ACTION_SUMMARY_MAX_CHARS, AGENT_DEFINITION_CONTRACT, AGENT_REPORT_MAX_CHARS } from '@propr/shared';
 import { createToolCatalog, executeTool, type ToolDeps } from '../mcp/tools.js';
 import { McpPolicy, type McpPrincipal } from '../mcp/policy.js';
 import { McpError } from '../mcp/config.js';
@@ -13,6 +13,7 @@ import { McpStore } from '../mcp/store.js';
 import { McpOAuthProvider } from '../mcp/oauth.js';
 import { AGENT_RUN_MCP_CLIENT_ID } from '../mcp/agentRunGrants.js';
 import { AGENT_RUN_REPORT_MCP_MAX_BYTES } from '../mcp/toolsAgentRuns.js';
+import { MAX_TOOL_RESULT_BYTES } from '../mcp/config.js';
 
 after(closeConnection);
 
@@ -365,5 +366,71 @@ test('runs are listed without reports and a large report is truncated under the 
     assert.equal(detail.run.reportTruncated, true);
     assert.ok(Buffer.byteLength(JSON.stringify(detail.run.report)) <= AGENT_RUN_REPORT_MCP_MAX_BYTES);
     assert.equal(detail.run.url, `https://instance.example/agents/${definition.id}/runs/${id}`);
+  } finally { await f.db.destroy(); }
+});
+
+test('an auto run paused by the cost gate can be approved and rejected over MCP', async () => {
+  const f = await fixture();
+  try {
+    const definition = await f.define(['acme/app'], { autonomyMode: 'auto' });
+    const paused = async (key: string) => {
+      const receipt = (await f.call('trigger_agent_run', { definitionId: definition.id, idempotencyKey: key })).data as Receipt;
+      const id = receipt.result.runId;
+      await transitionAgentRun(id, ['queued'], 'running', {}, { database: f.db });
+      await transitionAgentRun(id, ['running'], 'report_ready', { report: 'Open two issues.' }, { database: f.db });
+      // What advanceAfterReport does when the gate defers or skips the acting step.
+      await transitionAgentRun(id, ['report_ready'], 'awaiting_approval', { skipReason: 'Acting paused: usage is at 97%.' }, { database: f.db });
+      return id;
+    };
+    const approvedId = await paused('auto-paused-1');
+    const approval = (await f.call('approve_agent_run', { runId: approvedId, note: 'Go ahead.', idempotencyKey: 'approve-auto-1' })).data as Receipt;
+    assert.equal(approval.result.state, 'acting');
+    assert.deepEqual(f.acting, [{ runId: approvedId, note: 'Go ahead.' }]);
+    assert.deepEqual((await f.call('approve_agent_run', { runId: approvedId, note: 'Go ahead.', idempotencyKey: 'approve-auto-1' })).data, approval);
+    assert.equal(f.acting.length, 1);
+
+    const rejectedId = await paused('auto-paused-2');
+    const rejection = (await f.call('reject_agent_run', { runId: rejectedId, idempotencyKey: 'reject-auto-2' })).data as Receipt;
+    assert.equal(rejection.result.state, 'rejected');
+
+    // An auto run that is not waiting still goes through the guarded transition, which refuses it.
+    const queued = (await f.call('trigger_agent_run', { definitionId: definition.id, idempotencyKey: 'auto-queued-3' })).data as Receipt;
+    const refused = (await f.call('approve_agent_run', { runId: queued.result.runId, idempotencyKey: 'approve-auto-3' })).data as Receipt;
+    assert.equal(refused.state, 'failed');
+    assert.equal(refused.result.error?.code, 'AGENT_RUN_NOT_AWAITING_APPROVAL');
+    assert.equal(f.acting.length, 1);
+  } finally { await f.db.destroy(); }
+});
+
+test('get_agent_run fits the whole run, action summary included, under the MCP result bound', async () => {
+  const f = await fixture();
+  try {
+    const definition = await f.define(['acme/app'], { autonomyMode: 'auto' });
+    const triggered = (await f.call('trigger_agent_run', { definitionId: definition.id, idempotencyKey: 'large-run-1', source: 's'.repeat(255) })).data as Receipt;
+    const id = triggered.result.runId;
+    await transitionAgentRun(id, ['queued'], 'running', {}, { database: f.db });
+    await transitionAgentRun(id, ['running'], 'report_ready', { report: 'short' }, { database: f.db });
+    await transitionAgentRun(id, ['report_ready'], 'acting', {}, { database: f.db });
+    // Every text at its stored character limit, in three-byte characters.
+    const summary = '\u4e00'.repeat(AGENT_ACTION_SUMMARY_MAX_CHARS);
+    await transitionAgentRun(id, ['acting'], 'completed', { actionSummary: summary }, { database: f.db });
+    await f.db('agent_runs').where({ id }).update({ report: '\u4e00'.repeat(AGENT_REPORT_MAX_CHARS), operator_note: '\u4e00'.repeat(AGENT_ACTION_OPERATOR_NOTE_MAX_CHARS) });
+    type Detail = { run: { report: string; reportTruncated: boolean; actionSummary: string; actionSummaryTruncated?: boolean; operatorNote: string; url: string } };
+    let detail = (await f.call('get_agent_run', { runId: id })).data as Detail;
+    assert.ok(Buffer.byteLength(JSON.stringify(detail)) <= MAX_TOOL_RESULT_BYTES);
+    assert.equal(detail.run.actionSummary, summary);
+    assert.equal(detail.run.actionSummaryTruncated, undefined);
+    assert.equal(detail.run.operatorNote.length, AGENT_ACTION_OPERATOR_NOTE_MAX_CHARS);
+    assert.equal(detail.run.reportTruncated, true);
+    assert.ok(detail.run.report.length > 0);
+    assert.ok(detail.run.url.endsWith(`/runs/${id}`));
+
+    // Text that JSON-encodes six bytes a character is cut too, each with its flag.
+    await f.db('agent_runs').where({ id }).update({ action_summary: '\u0001'.repeat(AGENT_ACTION_SUMMARY_MAX_CHARS), failure_reason: '\u0001'.repeat(10_000) });
+    detail = (await f.call('get_agent_run', { runId: id })).data as Detail;
+    assert.ok(Buffer.byteLength(JSON.stringify(detail)) <= MAX_TOOL_RESULT_BYTES);
+    assert.equal(detail.run.actionSummaryTruncated, true);
+    assert.equal((detail.run as Record<string, unknown>).failureReasonTruncated, true);
+    assert.equal(detail.run.reportTruncated, true);
   } finally { await f.db.destroy(); }
 });

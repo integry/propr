@@ -203,7 +203,7 @@ Limits and truncation:
 
 - A stored report is at most 100,000 characters. A longer final message is cut with a `[truncated]` marker. The full output stays in the report task's execution logs.
 - The acting step's summary is cut at 20,000 characters the same way.
-- MCP's `get_agent_run` returns at most 200 KB of report and sets `reportTruncated: true` beyond that. The full report is at the run's `url`.
+- MCP's `get_agent_run` keeps the whole run under the 256 KiB tool result limit. It returns at most 200 KB of report, less when the action summary and the rest of the run need the room, and sets `reportTruncated: true` when it cuts the report. Any other text it cuts, such as the action summary, carries its own flag (`actionSummaryTruncated: true`). The full run is at its `url`.
 - The CLI's `propr automation report <run-id>` prints the stored Markdown to stdout.
 
 Report text is agent output. ProPR never treats it as instructions. The acting step receives it fenced as data, with instructions to ignore anything inside it that tries to change its rules.
