@@ -197,6 +197,46 @@ describe('AgentsPage', () => {
     expect(screen.queryByRole('link', { name: /Dependency review/ })).not.toBeInTheDocument();
   });
 
+  it('does not restore a deleted agent when a save of it is answered after the deletion', async () => {
+    setViewport(true);
+    renderAt('/agents/a1');
+    await screen.findByRole('link', { name: /Dependency review/ });
+    const editor = editorCallbacks.get('a1')!;
+
+    act(() => editor.onDeleted('a1', true));
+    expect(screen.queryByRole('link', { name: /Dependency review/ })).not.toBeInTheDocument();
+    act(() => editor.onSaved(agent('a1', 'Dependency review', { revision: 1 }), false, false));
+
+    expect(screen.queryByRole('link', { name: /Dependency review/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: /Issue triage/ })).toHaveLength(1);
+  });
+
+  it('does not roll a row back when an earlier save is answered after a later one', async () => {
+    setViewport(true);
+    renderAt('/agents/a1');
+    await screen.findByRole('link', { name: /Dependency review/ });
+    const closedEditor = editorCallbacks.get('a1')!;
+
+    act(() => closedEditor.onSaved(agent('a1', 'Second revision', { revision: 2 }), false, true));
+    act(() => closedEditor.onSaved(agent('a1', 'First revision', { revision: 1 }), false, false));
+
+    expect(screen.getByRole('link', { name: /Second revision/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /First revision/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps the later of two saves made while the first list read was in flight', async () => {
+    setViewport(true);
+    const finishRead = delayListRead();
+    renderAt('/agents/a1');
+
+    act(() => editorCallbacks.get('a1')!.onSaved(agent('a1', 'Second revision', { revision: 2 }), false, true));
+    act(() => editorCallbacks.get('a1')!.onSaved(agent('a1', 'First revision', { revision: 1 }), false, false));
+    await finishRead();
+
+    expect(await screen.findByRole('link', { name: /Second revision/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /First revision/ })).not.toBeInTheDocument();
+  });
+
   /** Holds the first list read until `finish` is called, answering it with the collection as it was when sent. */
   const delayListRead = () => {
     let finish: () => void = () => undefined;

@@ -170,7 +170,8 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
   }, [definition, form, onSaved, proprMcpSupport]);
 
   const remove = useCallback(async () => {
-    if (!definition) return false;
+    // A save answered after the deletion would describe an agent that no longer exists.
+    if (!definition || savingRef.current) return false;
     setDeleting(true);
     setError(null);
     try {

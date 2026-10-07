@@ -219,6 +219,7 @@ export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerCo
             <button
               type="button"
               onClick={() => setConfirmingDelete(true)}
+              disabled={editor.saving}
               className={`${BUTTON_CLASSES} border border-red-200 bg-white text-red-700 hover:bg-red-50`}
             >
               <Trash2 className="h-4 w-4" aria-hidden="true" />Delete
