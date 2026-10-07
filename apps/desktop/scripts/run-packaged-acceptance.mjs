@@ -605,11 +605,13 @@ const createFixture = async (mode, fixedOrigin) => {
       return json(response, 200, {
         period: '7d',
         repository: 'all',
+        tasks: 12,
         completed: 12,
+        failed: 0,
         successRate: 100,
         recordedSpend: null,
-        dailyCompleted: [],
-        previous: { completed: 0, successRate: null, recordedSpend: null },
+        dailyTasks: [],
+        previous: { tasks: 0, completed: 0, successRate: null, recordedSpend: null },
       });
     }
     if (request.url?.startsWith('/api/stats/')) return json(response, 200, { total: 12, pending: 0, inProgress: 0, completed: 12, failed: 0, dailyCounts: [] });

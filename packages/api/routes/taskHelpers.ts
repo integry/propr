@@ -27,6 +27,8 @@ export interface TaskQuery {
    * runs, whatever the status and search filters would list.
    */
   containsTask?: string;
+  /** Clock for the attention filter's recovery window; the current time by default. */
+  now?: Date;
 }
 
 export interface TaskPage {
@@ -195,7 +197,7 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
     // plan reviews awaiting a decision and the runs behind decisions that
     // recorded no task link, and excluding failures under recovery.
     attentionTaskIds = await timeApiStage('sql.tasks.attention', () =>
-      loadAttentionTaskIds(db, repository));
+      loadAttentionTaskIds(db, repository, { now: query.now }));
     if (attentionTaskIds.length === 0) return { tasks: [], total: 0, offset, limit, ...(groupByTask ? { totalRuns: 0 } : {}) };
   }
   const filters: SelectionFilters = {
