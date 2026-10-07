@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 await mock.module('@propr/core', {
     namedExports: {
+        AGENT_RUN_USAGE_PAUSE_PERCENT_MIN: 50,
+        AGENT_RUN_USAGE_PAUSE_PERCENT_MAX: 100,
         AGENT_TYPES: [],
         db: {},
         toProprOpenCodeModelId: (model: string) => model,
