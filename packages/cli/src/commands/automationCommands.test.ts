@@ -25,9 +25,16 @@ interface RecordedRequest {
   url: URL;
   headers: Record<string, string>;
   body: Record<string, unknown> | undefined;
+  signal: AbortSignal | undefined;
 }
 
-type Responder = (request: RecordedRequest, attempt: number) => { status?: number; body?: unknown } | Error;
+type ResponderResult = { status?: number; body?: unknown } | Error;
+/** `advance` moves the fake clock, simulating time spent waiting for the response. */
+type Responder = (
+  request: RecordedRequest,
+  attempt: number,
+  advance: (ms: number) => void,
+) => ResponderResult | Promise<ResponderResult>;
 
 function runFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -62,20 +69,23 @@ function runFixture(overrides: Record<string, unknown> = {}): Record<string, unk
 async function run(
   args: string[],
   responder: Responder,
+  options: { pollIntervalMs?: number } = {},
 ): Promise<{ stdout: string; stderr: string; requests: RecordedRequest[]; exitCode: number }> {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const requests: RecordedRequest[] = [];
   let exitCode = 0;
+  let clock = 0;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const request: RecordedRequest = {
       method: init?.method ?? "GET",
       url: new URL(String(input)),
       headers: { ...(init?.headers as Record<string, string>) },
       body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      signal: init?.signal ?? undefined,
     };
     requests.push(request);
-    const result = responder(request, requests.length);
+    const result = await responder(request, requests.length, (ms) => { clock += ms; });
     if (result instanceof Error) throw result;
     return new Response(JSON.stringify(result.body ?? {}), {
       status: result.status ?? 200,
@@ -88,9 +98,8 @@ async function run(
     exitCode = Number(code ?? 0);
     throw new CommandExit(exitCode);
   }) as typeof process.exit;
-  let clock = 0;
   const command = createAutomationCommand({
-    pollIntervalMs: 5_000,
+    pollIntervalMs: options.pollIntervalMs ?? 5_000,
     now: () => clock,
     sleep: async (ms) => { clock += ms; },
   });
@@ -183,9 +192,41 @@ test("run --wait exits 2 when the run is still in progress at the timeout", asyn
   const result = await run(["run", "agent-1", "--wait", "--timeout", "12"], triggerThenPoll(runFixture(), [runFixture({ state: "running" })]));
   assert.equal(result.exitCode, AUTOMATION_RUN_EXIT_CODES.timed_out);
   assert.match(result.stderr, /Timed out after 12s/);
-  // Polls at 5 s, 10 s and 12 s, then the deadline has passed.
-  assert.equal(result.requests.length, 4);
+  // Polls at 5 s and 10 s; at 12 s the deadline has arrived, so no further poll starts.
+  assert.equal(result.requests.length, 3);
   assert.equal(result.stdout, "");
+});
+
+test("run --wait times out when a poll response arrives after the deadline", async () => {
+  const result = await run(["run", "agent-1", "--wait", "--timeout", "1"], (request, _attempt, advance) => {
+    if (request.method === "POST") return { status: 202, body: { run: runFixture(), created: true } };
+    advance(5_000);
+    return { body: { run: runFixture({ state: "completed", report: "late" }) } };
+  }, { pollIntervalMs: 500 });
+  assert.equal(result.exitCode, AUTOMATION_RUN_EXIT_CODES.timed_out);
+  assert.match(result.stderr, /Timed out after 1s waiting for run run-1 \(state: queued\)/);
+  assert.equal(result.stdout, "");
+});
+
+test("run --wait aborts an in-flight poll at the deadline and exits 2", async () => {
+  const result = await run(["run", "agent-1", "--wait", "--timeout", "1", "--json"], (request) => {
+    if (request.method === "POST") return { status: 202, body: { run: runFixture(), created: true } };
+    // The poll never answers on its own; only the deadline abort ends it.
+    return new Promise<ResponderResult>((resolve) => {
+      request.signal?.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        resolve(error);
+      });
+    });
+  }, { pollIntervalMs: 950 });
+  assert.equal(result.exitCode, AUTOMATION_RUN_EXIT_CODES.timed_out);
+  assert.equal(result.requests.length, 2);
+  assert.ok(result.requests[1].signal?.aborted);
+  const document = JSON.parse(result.stdout);
+  assert.equal(document.timedOut, true);
+  assert.equal(document.exitCode, AUTOMATION_RUN_EXIT_CODES.timed_out);
+  assert.equal(document.run.state, "queued");
 });
 
 test("run --json prints a version 1 automation-run document with the exit code", async () => {
@@ -228,6 +269,18 @@ test("report exits 1 when the run has no report yet", async () => {
   assert.equal(result.exitCode, 1);
   assert.equal(result.stdout, "");
   assert.match(result.stderr, /no report yet \(state: running\)/);
+});
+
+test("report --json still exits 1 when the run has no report yet", async () => {
+  const result = await run(["report", "run-1", "--json"], () => ({ body: { run: runFixture({ state: "running" }) } }));
+  assert.equal(result.exitCode, 1);
+  const document = JSON.parse(result.stdout);
+  assert.equal(document.kind, "automation-run");
+  assert.equal(document.run.state, "running");
+  assert.equal(document.run.report, null);
+
+  const present = await run(["report", "run-1", "--json"], () => ({ body: { run: runFixture({ state: "completed", report: "# Findings" }) } }));
+  assert.equal(present.exitCode, 0);
 });
 
 test("approve sends the note; reject and cancel post to their endpoints", async () => {

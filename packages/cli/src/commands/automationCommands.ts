@@ -288,6 +288,30 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
+ * Fetches the run, aborting the request when the wait deadline arrives.
+ * Returns `null` when the deadline passes before or during the request.
+ */
+async function pollBeforeDeadline(
+  runId: string,
+  deadline: number,
+  settings: Required<AutomationCommandOptions>,
+): Promise<AutomationRun | null> {
+  const remaining = deadline - settings.now();
+  if (remaining <= 0) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), remaining);
+  try {
+    const run = await getAutomationRun(runId, { signal: controller.signal });
+    return settings.now() >= deadline ? null : run;
+  } catch (error) {
+    if (controller.signal.aborted) return null;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Polls the run until it reaches a stop state or the deadline passes. State
  * changes are reported on stderr so stdout only carries the report.
  */
@@ -302,8 +326,11 @@ async function waitForRun(
     const remaining = deadline - settings.now();
     if (remaining <= 0) return { run, timedOut: true };
     await settings.sleep(Math.min(settings.pollIntervalMs, remaining));
+    const next = await pollBeforeDeadline(run.id, deadline, settings);
+    // A poll that could not answer before the deadline leaves the last known run.
+    if (!next) return { run, timedOut: true };
     const previous = run.state;
-    run = await getAutomationRun(run.id);
+    run = next;
     if (!quiet && run.state !== previous) console.error(`state: ${run.state}`);
   }
   return { run, timedOut: false };
@@ -550,19 +577,19 @@ Exits 1 when the run has no report yet.
       let missing = false;
       try {
         const run = await getAutomationRun(runId);
+        missing = !run.report;
         if (options.json) {
           printJson({ kind: "automation-run", action: "report", run: runJson(run) });
-          return;
-        }
-        printRunMetadata(run, (line) => console.error(line));
-        if (run.reportTruncated) console.error("note: the report was truncated; the full output is in the task logs");
-        printRunOutcomeNotes(run);
-        if (run.report) {
-          console.error("");
-          writeReport(run.report);
         } else {
-          console.error(`Run ${run.id} has no report yet (state: ${run.state}).`);
-          missing = true;
+          printRunMetadata(run, (line) => console.error(line));
+          if (run.reportTruncated) console.error("note: the report was truncated; the full output is in the task logs");
+          printRunOutcomeNotes(run);
+          if (run.report) {
+            console.error("");
+            writeReport(run.report);
+          } else {
+            console.error(`Run ${run.id} has no report yet (state: ${run.state}).`);
+          }
         }
       } catch (error) {
         fail(error, { command: "report", json: options.json, runId });
