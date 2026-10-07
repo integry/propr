@@ -30,8 +30,7 @@ import {
     AgentRegistry,
     sweepConflictedPullRequests,
     getMergeConflictSweepIntervalMs,
-    runMigrations,
-    startDeferredAgentRunRetry
+    runMigrations
 } from '@propr/core';
 import type { CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { logger } from '@propr/core';
@@ -49,6 +48,7 @@ import {
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { sweepDraftContext } from './daemon/draftContextSweep.js';
 import { sweepPushRescues } from './daemon/rescueRefSweep.js';
+import { scheduleAgentRunSweeps } from './agentRunScheduler.js';
 import {
     clearUltrafixStateIfCurrent,
     hasUltrafixAutomaticWork,
@@ -279,8 +279,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
 
     const draftContextSweepInterval = await scheduleDraftContextSweep();
     const pushRescueSweepInterval = schedulePushRescueSweep();
-    // Re-evaluates agent runs the cost gate deferred once their retry time passes.
-    const stopDeferredAgentRunRetry = startDeferredAgentRunRetry();
+    // Fires scheduled agents, retries runs the cost gate deferred, fails runs
+    // whose worker stopped, and revokes leftover run-scoped MCP grants.
+    const stopAgentRunSweeps = scheduleAgentRunSweeps();
 
     let intervalId: NodeJS.Timeout | null = null;
     let routingService: RoutingWebSocketIntakeService | null = null;
@@ -453,7 +454,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(draftContextSweepInterval);
         clearInterval(pushRescueSweepInterval);
         clearInterval(mergeConflictSweepInterval);
-        await stopDeferredAgentRunRetry();
+        await stopAgentRunSweeps();
         // Stop the routing service first so it can drain in-flight deliveries and
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the

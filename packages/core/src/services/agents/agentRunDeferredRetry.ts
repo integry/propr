@@ -14,8 +14,8 @@ import { enqueueAgentRunPhase, type AgentRunGate, type AgentRunTriggerDependenci
 
 /**
  * The consumer of deferred agent runs. The cost gate defers a run by storing
- * `deferred_until`; nothing else picks it up again. The daemon calls
- * `retryDueDeferredAgentRuns` periodically, which re-evaluates every due run
+ * `deferred_until`; nothing else picks it up again. The daemon's agent run
+ * sweeps (`src/agentRunScheduler.ts`) call `retryDueDeferredAgentRuns` periodically, which re-evaluates every due run
  * through the gate with the run's own deferral count:
  *
  * - proceed: the run moves to `queued` and its report phase is enqueued;
@@ -35,7 +35,6 @@ import { enqueueAgentRunPhase, type AgentRunGate, type AgentRunTriggerDependenci
  */
 
 export const DEFAULT_DEFERRED_AGENT_RUN_BATCH_SIZE = 50;
-export const DEFAULT_DEFERRED_AGENT_RUN_RETRY_INTERVAL_MS = 60_000;
 
 export interface DeferredAgentRunRetryDependencies extends Pick<AgentRunTriggerDependencies, 'database' | 'now' | 'enqueue'> {
   gate?: AgentRunGate;
@@ -137,32 +136,4 @@ export async function retryDueDeferredAgentRuns(deps: DeferredAgentRunRetryDepen
   }
   if (due.length > 0 || undispatched.length > 0) logger.info({ due: due.length, ...result }, 'Retried due deferred agent runs');
   return result;
-}
-
-/**
- * Runs `retryDueDeferredAgentRuns` now and then every `intervalMs`, never
- * overlapping itself. The cost gate is created once so its "usage unknown"
- * log stays once per provider. Returns a function that stops the retries.
- */
-export function startDeferredAgentRunRetry(
-  { intervalMs = DEFAULT_DEFERRED_AGENT_RUN_RETRY_INTERVAL_MS, retry }: {
-    intervalMs?: number;
-    retry?: () => Promise<unknown>;
-  } = {},
-): () => Promise<void> {
-  const gate = createAgentRunCostGate();
-  const run = retry ?? (() => retryDueDeferredAgentRuns({ gate }));
-  let running: Promise<void> | null = null;
-  const tick = (): void => {
-    if (running) return;
-    running = run().then(() => undefined, (error: unknown) => {
-      logger.error({ err: error }, 'Deferred agent run retry failed');
-    }).finally(() => { running = null; });
-  };
-  tick();
-  const timer = setInterval(tick, intervalMs);
-  return async () => {
-    clearInterval(timer);
-    await running;
-  };
 }

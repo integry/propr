@@ -302,6 +302,56 @@ export async function deleteAgentDefinition(
   return deleted > 0;
 }
 
+/**
+ * Definitions the scheduler should fire: enabled, scheduled and due at `now`,
+ * oldest due first. Not owner-scoped; only the daemon calls it.
+ */
+export async function listDueScheduledAgentDefinitions(
+  now: number,
+  limit: number,
+  { database = db }: AgentDefinitionStoreDependencies = {},
+): Promise<StoredAgentDefinition[]> {
+  const rows = await database(TABLE).where({ schedule_enabled: true, enabled: true }).where('next_run_at', '<=', now)
+    .orderBy([{ column: 'next_run_at', order: 'asc' }, { column: 'id', order: 'asc' }])
+    .limit(Math.max(Math.trunc(limit), 1)).select<AgentDefinitionRow[]>();
+  return rows.map(rowToAgentDefinition);
+}
+
+/**
+ * Claims one schedule slot by moving `next_run_at` from the value the caller
+ * read to `nextRunAt`. Only one of several concurrent sweeps gets the
+ * definition back; the others get null and must not fire. The returned
+ * definition is the row as of the claim, so a schedule or agent disabled
+ * since the sweep read it is never fired. The claim is not a user edit, so
+ * `revision` and `updated_at` are left alone.
+ */
+export async function claimAgentDefinitionScheduleSlot(
+  id: string,
+  claimedNextRunAt: number,
+  nextRunAt: number,
+  { database = db }: AgentDefinitionStoreDependencies = {},
+): Promise<StoredAgentDefinition | null> {
+  const [updated] = await database(TABLE)
+    .where({ id, next_run_at: claimedNextRunAt, schedule_enabled: true, enabled: true })
+    .update({ next_run_at: nextRunAt })
+    .returning('*') as AgentDefinitionRow[];
+  return updated ? rowToAgentDefinition(updated) : null;
+}
+
+/**
+ * Turns a definition's schedule off on the system's behalf (e.g. its owner
+ * left the instance). Counts as an edit, so a stale editor gets a 409 instead
+ * of silently re-enabling it. Returns false when the schedule was already off.
+ */
+export async function disableAgentDefinitionSchedule(
+  id: string,
+  { database = db, now = Date.now }: AgentDefinitionStoreDependencies = {},
+): Promise<boolean> {
+  const updated = await database(TABLE).where({ id, schedule_enabled: true })
+    .update({ schedule_enabled: false, next_run_at: null, revision: database.raw('revision + 1'), updated_at: now() });
+  return Number(updated) > 0;
+}
+
 export type DeleteAgentDefinitionResult = 'deleted' | 'not_found' | 'run_active';
 
 /**

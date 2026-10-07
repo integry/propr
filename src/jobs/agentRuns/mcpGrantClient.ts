@@ -83,10 +83,13 @@ export async function requestAgentRunMcpGrant(runId: string, phase: AgentRunPhas
     return { grantId, phase, url: mcpUrl, token, expiresAt };
 }
 
-/** Revokes the grant a phase was issued; a grant that is already gone is not an error. */
+/**
+ * Revokes the grant a phase was issued; a grant that is already gone is not an
+ * error. Without `grantId`, whatever grant the phase currently holds is revoked.
+ */
 export async function revokeAgentRunMcpGrant(
     runId: string,
-    grant: Pick<IssuedAgentRunMcpGrant, 'grantId' | 'phase'>,
+    grant: Pick<IssuedAgentRunMcpGrant, 'phase'> & { grantId?: string },
     options: McpGrantClientOptions = {},
 ): Promise<void> {
     await postSigned('/mcp-grants/revoke', runId, { phase: grant.phase, grantId: grant.grantId }, options);
