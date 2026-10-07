@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, GripVertical, X } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
@@ -24,6 +25,26 @@ function useSplitViewport(): boolean {
     return () => query.removeEventListener('change', update);
   }, []);
   return split;
+}
+
+/**
+ * A detached node the editor renders into, plus a ref that docks it into
+ * whichever layout is showing. The narrow page and the split view are
+ * different element trees, so an editor rendered inside either would be
+ * unmounted on a breakpoint change and lose its unsaved form. Rendered
+ * through a portal from a fixed spot in the page instead, the editor keeps its
+ * state and only its DOM moves between the layouts.
+ */
+function useEditorDock() {
+  const [host] = useState(() => {
+    const node = document.createElement('div');
+    node.className = 'flex h-full min-h-0 min-w-0 flex-col';
+    return node;
+  });
+  const dockRef = useCallback((slot: HTMLElement | null) => {
+    if (slot && host.parentNode !== slot) slot.appendChild(host);
+  }, [host]);
+  return { host, dockRef };
 }
 
 const DEFINITION_PAGE_SIZE = 200;
@@ -106,6 +127,7 @@ const AgentsPage: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => {
   const split = useSplitViewport();
   const { isDemoMode } = useDemoMode();
   const { definitions, lastRunStates, error, upsert, remove, recordRun } = useAgentDefinitions();
+  const { host: editorHost, dockRef } = useEditorDock();
   const editing = isNew || definitionId !== null;
 
   const onSaved = useCallback((definition: AgentDefinitionRecord, created: boolean) => {
@@ -137,59 +159,61 @@ const AgentsPage: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => {
     <AgentList definitions={definitions} lastRunStates={lastRunStates} error={error} selectedId={definitionId} readOnly={isDemoMode} />
   );
 
-  const editor = (headerControls: React.ReactNode) => (
+  const editor = editing && createPortal(
     <AgentEditor
       key={definitionId ?? 'new'}
       definitionId={isNew ? null : definitionId}
-      headerControls={headerControls}
+      headerControls={split ? (
+        <button type="button" onClick={close} aria-label="Close agent" title="Close (Esc)" className={PANE_ACTION_CLASSES}>
+          <X className="h-4 w-4" aria-hidden="true" />
+        </button>
+      ) : null}
       onSaved={onSaved}
       onDeleted={onDeleted}
       onRunStarted={run => recordRun(run.definitionId, run.state)}
-    />
+    />,
+    editorHost,
   );
 
+  let layout: React.ReactNode;
   if (!split) {
-    if (!editing) return <div className="h-full" data-testid="agents-list-page">{list}</div>;
-    return (
+    layout = !editing ? <div className="h-full" data-testid="agents-list-page">{list}</div> : (
       <div className="flex h-full min-h-0 flex-col" data-testid="agents-detail-page">
         <nav className="flex-none border-b border-slate-200 bg-white px-4 py-2">
           <Link to="/agents" className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900">
             <ArrowLeft className="h-4 w-4" aria-hidden="true" />Back to list
           </Link>
         </nav>
-        <div className="min-h-0 flex-1">{editor(null)}</div>
+        <div ref={dockRef} className="min-h-0 flex-1" />
       </div>
+    );
+  } else {
+    layout = (
+      <PanelGroup id="agent-split-workspace" direction="horizontal" keyboardResizeBy={5} className="h-full bg-white" data-testid="agent-split-workspace">
+        <Panel id="agent-split-list" order={1} defaultSize={editing ? 40 : 100} minSize={28}>
+          <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="agent-split-list">{list}</div>
+        </Panel>
+        {editing && (
+          <>
+            <PanelResizeHandle
+              id="agent-split-resize-handle"
+              className="group flex w-2 flex-none cursor-col-resize items-center justify-center border-l border-slate-200 bg-slate-50 transition-colors hover:bg-teal-50 focus-visible:bg-teal-50 focus-visible:outline-none"
+              aria-label="Resize agent list and agent details"
+              hitAreaMargins={{ coarse: 12, fine: 6 }}
+            >
+              <GripVertical size={12} className="text-slate-400 group-hover:text-teal-700" aria-hidden="true" />
+            </PanelResizeHandle>
+            <Panel id="agent-split-details" order={2} defaultSize={60} minSize={35}>
+              <section ref={dockRef} aria-label="Agent details" className="flex h-full min-h-0 min-w-0 flex-col" data-testid="agent-split-details" />
+            </Panel>
+          </>
+        )}
+      </PanelGroup>
     );
   }
 
-  return (
-    <PanelGroup id="agent-split-workspace" direction="horizontal" keyboardResizeBy={5} className="h-full bg-white" data-testid="agent-split-workspace">
-      <Panel id="agent-split-list" order={1} defaultSize={editing ? 40 : 100} minSize={28}>
-        <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="agent-split-list">{list}</div>
-      </Panel>
-      {editing && (
-        <>
-          <PanelResizeHandle
-            id="agent-split-resize-handle"
-            className="group flex w-2 flex-none cursor-col-resize items-center justify-center border-l border-slate-200 bg-slate-50 transition-colors hover:bg-teal-50 focus-visible:bg-teal-50 focus-visible:outline-none"
-            aria-label="Resize agent list and agent details"
-            hitAreaMargins={{ coarse: 12, fine: 6 }}
-          >
-            <GripVertical size={12} className="text-slate-400 group-hover:text-teal-700" aria-hidden="true" />
-          </PanelResizeHandle>
-          <Panel id="agent-split-details" order={2} defaultSize={60} minSize={35}>
-            <section aria-label="Agent details" className="flex h-full min-h-0 min-w-0 flex-col" data-testid="agent-split-details">
-              {editor(
-                <button type="button" onClick={close} aria-label="Close agent" title="Close (Esc)" className={PANE_ACTION_CLASSES}>
-                  <X className="h-4 w-4" aria-hidden="true" />
-                </button>,
-              )}
-            </section>
-          </Panel>
-        </>
-      )}
-    </PanelGroup>
-  );
+  // The editor sits beside the layout rather than inside it, so it stays mounted when the layout changes.
+  return <>{editor}{layout}</>;
 };
 
 export default AgentsPage;
