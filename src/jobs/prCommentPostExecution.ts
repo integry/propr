@@ -12,6 +12,7 @@ import {
     renderVisualPreviewSection,
     renderVisualPreviewUploadFailureSection,
     resolveAgentTerminationReason,
+    describeAgentTermination,
     sanitizeAgentReport,
     TaskStates,
     VISUAL_PREVIEW_SLOT,
@@ -253,7 +254,7 @@ function requirePartialExecutionChanges(
     terminationReason: ReturnType<typeof resolveAgentTerminationReason>,
 ): void {
     if (partial && !commitResult) {
-        throw new Error(`Agent execution ${terminationReason === 'timeout' ? 'timed out' : 'reached the maximum turn limit'} before producing changes to publish`);
+        throw new Error(`${terminationReason ? describeAgentTermination(terminationReason) : 'Agent execution was interrupted.'} No changes were produced to publish.`);
     }
 }
 

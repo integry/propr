@@ -235,7 +235,7 @@ case "\${PROPR_EXECUTION_TIMEOUT_MS:-}" in
     *) validation_deadline=$(( SECONDS + PROPR_EXECUTION_TIMEOUT_MS / 1000 - ${reserveS} )) ;;
 esac
 export PROPR_WORKSPACE="\${PROPR_WORKSPACE:-/home/node/workspace}"
-export PROPR_CACHE_DIR="\${PROPR_CACHE_DIR:-/tmp/git-processor/propr-cache/\${PROPR_AGENT_TYPE:-agent}}"
+export PROPR_CACHE_DIR="\${PROPR_CACHE_DIR:-/tmp/propr-setup-cache/\${PROPR_AGENT_TYPE:-agent}}"
 # Read-only analysis calls must not run workflow hooks.
 if [ "\${PROPR_REPO_SETUP:-1}" = "0" ]; then exec "$entrypoint" "$@"; fi
 mkdir -p "$PROPR_CACHE_DIR" 2>/dev/null || true
