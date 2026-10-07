@@ -47,9 +47,9 @@ through `c2de30509`.
   approve** (an acting step waits for your approval, with an Inbox notice) or
   **Auto**. The acting step works only through ProPR MCP tools with a
   short-lived grant limited to the automation's repositories; it can create
-  tasks, to-dos and PR comments, and cannot merge, deploy, change settings or
-  trigger other automations. Acting and ProPR tool access need Claude
-  Code or Codex. Unattended runs are skipped or deferred when Agent Tank reports
+  tasks, plans, goals, to-dos and PR comments, and cannot merge, deploy, change
+  settings or trigger other automations. Acting and ProPR tool access need
+  Claude Code or Codex. Unattended runs are skipped or deferred when Agent Tank reports
   usage at or above `agent_run_usage_pause_percent` (default 90%); missed
   schedule slots coalesce into one run. New MCP tools: `list_agent_definitions`,
   `get_agent_definition`, `get_agent_definition_contract`, `list_agent_runs`,
@@ -184,14 +184,15 @@ through `c2de30509`.
   repository's `network.allow` add exact hosts, `*.domain` wildcards or
   `host:port`. DNS resolves on the worker, and loopback, private and link-local
   addresses (including cloud metadata) are refused unless the instance lists
-  the IP. The instance
-  sets the default mode (`open` by default) and can enforce restricted mode
-  across repositories (**Settings → Automation → Agent network**, `propr setting
-  update`, MCP `update_execution_settings`). Issue runs, PR commands, reviews,
-  goals and indexing are covered; plan generation is not. Each restricted run
-  records one timeline event listing every denied host. Claude Code, Codex,
-  OpenCode and Vibe run behind the proxy; Antigravity falls back to open
-  networking with a warning, or is refused when restricted mode is enforced.
+  the IP. The instance sets the default mode (`open` by default) and can
+  enforce restricted mode across repositories (**Settings → Automation → Agent
+  network**, `propr setting update`, MCP `update_execution_settings`). Issue
+  runs, PR commands, reviews, goals and indexing are covered; Automation runs
+  follow restricted mode only when the instance enforces it, and plan generation
+  is not covered. Each restricted issue, PR, review or goal run records one
+  timeline event listing every denied host. Claude Code, Codex, OpenCode and
+  Vibe run behind the proxy; Antigravity falls back to open networking with a
+  warning, or is refused when restricted mode is enforced.
   Requires a Linux Docker host that shares `PROPR_EGRESS_SOCKET_DIR` with the
   worker; the bundled Compose files and launcher mount it.
 - **Ultrafix escalation**: an opt-in instance policy

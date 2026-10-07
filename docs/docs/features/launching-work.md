@@ -18,6 +18,6 @@ The repository workspace's **New task** action prefills the repository. Select a
 
 MCP clients can use `create_task` with execute scope and a stable idempotency key, then follow the task and its pull request with `get_task_submission`; see [MCP](./mcp.md). `create_task` and `POST /api/task-submissions` accept an optional `maxCostUsd` that caps what the run may spend; see [Spend caps](./execution-safety.md#spend-caps). The CLI's existing issue implementation and `task inspect` commands are described in [ProPR CLI](./propr-cli.md#issue-implementation).
 
-## Plan or goal?
+## Plan, goal or agent?
 
-[Planner Studio](../tutorials/planner-studio.md) lets you edit, refine and approve a complete plan before creating issues. [Goals](./goals.md) keep an agent working toward an objective with progress, corrective inputs and pause/resume controls.
+[Planner Studio](../tutorials/planner-studio.md) lets you edit, refine and approve a complete plan before creating issues. [Goals](./goals.md) keep an agent working toward an objective with progress, corrective inputs and pause/resume controls. [Agents](./agents.md) run a saved prompt on demand or on a schedule and write a report for recurring investigation.
