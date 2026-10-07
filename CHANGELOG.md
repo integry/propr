@@ -9,6 +9,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dashboard HTTP API reference and a documented `@propr/client`**:
+  `npm run gen:openapi` generates an OpenAPI 3.1 spec,
+  `docs/static/openapi/propr-api.yaml`, from the API route registry and the
+  zod schemas in `packages/api/openapi`. The spec lists every registered route
+  with its authentication (session, bearer token or MCP scope) and any required
+  instance permission. Routes without annotations yet are marked
+  `x-undocumented: true`, and `info.x-route-coverage` counts them. The spec
+  documents the common error envelope (`code`, `message`, `hint`). Routes that
+  still return ad-hoc errors are marked `x-legacy-error`; their behaviour is
+  unchanged. A new "API reference" page under Operations in the docs renders the
+  spec. `@propr/client` gains typed `listTasks`, `getTaskHistory`,
+  `createTaskSubmission`, `getTaskSubmission` and `retryTaskSubmission`
+  methods. Its request and response types (`ProprApi.*`) are generated from the
+  same schemas, and a new `packages/client/README.md` covers installation,
+  bearer authentication, examples and the Socket.IO events. Pull request checks
+  run `gen:openapi:check`, which fails on a stale or invalid spec, and
+  `check:client-contract`, which fails when the client's operations or method
+  signatures drift from the spec.
+- **Automatic replacement runs**: an issue task lost with its worker (the
+  reconciler finds neither its queue job nor its task container) now gets one
+  replacement attempt instead of only being marked failed; a second loss in the
+  same lineage is final. A run that ends with a transient provider error that
+  `withRetry` treats as retryable (5xx, `529`/overloaded, connection resets,
+  timeouts; 429 and usage limits excluded) is replaced up to
+  `MAX_PROVIDER_REPLACEMENTS` times (default 2, also the instance setting
+  `max_provider_replacements`; `0` disables it). `INFRA_LOST_REPLACEMENT=false`
+  disables lost-run replacement. Replacements reuse the original agent, model
+  and per-task overrides, continue the pushed work branch, go through
+  repository capacity admission, and receive the per-run cost cap minus what
+  earlier attempts spent. User and withdrawal cancellations, watchdog, timeout
+  and cost-cap stops, goal tasks and closed issues are never replaced. Attempts
+  are linked with `replaces_task_id`, `replaced_by_task_id` and
+  `attempt_number`, so the cap survives restarts. The task timeline records
+  `replacement.dispatched`, `replacement.skipped` and `replacement.exhausted`;
+  the Inbox shows one "Replacement started" card instead of a failure alert;
+  the final GitHub failure comment links every attempt; task detail shows the
+  attempt lineage and `propr task get --json` includes `replacesTaskId`,
+  `replacedByTaskId` and `attemptNumber`. `withRetry` now also retries HTTP
+  `529` and "overloaded" errors.
+- **Persisted review scores and per-model review quality**: every `/review`
+  and Ultrafix review cycle that produces a parsed `Score: N/10` now writes a
+  `review_scores` row with the reviewer and implementer agent and model, blocker
+  and suggestion counts, the reviewed head and, for Ultrafix, the cycle number
+  and goal. Merged and closed outcomes are recorded on the PR's existing state
+  row. `GET /api/stats/review-scores` (and `.csv`) reports, per implementer
+  model, PRs scored, mean and median first score, mean final score, cycles to
+  goal, merge rate and cost per merged PR, each with its denominator and with
+  unknown values as `null`. `GET /api/pull-requests/:number/scores` returns one
+  PR's score history, and `/api/stats/overview` model rows gain
+  `mean_final_score` and `n_scored`. The Analytics page adds a "Review quality
+  by model" table, task details show a PR's score history, `propr stats
+  review-scores` prints the summary (`--json` supported), and MCP
+  `get_pull_request` includes `scoreHistory`. Earlier scores are not backfilled.
+- **Fail-closed auto-merge policy with protected paths**: `.propr/workflow.yml`
+  accepts an `auto_merge` block (`enabled`, `method`, `protected_paths`), and
+  `.propr/**` is always protected. Before arming GitHub auto-merge (after the PR
+  is created, after Ultrafix reaches its goal, and for Epic queue heads), ProPR
+  reads the policy from the PR's base branch and lists the changed files from a
+  fresh GitHub API fetch. It never uses the head branch or the agent's worktree.
+  An invalid or unreadable policy, an empty diff, an unavailable diff or a
+  protected path means auto-merge is not armed. Each decision writes one task
+  timeline event with a stable reason code (`armed`, `skipped_protected_path`,
+  `skipped_disabled`, `skipped_empty_diff`, `skipped_policy_invalid`,
+  `skipped_diff_unavailable`). A skip posts a one-line PR comment and keeps the
+  `auto-merge` label for a person to act on. The check-based fallback merge
+  applies the same policy. A new head on a PR that ProPR armed is re-evaluated,
+  and auto-merge is disabled with a comment if the head now violates the policy.
+  A skipped Epic queue head shows "Waiting for human merge" and resumes once a
+  person merges the PR.
 - **Per-run spend caps**: a run whose estimated cost reaches its cap is now
   stopped while it executes, and its partial work is published like a
   timed-out run's. The cap comes from a per-task `maxCostUsd` (task

@@ -13,6 +13,7 @@ import {
     DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS,
     loadUltrafixCiWaitTimeoutMs,
     withUltrafixLabelTransition,
+    recoverCiFailureFollowups,
 } from '@propr/core';
 import {
     clearDeferredContinuationIfCurrent,
@@ -60,6 +61,7 @@ export interface UltrafixCiDeferralResult {
 }
 
 export interface UltrafixCiWaitDeps {
+    recoverFailures?: typeof recoverCiFailureFollowups;
     now: () => number;
     loadTimeoutMs: () => Promise<number>;
     postComment: (options: { owner: string; repo: string; pullRequestNumber: number; body: string; correlatedLogger: Logger }) => Promise<void>;
@@ -183,6 +185,7 @@ async function loadTimeoutMsSafely(): Promise<number> {
 }
 
 const defaultDeps: UltrafixCiWaitDeps = {
+    recoverFailures: recoverCiFailureFollowups,
     now: () => Date.now(),
     loadTimeoutMs: loadTimeoutMsSafely,
     postComment: postPrComment,
@@ -213,6 +216,13 @@ export async function handleUltrafixCiDeferral(
         lastScore: input.lastScore !== undefined ? input.lastScore : (sameDeferral ? existing.lastScore : undefined),
     };
     const blockingChecks = listBlockingChecks(record);
+    if (record.blockingFailed.length > 0 && deps.recoverFailures) {
+        try {
+            await deps.recoverFailures(owner, repo, pr, ci.headSha);
+        } catch (error) {
+            correlatedLogger.warn({ error: (error as Error).message, pr }, 'Failed to recover missed CI follow-up; will retry on next poll');
+        }
+    }
     const waitedMs = Math.max(0, nowMs - Date.parse(record.since));
     const timeoutMs = await deps.loadTimeoutMs();
 

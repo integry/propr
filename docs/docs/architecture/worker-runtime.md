@@ -49,7 +49,7 @@ Worker failures generally fall into these categories:
 - Empty or invalid agent output
 - Pull request creation or update failures
 
-Transient git and GitHub operations are retried with exponential backoff. Retry counts and backoff are hard-coded in `retryHandler.ts`; they are not environment-configurable. Agent failures are recorded with logs and task state so you can inspect the run, retry it, or switch models.
+Transient git and GitHub operations are retried with exponential backoff. Retry counts and backoff are hard-coded in `retryHandler.ts`; they are not environment-configurable. Agent failures are recorded with logs and task state so you can inspect the run, retry it, or switch models. Issue runs lost with their worker, or ended by a transient provider error, are re-run automatically as linked replacement attempts; see [Reconciliation and automatic replacement runs](./worker.md#reconciliation-and-automatic-replacement-runs).
 
 ## Job States
 

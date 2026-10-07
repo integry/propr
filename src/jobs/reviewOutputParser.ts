@@ -420,16 +420,10 @@ function formatPublicSuggestions(suggestions: ReviewSuggestion[]): string {
     ].filter(Boolean).join('\n\n')).join('\n\n');
 }
 
-/**
- * Validate a machine-oriented reviewer response, then render the normalized
- * Markdown that is safe to publish. Invalid responses return null so callers
- * can preserve the original diagnostic output and fail closed downstream.
- */
-export function renderPublicReview(
-    body: string,
-    scoreCap?: { maximum: number; reason: string },
-    options: PublicReviewRenderOptions = {},
-): string | null {
+/** The validated review `renderPublicReview` publishes, or null when it publishes none. */
+export function parsePublishableReview(
+    body: string, options: Pick<PublicReviewRenderOptions, 'changedFilePaths'> = {},
+): { cleaned: string; parsed: StructuredReviewResult } | null {
     if (ERROR_REVIEW_MARKER_RE.test(body)) return null;
     const cleaned = prepareReviewBody(body);
     const parsed = parseContract(cleaned, MACHINE_CONTRACT);
@@ -440,13 +434,33 @@ export function renderPublicReview(
             !evidenceReferencesChangedFile(finding.evidence, options.changedFilePaths!),
         )
     ) return null;
+    return { cleaned, parsed };
+}
+
+/** The score a published review shows: the parsed score under any external cap. */
+export const publishedReviewScore = (score: number, scoreCap?: { maximum: number }): number =>
+    Math.min(score, scoreCap?.maximum ?? 10);
+
+/**
+ * Validate a machine-oriented reviewer response, then render the normalized
+ * Markdown that is safe to publish. Invalid responses return null so callers
+ * can preserve the original diagnostic output and fail closed downstream.
+ */
+export function renderPublicReview(
+    body: string,
+    scoreCap?: { maximum: number; reason: string },
+    options: PublicReviewRenderOptions = {},
+): string | null {
+    const publishable = parsePublishableReview(body, options);
+    if (!publishable) return null;
+    const { cleaned, parsed } = publishable;
 
     const publicFindings = renumberRecords(parsed.actionableFindings, 'F', options.firstFindingNumber ?? 1);
     const publicSuggestions = renumberRecords(parsed.suggestions, 'S', options.firstSuggestionNumber ?? 1);
 
     const overallSection = extractMarkdownSection(cleaned, 'Overall Evaluation');
     const originalScoreSection = extractMarkdownSection(cleaned, 'Score');
-    const publishedScore = Math.min(parsed.score ?? 10, scoreCap?.maximum ?? 10);
+    const publishedScore = publishedReviewScore(parsed.score ?? 10, scoreCap);
     const scoreSection = originalScoreSection.replace(
         /^(\*\*)?Score:[ \t]*\d{1,2}[ \t]*\/[ \t]*10\1[ \t]*$/m,
         (_line, emphasis: string | undefined) => `${emphasis ?? ''}Score: ${publishedScore}/10${emphasis ?? ''}`,

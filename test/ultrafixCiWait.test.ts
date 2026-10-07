@@ -7,6 +7,7 @@ await mock.module('@propr/core', {
         DEFAULT_ULTRAFIX_CI_WAIT_TIMEOUT_MS: 2 * 60 * 60 * 1000,
         loadUltrafixCiWaitTimeoutMs: async () => 2 * 60 * 60 * 1000,
         withUltrafixLabelTransition: async (_redis: unknown, _identity: unknown, operation: () => Promise<unknown>) => operation(),
+        recoverCiFailureFollowups: async () => undefined,
     },
 });
 
@@ -70,6 +71,20 @@ function deferral(redis: ReturnType<typeof createMockRedis>, headSha = 'abc1234d
 }
 
 describe('Ultrafix CI deferral notice', () => {
+    test('retries missed failure recovery without repeating the wait notice', async () => {
+        const redis = createMockRedis();
+        const { deps, postComment } = makeDeps();
+        const calls: unknown[][] = [];
+        deps.recoverFailures = async (...args) => {
+            calls.push(args);
+            if (calls.length === 1) throw new Error('GitHub temporarily unavailable');
+        };
+        await handleUltrafixCiDeferral(deferral(redis), deps);
+        await handleUltrafixCiDeferral(deferral(redis), deps);
+        assert.deepEqual(calls, Array(2).fill(['integry', 'propr', 2755, 'abc1234def']));
+        assert.equal(postComment.mock.callCount(), 1);
+    });
+
     test('posts one comment per deferral, not per poll', async () => {
         const redis = createMockRedis();
         const { deps, postComment, stopLoop, advance } = makeDeps();

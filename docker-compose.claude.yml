@@ -1,0 +1,28 @@
+# Optional: expose existing Claude account configuration to agent launchers.
+# The file must already exist; never let Docker create a directory in its place.
+# Use with: docker compose -f docker-compose.yml -f docker-compose.claude.yml up -d
+services:
+  worker:
+    volumes:
+      - type: bind
+        source: ${HOME:?HOME must be set}/.claude.json
+        target: ${HOME:?HOME must be set}/.claude.json
+        read_only: true
+        bind:
+          create_host_path: false
+  api:
+    volumes:
+      - type: bind
+        source: ${HOME:?HOME must be set}/.claude.json
+        target: ${HOME:?HOME must be set}/.claude.json
+        read_only: true
+        bind:
+          create_host_path: false
+  indexing-worker:
+    volumes:
+      - type: bind
+        source: ${HOME:?HOME must be set}/.claude.json
+        target: ${HOME:?HOME must be set}/.claude.json
+        read_only: true
+        bind:
+          create_host_path: false

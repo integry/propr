@@ -8,7 +8,7 @@
  */
 
 import { expect, test, type Page } from '@playwright/test';
-import { capture, fixture } from './dashboard-sections.fixture';
+import { capture, captureTarget, fixture } from './dashboard-sections.fixture';
 
 const dayKeys = (days: number): string[] => Array.from({ length: days }, (_, index) =>
   new Date(Date.parse('2026-09-23T00:00:00Z') - (days - 1 - index) * 86_400_000).toISOString().slice(0, 10));
@@ -18,7 +18,7 @@ const SCALE: Record<string, number> = { '24h': 1, '7d': 3, '30d': 10, '90d': 24,
 const DAYS: Record<string, number> = { '24h': 2, '7d': 8, '30d': 31, '90d': 91, '1y': 366, all: 400 };
 
 async function stubAnalytics(page: Page, requests: string[] = []) {
-  await page.route('**/api/stats/{tasks,repositories,overview}*', route => {
+  await page.route('**/api/stats/{tasks,repositories,overview,review-scores}*', route => {
     const url = new URL(route.request().url());
     requests.push(`${url.pathname}${url.search}`);
     const period = url.searchParams.get('period') ?? '30d';
@@ -40,6 +40,17 @@ async function stubAnalytics(page: Page, requests: string[] = []) {
         { repository: 'example/workspace', total: 6 * scale, completed: 5 * scale, failed: scale, inProgress: 0, successRate: 83.3 },
         { repository: 'example/design-system', total: 3 * scale, completed: 3 * scale, failed: 0, inProgress: 0, successRate: 100 },
         { repository: 'example/docs', total: scale, completed: scale, failed: 0, inProgress: 0, successRate: 100 },
+      ] } });
+    }
+    if (url.pathname === '/api/stats/review-scores') {
+      const figures = (prs: number, first: number, final: number, merged: number, cost: number | null) => ({
+        prs_scored: prs, first_score: { mean: first, median: Math.round(first), n: prs }, final_score: { mean: final, n: prs },
+        cycles_to_goal: { mean: 1.8, n: Math.max(1, Math.round(prs / 2)), attempted: prs },
+        merge_rate: { value: merged / prs, merged, n: prs }, cost_per_merged_pr: { usd: cost, n: cost === null ? 0 : merged },
+      });
+      return route.fulfill({ json: { period, repository: 'all', prs_scored: 6 * scale, scores_recorded: 14 * scale, models: [
+        { implementer_model: 'claude-opus-5-5', implementer_agent: 'claude', ...figures(4 * scale, 6.4, 8.6, 3 * scale, 1.84) },
+        { implementer_model: 'gpt-5.6', implementer_agent: 'codex', ...figures(2 * scale, 5.9, 8.1, scale, null) },
       ] } });
     }
     return route.fulfill({ json: {
@@ -109,6 +120,7 @@ test('wider screens get the segmented control, and a choice reaches every sectio
   await expect.poll(() => [...new Set(requests)].sort()).toEqual([
     '/api/stats/overview?period=7d',
     '/api/stats/repositories?period=7d',
+    '/api/stats/review-scores?period=7d',
     '/api/stats/tasks?period=7d',
   ]);
   await expect(page.getByText('design-system')).toBeVisible();
@@ -262,4 +274,17 @@ test('repository and model rows drill down to the filtered lists', async ({ page
 
   await row.getByRole('cell').last().click();
   await expect(page).toHaveURL(/\/tasks\?repository=example%2Fworkspace$/);
+});
+
+test('review quality by model shows every figure with its denominator and unknowns as a dash', async ({ page }) => {
+  await openAnalytics(page, 1440);
+  const pane = page.locator('section', { has: page.getByRole('heading', { name: /Review quality by model/ }) });
+  const rows = pane.getByTestId('review-quality-row');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText('Claude Opus 5.5');
+  await expect(rows.first()).toContainText('$1.84');
+  await expect(rows.nth(1)).toContainText('—');
+  await expect(pane.getByText('n=40').first()).toBeVisible();
+  await captureTarget(pane, 'analytics-review-quality');
+  await captureSettled(page, 'analytics-review-quality-page');
 });

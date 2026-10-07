@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { assertGitHubRepositoryIdentity } from '../../core/src/git/repositoryPaths.js';
 import type { RepoToMonitor, VisualPreviewSettings, VisualPreviewType } from '@propr/core';
 import { normalizeOptionalBranchName } from './branchNameValidation.js';
+import { isValidAutoResolveMergeConflicts, normalizeStoredAutoResolveMergeConflicts, preserveRepoAutoResolveMergeConflicts, withAutoResolveMergeConflicts } from './configRepoAutoResolve.js';
 
 const MAX_VISUAL_PREVIEW_INSTRUCTIONS_LENGTH = 4000;
 
@@ -73,7 +74,7 @@ export function withDefaultRepoAutoFollowup(repo: RepoToMonitor): RepoToMonitor 
 
 export function withDefaultRepoOptions(repo: RepoToMonitor): RepoToMonitor {
   return {
-    ...withDefaultRepoAutoFollowup(repo),
+    ...withAutoResolveMergeConflicts(withDefaultRepoAutoFollowup(repo), normalizeStoredAutoResolveMergeConflicts(repo.autoResolveMergeConflicts)),
     cancelCiDuringFollowup: repo.cancelCiDuringFollowup === true,
     cancelCiDuringFollowupWorkflows: normalizeStoredWorkflowSelection(repo.cancelCiDuringFollowupWorkflows),
     nonBlockingChecks: normalizeStoredWorkflowSelection(repo.nonBlockingChecks),
@@ -369,6 +370,7 @@ function validateOptionalBooleans(candidate: Partial<RepoToMonitor>, repoName: s
       return failure(`Invalid ${field} format for ${repoName}: must be a boolean`);
     }
   }
+  if (!isValidAutoResolveMergeConflicts(candidate.autoResolveMergeConflicts)) return failure(`Invalid autoResolveMergeConflicts format for ${repoName}: must be a boolean or null`);
   return success(undefined);
 }
 
@@ -418,7 +420,7 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
   const visualPreview = normalizeVisualPreview(candidate.visualPreview, name);
   if (!visualPreview.ok) return visualPreview;
 
-  return success({
+  return success(withAutoResolveMergeConflicts({
     id: candidate.id?.trim() || randomUUID(),
     name,
     enabled,
@@ -433,7 +435,7 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
     alias: alias.value,
     baseBranch: baseBranch.value,
     defaultBranch: defaultBranch.value
-  });
+  }, normalizeStoredAutoResolveMergeConflicts(candidate.autoResolveMergeConflicts)));
 }
 
 /**
@@ -480,7 +482,7 @@ export function preserveRepoSettings(
   repos = preserveRepoCancelCiDuringFollowup(previousRepos, repos, incomingRepos);
   repos = preserveRepoCancelCiWorkflows(previousRepos, repos, incomingRepos);
   repos = preserveRepoNonBlockingChecks(previousRepos, repos, incomingRepos);
-  repos = preserveRepoNotifications(previousRepos, repos, incomingRepos);
+  repos = preserveRepoAutoResolveMergeConflicts(previousRepos, preserveRepoNotifications(previousRepos, repos, incomingRepos), incomingRepos);
   repos = preserveRepoGitHubPrTemplateFallback(previousRepos, repos, incomingRepos);
   return preserveRepoVisualPreview(previousRepos, repos, incomingRepos);
 }

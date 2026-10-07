@@ -554,6 +554,7 @@ jobs:
               scripts/ci-redis.sh \
               scripts/ci-runner-evidence.sh \
               scripts/ci-rootless-preflight.sh \
+              scripts/smoke-check-app-sharp.sh \
               scripts/smoke-test-images.sh \
               scripts/smoke-test-preview-agent-image.sh \
               scripts/smoke-test-preview-runtime-images.sh \
@@ -1026,6 +1027,47 @@ jobs:
               fi
             fi
 
+          fi
+
+          # --- API REFERENCE ---
+          # The OpenAPI spec is generated from the API route registry, published
+          # by the docs site and consumed by @propr/client, so a change to any
+          # of the three can make the committed spec or client contract stale.
+          if [ "${FILTER_API:-}" != 'false' ] || [ "${FILTER_DOCS:-}" != 'false' ] || [ "${FILTER_UI:-}" != 'false' ]; then
+            echo -e "\n--- API Reference: OpenAPI Spec & Client Contract ---" >> build_log.txt
+            API_REFERENCE_FAILED=0
+
+            if ! build_shared_once; then
+              echo "❌ Shared Package Build FAILED (API reference dependency)" >> build_log.txt
+              echo "$SHARED_OUTPUT" >> build_log.txt
+              API_REFERENCE_FAILED=1
+              EXIT_CODE=1
+            fi
+
+            if [ $API_REFERENCE_FAILED -eq 0 ]; then
+              # Also validates the spec against the OpenAPI 3.1 schema.
+              OPENAPI_OUTPUT=$(npm run gen:openapi:check 2>&1) || {
+                echo "❌ OpenAPI spec is stale or invalid (run npm run gen:openapi)" >> build_log.txt
+                echo "$OPENAPI_OUTPUT" >> build_log.txt
+                API_REFERENCE_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $API_REFERENCE_FAILED -eq 0 ]; then
+                echo "✅ OpenAPI spec is current and valid" >> build_log.txt
+              fi
+            fi
+
+            if [ $API_REFERENCE_FAILED -eq 0 ]; then
+              CONTRACT_OUTPUT=$(npm run check:client-contract 2>&1) || {
+                echo "❌ @propr/client contract check FAILED" >> build_log.txt
+                echo "$CONTRACT_OUTPUT" >> build_log.txt
+                API_REFERENCE_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $API_REFERENCE_FAILED -eq 0 ]; then
+                echo "✅ @propr/client matches the OpenAPI spec" >> build_log.txt
+              fi
+            fi
           fi
 
           exit $EXIT_CODE

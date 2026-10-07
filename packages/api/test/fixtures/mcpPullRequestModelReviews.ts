@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import * as core from '@propr/core';
+import type { ReviewCommandMeta } from '@propr/core';
 import type { McpPrincipal } from '../../mcp/policy.js';
 import { type Args, type WriteFixture, interceptRest } from './mcpPullRequestWrites.js';
 
@@ -58,9 +58,12 @@ export async function verifyModelReviews({ t, call, mutate, principal, findPullR
     const stored = comments.find(comment => comment.id === review.result.commentId)!;
     assert.equal(stored.body.split('\n')[0], '/review gpt-5.6');
     // The webhook parses the posted comment and resolves the same assignment validation did.
+    // Core is loaded lazily: a static import would open its database before the
+    // calling test points DATA_DIR/DB_FILENAME at its own temporary root.
+    const core = await import('@propr/core');
     const meta = core.buildCommandMeta(core.parseSlashCommand(stored.body)!);
     assert.equal(meta.mode, 'review');
-    const assignments = await core.resolveReviewModels((meta as core.ReviewCommandMeta).models);
+    const assignments = await core.resolveReviewModels((meta as ReviewCommandMeta).models);
     assert.deepEqual(assignments.map(assignment => [assignment.agentAlias, assignment.model]), [[review.result.agentAlias, review.result.resolvedModel]]);
   });
 

@@ -38,6 +38,7 @@ const { determinePRStatusUpdate } = await import('../src/webhook/statusMachine.j
 const { createEpicExecutionQueue, getEpicExecutionQueue, summarizeEpicQueue, decideEpicAdvance,
   advanceEpicQueue, startEpicQueueHead, reconcileEpicExecutionQueues, readyEpicExecutionQueue,
   cancelEpicExecutionQueue, onPlanIssueStatusChanged, finalizeCompletedEpicQueue } = await import('../src/services/taskPlanning/epicExecutionQueue.js');
+const { markEpicQueueAwaitingHumanMerge } = await import('../src/services/taskPlanning/epicQueueHumanMerge.js');
 
 await database.raw('PRAGMA foreign_keys = ON');
 await database.schema.createTable('task_drafts', table => {
@@ -400,4 +401,29 @@ test('failed recovery cannot rotate or cancel a replacement execution', async ()
   assert.equal(replacement?.executionId, replacementId);
   assert.equal(replacement?.status, 'active');
   assert.equal((await database('epic_execution_queues').where({ draft_id: 'draft' }).first()).updated_at, 42);
+});
+
+test('a skipped auto-merge arm leaves the queue waiting for a human merge, then resumes', async () => {
+  await createEpicExecutionQueue(input);
+  await startEpicQueueHead('draft');
+  assert.deepEqual(starts, [10]);
+  await status(10, S.UNDER_REVIEW);
+  // Only the current head can be marked.
+  assert.equal(await markEpicQueueAwaitingHumanMerge({ draftId: 'draft', issueNumber: 30, prNumber: 130, reason: 'skipped_protected_path' }, { database }), false);
+  assert.equal(await markEpicQueueAwaitingHumanMerge({ draftId: 'draft', issueNumber: 10, prNumber: 110, reason: 'skipped_protected_path' }, { database }), true);
+  // Recovery neither fails the queue nor clears the explanation nor starts a successor.
+  await reconcileEpicExecutionQueues();
+  await startEpicQueueHead('draft');
+  let queue = await getEpicExecutionQueue('draft');
+  assert.equal(queue?.status, 'active');
+  assert.equal(queue?.cursor, 0);
+  assert.match(queue?.blockedReason ?? '', /^Waiting for human merge: auto-merge was not armed for PR #110 \(issue #10, skipped_protected_path\)/);
+  assert.deepEqual(starts, [10]);
+  // A person merges the PR: the queue advances and clears the explanation.
+  await status(10, S.MERGED);
+  await onPlanIssueStatusChanged('draft', 10, S.MERGED);
+  queue = await getEpicExecutionQueue('draft');
+  assert.equal(queue?.cursor, 1);
+  assert.equal(queue?.blockedReason, null);
+  assert.deepEqual(starts, [10, 30]);
 });

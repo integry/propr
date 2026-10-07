@@ -1,5 +1,5 @@
 import type { RequestHandler } from 'express';
-import { requirePermission } from './authorization.js';
+import { requirePermission } from './permissionCheck.js';
 
 export const requireManageSettings = requirePermission('instance.manage_settings');
 export const requireManageAgents = requirePermission('instance.manage_agents');

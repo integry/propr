@@ -2,7 +2,7 @@
 export { default as logger, generateCorrelationId, createCorrelatedLogger } from './utils/logger.js';
 export { handleError, withErrorHandling, safeAsync, makeIdempotent, categorizeError, ErrorCategories } from './utils/errorHandler.js';
 export type { ErrorCategory, ErrorDetails, ErrorHandlerOptions, IssueRef as ErrorIssueRef } from './utils/errorHandler.js';
-export { withRetry, retryConfigs, calculateDelay } from './utils/retryHandler.js';
+export { withRetry, retryConfigs, calculateDelay, isDefaultRetryableError, isQuotaExhaustionError } from './utils/retryHandler.js';
 export { clearUltrafixStateForLabelRemoval, withUltrafixLabelTransition } from './utils/ultrafixLabelTransition.js';
 export type { UltrafixLabelRemovalResult } from './utils/ultrafixLabelTransition.js';
 export type { RetryConfig, RetryOptions } from './utils/retryHandler.js';
@@ -142,6 +142,7 @@ export type {
 
 export { areAllChecksPassing, buildRedisRuntimeConfig, closeUltrafixStateRedis, getCurrentPRHead, getCheckRunsStatus, getCheckRunsStatusForRepo, summarizeCheckSignals, getActiveTasksForPR, hasActiveTasksForPR, type CheckRunsStatus, type ActivePRWork, type ActivePRTask, type ActivePRQueuedJob } from './webhook/checkRunHelpers.js';
 export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltrafixCheckRunHook, type StatusEventPayload } from './webhook/checkRunHandler.js';
+export { recoverCiFailureFollowups } from './webhook/ciFailureRecovery.js';
 export * from './webhook/ciFailureFollowup.js';
 export * from './webhook/closedPullRequestCi.js';
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
@@ -158,7 +159,32 @@ export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isRevi
 export { parseSlashCommand, buildCommandMeta } from './webhook/slashCommandParser.js';
 export type { ParsedSlashCommand, SlashCommandName, CommandMeta, ReviewCommandMeta, FixCommandMeta, MergeCommandMeta, UltrafixCommandMeta } from './webhook/slashCommandParser.js';
 export { handlePullRequestConflictDetection, handlePushConflictDetection, handleMergeCommand } from './webhook/mergeConflictDetector.js';
-export type { ConflictDetectionOutcome, ConflictDetectionResult, HandleMergeCommandOptions } from './webhook/mergeConflictDetector.js';
+export type { ConflictDetectionOutcome, ConflictDetectionResult, ConflictSkipReason, HandleMergeCommandOptions } from './webhook/mergeConflictDetector.js';
+export {
+    classifyMergeability,
+    evaluateOpenPullRequests,
+    getMergeConflictSweepIntervalMs,
+    isProprManagedPullRequest,
+    maybeQueueConflictResolution,
+    pollMergeability,
+    sweepConflictedPullRequests,
+    CONFLICT_DEDUP_TTL_SECONDS,
+    MAX_CONFLICT_ATTEMPTS_PER_WINDOW,
+    MERGEABILITY_POLL_DELAYS_MS,
+} from './webhook/mergeConflictAutoResolve.js';
+export type { ConflictPullRequest, ConflictTrigger, Mergeability, MergeConflictRedis } from './webhook/mergeConflictAutoResolve.js';
+export {
+    AUTO_RESOLVE_MERGE_CONFLICTS_CONFIG_KEY,
+    loadEffectiveAutoResolveMergeConflicts,
+    loadInstanceAutoResolveMergeConflicts,
+    normalizeAutoResolveMergeConflictsOverride,
+    parseBooleanSetting,
+    resolveAutoResolveMergeConflicts,
+    resolveRepositoryAutoResolveMergeConflictsOverride,
+} from './config/mergeConflictSettings.js';
+export type { AutoResolveMergeConflictsSource, EffectiveAutoResolveMergeConflicts } from './config/mergeConflictSettings.js';
+export { performConflictResolution, findConflictMarkers } from './git/conflictResolution.js';
+export type { ConflictResolutionOptions, ConflictResolutionOutcome, ConflictResolverContext } from './git/conflictResolution.js';
 export {
     determinePRStatusUpdate,
     isTerminalStatus,
@@ -526,9 +552,13 @@ export { checkNameMatches, isNonBlockingCheck } from './webhook/nonBlockingCheck
 export * from './services/usageTips/index.js';
 
 export * from './workflow/repositoryWorkflow.js';
+export * from './workflow/autoMergePolicy.js';
+export * from './services/autoMergeGate.js';
 export * from './workflow/prTemplate.js';
 export { executeWithRepositoryWorkflow, buildRepositoryValidationReport, REPOSITORY_VALIDATION_REPORT_MAX_LENGTH } from './workflow/workflowExecution.js';
 export { withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, reconcileRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError } from './workflow/workflowConcurrency.js';
 export * from './services/taskCancellation.js';
 export * from './services/taskIntent.js';
 export * from './services/taskPlanning/epicExecutionQueue.js';
+export * from './services/taskPlanning/epicQueueHumanMerge.js';
+export * from './services/reviewScoreStore.js';

@@ -408,6 +408,7 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
     await createPRCommentTaskStateIfMissing({ job, taskId, stateManager, preexistingState, modelName, correlatedLogger });
 
     let capacityRefused = false;
+    let executionFailed = false;
     const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
 
     try {
@@ -439,6 +440,7 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
         }
         return await runWithExecutionAbortSignal(executionController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }), hashTaskAttemptToken(lockToken));
     } catch (error) {
+        executionFailed = true;
         const failJob = (failure: Error) => handleJobError(failure, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, retryComments: context.commentsToProcess, publicationStatus: state.publication?.status });
         if (error instanceof RepositoryWorkflowCapacityError) {
             capacityRefused = true;
@@ -461,6 +463,6 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
         return { status: 'requeued', reason: 'usage_limit' };
     } finally {
         await stopLockHeartbeat();
-        await cleanupJob({ stateManager, lockKey, lockToken, taskId, octokit: state.octokit ?? undefined, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobUserId: job.data.userId, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient, skipPendingCommentFollowup: capacityRefused });
+        await cleanupJob({ stateManager, lockKey, lockToken, taskId, octokit: state.octokit ?? undefined, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobUserId: job.data.userId, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient, skipPendingCommentFollowup: capacityRefused, success: !executionFailed });
     }
 }

@@ -21,6 +21,7 @@ import {
     createPersistedTaskStateStore,
     type PersistedTaskStateStore,
 } from './persistedTaskStateStore.js';
+import type { TaskReplacementService } from './taskReplacement/service.js';
 
 // Keep the original key so mixed-version workers still share one lease during rolling deploys.
 const RECONCILIATION_LEASE_KEY = 'lock:worker:pr-task-state-reconciliation';
@@ -58,6 +59,8 @@ export interface WorkerTaskStateRecoveryOptions {
     recoverGoals?: () => Promise<unknown>;
     /** Follow-up CI suspensions that outlived their task, under the same lease. */
     reconcileCiSuspensions?: () => Promise<unknown>;
+    /** Replacement attempts for orphaned tasks, and completion of interrupted replacement decisions. */
+    replacement?: TaskReplacementService;
 }
 
 class RecoveryOperationTimeoutError extends Error {
@@ -277,12 +280,23 @@ export async function startWorkerTaskStateRecovery(
                     batchSize,
                     timeBudgetMs: reconciliationBudgetMs,
                     signal: controller.signal,
+                    ...(options.replacement ? { replacement: options.replacement } : {}),
                 }),
                 controller.signal,
             );
             cursor = result.nextCursor;
             backlog = result.backlog ?? [];
             logger.info(result.summary, 'Reconciled stale persisted task states');
+            if (options.replacement) {
+                const replacement = options.replacement;
+                const replacementResult = await runWithinDeadline(
+                    'Task replacement recovery',
+                    () => replacement.resumePending(),
+                    deadline - leaseReleaseBudgetMs,
+                    controller.signal,
+                );
+                logger.info(replacementResult, 'Resumed interrupted task replacement decisions');
+            }
             if (options.recoverGoals) {
                 const goalResult = await runWithinDeadline(
                     'Native goal recovery',

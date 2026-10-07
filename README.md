@@ -326,6 +326,7 @@ More answers in the [full FAQ](https://docs.propr.dev/docs/faq).
 | [Feature overview](https://docs.propr.dev/docs/features/overview) | [PR slash commands](https://docs.propr.dev/docs/features/pr-commands) | [GitHub authentication](https://docs.propr.dev/docs/operations/github-auth) |
 | [Local setup](https://docs.propr.dev/docs/tutorials/setup-local) | [Agents and models](https://docs.propr.dev/docs/features/agents-and-models) | [Troubleshooting](https://docs.propr.dev/docs/operations/troubleshooting) |
 | [Planner Studio](https://docs.propr.dev/docs/tutorials/planner-studio) | [CLI reference](https://docs.propr.dev/docs/features/propr-cli) | [Architecture](https://docs.propr.dev/docs/architecture/overview) |
+| | | [API reference](https://docs.propr.dev/docs/operations/api-reference) |
 
 The docs also ship inside the stack — run `propr docs` to open the bundled copy.
 
