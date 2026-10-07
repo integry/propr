@@ -6,7 +6,11 @@ import { AttachmentUploader } from './AttachmentUploader';
 import { resizeImage } from './imageUtils';
 import { ClearImplementationDialog } from './ClearImplementationDialog';
 import { extractFilePaths } from './taskCardUtils';
+import { getOutlineTitle } from './planDisplayName';
 import { RenderEditableContent, CollapsedImplementationPreview, EditableField, ViewMode } from './TaskCardComponents';
+
+/** Heading text: the step number sits beside it, so a generated "<plan> (n/m):" prefix is dropped. */
+const getHeadingTitle = (title: string | undefined): string => getOutlineTitle(title ?? '');
 
 interface TaskCardProps {
   task: PlanTask;
@@ -154,8 +158,11 @@ export const TaskCard = forwardRef<HTMLDivElement, TaskCardProps>(({
                   <h3
                     onClick={() => handleFieldClick('title')}
                     className="text-xl font-semibold text-gray-900 cursor-default hover:bg-gray-50 rounded px-2 py-1 -ml-2 leading-tight"
+                    title={task.title}
                   >
-                    {task.title || <span className="text-gray-400 italic font-normal">Task Title</span>}
+                    {/* The step number sits beside the heading, so a generated "<plan> (n/m):" prefix (which
+                        keeps its original position after a reorder) is dropped; editing shows the raw title. */}
+                    {getHeadingTitle(task.title) || <span className="text-gray-400 italic font-normal">Task Title</span>}
                   </h3>
                 )}
               </div>

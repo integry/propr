@@ -8,7 +8,7 @@ import SetupWizard from '../components/TaskPlanner/SetupWizard';
 import PlanEditor from '../components/TaskPlanner/PlanEditor';
 import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import { GenerationProgress } from '../components/TaskPlanner/GenerationProgress';
-import StudioStepper, { StudioPhaseSwitcher } from '../components/TaskPlanner/StudioStepper';
+import { StudioPhaseSwitcher } from '../components/TaskPlanner/StudioStepper';
 import { StudioStageContext, type StudioStage } from '../components/TaskPlanner/studioStageContext';
 import { PlannerDraft, DraftWithPlan } from '../api/plannerApi';
 import { getDraftDisplayName } from '../components/TaskPlanner/planDisplayName';
@@ -82,17 +82,13 @@ const ErrorView: React.FC<{ error: string | null }> = ({ error }) => (
 );
 
 /**
- * Page frame for every studio phase. On desktop the phases sit in each view's own title row
- * (see StudioPhaseSwitcher), so there is no separate stepper band; phone widths keep the
- * full stepper because their headers have no room for it.
+ * Page frame for every studio phase. The phases sit in each view's own title row (see
+ * StudioPhaseSwitcher) at every width, so there is no separate stepper band.
  */
 const StudioShell: React.FC<{ currentStage: StudioStage; intro?: React.ReactNode; children: React.ReactNode }> = ({ currentStage, intro, children }) => (
   <StudioStageContext.Provider value={currentStage}>
     <div className="planner-studio-viewport flex flex-col">
       {intro && <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-3 border-b border-gray-300">{intro}</div>}
-      <div className="md:hidden bg-gray-100 px-4 py-2 border-b border-gray-300">
-        <StudioStepper currentStage={currentStage} />
-      </div>
 
       {/* Scrollable Canvas */}
       <div className="flex-1 overflow-auto bg-white">
@@ -124,10 +120,10 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft;
         animate={{ opacity: 1 }}
         className="h-full"
       >
-        <div className="flex items-center justify-between px-6 py-3 border-b border-gray-100">
-          <div className="flex items-center gap-4">
+        <div className="flex items-center justify-between gap-2 px-4 md:px-6 py-3 border-b border-gray-100">
+          <div className="flex items-center gap-2 md:gap-4 min-w-0">
             <div className="text-sm text-gray-500 truncate max-w-md">{taskTitle}</div>
-            <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-700 flex items-center gap-1">
+            <span className="px-2 py-1 rounded text-xs font-medium bg-yellow-100 text-yellow-700 flex items-center gap-1 flex-shrink-0">
               <motion.span
                 animate={{ opacity: [1, 0.5, 1] }}
                 transition={{ duration: 1.5, repeat: Infinity }}
@@ -136,7 +132,7 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft;
               Generating
             </span>
           </div>
-          <StudioPhaseSwitcher className="hidden md:block" />
+          <StudioPhaseSwitcher />
         </div>
 
         <div className="px-6 py-4">

@@ -12,6 +12,7 @@ import {
 } from './PlanIssueRowComponents';
 import { getContainerClassName, getTitleClassName } from './planIssueRowUtils';
 import { getOutlineTitle } from './planDisplayName';
+import type { PlanIssueDefaultSelection } from './planIssueDefaultSelection';
 
 interface PlanIssueRowProps {
   issue: PlanIssue;
@@ -20,9 +21,13 @@ interface PlanIssueRowProps {
   onImplement: (issueNumber: number, models?: AgentModelPair[]) => void;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
+  /** Plan default agent/model (the toolbar selection); the override popover can reset to it. */
+  defaultSelection?: PlanIssueDefaultSelection | null;
   implementing?: boolean;
   disableImplementation?: boolean;
   isFirstPending?: boolean;
+  /** Pending, but owned by the execution queue: it starts once the issue ahead of it finishes. */
+  isQueued?: boolean;
   onImplementWithWarning?: (issueNumber: number, models?: AgentModelPair[]) => void;
   /** Inherited multi-mode state from parent (e.g., applied from global selection) */
   inheritedIsMulti?: boolean;
@@ -48,9 +53,11 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
   onImplement,
   onAgentChange,
   onModelChange,
+  defaultSelection,
   implementing = false,
   disableImplementation = false,
   isFirstPending = true,
+  isQueued = false,
   onImplementWithWarning,
   inheritedIsMulti,
   inheritedSelectedModels,
@@ -136,7 +143,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               #{issue.issue_number}
               <ExternalLink size={10} className="opacity-50" />
             </a>
-            <span className="w-24 flex-shrink-0"><StatusBadge status={issue.status} /></span>
+            <span className="w-24 flex-shrink-0"><StatusBadge status={issue.status} queued={isQueued} /></span>
             {issueTitle && (
               // The plan name and step counter ("Agents v1 (6/17):") repeat on every row, so rows lead with the step itself.
               <span className={`text-sm ${getTitleClassName(isMerged)} truncate`} title={issueTitle}>
@@ -161,6 +168,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
               issue={issue}
               onAgentChange={onAgentChange}
               onModelChange={onModelChange}
+              defaultSelection={defaultSelection}
               disableImplementation={disableImplementation}
               implementButtonPressed={implementButtonPressed}
               showImplementButton={showImplementButton}

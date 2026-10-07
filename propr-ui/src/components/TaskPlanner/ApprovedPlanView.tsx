@@ -236,7 +236,8 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
         <div className="hidden lg:block"><OriginalPromptPopover prompt={initialPrompt} /></div>
       </>
     )}
-    <StudioPhaseSwitcher className="hidden md:block" />
+    {/* The phase pill replaces the old stepper band on phones too, so it shares the title row. */}
+    <StudioPhaseSwitcher className="ml-auto md:ml-0" />
   </div>
 );
 

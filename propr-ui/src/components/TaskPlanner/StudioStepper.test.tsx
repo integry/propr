@@ -23,4 +23,17 @@ describe('StudioPhaseSwitcher', () => {
     expect(current).toHaveTextContent('2Review(17)');
     expect(phases).toHaveTextContent('3Execute');
   });
+
+  it('keeps only the current phase label visible below md so the pill fits a phone title row', () => {
+    render(
+      <StudioStageContext.Provider value="execute">
+        <StudioPhaseSwitcher />
+      </StudioStageContext.Provider>
+    );
+
+    expect(screen.getAllByLabelText('Done')).toHaveLength(2);
+    expect(screen.getByText('Define')).toHaveClass('sr-only', 'md:not-sr-only');
+    expect(screen.getByText('Review')).toHaveClass('sr-only', 'md:not-sr-only');
+    expect(screen.getByText('Execute')).not.toHaveClass('sr-only');
+  });
 });

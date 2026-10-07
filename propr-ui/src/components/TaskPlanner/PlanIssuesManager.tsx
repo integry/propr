@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, ChevronUp, CheckCircle, AlertCircle } from 'lucide-react';
-import { AgentModelPair, PlanIssue, STATUS_CONFIG } from '../../api/planIssuesApi';
+import { AgentModelPair, PlanIssue } from '../../api/planIssuesApi';
 import { PlanTask } from '../../api/plannerApi';
 import PlanIssueRow from './PlanIssueRow';
 import { ListSkeleton } from '../ui/Skeleton';
@@ -11,6 +11,7 @@ import { IssueCreationProgressIndicator } from './IssueCreationProgressIndicator
 import { ExecutionOptionsToolbar, TasksBeingCreated } from './PlanIssuesManagerToolbar';
 import PlanIntentConfirmationDialog from './PlanIntentConfirmationDialog';
 import ExecuteAllBar from './ExecuteAllBar';
+import { useExecuteAll } from './useExecuteAll';
 import {
   describePlanPrBehavior,
   type PlanNotificationIntent,
@@ -127,6 +128,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
 
   const {
     issues, agents, loading, error, clearError, implementingIssue,
+    queuedIssueNumbers, queueingRemaining, handleQueueRemaining,
     issueTitles, issueTaskMap, activeIssues, mergedIssues,
     pendingCount, firstPendingIssueNumber,
     globalAgent, globalModel, globalIsMulti, globalSelectedModels, applyingGlobal,
@@ -198,20 +200,17 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     onNotificationIntentConsumed?.();
   }, [loading, notificationIntent, onNotificationIntentConsumed]);
 
-  const hasRunningIssues = useMemo(
-    () => issues.some(issue => STATUS_CONFIG[issue.status]?.isActive),
-    [issues]
-  );
-
-  // The batch only starts from the earliest unmerged issue, and only while nothing runs. The client
-  // cannot see the server's execution queue, so a running issue or an unfinished predecessor may
-  // belong to a queue that already owns the pending tasks; starting a successor would bypass it.
-  const handleExecuteAll = useCallback(() => {
-    if (hasRunningIssues || !executionIntent.canExecute || !executionIntent.issue) return;
-    void handleImplementIssue(executionIntent.issue.issue_number, executionIntent.models);
-  }, [executionIntent, handleImplementIssue, hasRunningIssues]);
+  const { hasInFlightIssues, handleExecuteAll, batchLocked, batchBusy } = useExecuteAll({
+    issues, executionIntent, isReadOnly, isSavingExecutionSettings, implementingIssue, queueingRemaining,
+    handleImplementIssue, handleQueueRemaining,
+  });
 
   const issueCount = activeIssues.length + mergedIssues.length;
+  // The toolbar selection starts at the catalog default and is what "Reset to default" restores.
+  const planDefaultSelection = useMemo(
+    () => ({ agentAlias: globalAgent, modelName: globalModel }),
+    [globalAgent, globalModel],
+  );
 
   const handleConfirmExecutionIntent = useCallback(() => {
     if (!executionIntent.canExecute || !executionIntent.issue) return;
@@ -325,7 +324,9 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
               implementing={implementingIssue === issue.issue_number}
               disableImplementation={isSavingExecutionSettings || isReadOnly}
               isFirstPending={issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber}
-              showImplementButton={showRowImplementButton(useEpic, issueCount)}
+              isQueued={queuedIssueNumbers.has(issue.issue_number)}
+              defaultSelection={planDefaultSelection}
+              showImplementButton={showRowImplementButton(useEpic, issueCount) && !queuedIssueNumbers.has(issue.issue_number)}
               onImplementWithWarning={handleImplementWithWarning}
               inheritedIsMulti={issueMultiModeMap[issue.issue_number]}
               inheritedSelectedModels={issueSelectedModelsMap[issue.issue_number]}
@@ -338,14 +339,16 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         </div>
       )}
       <ExecuteAllBar
-        remainingCount={pendingCount}
+        remainingCount={pendingCount - queuedIssueNumbers.size}
+        queuedCount={queuedIssueNumbers.size}
         taskCount={issueCount}
         useEpic={useEpic}
         autoMerge={autoMerge}
-        hasRunningIssues={hasRunningIssues}
+        hasRunningIssues={hasInFlightIssues}
         canExecute={executionIntent.canExecute}
+        readOnly={batchLocked}
         unavailableReason={executionIntent.unavailableReason}
-        executing={implementingIssue !== null}
+        executing={batchBusy}
         onExecuteAll={handleExecuteAll}
       />
       {mergedIssues.length > 0 && (

@@ -35,22 +35,32 @@ describe('ExecuteAllBar', () => {
     expect(screen.getByTestId('execute-all-hint')).not.toHaveTextContent('concurrency slots');
   });
 
-  it('does not bypass an active auto-merge queue while issues are running', () => {
+  it('stays enabled while issues run so the backlog can be queued behind them', () => {
     const onExecuteAll = vi.fn();
-    render(<ExecuteAllBar {...baseProps} remainingCount={10} autoMerge hasRunningIssues onExecuteAll={onExecuteAll} />);
+    render(<ExecuteAllBar {...baseProps} remainingCount={10} autoMerge hasRunningIssues canExecute={false}
+      unavailableReason="There is no eligible pending issue to start." onExecuteAll={onExecuteAll} />);
 
     const button = screen.getByRole('button', { name: 'Queue Remaining (10 tasks)' });
-    expect(button).toBeDisabled();
-    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('Issues are running.');
+    expect(button).toBeEnabled();
+    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('Queues 10 tasks behind the running work. Each starts automatically');
     fireEvent.click(button);
-    expect(onExecuteAll).not.toHaveBeenCalled();
+    expect(onExecuteAll).toHaveBeenCalledTimes(1);
   });
-
-  it('blocks the epic batch while issues are running, as the epic endpoint refuses it', () => {
+  it('keeps the epic batch enabled while issues are running', () => {
     render(<ExecuteAllBar {...baseProps} useEpic hasRunningIssues onExecuteAll={vi.fn()} />);
 
+    expect(screen.getByRole('button', { name: /Queue Remaining/ })).toBeEnabled();
+  });
+  it('summarizes queued work once nothing is left to queue', () => {
+    render(<ExecuteAllBar {...baseProps} remainingCount={0} queuedCount={10} useEpic hasRunningIssues onExecuteAll={vi.fn()} />);
+
+    expect(screen.queryByRole('button', { name: /Queue Remaining/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('10 tasks queued.');
+  });
+  it('is disabled for read-only viewers even while issues run', () => {
+    render(<ExecuteAllBar {...baseProps} autoMerge hasRunningIssues readOnly onExecuteAll={vi.fn()} />);
+
     expect(screen.getByRole('button', { name: /Queue Remaining/ })).toBeDisabled();
-    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('Wait for the running issues to finish before queueing the remaining epic.');
   });
 
   it('shows why the batch cannot start when an earlier issue is unfinished', () => {

@@ -44,5 +44,7 @@ export * from './handlers/index.js';
 export {
   createGetIssuesHandler,
   createImplementIssueHandler,
+  createGetExecutionQueueHandler,
+  createQueueRemainingHandler,
   createUpdateIssueHandler
 } from '../planIssueHandlers.js';

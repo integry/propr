@@ -32,7 +32,7 @@ const StepTab: React.FC<StepTabProps> = ({ id, index, fullTitle, isActive, canRe
     <li
       ref={setNodeRef}
       style={{ transform: CSS.Translate.toString(transform), transition }}
-      className={`group relative min-w-0 flex-1 ${isDragging ? 'z-20 bg-white shadow-md' : ''}`}
+      className={`group relative min-w-[5rem] flex-initial ${isDragging ? 'z-20 bg-white shadow-md' : ''}`}
     >
       {canReorder && (
         <span

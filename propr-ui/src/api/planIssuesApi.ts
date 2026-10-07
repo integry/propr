@@ -149,6 +149,40 @@ export const implementIssue = async (
   return response.json();
 };
 
+/** Summary of the plan's sequential execution queue: `issues[cursor]` is in flight, later entries wait their turn. */
+export interface PlanExecutionQueue {
+  issues: number[];
+  cursor: number;
+  head: number | null;
+  status: 'active' | 'completed' | 'cancelled';
+  blockedReason: string | null;
+}
+
+/** Fetches the plan's execution queue, or null when the plan never queued work. */
+export const getPlanExecutionQueue = async (draftId: string): Promise<PlanExecutionQueue | null> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/execution-queue`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return (await response.json()).queue ?? null;
+};
+
+/**
+ * Queues every pending issue behind the issues already running. Nothing starts now:
+ * the server starts each queued issue once the one ahead of it finishes.
+ */
+export const queueRemainingIssues = async (
+  draftId: string,
+  options: Pick<ImplementIssueOptions, 'useEpic' | 'autoMerge'> = {}
+): Promise<{ queued: number[]; alreadyQueued: boolean; queue: PlanExecutionQueue | null }> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/execution-queue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(options),
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 /**
  * Updates a plan issue's agent/model configuration or status.
  */

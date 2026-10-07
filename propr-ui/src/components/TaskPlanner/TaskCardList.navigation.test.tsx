@@ -100,6 +100,18 @@ describe('TaskCardList adaptive navigation', () => {
     for (const step of [1, 2, 3]) expect(tabs.querySelector(`[aria-label="Reorder step ${step}"]`)).not.toBeNull();
   });
 
+  it('sizes short-plan tabs to their labels instead of clamping them to equal shares', () => {
+    renderList(3, vi.fn());
+    const tabs = Array.from(screen.getByRole('navigation', { name: 'Plan steps' }).querySelectorAll('li'));
+    expect(tabs).toHaveLength(3);
+    for (const tab of tabs) {
+      // flex-1 (basis 0) split the row evenly and truncated long labels next to empty space.
+      expect(tab).not.toHaveClass('flex-1');
+      expect(tab).toHaveClass('flex-initial');
+      expect(tab.querySelector('button')).toHaveClass('whitespace-nowrap');
+    }
+  });
+
   it('shows no reorder handles when the plan cannot be reordered', () => {
     renderList(3);
     expect(screen.queryByLabelText(/Reorder step/)).not.toBeInTheDocument();

@@ -92,7 +92,7 @@ mock.method(registry, 'getAgentByAlias', (alias: string) => alias === 'test' ? {
 const issueHelpers = await import('../routes/planIssueHelpers.js');
 await mock.module('../routes/planIssueHelpers.js', { namedExports: { ...issueHelpers, getLlmLabel: async (model: string | null) => model ? `llm-${model}` : 'llm-old',
 } });
-const { createUpdateIssueHandler, createImplementIssueHandler } = await import('../routes/planIssueHandlers.js');
+const { createUpdateIssueHandler, createImplementIssueHandler, createQueueRemainingHandler } = await import('../routes/planIssueHandlers.js');
 const realUpdateIssue = createUpdateIssueHandler({ verifyOwnership: async () => ({ authorized: true,
   draft: await core.db('task_drafts').where({ draft_id: planId }).first() }) });
 const { addPlanningTools, planEpicDispatch } = await import('../mcp/toolsPlanning.js');
@@ -951,4 +951,62 @@ test('setup recovery cannot restore a stale head selection after the execution i
   assert.equal((await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).first()).model_name, 'model');
   assert.notEqual((await core.getEpicExecutionQueue(planId))?.executionId, old.executionId);
   assert.equal((await core.getEpicExecutionQueue(planId))?.ready, false);
+});
+
+async function queueRemainingFromUI(body: Record<string, unknown> = {}) {
+  const handler = createQueueRemainingHandler({ verifyOwnership: async () => ({ authorized: true,
+    draft: await database('task_drafts').where({ draft_id: planId }).first() }) });
+  let status = 200;
+  let payload: unknown;
+  const response = { status(code: number) { status = code; return this; }, json(value: unknown) { payload = value; } };
+  await handler({ params: { id: planId }, user: { id: 'user' }, body } as never, response as never);
+  return { status, body: payload as { queued?: number[]; alreadyQueued?: boolean; error?: string } };
+}
+
+test('Queue Remaining queues pending epic issues behind a running issue without starting them', async () => {
+  await database('task_drafts').where({ draft_id: planId }).update({ context_config: JSON.stringify({ useEpic: true, epicLabel: 'base-epic' }) });
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).update({ status: 'processing' });
+  const result = await queueRemainingFromUI();
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.queued, [20, 30, 40]);
+  const queue = await core.getEpicExecutionQueue(planId);
+  assert.deepEqual(queue?.issues, [10, 20, 30, 40]);
+  assert.equal(queue?.ready, true);
+  assert.equal(labelCalls.some(call => call.labels.includes('AI')), false);
+  assert.deepEqual(issueLabels.get(20)?.sort(), ['base-epic', 'llm-model']);
+  await core.updatePlanIssueStatus(repository, 10, core.PlanIssueStatus.MERGED);
+  assert.deepEqual(labelCalls.filter(call => call.labels.includes('AI')).map(call => call.number), [20]);
+});
+
+test('Queue Remaining extends an active queue once and is idempotent afterwards', async () => {
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  await database('task_drafts').where({ draft_id: planId }).update({ context_config: JSON.stringify({ useEpic: true, epicLabel: 'base-epic' }) });
+  await run({ issues: [10, 30] });
+  const executionId = (await core.getEpicExecutionQueue(planId))?.executionId;
+  const first = await queueRemainingFromUI();
+  assert.equal(first.status, 200);
+  assert.equal(first.body.alreadyQueued, false);
+  const queue = await core.getEpicExecutionQueue(planId);
+  assert.equal(queue?.executionId, executionId);
+  assert.deepEqual(queue?.issues, [10, 30, 20, 40]);
+  assert.equal(issueLabels.get(20)?.includes('AI'), false);
+  const second = await queueRemainingFromUI();
+  assert.equal(second.status, 200);
+  assert.equal(second.body.alreadyQueued, true);
+  assert.deepEqual((await core.getEpicExecutionQueue(planId))?.issues, [10, 30, 20, 40]);
+});
+
+test('Queue Remaining defers to the row start when nothing runs, and needs auto-merge outside an epic', async () => {
+  await database('task_drafts').where({ draft_id: planId }).update({ context_config: JSON.stringify({ autoMerge: true }) });
+  assert.equal((await queueRemainingFromUI()).status, 409);
+  await database('plan_issues').where({ draft_id: planId, issue_number: 10 }).update({ status: 'processing' });
+  assert.equal((await queueRemainingFromUI({ autoMerge: false })).status, 409);
+  assert.equal(await core.getEpicExecutionQueue(planId), null);
+  await database('plan_issues').where({ draft_id: planId }).update(models[0]);
+  const queued = await queueRemainingFromUI();
+  assert.equal(queued.status, 200);
+  const queue = await core.getEpicExecutionQueue(planId);
+  assert.equal(queue?.useEpic, false);
+  assert.deepEqual(issueLabels.get(30)?.sort(), ['auto-merge', 'llm-model']);
 });

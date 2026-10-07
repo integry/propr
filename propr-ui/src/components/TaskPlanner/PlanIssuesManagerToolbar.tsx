@@ -128,12 +128,13 @@ interface ExecutionModeToggleProps {
 
 const ExecutionModeToggle: React.FC<ExecutionModeToggleProps> = ({ useEpic, disabled, onChange }) => {
   const options = [
-    { value: true, label: 'Execute as Epic PR', icon: Layers, title: 'Runs every remaining issue in order and collects their PRs into one overarching Epic PR' },
-    { value: false, label: 'Execute as Individual Tasks', icon: ListChecks, title: 'Each issue opens its own PR against the base branch' },
+    { value: true, label: 'Execute as Epic PR', shortLabel: 'Epic PR', icon: Layers, title: 'Runs every remaining issue in order and collects their PRs into one overarching Epic PR' },
+    { value: false, label: 'Execute as Individual Tasks', shortLabel: 'Individual', icon: ListChecks, title: 'Each issue opens its own PR against the base branch' },
   ];
+  // Phones get short labels without icons so the toggle and the config button share one row.
   return (
-    <div role="radiogroup" aria-label="Execution mode" className="inline-flex rounded-md border border-slate-300 bg-white p-0.5">
-      {options.map(({ value, label, icon: Icon, title }) => {
+    <div role="radiogroup" aria-label="Execution mode" className="inline-flex flex-shrink-0 rounded-md border border-slate-300 bg-white p-0.5" data-testid="execution-mode-toggle">
+      {options.map(({ value, label, shortLabel, icon: Icon, title }) => {
         const selected = useEpic === value;
         return (
           <button
@@ -141,15 +142,17 @@ const ExecutionModeToggle: React.FC<ExecutionModeToggleProps> = ({ useEpic, disa
             type="button"
             role="radio"
             aria-checked={selected}
+            aria-label={label}
             disabled={disabled}
             title={title}
             onClick={() => { if (!selected) onChange?.(value); }}
-            className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs sm:text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+            className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded px-2 sm:px-2.5 py-1 text-xs sm:text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
               selected ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
             }`}
           >
-            <Icon size={14} />
-            {label}
+            <Icon size={14} className="hidden sm:block" />
+            <span className="sm:hidden">{shortLabel}</span>
+            <span className="hidden sm:inline">{label}</span>
           </button>
         );
       })}
@@ -171,9 +174,10 @@ export const ExecutionOptionsToolbar: React.FC<ExecutionOptionsToolbarProps> = (
     showAgent: isBatchPlan, globalAgent, globalModel, globalIsMulti, globalSelectedModels, autoMerge, runUltrafix, ultrafixGoal,
   });
 
-  // One bar: the execution mode on the left, every other setting behind the config summary on the right
+  // One bar: the execution mode on the left, every other setting behind the config summary on the right.
+  // Phones keep both on a single row; the config summary truncates instead of wrapping.
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 py-2 border-b border-slate-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-3" data-testid="execution-options-bar">
+    <div className="flex flex-nowrap sm:flex-wrap items-center justify-between gap-2 py-2 border-b border-slate-200 bg-slate-50 px-3 sm:px-4 -mx-4 mb-3" data-testid="execution-options-bar">
       {isBatchPlan ? (
         <ExecutionModeToggle useEpic={useEpic || false} disabled={disableImplementation} onChange={onUseEpicChange} />
       ) : <span />}

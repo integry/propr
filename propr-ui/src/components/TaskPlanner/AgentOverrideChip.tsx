@@ -6,6 +6,7 @@ import { ProviderLogo } from '../ui/ProviderLogo';
 import AgentModelSelector from './AgentModelSelector';
 import { getModelName, getShortModelName } from './planIssueRowUtils';
 import { useAnchoredPopover } from './useAnchoredPopover';
+import { isOverriddenFromDefault, type PlanIssueDefaultSelection } from './planIssueDefaultSelection';
 
 const getAgentChipLabel = (issue: PlanIssue, isMultiMode: boolean, selectedModels: AgentModelPair[]): string => {
   if (isMultiMode) return selectedModels.length > 0 ? `${selectedModels.length} models` : 'Choose models';
@@ -19,8 +20,10 @@ export interface AgentOverrideChipProps {
   disabled: boolean;
   isMultiMode: boolean;
   selectedModels: AgentModelPair[];
-  onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
-  onModelChange: (issueNumber: number, modelName: string | null) => void;
+  onAgentChange: (issueNumber: number, agentAlias: string | null) => void | Promise<void>;
+  onModelChange: (issueNumber: number, modelName: string | null) => void | Promise<void>;
+  /** The plan's default agent/model (the toolbar selection). Enables "Reset to default" when the issue differs. */
+  defaultSelection?: PlanIssueDefaultSelection | null;
   handleMultiToggle: (multi: boolean) => void;
   handleMultiModelChange: (models: AgentModelPair[]) => void;
   handleImplementClick: () => void;
@@ -31,7 +34,7 @@ export interface AgentOverrideChipProps {
  * the agent and model selects only appear in a popover when the chip is clicked.
  */
 export const AgentOverrideChip: React.FC<AgentOverrideChipProps> = ({
-  agents, issue, disabled, isMultiMode, selectedModels,
+  agents, issue, disabled, isMultiMode, selectedModels, defaultSelection,
   onAgentChange, onModelChange, handleMultiToggle, handleMultiModelChange, handleImplementClick,
 }) => {
   // The popover is portalled with fixed, viewport-aware coordinates so neither the row's overflow
@@ -39,6 +42,14 @@ export const AgentOverrideChip: React.FC<AgentOverrideChipProps> = ({
   const { open, position, toggle, close, containerRef, popoverRef } = useAnchoredPopover();
   const issueNumber = issue.issue_number;
   const label = getAgentChipLabel(issue, isMultiMode, selectedModels);
+  const canReset = !isMultiMode && isOverriddenFromDefault(issue, defaultSelection);
+  const handleReset = async () => {
+    if (!defaultSelection?.agentAlias) return;
+    close();
+    // Changing the agent also picks that agent's default model, so the plan's model is applied after it.
+    if (issue.agent_alias !== defaultSelection.agentAlias) await onAgentChange(issueNumber, defaultSelection.agentAlias);
+    if (defaultSelection.modelName) await onModelChange(issueNumber, defaultSelection.modelName);
+  };
   const agentTitle = issue.agent_alias ? `${issue.agent_alias} / ${getModelName(issue.model_name) || 'default model'}` : 'No agent selected';
 
   return (
@@ -68,7 +79,20 @@ export const AgentOverrideChip: React.FC<AgentOverrideChipProps> = ({
           style={position}
           className="fixed z-50 w-max max-w-[calc(100vw-2rem)] overflow-y-auto rounded-md border border-slate-200 bg-white p-3 shadow-lg"
         >
-          <div className="mb-2 text-[11px] font-bold uppercase tracking-widest text-slate-500">Agent for #{issueNumber}</div>
+          <div className="mb-2 flex items-baseline justify-between gap-4">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Agent for #{issueNumber}</span>
+            {canReset && (
+              <button
+                type="button"
+                onClick={() => { void handleReset(); }}
+                disabled={disabled}
+                title={`Use the plan default (${defaultSelection?.agentAlias}${defaultSelection?.modelName ? ` / ${getModelName(defaultSelection.modelName)}` : ''})`}
+                className="text-xs font-medium text-teal-700 hover:text-teal-900 hover:underline disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Reset to default
+              </button>
+            )}
+          </div>
           <AgentModelSelector
             agents={agents}
             selectedAgent={issue.agent_alias}

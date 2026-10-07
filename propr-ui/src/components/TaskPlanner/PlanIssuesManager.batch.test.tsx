@@ -6,7 +6,9 @@ import { PlanIssuesManager } from './PlanIssuesManager';
 
 const state = vi.hoisted(() => ({
   handleImplementIssue: vi.fn(),
+  handleQueueRemaining: vi.fn(),
   issues: [] as PlanIssue[],
+  queued: new Set<number>(),
 }));
 
 vi.mock('./usePlanIssuesManager', () => ({
@@ -21,6 +23,9 @@ vi.mock('./usePlanIssuesManager', () => ({
       error: null,
       clearError: vi.fn(),
       implementingIssue: null,
+      queuedIssueNumbers: state.queued,
+      queueingRemaining: false,
+      handleQueueRemaining: state.handleQueueRemaining,
       issueTitles: {},
       issueTaskMap: {},
       activeIssues: active,
@@ -53,8 +58,8 @@ vi.mock('./usePlanIssuesManager', () => ({
   },
 }));
 vi.mock('./PlanIssueRow', () => ({
-  default: ({ issue, showImplementButton }: { issue: PlanIssue; showImplementButton?: boolean }) => (
-    <div data-testid="row">#{issue.issue_number}{showImplementButton !== false && issue.status === 'pending' ? ' Implement' : ''}</div>
+  default: ({ issue, showImplementButton, isQueued }: { issue: PlanIssue; showImplementButton?: boolean; isQueued?: boolean }) => (
+    <div data-testid="row">#{issue.issue_number}{showImplementButton !== false && issue.status === 'pending' ? ' Implement' : ''}{isQueued ? ' Queued' : ''}</div>
   ),
 }));
 vi.mock('./PlanIssuesManagerToolbar', () => ({
@@ -89,6 +94,9 @@ describe('PlanIssuesManager batch queue', () => {
   beforeEach(() => {
     state.handleImplementIssue.mockReset();
     state.handleImplementIssue.mockResolvedValue(undefined);
+    state.handleQueueRemaining.mockReset();
+    state.handleQueueRemaining.mockResolvedValue(undefined);
+    state.queued = new Set();
   });
 
   test('starts the first pending issue when nothing is running', () => {
@@ -98,27 +106,51 @@ describe('PlanIssuesManager batch queue', () => {
     expect(state.handleImplementIssue).toHaveBeenCalledWith(2, undefined);
   });
 
-  test('does not start a successor while the auto-merge queue head is running', () => {
+  test('queues the backlog behind a running auto-merge head instead of starting a successor', () => {
     state.issues = [issue(1, 'processing'), issue(2, 'pending'), issue(3, 'pending')];
     renderManager({ autoMerge: true });
     const button = screen.getByRole('button', { name: 'Queue Remaining (2 tasks)' });
-    expect(button).toBeDisabled();
+    expect(button).toBeEnabled();
+    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('Queues 2 tasks behind the running work');
     fireEvent.click(button);
+    expect(state.handleQueueRemaining).toHaveBeenCalledTimes(1);
     expect(state.handleImplementIssue).not.toHaveBeenCalled();
   });
 
-  test('does not start a successor while an earlier issue awaits review', () => {
+  test('queues the backlog while an earlier issue awaits review', () => {
     state.issues = [issue(1, 'under_review'), issue(2, 'pending'), issue(3, 'pending')];
     renderManager({ autoMerge: true });
-    expect(screen.getByRole('button', { name: 'Queue Remaining (2 tasks)' })).toBeDisabled();
-    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('There is no eligible pending issue to start.');
+    fireEvent.click(screen.getByRole('button', { name: 'Queue Remaining (2 tasks)' }));
+    expect(state.handleQueueRemaining).toHaveBeenCalledTimes(1);
   });
 
-  test('blocks the epic batch while issues are running', () => {
+  test('keeps the epic batch enabled while issues are running', () => {
     state.issues = [issue(1, 'refinement_processing'), issue(2, 'pending'), issue(3, 'pending')];
     renderManager({ useEpic: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Queue Remaining (2 tasks)' }));
+    expect(state.handleQueueRemaining).toHaveBeenCalledTimes(1);
+  });
+
+  test('marks queued rows and only offers the issues the queue does not own yet', () => {
+    state.issues = [issue(1, 'processing'), issue(2, 'pending'), issue(3, 'pending'), issue(4, 'pending')];
+    state.queued = new Set([2, 3]);
+    renderManager({ autoMerge: true });
+    expect(screen.getByRole('button', { name: 'Queue Remaining (1 task)' })).toBeEnabled();
+    expect(screen.getAllByTestId('row').map(row => row.textContent)).toEqual(['#1', '#2 Queued', '#3 Queued', '#4 Implement']);
+  });
+
+  test('replaces the button with a queued summary once the queue owns every pending issue', () => {
+    state.issues = [issue(1, 'processing'), issue(2, 'pending'), issue(3, 'pending')];
+    state.queued = new Set([2, 3]);
+    renderManager({ useEpic: true });
+    expect(screen.queryByRole('button', { name: /Queue Remaining/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('2 tasks queued. Each starts automatically');
+  });
+
+  test('read-only viewers cannot queue the backlog', () => {
+    state.issues = [issue(1, 'processing'), issue(2, 'pending'), issue(3, 'pending')];
+    render(<PlanIssuesManager draftId="draft-1" repository="integry/propr" tasks={tasks(3)} autoMerge isReadOnly />);
     expect(screen.getByRole('button', { name: 'Queue Remaining (2 tasks)' })).toBeDisabled();
-    expect(screen.getByTestId('execute-all-hint')).toHaveTextContent('Wait for the running issues to finish');
   });
 
   test('sizes the epic batch from the created issues, not plan_json', () => {

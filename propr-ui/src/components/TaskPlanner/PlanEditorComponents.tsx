@@ -199,13 +199,14 @@ const PlanEditorMobileHeader: React.FC<PlanEditorHeaderProps> = ({
           </button>
         </div>
       </div>
-      {/* Second row: Repository info */}
-      <div className="flex items-center gap-2 px-3 pb-2 text-xs text-gray-600">
+      {/* Second row: Repository info and the phase pill (the title row is full of icon actions) */}
+      <div className="flex items-center gap-2 px-3 pb-2 text-xs text-gray-600" data-testid="plan-editor-mobile-meta-row">
         <Github size={12} className="text-gray-500 flex-shrink-0" />
-        <span className="truncate">{repository}</span>
+        <span className="truncate min-w-0">{repository}</span>
         <span className="text-gray-400">/</span>
         <GitBranch size={12} className="text-gray-500 flex-shrink-0" />
-        <span className="truncate">{baseBranch}</span>
+        <span className="truncate min-w-0">{baseBranch}</span>
+        <StudioPhaseSwitcher className="ml-auto" />
       </div>
     </div>
   );
@@ -286,24 +287,26 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
   const repoName = repository.split('/').pop() || repository;
 
   return (
-    <div className="flex items-center justify-between px-6 py-2 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-4">
-      <div className="flex items-center gap-3 min-w-0 flex-1">
+    <div className="flex items-center justify-between px-6 py-2 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-6">
+      {/* Only the plan name (and the branch chip) shrink; the phase pill keeps its width, so it
+          can never slide under the tool cluster. min-w-0 lets the title truncate instead of widening the page. */}
+      <div data-testid="plan-editor-title-group" className="flex items-center gap-3 min-w-0 flex-1">
         {/* Plan Name - takes the space the actions no longer need */}
         <h1 className="text-base font-semibold text-gray-900 truncate min-w-0 flex-1" title={planName}>
           {planName}
         </h1>
         {/* Repository and branch as quiet code metadata */}
-        <div className="flex items-center gap-2 text-xs flex-shrink-0">
+        <div className="flex items-center gap-2 text-xs min-w-0 flex-shrink">
           <span className="hidden 2xl:inline font-mono text-slate-600 truncate max-w-[160px]" title={repository}>{repoName}</span>
-          <span className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-slate-700">
-            <GitBranch size={12} />
-            {baseBranch}
+          <span className="inline-flex min-w-0 max-w-[160px] items-center gap-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-slate-700" title={baseBranch}>
+            <GitBranch size={12} className="flex-shrink-0" />
+            <span className="truncate">{baseBranch}</span>
           </span>
         </div>
         <StudioPhaseSwitcher counts={planLength !== undefined ? { review: planLength } : undefined} />
       </div>
 
-      <div className="flex items-center gap-2 flex-shrink-0">
+      <div data-testid="plan-editor-tool-cluster" className="flex items-center gap-2 flex-shrink-0">
         {/* Secondary navigation: the source prompt and the way back to setup */}
         <div className="flex items-center rounded-md border border-slate-200 bg-white divide-x divide-slate-200">
           {originalPrompt && (

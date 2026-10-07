@@ -29,7 +29,8 @@ export const ExecutionConfigPopover: React.FC<ExecutionConfigPopoverProps> = ({ 
         data-testid="execution-config-button"
       >
         <Settings2 size={14} className="flex-shrink-0 text-slate-500" />
-        <span className="font-medium flex-shrink-0">Config:</span>
+        {/* The settings icon stands in for the label on phones, leaving the room to the summary. */}
+        <span className="font-medium flex-shrink-0 sr-only sm:not-sr-only">Config:</span>
         <span className="truncate text-slate-600">{summary}</span>
         <ChevronDown size={14} className={`flex-shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>

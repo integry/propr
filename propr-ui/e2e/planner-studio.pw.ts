@@ -103,9 +103,13 @@ const studioDrafts: Record<string, Record<string, unknown>> = {
 };
 
 const implementRequests: string[] = [];
+const queueRequests: string[] = [];
+const executionQueues: Record<string, unknown> = {};
 
 async function fixture(page: Page) {
   implementRequests.length = 0;
+  queueRequests.length = 0;
+  for (const draftId of Object.keys(executionQueues)) delete executionQueues[draftId];
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
@@ -118,6 +122,21 @@ async function fixture(page: Page) {
       const [, draftId, suffix] = draftMatch;
       if (!suffix) return route.fulfill({ json: studioDrafts[draftId] });
       if (suffix === '/issues') return route.fulfill({ json: planIssues[draftId] ?? [] });
+      if (suffix === '/execution-queue' && route.request().method() === 'POST') {
+        // Mirrors the server: in-flight issues head the queue and every pending issue waits behind them.
+        queueRequests.push(draftId);
+        const issues = ((planIssues[draftId] ?? []) as Array<{ id: number; issue_number: number; status: string }>).filter(issue => !['merged', 'closed'].includes(issue.status))
+          .sort((left, right) => Number(left.status === 'pending') - Number(right.status === 'pending') || left.id - right.id);
+        executionQueues[draftId] = { issues: issues.map(issue => issue.issue_number), cursor: 0, head: issues[0]?.issue_number ?? null, status: 'active', blockedReason: null };
+        const queued = issues.filter(issue => issue.status === 'pending').map(issue => issue.issue_number);
+        return route.fulfill({ json: { queued, alreadyQueued: false, queue: executionQueues[draftId] } });
+      }
+      if (suffix === '/execution-queue') return route.fulfill({ json: { queue: executionQueues[draftId] ?? null } });
+      const issueMatch = suffix?.match(/^\/issues\/(\d+)$/);
+      if (issueMatch && route.request().method() === 'PATCH') {
+        const stored = ((planIssues[draftId] ?? []) as Array<{ issue_number: number }>).find(issue => issue.issue_number === Number(issueMatch[1]));
+        return route.fulfill({ json: { ...stored, ...route.request().postDataJSON() } });
+      }
       if (suffix === '/repository-info') return route.fulfill({ json: { defaultBranch: 'main', branches: ['main'] } });
     }
     const responses: Record<string, unknown> = {
@@ -217,10 +236,22 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
   await expect(stepTabs).toHaveCount(3);
   await expect(tabs.getByRole('button', { name: '1. Shared Contracts' })).toHaveAttribute('aria-current', 'step');
   await expect(tabs.getByRole('button', { name: '3. Agent Run Store' })).toBeVisible();
-  // Tabs share the bar instead of stopping at a fixed width and leaving the right side empty.
-  const tabList = (await tabs.locator('ol').boundingBox())!;
-  const lastTab = (await tabs.getByRole('listitem').last().boundingBox())!;
-  expect(tabList.x + tabList.width - (lastTab.x + lastTab.width)).toBeLessThan(8);
+  // With room to spare, tabs size to their labels on one line instead of truncating beside empty space.
+  const clipped = await stepTabs.evaluateAll(buttons => buttons.flatMap(button => [...button.querySelectorAll('span')])
+    .filter(label => label.scrollWidth > label.clientWidth + 1).map(label => label.textContent));
+  expect(clipped).toEqual([]);
+  const tabHeights = await stepTabs.evaluateAll(buttons => buttons.map(button => Math.round(button.getBoundingClientRect().height)));
+  expect(new Set(tabHeights).size).toBe(1);
+  // The phase pill keeps clear of the header's icon cluster.
+  const pill = (await page.getByRole('navigation', { name: 'Plan phase' }).boundingBox())!;
+  const nextControl = await page.getByRole('navigation', { name: 'Plan phase' }).evaluate(nav => {
+    const right = nav.getBoundingClientRect().right;
+    const header = nav.closest('header') ?? document.body;
+    const lefts = [...header.querySelectorAll('button, a')].map(control => control.getBoundingClientRect())
+      .filter(box => box.width > 0 && box.left >= right - 1).map(box => box.left);
+    return Math.min(...lefts);
+  });
+  expect(nextControl - (pill.x + pill.width)).toBeGreaterThanOrEqual(12);
   const notes = page.getByText('User Notes').first().locator('xpath=ancestor::div[contains(@class, "rounded-md")][1]');
   await expect(notes).toHaveCSS('border-top-style', 'solid');
   await expect(notes.locator('.border-dashed')).toHaveCount(0);
@@ -237,8 +268,9 @@ test('review step uses a tab bar instead of the outline rail for short plans', a
   // Each task has its own requirements, not task 1's copied.
   await expect(page.locator('[data-task-index="2"]')).toContainText('packages/server/src/runStore.ts');
   await expect(page.locator('[data-task-index="2"]')).not.toContainText('agentDefinitions.ts');
-  // Step counters match the 3-step plan.
-  await expect(page.getByText('Agents v1 (1/3): Shared contracts for agent definitions')).toBeVisible();
+  // Headings drop the stored "Agents v1 (n/m):" prefix and let the leading number carry the order.
+  await expect(page.locator('[data-task-index="0"]').getByRole('heading').first()).toContainText('Shared contracts for agent definitions');
+  await expect(page.locator('[data-task-index="0"]').getByRole('heading').first()).not.toContainText('(1/3)');
   await expect(page.getByText(/\(\d+\/17\)/)).toHaveCount(0);
   // Phases sit on the title row and the primary action sits in the header: no stepper band, no footer bar.
   const header = page.getByRole('heading', { level: 1 }).locator('xpath=ancestor::div[contains(@class, "justify-between")][1]');
@@ -315,16 +347,30 @@ test('execution step renders one matrix with batch controls and labelled ultrafi
   const matrix = page.getByTestId('plan-execution-matrix');
   await expect(matrix.getByRole('combobox')).toHaveCount(0);
   await expect(matrix.getByTestId('agent-override-chip').first()).toHaveText('Opus 5.5');
-  // #2798 is running and may head an active queue, so the batch must not start its successors.
-  await expect(page.getByRole('button', { name: 'Queue Remaining (2 tasks)' })).toBeDisabled();
+  // #2798 is running; the batch stays available and queues its successors behind it.
+  await expect(page.getByRole('button', { name: 'Queue Remaining (2 tasks)' })).toBeEnabled();
   await capture(page, 'execution-config-popover');
   await page.keyboard.press('Escape');
   await matrix.getByTestId('agent-override-chip').first().click();
-  await expect(page.getByRole('dialog', { name: /Agent override for #2799/ })).toBeVisible();
+  const override = page.getByRole('dialog', { name: /Agent override for #2799/ });
+  await expect(override).toBeVisible();
+  await expect(override.getByRole('button', { name: 'Reset to default' })).toHaveCount(0);
+  // A per-issue override offers a way back to the plan default.
+  await override.getByRole('combobox').nth(1).selectOption('claude-sonnet-5-5');
+  await expect(matrix.getByTestId('agent-override-chip').first()).toHaveText('Sonnet 5.5');
+  await expect(override.getByRole('button', { name: 'Reset to default' })).toBeVisible();
   await capture(page, 'execution-agent-override');
+  await override.getByRole('button', { name: 'Reset to default' }).click();
+  await expect(override).toHaveCount(0);
+  await expect(matrix.getByTestId('agent-override-chip').first()).toHaveText('Opus 5.5');
+  // Clicking anywhere else dismisses the popover.
+  await matrix.getByTestId('agent-override-chip').first().click();
+  await expect(override).toBeVisible();
+  await page.mouse.click(700, 700);
+  await expect(override).toHaveCount(0);
 });
 
-test('execution step for a 17-issue plan keeps the title readable and holds the queue while others run', async ({ page }) => {
+test('execution step for a 17-issue plan keeps the title readable and queues the backlog while others run', async ({ page }) => {
   await page.goto('/studio/plan-agents-exec');
   const matrix = page.getByTestId('plan-execution-matrix');
   await expect(matrix.getByTestId('plan-execution-row')).toHaveCount(12);
@@ -340,16 +386,22 @@ test('execution step for a 17-issue plan keeps the title readable and holds the 
   // Rows lead with the step, not "Agents v1 (6/17):".
   await expect(matrix.getByText('Report-run prompt builder with previous reports and input files', { exact: true })).toBeVisible();
   await expect(matrix.getByText(/Agents v1 \(/)).toHaveCount(0);
-  // Running issues may belong to an active queue that already owns the rest, so the batch waits.
+  // Running issues do not hold the backlog: the batch queues the rest behind them without starting any now.
   const queue = page.getByRole('button', { name: 'Queue Remaining (10 tasks)' });
-  await expect(queue).toBeDisabled();
-  await expect(page.getByTestId('execute-all-hint')).toContainText('Issues are running.');
-  await queue.click({ force: true });
-  expect(implementRequests).toEqual([]);
+  await expect(queue).toBeEnabled();
+  await expect(page.getByTestId('execute-all-hint')).toContainText('Queues 10 tasks behind the running work');
   await page.waitForTimeout(500);
   await capture(page, 'execution-17-issues');
   await queue.scrollIntoViewIfNeeded();
   await capture(page, 'execution-17-issues-queue');
+  await queue.click();
+  await expect(page.getByTestId('execute-all-hint')).toContainText('10 tasks queued. Each starts automatically');
+  await expect(page.getByRole('button', { name: /Queue Remaining/ })).toHaveCount(0);
+  await expect(matrix.getByText('Queued', { exact: true })).toHaveCount(10);
+  expect(queueRequests).toEqual(['plan-agents-exec']);
+  expect(implementRequests).toEqual([]);
+  await page.getByTestId('execute-all-hint').scrollIntoViewIfNeeded();
+  await capture(page, 'execution-17-issues-queued');
 });
 
 test('define step shows technical scope estimates and consistent token units', async ({ page }) => {

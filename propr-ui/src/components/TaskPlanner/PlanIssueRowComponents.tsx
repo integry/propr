@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ExternalLink, GitPullRequest, MessageSquare, Play, Loader2, Eye, ChevronDown, StickyNote } from 'lucide-react';
 import { PlanIssue, PlanIssueStatus, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
-import { AgentOverrideChip } from './AgentOverrideChip';
+import { AgentOverrideChip, type AgentOverrideChipProps } from './AgentOverrideChip';
 import { getAttachmentUrl } from '../../api/proprApi';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import { PlanTask } from '../../api/plannerApi';
@@ -110,8 +110,11 @@ export const UltrafixSettingsControls: React.FC<UltrafixSettingsControlsProps> =
   );
 };
 
-export const StatusBadge: React.FC<{ status: PlanIssueStatus }> = ({ status }) => {
-  const config = STATUS_CONFIG[status];
+/** A queued issue is still pending on the server; the label tells the user it will start on its own. */
+const QUEUED_STATUS = { ...STATUS_CONFIG.pending, label: 'Queued', bgColor: 'bg-slate-50', dotColor: 'bg-slate-400' };
+
+export const StatusBadge: React.FC<{ status: PlanIssueStatus; queued?: boolean }> = ({ status, queued = false }) => {
+  const config = queued && status === 'pending' ? QUEUED_STATUS : STATUS_CONFIG[status];
 
   return (
     <span className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 text-xs font-medium rounded border ${config.color} ${config.bgColor} ${config.borderColor}`}>
@@ -197,6 +200,8 @@ export interface RowActionsProps {
   issue: PlanIssue;
   onAgentChange: (issueNumber: number, agentAlias: string | null) => void;
   onModelChange: (issueNumber: number, modelName: string | null) => void;
+  /** Plan default agent/model; lets the override popover offer "Reset to default". */
+  defaultSelection?: AgentOverrideChipProps['defaultSelection'];
   disableImplementation?: boolean;
   implementButtonPressed?: boolean;
   showImplementButton?: boolean;
@@ -220,6 +225,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
   issue,
   onAgentChange,
   onModelChange,
+  defaultSelection,
   disableImplementation = false,
   implementButtonPressed = false,
   showImplementButton = true,
@@ -246,6 +252,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
             selectedModels={selectedModels}
             onAgentChange={onAgentChange}
             onModelChange={onModelChange}
+            defaultSelection={defaultSelection}
             handleMultiToggle={handleMultiToggle}
             handleMultiModelChange={handleMultiModelChange}
             handleImplementClick={handleImplementClick}

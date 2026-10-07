@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import type { PlanIssue } from '../../api/planIssuesApi';
 import { RowActions, UltrafixSettingsControls } from './PlanIssueRowComponents';
 import { AgentOverrideChip } from './AgentOverrideChip';
+import { isOverriddenFromDefault } from './planIssueDefaultSelection';
 
 const issue = {
   id: 1, draft_id: 'd', repository: 'integry/propr', issue_number: 2799, pr_number: null, status: 'pending',
@@ -36,6 +37,74 @@ describe('AgentOverrideChip', () => {
 
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+
+describe('AgentOverrideChip dismissal and reset', () => {
+  const defaultSelection = { agentAlias: 'claude', modelName: 'claude-opus-5-5' };
+  const openPopover = () => fireEvent.click(screen.getByTestId('agent-override-chip'));
+
+  it('closes on Escape and on a click outside, but not on a click inside', () => {
+    render(<AgentOverrideChip {...chipProps} onModelChange={vi.fn()} />);
+    openPopover();
+    fireEvent.mouseDown(screen.getByRole('dialog'));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    openPopover();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('hides "Reset to default" when the issue already uses the plan default', () => {
+    render(<AgentOverrideChip {...chipProps} onModelChange={vi.fn()} defaultSelection={defaultSelection} />);
+    openPopover();
+    expect(screen.queryByRole('button', { name: 'Reset to default' })).not.toBeInTheDocument();
+  });
+
+  it('resets an overridden model back to the plan default', async () => {
+    const onAgentChange = vi.fn();
+    const onModelChange = vi.fn();
+    const overridden = { ...issue, model_name: 'claude-sonnet-5-5' } as PlanIssue;
+    render(<AgentOverrideChip {...chipProps} issue={overridden} onAgentChange={onAgentChange} onModelChange={onModelChange} defaultSelection={defaultSelection} />);
+    openPopover();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset to default' }));
+
+    await waitFor(() => expect(onModelChange).toHaveBeenCalledWith(2799, 'claude-opus-5-5'));
+    expect(onAgentChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('resets an overridden agent first, then applies the default model', async () => {
+    const calls: string[] = [];
+    let resolveAgent: () => void = () => {};
+    const onAgentChange = vi.fn(() => new Promise<void>(resolve => { calls.push('agent'); resolveAgent = resolve; }));
+    const onModelChange = vi.fn(() => { calls.push('model'); });
+    const overridden = { ...issue, agent_alias: 'codex', model_name: 'gpt-6' } as PlanIssue;
+    render(<AgentOverrideChip {...chipProps} issue={overridden} onAgentChange={onAgentChange} onModelChange={onModelChange} defaultSelection={defaultSelection} />);
+    openPopover();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset to default' }));
+
+    expect(onAgentChange).toHaveBeenCalledWith(2799, 'claude');
+    expect(onModelChange).not.toHaveBeenCalled();
+    resolveAgent();
+    await waitFor(() => expect(onModelChange).toHaveBeenCalledWith(2799, 'claude-opus-5-5'));
+    expect(calls).toEqual(['agent', 'model']);
+  });
+});
+
+describe('isOverriddenFromDefault', () => {
+  const selection = { agentAlias: 'claude', modelName: 'claude-opus-5-5' };
+  it.each([
+    [{ agent_alias: 'claude', model_name: 'claude-opus-5-5' }, selection, false],
+    [{ agent_alias: 'claude', model_name: null }, selection, false],
+    [{ agent_alias: 'claude', model_name: 'claude-sonnet-5-5' }, selection, true],
+    [{ agent_alias: 'codex', model_name: 'claude-opus-5-5' }, selection, true],
+    [{ agent_alias: 'codex', model_name: null }, undefined, false],
+    [{ agent_alias: 'codex', model_name: null }, { agentAlias: null, modelName: null }, false],
+  ])('%o vs %o -> %s', (row, defaults, expected) => {
+    expect(isOverriddenFromDefault(row, defaults)).toBe(expected);
   });
 });
 

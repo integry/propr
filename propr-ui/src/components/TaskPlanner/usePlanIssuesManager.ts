@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { PlanIssue, STATUS_CONFIG, getPlanIssues, implementIssue, updatePlanIssue, AgentModelPair } from '../../api/planIssuesApi';
+import { PlanIssue, STATUS_CONFIG, getPlanIssues, getPlanExecutionQueue, implementIssue, queueRemainingIssues, updatePlanIssue, AgentModelPair, type PlanExecutionQueue } from '../../api/planIssuesApi';
 import { getInstanceCatalog } from '../../api/proprApi';
 import { PlanTask } from '../../api/plannerApi';
 import { useSocket } from '../../contexts/useSocket';
@@ -29,6 +29,8 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [implementingIssue, setImplementingIssue] = useState<number | null>(null);
+  const [executionQueue, setExecutionQueue] = useState<PlanExecutionQueue | null>(null);
+  const [queueingRemaining, setQueueingRemaining] = useState(false);
   const [globalAgent, setGlobalAgent] = useState<string | null>(null);
   const [globalModel, setGlobalModel] = useState<string | null>(null);
   const [globalIsMulti, setGlobalIsMulti] = useState(false);
@@ -102,6 +104,13 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
     return { activeIssues: active, mergedIssues: merged, pendingCount: pending, hasActiveIssues: hasActive, firstPendingIssueNumber: firstPending, sortedIssues: sorted };
   }, [issuesWithDefaults, autoMerge, useEpic]);
 
+  // Pending issues behind the queue's cursor wait for a running predecessor; the server starts them in turn.
+  const queuedIssueNumbers = useMemo(() => {
+    if (executionQueue?.status !== 'active') return new Set<number>();
+    const waiting = new Set(executionQueue.issues.slice(executionQueue.cursor));
+    return new Set(issues.filter(issue => issue.status === 'pending' && waiting.has(issue.issue_number)).map(issue => issue.issue_number));
+  }, [executionQueue, issues]);
+
   const getUnmergedIssuesBefore = useCallback((issueNumber: number) => {
     const unmerged: Array<{ issue_number: number; title?: string }> = [];
     for (const issue of sortedIssues) {
@@ -118,8 +127,13 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
 
   const fetchIssues = useCallback(async () => {
     try {
-      const fetchedIssues = await getPlanIssues(draftId);
+      // The queue only labels rows; a failed lookup must not hide the issues themselves.
+      const [fetchedIssues, queue] = await Promise.all([
+        getPlanIssues(draftId),
+        getPlanExecutionQueue(draftId).catch(() => null),
+      ]);
       setIssues(fetchedIssues);
+      setExecutionQueue(queue);
       setError(null);
     } catch (err) {
       console.error('Failed to fetch plan issues:', err);
@@ -216,6 +230,21 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
       setError('Failed to start implementation');
     } finally {
       setImplementingIssue(null);
+    }
+  }, [draftId, fetchIssues, onRefresh, useEpic, autoMerge]);
+
+  const handleQueueRemaining = useCallback(async () => {
+    setQueueingRemaining(true);
+    try {
+      const result = await queueRemainingIssues(draftId, { useEpic, autoMerge });
+      setExecutionQueue(result.queue);
+      await fetchIssues();
+      onRefresh?.();
+    } catch (err) {
+      console.error('Failed to queue the remaining issues:', err);
+      setError(err instanceof Error && err.message ? err.message : 'Failed to queue the remaining issues');
+    } finally {
+      setQueueingRemaining(false);
     }
   }, [draftId, fetchIssues, onRefresh, useEpic, autoMerge]);
 
@@ -389,6 +418,7 @@ export function usePlanIssuesManager({ draftId, tasks, onRefresh, useEpic, autoM
 
   return {
     issues, agents, loading, error, clearError, implementingIssue,
+    queuedIssueNumbers, queueingRemaining, handleQueueRemaining,
     issueTitles, issueTaskMap, activeIssues, mergedIssues,
     pendingCount, hasActiveIssues, firstPendingIssueNumber,
     globalAgent, globalModel, globalIsMulti, globalSelectedModels, applyingGlobal,
