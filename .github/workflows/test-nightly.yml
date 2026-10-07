@@ -21,7 +21,12 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
-      issues: write
+    # The test steps continue on error, so the health job reads their outcomes
+    # here to tell which step failed and whether its output artifact applies.
+    outputs:
+      full_tests: ${{ steps.full_tests.outcome }}
+      e2e_config: ${{ steps.e2e_config.outcome }}
+      e2e_tests: ${{ steps.e2e_tests.outcome }}
 
     steps:
       - name: Checkout repository
@@ -152,74 +157,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Create Failure Issue
-        if: always() && !cancelled() && (failure() || steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure')
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const runUrl = 'https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId;
-            const date = new Date().toISOString().split('T')[0];
-
-            const outcomes = {
-              install: '${{ steps.install.outcome }}',
-              build: '${{ steps.build.outcome }}',
-              docs: '${{ steps.docs.outcome }}',
-              redis: '${{ steps.redis.outcome }}',
-              fullTests: '${{ steps.full_tests.outcome }}',
-              e2eConfig: '${{ steps.e2e_config.outcome }}',
-              e2eTests: '${{ steps.e2e_tests.outcome }}',
-            };
-
-            const body = [
-              '## Nightly Test Suite Failure Report',
-              '',
-              `**Date:** ${date}`,
-              `**Dependency install:** ${outcomes.install}`,
-              `**Workspace build:** ${outcomes.build}`,
-              `**Docs validation:** ${outcomes.docs}`,
-              `**Redis startup:** ${outcomes.redis}`,
-              `**Full test suite:** ${outcomes.fullTests}`,
-              `**Live E2E configuration:** ${outcomes.e2eConfig}`,
-              `**Live E2E tests:** ${outcomes.e2eTests}`,
-              '',
-              'Sanitized process output is available in the `nightly-test-output` artifact on the workflow run.',
-              '',
-              `**[View Workflow Run](${runUrl})**`,
-            ].join('\n');
-
-            // Check for existing open issues with the same title pattern
-            const existingIssues = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'nightly-test-failure',
-              per_page: 10,
-            });
-
-            const todayTitle = `Nightly Test Suite Failed - ${date}`;
-            const existingToday = existingIssues.data.find(issue => issue.title === todayTitle);
-
-            if (existingToday) {
-              // Update existing issue with new comment
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existingToday.number,
-                body: `## Re-run Results\n\n${body}`,
-              });
-              console.log(`Updated existing issue #${existingToday.number}`);
-            } else {
-              // Create new issue
-              const issue = await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: todayTitle,
-                body: body,
-                labels: ['nightly-test-failure', 'bug'],
-              });
-              console.log(`Created issue #${issue.data.number}`);
-            }
-
       - name: Fail Job
         if: steps.full_tests.outcome == 'failure' || steps.e2e_config.outcome == 'failure' || steps.e2e_tests.outcome == 'failure'
         run: exit 1
@@ -289,3 +226,50 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/desktop-connect-discovery-guard.yml
+
+  # One "Nightly test health" issue tracks a red nightly on the default branch:
+  # a failure opens it or comments on the open one, the next green run comments
+  # and closes it. Skipped or cancelled jobs without a failure leave it alone.
+  # See scripts/nightly-health-issue.mjs.
+  nightly-health:
+    name: Nightly test health
+    needs: [e2e-tests, native-electron, desktop-package, desktop-connect]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+
+    steps:
+      - name: Checkout health issue script
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: |
+            scripts/nightly-health-issue.mjs
+            scripts/sanitize-ci-output.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download sanitized failure diagnostics
+        if: contains(needs.*.result, 'failure')
+        continue-on-error: true
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: nightly-test-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: nightly-diagnostics
+
+      - name: Update nightly health issue
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          NIGHTLY_DIAGNOSTICS_DIR: nightly-diagnostics
+          NIGHTLY_SUITE_JOB_ID: e2e-tests
+          NIGHTLY_SUITE_JOB_NAME: Run E2E Test Suite
+          NIGHTLY_HEALTH_JOB_NAME: Nightly test health
+          GITHUB_TOKEN_TO_REDACT: ${{ github.token }}
+        with:
+          script: |
+            const { runNightlyHealth } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/nightly-health-issue.mjs`);
+            await runNightlyHealth({ github, context, core });

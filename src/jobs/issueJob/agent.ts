@@ -11,6 +11,7 @@ import type { ExecutionParams, JobContext } from './types.js';
 import { localizeContentImages } from '../issueJobHelpers.js';
 import { createSessionIdCallback, createContainerIdCallback } from '../issueJobCallbacks.js';
 import { runRepositoryWorkflow } from '../repositoryWorkflow.js';
+import { markAgentExecutionFailure } from '../providerReplacement.js';
 import { redisClient } from './config.js';
 
 export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
@@ -145,7 +146,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       onSessionId: createSessionIdCallback(taskId, issueRef, { modelName, stateManager, correlatedLogger, redisClient }),
       onContainerId: createContainerIdCallback(taskId, stateManager, correlatedLogger, worktreeInfo.worktreePath),
       taskId
-    }));
+    }).catch(error => { throw markAgentExecutionFailure(error); }));
   } finally {
     clearInterval(fileChangesInterval);
   }

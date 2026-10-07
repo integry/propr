@@ -106,3 +106,22 @@ describe('task terminal reasons', () => {
   });
 });
 
+describe('TaskStatusTable replacement events', () => {
+  it('labels replacement timeline events by event instead of repeating the failure', () => {
+    render(<TaskStatusTable history={[
+      { state: 'processing', timestamp: at(0) },
+      { state: 'failed', timestamp: at(10), reason: 'Task failed: orphaned' },
+      { state: 'failed', timestamp: at(11), reason: 'Replacement attempt 2 dispatched', metadata: { event: 'replacement.dispatched', attemptNumber: 2, replacementTaskId: 'attempt-2' } },
+    ]} />);
+    expect(screen.getAllByText('Task Failed')).toHaveLength(1);
+    expect(screen.getByText('Replacement Attempt 2 Started')).toBeInTheDocument();
+  });
+
+  it('shows why a replacement was skipped', () => {
+    render(<TaskStatusTable history={[
+      { state: 'failed', timestamp: '2026-10-06T09:00:00.000Z' },
+      { state: 'failed', timestamp: '2026-10-06T09:00:01.000Z', reason: 'Replacement skipped: the replacement cap was reached', metadata: { event: 'replacement.skipped' } },
+    ]} />);
+    expect(screen.getByText('Replacement skipped: the replacement cap was reached')).toBeInTheDocument();
+  });
+});

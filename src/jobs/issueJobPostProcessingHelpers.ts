@@ -3,6 +3,7 @@ import {
     getEpicExecutionQueue,
     findIssueSubmission,
     findPlanIssueByRepoAndNumber,
+    gateAutoMergeArming,
     generateCompletionComment,
     getAuthenticatedOctokit,
     linkPRToPlanIssue,
@@ -307,8 +308,9 @@ export async function handleCreatedPlanIssuePR(options: {
     currentIssueData: { data: { labels: Array<{ name: string }> } };
     prNumber: number;
     correlatedLogger: Logger;
+    taskId?: string;
 }): Promise<void> {
-    const { issueRef, currentIssueData, prNumber, correlatedLogger } = options;
+    const { issueRef, currentIssueData, prNumber, correlatedLogger, taskId } = options;
     const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
     await linkPRToPlanIssue(repository, issueRef.number, prNumber);
     correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber }, 'Linked PR to plan issue');
@@ -352,11 +354,30 @@ export async function handleCreatedPlanIssuePR(options: {
 
     if (!hasAutoMergeLabel) return;
 
-    correlatedLogger.info({ prNumber }, 'Auto-merge label detected, enabling auto-merge on PR');
+    correlatedLogger.info({ prNumber }, 'Auto-merge label detected, evaluating the repository auto-merge policy');
+    // An active Epic queue arms each head's PR as the queue advances.
+    const epicQueue = planIssue?.draft_id ? await getEpicExecutionQueue(planIssue.draft_id) : null;
+    const queueHead = epicQueue?.status === 'active' && epicQueue.issues[epicQueue.cursor] === issueRef.number;
+    const gate = await gateAutoMergeArming({
+        owner: issueRef.repoOwner,
+        repo: issueRef.repoName,
+        prNumber,
+        opportunity: queueHead ? 'epic_queue_advance' : 'initial_pr',
+        taskId,
+        issueNumber: issueRef.number,
+        log: correlatedLogger,
+    });
+    if (!gate.arm || !gate.pullRequest) {
+        correlatedLogger.info({ prNumber, reason: gate.reason, matchedPaths: gate.matchedPaths }, 'Auto-merge not armed by repository policy');
+        return;
+    }
+    // Arm only the head the policy evaluated; a newer head needs its own decision.
     const autoMergeResult = await enableAutoMerge({
         owner: issueRef.repoOwner,
         repoName: issueRef.repoName,
         prNumber,
+        mergeMethod: gate.mergeMethod,
+        expectedHead: { headSha: gate.pullRequest.headSha, baseRef: gate.pullRequest.baseRef },
     });
     if (autoMergeResult.success) {
         correlatedLogger.info({ prNumber, autoMergeEnabled: autoMergeResult.autoMergeEnabled }, 'Auto-merge enabled successfully');

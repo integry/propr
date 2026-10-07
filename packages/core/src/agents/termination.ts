@@ -41,6 +41,7 @@ export function isIncompleteAgentExecution(input: TerminationInput): boolean {
 
 export function describeAgentTermination(reason: AgentTerminationReason): string {
     switch (reason) {
+        case 'runtime_crash': return 'The agent runtime crashed before it could confirm that all requested work was complete. The changes are partial and validation may be unfinished.';
         case 'timeout': return 'The agent reached the execution time limit before it could confirm that all requested work was complete.';
         case 'cost_cap': return 'The run reached its spend cap before the agent could confirm that all requested work was complete.';
         case 'stalled': return 'The agent stopped producing output and the stall watchdog ended the run before it could confirm that all requested work was complete.';

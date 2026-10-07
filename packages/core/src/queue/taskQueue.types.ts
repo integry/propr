@@ -42,8 +42,20 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData {
     subtitle?: string;
     issueNumber?: number;
     isRetryFromRateLimit?: boolean;  // Set when job is retried after rate limit
+    /** Task this job replaces after an infrastructure-lost or transient provider failure. */
+    replacesTaskId?: string;
+    /** 1-based attempt number within the replacement lineage. */
+    attemptNumber?: number;
+    /** First task of the replacement lineage. */
+    lineageRootTaskId?: string;
+    /** Why this replacement attempt was dispatched. */
+    replacementCause?: 'infra_lost' | 'provider_transient';
+    /** Pushed work branch of the replaced attempt, continued instead of a fresh worktree. */
+    replacementBranch?: string;
     /** Per-task spend cap override in USD; beats `.propr/workflow.yml` and the instance default. */
     maxCostUsd?: number;
+    /** Task IDs of earlier attempts (replaced runs) whose spend counts toward this run's cap. */
+    costBudgetTaskIds?: string[];
 }
 
 export type SystemAction = 'auto_resolve_merge_conflicts';
@@ -53,7 +65,7 @@ export interface AutoResolveContext {
     headBranch: string;
     headSha: string;
     baseSha: string;
-    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment';
+    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment' | 'sweep';
 }
 
 export interface CommentJobData extends RepositoryWorkflowDeferralData {
@@ -191,7 +203,7 @@ export interface MergeConflictJobData {
     baseBranch: string;
     headSha: string;
     baseSha: string;
-    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment';
+    triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment' | 'sweep';
     correlationId: string;
     systemGenerated: true;    // Distinguishes from user-authored follow-up comments
 }
@@ -226,7 +238,7 @@ export interface ClaudeResult {
     };
     rawOutput?: string;
     error?: string;
-    terminationReason?: 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output';
+    terminationReason?: 'timeout' | 'max_turns' | 'cost_cap' | 'stalled' | 'degenerate_output' | 'runtime_crash';
     tokenUsage?: TokenUsage;
     usageMetrics?: SubscriptionUsageMetrics | null;
 }

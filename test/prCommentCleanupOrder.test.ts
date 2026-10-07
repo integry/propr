@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 const events: string[] = [];
 const queued: Array<{ name: string; data: any }> = [];
+const cleanupOptions: any[] = [];
 const noOp = () => undefined;
 
 const core = await import('@propr/core');
@@ -10,7 +11,7 @@ await mock.module('@propr/core', {
     namedExports: {
         ...core,
         issueQueue: { add: async (name: string, data: any) => { events.push('queued'); queued.push({ name, data }); } },
-        cleanupWorktree: async () => { await new Promise(resolve => setTimeout(resolve, 5)); events.push('worktree-removed'); },
+        cleanupWorktree: async (_repo: string, _path: string, _branch: string, options: unknown) => { cleanupOptions.push(options); await new Promise(resolve => setTimeout(resolve, 5)); events.push('worktree-removed'); },
     },
 });
 await mock.module('../src/jobs/prProcessingLock.js', {
@@ -24,6 +25,20 @@ await mock.module('../src/jobs/prContributionDiscussion.js', { namedExports: { l
 
 const { cleanupJob } = await import('../src/jobs/prCommentJobUtils.js');
 after(async () => { await core.closeConnection?.(); });
+
+test('failed follow-ups retain their work before releasing the PR lock', async () => {
+    events.length = 0;
+    cleanupOptions.length = 0;
+    await cleanupJob({
+        success: false, skipPendingCommentFollowup: true,
+        stateManager: {} as never, lockKey: 'lock:pr:acme:web:42', lockToken: 'token', taskId: 'failed-task',
+        localRepoPath: '/repo', worktreeInfo: { worktreePath: '/worktrees/pr-42', branchName: 'feature' } as never,
+        repoOwner: 'acme', repoName: 'web', pullRequestNumber: 42, jobBranchName: 'feature', jobLlm: null,
+        correlatedLogger: { debug: noOp, info: noOp, warn: noOp, error: noOp } as never, redisClient: {} as never,
+    });
+    assert.deepEqual(cleanupOptions, [{ deleteBranch: false, success: false, retentionStrategy: 'keep_on_failure' }]);
+    assert.deepEqual(events, ['ci-released', 'worktree-removed', 'lock-released']);
+});
 
 for (const deferred of [false, true]) test(`the PR lock is held until the worktree holding the PR branch is removed (capacity deferred: ${deferred})`, async () => {
     events.length = 0;

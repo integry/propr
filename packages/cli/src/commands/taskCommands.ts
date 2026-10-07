@@ -406,6 +406,11 @@ function displayTaskDetails(status: TaskStatus, showInspectionTiming = false): v
     }
   }
 
+  if (status.attemptNumber > 1 || status.replacesTaskId || status.replacedByTaskId) {
+    console.log(`Attempt:      ${status.attemptNumber}`);
+    if (status.replacesTaskId) console.log(`Replaces:     ${status.replacesTaskId}`);
+    if (status.replacedByTaskId) console.log(`Replaced by:  ${status.replacedByTaskId}`);
+  }
   if (status.budget) {
     console.log(`Spend:        ${formatTaskBudget(status.budget)}`);
   }

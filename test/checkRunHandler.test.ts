@@ -123,6 +123,19 @@ await mock.module('../packages/core/src/services/taskExecutionService.js', {
     }
 });
 
+// Mock the repository auto-merge policy gate (covered by packages/core/test/autoMergeGate.test.ts)
+type PolicyDecision = { arm: boolean; reason: string; method?: 'merge' | 'squash' | 'rebase' };
+const armedDecision: PolicyDecision = { arm: true, reason: 'armed' };
+// Like the real gate, the evaluation reports the PR head it read from GitHub.
+const evaluateCurrentHead = async (input: { owner: string; repo: string; prNumber: number }) => ({
+    decision: armedDecision as PolicyDecision,
+    pullRequest: { headSha: await getCurrentPRHead(input.owner, input.repo, input.prNumber) } as { headSha: string | null } | null,
+});
+const mockEvaluatePullRequestAutoMerge = mock.fn(evaluateCurrentHead);
+await mock.module('../packages/core/src/services/autoMergeGate.js', {
+    namedExports: { evaluatePullRequestAutoMerge: mockEvaluatePullRequestAutoMerge }
+});
+
 // Import the modules under test
 const {
     mergePR,
@@ -168,6 +181,8 @@ function resetMocks(): void {
     mockFindPlanIssueByRepoAndNumber.mock.resetCalls();
     mockUpdatePlanIssueByPR.mock.resetCalls();
     mockTriggerNextPendingIssue.mock.resetCalls();
+    mockEvaluatePullRequestAutoMerge.mock.resetCalls();
+    mockEvaluatePullRequestAutoMerge.mock.mockImplementation(evaluateCurrentHead);
     resetUltrafixStateRedisForTests();
 }
 
@@ -1126,6 +1141,18 @@ describe('mergePR', () => {
         assert.strictEqual(mergeCall.arguments[1].commit_title, 'Custom title');
         assert.strictEqual(mergeCall.arguments[1].commit_message, 'Custom message');
     });
+
+    test('pins the expected head SHA when given', async () => {
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(async () => ({ data: { merged: true, sha: 'merge-sha' } }));
+
+        await mergePR({ owner: 'test-owner', repoName: 'test-repo', prNumber: 42, sha: 'evaluated-head' });
+        await mergePR({ owner: 'test-owner', repoName: 'test-repo', prNumber: 42 });
+
+        const calls = mockOctokit.request.mock.calls as unknown as Array<{ arguments: [string, { sha?: string }] }>;
+        assert.strictEqual(calls[0].arguments[1].sha, 'evaluated-head');
+        assert.ok(!('sha' in calls[1].arguments[1]));
+    });
 });
 
 // ============= deleteBranch Tests =============
@@ -1496,6 +1523,73 @@ describe('handleCheckRunEvent', () => {
             call.arguments[0].includes('merge')
         );
         assert.ok(mergeCall, 'Should merge when SHA matches');
+    });
+
+    test('does not merge when the repository auto-merge policy skips the PR, and uses its merge method otherwise', async () => {
+        const mockMergeablePR = async (endpoint: string) => {
+            if (endpoint.includes('pulls') && !endpoint.includes('merge') && !endpoint.includes('commits')) {
+                return {
+                    data: {
+                        labels: [{ name: 'auto-merge' }], draft: false, mergeable: true, mergeable_state: 'clean', body: '',
+                        base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
+                    }
+                };
+            }
+            if (endpoint.includes('check-runs')) return { data: { check_runs: [{ name: 'CI', status: 'completed', conclusion: 'success' }] } };
+            if (endpoint.includes('merge')) return { data: { merged: true, sha: 'merge123' } };
+            return { data: {} };
+        };
+        const mergeCalls = () => mockOctokit.request.mock.calls.filter((call: { arguments: [string] }) => call.arguments[0].includes('/merge'));
+
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(mockMergeablePR);
+        mockEvaluatePullRequestAutoMerge.mock.mockImplementation(async () => ({
+            decision: { arm: false, reason: 'skipped_protected_path' }, pullRequest: null,
+        }));
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mockEvaluatePullRequestAutoMerge.mock.callCount(), 1);
+        assert.equal(mergeCalls().length, 0, 'a skipped policy decision leaves the merge to a human');
+
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(mockMergeablePR);
+        mockEvaluatePullRequestAutoMerge.mock.mockImplementation(async () => ({
+            decision: { arm: true, reason: 'armed', method: 'rebase' }, pullRequest: { headSha: 'abc123sha' },
+        }));
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mergeCalls().length, 1);
+        assert.equal((mergeCalls()[0].arguments as unknown as [string, { merge_method: string }])[1].merge_method, 'rebase');
+    });
+
+    test('merges only the head the auto-merge policy evaluated', async () => {
+        const mockMergeablePR = async (endpoint: string) => {
+            if (endpoint.includes('pulls') && !endpoint.includes('merge') && !endpoint.includes('commits')) {
+                return {
+                    data: {
+                        labels: [{ name: 'auto-merge' }], draft: false, mergeable: true, mergeable_state: 'clean', body: '',
+                        base: { ref: 'main' }, head: { ref: 'feature', sha: 'abc123sha', repo: { owner: { login: 'test-owner' } } },
+                    }
+                };
+            }
+            if (endpoint.includes('check-runs')) return { data: { check_runs: [{ name: 'CI', status: 'completed', conclusion: 'success' }] } };
+            if (endpoint.includes('merge')) return { data: { merged: true, sha: 'merge123' } };
+            return { data: {} };
+        };
+        const mergeCalls = () => mockOctokit.request.mock.calls.filter((call: { arguments: [string] }) => call.arguments[0].includes('/merge'));
+
+        // A protected head pushed during evaluation was what the policy saw: the
+        // decision does not cover the head whose checks passed, so nothing merges.
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(mockMergeablePR);
+        mockEvaluatePullRequestAutoMerge.mock.mockImplementation(async () => ({ decision: armedDecision, pullRequest: { headSha: 'newer-head' } }));
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mergeCalls().length, 0);
+
+        // The REST merge pins the evaluated head so GitHub refuses a replacement head.
+        resetMocks();
+        mockOctokit.request.mock.mockImplementation(mockMergeablePR);
+        await handleCheckRunEvent(createMockCheckRunPayload({ headSha: 'abc123sha' }), 'test-correlation-id');
+        assert.equal(mergeCalls().length, 1);
+        assert.equal((mergeCalls()[0].arguments as unknown as [string, { sha?: string }])[1].sha, 'abc123sha');
     });
 
     test('does not merge after one successful check while GitHub still reports required checks blocked', async () => {

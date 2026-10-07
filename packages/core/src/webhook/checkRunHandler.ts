@@ -25,6 +25,8 @@ import {
 import type { CheckRunEvent, CheckSuiteEvent } from '@octokit/webhooks-types';
 import { getNonBlockingChecksForRepository } from '../daemon/configLoader.js';
 import { isNonBlockingCheck } from './nonBlockingChecks.js';
+import { evaluatePullRequestAutoMerge } from '../services/autoMergeGate.js';
+import type { AutoMergePolicyMethod } from '../workflow/autoMergePolicy.js';
 
 export interface StatusEventPayload {
     sha: string;
@@ -141,7 +143,7 @@ export async function shouldAutoMergePR(ctx: PRMergeContext): Promise<boolean> {
 /**
  * Performs the actual merge of a PR and post-merge actions.
  */
-async function performMergeAndPostActions(ctx: PRMergeContext): Promise<void> {
+async function performMergeAndPostActions(ctx: PRMergeContext, mergeMethod: AutoMergePolicyMethod = 'squash', expectedHeadSha?: string): Promise<void> {
     const { owner, repoName, prNumber, prInfo, log } = ctx;
     let commitTitle: string | undefined;
     let commitMessage: string | undefined;
@@ -155,7 +157,7 @@ async function performMergeAndPostActions(ctx: PRMergeContext): Promise<void> {
         }
     }
 
-    const mergeResult = await mergePR({ owner, repoName, prNumber, mergeMethod: 'squash', commitTitle, commitMessage });
+    const mergeResult = await mergePR({ owner, repoName, prNumber, mergeMethod, commitTitle, commitMessage, sha: expectedHeadSha });
 
     if (mergeResult.success && mergeResult.merged) {
         log.info({ owner, repoName, prNumber, sha: mergeResult.sha }, 'PR auto-merged successfully');
@@ -230,8 +232,24 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<void
         return;
     }
 
+    // The repository's auto-merge policy (read from the base branch) gates this
+    // merge exactly like arming GitHub auto-merge; any uncertainty keeps a human in the loop.
+    const { decision, pullRequest } = await evaluatePullRequestAutoMerge({ owner, repo: repoName, prNumber, opportunity: 'check_merge' });
+    if (!decision.arm) {
+        log.info({ owner, repoName, prNumber, reason: decision.reason, matchedPaths: decision.matchedPaths },
+            'Auto-merge policy does not allow merging this PR; leaving it for a human');
+        return;
+    }
+    // The decision covers only the head it evaluated, which must be the head whose checks passed.
+    if (pullRequest?.headSha !== headSha) {
+        log.info({ owner, repoName, prNumber, checkedHeadSha: headSha, evaluatedHeadSha: pullRequest?.headSha },
+            'PR head changed while evaluating the auto-merge policy, skipping merge');
+        return;
+    }
+
     log.info({ owner, repoName, prNumber, headSha }, 'All checks passing for auto-merge PR, attempting to merge');
-    await performMergeAndPostActions(mergeCtx);
+    // GitHub refuses the merge if the head moved after the evaluation.
+    await performMergeAndPostActions(mergeCtx, decision.method, pullRequest.headSha);
 }
 
 export async function reevaluatePRAutoMerge(

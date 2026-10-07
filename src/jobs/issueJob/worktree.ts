@@ -2,7 +2,8 @@
  * Worktree operations for GitHub issue job.
  */
 
-import { materializeSubmissionAttachments, createWorktreeForIssue, pushBranch, TaskStates, updateFileChangesFromWorktree, loadRepositoryVisualPreviewSettings, refineWorkflowPreviews } from '@propr/core';
+import { db, materializeSubmissionAttachments, createWorktreeForIssue, pushBranch, TaskStates, updateFileChangesFromWorktree, loadRepositoryVisualPreviewSettings, refineWorkflowPreviews } from '@propr/core';
+import { recordPushedBranch } from '../../taskReplacement/store.js';
 import type { ExecuteWorktreeParams, ExecuteWorktreeResult } from './types.js';
 import { fetchIssueComments } from './github.js';
 import { executeAgentAndRecordMetrics } from './agent.js';
@@ -16,6 +17,8 @@ export async function executeWorktreeOperations(params: ExecuteWorktreeParams): 
     baseBranch: issueRef.baseBranch || null, octokit, modelName,
     // Hooks and validation come from the policy commit, so the agent starts from that same commit.
     startRevision: context.repositoryWorkflow ? { branch: context.repositoryWorkflow.baseBranch, revision: context.repositoryWorkflow.revision } : null,
+    // A replacement attempt continues the work branch its predecessor pushed.
+    ...(issueRef.replacementBranch ? { reuseBranch: issueRef.replacementBranch } : {}),
   });
   await materializeSubmissionAttachments(issueRef, worktreeInfo.worktreePath);
   await job.updateProgress(75);
@@ -23,13 +26,21 @@ export async function executeWorktreeOperations(params: ExecuteWorktreeParams): 
   // Construct the task dashboard URL
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
   const taskUrl = `${frontendUrl}/tasks/${encodeURIComponent(taskId)}`;
+  const attemptLine = issueRef.replacesTaskId
+    ? `- Attempt: ${issueRef.attemptNumber ?? 2} (replaces [${issueRef.replacesTaskId}](${frontendUrl}/tasks/${encodeURIComponent(issueRef.replacesTaskId)}))\n`
+    : '';
 
   await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
     owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-    body: `🤖 AI processing has started for this issue using **${agentAlias}** agent with **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Agent: \`${agentAlias}\`\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main'}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\`\n\n🔍 [Track Task Execution](${taskUrl})`,
+    body: `🤖 AI processing has started for this issue using **${agentAlias}** agent with **${modelName}** model.\n\nI'll analyze the problem and work on a solution. This may take a few minutes.\n\n**Processing Details:**\n- Agent: \`${agentAlias}\`\n- Model: \`${modelName}\`\n- Branch: \`${worktreeInfo.branchName}\`\n- Base Branch: \`${issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main'}\`\n- Worktree: \`${worktreeInfo.worktreePath.split('/').pop()}\`\n${attemptLine}\n🔍 [Track Task Execution](${taskUrl})`,
   });
 
   await pushBranch(worktreeInfo.worktreePath, worktreeInfo.branchName, { repoUrl, authToken: githubToken.token });
+  try {
+    await recordPushedBranch(db, taskId, worktreeInfo.branchName);
+  } catch (error) {
+    correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Failed to record the pushed work branch');
+  }
   await job.updateProgress(80);
 
   const issueComments = await fetchIssueComments(octokit, issueRef, correlatedLogger);

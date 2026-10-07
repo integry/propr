@@ -160,6 +160,20 @@ describe('preview runtime smoke cleanup lifecycle', { skip: unsupported }, () =>
     assert.deepEqual(previewRoots(workspace.tmp), ['propr-preview-runtime-smoke.Other1']);
   });
 
+  test('fails before starting any service when the app image cannot run sharp', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    apiCompatibility = compatibility;
+    const result = await runSmoke(workspace, { FAKE_DOCKER_SHARP: 'fail' });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Cannot find module 'sharp'/);
+    assert.doesNotMatch(result.stdout, /Preview runtime smoke passed/);
+    assert.doesNotMatch(result.stderr, /did not remove every owned resource/);
+    const calls = readFileSync(join(workspace.state, 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(calls.some((call) => call[0] === 'network' && call[1] === 'create'), false);
+    assert.deepEqual(previewRoots(workspace.tmp), ['propr-preview-runtime-smoke.Other1']);
+  });
+
   test('fails a passing smoke when generated data cannot be removed', { skip: !hostCannotRemovePrivateSubtree }, async (t) => {
     const workspace = makeWorkspace();
     t.after(() => forceRemove(workspace.root));
