@@ -78,4 +78,29 @@ describe('PlanEditorHeader (mobile)', () => {
     expect(phases.querySelector('[aria-current="step"]')).toHaveTextContent('2Review');
     expect(screen.queryByRole('navigation', { name: 'Progress' })).not.toBeInTheDocument();
   });
+
+  it('puts Back on the top-left edge and tucks Undo, Redo and History into the "…" menu above Delete', () => {
+    const onBackToSetup = vi.fn();
+    const onUndo = vi.fn();
+    render(<PlanEditorHeader {...baseProps} isMobile onBackToSetup={onBackToSetup} onUndo={onUndo} />);
+    const metaRow = screen.getByTestId('plan-editor-mobile-meta-row');
+    const back = screen.getByRole('button', { name: 'Back to Setup' });
+    expect(metaRow.firstElementChild).toBe(back);
+    fireEvent.click(back);
+    expect(onBackToSetup).toHaveBeenCalledTimes(1);
+
+    // Only the title and the menu share the title row.
+    expect(screen.queryByTitle('Undo')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('Delete Plan')).not.toBeInTheDocument();
+    const titleRow = screen.getByRole('heading', { name: 'Agents v1' }).parentElement!;
+    expect(titleRow.querySelectorAll('button')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'More plan actions' }));
+    const items = screen.getAllByRole('menuitem').map(item => item.textContent);
+    expect(items).toEqual(['Undo', 'Redo', 'Plan history', 'Delete plan']);
+    expect(screen.getByRole('menuitem', { name: 'Redo' })).toBeDisabled();
+    expect(screen.getByRole('separator')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Undo' }));
+    expect(onUndo).toHaveBeenCalledTimes(1);
+  });
 });

@@ -169,7 +169,47 @@ test('planner screens on a mobile viewport', async ({ page }) => {
   const reviewTitle = (await page.getByRole('heading', { level: 1 }).boundingBox())!;
   const reviewScopeBox = (await reviewScope.boundingBox())!;
   expect(reviewTitle.y).toBeGreaterThan(reviewScopeBox.y + reviewScopeBox.height - 1);
+  // Back sits on the top-left edge; the title row carries only the "…" menu, which holds Undo/Redo/History/Delete.
+  const back = page.getByRole('button', { name: 'Back to Setup' });
+  const backBox = (await back.boundingBox())!;
+  expect(backBox.x).toBeLessThan(reviewScopeBox.x);
+  expect(backBox.x).toBeLessThan(16);
+  await expect(page.getByTitle('Undo')).toHaveCount(0);
+  await expect(page.getByTitle('Delete Plan')).toHaveCount(0);
+  expect(reviewTitle.width).toBeGreaterThan(390 - 80);
+  // The footer is two buttons with the count in the primary action.
+  const createIssues = page.getByRole('button', { name: 'Create 17 Issues' });
+  await expect(createIssues).toBeInViewport();
+  await expect(page.getByText('17 tasks', { exact: true })).toHaveCount(0);
   await capture(page, 'mobile-review-17-steps');
+  await page.getByRole('button', { name: 'More plan actions' }).click();
+  await expect(page.getByRole('menuitem')).toHaveText(['Undo', 'Redo', 'Plan history', 'Delete plan']);
+  await capture(page, 'mobile-review-overflow-menu');
+  await page.getByRole('button', { name: 'More plan actions' }).click({ force: true });
+  await page.mouse.click(10, 400);
+  // The task jumper reaches a late task without scrolling through the whole specification.
+  const jumper = page.getByTestId('mobile-task-jumper');
+  await expect(jumper).toContainText('Task 1 of 17');
+  await jumper.click();
+  const sheet = page.getByRole('dialog', { name: 'Jump to task' });
+  await expect(sheet.locator('li')).toHaveCount(17);
+  await capture(page, 'mobile-review-task-jumper');
+  await sheet.locator('li').nth(13).getByRole('button').click();
+  await expect(sheet).toBeHidden();
+  await expect(page.locator('[data-task-index="13"]')).toBeInViewport();
+  await expect(jumper).toContainText('Task 14 of 17');
+  await capture(page, 'mobile-review-jumped-task-14');
+  // On a 360px Android phone the two footer buttons still sit side by side without wrapping or overlapping.
+  await page.setViewportSize({ width: 360, height: 780 });
+  const refineBox = (await page.getByRole('button', { name: 'Refine' }).boundingBox())!;
+  const createBox = (await createIssues.boundingBox())!;
+  expect(Math.abs((createBox.y + createBox.height / 2) - (refineBox.y + refineBox.height / 2))).toBeLessThanOrEqual(1);
+  expect(createBox.x).toBeGreaterThan(refineBox.x + refineBox.width);
+  expect(createBox.x + createBox.width).toBeLessThanOrEqual(360);
+  expect(await createIssues.locator('span').evaluate(label => label.scrollWidth <= label.clientWidth)).toBe(true);
+  expect(await overflow()).toBeLessThanOrEqual(0);
+  await capture(page, 'mobile-review-footer-360');
+  await page.setViewportSize({ width: 390, height: 844 });
 
   await page.goto('/studio/plan-mcp-exec');
   await expect(page.getByTestId('plan-execution-matrix').getByTestId('plan-execution-row')).toHaveCount(3);

@@ -1,10 +1,14 @@
 import React, { useState } from 'react';
-import { FileQuestion, Info, X, Undo2, Redo2, Loader2, ArrowLeft, GitBranch, Trash2, AlertCircle, History, MessageSquare, MoreHorizontal } from 'lucide-react';
+import { FileQuestion, Info, X, Undo2, Redo2, ArrowLeft, GitBranch, AlertCircle, History, MessageSquare } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GranularityEnforcementMetadata } from '../../api/proprApi';
 import { StudioPhaseSwitcher } from './StudioStepper';
-import { StudioScopePill } from './StudioScopePill';
 import { FinalizeButton } from './FinalizeButton';
+import { PlanOverflowMenu } from './PlanOverflowMenu';
+import { PlanEditorMobileHeader } from './PlanEditorMobileHeader';
+import { getReadOnlyTitle, isPlanActionDisabled } from './planEditorHeaderUtils';
+
+export { PlanOverflowMenu, type PlanMenuItem } from './PlanOverflowMenu';
 
 interface OriginalPromptPopoverProps {
   prompt: string;
@@ -116,171 +120,8 @@ export interface PlanEditorHeaderProps {
   onFinalize?: () => void;
 }
 
-const isPlanActionDisabled = (
-  isFinalizing: boolean,
-  isResettingToSetup: boolean,
-  isDeleting: boolean,
-  isReadOnly: boolean
-) => isFinalizing || isResettingToSetup || isDeleting || isReadOnly;
-
-const getReadOnlyTitle = (isReadOnly: boolean, title: string) => (
-  isReadOnly ? 'Demo mode is read-only' : title
-);
-
-const PlanEditorMobileHeader: React.FC<PlanEditorHeaderProps> = ({
-  planName,
-  repository,
-  baseBranch,
-  isDeleting,
-  isFinalizing,
-  isResettingToSetup,
-  canUndo,
-  canRedo,
-  onDelete,
-  onBackToSetup,
-  onUndo,
-  onRedo,
-  onShowHistory,
-  isReadOnly = false
-}) => {
-  const actionDisabled = isPlanActionDisabled(isFinalizing, isResettingToSetup, isDeleting, isReadOnly);
-
-  return (
-    <div className="flex flex-col border-b border-gray-200 bg-gray-100 flex-shrink-0">
-      {/* Tier 1: scope (repo/branch) and the step badge */}
-      <div className="flex items-center gap-2 px-3 pt-2" data-testid="plan-editor-mobile-meta-row">
-        <StudioScopePill repository={repository} baseBranch={baseBranch} />
-        <StudioPhaseSwitcher className="ml-auto" />
-      </div>
-      {/* Tier 2: the plan title on its own line, with the icon actions */}
-      <div className="flex items-center justify-between px-3 py-2 gap-2">
-        <h1 className="text-base font-semibold text-gray-900 truncate min-w-0 flex-1" title={planName}>
-          {planName}
-        </h1>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button
-            onClick={onUndo}
-            disabled={!canUndo || isReadOnly}
-            className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title="Undo"
-          >
-            <Undo2 size={16} className="text-gray-600" />
-          </button>
-          <button
-            onClick={onRedo}
-            disabled={!canRedo || isReadOnly}
-            className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title="Redo"
-          >
-            <Redo2 size={16} className="text-gray-600" />
-          </button>
-          {onShowHistory && (
-            <button
-              onClick={onShowHistory}
-              className="p-1.5 rounded hover:bg-gray-200 transition-colors"
-              title="Plan history"
-            >
-              <History size={16} className="text-gray-600" />
-            </button>
-          )}
-          <button
-            onClick={onBackToSetup}
-            disabled={actionDisabled}
-            className="p-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title={getReadOnlyTitle(isReadOnly, 'Back to Setup')}
-          >
-            <ArrowLeft size={16} />
-          </button>
-          <button
-            onClick={onDelete}
-            disabled={actionDisabled}
-            className="p-1.5 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title={getReadOnlyTitle(isReadOnly, 'Delete Plan')}
-          >
-            {isDeleting ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <Trash2 size={16} />
-            )}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
 const SECONDARY_GROUP_BUTTON_CLASS = 'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed first:rounded-l-md last:rounded-r-md';
 const ICON_GROUP_BUTTON_CLASS = 'px-2 py-1.5 text-slate-600 hover:bg-slate-50 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors first:rounded-l-md last:rounded-r-md';
-
-export interface PlanMenuItem {
-  label: string;
-  icon: React.ReactNode;
-  onSelect: () => void;
-  disabled?: boolean;
-  title?: string;
-}
-
-interface PlanOverflowMenuProps {
-  isDeleting: boolean;
-  deleteDisabled: boolean;
-  deleteTitle: string;
-  onDelete: () => void;
-  /** Non-destructive actions listed above Delete, e.g. Pause and Revise in the phone header. */
-  items?: PlanMenuItem[];
-}
-
-/** Destructive plan actions live behind "…" so they are never one stray click away. */
-export const PlanOverflowMenu: React.FC<PlanOverflowMenuProps> = ({ isDeleting, deleteDisabled, deleteTitle, onDelete, items = [] }) => {
-  const [isOpen, setIsOpen] = useState(false);
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        aria-label="More plan actions"
-        aria-haspopup="menu"
-        aria-expanded={isOpen}
-        title="More plan actions"
-        className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-200 rounded-md transition-colors"
-      >
-        {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <MoreHorizontal size={16} />}
-      </button>
-      {isOpen && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
-          <div role="menu" className="absolute right-0 top-full mt-1 z-50 w-44 rounded-md border border-slate-200 bg-white py-1 shadow-lg">
-            {items.map((item) => (
-              <button
-                key={item.label}
-                type="button"
-                role="menuitem"
-                onClick={() => { setIsOpen(false); item.onSelect(); }}
-                disabled={item.disabled}
-                title={item.title}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {item.icon}
-                {item.label}
-              </button>
-            ))}
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => { setIsOpen(false); onDelete(); }}
-              disabled={deleteDisabled}
-              title={deleteTitle}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Trash2 size={14} />
-              Delete plan
-            </button>
-          </div>
-        </>
-      )}
-    </div>
-  );
-};
 
 const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
   planName,

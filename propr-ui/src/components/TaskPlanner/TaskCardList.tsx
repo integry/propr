@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import TaskCard from './TaskCard';
 import TaskTimeline from './TaskTimeline';
 import { CollapsedOutlineRail, OUTLINE_RAIL_MIN_TASKS, TaskTabBar } from './TaskTabBar';
+import { MobileTaskJumper } from './MobileTaskJumper';
 import { PlanTask } from '../../api/proprApi';
 import { useIsMobile } from '../../hooks/useIsMobile';
 
@@ -119,6 +120,8 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
 
   // Multi-step plans get navigation on desktop: a tab bar for short plans,
   // a collapsible outline rail once the plan is long enough to need one.
+  // Phones get a "Task N of M" jumper instead.
+  const showMobileJumper = tasks.length > 1 && isMobile;
   const showNavigation = tasks.length > 1 && !isMobile;
   const showOutlineRail = showNavigation && tasks.length >= OUTLINE_RAIL_MIN_TASKS;
   const showTabBar = showNavigation && !showOutlineRail;
@@ -149,6 +152,9 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
 
       {/* The tab bar sits above the scroll container, never inside it, so content cannot scroll above it. */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {showMobileJumper && (
+          <MobileTaskJumper taskTitles={taskTitles} activeIndex={activeTaskIndex} onSelect={handleTimelineClick} />
+        )}
         {showTabBar && (
           <TaskTabBar
             taskTitles={taskTitles}
