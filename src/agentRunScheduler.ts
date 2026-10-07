@@ -15,6 +15,8 @@ import {
     createAgentRunCostGate,
     db,
     disableAgentDefinitionSchedule,
+    enqueueAgentRunPhase,
+    getAgentRunByIdempotencyKey,
     listDueScheduledAgentDefinitions,
     logger,
     recordSkippedRun,
@@ -109,14 +111,15 @@ function bootstrapAdminUsernames(environment: NodeJS.ProcessEnv = process.env): 
  * import: the owner must pass the GitHub user whitelist when one is
  * configured, and is then a member through an explicit `instance_members` row,
  * as a bootstrap administrator (`PROPR_ADMIN_USERS`), or implicitly as a user
- * who signed in (a stored GitHub user grant).
+ * who signed in (a stored GitHub user grant). A failed lookup throws, so the
+ * sweep keeps the slot pending and retries instead of treating it as lost
+ * membership.
  */
 export async function isAgentOwnerInstanceMember(ownerId: string, database: Knex = db): Promise<boolean> {
     const member = await database('instance_members').where({ github_user_id: ownerId })
         .first<{ github_username?: string } | undefined>('github_username');
     const grant = await database('github_user_grants').where({ github_user_id: ownerId })
-        .first<{ github_username?: string } | undefined>('github_username')
-        .catch(() => undefined);
+        .first<{ github_username?: string } | undefined>('github_username');
     const username = grant?.github_username || member?.github_username || null;
     if (getGithubUserWhitelist().length > 0 && !isGithubUserWhitelisted(username)) return false;
     if (member || grant) return true;
@@ -149,6 +152,8 @@ interface ScheduleContext {
     trigger: NonNullable<AgentRunSweepDependencies['trigger']>;
     gate: AgentRunGate;
     isMember: NonNullable<AgentRunSweepDependencies['isMember']>;
+    /** Enqueues the report phase of a `queued` receipt. */
+    dispatch: (run: StoredAgentRun) => Promise<unknown>;
     clock: () => number;
 }
 
@@ -185,35 +190,76 @@ async function claimDueSlot(
     return definition ? { definition, slot } : { outcome: 'lost' };
 }
 
-/** Records the run for `slot`, which this or an earlier sweep claimed and left pending. */
+/** A `skipped` receipt for the slot; a replay returns the receipt already recorded. */
+async function recordSkippedSlot(
+    definition: StoredAgentDefinition,
+    slot: { triggerSource: string; idempotencyKey: string },
+    skipReason: string,
+    context: ScheduleContext,
+): Promise<{ run: StoredAgentRun; created: boolean }> {
+    return recordSkippedRun({ definition, trigger: 'schedule', ...slot, skipReason }, { database: context.database, now: context.clock });
+}
+
+/**
+ * Records the run for `slot`, which this or an earlier sweep claimed and left
+ * pending. The pending slot is the slot's dispatch obligation: it is released
+ * only once the receipt exists and no longer needs dispatching, so a sweep
+ * that stopped between creating a `queued` receipt and enqueueing it is
+ * completed by the next one.
+ */
 async function fireClaimedSlot(definition: StoredAgentDefinition, slot: number, context: ScheduleContext): Promise<ScheduleOutcome> {
-    // An offboarded owner's agent must stop running. Disabling drops the pending slot.
-    if (!await context.isMember(definition.ownerId)) {
+    const slotIso = new Date(slot).toISOString();
+    const slotKeys = { triggerSource: `schedule:${definition.scheduleCron}`, idempotencyKey: `schedule:${slotIso}` };
+
+    let receipt: { run: StoredAgentRun; enqueued: boolean };
+    let outcome: ScheduleOutcome;
+    if (!definition.scheduleEnabled) {
+        // The schedule was turned off after the claim: the slot starts no new work.
+        const { run, created } = await recordSkippedSlot(definition, slotKeys,
+            'The scheduled run was skipped: the schedule was turned off', context);
+        logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: created ? 'skipped' : 'existing', reason: 'schedule_disabled' },
+            'Scheduled agent run');
+        receipt = { run, enqueued: false };
+        outcome = created ? 'invalid' : 'existing';
+    } else if (!await context.isMember(definition.ownerId)) {
+        // An offboarded owner's agent must stop running. A receipt an earlier
+        // sweep accepted but may not have dispatched is skipped first, since
+        // disabling drops the pending slot.
+        const existing = await getAgentRunByIdempotencyKey(definition.id, slotKeys.idempotencyKey, { database: context.database });
+        if (existing?.state === 'queued') {
+            await transitionAgentRun(existing.id, ['queued'], 'skipped',
+                { skipReason: 'The scheduled run was skipped: the owner is no longer an instance member' },
+                { database: context.database, now: context.clock });
+        }
         return disableSchedule(definition, 'The owner is no longer an instance member', context);
+    } else {
+        try {
+            const { run, created, enqueued } = await context.trigger({ definition, trigger: 'schedule', ...slotKeys, gate: context.gate });
+            logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: created ? run.state : 'existing' },
+                'Scheduled agent run');
+            receipt = { run, enqueued };
+            outcome = created ? 'created' : 'existing';
+        } catch (error) {
+            // A slot claimed before the agent was disabled still gets a receipt.
+            if (!(error instanceof AgentRunTriggerError) || (error.code !== 'AGENT_INVALID' && error.code !== 'AGENT_DISABLED')) throw error;
+            // The history shows why the slot did not run.
+            const { run, created } = await recordSkippedSlot(definition, slotKeys, `The scheduled run was skipped: ${error.message}`, context);
+            logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: 'skipped', reason: error.message },
+                'Scheduled agent run');
+            receipt = { run, enqueued: false };
+            outcome = created ? 'invalid' : 'existing';
+        }
     }
 
-    const slotIso = new Date(slot).toISOString();
-    const triggerSource = `schedule:${definition.scheduleCron}`;
-    const idempotencyKey = `schedule:${slotIso}`;
-    let outcome: ScheduleOutcome;
-    try {
-        const { run, created } = await context.trigger({ definition, trigger: 'schedule', triggerSource, idempotencyKey, gate: context.gate });
-        logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: created ? run.state : 'existing' },
+    // A replayed `queued` receipt may never have been enqueued (the sweep that
+    // created it stopped first). The job id is deterministic and the worker
+    // skips a run that is no longer `queued`, so dispatching again is safe. A
+    // failed dispatch throws and leaves the slot pending for the next sweep.
+    if (receipt.run.state === 'queued' && !receipt.enqueued) {
+        await context.dispatch(receipt.run);
+        logger.info({ definitionId: definition.id, slot: slotIso, runId: receipt.run.id, decision: 'redispatched' },
             'Scheduled agent run');
-        outcome = created ? 'created' : 'existing';
-    } catch (error) {
-        // A slot claimed before the agent was disabled still gets a receipt.
-        if (!(error instanceof AgentRunTriggerError) || (error.code !== 'AGENT_INVALID' && error.code !== 'AGENT_DISABLED')) throw error;
-        // The history shows why the slot did not run.
-        const { run, created } = await recordSkippedRun({
-            definition, trigger: 'schedule', triggerSource, idempotencyKey,
-            skipReason: `The scheduled run was skipped: ${error.message}`,
-        }, { database: context.database, now: context.clock });
-        logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: 'skipped', reason: error.message },
-            'Scheduled agent run');
-        outcome = created ? 'invalid' : 'existing';
     }
-    // The receipt exists, so the slot no longer needs to be resumed.
     await releaseAgentDefinitionScheduleSlot(definition.id, slot, { database: context.database });
     return outcome;
 }
@@ -247,7 +293,8 @@ export async function runAgentScheduleSweep(deps: AgentRunSweepDependencies = {}
     const now = clock();
     const result: AgentScheduleSweepResult = { created: 0, existing: 0, invalid: 0, disabled: 0, lost: 0, failed: 0 };
     const due = await listDueScheduledAgentDefinitions(now, batchSize, { database });
-    const context: ScheduleContext = { now, database, trigger, gate, isMember, clock };
+    const dispatch = (run: StoredAgentRun) => enqueueAgentRunPhase(run, 'report', { enqueue });
+    const context: ScheduleContext = { now, database, trigger, gate, isMember, dispatch, clock };
     for (const entry of due) {
         try {
             const outcome = await fireDueDefinition(entry, context);
@@ -354,8 +401,12 @@ async function failStuckRuns(runs: StoredAgentRun[], cutoff: number, { database,
 export interface AgentRunGrantCleanupDependencies {
     database?: Knex;
     now?: () => number;
-    /** Revokes one run phase's grant through the API's internal route. */
-    revoke?: (runId: string, phase: AgentRunPhase) => Promise<void>;
+    /**
+     * Revokes one run phase's grant through the API's internal route. With
+     * `expiredBy`, the API revokes only a grant that expired by then, so a
+     * replacement issued after the record was read is left alone.
+     */
+    revoke?: (runId: string, phase: AgentRunPhase, fence: { expiredBy?: number }) => Promise<void>;
 }
 
 function parseGrantRecordId(id: string): { runId: string; phase: AgentRunPhase } | null {
@@ -375,7 +426,7 @@ export async function cleanupAgentRunGrants(deps: AgentRunGrantCleanupDependenci
     const {
         database = db,
         now = Date.now,
-        revoke = (runId, phase) => revokeAgentRunMcpGrant(runId, { phase }),
+        revoke = (runId, phase, { expiredBy }) => revokeAgentRunMcpGrant(runId, { phase, expiredBy }),
     } = deps;
     const timestamp = now();
     let revoked = 0;
@@ -413,7 +464,10 @@ async function revokeLeftoverGrants(
         const ended = state === undefined || isTerminalAgentRunState(state);
         if (!expired && !ended) continue;
         try {
-            await revoke(grant.runId, grant.phase);
+            // A live run may replace an expired grant by retrying its phase, so
+            // that revocation is fenced by the expiry evaluated here. An ended
+            // or missing run is never issued a replacement.
+            await revoke(grant.runId, grant.phase, ended ? {} : { expiredBy: timestamp });
             revoked += 1;
             logger.info({ runId: grant.runId, phase: grant.phase, runState: state ?? null, expired }, 'Revoked leftover agent run MCP grant');
         } catch (error) {

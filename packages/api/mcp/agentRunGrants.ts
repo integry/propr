@@ -161,10 +161,12 @@ export async function revokeAgentRunGrant(grantId: string, deps: AgentRunGrantDe
  * Revokes the grant recorded for one run phase and forgets it. Returns the
  * revoked grant id, or null when that phase holds no grant. With `grantId`,
  * only that grant is revoked: a newer grant recorded by a retried phase is
- * left alone (the older one was revoked when it was replaced).
+ * left alone (the older one was revoked when it was replaced). With
+ * `expiredBy`, only a grant that expired by that time is revoked, so a cleanup
+ * that judged an earlier record expired never revokes its fresh replacement.
  */
 export async function revokeAgentRunPhaseGrant(
-  runId: string, phase: AgentRunGrantPhase, deps: AgentRunGrantDependencies & { grantId?: string } = {},
+  runId: string, phase: AgentRunGrantPhase, deps: AgentRunGrantDependencies & { grantId?: string; expiredBy?: number } = {},
 ): Promise<string | null> {
   const oauth = await provider(deps);
   const recordId = agentRunGrantRecordId(runId, phase);
@@ -174,6 +176,7 @@ export async function revokeAgentRunPhaseGrant(
     if (!await tx('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: recordId }).forUpdate().first('id')) return null;
     const record = await oauth.store.get<AgentRunGrantRecord | null>(AGENT_RUN_GRANT_RECORD_KIND, recordId, tx);
     if (!record || (deps.grantId !== undefined && record.grantId !== deps.grantId)) return null;
+    if (deps.expiredBy !== undefined && record.expiresAt > deps.expiredBy) return null;
     await oauth.revokeGrant(record.grantId, undefined, tx);
     await tx('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND, id: recordId }).delete();
     return record.grantId;

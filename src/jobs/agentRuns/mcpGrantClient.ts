@@ -43,7 +43,7 @@ export function agentContainerMcpUrl(environment: NodeJS.ProcessEnv = process.en
 async function postSigned(
     path: string,
     runId: string,
-    body: { phase: AgentRunPhase; grantId?: string },
+    body: { phase: AgentRunPhase; grantId?: string; expiredBy?: number },
     { environment = process.env, fetchImpl = fetch, now = Date.now }: McpGrantClientOptions,
 ): Promise<Record<string, unknown>> {
     const secret = environment.SYSTEM_TASK_SECRET;
@@ -85,14 +85,15 @@ export async function requestAgentRunMcpGrant(runId: string, phase: AgentRunPhas
 
 /**
  * Revokes the grant a phase was issued; a grant that is already gone is not an
- * error. Without `grantId`, whatever grant the phase currently holds is revoked.
+ * error. Without `grantId`, whatever grant the phase currently holds is
+ * revoked; `expiredBy` then limits that to a grant that expired by that time.
  */
 export async function revokeAgentRunMcpGrant(
     runId: string,
-    grant: Pick<IssuedAgentRunMcpGrant, 'phase'> & { grantId?: string },
+    grant: Pick<IssuedAgentRunMcpGrant, 'phase'> & { grantId?: string; expiredBy?: number },
     options: McpGrantClientOptions = {},
 ): Promise<void> {
-    await postSigned('/mcp-grants/revoke', runId, { phase: grant.phase, grantId: grant.grantId }, options);
+    await postSigned('/mcp-grants/revoke', runId, { phase: grant.phase, grantId: grant.grantId, expiredBy: grant.expiredBy }, options);
 }
 
 /**

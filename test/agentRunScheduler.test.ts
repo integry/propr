@@ -15,6 +15,7 @@ import {
   listAgentRuns,
   transitionAgentRun,
   triggerAgentRun,
+  updateAgentDefinition,
   type CreateAgentDefinitionInput,
 } from '@propr/core';
 import {
@@ -236,6 +237,69 @@ describe('agent run scheduler', () => {
       assert.equal((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot, null);
     });
 
+    test('a pending slot whose queued receipt was never enqueued is dispatched before release', async () => {
+      const definition = await define();
+      // The daemon created the queued receipt and exited before enqueueing it.
+      await claimAgentDefinitionScheduleSlot(definition.id, { claimedNextRunAt: T0900, nextRunAt: T0900 + HOUR, slot: T0900 }, { database });
+      const { run } = await createAgentRun({ definition, trigger: 'schedule', idempotencyKey: `schedule:${new Date(T0900).toISOString()}` }, { database, now });
+
+      // A failed dispatch keeps the obligation.
+      const failing = await runAgentScheduleSweep(deps({ enqueue: () => Promise.reject(new Error('redis down')) }));
+      assert.equal(failing.failed, 1);
+      assert.equal(Number((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot), T0900);
+
+      const result = await runAgentScheduleSweep(deps());
+      assert.equal(result.existing, 1);
+      assert.deepEqual(enqueued, [run.id]);
+      assert.equal((await getAgentRunById(run.id, { database }))?.state, 'queued');
+      assert.equal((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot, null);
+      assert.equal((await listAgentRuns(definition.id, 'alice', {}, { database })).total, 1);
+    });
+
+    test('a pending slot whose receipt is past queued is released without dispatching', async () => {
+      const definition = await define();
+      await claimAgentDefinitionScheduleSlot(definition.id, { claimedNextRunAt: T0900, nextRunAt: T0900 + HOUR, slot: T0900 }, { database });
+      const { run } = await createAgentRun({ definition, trigger: 'schedule', idempotencyKey: `schedule:${new Date(T0900).toISOString()}` }, { database, now });
+      await transitionAgentRun(run.id, ['queued'], 'running', {}, { database, now });
+
+      assert.equal((await runAgentScheduleSweep(deps())).existing, 1);
+      assert.deepEqual(enqueued, []);
+      assert.equal((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot, null);
+    });
+
+    test('a pending slot of a schedule turned off after the claim records a skipped run and starts nothing', async () => {
+      const definition = await define();
+      await claimAgentDefinitionScheduleSlot(definition.id, { claimedNextRunAt: T0900, nextRunAt: T0900 + HOUR, slot: T0900 }, { database });
+      await updateAgentDefinition(definition.id, 'alice', { scheduleEnabled: false }, { database, now });
+      let triggered = 0;
+
+      const result = await runAgentScheduleSweep(deps({ trigger: input => { triggered += 1; return trigger(input); } }));
+      assert.equal(result.invalid, 1);
+      assert.equal(triggered, 0);
+      assert.deepEqual(enqueued, []);
+      const { runs } = await listAgentRuns(definition.id, 'alice', {}, { database });
+      assert.equal(runs.length, 1);
+      assert.equal(runs[0].state, 'skipped');
+      assert.match(runs[0].skipReason ?? '', /schedule was turned off/);
+      const stored = await getAgentDefinition(definition.id, 'alice', { database });
+      assert.equal(stored?.enabled, true);
+      assert.equal(stored?.nextRunAt, null);
+      assert.equal((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot, null);
+    });
+
+    test('an offboarded owner\'s undispatched queued receipt is skipped, not left queued', async () => {
+      const definition = await define();
+      await claimAgentDefinitionScheduleSlot(definition.id, { claimedNextRunAt: T0900, nextRunAt: T0900 + HOUR, slot: T0900 }, { database });
+      const { run } = await createAgentRun({ definition, trigger: 'schedule', idempotencyKey: `schedule:${new Date(T0900).toISOString()}` }, { database, now });
+      members.clear();
+
+      assert.equal((await runAgentScheduleSweep(deps())).disabled, 1);
+      assert.deepEqual(enqueued, []);
+      const stored = await getAgentRunById(run.id, { database });
+      assert.equal(stored?.state, 'skipped');
+      assert.match(stored?.skipReason ?? '', /no longer an instance member/);
+    });
+
     test('a long downtime coalesces into the actual latest due slot', async () => {
       const definition = await define({ scheduleCron: '*/15 * * * *' });
       // 105 days of 15-minute slots: more than 10,000 missed occurrences.
@@ -303,6 +367,21 @@ describe('agent run scheduler', () => {
       const result = await runAgentScheduleSweep(deps({ isMember: undefined }));
       assert.equal(result.created, 1);
       assert.equal((await getAgentDefinition(definition.id, 'alice', { database }))?.scheduleEnabled, true);
+    });
+    test('a failed grant lookup keeps the pending slot instead of disabling the schedule', async () => {
+      delete process.env.GITHUB_USER_WHITELIST;
+      const definition = await define();
+      await addGrant('alice', 'alice-gh');
+      await database.schema.renameTable('github_user_grants', 'github_user_grants_offline');
+      const failing = await runAgentScheduleSweep(deps({ isMember: undefined }));
+      assert.equal(failing.failed, 1);
+      assert.equal(failing.disabled, 0);
+      const pending = await database('agent_definitions').where({ id: definition.id }).first();
+      assert.equal(Number(pending.pending_schedule_slot), T0900);
+      assert.equal((await getAgentDefinition(definition.id, 'alice', { database }))?.scheduleEnabled, true);
+
+      await database.schema.renameTable('github_user_grants_offline', 'github_user_grants');
+      assert.equal((await runAgentScheduleSweep(deps({ isMember: undefined }))).created, 1);
     });
   });
 
@@ -405,11 +484,18 @@ describe('agent run scheduler', () => {
       await database('mcp_records').insert({ kind: 'client', id: 'other', value: 'x', owner_id: null, expires_at: clock - HOUR });
 
       const revoked: string[] = [];
-      const count = await cleanupAgentRunGrants({ database, now, revoke: async (runId, phase) => { revoked.push(`${runId}:${phase}`); } });
+      const fences = new Map<string, { expiredBy?: number }>();
+      const count = await cleanupAgentRunGrants({ database, now, revoke: async (runId, phase, fence) => {
+        revoked.push(`${runId}:${phase}`);
+        fences.set(`${runId}:${phase}`, fence);
+      } });
       assert.equal(count, 3);
       assert.deepEqual(revoked.sort(), [
         `${done.id}:action`, `${expired.id}:report`, '00000000-0000-4000-8000-000000000000:report',
       ].sort());
+      // A live run may have replaced its expired grant meanwhile, so that revoke is fenced by expiry.
+      assert.deepEqual(fences.get(`${expired.id}:report`), { expiredBy: clock });
+      assert.deepEqual(fences.get(`${done.id}:action`), {});
     });
 
     test('a failed revocation is retried on the next sweep', async () => {
