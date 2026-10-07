@@ -20,7 +20,7 @@ export const CRON_MACROS = {
 } as const;
 
 /** Agent schedules may not fire more often than this (cost guard). */
-export const MIN_AGENT_SCHEDULE_INTERVAL_MINUTES = 15;
+export const MIN_AGENT_SCHEDULE_INTERVAL_MINUTES = 5;
 /** Upper bound for a cron expression string accepted from users. */
 export const AGENT_SCHEDULE_MAX_LENGTH = 128;
 /** nextCronOccurrence gives up when no match exists within this window. */

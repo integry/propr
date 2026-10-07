@@ -64,9 +64,10 @@ describe('validateAgentDefinitionInput', () => {
     assert.match(validateAgentDefinitionInput({ ...validInput, autonomy: 'yolo' }) ?? '', /autonomy must be one of/);
   });
 
-  test('rejects schedules more frequent than 15 minutes', () => {
-    assert.match(validateAgentDefinitionInput({ ...validInput, schedule: '*/5 * * * *' }) ?? '', /every 15 minutes/);
-    assert.match(validateAgentDefinitionInput({ ...validInput, schedule: '* * * * *' }) ?? '', /every 15 minutes/);
+  test('rejects schedules more frequent than 5 minutes', () => {
+    assert.match(validateAgentDefinitionInput({ ...validInput, schedule: '*/2 * * * *' }) ?? '', /every 5 minutes/);
+    assert.match(validateAgentDefinitionInput({ ...validInput, schedule: '* * * * *' }) ?? '', /every 5 minutes/);
+    assert.equal(validateAgentDefinitionInput({ ...validInput, schedule: '*/5 * * * *' }), null);
   });
 
   test('rejects malformed cron', () => {
@@ -79,7 +80,7 @@ describe('validateAgentDefinitionInput', () => {
     assert.equal(validateAgentDefinitionInput({ autonomy: 'preview' }, { partial: true }), null);
     assert.equal(validateAgentDefinitionInput({ autonomy: 'preview' }), 'name is required');
     assert.equal(validateAgentDefinitionInput({ name: '' }, { partial: true }), 'name is required');
-    assert.match(validateAgentDefinitionInput({ schedule: '*/1 * * * *' }, { partial: true }) ?? '', /every 15 minutes/);
+    assert.match(validateAgentDefinitionInput({ schedule: '*/1 * * * *' }, { partial: true }) ?? '', /every 5 minutes/);
   });
 
   test('rejects non-object input and invalid optional fields', () => {
@@ -146,19 +147,19 @@ describe('cron evaluation', () => {
 
 describe('validateAgentSchedule', () => {
   test('enforces the minimum interval', () => {
-    assert.equal(validateAgentSchedule('*/15 * * * *'), null);
+    assert.equal(validateAgentSchedule('*/5 * * * *'), null);
     assert.equal(validateAgentSchedule('@hourly'), null);
-    assert.match(validateAgentSchedule('*/10 * * * *') ?? '', /every 15 minutes/);
-    assert.match(validateAgentSchedule('0,10 * * * *') ?? '', /every 15 minutes/);
-    // 23:55 to 00:05 the next day is only 10 minutes apart.
-    assert.match(validateAgentSchedule('5,55 0,23 * * *') ?? '', /every 15 minutes/);
-    assert.equal(validateAgentSchedule('5,55 0,23 * * 1'), null);
+    assert.match(validateAgentSchedule('*/4 * * * *') ?? '', /every 5 minutes/);
+    assert.match(validateAgentSchedule('0,3 * * * *') ?? '', /every 5 minutes/);
+    // 23:58 to 00:02 the next day is only 4 minutes apart.
+    assert.match(validateAgentSchedule('2,58 0,23 * * *') ?? '', /every 5 minutes/);
+    assert.equal(validateAgentSchedule('2,58 0,23 * * 1'), null);
     // Feb 29 and Mar 1 fall on Friday and Saturday only in some leap years
-    // (e.g. 2036), where 23:55 to 00:05 is only 10 minutes apart.
-    assert.match(validateAgentSchedule('5,55 0,23 */28 * 5,6') ?? '', /every 15 minutes/);
-    assert.equal(nextCronOccurrence('5,55 0,23 */28 * 5,6', new Date('2036-02-29T23:55:00Z')).toISOString(), '2036-03-01T00:05:00.000Z');
-    assert.match(validateAgentSchedule('5,55 0,23 1,29 2,3 *') ?? '', /every 15 minutes/);
-    assert.equal(validateAgentSchedule('5,55 0,23 1,15 * *'), null);
+    // (e.g. 2036), where 23:58 to 00:02 is only 4 minutes apart.
+    assert.match(validateAgentSchedule('2,58 0,23 */28 * 5,6') ?? '', /every 5 minutes/);
+    assert.equal(nextCronOccurrence('2,58 0,23 */28 * 5,6', new Date('2036-02-29T23:58:00Z')).toISOString(), '2036-03-01T00:02:00.000Z');
+    assert.match(validateAgentSchedule('2,58 0,23 1,29 2,3 *') ?? '', /every 5 minutes/);
+    assert.equal(validateAgentSchedule('2,58 0,23 1,15 * *'), null);
   });
 
   test('rejects schedules that never fire or fire less than yearly', () => {
