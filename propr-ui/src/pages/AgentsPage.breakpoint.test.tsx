@@ -53,7 +53,7 @@ const renderAt = (url: string) => render(
 describe('AgentsPage across the split breakpoint', () => {
   beforeEach(() => {
     vi.mocked(listAgentDefinitions).mockResolvedValue({ definitions: [saved], total: 1, limit: 200, offset: 0 });
-    vi.mocked(listAgentRuns).mockResolvedValue({ runs: [], total: 0, limit: 1, offset: 0 });
+    vi.mocked(listAgentRuns).mockResolvedValue({ runs: [], total: 0, limit: 1, offset: 0, nextOffset: null });
     vi.mocked(getAgentDefinition).mockResolvedValue(saved);
     vi.mocked(getInstanceCatalog).mockResolvedValue({
       agents: [{ alias: 'claude-main', type: 'claude', enabled: true, supportedModels: ['claude-opus-4-5'], defaultModel: 'claude-opus-4-5' }],

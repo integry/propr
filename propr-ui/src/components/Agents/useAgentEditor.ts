@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { agentTypeSupportsProprMcp, validateAgentDefinitionInput, type InstanceCatalogAgent } from '@propr/shared';
 import { getInstanceCatalog } from '../../api/proprApi';
 import {
   createAgentDefinition,
   deleteAgentAttachment,
   deleteAgentDefinition,
+  getAgentCapacity,
   getAgentDefinition,
   isAgentConflictError,
   triggerAgentRun,
@@ -15,6 +16,7 @@ import {
 } from '../../api/agentDefinitionsApi';
 import { emptyAgentForm, formFromDefinition, formToInput, type AgentEditorForm, type AgentEditorFormPatch } from './agentEditorForm';
 import type { ProprMcpSupport } from './AgentCapabilitiesSection';
+import { capacityWarning } from './agentRunPresentation';
 
 export interface AgentEditorCallbacks {
   /**
@@ -27,8 +29,32 @@ export interface AgentEditorCallbacks {
   onRunStarted?: (run: AgentRunRecord) => void;
 }
 
+interface AgentEditorOptions {
+  /** Opens a run Run now started (or the one already in progress), while this editor is still open. */
+  openRun?: (run: AgentRunRecord) => void;
+}
+
 export const CONFLICT_MESSAGE = 'Changed elsewhere — reload';
 export const RUN_NEEDS_SAVE_MESSAGE = 'Save your changes to run them';
+
+interface RunGate { running: boolean; saving: boolean; dirty: boolean; conflict: boolean; loading: boolean; attachmentsPending: boolean; disabledAgent: boolean }
+
+/**
+ * Run now starts the definition the server holds, so it is held back while a
+ * save is replacing it, while the form shows changes that are not saved yet,
+ * while the agent changed elsewhere and its replacement has not loaded, and
+ * while input files are still being added or removed. A disabled agent
+ * cannot be run at all.
+ */
+export function runAvailability(isDemoMode: boolean, { running, saving, dirty, conflict, loading, attachmentsPending, disabledAgent }: RunGate) {
+  let runHint: string | null = null;
+  if (!isDemoMode && disabledAgent) runHint = 'This agent is disabled';
+  else if (!isDemoMode && dirty && !saving && !conflict) runHint = RUN_NEEDS_SAVE_MESSAGE;
+  return {
+    runDisabled: isDemoMode || disabledAgent || running || saving || dirty || conflict || loading || attachmentsPending,
+    runHint,
+  };
+}
 
 /** Whether the form would save something other than the definition as loaded. */
 export function formDiffersFrom(form: AgentEditorForm, definition: AgentDefinitionRecord): boolean {
@@ -49,7 +75,11 @@ export function proprMcpSupportFor(agents: readonly InstanceCatalogAgent[], alia
  * agent sends the revision it was loaded at, so an edit made elsewhere in the
  * meantime surfaces as a conflict instead of being overwritten.
  */
-export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted, onRunStarted }: AgentEditorCallbacks) {
+export function useAgentEditor(
+  definitionId: string | null,
+  { onSaved, onDeleted, onRunStarted }: AgentEditorCallbacks,
+  { openRun }: AgentEditorOptions = {},
+) {
   const [definition, setDefinition] = useState<AgentDefinitionRecord | null>(null);
   const [form, setForm] = useState<AgentEditorForm>(emptyAgentForm);
   const [loading, setLoading] = useState(definitionId !== null);
@@ -58,6 +88,8 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [running, setRunning] = useState(false);
+  /** The near-limit question Run now is waiting on, if the agent's subscription is close to its pause threshold. */
+  const [capacityQuestion, setCapacityQuestion] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -121,6 +153,17 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
   const { support: proprMcpSupport, agentType } = useMemo(() => proprMcpSupportFor(agents, form.agentId), [agents, form.agentId]);
   /** A run uses the saved definition, so it is offered only while the form shows exactly that. */
   const dirty = useMemo(() => Boolean(definition && formDiffersFrom(form, definition)), [definition, form]);
+  /**
+   * The definition and dirtiness as last rendered, for a run resuming after
+   * the capacity check: the form stays editable meanwhile, and the callback
+   * it resumes in still holds the values from when Run now was clicked.
+   */
+  const definitionRef = useRef(definition);
+  const dirtyRef = useRef(dirty);
+  useLayoutEffect(() => {
+    definitionRef.current = definition;
+    dirtyRef.current = dirty;
+  }, [definition, dirty]);
 
   const update = useCallback((patch: AgentEditorFormPatch) => {
     setForm(current => ({ ...current, ...patch }));
@@ -214,21 +257,64 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
     await trackAttachments(() => deleteAgentAttachment(definition.id, attachmentId));
   }, [definition, trackAttachments]);
 
-  const run = useCallback(async () => {
-    const blocked = savingRef.current || conflictRef.current || loadingRef.current || attachmentsPendingRef.current > 0;
-    if (!definition || blocked || dirty) return;
+  const runBlocked = useCallback(
+    () => !definitionRef.current || dirtyRef.current || savingRef.current || conflictRef.current || loadingRef.current || attachmentsPendingRef.current > 0,
+    [],
+  );
+
+  /** Judged on current state, as it may run after an await during which the form, a save or a file change moved on. */
+  const startRun = useCallback(async () => {
+    const current = definitionRef.current;
+    if (!current || runBlocked()) return;
     setRunning(true);
     setError(null);
     try {
-      const result = await triggerAgentRun(definition.id);
+      const result = await triggerAgentRun(current.id);
       setNotice(result.created ? 'Run started' : 'A run is already in progress');
       onRunStarted?.(result.run);
+      if (openRef.current) openRun?.(result.run);
     } catch (runFailure) {
       setError((runFailure as Error).message);
     } finally {
       setRunning(false);
     }
-  }, [definition, dirty, onRunStarted]);
+  }, [onRunStarted, openRun, runBlocked]);
+
+  /**
+   * Run now checks the agent's subscription first. Attended runs may go ahead
+   * near the limit, but only once the user has confirmed it; when the usage
+   * cannot be read the run starts and the server's own gate decides. However
+   * the check ends, including a start refused because something changed while
+   * it was pending, Run now is offered again afterwards.
+   */
+  const run = useCallback(async () => {
+    if (!definition || runBlocked()) return;
+    setRunning(true);
+    setError(null);
+    try {
+      let warning: string | null = null;
+      try {
+        warning = capacityWarning(await getAgentCapacity(definition.id));
+      } catch {
+        warning = null;
+      }
+      if (!openRef.current) return;
+      if (warning) {
+        setCapacityQuestion(warning);
+        return;
+      }
+      await startRun();
+    } finally {
+      setRunning(false);
+    }
+  }, [definition, runBlocked, startRun]);
+
+  const confirmRun = useCallback(async () => {
+    setCapacityQuestion(null);
+    await startRun();
+  }, [startRun]);
+
+  const dismissRun = useCallback(() => setCapacityQuestion(null), []);
 
   /** Waits out attachment changes: a read taken before one commits would replace the file list it produced. */
   const reload = useCallback(() => {
@@ -240,5 +326,6 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
     definition, form, agents, loading, loadError, saving, deleting, running, error, conflict, notice, dirty,
     attachmentsPending: attachmentsPending > 0,
     proprMcpSupport, agentType, update, changeAgent, save, remove, upload, removeAttachment, run, reload,
+    capacityQuestion, confirmRun, dismissRun,
   };
 }

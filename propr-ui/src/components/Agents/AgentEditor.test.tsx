@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { validateAgentSchedule } from '@propr/shared';
 import { AgentEditor } from './AgentEditor';
 import {
   AgentApiError,
   createAgentDefinition,
   deleteAgentAttachment,
-  deleteAgentDefinition,
-  getAgentDefinition,
+  deleteAgentDefinition, getAgentCapacity, getAgentDefinition,
   triggerAgentRun,
   updateAgentDefinition,
   uploadAgentAttachment,
@@ -24,7 +24,7 @@ vi.mock('../../api/agentDefinitionsApi', async importOriginal => ({
   deleteAgentDefinition: vi.fn(),
   uploadAgentAttachment: vi.fn(),
   deleteAgentAttachment: vi.fn(),
-  triggerAgentRun: vi.fn(),
+  triggerAgentRun: vi.fn(), getAgentCapacity: vi.fn(),
 }));
 
 vi.mock('../../api/proprApi', () => ({ getInstanceCatalog: vi.fn() }));
@@ -40,9 +40,8 @@ const definition: AgentDefinitionRecord = {
   autonomyMode: 'dry_run', enabled: true, revision: 3, createdAt: 0, updatedAt: 0,
 };
 
-const renderEditor = (definitionId: string | null = null) => render(
-  <AgentEditor definitionId={definitionId} onSaved={vi.fn()} onDeleted={vi.fn()} />,
-);
+const renderEditor = (definitionId: string | null = null) =>
+  render(<AgentEditor definitionId={definitionId} onSaved={vi.fn()} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
 
 const fillRequired = () => {
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Nightly triage' } });
@@ -51,6 +50,7 @@ const fillRequired = () => {
 
 describe('AgentEditor', () => {
   beforeEach(() => {
+    vi.mocked(getAgentCapacity).mockResolvedValue({ capacity: { status: 'ok', sessionPercent: 20, provider: 'claude' }, threshold: 90 });
     vi.mocked(getInstanceCatalog).mockResolvedValue({
       agents: [
         { alias: 'claude-main', type: 'claude', enabled: true, supportedModels: ['claude-opus-4-5'], defaultModel: 'claude-opus-4-5' },
@@ -239,7 +239,7 @@ describe('AgentEditor', () => {
     let finish: (saved: AgentDefinitionRecord) => void = () => undefined;
     vi.mocked(createAgentDefinition).mockReturnValue(new Promise(resolve => { finish = resolve; }));
     const onSaved = vi.fn();
-    const { unmount } = render(<AgentEditor definitionId={null} onSaved={onSaved} onDeleted={vi.fn()} />);
+    const { unmount } = render(<AgentEditor definitionId={null} onSaved={onSaved} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
     fillRequired();
     fireEvent.click(screen.getByRole('button', { name: 'Create agent' }));
     await waitFor(() => expect(createAgentDefinition).toHaveBeenCalled());
@@ -252,7 +252,7 @@ describe('AgentEditor', () => {
   it('reports a creation that finishes while its editor is open as open', async () => {
     vi.mocked(createAgentDefinition).mockResolvedValue({ ...definition, id: 'agent-2' });
     const onSaved = vi.fn();
-    render(<AgentEditor definitionId={null} onSaved={onSaved} onDeleted={vi.fn()} />);
+    render(<AgentEditor definitionId={null} onSaved={onSaved} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
     fillRequired();
     fireEvent.click(screen.getByRole('button', { name: 'Create agent' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: 'agent-2' }), true, true));

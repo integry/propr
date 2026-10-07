@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { AgentEditor } from './AgentEditor';
 import {
   AgentApiError,
@@ -34,7 +35,7 @@ const definition: AgentDefinitionRecord = {
 };
 
 const renderEditor = (definitionId: string) => render(
-  <AgentEditor definitionId={definitionId} onSaved={vi.fn()} onDeleted={vi.fn()} />,
+  <AgentEditor definitionId={definitionId} onSaved={vi.fn()} onDeleted={vi.fn()} />, { wrapper: MemoryRouter },
 );
 
 /** A reload and an input file change both settle the file list, so one waits for the other instead of racing it. */

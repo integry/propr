@@ -9,12 +9,11 @@ import { CodeChip } from '../ui/CodeChip';
 import {
   AUTONOMY_BADGE_CLASSES,
   AUTONOMY_LABELS,
-  RUN_STATE_CLASSES,
-  RUN_STATE_LABELS,
   repoShortName,
   runnerLabel,
   scheduleSummary,
 } from './agentPresentation';
+import { AgentRunStateBadge } from './AgentRunStateBadge';
 
 interface AgentListProps {
   definitions: AgentDefinitionRecord[] | null;
@@ -60,9 +59,9 @@ const AgentRow: React.FC<{ definition: AgentDefinitionRecord; lastRunState?: Age
             </span>
             {!definition.enabled && <span className="flex-none text-[10px] font-bold uppercase tracking-wider text-slate-400">Disabled</span>}
           </div>
-          <span className={`flex-none text-xs ${lastRunState ? RUN_STATE_CLASSES[lastRunState] : 'text-slate-400'}`} data-testid="agent-last-run">
-            {lastRunState ? RUN_STATE_LABELS[lastRunState] : 'Never run'}
-          </span>
+          {lastRunState
+            ? <AgentRunStateBadge state={lastRunState} attention data-testid="agent-last-run" />
+            : <span className="flex-none text-xs text-slate-400" data-testid="agent-last-run">Never run</span>}
         </div>
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-slate-500">
           {definition.repositories.slice(0, MAX_REPO_CHIPS).map(repository => (

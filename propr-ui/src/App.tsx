@@ -227,7 +227,7 @@ const AppContent: React.FC = () => {
                     <Route path="/agents" element={<Layout><AgentsPage /></Layout>} />
                     <Route path="/agents/new" element={<Layout><AgentsPage isNew /></Layout>} />
                     <Route path="/agents/:definitionId" element={<Layout><AgentsPage /></Layout>} />
-                    <Route path="/agents/:definitionId/runs/:runId" element={<Layout><AgentsPage /></Layout>} />
+                    <Route path="/agents/:definitionId/runs/:runId?" element={<Layout><AgentsPage section="runs" /></Layout>} />
                     <Route
                       path="/studio/new"
                       element={

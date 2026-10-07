@@ -31,19 +31,23 @@ export const RUN_STATE_LABELS: Record<AgentRunState, string> = {
   cancelled: 'Cancelled',
 };
 
-/** Active work is teal, a waiting human is amber, failure is red and finished runs recede to gray. */
-export const RUN_STATE_CLASSES: Record<AgentRunState, string> = {
-  queued: 'text-blue-700',
-  deferred: 'text-amber-700',
-  running: 'text-teal-700',
-  report_ready: 'text-teal-700',
-  awaiting_approval: 'text-amber-700',
-  acting: 'text-teal-700',
-  completed: 'text-slate-500',
-  failed: 'text-red-700',
-  skipped: 'text-slate-500',
-  rejected: 'text-slate-500',
-  cancelled: 'text-slate-500',
+/**
+ * Run state badges: waiting to start is gray, active work is teal, a waiting
+ * human is amber, success is green, failure is red, and runs that ended
+ * without a result recede to slate.
+ */
+export const RUN_STATE_BADGE_CLASSES: Record<AgentRunState, string> = {
+  queued: 'border-slate-200 bg-slate-100 text-slate-600',
+  deferred: 'border-slate-200 bg-slate-100 text-slate-600',
+  running: 'border-teal-200 bg-teal-50 text-teal-700',
+  report_ready: 'border-teal-200 bg-teal-50 text-teal-700',
+  awaiting_approval: 'border-amber-300 bg-amber-50 text-amber-800',
+  acting: 'border-teal-200 bg-teal-50 text-teal-700',
+  completed: 'border-green-200 bg-green-50 text-green-700',
+  failed: 'border-red-200 bg-red-50 text-red-700',
+  skipped: 'border-slate-200 bg-white text-slate-500',
+  rejected: 'border-slate-200 bg-white text-slate-500',
+  cancelled: 'border-slate-200 bg-white text-slate-500',
 };
 
 /** One-click schedules offered by the editor, all in UTC. */

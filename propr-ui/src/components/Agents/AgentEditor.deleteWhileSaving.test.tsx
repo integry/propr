@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { AgentEditor } from './AgentEditor';
 import { deleteAgentDefinition, getAgentDefinition, updateAgentDefinition, type AgentDefinitionRecord } from '../../api/agentDefinitionsApi';
 import { getInstanceCatalog } from '../../api/proprApi';
@@ -45,7 +46,7 @@ describe('AgentEditor deletion while saving', () => {
   });
 
   it('disables Delete while a save is pending', async () => {
-    render(<AgentEditor definitionId="agent-1" onSaved={vi.fn()} onDeleted={vi.fn()} />);
+    render(<AgentEditor definitionId="agent-1" onSaved={vi.fn()} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
 
     await screen.findByLabelText('Name');
     const deleteButton = screen.getByRole('button', { name: 'Delete' });
