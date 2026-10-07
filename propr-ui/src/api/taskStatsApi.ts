@@ -92,6 +92,7 @@ export interface StatsOverviewUsage {
 }
 
 export interface StatsOverviewCacheUsage {
+  /** The whole prompt: uncached input, cache writes and cache reads. */
   input_tokens: number;
   cache_read_tokens: number;
   /** Share of prompt tokens served from the cache, 0–1. */

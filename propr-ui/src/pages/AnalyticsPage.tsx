@@ -127,7 +127,7 @@ const buildDeliveryMetrics = (overview: { data: StatsOverviewResponse | null; lo
     {
       label: 'First-time pass',
       testId: 'metric-first-time-pass',
-      hint: 'Merged pull requests that needed no fix: one implementation run, no follow-up fix and no Ultrafix retry',
+      hint: 'Merged pull requests that needed no fix: one implementation task, no follow-up fix and no Ultrafix fix',
       value: read(pass?.rate == null ? undefined : formatShare(pass.rate)),
       detail: pass && pass.n > 0 ? `${pass.passed.toLocaleString()} of ${pass.n.toLocaleString()} merged PRs` : undefined,
     },
@@ -141,7 +141,7 @@ const buildDeliveryMetrics = (overview: { data: StatsOverviewResponse | null; lo
     {
       label: 'Autonomy',
       testId: 'metric-autonomy',
-      hint: 'Finished tasks that completed without failing or asking for an operator',
+      hint: 'Finished tasks that never failed, even if a retry later completed them, and never asked for an operator',
       value: read(autonomy?.rate == null ? undefined : formatShare(autonomy.rate)),
       detail: autonomy && autonomy.n > 0 ? `${formatShare(autonomy.operator / autonomy.n)} required operator` : undefined,
     },

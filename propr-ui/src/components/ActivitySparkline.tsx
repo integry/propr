@@ -89,9 +89,10 @@ const CARD_CLEARANCE = 2 * 16 + 2 * 4 + 2 + CARET_SIZE;
 const MIN_HEADROOM = 0.15;
 /**
  * The headroom the busiest day needs for its card to fit between its bar and
- * the chart's top edge, at least `MIN_HEADROOM`. Before the plot is measured,
- * and on one too short to spare the room, the minimum stands; the card then
- * clamps to the top edge rather than climbing over the legend.
+ * the chart's top edge, at least `MIN_HEADROOM`. On a plot too short to spare
+ * the room the minimum stands; the card then clamps to the top edge rather
+ * than climbing over the legend. The chart measures its frame before its first
+ * paint, so the ceiling is never drawn at the minimum and then raised.
  */
 const headroomFor = (plotHeight: number): number => {
   const clearance = CARD_CLEARANCE - PLOT_TOP;
@@ -242,6 +243,13 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
   const paired = hasRuns(data);
   const today = utcToday();
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const frame = useRef<HTMLDivElement>(null);
+  // Before paint, so the first frame already has the ceiling its height needs;
+  // ResponsiveContainer reports every later size.
+  useLayoutEffect(() => {
+    const element = frame.current;
+    if (element && element.clientHeight > 0) setSize({ width: element.clientWidth, height: element.clientHeight });
+  }, []);
   const plotWidth = Math.max(0, size.width - Y_AXIS_WIDTH);
   const plotHeight = Math.max(0, size.height - PLOT_TOP - X_AXIS_HEIGHT);
   const busiest = Math.max(0, ...data.map(point => Math.max(point.count, point.runs ?? 0)));
@@ -255,7 +263,7 @@ const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading =
 
   return (
     <div data-testid="activity-chart">
-      <div className="h-48 xl:h-64">
+      <div ref={frame} className="h-48 xl:h-64">
         {isLoading ? (
           <SkeletonRegion label="Loading activity…" className="flex h-full w-full flex-col justify-end pb-7">
             <div className="flex h-[85%] items-end justify-between gap-1 pl-7">

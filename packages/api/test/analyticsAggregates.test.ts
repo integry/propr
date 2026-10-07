@@ -20,6 +20,7 @@ before(async () => {
     table.string('model_name');
     table.integer('input_tokens');
     table.integer('cache_read_input_tokens');
+    table.integer('cache_creation_input_tokens');
   });
 });
 after(async () => database.destroy());
@@ -48,21 +49,29 @@ test('runs per task divides total runs by total tasks, so the two figures beside
   assert.deepEqual(await loadRunVolume(database, WEEK), { total: 0, tasks: 0, per_task: null });
 });
 
-test('cache usage reports the hit rate and what cached reads saved at known prices', async () => {
+test('cache usage reports the hit rate over the whole prompt and what cached reads saved at known prices', async () => {
+  // Rows as executions persist them: `input_tokens` is only the uncached part of
+  // the prompt, beside separate cache-write and cache-read counts.
   await database('llm_executions').insert([
-    { task_id: 'a', start_time: daysAgo(1), model_name: 'priced', input_tokens: 1_000_000, cache_read_input_tokens: 800_000 },
-    { task_id: 'b', start_time: daysAgo(1), model_name: 'unpriced', input_tokens: 1_000_000, cache_read_input_tokens: 600_000 },
+    // A Claude run: almost all of its prompt is read back from the cache.
+    { task_id: 'a', start_time: daysAgo(1), model_name: 'priced', input_tokens: 2_000, cache_creation_input_tokens: 8_000, cache_read_input_tokens: 150_000 },
+    // A Codex run, its inclusive input already split into uncached and cached parts; it reports no cache writes.
+    { task_id: 'b', start_time: daysAgo(1), model_name: 'unpriced', input_tokens: 30_000, cache_creation_input_tokens: null, cache_read_input_tokens: 70_000 },
     // An execution that never reported a breakdown stays out of the denominator.
     { task_id: 'c', start_time: daysAgo(1), model_name: 'priced', input_tokens: 5_000_000, cache_read_input_tokens: null },
   ]);
   const prices = (model: string) => (model === 'priced' ? { prompt: 4 / 1_000_000, cacheRead: 0.2 / 1_000_000 } : null);
-  assert.deepEqual(await loadCacheUsage(database, WEEK, prices), {
-    input_tokens: 2_000_000,
-    cache_read_tokens: 1_400_000,
-    hit_rate: 0.7,
-    // 800k reads at $3.80/M below the full prompt price; the unpriced model adds nothing.
-    saved_usd: 3.04,
+  const usage = await loadCacheUsage(database, WEEK, prices);
+  assert.deepEqual(usage, {
+    // 160k from the Claude run and 100k from the Codex run.
+    input_tokens: 260_000,
+    cache_read_tokens: 220_000,
+    hit_rate: 0.8462,
+    // 150k reads at $3.80/M below the full prompt price; the unpriced model adds nothing.
+    saved_usd: 0.57,
   });
+  // Cache reads far above uncached input still make a share, never above 1.
+  assert.ok(usage!.hit_rate <= 1 && usage!.cache_read_tokens <= usage!.input_tokens);
   const unpriced = await loadCacheUsage(database, WEEK, () => null);
   assert.equal(unpriced?.saved_usd, null);
 

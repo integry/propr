@@ -11,6 +11,7 @@
 
 import type { Knex } from 'knex';
 import { analyticsDayKeys, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
+import { hasColumn } from './analyticsSchema.js';
 
 export interface TaskSummary {
   /** Tasks created in the window. */
@@ -32,10 +33,14 @@ const scopeToRepository = <T extends Knex.QueryBuilder>(query: T, column: string
  * Task volume for a window, or for all time without one: what was submitted,
  * and how much of it finished either way. A task that failed and later
  * succeeded counts as both, as the Analytics success rate always has.
+ *
+ * `dailySince` bounds only the per-day grouping, for a caller that draws
+ * fewer days than it totals; the totals still cover the whole window.
  */
 export async function loadTaskSummary(
-  db: Knex, window: AnalyticsWindow | null, repository = 'all',
+  db: Knex, window: AnalyticsWindow | null, repository = 'all', options: { dailySince?: Date } = {},
 ): Promise<TaskSummary> {
+  const { dailySince } = options;
   const dailyQuery = db('tasks')
     .select(db.raw('date(created_at) as date'))
     .count('* as count')
@@ -43,6 +48,15 @@ export async function loadTaskSummary(
     .orderBy('date', 'asc');
   whereCreatedWithin(dailyQuery, 'created_at', window);
   scopeToRepository(dailyQuery, 'repository', repository);
+  if (dailySince) dailyQuery.where('created_at', '>=', dailySince.toISOString());
+
+  // Without a bound on the days, the days themselves add up to the total.
+  const totalQuery = () => {
+    const query = db('tasks').count('* as count');
+    whereCreatedWithin(query, 'created_at', window);
+    scopeToRepository(query, 'repository', repository);
+    return query.first() as unknown as Promise<{ count?: number | string } | undefined>;
+  };
 
   const outcomeCount = (state: string) => {
     const query = db('task_history as h')
@@ -54,10 +68,11 @@ export async function loadTaskSummary(
     return query.first() as unknown as Promise<{ count?: number | string } | undefined>;
   };
 
-  const [dailyRows, completed, failed] = await Promise.all([
+  const [dailyRows, completed, failed, bounded] = await Promise.all([
     dailyQuery as unknown as Promise<Array<{ date: string; count: number | string }>>,
     outcomeCount('completed'),
     outcomeCount('failed'),
+    dailySince ? totalQuery() : Promise.resolve(undefined),
   ]);
 
   const counts = new Map(dailyRows.map(row => [String(row.date), Number(row.count)]));
@@ -67,11 +82,31 @@ export async function loadTaskSummary(
     : from ? analyticsDayKeys(from, window.to).map(date => ({ date, count: counts.get(date) ?? 0 })) : [];
 
   return {
-    total: dailyRows.reduce((sum, row) => sum + Number(row.count), 0),
+    total: bounded ? Number(bounded.count ?? 0) : dailyRows.reduce((sum, row) => sum + Number(row.count), 0),
     completed: Number(completed?.count ?? 0),
     failed: Number(failed?.count ?? 0),
     dailyCounts,
   };
+}
+
+/**
+ * The activity chart's days: tasks created and runs started on each.
+ *
+ * A fixed-length window lists every one of its days. All time starts at the
+ * earliest day with either a task or a run — a planning run can precede the
+ * first task, or exist without any — so every run the delivery band totals
+ * lands on a day the chart draws.
+ */
+export function activityDays(
+  taskDays: Array<{ date: string; count: number }>, dailyRuns: Map<string, number>, window: AnalyticsWindow,
+): Array<{ date: string; count: number; runs: number }> {
+  let days = taskDays;
+  if (!window.from) {
+    const first = [...taskDays.map(day => day.date), ...dailyRuns.keys()].sort()[0];
+    const counts = new Map(taskDays.map(day => [day.date, day.count]));
+    days = first ? analyticsDayKeys(new Date(`${first}T00:00:00.000Z`), window.to).map(date => ({ date, count: counts.get(date) ?? 0 })) : [];
+  }
+  return days.map(day => ({ date: day.date, count: day.count, runs: dailyRuns.get(day.date) ?? 0 }));
 }
 
 /**
@@ -136,16 +171,18 @@ export async function loadRunVolume(db: Knex, window: AnalyticsWindow | null): P
 
 /**
  * Runs started per UTC day, keyed by day; days without a run are absent.
+ * `since` bounds the days for a caller that draws fewer than the window holds.
  *
  * The same executions `loadRunVolume` totals, bucketed by when each started,
  * so the activity chart's daily runs sum to the delivery band's run count.
  */
-export async function loadDailyRuns(db: Knex, window: AnalyticsWindow | null): Promise<Map<string, number>> {
+export async function loadDailyRuns(db: Knex, window: AnalyticsWindow | null, since?: Date): Promise<Map<string, number>> {
   const query = db('llm_executions')
     .select(db.raw('date(start_time) as date'))
     .count('* as runs')
     .groupByRaw('date(start_time)');
   whereCreatedWithin(query, 'start_time', window);
+  if (since) query.where('start_time', '>=', since.toISOString());
   const rows = await query as unknown as Array<{ date: string | null; runs: number | string }>;
   return new Map(rows.filter(row => row.date).map(row => [String(row.date), Number(row.runs)]));
 }
@@ -154,7 +191,10 @@ export async function loadDailyRuns(db: Knex, window: AnalyticsWindow | null): P
 export type CachePriceLookup = (model: string) => { prompt: number; cacheRead?: number } | null;
 
 export interface CacheUsage {
-  /** Prompt tokens, cached or not, across executions that reported a cache breakdown. */
+  /**
+   * Prompt tokens across executions that reported a cache breakdown: ordinary
+   * input, cache writes and cache reads together.
+   */
   input_tokens: number;
   /** Of those, tokens served from the prompt cache. */
   cache_read_tokens: number;
@@ -171,13 +211,19 @@ export interface CacheUsage {
  * Prompt cache effectiveness. Null when no execution in the window reported
  * a cache breakdown, so an agent that never reports one does not read as a
  * 0% hit rate.
+ *
+ * Executions store the prompt as disjoint parts, in Anthropic's convention:
+ * `input_tokens` is only the uncached portion, beside separate cache-write
+ * and cache-read counts (Codex's inclusive count is split the same way before
+ * it is stored). The whole prompt is therefore their sum.
  */
 export async function loadCacheUsage(
   db: Knex, window: AnalyticsWindow | null, priceOf: CachePriceLookup,
 ): Promise<CacheUsage | null> {
-  const [hasInput, hasCacheRead] = await Promise.all([
-    db.schema.hasColumn('llm_executions', 'input_tokens'),
-    db.schema.hasColumn('llm_executions', 'cache_read_input_tokens'),
+  const [hasInput, hasCacheRead, hasCacheCreation] = await Promise.all([
+    hasColumn(db, 'llm_executions', 'input_tokens'),
+    hasColumn(db, 'llm_executions', 'cache_read_input_tokens'),
+    hasColumn(db, 'llm_executions', 'cache_creation_input_tokens'),
   ]);
   if (!hasInput || !hasCacheRead) return null;
 
@@ -187,16 +233,19 @@ export async function loadCacheUsage(
     .whereNotNull('cache_read_input_tokens')
     .whereNotNull('input_tokens')
     .groupBy('model_name');
+  if (hasCacheCreation) query.select(db.raw('sum(coalesce(cache_creation_input_tokens, 0)) as written'));
   whereCreatedWithin(query, 'start_time', window);
-  const rows = await query as unknown as Array<{ model_name: string | null; input: number | string | null; cached: number | string | null }>;
+  const rows = await query as unknown as Array<{
+    model_name: string | null; input: number | string | null; cached: number | string | null; written?: number | string | null;
+  }>;
 
-  let input = 0;
+  let prompt = 0;
   let cached = 0;
   let saved = 0;
   let priced = false;
   for (const row of rows) {
     const rowCached = Number(row.cached ?? 0);
-    input += Number(row.input ?? 0);
+    prompt += Number(row.input ?? 0) + Number(row.written ?? 0) + rowCached;
     cached += rowCached;
     const price = row.model_name ? priceOf(row.model_name) : null;
     if (price && price.cacheRead !== undefined && rowCached > 0) {
@@ -204,11 +253,11 @@ export async function loadCacheUsage(
       priced = true;
     }
   }
-  if (input <= 0) return null;
+  if (prompt <= 0) return null;
   return {
-    input_tokens: input,
+    input_tokens: prompt,
     cache_read_tokens: cached,
-    hit_rate: Number((cached / input).toFixed(4)),
+    hit_rate: Number((cached / prompt).toFixed(4)),
     saved_usd: priced ? Number(saved.toFixed(2)) : null,
   };
 }

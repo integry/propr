@@ -32,14 +32,14 @@ The Analytics page reports task volume (the deliverables) and run volume (the co
 | Figure | How it is computed |
 |---|---|
 | Runs per task | Agent executions started in the period (the Models table's runs, summed) ÷ tasks created in the period (the totals band's Total tasks): the iteration multiplier. Tasks that recorded no run still count, so tasks × runs per task equals the runs shown |
-| First-time pass | Of pull requests opened by tasks in the period and merged, those that needed no fix: one implementation run, no follow-up fix task on the PR (reviews do not count) and no Ultrafix cycle after the first |
+| First-time pass | Of pull requests opened by tasks in the period and merged, those that needed no fix: one implementation task for the issue (however many runs it recorded), no follow-up fix task on the PR — an Ultrafix fix step included, scored or not; reviews do not count — and no Ultrafix cycle after the first |
 | Time to merge | Mean (and median) wall-clock time from the issue's first task to the merge |
-| Autonomy | Of tasks created in the period that finished, those that never failed and never entered an attention state; the rest required an operator. Cancelled work is left out |
-| Cache hit rate | Prompt tokens served from the prompt cache ÷ all prompt tokens, over runs that reported a cache breakdown. Savings price the cached reads at each model's official prompt price less its cache-read price; models without an official price are left out |
+| Autonomy | Of tasks created in the period that finished, those that never failed (a failure counts even when a retry later completed the task) and never entered an attention state; the rest required an operator. Cancelled work is left out |
+| Cache hit rate | Prompt tokens served from the prompt cache ÷ all prompt tokens (uncached input, cache writes and cache reads together), over runs that reported a cache breakdown. Savings price the cached reads at each model's official prompt price less its cache-read price; models without an official price are left out |
 
 A figure with nothing behind it is shown as "—", never as zero.
 
-The Activity chart plots the same two volumes day by day on one scale: each day has a pair of bars of equal width side by side, its runs in light slate and its tasks in dark slate (teal for today's tasks). A runs bar that towers over its tasks bar is an agent iterating on the same work; one level with it is work landing in a run or two. The pane heading carries the legend with each series' total for the period, and hovering a day shows its runs, tasks and runs per task in a card centred over that day, with a caret pointing at its taller bar. `GET /api/stats/tasks` reports a `runs` count beside each day's task `count`.
+The Activity chart plots the same two volumes day by day on one scale: each day has a pair of bars of equal width side by side, its runs in light slate and its tasks in dark slate (teal for today's tasks). A runs bar that towers over its tasks bar is an agent iterating on the same work; one level with it is work landing in a run or two. The pane heading carries the legend with each series' total for the period, and hovering a day shows its runs, tasks and runs per task in a card centred over that day, with a caret pointing at its taller bar. `GET /api/stats/tasks` reports a `runs` count beside each day's task `count`. For all time, the days start at the earliest task or run, so a planning run made before the first task is still drawn.
 
 ### Breakdowns the product provides
 

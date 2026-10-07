@@ -16,6 +16,7 @@ import type { Knex } from 'knex';
 import { whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
 import { ATTENTION_TASK_STATES, chunk } from './dashboardQueries.js';
 import { isPullRequestTask } from './pullRequestTaskIdentity.js';
+import { hasColumn, hasTable } from './analyticsSchema.js';
 
 export interface DeliveryMetrics {
   /** Pull requests opened by tasks created in the window. */
@@ -23,8 +24,9 @@ export interface DeliveryMetrics {
   prs_merged: number;
   prs_closed: number;
   /**
-   * Merged PRs that needed no fix: one implementation run of their issue, no
-   * follow-up fix task on the PR and no Ultrafix fix cycle. n is merged PRs.
+   * Merged PRs that needed no fix: one implementation task for their issue, no
+   * follow-up fix task on the PR (Ultrafix's included) and no Ultrafix fix
+   * cycle. n is merged PRs.
    */
   first_time_pass: { rate: number | null; passed: number; n: number };
   /** Wall-clock minutes from the issue's first task to the merge. n is merged PRs with a merge time. */
@@ -42,7 +44,7 @@ export interface AutonomyMetrics {
   n: number;
 }
 
-interface TaskRow {
+export interface TaskRow {
   task_id: string;
   repository: string;
   issue_number: number | null;
@@ -72,22 +74,26 @@ function median(values: number[]): number | null {
 
 const toTime = (value: string | Date): number => new Date(value).getTime();
 
-/** Reviews and Ultrafix cycles are judged elsewhere; any other task acting on a PR is a fix. */
+/**
+ * Any task acting on a PR is a fix unless it only reviews. An Ultrafix loop's
+ * fix step is a fix like any other: the task itself is the evidence, whether
+ * or not a later review of the fixed code was ever scored.
+ */
 function isFixTask(task: TaskRow): boolean {
   if (task.task_type === 'review') return false;
-  let data: { commandMode?: unknown; ultrafixMeta?: unknown } = {};
+  let data: { commandMode?: unknown } = {};
   try {
     data = task.initial_job_data ? JSON.parse(task.initial_job_data) as typeof data : {};
   } catch {
     data = {};
   }
-  return data.commandMode !== 'review' && !data.ultrafixMeta;
+  return data.commandMode !== 'review';
 }
 
 async function loadOutcomes(db: Knex, pullRequests: PullRequest[]): Promise<Map<string, { merged_at: string | null; outcome: string | null }>> {
   const outcomes = new Map<string, { merged_at: string | null; outcome: string | null }>();
-  if (!pullRequests.length || !await db.schema.hasTable('notification_pull_request_state')) return outcomes;
-  const hasOutcome = await db.schema.hasColumn('notification_pull_request_state', 'outcome');
+  if (!pullRequests.length || !await hasTable(db, 'notification_pull_request_state')) return outcomes;
+  const hasOutcome = await hasColumn(db, 'notification_pull_request_state', 'outcome');
   const repositories = [...new Set(pullRequests.map(pr => pr.repository))];
   for (const numbers of chunk([...new Set(pullRequests.map(pr => pr.prNumber))])) {
     const rows = await db('notification_pull_request_state')
@@ -101,10 +107,14 @@ async function loadOutcomes(db: Knex, pullRequests: PullRequest[]): Promise<Map<
   return outcomes;
 }
 
-/** PRs whose Ultrafix loop ran a fix: a scored cycle after the first. */
+/**
+ * PRs whose Ultrafix loop recorded a scored cycle after the first, which only
+ * a fix leads to. Supporting evidence: a fix whose next review was never
+ * scored is still found by its task.
+ */
 async function loadUltrafixFixedPullRequests(db: Knex, pullRequests: PullRequest[]): Promise<Set<string>> {
   const fixed = new Set<string>();
-  if (!pullRequests.length || !await db.schema.hasTable('review_scores')) return fixed;
+  if (!pullRequests.length || !await hasTable(db, 'review_scores')) return fixed;
   const repositories = [...new Set(pullRequests.map(pr => pr.repository))];
   for (const numbers of chunk([...new Set(pullRequests.map(pr => pr.prNumber))])) {
     const rows = await db('review_scores')
@@ -122,21 +132,26 @@ const TASK_COLUMNS = ['task_id', 'repository', 'issue_number', 'pr_number', 'tas
 
 /** Task columns to read; `initial_job_data` only tells reviews apart, so a schema without it reads every follow-up as a fix. */
 async function taskColumns(db: Knex): Promise<string[]> {
-  return await db.schema.hasColumn('tasks', 'initial_job_data') ? [...TASK_COLUMNS, 'initial_job_data'] : TASK_COLUMNS;
+  return await hasColumn(db, 'tasks', 'initial_job_data') ? [...TASK_COLUMNS, 'initial_job_data'] : TASK_COLUMNS;
 }
 
-/** Every task in the given repositories that names one of the numbers, by issue or PR. */
-async function loadRelatedTasks(db: Knex, repositories: string[], numbers: number[], columns: string[]): Promise<TaskRow[]> {
-  const rows: TaskRow[] = [];
+/**
+ * Every task in the given repositories that names one of the numbers, by issue
+ * or PR, once each: a task whose issue and PR numbers fall in different
+ * batches is matched by both.
+ */
+export async function loadRelatedTasks(db: Knex, repositories: string[], numbers: number[], columns: string[]): Promise<TaskRow[]> {
+  const rows = new Map<string, TaskRow>();
   for (const batch of chunk(numbers)) {
-    rows.push(...await db('tasks')
+    const matched = await db('tasks')
       .whereIn('repository', repositories)
       .where(function (this: Knex.QueryBuilder) {
         this.whereIn('issue_number', batch).orWhereIn('pr_number', batch);
       })
-      .select(columns) as TaskRow[]);
+      .select(columns) as TaskRow[];
+    for (const task of matched) rows.set(task.task_id, task);
   }
-  return rows;
+  return [...rows.values()];
 }
 
 async function loadRunCounts(db: Knex, taskIds: string[]): Promise<Map<string, number>> {
@@ -175,8 +190,11 @@ function mergedPullRequestFacts(
     const minutes = (toTime(mergedAt) - Math.min(...implementations.map(task => toTime(task.created_at)))) / 60_000;
     if (Number.isFinite(minutes) && minutes >= 0) minutesToMerge = minutes;
   }
+  // Runs on the one implementation task are not counted against it: a task
+  // can record several (auxiliary calls, a usage-limit requeue), and any run
+  // that fixed the PR belongs to a follow-up task, judged by isFixTask.
   return {
-    firstTimePass: implementations.length <= 1 && runsOf(implementations) <= 1 && !followUps.some(isFixTask) && !ultrafixFixed,
+    firstTimePass: implementations.length <= 1 && !followUps.some(isFixTask) && !ultrafixFixed,
     runs: runsOf([...implementations, ...followUps]),
     minutesToMerge,
   };
@@ -236,11 +254,13 @@ export async function loadDeliveryMetrics(db: Knex, window: AnalyticsWindow | nu
 /**
  * Of the tasks created in the window that have finished, how many did so
  * without a human: they never failed and never entered an attention state.
- * Cancelled work is an operator's choice, not an outcome, and is left out.
+ * A failure counts even when a retry later completed the task, as the
+ * dashboard's own queries keep it. Cancelled work is an operator's choice,
+ * not an outcome, and is left out.
  */
 export async function loadAutonomy(db: Knex, window: AnalyticsWindow | null): Promise<AutonomyMetrics> {
   const finishedStates = ['completed', 'failed'];
-  const attention = [...ATTENTION_TASK_STATES];
+  const operatorStates = ['failed', ...ATTENTION_TASK_STATES];
   const query = db('tasks as t')
     .join(
       db('task_history').select('task_id').max('timestamp as max_ts').groupBy('task_id').as('latest'),
@@ -251,9 +271,9 @@ export async function loadAutonomy(db: Knex, window: AnalyticsWindow | null): Pr
     })
     .whereIn('h.state', finishedStates)
     .select(db.raw(`count(distinct t.task_id) as finished`))
-    .select(db.raw(`count(distinct CASE WHEN h.state = 'failed' OR EXISTS (
-      SELECT 1 FROM task_history AS a WHERE a.task_id = t.task_id AND a.state IN (${attention.map(() => '?').join(', ')})
-    ) THEN t.task_id END) as operator`, attention));
+    .select(db.raw(`count(distinct CASE WHEN EXISTS (
+      SELECT 1 FROM task_history AS a WHERE a.task_id = t.task_id AND a.state IN (${operatorStates.map(() => '?').join(', ')})
+    ) THEN t.task_id END) as operator`, operatorStates));
   whereCreatedWithin(query, 't.created_at', window);
   const row = await query.first() as { finished?: number | string; operator?: number | string } | undefined;
   const n = Number(row?.finished ?? 0);

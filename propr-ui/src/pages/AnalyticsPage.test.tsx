@@ -397,6 +397,7 @@ describe('AnalyticsPage', () => {
           first_score: { mean: 3, median: 3, n: 1 }, final_score: { mean: 3, n: 1 },
           cycles_to_goal: { mean: null, n: 0, attempted: 0 }, merge_rate: { value: null, merged: 0, n: 0 },
           cost_per_merged_pr: { usd: null, n: 0 },
+          score_delta: { mean: 0, n: 1 },
         },
       ],
     });
@@ -420,7 +421,9 @@ describe('AnalyticsPage', () => {
     expect(within(rows[1]).getByTestId('review-quality-delta')).toHaveTextContent('−2.0 ▼');
     expect(within(rows[1]).getByTestId('review-quality-delta').firstElementChild).toHaveClass('text-red-600');
     expect(rows[2]).toHaveTextContent('Manual / Untracked');
-    // A server that predates delta and runs leaves them unknown, as it does merge rate.
+    // No tracked agent can be credited with the untracked row's change, so its
+    // delta is unknown rather than a measured 0.0; runs it never reported are unknown too.
+    expect(within(rows[2]).getByTestId('review-quality-delta')).toHaveTextContent('—');
     expect(within(rows[2]).getAllByText('—')).toHaveLength(3);
     expect(screen.getByTestId('review-quality-scope')).toHaveTextContent('Covers the 4 PRs with a review score in this period');
     expect(getReviewScoreSummary).toHaveBeenCalledWith('30d');

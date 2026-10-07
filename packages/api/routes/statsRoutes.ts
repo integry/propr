@@ -12,6 +12,7 @@ import {
   loadRunVolume,
   loadDailyRuns,
   loadTaskSummary,
+  activityDays,
   type CachePriceLookup,
 } from './analyticsAggregates.js';
 import { loadAutonomy, loadDeliveryMetrics } from './analyticsDelivery.js';
@@ -96,12 +97,17 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
 
       // Volume comes from the aggregation the dashboard widget shares. With a
       // period every day in the window is listed, including empty ones;
-      // without one, totals are all-time and the days are the last 30.
+      // without one, totals are all-time and the days are the last 30, so
+      // only those 30 are grouped.
       // Runs beside tasks, per day: the compute behind each day's deliverables.
-      const [summary, dailyRuns] = await Promise.all([loadTaskSummary(db, analyticsWindow), loadDailyRuns(db, analyticsWindow)]);
-      const dailyCounts: DailyCountRow[] = analyticsWindow
-        ? summary.dailyCounts
-        : summary.dailyCounts.filter(day => day.date >= thirtyDaysAgoStr.slice(0, 10));
+      const dailySince = analyticsWindow ? undefined : thirtyDaysAgo;
+      const [summary, dailyRuns] = await Promise.all([
+        loadTaskSummary(db, analyticsWindow, 'all', { dailySince }),
+        loadDailyRuns(db, analyticsWindow, dailySince),
+      ]);
+      const dailyCounts: Array<DailyCountRow & { runs: number }> = analyticsWindow
+        ? activityDays(summary.dailyCounts, dailyRuns, analyticsWindow)
+        : summary.dailyCounts.map(day => ({ ...day, runs: dailyRuns.get(day.date) ?? 0 }));
 
       // Status distribution from latest task_history entries
       const statusDistributionQuery = db('task_history as h')
@@ -152,7 +158,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
         dailyCounts: dailyCounts.map((row) => ({
           date: String(row.date),
           count: Number(row.count),
-          runs: dailyRuns.get(String(row.date)) ?? 0,
+          runs: row.runs,
         })),
         statusDistribution: statusDistribution.map((row) => ({
           status: String(row.state),

@@ -158,6 +158,31 @@ test('a day period zero-fills one daily count per UTC day, today and the days be
   assert.deepEqual(empty.body.dailyCounts, []);
 });
 
+test('all-time activity starts at the earliest task or run, so its runs match the overview', async () => {
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const totalRuns = async () => {
+    const overview = await call(stats.getOverview, { period: 'all' });
+    return (overview.body.runs as { total: number }).total;
+  };
+  const activity = async () => (await call(stats.getTaskStats, { period: 'all' })).body.dailyCounts as Array<{ date: string; count: number; runs: number }>;
+
+  // A planning run before any task exists belongs to no task.
+  await database('llm_executions').insert({ task_id: null, start_time: daysAgo(4), model_name: 'claude-opus-5-5' });
+  let days = await activity();
+  assert.equal(days[0].date, daysAgo(4).slice(0, 10));
+  assert.equal(days.length, 5);
+  assert.equal(days.reduce((total, day) => total + day.runs, 0), await totalRuns());
+  assert.equal(days.reduce((total, day) => total + day.count, 0), 0);
+
+  // A later first task does not move the start past the earlier run.
+  await seedRecentAndOlder();
+  days = await activity();
+  assert.equal(days[0].date, daysAgo(4).slice(0, 10));
+  assert.equal(days.find(day => day.date === daysAgo(2).slice(0, 10))?.count, 1);
+  assert.equal(days.reduce((total, day) => total + day.runs, 0), 3);
+  assert.equal(await totalRuns(), 3);
+});
+
 test('a period bounds overview usage by execution start but never the indexed repository count', async () => {
   await seedRecentAndOlder();
   const stats = createStatsRoutes({ db: database, now: () => NOW });

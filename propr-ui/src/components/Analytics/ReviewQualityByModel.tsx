@@ -79,7 +79,12 @@ const ModelRow: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
       <td className={`${CELL} text-right text-slate-800`}>{row.prs_scored.toLocaleString()}</td>
       <Figure value={score(row.first_score.mean)} basis={`Mean over ${prs(row.first_score.n)}`} />
       <Figure value={score(row.final_score.mean)} basis={`Mean over ${prs(row.final_score.n)}`} testId="review-quality-final" />
-      <Delta value={row.score_delta?.mean} n={row.score_delta?.n ?? 0} />
+      {row.implementer_model ? (
+        <Delta value={row.score_delta?.mean} n={row.score_delta?.n ?? 0} />
+      ) : (
+        // No tracked agent made the follow-up changes, so there is no delta to credit to one.
+        <Figure value={null} basis="no tracked agent to credit with the change" testId="review-quality-delta" />
+      )}
       <Figure value={score(runs?.mean)} basis={`Mean over ${prs(runs?.n ?? 0)} merged with recorded runs`} testId="review-quality-runs" />
       <Figure
         value={rate === null ? null : `${Math.round(rate * 100)}%`}
