@@ -24,4 +24,6 @@ export interface InstanceCatalogResponse {
   agents: InstanceCatalogAgent[];
   repositories: InstanceCatalogRepository[];
   defaultAgentAlias?: string;
+  /** Instance-wide planner model override (`agent:model` or a model label). Omitted when unset. */
+  plannerGenerationModel?: string;
 }

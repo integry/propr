@@ -113,12 +113,17 @@ export function createInstanceCatalogRoutes({ services: overrides }: InstanceCat
       const defaultAgentAlias = typeof settings.default_agent_alias === 'string'
         ? settings.default_agent_alias.trim()
         : '';
+      const plannerGenerationModel = typeof settings.planner_generation_model === 'string'
+        ? settings.planner_generation_model.trim()
+        : '';
       const response: InstanceCatalogResponse = {
         agents: catalogAgents,
         repositories: repositories.filter(repository => repository.enabled).map(catalogRepository),
         ...(defaultAgentAlias && catalogAgents.some(agent => agent.alias === defaultAgentAlias)
           ? { defaultAgentAlias }
           : {}),
+        // Lets the planner name the model behind its "Default" choice without an admin settings read.
+        ...(plannerGenerationModel ? { plannerGenerationModel } : {}),
       };
       res.json(response);
     } catch (error) {

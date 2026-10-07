@@ -427,3 +427,50 @@ test('a skipped auto-merge arm leaves the queue waiting for a human merge, then 
   assert.equal(queue?.blockedReason, null);
   assert.deepEqual(starts, [10, 30]);
 });
+
+// Mirrors the API's "queue behind running work": the in-flight issues head the queue, without headStartedAt.
+async function queueBehindTwoRunningHeads(deps = {}) {
+  await status(10, S.PROCESSING); await status(20, S.PROCESSING);
+  await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [10, 20, 30, 40],
+    advanceOn: 'terminal', autoMerge: true, useEpic: true, ready: false }, deps);
+  await readyEpicExecutionQueue('draft');
+}
+
+test('a queue behind two running heads waits for both and never re-dispatches the second', async () => {
+  await queueBehindTwoRunningHeads();
+  assert.deepEqual(starts, []);
+  await status(10, S.MERGED);
+  await onPlanIssueStatusChanged('draft', 10, S.MERGED);
+  // The second head is already processing: the cursor moves onto it, but nothing is labelled.
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 1);
+  assert.deepEqual(starts, []);
+  await status(20, S.CLOSED);
+  await onPlanIssueStatusChanged('draft', 20, S.CLOSED);
+  assert.deepEqual(starts, [30]);
+});
+
+test('a second running head that finishes first is skipped once the first head finishes', async () => {
+  await queueBehindTwoRunningHeads();
+  await status(20, S.MERGED);
+  await onPlanIssueStatusChanged('draft', 20, S.MERGED);
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 0);
+  assert.deepEqual(starts, []);
+  await status(10, S.MERGED);
+  await onPlanIssueStatusChanged('draft', 10, S.MERGED);
+  assert.equal((await getEpicExecutionQueue('draft'))?.cursor, 2);
+  assert.deepEqual(starts, [30]);
+});
+
+test('recovery never treats a running head without headStartedAt as a lost dispatch', async () => {
+  let time = 1_000_000;
+  const deps = { now: () => time };
+  await queueBehindTwoRunningHeads(deps);
+  time += 20 * 60_000;
+  await reconcileEpicExecutionQueues(deps);
+  assert.deepEqual(starts, []);
+  assert.equal((await getEpicExecutionQueue('draft'))?.status, 'active');
+  await status(10, S.CLOSED); await status(20, S.MERGED);
+  time += 20 * 60_000;
+  await reconcileEpicExecutionQueues(deps);
+  assert.deepEqual(starts, [30]);
+});

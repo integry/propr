@@ -60,3 +60,11 @@ describe('PlanStudioPage notification intent routing', () => {
     expect(screen.getByTestId('received-intent')).toHaveTextContent('none');
   });
 });
+
+describe('PlanStudioPage layout', () => {
+  test('renders no line-and-circle stepper band at any width', () => {
+    renderStudio('/studio/draft-1');
+    expect(screen.queryByRole('navigation', { name: 'Progress' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Define & Context')).not.toBeInTheDocument();
+  });
+});

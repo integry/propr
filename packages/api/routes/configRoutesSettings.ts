@@ -1,7 +1,7 @@
 import { db } from '@propr/core';
 import * as configManager from '@propr/core';
 import { extractSettingSaves, ConfigRouteError, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext, type SettingSaveName } from './configHelpers.js';
-import { AGENT_WATCHDOG_SETTING_NAMES } from './configSettings.js';
+import { AGENT_NETWORK_SETTING_NAMES, AGENT_WATCHDOG_SETTING_NAMES } from './configSettings.js';
 import type { Knex } from 'knex';
 import {
   REVIEW_CONTEXT_BUDGET_PERCENT_OPTIONS,
@@ -44,6 +44,27 @@ export async function agentWatchdogSettingsResponse(configStore: typeof configMa
       agent_stall_timeout_ms: effective.stallTimeoutMs,
       agent_tool_stall_timeout_ms: effective.toolStallTimeoutMs,
       agent_degenerate_output_limit: effective.degenerateOutputLimit,
+    },
+  };
+}
+
+/**
+ * Agent network policy: the stored override (null when the environment default
+ * applies), the environment default and the policy in force for the next run.
+ */
+export async function agentNetworkSettingsResponse(configStore: typeof configManager): Promise<Record<string, unknown>> {
+  const stored = Object.fromEntries(await Promise.all(AGENT_NETWORK_SETTING_NAMES.map(async name => [name, await configStore.getConfig<unknown>(name, null)] as const)));
+  const effective = configManager.resolveInstanceNetworkPolicy(stored);
+  const defaults = configManager.resolveInstanceNetworkPolicyEnvDefault();
+  return {
+    ...Object.fromEntries(AGENT_NETWORK_SETTING_NAMES.map(name => [name, stored[name] ?? null])),
+    agent_network_defaults: {
+      agent_network_mode: defaults.mode, agent_network_mode_enforced: defaults.enforced, agent_network_allow: defaults.allow,
+      agent_network_ignore_repository_allow: defaults.ignoreRepositoryAllow,
+    },
+    agent_network_effective: {
+      agent_network_mode: effective.mode, agent_network_mode_enforced: effective.enforced, agent_network_allow: effective.allow,
+      agent_network_ignore_repository_allow: effective.ignoreRepositoryAllow,
     },
   };
 }
@@ -248,6 +269,10 @@ async function saveNormalizedSettingsWithRollback({
     agent_stall_timeout_ms,
     agent_tool_stall_timeout_ms,
     agent_degenerate_output_limit,
+    agent_network_mode,
+    agent_network_mode_enforced,
+    agent_network_allow,
+    agent_network_ignore_repository_allow,
     ...otherSettings
   } = settings;
 
@@ -270,7 +295,11 @@ async function saveNormalizedSettingsWithRollback({
     ultrafix_ci_wait_timeout_ms,
     agent_stall_timeout_ms,
     agent_tool_stall_timeout_ms,
-    agent_degenerate_output_limit
+    agent_degenerate_output_limit,
+    agent_network_mode,
+    agent_network_mode_enforced,
+    agent_network_allow,
+    agent_network_ignore_repository_allow
   });
 
   if (extracted.error) {

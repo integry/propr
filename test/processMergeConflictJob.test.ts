@@ -414,6 +414,13 @@ await mock.module('../src/jobs/prPublication.js', {
     namedExports: { PullRequestPublication: MockPullRequestPublication },
 });
 
+// The real module imports network-policy exports that the @propr/core mock above omits.
+await mock.module('../src/jobs/networkEgress.js', {
+    namedExports: {
+        runWithNetworkPolicy: async (_options: unknown, execute: () => Promise<unknown>) => execute(),
+    },
+});
+
 // Import the module under test
 const { processMergeConflictJob } = await import('../src/jobs/processMergeConflictJob.js');
 

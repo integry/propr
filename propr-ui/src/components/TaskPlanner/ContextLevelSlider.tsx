@@ -1,5 +1,7 @@
 import React, { useCallback } from 'react';
-import { Layers, Zap, Clock, Turtle, BarChart2, Target } from 'lucide-react';
+import { Layers } from 'lucide-react';
+import { DEFAULT_MODEL_MAX_TOKENS, getContextTokenBudget } from '../../hooks/contextRefreshUtils';
+import { formatTokenAmount } from './tokenFormat';
 
 interface ContextLevelSliderProps {
   value: number;
@@ -7,6 +9,10 @@ interface ContextLevelSliderProps {
   compress?: boolean;
   onCompressChange?: (compress: boolean) => void;
   hideCostLabels?: boolean;
+  /** The planning model's context window, when the preview has reported it. */
+  modelMaxTokens?: number;
+  /** One settings-group row for phones: "Scope  100% (Full Scan)" over a thin slider, without the level shortcuts. */
+  compact?: boolean;
 }
 
 // Level thresholds for determining which config to use
@@ -19,48 +25,54 @@ const getLevelType = (value: number): LevelType => {
   return 'fullscan';
 };
 
-// Context level configuration with monotone icons
+// Context level configuration: technical descriptors with approximate latency estimates.
+// The token estimate is derived from the model's context window, as the preview's budget is.
 interface ContextLevelConfig {
   label: string;
   subtitle: string;
-  indicatorLine: string;
-  speedIcon: React.ComponentType<{ className?: string }>;
-  costText: string;
-  precisionIcon: React.ComponentType<{ className?: string }>;
+  scanName: string;
+  analysis: string;
+  costLabel: string;
+  latencyEstimate: string;
 }
+
+// The scan times are fixed typical ranges, not measurements of the selected repository.
+const LATENCY_ESTIMATE_NOTE = 'Typical scan time for this scope; not measured for this repository';
 
 const LEVEL_CONFIGS: Record<LevelType, ContextLevelConfig> = {
   focused: {
     label: 'Focused',
     subtitle: 'Analyzes only directly referenced files. Best for isolated bug fixes and simple tweaks.',
-    indicatorLine: 'Fast · $ · Standard',
-    speedIcon: Zap,
-    costText: '$',
-    precisionIcon: BarChart2,
+    scanName: 'Targeted File Scan',
+    analysis: 'Direct References',
+    costLabel: 'Lowest Cost',
+    latencyEstimate: '<1m scan',
   },
   expanded: {
     label: 'Expanded',
     subtitle: 'Analyzes imports, dependencies, and related modules. Best for adding new features or updating logic.',
-    indicatorLine: 'Moderate · $$ · High Precision',
-    speedIcon: Clock,
-    costText: '$$',
-    precisionIcon: BarChart2,
+    scanName: 'Dependency Graph Scan',
+    analysis: 'Imports & Related Modules',
+    costLabel: 'Moderate Cost',
+    latencyEstimate: '~1-2m scan',
   },
   fullscan: {
     label: 'Full Scan',
     subtitle: 'Scans the entire repository structure to catch edge cases. Essential for refactoring and architectural changes.',
-    indicatorLine: 'Slower · $$$ · Max Precision',
-    speedIcon: Turtle,
-    costText: '$$$',
-    precisionIcon: Target,
+    scanName: 'Full Repository Scan',
+    analysis: 'Deep AST Analysis',
+    costLabel: 'Higher Cost',
+    latencyEstimate: '~3-5m scan',
   },
 };
 
-export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange, hideCostLabels }) => {
+export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, onChange, hideCostLabels, modelMaxTokens, compact }) => {
   // Get the current level type and config
   const levelType = getLevelType(value);
   const config = LEVEL_CONFIGS[levelType];
-  const SpeedIcon = config.speedIcon;
+  const analysisDetail = hideCostLabels ? config.analysis : `${config.analysis} · ${config.costLabel}`;
+  const tokenEstimate = `≤${formatTokenAmount(getContextTokenBudget(value, modelMaxTokens || DEFAULT_MODEL_MAX_TOKENS))} tokens`;
+  const estimate = hideCostLabels ? config.latencyEstimate : `${tokenEstimate} · ${config.latencyEstimate}`;
 
   // Handle slider change - no snapping, moves at 10% increments
   const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -73,32 +85,49 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
     onChange(targetValue);
   }, [onChange]);
 
+  if (compact) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <label htmlFor="context-scope-range" className="text-xs text-slate-500">Scope</label>
+          <span className="text-xs font-medium tabular-nums text-slate-800" data-testid="context-scope-descriptor">
+            {value}% <span className="font-normal text-slate-500">({config.label})</span>
+          </span>
+        </div>
+        <input
+          id="context-scope-range"
+          type="range"
+          min={10}
+          max={100}
+          step={10}
+          value={value}
+          onChange={handleSliderChange}
+          aria-valuetext={`${value}% (${config.label})`}
+          className="context-slider w-full h-1.5 rounded-lg cursor-pointer"
+        />
+        <p className="text-[11px] font-mono text-slate-500" data-testid="context-scope-estimate" title={LATENCY_ESTIMATE_NOTE}>
+          {config.scanName} · {estimate}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-2 sm:space-y-3">
-      {/* Header Row: Title on left, compact status line on right */}
+      {/* Header Row: Title on left, token / latency estimate on right */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 sm:gap-2">
           <Layers className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-gray-500" />
           <label className="text-xs sm:text-sm font-medium text-gray-700">
             Context Scope
           </label>
-          <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${levelType === 'focused' ? 'bg-sky-100 text-sky-600' : levelType === 'expanded' ? 'bg-blue-100 text-blue-600' : 'bg-indigo-100 text-indigo-600'}`}>
+          <span className="text-xs font-medium tabular-nums px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
             {value}%
           </span>
         </div>
-        {/* Single line indicator with monotone icons - Ocean Depth color scale */}
-        <div className={`flex items-center gap-1 sm:gap-2 text-xs ${levelType === 'focused' ? 'text-sky-400' : levelType === 'expanded' ? 'text-blue-500' : 'text-indigo-600'}`}>
-          <SpeedIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-gray-500" />
-          <span className="hidden sm:inline">{levelType === 'focused' ? 'Fast' : levelType === 'expanded' ? 'Moderate' : 'Slower'}</span>
-          {!hideCostLabels && (
-            <>
-              <span className="text-gray-400">·</span>
-              <span>{config.costText}</span>
-            </>
-          )}
-          <span className="text-gray-400 hidden sm:inline">·</span>
-          <span className="hidden sm:inline">{levelType === 'focused' ? 'Standard' : levelType === 'expanded' ? 'High' : 'Max'}</span>
-        </div>
+        <span className="text-xs font-mono text-slate-500 whitespace-nowrap" data-testid="context-scope-estimate" title={LATENCY_ESTIMATE_NOTE}>
+          {estimate}
+        </span>
       </div>
 
       {/* Slider with Gradient Track */}
@@ -137,10 +166,15 @@ export const ContextLevelSlider: React.FC<ContextLevelSliderProps> = ({ value, o
         </div>
       </div>
 
-      {/* Dynamic Subtitle - hidden on mobile */}
-      <p className="hidden sm:block text-xs text-gray-600 italic">
-        {config.subtitle}
-      </p>
+      {/* Scan descriptor and dynamic subtitle */}
+      <div className="space-y-0.5">
+        <p className="text-xs font-medium text-slate-700" data-testid="context-scope-descriptor">
+          {config.scanName} <span className="font-normal text-slate-500">({analysisDetail})</span>
+        </p>
+        <p className="hidden sm:block text-xs text-slate-500">
+          {config.subtitle}
+        </p>
+      </div>
     </div>
   );
 };

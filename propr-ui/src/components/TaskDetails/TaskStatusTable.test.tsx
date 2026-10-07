@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import TaskStatusTable from './TaskStatusTable';
+import type { HistoryItem, NetworkEgressSummary } from './types';
 
 const at = (second: number) => new Date(Date.UTC(2026, 9, 1, 0, 50, second)).toISOString();
 
@@ -103,6 +104,62 @@ describe('task terminal reasons', () => {
     expect(screen.queryByText(/Retry Implementing Changes/)).not.toBeInTheDocument();
     expect(screen.getByTestId('budget-exceeded')).toHaveTextContent('Estimated $5.12 of a $5.00 cap · .propr/workflow.yml');
     expect(screen.getByTestId('task-terminal-reason')).toHaveTextContent('The run was stopped because it reached its spend cap.');
+  });
+});
+
+
+describe('network egress events', () => {
+  const at = (minute: number) => new Date(Date.UTC(2026, 9, 6, 12, minute)).toISOString();
+  const networkEvent = (networkEgress: Partial<NetworkEgressSummary>): HistoryItem => ({
+    state: 'CLAUDE_EXECUTION', timestamp: at(20), reason: 'Restricted network',
+    metadata: { event: 'network.egress', networkEgress: { mode: 'restricted', source: 'workflow', deniedConnections: 0, deniedHosts: [], ...networkEgress } },
+  });
+
+  it('shows the mode and every denied host without counting the event as another attempt', () => {
+    const deniedHosts = Array.from({ length: 10 }, (_, index) => ({ host: `host${index}.example.com`, count: 10 - index }));
+    render(<TaskStatusTable history={[
+      { state: 'CLAUDE_EXECUTION', timestamp: at(2) },
+      networkEvent({ deniedConnections: 58, deniedHosts, omittedDeniedHosts: 1, omittedDeniedAttempts: 3 }),
+      { state: 'CLAUDE_EXECUTION', timestamp: at(21), reason: 'claude agent execution completed' },
+    ]} />);
+    expect(screen.getByText('Restricted Network: Connections Denied')).toBeInTheDocument();
+    expect(screen.queryByText(/Retry Implementing Changes/)).not.toBeInTheDocument();
+    const detail = screen.getByTestId('network-egress');
+    expect(detail).toHaveTextContent('Network: restricted · .propr/workflow.yml');
+    expect(detail).toHaveTextContent('host0.example.com × 10');
+    expect(detail).toHaveTextContent('host7.example.com × 3');
+    expect(detail).not.toHaveTextContent('host8.example.com');
+    // Two hosts beyond the shown list plus one beyond the recorded list; none disappear.
+    expect(detail).toHaveTextContent('+3 more hosts (6 attempts)');
+  });
+
+  it('warns when an agent fell back to open networking', () => {
+    render(<TaskStatusTable history={[networkEvent({ restrictedContainers: 0, fallbacks: [{ agentType: 'antigravity', reason: 'not verified' }] })]} />);
+    expect(screen.getByText('Restricted Network')).toBeInTheDocument();
+    expect(screen.getByTestId('network-egress')).toHaveTextContent('antigravity ran with open network: not verified');
+  });
+
+  it('labels a run by its final outcome when a refused agent was followed by one behind the proxy', () => {
+    render(<TaskStatusTable history={[networkEvent({ source: 'instance_enforced', restrictedContainers: 1, refusals: [{ agentType: 'antigravity', reason: 'not verified' }] })]} />);
+    expect(screen.getByText('Restricted Network')).toBeInTheDocument();
+    expect(screen.queryByText('Restricted Network: Agent Refused')).not.toBeInTheDocument();
+    expect(screen.getByTestId('network-egress')).toHaveTextContent('antigravity refused (restricted mode is enforced): not verified');
+  });
+
+  it('flags allowed connections that failed upstream', () => {
+    render(<TaskStatusTable history={[networkEvent({ restrictedContainers: 1, failedConnections: 2, failedHosts: [{ host: 'api.example.com', count: 2 }] })]} />);
+    expect(screen.getByTestId('network-egress')).toHaveTextContent('2 allowed connections failed upstream: api.example.com × 2');
+    expect(screen.getByLabelText('Network policy needs attention')).toBeInTheDocument();
+  });
+
+  it('says so when no agent container started', () => {
+    render(<TaskStatusTable history={[networkEvent({ restrictedContainers: 0 })]} />);
+    expect(screen.getByText('Restricted Network: No Agent Container Started')).toBeInTheDocument();
+  });
+
+  it('still labels a run whose only agent was refused', () => {
+    render(<TaskStatusTable history={[networkEvent({ source: 'instance_enforced', restrictedContainers: 0, refusals: [{ agentType: 'antigravity', reason: 'not verified' }] })]} />);
+    expect(screen.getByText('Restricted Network: Agent Refused')).toBeInTheDocument();
   });
 });
 

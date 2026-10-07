@@ -1,27 +1,36 @@
 import React, { useState } from 'react';
-import { FileQuestion, Info, X, Undo2, Redo2, Loader2, ArrowLeft, Github, GitBranch, Trash2, AlertCircle, History } from 'lucide-react';
+import { FileQuestion, Info, X, Undo2, Redo2, ArrowLeft, GitBranch, AlertCircle, History, MessageSquare } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GranularityEnforcementMetadata } from '../../api/proprApi';
+import { StudioPhaseSwitcher } from './StudioStepper';
+import { FinalizeButton } from './FinalizeButton';
+import { PlanOverflowMenu } from './PlanOverflowMenu';
+import { PlanEditorMobileHeader } from './PlanEditorMobileHeader';
+import { getReadOnlyTitle, isPlanActionDisabled } from './planEditorHeaderUtils';
+
+export { PlanOverflowMenu, type PlanMenuItem } from './PlanOverflowMenu';
 
 interface OriginalPromptPopoverProps {
   prompt: string;
+  buttonClassName?: string;
+  labelClassName?: string;
 }
 
-export const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt }) => {
+const PROMPT_BUTTON_CLASS = 'flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors text-teal-700 hover:bg-teal-50';
+
+export const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt, buttonClassName = PROMPT_BUTTON_CLASS, labelClassName = 'hidden sm:inline' }) => {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
     <div className="relative">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors"
-        style={{ color: 'rgb(29, 138, 138)' }}
-        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(29, 138, 138, 0.1)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+        className={buttonClassName}
         title="View original prompt"
+        aria-label="Prompt"
       >
         <FileQuestion size={14} />
-        <span className="hidden sm:inline font-medium">Prompt</span>
+        <span className={`${labelClassName} font-medium`}>Prompt</span>
       </button>
       <AnimatePresence>
         {isOpen && (
@@ -103,103 +112,16 @@ export interface PlanEditorHeaderProps {
   onShowHistory?: () => void;
   isMobile?: boolean;
   isReadOnly?: boolean;
+  /** Desktop only: whether the Assistant pane is shown, and the toggle for it. */
+  isAssistantOpen?: boolean;
+  onToggleAssistant?: () => void;
+  /** Desktop only: the plan's primary action ("Create N GitHub Issues") sits in the header. */
+  planLength?: number;
+  onFinalize?: () => void;
 }
 
-const isPlanActionDisabled = (
-  isFinalizing: boolean,
-  isResettingToSetup: boolean,
-  isDeleting: boolean,
-  isReadOnly: boolean
-) => isFinalizing || isResettingToSetup || isDeleting || isReadOnly;
-
-const getReadOnlyTitle = (isReadOnly: boolean, title: string) => (
-  isReadOnly ? 'Demo mode is read-only' : title
-);
-
-const PlanEditorMobileHeader: React.FC<PlanEditorHeaderProps> = ({
-  planName,
-  repository,
-  baseBranch,
-  isDeleting,
-  isFinalizing,
-  isResettingToSetup,
-  canUndo,
-  canRedo,
-  onDelete,
-  onBackToSetup,
-  onUndo,
-  onRedo,
-  onShowHistory,
-  isReadOnly = false
-}) => {
-  const actionDisabled = isPlanActionDisabled(isFinalizing, isResettingToSetup, isDeleting, isReadOnly);
-
-  return (
-    <div className="flex flex-col border-b border-gray-200 bg-gray-100 flex-shrink-0">
-      {/* First row: Plan name and actions */}
-      <div className="flex items-center justify-between px-3 py-2 gap-2">
-        <h1 className="text-base font-semibold text-gray-900 truncate min-w-0 flex-1" title={planName}>
-          {planName}
-        </h1>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button
-            onClick={onUndo}
-            disabled={!canUndo || isReadOnly}
-            className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title="Undo"
-          >
-            <Undo2 size={16} className="text-gray-600" />
-          </button>
-          <button
-            onClick={onRedo}
-            disabled={!canRedo || isReadOnly}
-            className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title="Redo"
-          >
-            <Redo2 size={16} className="text-gray-600" />
-          </button>
-          {onShowHistory && (
-            <button
-              onClick={onShowHistory}
-              className="p-1.5 rounded hover:bg-gray-200 transition-colors"
-              title="Plan history"
-            >
-              <History size={16} className="text-gray-600" />
-            </button>
-          )}
-          <button
-            onClick={onBackToSetup}
-            disabled={actionDisabled}
-            className="p-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title={getReadOnlyTitle(isReadOnly, 'Back to Setup')}
-          >
-            <ArrowLeft size={16} />
-          </button>
-          <button
-            onClick={onDelete}
-            disabled={actionDisabled}
-            className="p-1.5 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            title={getReadOnlyTitle(isReadOnly, 'Delete Plan')}
-          >
-            {isDeleting ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <Trash2 size={16} />
-            )}
-          </button>
-        </div>
-      </div>
-      {/* Second row: Repository info */}
-      <div className="flex items-center gap-2 px-3 pb-2 text-xs text-gray-600">
-        <Github size={12} className="text-gray-500 flex-shrink-0" />
-        <span className="truncate">{repository}</span>
-        <span className="text-gray-400">/</span>
-        <GitBranch size={12} className="text-gray-500 flex-shrink-0" />
-        <span className="truncate">{baseBranch}</span>
-      </div>
-    </div>
-  );
-};
+const SECONDARY_GROUP_BUTTON_CLASS = 'flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed first:rounded-l-md last:rounded-r-md';
+const ICON_GROUP_BUTTON_CLASS = 'px-2 py-1.5 text-slate-600 hover:bg-slate-50 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors first:rounded-l-md last:rounded-r-md';
 
 const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
   planName,
@@ -216,91 +138,107 @@ const PlanEditorDesktopHeader: React.FC<PlanEditorHeaderProps> = ({
   onUndo,
   onRedo,
   onShowHistory,
-  isReadOnly = false
+  isReadOnly = false,
+  isAssistantOpen,
+  onToggleAssistant,
+  planLength,
+  onFinalize
 }) => {
   const actionDisabled = isPlanActionDisabled(isFinalizing, isResettingToSetup, isDeleting, isReadOnly);
 
+  const repoName = repository.split('/').pop() || repository;
+
   return (
-    <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-4">
-      <div className="flex items-center gap-4 min-w-0 flex-1">
-        {/* Plan Name - responsive width based on available space */}
-        <h1 className="text-lg font-semibold text-gray-900 truncate min-w-0 flex-shrink" title={planName}>
+    <div className="flex items-center justify-between px-6 py-2 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-6">
+      {/* Only the plan name (and the branch chip) shrink; the phase pill keeps its width, so it
+          can never slide under the tool cluster. min-w-0 lets the title truncate instead of widening the page. */}
+      <div data-testid="plan-editor-title-group" className="flex items-center gap-3 min-w-0 flex-1">
+        {/* Plan Name - takes the space the actions no longer need */}
+        <h1 className="text-base font-semibold text-gray-900 truncate min-w-0 flex-1" title={planName}>
           {planName}
         </h1>
-        <div className="h-4 w-px bg-gray-300 flex-shrink-0" />
-        {/* Repository and Branch Breadcrumb */}
-        <div className="flex items-center gap-2 text-sm flex-shrink-0">
-          <Github size={16} className="text-gray-500" />
-          <span className="font-medium text-gray-900 truncate max-w-[200px]" title={repository}>{repository}</span>
-          <span className="text-gray-400">/</span>
-          <GitBranch size={14} className="text-gray-500" />
-          <span className="text-gray-600">{baseBranch}</span>
+        {/* Repository and branch as quiet code metadata */}
+        <div className="flex items-center gap-2 text-xs min-w-0 flex-shrink">
+          <span className="hidden 2xl:inline font-mono text-slate-600 truncate max-w-[160px]" title={repository}>{repoName}</span>
+          <span className="inline-flex min-w-0 max-w-[160px] items-center gap-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-slate-700" title={baseBranch}>
+            <GitBranch size={12} className="flex-shrink-0" />
+            <span className="truncate">{baseBranch}</span>
+          </span>
         </div>
-        {/* Original Prompt - moved to header */}
-        {originalPrompt && (
-          <>
-            <div className="h-4 w-px bg-gray-300 flex-shrink-0 hidden lg:block" />
-            <div className="hidden lg:block">
-              <OriginalPromptPopover prompt={originalPrompt} />
-            </div>
-          </>
-        )}
+        <StudioPhaseSwitcher counts={planLength !== undefined ? { review: planLength } : undefined} />
       </div>
 
-      <div className="flex items-center gap-2 flex-shrink-0">
-        {/* Delete Plan */}
-        <button
-          onClick={onDelete}
-          disabled={actionDisabled}
-          className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          title={getReadOnlyTitle(isReadOnly, 'Delete Plan')}
-        >
-          {isDeleting ? (
-            <Loader2 size={16} className="animate-spin" />
-          ) : (
-            <Trash2 size={16} />
+      <div data-testid="plan-editor-tool-cluster" className="flex items-center gap-2 flex-shrink-0">
+        {/* Secondary navigation: the source prompt and the way back to setup */}
+        <div className="flex items-center rounded-md border border-slate-200 bg-white divide-x divide-slate-200">
+          {originalPrompt && (
+            <OriginalPromptPopover prompt={originalPrompt} buttonClassName={SECONDARY_GROUP_BUTTON_CLASS} labelClassName="hidden 2xl:inline" />
           )}
-        </button>
-        <div className="h-6 w-px bg-gray-300 mx-1" />
-        {/* Back to Setup */}
-        <button
-          onClick={onBackToSetup}
-          disabled={actionDisabled}
-          className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          title={getReadOnlyTitle(isReadOnly, 'Back to Setup')}
-        >
-          <ArrowLeft size={16} />
-          Back to Setup
-        </button>
-        <div className="h-6 w-px bg-gray-300 mx-1" />
-        {/* Undo/Redo */}
-        <div className="flex items-center gap-1">
+          {/* Labels only on wide screens so the plan title keeps its room on the title row */}
+          <button
+            onClick={onBackToSetup}
+            disabled={actionDisabled}
+            className={SECONDARY_GROUP_BUTTON_CLASS}
+            title={getReadOnlyTitle(isReadOnly, 'Back to Setup')}
+            aria-label="Back to Setup"
+          >
+            <ArrowLeft size={14} />
+            <span className="hidden 2xl:inline">Back to Setup</span>
+          </button>
+        </div>
+        {/* Undo / Redo / History as one segmented icon pill */}
+        <div className="flex items-center rounded-md border border-slate-200 bg-white divide-x divide-slate-200">
           <button
             onClick={onUndo}
             disabled={!canUndo || isReadOnly}
-            className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className={ICON_GROUP_BUTTON_CLASS}
             title="Undo"
           >
-            <Undo2 size={18} className="text-gray-600" />
+            <Undo2 size={15} />
           </button>
           <button
             onClick={onRedo}
             disabled={!canRedo || isReadOnly}
-            className="p-2 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className={ICON_GROUP_BUTTON_CLASS}
             title="Redo"
           >
-            <Redo2 size={18} className="text-gray-600" />
+            <Redo2 size={15} />
           </button>
           {onShowHistory && (
             <button
               onClick={onShowHistory}
-              className="p-2 rounded hover:bg-gray-200 transition-colors"
+              className={ICON_GROUP_BUTTON_CLASS}
               title="Plan history"
             >
-              <History size={18} className="text-gray-600" />
+              <History size={15} />
             </button>
           )}
         </div>
+        {onToggleAssistant && (
+          <button
+            type="button"
+            onClick={onToggleAssistant}
+            aria-pressed={isAssistantOpen}
+            title={isAssistantOpen ? 'Hide the Assistant to read the plan at full width' : 'Show the Assistant'}
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              isAssistantOpen
+                ? 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100'
+                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            <MessageSquare size={14} />
+            Assistant
+          </button>
+        )}
+        {onFinalize && planLength !== undefined && (
+          <FinalizeButton planLength={planLength} isFinalizing={isFinalizing} isReadOnly={isReadOnly} onFinalize={onFinalize} />
+        )}
+        <PlanOverflowMenu
+          isDeleting={isDeleting}
+          deleteDisabled={actionDisabled}
+          deleteTitle={getReadOnlyTitle(isReadOnly, 'Delete Plan')}
+          onDelete={onDelete}
+        />
       </div>
     </div>
   );

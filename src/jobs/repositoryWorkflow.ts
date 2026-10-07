@@ -7,6 +7,7 @@ import {
 import type { getAuthenticatedOctokit, ResolvedRepositoryWorkflow, WorkerStateManager, AgentExecutionResult, IssueJobData } from '@propr/core';
 import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
+import { runWithNetworkPolicy } from './networkEgress.js';
 
 type Octokit = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 type RepositoryWorkflowDeferralData = Pick<IssueJobData, 'repositoryWorkflow' | 'repositoryWorkflowBaseBranch' | 'repositoryWorkflowDeferrals' | 'repositoryWorkflowRetryAt'>;
@@ -350,7 +351,9 @@ export async function runRepositoryWorkflow(options: {
     let result: AgentExecutionResult;
     try {
         await checkWorkflowTaskActive(options);
-        result = await executeWithRepositoryWorkflow(options.workflow, execute);
+        // The network policy applies with or without a workflow file: the instance may require restricted mode.
+        result = await runWithNetworkPolicy({ workflow: options.workflow, taskId: options.taskId, correlatedLogger: options.correlatedLogger },
+            () => executeWithRepositoryWorkflow(options.workflow, execute));
     } catch (error) {
         await releaseRepositoryWorkflowSlot().catch(() => undefined);
         throw error;

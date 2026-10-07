@@ -31,6 +31,11 @@ auto_merge:
     - ".github/workflows/**"
     - "packages/core/src/db/migrations/**"
     - "package.json"
+network:
+  mode: restricted
+  allow:
+    - "registry.npmjs.org"
+    - "*.internal.example.com"
 ```
 
 All fields are optional. Use `{}` for an empty policy; a file that is empty or contains only comments (for example, the scaffold with every section commented out) is also treated as an empty policy. See the [JSON schema](/schemas/repository-workflow.schema.json) for editor validation. Unknown fields, duplicate YAML keys, aliases, unsupported tags, invalid types and missing instruction files fail the attempt before the implementation agent starts. The task's existing issue/PR error reporting surfaces these errors once; the job is not retried, because the same base commit would fail the same way. A malformed instance `worker_concurrency` setting is not a workflow error: ProPR falls back to `WORKER_CONCURRENCY` (default 5). Files must be UTF-8 and at most 128 KiB each. Validation accepts at most 100 commands.
@@ -99,6 +104,25 @@ A missing `.propr/workflow.yml` is not an error: the defaults apply and only `.p
 
 **Epic queues.** An Epic queue advances when the head's PR is merged, not when auto-merge is armed. If auto-merge is skipped for the head's PR, the queue stays active and shows *Waiting for human merge* with the reason; it resumes as soon as a person merges the PR.
 
+## Network
+
+`network` sets the agent container's network mode for this repository's runs:
+
+```yaml
+network:
+  mode: restricted      # open (default, current behaviour) | restricted
+  allow:
+    - "registry.npmjs.org"
+    - "*.internal.example.com"
+    - "git.example.com:8443"
+```
+
+- `mode: restricted` starts the agent container with no network interface. Its only route out is a per-run proxy on the worker that allows the agent's provider API, GitHub, npm and PyPI, the instance's `agent_network_allow` hosts and the hosts in `allow`. `mode: open` gives the container ordinary outbound access. Without `mode`, the instance default (`agent_network_mode`, default `open`) applies.
+- `allow` lists extra hosts: exact hostnames, `*.domain` wildcards (subdomains only, not the apex), or IP literals, each optionally with `:port`. Without a port, only ports 80 and 443 are allowed. A bare `*` or one-label wildcard such as `*.com` fails validation. Repository entries reach public addresses only: a host that resolves to a loopback, private or link-local address, or such an IP literal, is refused unless the instance's own `agent_network_allow` lists that address.
+- When the instance enforces restricted mode (`agent_network_mode_enforced`), `mode: open` is ignored and the timeline records that it was overridden; `allow` still applies unless the instance also sets `agent_network_ignore_repository_allow`, in which case it is ignored and the timeline says so. A repository can always choose `restricted`.
+
+At the end of each restricted run the task timeline lists every denied host with its attempt count. See [Restricted network mode](./execution-safety.md#restricted-network-mode) for the mechanism, the per-agent compatibility (Antigravity falls back to `open`) and its limitations.
+
 ## Instance defaults and hard limits
 
 Repository policy can refine instance configuration but cannot grant permissions:
@@ -106,7 +130,7 @@ Repository policy can refine instance configuration but cannot grant permissions
 - `limits.max_parallel_tasks` caps concurrent issue implementations and follow-ups **across all branches and workers for this repository**. It is clamped to the instance `worker_concurrency` setting (or `WORKER_CONCURRENCY`, default 5). Capacity is claimed only after an attempt passes its skip and cancellation checks, and it is released as soon as the agent container exits. Committing, PR creation and completion comments do not count against the cap. Attempts refused admission are delayed in the queue, freeing shared worker slots for other repositories. They check cancellation again on re-entry. Refused attempts are kept in a waiting list in Redis. When a slot is released, ProPR wakes the longest-waiting attempts first instead of leaving them to their backoff. The task timeline shows one **Waiting for Repository Capacity** entry per wait, updated with the number of refusals and the next retry time. While a follow-up waits, its PR is not locked, so a later comment job on the same PR can be admitted first. Runs without a workflow participate in the count; when branches have different active caps, the smallest cap governs admission. Lowering a cap does not interrupt already-running work, but an attempt that waited is checked again against the cap in the base-branch policy it re-reads when admitted; if that cap is now full, the attempt gives up its slot and keeps waiting under the new policy. A run's capacity lease is renewed in Redis while its container runs. Every run counts toward capacity, including runs without a cap. So a lease that cannot be renewed (for example during a Redis outage) stops the container before another worker can take its slot.
 - `limits.max_cost_usd` caps what **one run** may spend, in USD (estimated from token usage, like every cost figure in ProPR). It applies to issue implementations, PR follow-ups, `/fix`, ultrafix cycles and reviews; goals keep their own controls. A per-task `maxCostUsd` override (task submissions, MCP `create_task`, `propr issue implement --max-cost`) takes precedence over this value, and the instance `default_max_cost_usd` setting applies when the file sets none. `0` means no cap from this file. Values are clamped to 100000. Unlike other fields, a malformed or negative amount does not fail the attempt: it is logged as a warning and treated as no cap from this file, so a typo can never stop every run at $0 (the editor schema still flags it). When the run's estimated cost reaches the cap, ProPR stops its agent container and publishes the partial work as it does for a timed-out run; see [Spend caps](./execution-safety.md#spend-caps). Unlike `max_parallel_tasks`, the cap is not clamped to an instance setting.
 - `previews.types` selects a subset of the types enabled in repository Settings. It cannot enable previews when Settings disable them. An empty subset disables capture for the run. Repository preview instructions are appended to Settings instructions; upload and storage limits remain unchanged.
-- Credentials, container networking, mounts, provider choice and other instance settings cannot be declared in this file. Unsupported keys fail validation.
+- `network.mode` can choose `restricted`, or `open` unless the instance enforces restricted mode; `network.allow` only adds hosts to a restricted run. Credentials, other container networking (Docker networks, ports, DNS), mounts, provider choice and other instance settings cannot be declared in this file. Unsupported keys fail validation.
 
 The generated container wrapper (all hooks and validation commands after shell quoting, including wrapper overhead) must fit within 120 KiB of UTF-8 text. This is checked when preparing the workflow, before agent execution. If it exceeds the limit, move long commands into repository scripts and invoke those scripts from the workflow. The 128 KiB source-file limit still applies independently.
 

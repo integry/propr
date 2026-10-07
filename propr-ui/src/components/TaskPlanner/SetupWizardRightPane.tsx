@@ -87,6 +87,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
           value={contextLevel}
           onChange={onContextLevelChange}
           hideCostLabels={hideCostsAndTokens}
+          modelMaxTokens={preview.data?.stats.modelMaxContextTokens}
         />
       </div>
 

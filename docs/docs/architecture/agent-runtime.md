@@ -19,7 +19,7 @@ Every coding agent runs in a Docker container so ProPR can control runtime depen
 - For every agent except Vibe, the host's `/tmp/git-processor` directory (all clones and worktrees) mounted at the same path so git works in the linked worktree
 - Structured stdout, stderr, exit code, duration, session ID, and token usage capture when the CLI exposes those fields
 
-All agents run from the unified Debian/glibc `propr/agent` image. Its internal base stage includes Node.js 22, Git and repository tooling, `scripts/init-firewall.sh`, a scoped `gh` wrapper, and entrypoint support used by the worker. The image uses Node.js 22 to satisfy current agent CLI engine requirements. Independent CLI build stages preserve Docker cache reuse when one configured version changes.
+All agents run from the unified Debian/glibc `propr/agent` image. Its internal base stage includes Node.js 22, Git and repository tooling, a scoped `gh` wrapper, and entrypoint support used by the worker. The image uses Node.js 22 to satisfy current agent CLI engine requirements. Independent CLI build stages preserve Docker cache reuse when one configured version changes.
 
 This table maps each agent type to the unified image, its type-specific entrypoint, and its credential mount; other pages link here instead of repeating it.
 
@@ -70,11 +70,11 @@ The runtime should preserve these boundaries:
 
 ### Network Egress
 
-Agent images ship `scripts/init-firewall.sh`, an optional egress-restriction script. All current agent entrypoints skip it because applying those rules requires running the container with Docker's `--privileged` flag.
+Containers run on Docker's default bridge network with `--security-opt no-new-privileges` and `--cap-add CHOWN`, so outbound network access is unrestricted in the default `open` mode. The `.propr/setup.sh` hook runs under that same Docker privilege boundary and cannot use sudo to install system packages.
 
-Containers run on Docker's default bridge network with `--security-opt no-new-privileges` and `--cap-add CHOWN`, so outbound network access is unrestricted by default. The `.propr/setup.sh` hook runs under that same Docker privilege boundary and cannot use sudo to install system packages. Treat the firewall script as available hardening for deployments that can run privileged containers; in the default runtime it is inactive.
+In `restricted` mode (instance setting `agent_network_mode`, or `network.mode` in `.propr/workflow.yml`), the Docker executor starts a per-container allowlist proxy in the worker process on a Unix socket under `PROPR_EGRESS_SOCKET_DIR`, replaces the container's network (whatever `docker run` named, or the default bridge) with `--network none`, mounts the socket directory read-only at `/run/propr-egress`, and sets `HTTP_PROXY`/`HTTPS_PROXY`, `NO_PROXY` and Git's `http.proxy`. A bridge started by the container wrapper exposes the socket as `127.0.0.1:3128` before setup hooks and the agent run. The proxy resolves DNS on the worker and refuses hosts outside the allowlist with `403`, and chains allowed connections through the worker's own `HTTPS_PROXY`/`HTTP_PROXY` when set; it closes when the container's `docker run` exits. Native goal sessions, which spawn `docker run` directly, get the same proxy for the life of that process. No privileged flag or extra capability is used. See [Restricted network mode](../features/execution-safety.md#restricted-network-mode).
 
-Provider connectivity failures usually come from the host network, DNS, proxy settings, provider availability, or an external firewall; ProPR applies no network policy of its own in the default runtime. If you enable the firewall script in a privileged deployment, confirm its allowlist covers GitHub and the provider endpoints required by every enabled agent image.
+Provider connectivity failures in open mode usually come from the host network, DNS, proxy settings, provider availability, or an external firewall. In restricted mode, check the task timeline's **Restricted Network** event for denied hosts first.
 
 ## Monitoring And Debugging
 
@@ -107,7 +107,7 @@ Check that the deployment user can access Docker and that the launcher or worker
 
 ### Network Issues
 
-Egress is unrestricted by default because the shipped firewall script is skipped by every entrypoint. Check the host network, DNS, proxy configuration, external firewall rules, and provider status before looking for a ProPR container firewall rule.
+In the default `open` mode egress is unrestricted: check the host network, DNS, proxy configuration, external firewall rules, and provider status. In `restricted` mode, the task timeline's **Restricted Network** event lists every denied host; add a needed host to `network.allow` in `.propr/workflow.yml` or to the instance `agent_network_allow` setting. A container log line `ProPR restricted network: egress proxy socket ... is missing` means the Docker daemon cannot see the worker's `PROPR_EGRESS_SOCKET_DIR`; mount it at the same path, or set `HOST_PROPR_EGRESS_SOCKET_DIR` to the Docker host path.
 
 ### Timeout Issues
 

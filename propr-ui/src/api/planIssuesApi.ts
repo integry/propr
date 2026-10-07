@@ -149,6 +149,40 @@ export const implementIssue = async (
   return response.json();
 };
 
+/** Summary of the plan's sequential execution queue: `issues[cursor]` is in flight, later entries wait their turn. */
+export interface PlanExecutionQueue {
+  issues: number[];
+  cursor: number;
+  head: number | null;
+  status: 'active' | 'completed' | 'cancelled';
+  blockedReason: string | null;
+}
+
+/** Fetches the plan's execution queue, or null when the plan never queued work. */
+export const getPlanExecutionQueue = async (draftId: string): Promise<PlanExecutionQueue | null> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/execution-queue`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return (await response.json()).queue ?? null;
+};
+
+/**
+ * Queues every pending issue behind the issues already running. Nothing starts now:
+ * the server starts each queued issue once the one ahead of it finishes.
+ */
+export const queueRemainingIssues = async (
+  draftId: string,
+  options: Pick<ImplementIssueOptions, 'useEpic' | 'autoMerge'> = {}
+): Promise<{ queued: number[]; alreadyQueued: boolean; queue: PlanExecutionQueue | null }> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/planner/drafts/${draftId}/execution-queue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(options),
+  });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 /**
  * Updates a plan issue's agent/model configuration or status.
  */
@@ -171,62 +205,71 @@ export const updatePlanIssue = async (
 };
 
 /**
- * Status display configuration for UI.
+ * Status display configuration for the execution matrix.
+ * Quiet slate for queued/finished states, teal for running work, amber when the user's attention is needed.
  */
 export const STATUS_CONFIG: Record<PlanIssueStatus, {
   label: string;
   color: string;
   bgColor: string;
   borderColor: string;
+  dotColor: string;
   isActive: boolean;
 }> = {
   pending: {
     label: 'Pending',
-    color: 'text-gray-600',
-    bgColor: 'bg-gray-100',
-    borderColor: 'border-gray-200',
+    color: 'text-slate-600',
+    bgColor: 'bg-white',
+    borderColor: 'border-slate-200',
+    dotColor: 'bg-slate-300',
     isActive: false
   },
   processing: {
-    label: 'Processing',
-    color: 'text-blue-700',
-    bgColor: 'bg-blue-100',
-    borderColor: 'border-blue-200',
+    label: 'Running',
+    color: 'text-teal-700',
+    bgColor: 'bg-teal-50',
+    borderColor: 'border-teal-200',
+    dotColor: 'bg-teal-500',
     isActive: true
   },
   under_review: {
-    label: 'Review',
-    color: 'text-purple-700',
-    bgColor: 'bg-purple-100',
-    borderColor: 'border-purple-200',
+    label: 'In Review',
+    color: 'text-amber-700',
+    bgColor: 'bg-amber-50',
+    borderColor: 'border-amber-200',
+    dotColor: 'bg-amber-500',
     isActive: false
   },
   in_refinement: {
     label: 'Refining',
     color: 'text-amber-700',
-    bgColor: 'bg-amber-100',
+    bgColor: 'bg-amber-50',
     borderColor: 'border-amber-200',
+    dotColor: 'bg-amber-500',
     isActive: false
   },
   refinement_processing: {
-    label: 'Feedback',
-    color: 'text-orange-700',
-    bgColor: 'bg-orange-100',
-    borderColor: 'border-orange-200',
+    label: 'Running',
+    color: 'text-teal-700',
+    bgColor: 'bg-teal-50',
+    borderColor: 'border-teal-200',
+    dotColor: 'bg-teal-500',
     isActive: true
   },
   merged: {
-    label: 'Merged',
-    color: 'text-green-700',
-    bgColor: 'bg-green-100',
-    borderColor: 'border-green-200',
+    label: 'Completed',
+    color: 'text-slate-500',
+    bgColor: 'bg-slate-50',
+    borderColor: 'border-slate-200',
+    dotColor: 'bg-slate-400',
     isActive: false
   },
   closed: {
     label: 'Closed',
-    color: 'text-red-700',
-    bgColor: 'bg-red-100',
-    borderColor: 'border-red-200',
+    color: 'text-slate-500',
+    bgColor: 'bg-slate-50',
+    borderColor: 'border-slate-200',
+    dotColor: 'bg-slate-300',
     isActive: false
   }
 };
