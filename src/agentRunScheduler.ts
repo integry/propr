@@ -18,6 +18,7 @@ import {
     listDueScheduledAgentDefinitions,
     logger,
     recordSkippedRun,
+    releaseAgentDefinitionScheduleSlot,
     rowToAgentRun,
     retryDueDeferredAgentRuns,
     transitionAgentRun,
@@ -26,6 +27,7 @@ import {
     type AgentRunGate,
     type AgentRunRow,
     type DeferredAgentRunRetryResult,
+    type DueScheduledAgentDefinition,
     type StoredAgentDefinition,
     type StoredAgentRun,
     type TriggerAgentRunInput,
@@ -40,14 +42,20 @@ import type { AgentRunPhase } from './jobs/agentRuns/toolPolicy.js';
  * with the cost gate.
  *
  * - schedule: fires due definitions exactly once per slot. A compare-and-set
- *   on `next_run_at` lets one sweep claim a slot, and the run's idempotency key
- *   `schedule:<slot ISO>` makes a replay of the same slot return the same run.
- *   Missed slots coalesce into one run for the latest due slot.
+ *   on `next_run_at` lets one sweep claim a slot and records it as pending in
+ *   the same update; the pending slot is cleared only once its run receipt
+ *   exists, so a sweep that stops in between is resumed by the next one. The
+ *   run's idempotency key `schedule:<slot ISO>` makes a replay of the same slot
+ *   return the same run. Missed slots coalesce into one run for the latest
+ *   due slot.
  * - deferred retry: re-evaluates deferred runs through the cost gate.
  * - stuck runs: fails `running`/`acting` runs whose task ended long ago, i.e.
  *   the worker stopped before recording the result.
  * - grant cleanup (slower cadence): revokes run-scoped MCP grants left behind
  *   by terminal runs or past their expiry, a backstop for crashed workers.
+ *
+ * Stuck-run recovery and grant cleanup page through every candidate on each
+ * pass, so records that stay ineligible never hide later eligible ones.
  */
 
 export const AGENT_SCHEDULE_SWEEP_BATCH_SIZE = 50;
@@ -61,8 +69,7 @@ const AGENT_RUN_GRANT_RECORD_KIND = 'agent_run_grant';
 const GRANT_CLEANUP_BATCH_SIZE = 200;
 const STUCK_RUN_BATCH_SIZE = 100;
 const TERMINAL_TASK_STATES = new Set(['completed', 'failed', 'cancelled']);
-/** Bounds the walk over missed slots; a cron has at least 15 minutes between firings. */
-const MAX_COALESCED_SLOTS = 10_000;
+const MINUTE_MS = 60_000;
 
 export interface AgentRunSweepDependencies {
     database?: Knex;
@@ -81,7 +88,7 @@ export interface AgentScheduleSweepResult {
     created: number;
     /** Slots whose run already existed (a replay of the same slot). */
     existing: number;
-    /** Slots recorded as `skipped` because the definition no longer validates. */
+    /** Slots recorded as `skipped` because the definition no longer validates or was disabled after the claim. */
     invalid: number;
     /** Definitions whose schedule was turned off. */
     disabled: number;
@@ -97,10 +104,12 @@ function bootstrapAdminUsernames(environment: NodeJS.ProcessEnv = process.env): 
 }
 
 /**
- * Whether an agent owner is still an instance member: an explicit
- * `instance_members` row or a bootstrap administrator (`PROPR_ADMIN_USERS`),
- * and allowed by the GitHub user whitelist when one is configured. Mirrors
- * `resolveInstanceAuthorization` in the API, which core cannot import.
+ * Whether an agent owner is still an instance member. Mirrors the API's
+ * whitelist check plus `resolveInstanceAuthorization`, which the daemon cannot
+ * import: the owner must pass the GitHub user whitelist when one is
+ * configured, and is then a member through an explicit `instance_members` row,
+ * as a bootstrap administrator (`PROPR_ADMIN_USERS`), or implicitly as a user
+ * who signed in (a stored GitHub user grant).
  */
 export async function isAgentOwnerInstanceMember(ownerId: string, database: Knex = db): Promise<boolean> {
     const member = await database('instance_members').where({ github_user_id: ownerId })
@@ -110,22 +119,28 @@ export async function isAgentOwnerInstanceMember(ownerId: string, database: Knex
         .catch(() => undefined);
     const username = grant?.github_username || member?.github_username || null;
     if (getGithubUserWhitelist().length > 0 && !isGithubUserWhitelisted(username)) return false;
-    if (member) return true;
+    if (member || grant) return true;
     return username !== null && bootstrapAdminUsernames().includes(username.toLowerCase());
 }
 
 /**
- * The latest slot at or before `now`, walking forward from the claimed one.
- * The claimed slot is due, so the result is never earlier than it.
+ * The latest slot at or before `now`. The claimed slot is due, so the result
+ * is never earlier than it. Binary-searches the last minute whose following
+ * occurrence is still due, so a long downtime costs a few dozen cron
+ * evaluations instead of one per missed slot.
  */
-function latestDueSlot(cron: ParsedCronExpression, claimedSlot: number, now: number): number {
-    let slot = claimedSlot;
-    for (let step = 0; step < MAX_COALESCED_SLOTS; step++) {
-        const following = nextCronOccurrence(cron, new Date(slot)).getTime();
-        if (following > now) return slot;
-        slot = following;
+export function latestDueSlot(cron: ParsedCronExpression, claimedSlot: number, now: number): number {
+    const following = (time: number) => nextCronOccurrence(cron, new Date(time)).getTime();
+    if (following(claimedSlot) > now) return claimedSlot;
+    // Invariant: the occurrence after minute `low` is due, the one after `high` is not.
+    let low = Math.floor(claimedSlot / MINUTE_MS);
+    let high = Math.floor(now / MINUTE_MS);
+    while (high - low > 1) {
+        const middle = Math.floor((low + high) / 2);
+        if (following(middle * MINUTE_MS) <= now) low = middle;
+        else high = middle;
     }
-    return slot;
+    return following(low * MINUTE_MS);
 }
 
 interface ScheduleContext {
@@ -144,25 +159,35 @@ async function disableSchedule(definition: StoredAgentDefinition, reason: string
     return disabled ? 'disabled' : null;
 }
 
-async function fireDueDefinition(due: StoredAgentDefinition, context: ScheduleContext): Promise<ScheduleOutcome> {
+/**
+ * Claims the latest due slot, recording it as pending in the same update.
+ * Returns the claimed definition and slot, or the outcome when nothing is claimed.
+ */
+async function claimDueSlot(
+    due: StoredAgentDefinition,
+    context: ScheduleContext,
+): Promise<{ definition: StoredAgentDefinition; slot: number } | { outcome: ScheduleOutcome }> {
     const claimedSlot = due.nextRunAt!;
-    let cron: ParsedCronExpression;
     let next: number;
     let slot: number;
     try {
-        cron = parseCronExpression(due.scheduleCron ?? '');
+        const cron = parseCronExpression(due.scheduleCron ?? '');
         next = nextCronOccurrence(cron, new Date(context.now)).getTime();
         slot = latestDueSlot(cron, claimedSlot, context.now);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return disableSchedule(due, `The schedule cannot be evaluated: ${message}`, context);
+        return { outcome: await disableSchedule(due, `The schedule cannot be evaluated: ${message}`, context) };
     }
 
     // Only one sweep moves next_run_at off the value it read; the others stop here.
-    const definition = await claimAgentDefinitionScheduleSlot(due.id, claimedSlot, next, { database: context.database });
-    if (!definition) return 'lost';
+    const definition = await claimAgentDefinitionScheduleSlot(due.id,
+        { claimedNextRunAt: claimedSlot, nextRunAt: next, slot }, { database: context.database });
+    return definition ? { definition, slot } : { outcome: 'lost' };
+}
 
-    // An offboarded owner's agent must stop running.
+/** Records the run for `slot`, which this or an earlier sweep claimed and left pending. */
+async function fireClaimedSlot(definition: StoredAgentDefinition, slot: number, context: ScheduleContext): Promise<ScheduleOutcome> {
+    // An offboarded owner's agent must stop running. Disabling drops the pending slot.
     if (!await context.isMember(definition.ownerId)) {
         return disableSchedule(definition, 'The owner is no longer an instance member', context);
     }
@@ -170,13 +195,15 @@ async function fireDueDefinition(due: StoredAgentDefinition, context: ScheduleCo
     const slotIso = new Date(slot).toISOString();
     const triggerSource = `schedule:${definition.scheduleCron}`;
     const idempotencyKey = `schedule:${slotIso}`;
+    let outcome: ScheduleOutcome;
     try {
         const { run, created } = await context.trigger({ definition, trigger: 'schedule', triggerSource, idempotencyKey, gate: context.gate });
         logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: created ? run.state : 'existing' },
             'Scheduled agent run');
-        return created ? 'created' : 'existing';
+        outcome = created ? 'created' : 'existing';
     } catch (error) {
-        if (!(error instanceof AgentRunTriggerError) || error.code !== 'AGENT_INVALID') throw error;
+        // A slot claimed before the agent was disabled still gets a receipt.
+        if (!(error instanceof AgentRunTriggerError) || (error.code !== 'AGENT_INVALID' && error.code !== 'AGENT_DISABLED')) throw error;
         // The history shows why the slot did not run.
         const { run, created } = await recordSkippedRun({
             definition, trigger: 'schedule', triggerSource, idempotencyKey,
@@ -184,8 +211,23 @@ async function fireDueDefinition(due: StoredAgentDefinition, context: ScheduleCo
         }, { database: context.database, now: context.clock });
         logger.info({ definitionId: definition.id, slot: slotIso, runId: run.id, decision: 'skipped', reason: error.message },
             'Scheduled agent run');
-        return created ? 'invalid' : 'existing';
+        outcome = created ? 'invalid' : 'existing';
     }
+    // The receipt exists, so the slot no longer needs to be resumed.
+    await releaseAgentDefinitionScheduleSlot(definition.id, slot, { database: context.database });
+    return outcome;
+}
+
+/**
+ * Resumes a pending slot, or claims the latest due one and fires it. A pending
+ * slot blocks new claims, so a sweep that resumes one leaves the next due slot
+ * to the following sweep.
+ */
+async function fireDueDefinition({ definition, pendingSlot }: DueScheduledAgentDefinition, context: ScheduleContext): Promise<ScheduleOutcome> {
+    if (pendingSlot !== null) return fireClaimedSlot(definition, pendingSlot, context);
+    const claim = await claimDueSlot(definition, context);
+    if ('outcome' in claim) return claim.outcome;
+    return fireClaimedSlot(claim.definition, claim.slot, context);
 }
 
 /**
@@ -206,13 +248,14 @@ export async function runAgentScheduleSweep(deps: AgentRunSweepDependencies = {}
     const result: AgentScheduleSweepResult = { created: 0, existing: 0, invalid: 0, disabled: 0, lost: 0, failed: 0 };
     const due = await listDueScheduledAgentDefinitions(now, batchSize, { database });
     const context: ScheduleContext = { now, database, trigger, gate, isMember, clock };
-    for (const definition of due) {
+    for (const entry of due) {
         try {
-            const outcome = await fireDueDefinition(definition, context);
+            const outcome = await fireDueDefinition(entry, context);
             if (outcome) result[outcome] += 1;
         } catch (error) {
             result.failed += 1;
-            logger.error({ definitionId: definition.id, slot: definition.nextRunAt, err: error }, 'Could not fire scheduled agent run');
+            logger.error({ definitionId: entry.definition.id, slot: entry.pendingSlot ?? entry.definition.nextRunAt, err: error },
+                'Could not fire scheduled agent run; a claimed slot is resumed on the next sweep');
         }
     }
     if (due.length > 0) logger.info({ due: due.length, ...result }, 'Agent schedule sweep finished');
@@ -236,11 +279,11 @@ function toEpochMs(value: unknown): number | null {
     return Number.isNaN(parsed) ? null : parsed;
 }
 
-/** Runs in any of `states`, least recently updated first. */
-async function listAgentRunsInStates(states: readonly AgentRunState[], limit: number, database: Knex): Promise<StoredAgentRun[]> {
-    const rows = await database('agent_runs').whereIn('state', [...states])
-        .orderBy([{ column: 'updated_at', order: 'asc' }, { column: 'id', order: 'asc' }])
-        .limit(limit).select<AgentRunRow[]>();
+/** One page of runs in any of `states`, ordered by id and starting after `afterId`. */
+async function listAgentRunsInStates(states: readonly AgentRunState[], limit: number, afterId: string | null, database: Knex): Promise<StoredAgentRun[]> {
+    const query = database('agent_runs').whereIn('state', [...states]);
+    if (afterId !== null) query.where('id', '>', afterId);
+    const rows = await query.orderBy('id', 'asc').limit(limit).select<AgentRunRow[]>();
     return rows.map(rowToAgentRun);
 }
 
@@ -265,8 +308,20 @@ function activeTaskId(run: StoredAgentRun): string | null {
  */
 export async function recoverStuckAgentRuns(deps: Pick<AgentRunSweepDependencies, 'database' | 'now'> = {}): Promise<number> {
     const { database = db, now = Date.now } = deps;
-    const runs = (await listAgentRunsInStates(['running', 'acting'], STUCK_RUN_BATCH_SIZE, database))
-        .filter(run => activeTaskId(run) !== null);
+    const cutoff = now() - AGENT_RUN_STUCK_GRACE_MS;
+    let failed = 0;
+    // Page by id through every candidate: runs whose task is still live stay
+    // in place and must not hide stuck runs after them.
+    let afterId: string | null = null;
+    for (;;) {
+        const page = await listAgentRunsInStates(['running', 'acting'], STUCK_RUN_BATCH_SIZE, afterId, database);
+        failed += await failStuckRuns(page.filter(run => activeTaskId(run) !== null), cutoff, { database, now });
+        if (page.length < STUCK_RUN_BATCH_SIZE) return failed;
+        afterId = page[page.length - 1].id;
+    }
+}
+
+async function failStuckRuns(runs: StoredAgentRun[], cutoff: number, { database, now }: { database: Knex; now: () => number }): Promise<number> {
     if (runs.length === 0) return 0;
     const taskIds = [...new Set(runs.map(run => activeTaskId(run)!))];
     const history = await database('task_history').whereIn('task_id', taskIds)
@@ -277,7 +332,6 @@ export async function recoverStuckAgentRuns(deps: Pick<AgentRunSweepDependencies
         if (!latest.has(row.task_id)) latest.set(row.task_id, { state: row.state, at: toEpochMs(row.timestamp) });
     }
 
-    const cutoff = now() - AGENT_RUN_STUCK_GRACE_MS;
     let failed = 0;
     for (const run of runs) {
         const taskId = activeTaskId(run)!;
@@ -323,10 +377,28 @@ export async function cleanupAgentRunGrants(deps: AgentRunGrantCleanupDependenci
         now = Date.now,
         revoke = (runId, phase) => revokeAgentRunMcpGrant(runId, { phase }),
     } = deps;
-    const records = await database('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND })
-        .orderBy([{ column: 'expires_at', order: 'asc' }, { column: 'id', order: 'asc' }])
-        .limit(GRANT_CLEANUP_BATCH_SIZE)
-        .select<{ id: string; expires_at: number | string | null }[]>('id', 'expires_at');
+    const timestamp = now();
+    let revoked = 0;
+    // Page by id through every grant record: live grants and revocations that
+    // keep failing stay in place and must not hide grants after them.
+    let afterId: string | null = null;
+    for (;;) {
+        const query = database('mcp_records').where({ kind: AGENT_RUN_GRANT_RECORD_KIND });
+        if (afterId !== null) query.where('id', '>', afterId);
+        const records = await query.orderBy('id', 'asc').limit(GRANT_CLEANUP_BATCH_SIZE)
+            .select<{ id: string; expires_at: number | string | null }[]>('id', 'expires_at');
+        revoked += await revokeLeftoverGrants(records, timestamp, database, revoke);
+        if (records.length < GRANT_CLEANUP_BATCH_SIZE) return revoked;
+        afterId = records[records.length - 1].id;
+    }
+}
+
+async function revokeLeftoverGrants(
+    records: { id: string; expires_at: number | string | null }[],
+    timestamp: number,
+    database: Knex,
+    revoke: NonNullable<AgentRunGrantCleanupDependencies['revoke']>,
+): Promise<number> {
     const grants = records.flatMap(record => {
         const parsed = parseGrantRecordId(record.id);
         return parsed ? [{ ...parsed, expiresAt: record.expires_at == null ? null : Number(record.expires_at) }] : [];
@@ -334,7 +406,6 @@ export async function cleanupAgentRunGrants(deps: AgentRunGrantCleanupDependenci
     if (grants.length === 0) return 0;
 
     const states = await getAgentRunStates(grants.map(grant => grant.runId), database);
-    const timestamp = now();
     let revoked = 0;
     for (const grant of grants) {
         const state = states.get(grant.runId);
