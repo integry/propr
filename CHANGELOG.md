@@ -21,8 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enforce restricted mode (`agent_network_mode_enforced`), in which case a
   repository's `network.mode: open` is ignored, and can also ignore the hosts
   repositories add (`agent_network_ignore_repository_allow`). The proxy refuses
-  loopback, private and link-local addresses, named directly or reached
-  through a hostname, unless the instance lists that address as an IP literal. Settings → Automation → Agent
+  loopback, private and link-local addresses (including their IPv4-mapped and
+  NAT64 forms), named directly or reached through a hostname, unless the
+  instance lists that address as an IP literal. A name with several addresses
+  is tried address by address, alternating IPv6 and IPv4, so a worker without
+  IPv6 still reaches dual-stack hosts. Settings → Automation → Agent
   network, `propr setting update` and MCP `update_execution_settings` manage the
   instance policy. Each restricted run ends with one timeline event listing the
   mode and every denied host with its attempt count; the task detail shows it.
@@ -256,8 +259,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`scripts/init-firewall.sh`**: the iptables firewall script shipped in the
   agent image needed privileged containers, so no entrypoint ever ran it. The
-  script and the entrypoints' "Skipping firewall setup" lines are gone;
-  restricted network mode replaces it.
+  script, the `iptables` package it needed and the entrypoints' "Skipping
+  firewall setup" lines are gone; restricted network mode replaces it.
 
 ### Fixed
 

@@ -54,10 +54,14 @@ const resolvesTo = (...addresses: string[]): EgressLookup => async () => address
 
 test('non-public ranges are recognised, including IPv4-mapped forms', () => {
     for (const address of ['127.0.0.1', '10.1.2.3', '172.18.0.2', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '224.0.0.1',
-        '::1', '::', 'fe80::1', 'fd00::1', '::ffff:127.0.0.1', '::ffff:ac12:2', 'not-an-address']) {
+        '::1', '::', 'fe80::1', 'fd00::1', '::ffff:127.0.0.1', '::ffff:ac12:2', 'not-an-address',
+        '64:ff9b::7f00:1', '64:ff9b::a00:1', '64:ff9b::192.168.1.1', '64:ff9b:0:0:0:0:a9fe:a9fe']) {
         assert.ok(isNonPublicAddress(address), address);
     }
-    for (const address of ['140.82.112.3', '203.0.113.10', '2606:4700::1111', '::ffff:140.82.112.3']) assert.ok(!isNonPublicAddress(address), address);
+    // A DNS64 answer for a public name embeds a public IPv4 address and stays reachable from a NAT64 worker.
+    for (const address of ['140.82.112.3', '203.0.113.10', '2606:4700::1111', '::ffff:140.82.112.3', '64:ff9b::8c52:7003', '64:ff9b::140.82.112.3']) {
+        assert.ok(!isNonPublicAddress(address), address);
+    }
 });
 
 test('an allowed name that resolves to loopback or a private address is refused without any upstream connection', async () => {
@@ -160,6 +164,92 @@ test('the same check applies before chaining through the worker proxy; a name th
         await proxy.close();
         workerProxy.closeAllConnections();
         await new Promise(resolve => workerProxy.close(resolve));
+    }
+});
+
+test('a vetted address that fails or hangs falls back to the next one, for CONNECT and plain HTTP', async () => {
+    const echo = net.createServer(socket => socket.on('data', chunk => socket.write(`echo:${chunk}`)));
+    await new Promise<void>(resolve => echo.listen(0, '127.0.0.1', resolve));
+    const echoPort = (echo.address() as net.AddressInfo).port;
+    const site = http.createServer((_request, response) => response.end('via-ipv4'));
+    await new Promise<void>(resolve => site.listen(0, '127.0.0.1', resolve));
+    const sitePort = (site.address() as net.AddressInfo).port;
+    const dialled: string[] = [];
+    const hung = new Set<net.Socket>();
+    // A worker without an IPv6 route: the first (IPv6) answer is refused at once or black-holed; the IPv4 one is the real site.
+    const start = async (ipv6: 'refused' | 'blackholed', handshakeTimeoutMs = 30_000) => startEgressProxy({
+        socketPath: await socketPath(),
+        allowlist: compileEgressAllowlist([`dual.example.com:${echoPort}`, `dual.example.com:${sitePort}`]),
+        lookup: resolvesTo('2001:db8::10', '2001:db8::11', '203.0.113.10'),
+        connect: (port, host) => {
+            dialled.push(host);
+            if (host === '203.0.113.10') return net.connect({ port, host: '127.0.0.1' });
+            if (ipv6 === 'refused') {
+                const socket = new net.Socket();
+                process.nextTick(() => socket.destroy(Object.assign(new Error(`connect ENETUNREACH ${host}`), { code: 'ENETUNREACH' })));
+                return socket;
+            }
+            const socket = new Duplex({ read() { /* never */ }, write(_chunk, _encoding, callback) { callback(); } }) as net.Socket;
+            hung.add(socket);
+            return socket;
+        },
+        connectAttemptDelayMs: 20, handshakeTimeoutMs,
+    });
+    const refused = await start('refused');
+    const blackholed = await start('blackholed');
+    const onlyIpv6 = await startEgressProxy({
+        socketPath: await socketPath(), allowlist: compileEgressAllowlist(['v6only.example.com']), lookup: resolvesTo('2001:db8::10', '2001:db8::11'),
+        connect: () => { const socket = new net.Socket(); process.nextTick(() => socket.destroy(new Error('connect ENETUNREACH'))); return socket; },
+        connectAttemptDelayMs: 20,
+    });
+    try {
+        for (const proxy of [refused, blackholed]) {
+            dialled.length = 0;
+            const tunnel = await connectThrough(proxy.socketPath, `dual.example.com:${echoPort}`);
+            assert.equal(tunnel.status, 'HTTP/1.1 200 Connection Established');
+            const reply = new Promise<string>(resolve => tunnel.socket.once('data', chunk => resolve(chunk.toString())));
+            tunnel.socket.write('ping');
+            assert.equal(await reply, 'echo:ping');
+            tunnel.socket.destroy();
+            // The families alternate: the IPv4 record is the second attempt, not the third.
+            assert.deepEqual(dialled, ['2001:db8::10', '203.0.113.10']);
+
+            const plain = await plainRequest(proxy.socketPath, `http://dual.example.com:${sitePort}/`);
+            assert.deepEqual(plain, { status: 200, body: 'via-ipv4' });
+            assert.equal(proxy.stats().failedConnections, 0);
+        }
+        assert.ok(dialled.every(host => ['2001:db8::10', '203.0.113.10'].includes(host)), 'only vetted addresses are dialled');
+
+        const tunnel = await connectThrough(onlyIpv6.socketPath, 'v6only.example.com:443');
+        assert.equal(tunnel.status, 'HTTP/1.1 502 Bad Gateway', 'every address failing is still a failed connection');
+        tunnel.socket.destroy();
+        assert.equal((await plainRequest(onlyIpv6.socketPath, 'http://v6only.example.com/')).status, 502);
+        assert.equal(onlyIpv6.stats().failedConnections, 2);
+    } finally {
+        await refused.close();
+        await blackholed.close();
+        await onlyIpv6.close();
+        for (const socket of hung) socket.destroy();
+        await new Promise(resolve => echo.close(resolve));
+        site.closeAllConnections();
+        await new Promise(resolve => site.close(resolve));
+    }
+});
+
+test('a black-holed address set is still bounded by the handshake deadline', async () => {
+    const dialled: string[] = [];
+    const proxy = await startEgressProxy({
+        socketPath: await socketPath(), allowlist: compileEgressAllowlist(['dark.example.com']), lookup: resolvesTo('2001:db8::10', '203.0.113.10'),
+        connect: (_port, host) => { dialled.push(host); return new Duplex({ read() { /* never */ }, write(_chunk, _encoding, callback) { callback(); } }) as net.Socket; },
+        connectAttemptDelayMs: 10, handshakeTimeoutMs: 150,
+    });
+    try {
+        const tunnel = await connectThrough(proxy.socketPath, 'dark.example.com:443');
+        assert.equal(tunnel.status, 'HTTP/1.1 504 Gateway Timeout');
+        tunnel.socket.destroy();
+        assert.deepEqual(dialled, ['2001:db8::10', '203.0.113.10'], 'each vetted address is tried once within the one deadline');
+    } finally {
+        await proxy.close();
     }
 });
 

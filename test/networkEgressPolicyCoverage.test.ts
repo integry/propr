@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { buildDockerArgs as buildClaudeDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts';
-import { buildCodexAppServerDockerArgs } from '../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts';
+import { buildCodexAppServerDockerArgs, buildCodexDockerArgs } from '../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts';
+import { buildOpenCodeDockerArgs } from '../packages/core/src/agents/impl/openCodeUtils.ts';
 import { wrapDockerRunArgsWithRepoSetup } from '../packages/core/src/claude/docker/repoSetupWrapper.ts';
 import { spawnWithNetworkPolicy, startWithNetworkPolicy } from '../packages/core/src/claude/docker/dockerNetworkPolicy.ts';
 import { NetworkPolicyError, executeWithNetworkPolicy, prepareDockerRunNetwork, setUnscopedNetworkPolicyResolver } from '../packages/core/src/network/egressExecution.ts';
@@ -65,6 +66,31 @@ test('native Claude and Codex goal containers go through the wrapper and start b
         assert.deepEqual(networksOf(rewritten), ['none'], name);
         const command = args.slice(args.indexOf('-lc') + 2);
         assert.deepEqual(rewritten.slice(-command.length), command, `${name} keeps its command`);
+    }
+});
+
+test('indexing summarization (analysis) containers go through the wrapper and start behind the proxy', async () => {
+    // summaryMiner calls agent.analyze(), which builds its docker run with the same builders, in analysis form.
+    const config = (type: AgentType): AgentConfig => ({
+        id: `${type}-id`, type, alias: `${type}-test`, enabled: true, dockerImage: 'propr/agent:test',
+        configPath: type === 'codex' ? codexConfigPath : `/tmp/${type}-config`, supportedModels: ['test-model'], defaultModel: 'test-model',
+    });
+    const analysis = { worktreePath: '/tmp/analysis', githubToken: '', modelName: 'test-model', issueNumber: 0, taskId: 'index-1', executionType: 'summarization', readOnlyWorkspace: false };
+    const builders: Array<[string, string[]]> = [
+        ['Claude analysis', buildClaudeDockerArgs(config('claude'), 1, { ...analysis, systemPrompt: 'You are a helpful assistant.' })],
+        ['Codex analysis', buildCodexDockerArgs(config('codex'), { ...analysis, jsonOutput: true })],
+        ['OpenCode analysis', buildOpenCodeDockerArgs({ ...analysis, config: config('opencode'), readOnlyWorkspace: true, configPath: codexConfigPath, ensureConfigPath: () => undefined })],
+    ];
+    for (const [name, args] of builders) {
+        const { report } = await executeWithNetworkPolicy(restricted({ source: 'instance_enforced' }), async () => {
+            const run = await prepareDockerRunNetwork('docker', args);
+            assert.ok(run, `${name} is not left open`);
+            assert.deepEqual(networksOf(run.args), ['none'], name);
+            await run.release();
+        });
+        assert.equal(report.restrictedContainers, 1, name);
+        assert.deepEqual(report.refusals, [], `${name} is not refused by an enforcing instance`);
+        assert.deepEqual(report.fallbacks, [], name);
     }
 });
 

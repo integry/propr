@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import type { Duplex } from 'node:stream';
 import type { EgressAllowlist } from './egressAllowlist.js';
 import { normalizeEgressHost } from './egressAllowlist.js';
+import { connectToFirstAddress, type EgressConnectAttempt } from './egressConnect.js';
 
 /**
  * A per-run HTTP proxy that only opens connections to allowlisted hosts. It
@@ -113,13 +114,16 @@ export interface EgressProxyOptions {
     upstreamProxies?: UpstreamProxies;
     /** Bounds connecting and the chained CONNECT handshake only; an established stream has no deadline. */
     handshakeTimeoutMs?: number;
+    /** How long one vetted address is tried alone before the next joins it. */
+    connectAttemptDelayMs?: number;
 }
 
 /**
  * Loopback, unspecified, private (RFC 1918), carrier-grade NAT, link-local,
  * IETF protocol, multicast and reserved IPv4 ranges; IPv6 unspecified,
  * loopback, IPv4-compatible, unique local, link-local and multicast. IPv4
- * rules also match the IPv4-mapped (`::ffff:a.b.c.d`) forms. The benchmarking
+ * rules also match the IPv4-mapped (`::ffff:a.b.c.d`) forms and the IPv4
+ * address a well-known NAT64 (`64:ff9b::/96`) address embeds. The benchmarking
  * range (198.18.0.0/15) stays reachable: fake-IP DNS resolvers hand it out for
  * public names.
  */
@@ -133,10 +137,28 @@ const NON_PUBLIC_ADDRESSES = (() => {
     return list;
 })();
 
+/** The well-known NAT64 prefix (RFC 6052): `64:ff9b::a.b.c.d` reaches the IPv4 address in its last 32 bits. */
+const NAT64_PREFIX = (() => {
+    const list = new net.BlockList();
+    list.addSubnet('64:ff9b::', 96, 'ipv6');
+    return list;
+})();
+
+/** The IPv4 address in an IPv6 address's last 32 bits, written either as hex groups or dotted. */
+function embeddedIpv4(address: string): string {
+    const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(address);
+    if (dotted) return dotted[1];
+    const groups = address.split(':');
+    const [high, low] = groups.slice(-2).map(group => Number.parseInt(group || '0', 16));
+    return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+}
+
 /** Whether an address is one only the worker's own network position reaches (anything not an IP counts). */
 export function isNonPublicAddress(address: string): boolean {
     const family = net.isIP(address);
-    return family === 0 || NON_PUBLIC_ADDRESSES.check(address, family === 6 ? 'ipv6' : 'ipv4');
+    if (family === 0 || NON_PUBLIC_ADDRESSES.check(address, family === 6 ? 'ipv6' : 'ipv4')) return true;
+    // A NAT64 worker reaches whatever IPv4 address is embedded; public ones (DNS64 answers) stay usable.
+    return family === 6 && NAT64_PREFIX.check(address, 'ipv6') && NON_PUBLIC_ADDRESSES.check(embeddedIpv4(address), 'ipv4');
 }
 
 const defaultLookup: EgressLookup = host => dns.lookup(host, { all: true, verbatim: true });
@@ -193,7 +215,7 @@ function deniedTarget(host: string, port: number): string {
 }
 
 /** Where an allowed target is opened: a vetted address, the worker's proxy (which resolves the name), or nowhere. */
-type EgressRoute = { address?: string } | { denied: true } | { unresolved: true };
+type EgressRoute = { addresses?: string[] } | { denied: true } | { unresolved: true };
 
 function refuse(socket: Duplex, status: string, message: string): void {
     if (socket.destroyed) return;
@@ -254,12 +276,13 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
      */
     const route = async (host: string, port: number, chained: boolean): Promise<EgressRoute> => {
         let route: EgressRoute;
-        if (net.isIP(host)) route = reachable(host, port) ? { address: host } : { denied: true };
+        if (net.isIP(host)) route = reachable(host, port) ? { addresses: [host] } : { denied: true };
         else {
             let addresses: Array<{ address: string }> = [];
             try { addresses = await lookup(host); } catch { /* unresolvable */ }
             route = addresses.some(entry => !reachable(entry.address, port)) ? { denied: true }
-                : addresses.length ? { address: chained ? undefined : addresses[0].address }
+                // Every vetted address is kept: the first may be a family the worker has no route for.
+                : addresses.length ? { addresses: chained ? undefined : addresses.map(entry => entry.address) }
                 : chained ? {} : { unresolved: true };
         }
         if ('denied' in route) recorder.deny(deniedTarget(host, port));
@@ -274,6 +297,27 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
         return () => clearTimeout(timer);
     };
     const connectedEvent = (proxy: URL | undefined): 'secureConnect' | 'connect' => proxy?.protocol === 'https:' ? 'secureConnect' : 'connect';
+    /** Opens the worker's proxy, or the first vetted address that answers; the caller's handshake deadline bounds both. */
+    const openUpstream = (proxy: URL | undefined, port: number, addresses: string[] | undefined): EgressConnectAttempt => {
+        if (!proxy) {
+            // close() destroys pending attempts; that must not dial the next address after shutdown.
+            const dial = (targetPort: number, address: string): net.Socket => {
+                if (shuttingDown) throw new Error('egress proxy closed');
+                return connect(targetPort, address);
+            };
+            return connectToFirstAddress(port, addresses ?? [], { connect: dial, attemptDelayMs: options.connectAttemptDelayMs, track });
+        }
+        const socket = connectToProxy(proxy);
+        track(socket);
+        let settled = false;
+        const connected = new Promise<net.Socket>((resolve, reject) => {
+            const failed = (error?: Error): void => { if (!settled) { settled = true; socket.destroy(); reject(error ?? new Error('upstream connection closed')); } };
+            socket.on('error', failed);
+            socket.once('close', () => failed());
+            socket.once(connectedEvent(proxy), () => { if (!settled) { settled = true; resolve(socket); } });
+        });
+        return { connected, abort: () => { if (!settled) socket.destroy(); } };
+    };
 
     const server = http.createServer(async (request, response) => {
         let url: URL;
@@ -314,19 +358,18 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
         const authorization = proxy && proxyAuthorization(proxy);
         if (authorization) headers['proxy-authorization'] = authorization;
         let timedOut = false;
+        let attempt: EgressConnectAttempt | undefined;
         const upstream = http.request({
             method: request.method, headers,
             // Through the worker's proxy the request keeps its absolute form.
             path: proxy ? `http://${url.host}${url.pathname}${url.search}` : `${url.pathname}${url.search}`,
             // Tracked like CONNECT upstreams so close() ends them too.
-            createConnection: () => {
-                const socket = proxy ? connectToProxy(proxy) : connect(port, target.address ?? host);
-                track(socket);
+            createConnection: (_options, oncreate) => {
+                attempt = openUpstream(proxy, port, target.addresses);
                 // Only connecting is bounded: a slow response is the upstream's business.
-                const clearDeadline = handshakeDeadline(() => { timedOut = true; socket.destroy(new Error('upstream connection timed out')); });
-                socket.once(connectedEvent(proxy), clearDeadline);
-                socket.once('close', clearDeadline);
-                return socket;
+                const clearDeadline = handshakeDeadline(() => { timedOut = true; attempt?.abort(new Error('upstream connection timed out')); });
+                attempt.connected.then(socket => { clearDeadline(); oncreate(null, socket); }, (error: Error) => { clearDeadline(); oncreate(error, undefined as unknown as net.Socket); });
+                return undefined;
             },
         }, upstreamResponse => {
             const responseHeaders = Object.fromEntries(Object.entries(upstreamResponse.headers).filter(([name]) => !HOP_BY_HOP.has(name.toLowerCase())));
@@ -337,7 +380,7 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
             upstreamResponse.pipe(response);
         });
         // A client that goes away mid-response takes its upstream request with it.
-        response.once('close', () => { if (!response.writableFinished) upstream.destroy(); });
+        response.once('close', () => { if (!response.writableFinished) { attempt?.abort(); upstream.destroy(); } });
         upstream.on('error', () => upstreamFailed(timedOut ? 504 : 502, timedOut ? 'upstream connection timed out' : 'upstream connection failed'));
         request.pipe(upstream);
     });
@@ -361,37 +404,40 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
             refuse(client, '502 Bad Gateway', 'ProPR egress proxy: upstream connection failed\n');
             return;
         }
-        const upstream = proxy ? connectToProxy(proxy) : connect(target.port, destination.address ?? target.host);
-        track(upstream);
+        const attempt = openUpstream(proxy, target.port, destination.addresses);
+        let upstream: net.Socket | undefined;
         let failed = false, tunnelOpen = false;
         const fail = (status = '502 Bad Gateway', message = 'upstream connection failed'): void => {
             clearDeadline();
+            attempt.abort();
             // Once bytes flow, a failure just ends the tunnel; a 502 would corrupt the stream.
-            if (tunnelOpen) { client.destroy(); upstream.destroy(); return; }
+            if (tunnelOpen) { client.destroy(); upstream?.destroy(); return; }
             if (failed || client.destroyed || shuttingDown) return;
             failed = true;
             recorder.fail(deniedTarget(target.host, target.port));
             refuse(client, status, `ProPR egress proxy: ${message}\n`);
-            upstream.destroy();
+            upstream?.destroy();
         };
-        // Connecting and the worker proxy's CONNECT answer are bounded; the open tunnel is not.
+        // Connecting (to every vetted address tried) and the worker proxy's CONNECT answer are bounded; the open tunnel is not.
         const clearDeadline = handshakeDeadline(() => fail('504 Gateway Timeout', 'upstream connection timed out'));
-        upstream.on('error', () => fail());
-        upstream.once(connectedEvent(proxy), () => {
+        client.once('close', () => { clearDeadline(); attempt.abort(); upstream?.destroy(); });
+        attempt.connected.then(socket => {
+            upstream = socket;
+            if (failed || client.destroyed || shuttingDown) { socket.destroy(); return; }
+            socket.on('error', () => fail());
+            // Before the tunnel is up, a closed upstream is a failed connection the client must hear about.
+            socket.once('close', () => { if (tunnelOpen) client.destroy(); else fail(); });
             const established = (): void => {
                 clearDeadline();
                 tunnelOpen = true;
                 client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-                if (head?.length) upstream.write(head);
-                upstream.pipe(client);
-                client.pipe(upstream);
+                if (head?.length) socket.write(head);
+                socket.pipe(client);
+                client.pipe(socket);
             };
-            if (proxy) tunnelThroughProxy(upstream, proxy, `${net.isIP(target.host) === 6 ? `[${target.host}]` : target.host}:${target.port}`, { established, fail: () => fail() });
+            if (proxy) tunnelThroughProxy(socket, proxy, `${net.isIP(target.host) === 6 ? `[${target.host}]` : target.host}:${target.port}`, { established, fail: () => fail() });
             else established();
-        });
-        client.once('close', () => { clearDeadline(); upstream.destroy(); });
-        // Before the tunnel is up, a closed upstream is a failed connection the client must hear about.
-        upstream.once('close', () => { if (tunnelOpen) client.destroy(); else fail(); });
+        }, () => fail());
     });
     server.on('connection', socket => track(socket));
     server.on('clientError', (_error, socket) => refuse(socket, '400 Bad Request', ''));

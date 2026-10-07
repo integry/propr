@@ -275,3 +275,42 @@ test('a directly spawned agent container keeps its proxy until the process close
         assert.deepEqual(new Set(await readdir(root)), before, 'a cancelled spawn releases its proxy');
     });
 });
+
+test('a primitive rejection is rethrown unchanged, without a report it cannot carry', async () => {
+    for (const rejection of [undefined, null, 'failed', 42]) {
+        await assert.rejects(executeWithNetworkPolicy({ mode: 'restricted', source: 'workflow', allow: [] }, () => Promise.reject(rejection)),
+            (error: unknown) => { assert.equal(error, rejection); return true; });
+    }
+    const failure = new Error('agent failed');
+    await assert.rejects(executeWithNetworkPolicy({ mode: 'restricted', source: 'workflow', allow: [] }, () => Promise.reject(failure)), failure);
+    assert.equal(networkEgressReportFromError(failure)?.mode, 'restricted', 'an object rejection still carries the report');
+});
+
+test('the instance policy read is retried while the settings database is locked, and still fails closed otherwise', async () => {
+    const { loadInstanceNetworkPolicy } = await import('../src/config/configManagerAgentNetwork.js');
+    const stored = { agent_network_mode: 'restricted', agent_network_allow: null, agent_network_mode_enforced: true, agent_network_ignore_repository_allow: null };
+    const retry = { maxAttempts: 4, baseDelayMs: 1, maxDelayMs: 1, maxTotalMs: 5_000, sleep: async () => undefined };
+    let reads = 0;
+    const policy = await loadInstanceNetworkPolicy({
+        read: async () => {
+            if (++reads < 3) throw Object.assign(new Error('SQLITE_BUSY: database is locked'), { code: 'SQLITE_BUSY' });
+            return stored;
+        },
+        retry,
+    });
+    assert.equal(reads, 3);
+    assert.equal(policy.mode, 'restricted');
+    assert.equal(policy.enforced, true);
+
+    reads = 0;
+    await assert.rejects(loadInstanceNetworkPolicy({
+        read: async () => { reads++; throw Object.assign(new Error('SQLITE_BUSY: database is locked'), { code: 'SQLITE_BUSY' }); }, retry,
+    }), /SQLITE_BUSY/, 'contention that outlasts the budget still fails the run');
+    assert.equal(reads, 4);
+
+    reads = 0;
+    await assert.rejects(loadInstanceNetworkPolicy({
+        read: async () => { reads++; throw Object.assign(new Error('disk I/O error'), { code: 'SQLITE_IOERR' }); }, retry,
+    }), /disk I\/O error/);
+    assert.equal(reads, 1, 'only lock contention is retried');
+});

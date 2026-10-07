@@ -60,10 +60,9 @@ function watchdogOverride(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-/** One host per line (commas also separate); an empty list uses the environment default. */
-export function parseAllowlistDraft(draft: string): string[] | null {
-  const hosts = [...new Set(draft.split(/[\s,]+/).map(host => host.trim().toLowerCase()).filter(Boolean))];
-  return hosts.length ? hosts : null;
+/** One host per line (commas also separate), normalized and deduplicated. */
+export function parseAllowlistDraft(draft: string): string[] {
+  return [...new Set(draft.split(/[\s,]+/).map(host => host.trim().toLowerCase()).filter(Boolean))];
 }
 
 type AgentNetworkOverrideName = 'agent_network_mode' | 'agent_network_mode_enforced' | 'agent_network_allow' | 'agent_network_ignore_repository_allow';

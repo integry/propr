@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import net from 'node:net';
+import path from 'node:path';
 import { after, test } from 'node:test';
 import { closeConnection, prepareDockerRunNetwork, resolveNetworkPolicy, type NetworkEgressReport, type ResolvedRepositoryWorkflow } from '@propr/core';
 import { networkEgressEvent, runWithNetworkPolicy, shouldRecordNetworkEgress } from '../src/jobs/networkEgress.js';
@@ -55,6 +57,35 @@ test('work without a task logs a report that needs attention instead of recordin
     assert.equal(recorded, 0);
     assert.equal(warnings.length, 1);
     assert.match(String((warnings[0] as unknown[])[1]), /Restricted network unavailable for antigravity/);
+});
+
+test('work without a task logs allowed connections that failed upstream', async () => {
+    const warnings: unknown[][] = [];
+    // `.invalid` never resolves (RFC 6761), so the allowed connection fails on the worker without leaving it.
+    const options = {
+        correlatedLogger: { warn(...args: unknown[]) { warnings.push(args); } },
+        resolvePolicy: async () => ({ mode: 'restricted' as const, source: 'instance' as const, allow: ['unreachable.propr.invalid'] }),
+    };
+    await runWithNetworkPolicy(options, async () => {
+        const run = await prepareDockerRunNetwork('docker', ['run', '--rm', '-e', 'PROPR_AGENT_TYPE=claude', '--entrypoint', '/bin/bash', 'agent:test', '-lc', 'exec "$@"', 'claude']);
+        assert.ok(run);
+        try {
+            const mount = run.args[run.args.findIndex(arg => arg.endsWith(':/run/propr-egress:ro'))];
+            const socketPath = path.join(mount.slice(0, -':/run/propr-egress:ro'.length), 'proxy.sock');
+            const status = await new Promise<string>((resolve, reject) => {
+                const socket = net.connect(socketPath);
+                socket.on('error', reject);
+                socket.once('data', chunk => { resolve(chunk.toString().split('\r\n')[0]); socket.destroy(); });
+                socket.write('CONNECT unreachable.propr.invalid:443 HTTP/1.1\r\nHost: unreachable.propr.invalid:443\r\n\r\n');
+            });
+            assert.equal(status, 'HTTP/1.1 502 Bad Gateway');
+        } finally {
+            await run.release();
+        }
+    });
+    assert.equal(warnings.length, 1, 'a failed upstream is not silent for indexing');
+    assert.equal((warnings[0][0] as { networkEgress: NetworkEgressReport }).networkEgress.failedConnections, 1);
+    assert.match(String(warnings[0][1]), /1 allowed connection failed/);
 });
 
 test('the aggregated report is recorded once per run, after success and after failure', async () => {

@@ -98,3 +98,7 @@ test('every CLI the final stage verifies is linked into PATH in that same stage'
     );
   }
 });
+
+test('the agent image no longer installs iptables: restricted networking needs no firewall inside the container', () => {
+  assert.doesNotMatch(dockerfile, /iptables/i);
+});

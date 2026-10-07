@@ -68,7 +68,7 @@ export async function runWithNetworkPolicy<T>(options: {
     const record = taskId
         ? (report: NetworkEgressReport) => (options.record ?? recordNetworkEgressEvent)(taskId, report, options.correlatedLogger)
         : async (report: NetworkEgressReport) => {
-            if (report.deniedConnections || report.fallbacks.length || report.refusals.length) options.correlatedLogger.warn({ networkEgress: report }, networkEgressEvent(report).reason);
+            if (report.deniedConnections || report.failedConnections || report.fallbacks.length || report.refusals.length) options.correlatedLogger.warn({ networkEgress: report }, networkEgressEvent(report).reason);
         };
     try {
         const { result, report } = await executeWithNetworkPolicy(policy, execute);

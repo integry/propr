@@ -82,8 +82,9 @@ export async function executeWithNetworkPolicy<T>(
         const result = await networkEgressExecution.run(context, execute);
         return { result, report: report() };
     } catch (error) {
-        // A failed run still reports the hosts it was denied.
-        (error as { networkEgressReport?: NetworkEgressReport }).networkEgressReport = report();
+        // A failed run still reports the hosts it was denied. A primitive rejection cannot carry
+        // the report; assigning to it would replace the original failure with a TypeError.
+        if (error && typeof error === 'object') (error as { networkEgressReport?: NetworkEgressReport }).networkEgressReport = report();
         throw error;
     }
 }
