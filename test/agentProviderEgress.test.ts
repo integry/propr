@@ -36,7 +36,10 @@ const CASES: Array<{ name: string; agent: AgentType; env: string[]; setup?: stri
     {
         // stream-json carries the provider's error (text mode only prints "Execution error"); the
         // non-essential traffic (telemetry, error reporting, auto-update) is denied by the proxy anyway.
-        name: 'Claude Code', agent: 'claude', env: ['ANTHROPIC_API_KEY=sk-ant-propr-egress-invalid', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1'],
+        // Claude Code retries the 401 ten times with backoff (~3 minutes), outlasting the timeout, so
+        // retries are off: the first rejection already proves the request went through the proxy.
+        name: 'Claude Code', agent: 'claude',
+        env: ['ANTHROPIC_API_KEY=sk-ant-propr-egress-invalid', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1', 'CLAUDE_CODE_MAX_RETRIES=0'],
         command: `claude -p '${PROMPT}' --max-turns 1 --output-format stream-json --verbose`,
     },
     {
