@@ -174,8 +174,16 @@ permissions. `propr check --verify` warns when it is absent.
 | `pull_request` | PR lifecycle and follow-ups |
 | `pull_request_review_comment` | Inline review follow-ups |
 | `check_run` | Check completion and failed-CI follow-ups |
+| `check_suite` | Check suite completion (auto-merge and `/ultrafix` wake-ups) |
 | `push` | Branch changes |
 | `status` | Commit status updates |
+
+Apps created before `check_suite` was added are not subscribed to it, and
+`propr check --verify` reports it as missing. Add it under the App's
+**Permissions & events → Subscribe to events** (check **Check suite**), then
+save. No new permission is needed: it uses the existing Checks read access.
+Until then, `/ultrafix` still wakes from `check_run` and `status` events and
+from polling, and auto-merge still runs on `check_run`.
 
 ### SSH and callback handling
 

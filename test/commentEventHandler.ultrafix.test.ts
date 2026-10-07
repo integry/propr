@@ -330,6 +330,19 @@ describe('commentEventHandler — /ultrafix command', () => {
         }));
     });
 
+    test('/ultrafix persists its instructions and starting user in the loop state', async () => {
+        const event = createPRCommentEvent('/ultrafix\nKeep the public API stable.');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-instructions', config);
+
+        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
+        const loopOptions = mockStartLoop.mock.calls[0].arguments[1] as Record<string, unknown>;
+        // A recovered loop has no deferred record to carry these, so the state must.
+        assert.strictEqual(loopOptions.instructions, 'Keep the public API stable.');
+        assert.strictEqual(loopOptions.userId, String(event.sender.id));
+    });
+
     test('bare /ultrafix initializes loop and enqueues review job', async () => {
         const event = createPRCommentEvent('/ultrafix');
         const config = createTestConfig();

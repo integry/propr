@@ -289,6 +289,16 @@ run_hook() {
     if [ "$hook_exit" -ne 0 ]; then echo "ProPR workflow hook $1 failed with exit code $hook_exit" >&2; fi
     return "$hook_exit"
 }
+# Whole-second SECONDS would count a command that exits just across a second
+# boundary as having run for a full second; bash 5 offers microseconds.
+clock_ms() {
+    if [ -n "\${EPOCHREALTIME:-}" ]; then
+        now_us=\${EPOCHREALTIME//[!0-9]/}
+        echo $(( 10#$now_us / 1000 ))
+    else
+        echo $(( SECONDS * 1000 ))
+    fi
+}
 run_validation() {
     limit=
     if [ -n "$validation_deadline" ]; then
@@ -300,13 +310,14 @@ run_validation() {
         fi
         if [ "$remaining" -lt ${Math.ceil(hookTimeoutS)} ]; then limit=$remaining; fi
     fi
-    started=$SECONDS
+    started_ms=$(clock_ms)
     run_command "$2" $limit
     validation_exit=$?
     # 124 and 137 are timeout(1)'s TERM and KILL results, but a command can also
     # exit 124 itself or be killed (OOM, external KILL) before its limit.
+    if [ -n "$limit" ]; then limit_ms=$(( limit * 1000 )); else limit_ms=${Math.floor(workflow.timeoutMs)}; fi
     case "$validation_exit" in
-        124|137) if [ $(( SECONDS - started )) -ge "\${limit:-${Math.floor(hookTimeoutS)}}" ]; then validation_exit=timeout; fi ;;
+        124|137) if [ $(( $(clock_ms) - started_ms )) -ge "$limit_ms" ]; then validation_exit=timeout; fi ;;
     esac
     printf '\\n%s\\n' "${marker}:validation:$1:$validation_exit" >&2
 }

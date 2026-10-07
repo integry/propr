@@ -91,6 +91,20 @@ test('failed hook ignores retryable attempts and finalizes exhausted jobs', asyn
     assert.equal(finalizeFailedPRCommentTask.mock.calls[0].arguments[1].message, 'exhausted');
 });
 
+test('failed hook runs the exhausted-failure hook only once attempts are exhausted', async () => {
+    finalizeFailedPRCommentTask.mock.resetCalls();
+    const harness = createWorkerHarness();
+    const onExhaustedFailure = mock.fn(async () => { throw new Error('redis down'); });
+    const finalizers = attachPRCommentTaskStateFinalizers(harness.worker, {} as WorkerStateManager, { onExhaustedFailure });
+
+    harness.emit('failed', makeJob(async () => 'waiting'), new Error('retrying'));
+    harness.emit('failed', makeJob(async () => 'failed'), new Error('exhausted'));
+    await finalizers.close();
+
+    assert.equal(onExhaustedFailure.mock.calls.length, 1);
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1, 'a failing hook does not block finalization');
+});
+
 test('failed hook does not finalize from retry metadata without a failed state', async () => {
     finalizeFailedPRCommentTask.mock.resetCalls();
     const harness = createWorkerHarness();

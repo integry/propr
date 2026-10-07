@@ -199,6 +199,8 @@ jobs:
         continue-on-error: true
         env:
           NODE_ENV: test
+          # Redis was started above: its integration suites must run, not skip.
+          PROPR_REQUIRE_REDIS_INTEGRATION: '1'
           PROPR_TEST_SHARD_INDEX: ${{ matrix.shard }}
           PROPR_TEST_SUMMARY_FILE: ${{ github.workspace }}/shard-output/summary.json
         run: |

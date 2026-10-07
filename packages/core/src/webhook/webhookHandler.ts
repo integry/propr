@@ -3,7 +3,7 @@ import { resolveIssueTriggerLabels } from './issueTriggerRestoration.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import logger from '../utils/logger.js';
 import { handlePlanIssueStatusUpdate, handlePlanPRUpdate, handlePlanPRCommentTracking, type CommentEventType } from './planIssueTracking.js';
-import { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
+import { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
 import { clearUltrafixLoopState, getUltrafixStateRedis } from './checkRunHelpers.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { retryConfigs, withRetry } from '../utils/retryHandler.js';
@@ -18,7 +18,7 @@ import type {
     PullRequestReviewCommentEvent, PullRequestReviewCommentCreatedEvent,
     PullRequestReviewCommentDeletedEvent, PullRequestReviewCommentEditedEvent,
     PullRequestEvent,
-    CheckRunEvent, PushEvent
+    CheckRunEvent, CheckSuiteEvent, PushEvent
 } from '@octokit/webhooks-types';
 import type { Redis } from 'ioredis';
 import { ACCEPTED_NO_SEAT_DISPOSITION, normalizeDisposition, type DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
@@ -143,6 +143,10 @@ function isPullRequestEvent(payload: unknown): payload is PullRequestEvent {
 
 function isCheckRunEvent(payload: unknown): payload is CheckRunEvent {
     return typeof payload === 'object' && payload !== null && 'check_run' in payload && 'action' in payload;
+}
+
+function isCheckSuiteEvent(payload: unknown): payload is CheckSuiteEvent {
+    return typeof payload === 'object' && payload !== null && 'check_suite' in payload && 'action' in payload && !('check_run' in payload);
 }
 
 function isPushEvent(payload: unknown): payload is PushEvent {
@@ -370,6 +374,9 @@ async function processStandardWebhookEvent(
                 return ACCEPTED_NO_SEAT_DISPOSITION;
             }
             break;
+        case 'check_suite':
+            if (isCheckSuiteEvent(payload)) return ACCEPTED_NO_SEAT_DISPOSITION;
+            break;
         case 'push':
             if (isPushEvent(payload)) return ACCEPTED_NO_SEAT_DISPOSITION;
             break;
@@ -396,6 +403,17 @@ async function handleIntentWithdrawal(payload: unknown, eventType: WebhookEventT
     if (eventType === 'pull_request' && isPullRequestEvent(payload) && payload.action === 'closed' && !payload.pull_request.merged) {
         const [repoOwner, repoName] = payload.repository.full_name.split('/');
         await cancelWithdrawnIntent({ repoOwner, repoName, number: payload.pull_request.number, kind: 'pr' }, 'cancelled_pr_closed', webhookRedisClient ?? getUltrafixStateRedis());
+    }
+}
+
+async function handleCiEvent(payload: unknown, eventType: WebhookEventType, correlationId: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>): Promise<void> {
+    try {
+        if (eventType === 'check_run' && isCheckRunEvent(payload)) await handleCheckRunEvent(payload, correlationId);
+        else if (eventType === 'check_suite' && isCheckSuiteEvent(payload)) await handleCheckSuiteEvent(payload, correlationId);
+        else if (eventType === 'status' && isStatusEvent(payload)) await handleStatusEvent(payload, correlationId);
+    } catch (error) {
+        correlatedLogger.warn({ error, event: eventType }, 'CI event handler failed, continuing');
     }
 }
 
@@ -455,23 +473,8 @@ export async function processWebhookEvent(
     // Plan Issue Tracking (runs before standard processing to update status)
     await handlePlanIssueTracking(payload, eventType, correlationId, correlatedLogger);
 
-    // 5. Auto-merge: Handle check_run events to merge PRs when all checks pass
-    if (eventType === 'check_run' && isCheckRunEvent(payload)) {
-        try {
-            await handleCheckRunEvent(payload, correlationId);
-        } catch (checkRunError) {
-            correlatedLogger.warn({ error: checkRunError }, 'Check run handler failed, continuing');
-        }
-    }
-
-    // 5b. Handle legacy commit status events for ultrafix loop continuation
-    if (eventType === 'status' && isStatusEvent(payload)) {
-        try {
-            await handleStatusEvent(payload, correlationId);
-        } catch (statusError) {
-            correlatedLogger.warn({ error: statusError }, 'Status event handler failed, continuing');
-        }
-    }
+    // 5. CI events (check_run, check_suite, legacy status) drive auto-merge and Ultrafix continuation
+    await handleCiEvent(payload, eventType, correlationId, correlatedLogger);
 
     // 6. Epic PR handling
     if (eventType === 'pull_request' && isPullRequestEvent(payload)) {
