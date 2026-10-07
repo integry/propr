@@ -12,7 +12,7 @@ import { AgentScheduleSection } from './AgentScheduleSection';
 import { AgentAutonomySection } from './AgentAutonomySection';
 import { AgentDeleteDialog } from './AgentDeleteDialog';
 import { agentDisplayName } from './agentPresentation';
-import { CONFLICT_MESSAGE, useAgentEditor, type AgentEditorCallbacks } from './useAgentEditor';
+import { CONFLICT_MESSAGE, RUN_NEEDS_SAVE_MESSAGE, useAgentEditor, type AgentEditorCallbacks } from './useAgentEditor';
 
 interface AgentEditorProps extends AgentEditorCallbacks {
   /** The agent to edit, or null to create one. */
@@ -30,6 +30,8 @@ interface AgentEditorHeaderProps {
   canRun: boolean;
   running: boolean;
   runDisabled: boolean;
+  /** Why Run now is unavailable, when the reason is something the user can fix. */
+  runHint: string | null;
   onRun: () => void;
   saveLabel: string;
   saving: boolean;
@@ -38,7 +40,7 @@ interface AgentEditorHeaderProps {
 
 /** Title with the pane's navigation on the left, Run now and Save pinned to the right. */
 const AgentEditorHeader: React.FC<AgentEditorHeaderProps> = ({
-  title, headerControls, notice, canRun, running, runDisabled, onRun, saveLabel, saving, saveDisabled,
+  title, headerControls, notice, canRun, running, runDisabled, runHint, onRun, saveLabel, saving, saveDisabled,
 }) => (
   <header className="flex flex-none items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
     <div className="flex min-w-0 items-center gap-2">
@@ -47,8 +49,15 @@ const AgentEditorHeader: React.FC<AgentEditorHeaderProps> = ({
     </div>
     <div className="flex flex-none items-center gap-2">
       {notice && <span role="status" className="text-xs text-slate-500">{notice}</span>}
+      {canRun && runHint && <span id="agent-run-hint" className="text-xs text-slate-500">{runHint}</span>}
       {canRun && (
-        <button type="button" onClick={onRun} disabled={runDisabled} className={`${BUTTON_CLASSES} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>
+        <button
+          type="button"
+          onClick={onRun}
+          disabled={runDisabled}
+          aria-describedby={runHint ? 'agent-run-hint' : undefined}
+          className={`${BUTTON_CLASSES} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}
+        >
           {running ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" aria-hidden="true" />}
           Run now
         </button>
@@ -60,6 +69,17 @@ const AgentEditorHeader: React.FC<AgentEditorHeaderProps> = ({
     </div>
   </header>
 );
+
+/**
+ * Run now starts the saved definition, so it is held back while a save is
+ * replacing it and while the form shows changes that are not saved yet.
+ */
+function runAvailability(isDemoMode: boolean, { running, saving, dirty }: { running: boolean; saving: boolean; dirty: boolean }) {
+  return {
+    runDisabled: isDemoMode || running || saving || dirty,
+    runHint: !isDemoMode && dirty && !saving ? RUN_NEEDS_SAVE_MESSAGE : null,
+  };
+}
 
 /** Create or edit an agent: scope, prompt and files, model, capabilities, schedule and autonomy. */
 export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerControls, ...callbacks }) => {
@@ -80,7 +100,7 @@ export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerCo
       onRun={() => void editor.run()}
       saveLabel={definition ? 'Save' : 'Create agent'}
       saving={editor.saving}
-      runDisabled={isDemoMode || editor.running || editor.saving}
+      {...runAvailability(isDemoMode, editor)}
       saveDisabled={readOnly || editor.conflict}
     />
   );

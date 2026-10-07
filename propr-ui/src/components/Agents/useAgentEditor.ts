@@ -17,12 +17,23 @@ import { emptyAgentForm, formFromDefinition, formToInput, type AgentEditorForm, 
 import type { ProprMcpSupport } from './AgentCapabilitiesSection';
 
 export interface AgentEditorCallbacks {
-  onSaved: (definition: AgentDefinitionRecord, created: boolean) => void;
-  onDeleted: (definitionId: string) => void;
+  /**
+   * `open` is false when the editor that started the save was closed before
+   * the response came back: the list should still learn of the result, but
+   * nothing may navigate on its behalf, since another editor may be showing.
+   */
+  onSaved: (definition: AgentDefinitionRecord, created: boolean, open: boolean) => void;
+  onDeleted: (definitionId: string, open: boolean) => void;
   onRunStarted?: (run: AgentRunRecord) => void;
 }
 
 export const CONFLICT_MESSAGE = 'Changed elsewhere — reload';
+export const RUN_NEEDS_SAVE_MESSAGE = 'Save your changes to run them';
+
+/** Whether the form would save something other than the definition as loaded. */
+export function formDiffersFrom(form: AgentEditorForm, definition: AgentDefinitionRecord): boolean {
+  return JSON.stringify(formToInput(form)) !== JSON.stringify(formToInput(formFromDefinition(definition)));
+}
 
 /** Whether the chosen agent can be given ProPR's MCP tools, judged from the instance catalog. */
 export function proprMcpSupportFor(agents: readonly InstanceCatalogAgent[], alias: string | null): { support: ProprMcpSupport; agentType: string | null } {
@@ -52,6 +63,12 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
   const [notice, setNotice] = useState<string | null>(null);
   /** Set synchronously while a save is in flight, so a run cannot start on the configuration being replaced. */
   const savingRef = useRef(false);
+  /** False once this editor unmounts, so a late response no longer acts for it. */
+  const openRef = useRef(true);
+  useEffect(() => {
+    openRef.current = true;
+    return () => { openRef.current = false; };
+  }, []);
 
   const load = useCallback(async (id: string, isActive: () => boolean = () => true) => {
     setLoading(true);
@@ -86,6 +103,8 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
   }, []);
 
   const { support: proprMcpSupport, agentType } = useMemo(() => proprMcpSupportFor(agents, form.agentId), [agents, form.agentId]);
+  /** A run uses the saved definition, so it is offered only while the form shows exactly that. */
+  const dirty = useMemo(() => Boolean(definition && formDiffersFrom(form, definition)), [definition, form]);
 
   const update = useCallback((patch: AgentEditorFormPatch) => {
     setForm(current => ({ ...current, ...patch }));
@@ -114,11 +133,13 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
       const saved = definition
         ? await updateAgentDefinition(definition.id, input, definition.revision)
         : await createAgentDefinition(input);
+      if (!openRef.current) { onSaved(saved, !definition, false); return; }
       setDefinition(saved);
       setForm(formFromDefinition(saved));
       setNotice('Saved');
-      onSaved(saved, !definition);
+      onSaved(saved, !definition, true);
     } catch (saveFailure) {
+      if (!openRef.current) return;
       if (isAgentConflictError(saveFailure)) setConflict(true);
       else setError((saveFailure as Error).message);
     } finally {
@@ -133,7 +154,7 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
     setError(null);
     try {
       await deleteAgentDefinition(definition.id);
-      onDeleted(definition.id);
+      onDeleted(definition.id, openRef.current);
       return true;
     } catch (deleteFailure) {
       setError((deleteFailure as Error).message);
@@ -159,7 +180,7 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
   }, [applyAttachments, definition]);
 
   const run = useCallback(async () => {
-    if (!definition || savingRef.current) return;
+    if (!definition || savingRef.current || dirty) return;
     setRunning(true);
     setError(null);
     try {
@@ -171,12 +192,12 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
     } finally {
       setRunning(false);
     }
-  }, [definition, onRunStarted]);
+  }, [definition, dirty, onRunStarted]);
 
   const reload = useCallback(() => (definition ? load(definition.id) : Promise.resolve()), [definition, load]);
 
   return {
-    definition, form, agents, loading, loadError, saving, deleting, running, error, conflict, notice,
+    definition, form, agents, loading, loadError, saving, deleting, running, error, conflict, notice, dirty,
     proprMcpSupport, agentType, update, changeAgent, save, remove, upload, removeAttachment, run, reload,
   };
 }

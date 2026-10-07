@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import AgentsPage from './AgentsPage';
 import { listAgentDefinitions, listAgentRuns, type AgentDefinitionRecord } from '../api/agentDefinitionsApi';
@@ -12,11 +12,16 @@ vi.mock('../api/agentDefinitionsApi', () => ({
 
 vi.mock('../api/proprApi', () => ({ getInstanceCatalog: vi.fn() }));
 
+type EditorCallbacks = import('../components/Agents/useAgentEditor').AgentEditorCallbacks;
+/** The callbacks each mocked editor was last rendered with, by the agent it shows ('new' for creation). */
+const editorCallbacks = new Map<string, EditorCallbacks>();
+
 // The editor has its own suite; here it only has to say which agent it shows and where its controls are.
 vi.mock('../components/Agents/AgentEditor', () => ({
-  AgentEditor: ({ definitionId, headerControls }: { definitionId: string | null; headerControls?: React.ReactNode }) => (
-    <div data-testid="agent-editor">editor for {definitionId ?? 'new'}{headerControls}</div>
-  ),
+  AgentEditor: ({ definitionId, headerControls, ...callbacks }: { definitionId: string | null; headerControls?: React.ReactNode } & EditorCallbacks) => {
+    editorCallbacks.set(definitionId ?? 'new', callbacks);
+    return <div data-testid="agent-editor">editor for {definitionId ?? 'new'}{headerControls}</div>;
+  },
 }));
 
 const agent = (id: string, name: string, patch: Partial<AgentDefinitionRecord> = {}): AgentDefinitionRecord => ({
@@ -69,6 +74,7 @@ describe('AgentsPage', () => {
     cleanup();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+    editorCallbacks.clear();
   });
 
   it('opens an agent beside the list on wide screens without leaving /agents', async () => {
@@ -151,6 +157,43 @@ describe('AgentsPage', () => {
     expect(listAgentDefinitions).toHaveBeenCalledWith({ limit: 200, offset: 200 });
     fireEvent.change(screen.getByLabelText('Search agents'), { target: { value: 'Agent 199' } });
     expect(screen.getAllByRole('link', { name: /Agent 199/ })).toHaveLength(1);
+  });
+
+  it('lists a creation that finishes after its editor was closed without leaving the agent now open', async () => {
+    setViewport(true);
+    renderAt('/agents/new');
+    await screen.findByRole('link', { name: /Issue triage/ });
+    const creating = editorCallbacks.get('new')!;
+
+    fireEvent.click(screen.getByRole('link', { name: /Issue triage/ }));
+    expect(screen.getByTestId('agent-editor')).toHaveTextContent('editor for a2');
+
+    act(() => creating.onSaved(agent('a3', 'Fresh agent'), true, false));
+    expect(screen.getByTestId('location')).toHaveTextContent('/agents/a2');
+    expect(screen.getByTestId('agent-editor')).toHaveTextContent('editor for a2');
+    expect(screen.getByRole('link', { name: /Fresh agent/ })).toBeInTheDocument();
+  });
+
+  it('opens a created agent when its editor is still open', async () => {
+    setViewport(true);
+    renderAt('/agents/new');
+    await screen.findByRole('link', { name: /Issue triage/ });
+
+    act(() => editorCallbacks.get('new')!.onSaved(agent('a3', 'Fresh agent'), true, true));
+    expect(screen.getByTestId('location')).toHaveTextContent('/agents/a3');
+    expect(screen.getByRole('link', { name: /Fresh agent/ })).toBeInTheDocument();
+  });
+
+  it('drops a deleted agent from the list without leaving the agent now open', async () => {
+    setViewport(true);
+    renderAt('/agents/a1');
+    await screen.findByRole('link', { name: /Issue triage/ });
+    const deleting = editorCallbacks.get('a1')!;
+
+    fireEvent.click(screen.getByRole('link', { name: /Issue triage/ }));
+    act(() => deleting.onDeleted('a1', false));
+    expect(screen.getByTestId('location')).toHaveTextContent('/agents/a2');
+    expect(screen.queryByRole('link', { name: /Dependency review/ })).not.toBeInTheDocument();
   });
 
   it('explains what an agent is when there are none', async () => {

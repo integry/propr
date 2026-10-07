@@ -145,14 +145,16 @@ const AgentsPage: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => {
   const { host: editorHost, dockRef } = useEditorDock();
   const editing = isNew || definitionId !== null;
 
-  const onSaved = useCallback((definition: AgentDefinitionRecord, created: boolean) => {
+  // A save or delete that finishes after its editor was closed only updates the list:
+  // navigating would replace whichever editor is open now and discard its edits.
+  const onSaved = useCallback((definition: AgentDefinitionRecord, created: boolean, open: boolean) => {
     upsert(definition);
-    if (created) navigate(`/agents/${encodeURIComponent(definition.id)}`, { replace: true });
+    if (created && open) navigate(`/agents/${encodeURIComponent(definition.id)}`, { replace: true });
   }, [navigate, upsert]);
 
-  const onDeleted = useCallback((id: string) => {
+  const onDeleted = useCallback((id: string, open: boolean) => {
     remove(id);
-    navigate('/agents', { replace: true });
+    if (open) navigate('/agents', { replace: true });
   }, [navigate, remove]);
 
   const close = useCallback(() => navigate('/agents'), [navigate]);

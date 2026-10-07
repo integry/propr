@@ -5,6 +5,7 @@ import { AgentEditor } from './AgentEditor';
 import {
   AgentApiError,
   createAgentDefinition,
+  deleteAgentDefinition,
   getAgentDefinition,
   triggerAgentRun,
   updateAgentDefinition,
@@ -169,7 +170,7 @@ describe('AgentEditor', () => {
     vi.mocked(triggerAgentRun).mockResolvedValue({ created: true, run: { id: 'run-1' } } as unknown as Awaited<ReturnType<typeof triggerAgentRun>>);
     renderEditor('agent-1');
 
-    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Renamed' } });
+    await screen.findByLabelText('Name');
     const runButton = screen.getByRole('button', { name: 'Run now' });
     expect(runButton).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -182,6 +183,92 @@ describe('AgentEditor', () => {
     await waitFor(() => expect(runButton).toBeEnabled());
     fireEvent.click(runButton);
     await waitFor(() => expect(triggerAgentRun).toHaveBeenCalledWith('agent-1'));
+  });
+
+  it('disables Run now while the form differs from the saved agent and runs once it is saved', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue({ ...definition, autonomyMode: 'auto', capabilities: ['repository_read', 'propr_mcp'] });
+    vi.mocked(updateAgentDefinition).mockImplementation(async (_id, input) => ({
+      ...definition, prompt: input.prompt!, autonomyMode: input.autonomy!, capabilities: input.capabilities!, revision: 4,
+    }));
+    vi.mocked(triggerAgentRun).mockResolvedValue({ created: true, run: { id: 'run-1' } } as unknown as Awaited<ReturnType<typeof triggerAgentRun>>);
+    renderEditor('agent-1');
+
+    const runButton = await screen.findByRole('button', { name: 'Run now' });
+    expect(runButton).toBeEnabled();
+    fireEvent.click(screen.getByRole('radio', { name: /^Dry run/ }));
+    fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Only report, change nothing' } });
+
+    expect(runButton).toBeDisabled();
+    expect(runButton).toHaveAccessibleDescription('Save your changes to run them');
+    fireEvent.click(runButton);
+    expect(triggerAgentRun).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(runButton).toBeEnabled());
+    expect(screen.queryByText('Save your changes to run them')).not.toBeInTheDocument();
+    fireEvent.click(runButton);
+    await waitFor(() => expect(triggerAgentRun).toHaveBeenCalledWith('agent-1'));
+  });
+
+  it('re-enables Run now when an edit is undone', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    renderEditor('agent-1');
+
+    const prompt = await screen.findByLabelText('Prompt');
+    const runButton = screen.getByRole('button', { name: 'Run now' });
+    fireEvent.change(prompt, { target: { value: 'Something else' } });
+    expect(runButton).toBeDisabled();
+    fireEvent.change(prompt, { target: { value: definition.prompt } });
+    expect(runButton).toBeEnabled();
+  });
+
+  it('ignores a run requested from a stale render after the form was edited', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    const { result } = renderHook(() => useAgentEditor('agent-1', { onSaved: vi.fn(), onDeleted: vi.fn() }));
+    await waitFor(() => expect(result.current.definition).not.toBeNull());
+
+    act(() => result.current.update({ autonomy: 'auto' }));
+    expect(result.current.dirty).toBe(true);
+    await act(async () => { await result.current.run(); });
+    expect(triggerAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('reports a creation that finishes after its editor closed without claiming it is still open', async () => {
+    let finish: (saved: AgentDefinitionRecord) => void = () => undefined;
+    vi.mocked(createAgentDefinition).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const onSaved = vi.fn();
+    const { unmount } = render(<AgentEditor definitionId={null} onSaved={onSaved} onDeleted={vi.fn()} />);
+    fillRequired();
+    fireEvent.click(screen.getByRole('button', { name: 'Create agent' }));
+    await waitFor(() => expect(createAgentDefinition).toHaveBeenCalled());
+
+    unmount();
+    await act(async () => { finish({ ...definition, id: 'agent-2' }); });
+    expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: 'agent-2' }), true, false);
+  });
+
+  it('reports a creation that finishes while its editor is open as open', async () => {
+    vi.mocked(createAgentDefinition).mockResolvedValue({ ...definition, id: 'agent-2' });
+    const onSaved = vi.fn();
+    render(<AgentEditor definitionId={null} onSaved={onSaved} onDeleted={vi.fn()} />);
+    fillRequired();
+    fireEvent.click(screen.getByRole('button', { name: 'Create agent' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: 'agent-2' }), true, true));
+  });
+
+  it('reports a deletion that finishes after its editor closed without claiming it is still open', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    let finish: () => void = () => undefined;
+    vi.mocked(deleteAgentDefinition).mockReturnValue(new Promise<void>(resolve => { finish = resolve; }) as never);
+    const onDeleted = vi.fn();
+    const { result, unmount } = renderHook(() => useAgentEditor('agent-1', { onSaved: vi.fn(), onDeleted }));
+    await waitFor(() => expect(result.current.definition).not.toBeNull());
+
+    let pending: Promise<boolean> = Promise.resolve(false);
+    act(() => { pending = result.current.remove(); });
+    unmount();
+    await act(async () => { finish(); await pending; });
+    expect(onDeleted).toHaveBeenCalledWith('agent-1', false);
   });
 
   it('ignores a run requested while a save is in flight, even before the button re-renders', async () => {
