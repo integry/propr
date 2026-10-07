@@ -1,11 +1,12 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import logger from '../utils/logger.js';
 import type { AgentType } from '../agents/types.js';
-import { AGENT_EGRESS_PROXY_SUPPORT, baseEgressAllowlist, compileEgressAllowlist } from './egressAllowlist.js';
+import { AGENT_EGRESS_PROXY_SUPPORT, AGENT_EGRESS_RESTRICTED_ENV, baseEgressAllowlist, compileEgressAllowlist } from './egressAllowlist.js';
 import { EgressDenialRecorder, startEgressProxy, upstreamProxiesFromEnv, type EgressProxy, type EgressProxyStats } from './egressProxy.js';
 import type { AgentNetworkMode, ResolvedNetworkPolicy } from './networkPolicy.js';
 
@@ -68,23 +69,52 @@ export class NetworkPolicyError extends Error {
     constructor(message: string) { super(message); this.name = 'NetworkPolicyError'; }
 }
 
-/** Runs `execute` with every agent container it starts subject to `policy`. */
+function reportFor(context: NetworkEgressContext): NetworkEgressReport {
+    const { policy } = context;
+    return {
+        mode: policy.mode, source: policy.source, ...(policy.note ? { note: policy.note } : {}), allow: policy.allow,
+        restrictedContainers: context.restrictedContainers, fallbacks: context.fallbacks, refusals: context.refusals, ...context.recorder.stats(),
+    };
+}
+
+const sortedUnique = (entries: readonly string[] | undefined): string[] => [...new Set(entries ?? [])].sort();
+
+/** The same policy, whatever the order of its entries. */
+export function sameNetworkPolicy(a: ResolvedNetworkPolicy, b: ResolvedNetworkPolicy): boolean {
+    return a.mode === b.mode && a.source === b.source && (a.note ?? '') === (b.note ?? '')
+        && JSON.stringify(sortedUnique(a.allow)) === JSON.stringify(sortedUnique(b.allow))
+        && JSON.stringify(sortedUnique(a.instanceAllow)) === JSON.stringify(sortedUnique(b.instanceAllow));
+}
+
+/**
+ * Runs `execute` with every agent container it starts subject to `policy`.
+ *
+ * Inside a scope that already applies the same policy (a job reusing another
+ * job's agent helpers), `execute` joins that scope: its containers and
+ * denials go into the enclosing record, `nested` is true, and the report is
+ * the enclosing one so far, so the caller records nothing itself and a run
+ * never gets two `network.egress` events. A nested scope with a different
+ * policy gets its own record, since the enclosing one would misreport it.
+ */
 export async function executeWithNetworkPolicy<T>(
     policy: ResolvedNetworkPolicy,
     execute: () => Promise<T>,
-): Promise<{ result: T; report: NetworkEgressReport }> {
+): Promise<{ result: T; report: NetworkEgressReport; nested: boolean }> {
+    const enclosing = networkEgressExecution.getStore();
+    if (enclosing && sameNetworkPolicy(enclosing.policy, policy)) {
+        // A failure is left for the enclosing scope to attach its report to.
+        const result = await execute();
+        return { result, report: reportFor(enclosing), nested: true };
+    }
+    if (enclosing) logger.debug({ enclosing: enclosing.policy, policy }, 'Nested network policy scope with a different policy keeps its own record');
     const context: NetworkEgressContext = { policy, recorder: new EgressDenialRecorder(), restrictedContainers: 0, fallbacks: [], refusals: [] };
-    const report = (): NetworkEgressReport => ({
-        mode: policy.mode, source: policy.source, ...(policy.note ? { note: policy.note } : {}), allow: policy.allow,
-        restrictedContainers: context.restrictedContainers, fallbacks: context.fallbacks, refusals: context.refusals, ...context.recorder.stats(),
-    });
     try {
         const result = await networkEgressExecution.run(context, execute);
-        return { result, report: report() };
+        return { result, report: reportFor(context), nested: false };
     } catch (error) {
         // A failed run still reports the hosts it was denied. A primitive rejection cannot carry
         // the report; assigning to it would replace the original failure with a TypeError.
-        if (error && typeof error === 'object') (error as { networkEgressReport?: NetworkEgressReport }).networkEgressReport = report();
+        if (error && typeof error === 'object') (error as { networkEgressReport?: NetworkEgressReport }).networkEgressReport = reportFor(context);
         throw error;
     }
 }
@@ -231,6 +261,65 @@ export async function resolveUnscopedNetworkPolicy(command: string, args: string
     return policy.mode === 'restricted' && policy.source === 'instance_enforced' ? policy : undefined;
 }
 
+/** Runs one `docker run` (its arguments after `docker`) and reports how it ended. */
+export type EgressPreflightRunner = (args: string[]) => Promise<{ exitCode: number | null; stderr: string }>;
+
+const defaultPreflightRunner: EgressPreflightRunner = args => new Promise(resolve => {
+    execFile('docker', args, { timeout: 60_000, maxBuffer: 1024 * 1024 }, (error, _stdout, stderr) => {
+        if (error && (error as NodeJS.ErrnoException).code === 'ENOENT') { resolve({ exitCode: null, stderr: 'docker is not installed on the worker' }); return; }
+        resolve({ exitCode: error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : null) : 0, stderr: String(stderr ?? '') });
+    });
+});
+
+let socketMountPreflight: { runner: EgressPreflightRunner; verified?: Promise<boolean> } | undefined;
+
+/**
+ * Checks once per process, before the first restricted container starts,
+ * that a container can see a run's proxy socket through the bind mount. On a
+ * host whose Docker daemon does not share `PROPR_EGRESS_SOCKET_DIR` at
+ * `HOST_PROPR_EGRESS_SOCKET_DIR`, or cannot bind-mount Unix sockets at all
+ * (Docker Desktop file sharing), every restricted container would otherwise
+ * have no network at all, with only a line on its own stderr to say why. The
+ * check logs one actionable warning; the run itself still fails closed. A
+ * worker enables it at startup; nothing runs without that.
+ */
+export function enableEgressSocketMountPreflight(runner: EgressPreflightRunner = defaultPreflightRunner): void {
+    socketMountPreflight = { runner };
+}
+
+/** Unregisters the preflight (tests, shutdown). */
+export function disableEgressSocketMountPreflight(): void {
+    socketMountPreflight = undefined;
+}
+
+/** The throwaway container only tests the socket through the same mount the run gets. */
+export function egressSocketMountPreflightArgs(image: string, hostDirectory: string): string[] {
+    return ['run', '--rm', '--network', 'none', '--entrypoint', '/bin/sh', '-v', `${hostDirectory}:${EGRESS_CONTAINER_SOCKET_DIR}:ro`, image,
+        '-c', `test -S ${EGRESS_CONTAINER_SOCKET_DIR}/${SOCKET_NAME}`];
+}
+
+async function verifySocketMountOnce(image: string, hostDirectory: string): Promise<void> {
+    const preflight = socketMountPreflight;
+    if (!preflight) return;
+    preflight.verified ??= (async () => {
+        const roots = egressSocketRoots();
+        const hint = `the Docker daemon must see the worker's PROPR_EGRESS_SOCKET_DIR (${roots.local}) at HOST_PROPR_EGRESS_SOCKET_DIR (${roots.host}), on a host that can bind-mount Unix sockets (Docker Desktop file sharing cannot). Until then every restricted container has no network at all and its run fails closed.`;
+        try {
+            const outcome = await preflight.runner(egressSocketMountPreflightArgs(image, hostDirectory));
+            if (outcome.exitCode === 0) {
+                logger.info({ image, hostDirectory }, 'Restricted network preflight: a container sees the egress proxy socket through its mount');
+                return true;
+            }
+            logger.warn({ image, hostDirectory, exitCode: outcome.exitCode, stderr: outcome.stderr.trim().slice(-2000) },
+                `Restricted network preflight failed: a container cannot see the egress proxy socket; ${hint}`);
+        } catch (error) {
+            logger.warn({ image, hostDirectory, error: (error as Error).message }, `Restricted network preflight could not run; if restricted containers have no network, ${hint}`);
+        }
+        return false;
+    })();
+    await preflight.verified;
+}
+
 export interface PreparedEgressRun { args: string[]; release(): Promise<void> }
 
 /**
@@ -289,6 +378,13 @@ export async function prepareDockerRunNetwork(command: string, args: string[], e
     }
     activeProxies.set(id, proxy);
     context.restrictedContainers++;
+    // The wrapper puts the image right after `--entrypoint /bin/bash`.
+    try { await verifySocketMountOnce(args[entrypointIndex + 2], path.join(roots.host, id)); } catch { /* logged */ }
+
+    // Non-essential traffic the agent would otherwise attempt and have denied, unless the caller decided.
+    const quietEnv = (AGENT_EGRESS_RESTRICTED_ENV[agentType as AgentType] ?? [])
+        .filter(([key]) => envValue(containerOptions(args), key) === undefined)
+        .flatMap(([key, value]) => ['-e', `${key}=${value}`]);
 
     let rewritten = [...args];
     rewritten[scriptIndex] = `${EGRESS_BRIDGE_PRELUDE}\n${rewritten[scriptIndex]}`;
@@ -302,6 +398,7 @@ export async function prepareDockerRunNetwork(command: string, args: string[], e
         '-e', 'PROPR_NETWORK_MODE=restricted',
         ...[['HTTP_PROXY', PROXY_URL], ['HTTPS_PROXY', PROXY_URL], ['http_proxy', PROXY_URL], ['https_proxy', PROXY_URL], ['NO_PROXY', NO_PROXY], ['no_proxy', NO_PROXY]]
             .flatMap(([key, value]) => ['-e', `${key}=${value}`]),
+        ...quietEnv,
         ...rewritten.slice(entrypointIndex),
     ];
     let released: Promise<void> | undefined;

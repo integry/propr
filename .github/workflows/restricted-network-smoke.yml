@@ -3,9 +3,14 @@ name: Restricted Network Container Smoke
 # Runs the Docker-gated restricted-network tests that the regular suites skip:
 # a real agent container behind its per-run egress proxy (socket mount, bridge
 # startup, allow/deny), and each supported agent CLI reaching its provider
-# through that proxy. Hosted Linux runners have Docker; the published agent
-# image carries the entrypoints, and the wrapper and bridge come from this
-# checkout at run time.
+# through that proxy. Hosted Linux runners have Docker.
+#
+# The agent image under test is built from this checkout (Dockerfile.agent and
+# the entrypoints as reviewed), unless a dispatch names a published image. The
+# wrapper and bridge come from the checkout at run time either way. The
+# provider test needs the real provider endpoints and models.dev, so it runs
+# only on the nightly schedule and on dispatch: an outage there must not fail
+# an unrelated pull request.
 
 on:
   schedule:
@@ -13,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       agent_image:
-        description: 'Agent image to test'
-        required: true
-        default: 'propr/agent:latest'
+        description: 'Published agent image to test instead of one built from this checkout (for example propr/agent:latest)'
+        required: false
+        default: ''
         type: string
   pull_request:
     paths:
@@ -25,6 +30,7 @@ on:
       - 'packages/core/src/claude/docker/repoSetupWrapper.ts'
       - 'packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts'
       - 'scripts/*-entrypoint.sh'
+      - 'scripts/build-images.sh'
       - 'Dockerfile.agent'
       - 'test/egressProxyContainerSmoke.test.ts'
       - 'test/agentProviderEgress.test.ts'
@@ -40,11 +46,13 @@ permissions:
 jobs:
   container-smoke:
     name: Restricted network container smoke
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The managed agent image is linux/amd64 only (see Dockerfile.agent).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     env:
       NODE_ENV: test
-      PROPR_TEST_AGENT_IMAGE: ${{ inputs.agent_image || 'propr/agent:latest' }}
+      # A published image on request; otherwise the image built below from this checkout.
+      PROPR_TEST_AGENT_IMAGE: ${{ inputs.agent_image || format('propr/agent:{0}', github.event.pull_request.head.sha || github.sha) }}
       # Missing Docker or image is a failure here, not a skipped test.
       PROPR_TEST_REQUIRE_DOCKER: '1'
     steps:
@@ -65,11 +73,23 @@ jobs:
       - name: Build workspace packages
         run: npm run test:prepare
 
-      - name: Pull agent image
+      - name: Pull the published agent image named by the dispatch
+        if: inputs.agent_image != ''
         run: docker pull "$PROPR_TEST_AGENT_IMAGE"
+
+      - name: Build the agent image from this checkout
+        if: inputs.agent_image == ''
+        env:
+          # The full SHA the image is tagged with, matching PROPR_TEST_AGENT_IMAGE above.
+          GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        # Same build as the preview pipeline: a local full-SHA tag, never pushed. The root
+        # dependency tree installed above feeds the bundled third-party notices.
+        run: ./scripts/build-images.sh --sha-only --only agent --platform linux/amd64
 
       - name: Proxy, socket mount and bridge in a real container
         run: npx tsx --test test/egressProxyContainerSmoke.test.ts
 
       - name: Agent provider transports through the proxy
+        # Live provider endpoints: nightly and on dispatch only, so a provider outage cannot fail a pull request.
+        if: github.event_name != 'pull_request'
         run: npx tsx --test test/agentProviderEgress.test.ts

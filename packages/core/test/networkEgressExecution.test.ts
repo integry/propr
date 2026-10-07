@@ -9,9 +9,10 @@ import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { resolveInstanceNetworkPolicy, resolveNetworkPolicy, validateAgentNetworkSetting, type ResolvedNetworkPolicy } from '../src/network/networkPolicy.js';
 import {
-    EGRESS_BRIDGE_PRELUDE, EGRESS_ORPHAN_MAX_AGE_MS, NetworkPolicyError, dockerRunNeedsNetworkPolicy, executeWithNetworkPolicy, networkEgressReportFromError,
-    egressProcessNamespace, prepareDockerRunNetwork, sweepOrphanedEgressProxies,
+    EGRESS_BRIDGE_PRELUDE, EGRESS_ORPHAN_MAX_AGE_MS, NetworkPolicyError, disableEgressSocketMountPreflight, dockerRunNeedsNetworkPolicy, enableEgressSocketMountPreflight,
+    executeWithNetworkPolicy, networkEgressReportFromError, egressProcessNamespace, prepareDockerRunNetwork, sameNetworkPolicy, sweepOrphanedEgressProxies,
 } from '../src/network/egressExecution.js';
+import logger from '../src/utils/logger.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../src/claude/docker/repoSetupWrapper.js';
 import { spawnWithNetworkPolicy } from '../src/claude/docker/dockerNetworkPolicy.js';
 import { runWithExecutionAbortSignal } from '../src/claude/docker/dockerExecutionOwnership.js';
@@ -108,6 +109,103 @@ test('a restricted run starts its agent container without a network, behind its 
     assert.deepEqual(rewritten.slice(-3), ['claude', '-p', '-'], 'the agent command is unchanged');
     assert.equal(report.restrictedContainers, 1);
     assert.deepEqual(report.fallbacks, []);
+});
+
+test('a restricted Claude container is told to skip non-essential traffic, unless its caller decided; other agents are not', async () => {
+    const quiet = 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC';
+    const rewrite = async (args: string[]) => {
+        const { result } = await executeWithNetworkPolicy(restricted(), async () => {
+            const run = await prepareDockerRunNetwork('docker', args);
+            assert.ok(run);
+            await run.release();
+            return run.args;
+        });
+        return result;
+    };
+    // Statsig, Sentry and update checks are not in the base list: attempting them would label every run as denied.
+    assert.deepEqual(envOf(await rewrite(agentRunArgs('claude')), quiet), ['1']);
+    const explicit = agentRunArgs('claude');
+    explicit.splice(1, 0, '-e', `${quiet}=0`);
+    assert.deepEqual(envOf(await rewrite(explicit), quiet), ['0'], 'a value the caller set is kept, not duplicated');
+    assert.deepEqual(envOf(await rewrite(agentRunArgs('codex')), quiet), []);
+    assert.deepEqual(envOf(await rewrite(agentRunArgs('opencode')), quiet), []);
+});
+
+test('nested scopes with the same policy share one record; a different policy keeps its own', async () => {
+    const policy = restricted({ allow: ['a.example.com', 'b.example.com'], instanceAllow: ['a.example.com'] });
+    const reordered = restricted({ allow: ['b.example.com', 'a.example.com', 'b.example.com'], instanceAllow: ['a.example.com'] });
+    assert.ok(sameNetworkPolicy(policy, reordered), 'entry order and repeats do not make a different policy');
+    assert.ok(!sameNetworkPolicy(policy, restricted({ allow: ['a.example.com'] })));
+    assert.ok(!sameNetworkPolicy(policy, { ...policy, source: 'instance_enforced' }));
+
+    const outer = await executeWithNetworkPolicy(policy, async () => {
+        await (await prepareDockerRunNetwork('docker', agentRunArgs()))!.release();
+        // A job reusing another job's helpers: the inner scope joins the enclosing record.
+        const inner = await executeWithNetworkPolicy(reordered, async () => {
+            await (await prepareDockerRunNetwork('docker', agentRunArgs()))!.release();
+            return 'inner';
+        });
+        assert.equal(inner.result, 'inner');
+        assert.equal(inner.nested, true);
+        assert.equal(inner.report.restrictedContainers, 2, 'the inner report is the enclosing record so far');
+        // A different policy inside gets its own record, so the enclosing one does not misreport it.
+        const separate = await executeWithNetworkPolicy(restricted({ allow: ['c.example.com'] }), async () => {
+            await (await prepareDockerRunNetwork('docker', agentRunArgs()))!.release();
+        });
+        assert.equal(separate.nested, false);
+        assert.equal(separate.report.restrictedContainers, 1);
+        return 'outer';
+    });
+    assert.equal(outer.nested, false);
+    assert.equal(outer.report.restrictedContainers, 2, 'the enclosing run counts its own container and the joined scope\'s, not the separate one');
+
+    // A failure inside a joined scope carries the enclosing report, attached once, by the enclosing scope.
+    const failure = new Error('agent failed');
+    await assert.rejects(executeWithNetworkPolicy(policy, async () => {
+        await assert.rejects(executeWithNetworkPolicy(policy, () => Promise.reject(failure)), failure);
+        assert.equal(networkEgressReportFromError(failure), undefined, 'the joined scope attaches nothing');
+        throw failure;
+    }), failure);
+    assert.equal(networkEgressReportFromError(failure)?.mode, 'restricted');
+});
+
+test('the socket mount preflight runs one throwaway container per process and warns, once, when it cannot see the socket', async () => {
+    const runs: string[][] = [];
+    let outcome = { exitCode: 1, stderr: 'docker: no such socket' };
+    enableEgressSocketMountPreflight(async args => { runs.push(args); return outcome; });
+    const warn = mock.method(logger, 'warn', () => undefined);
+    try {
+        await executeWithNetworkPolicy(restricted(), async () => {
+            for (let attempt = 0; attempt < 2; attempt++) await (await prepareDockerRunNetwork('docker', agentRunArgs()))!.release();
+        });
+        assert.equal(runs.length, 1, 'checked once for the process, not once per run');
+        const [args] = runs;
+        assert.equal(args[0], 'run');
+        assert.deepEqual(args.slice(args.indexOf('--network'), args.indexOf('--network') + 2), ['--network', 'none']);
+        assert.equal(args[args.indexOf('--entrypoint') + 1], '/bin/sh');
+        assert.equal(args[args.indexOf('-v') + 2], 'propr/agent:test', 'the run\'s own image, already present, is used');
+        assert.match(args[args.indexOf('-v') + 1], /^\/srv\/host\/propr-egress\/[0-9a-f-]{36}:\/run\/propr-egress:ro$/, 'through the Docker host path, like the run');
+        assert.match(args.at(-1)!, /test -S \/run\/propr-egress\/proxy\.sock/);
+        const warnings = warn.mock.calls.map(call => String(call.arguments[1] ?? call.arguments[0]));
+        assert.equal(warnings.filter(message => /preflight failed/.test(message)).length, 1);
+        assert.match(warnings.find(message => /preflight failed/.test(message))!, /HOST_PROPR_EGRESS_SOCKET_DIR \(\/srv\/host\/propr-egress\)/, 'the warning names the paths to fix');
+        assert.match(warnings.find(message => /preflight failed/.test(message))!, /Docker Desktop/);
+
+        // A later process (here: re-enabled) whose container sees the socket logs no warning.
+        outcome = { exitCode: 0, stderr: '' };
+        enableEgressSocketMountPreflight(async args => { runs.push(args); return outcome; });
+        await executeWithNetworkPolicy(restricted(), async () => { await (await prepareDockerRunNetwork('docker', agentRunArgs()))!.release(); });
+        assert.equal(runs.length, 2);
+        assert.equal(warn.mock.calls.length, 1);
+
+        // Without a worker enabling it, nothing runs.
+        disableEgressSocketMountPreflight();
+        await executeWithNetworkPolicy(restricted(), async () => { await (await prepareDockerRunNetwork('docker', agentRunArgs()))!.release(); });
+        assert.equal(runs.length, 2);
+    } finally {
+        disableEgressSocketMountPreflight();
+        warn.mock.restore();
+    }
 });
 
 test('open runs, other commands and containers already without a network are left alone', async () => {

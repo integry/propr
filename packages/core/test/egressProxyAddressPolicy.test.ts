@@ -133,6 +133,51 @@ test('only an administrator IP-literal entry opens a non-public address; a repos
     }
 });
 
+test('an administrator address entry authorizes the address whatever its spelling, by name, by CONNECT literal and by HTTP URL', async () => {
+    const site = http.createServer((request, response) => response.end(`site:${request.headers.host}`));
+    await new Promise<void>(resolve => site.listen(0, '127.0.0.1', resolve));
+    const port = (site.address() as net.AddressInfo).port;
+    const connected: string[] = [];
+    const proxy = await startEgressProxy({
+        socketPath: await socketPath(),
+        allowlist: compileEgressAllowlist([`registry.internal.example.com:${port}`, `[fd00:0:0:0:0:0:0:5]:${port}`]),
+        // The administrator typed the address expanded; the resolver answers compressed.
+        addressAllowlist: compileEgressAllowlist([`[fd00:0:0:0:0:0:0:5]:${port}`]),
+        connect: (targetPort, host) => { connected.push(host); return net.connect({ port: targetPort, host: '127.0.0.1' }); },
+        lookup: resolvesTo('fd00::5'),
+    });
+    try {
+        const named = await connectThrough(proxy.socketPath, `registry.internal.example.com:${port}`);
+        assert.equal(named.status, 'HTTP/1.1 200 Connection Established', 'the name resolves to the authorized address');
+        named.socket.destroy();
+        for (const literal of [`[fd00::5]:${port}`, `[FD00:0:0:0:0:0:0:5]:${port}`, `[fd00:0000:0000:0000:0000:0000:0000:0005]:${port}`]) {
+            const tunnel = await connectThrough(proxy.socketPath, literal);
+            assert.equal(tunnel.status, 'HTTP/1.1 200 Connection Established', literal);
+            tunnel.socket.destroy();
+        }
+        // new URL() compresses the host of an absolute-form request before the allowlist sees it.
+        for (const url of [`http://[fd00:0:0:0:0:0:0:5]:${port}/`, `http://[fd00::5]:${port}/`, `http://registry.internal.example.com:${port}/`]) {
+            const plain = await plainRequest(proxy.socketPath, url);
+            assert.equal(plain.status, 200, url);
+            assert.match(plain.body, /^site:/);
+        }
+        assert.ok(connected.every(host => host === 'fd00::5'), `only the vetted address is dialled: ${connected.join(',')}`);
+        assert.equal(connected.length, 7);
+        const stats = proxy.stats();
+        assert.equal(stats.allowedConnections, 7);
+        assert.deepEqual(stats.deniedHosts, []);
+
+        const other = await connectThrough(proxy.socketPath, `[fd00::6]:${port}`);
+        assert.equal(other.status, 'HTTP/1.1 403 Forbidden', 'another address is still refused');
+        other.socket.destroy();
+        assert.deepEqual(proxy.stats().deniedHosts, [{ host: `[fd00::6]:${port}`, count: 1 }], 'denials name the canonical address');
+    } finally {
+        await proxy.close();
+        site.closeAllConnections();
+        await new Promise(resolve => site.close(resolve));
+    }
+});
+
 test('the same check applies before chaining through the worker proxy; a name the worker cannot resolve is left to that proxy', async () => {
     const seen: string[] = [];
     const workerProxy = http.createServer();

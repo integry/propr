@@ -73,6 +73,22 @@ test('allowlist entries match exact hosts, wildcard subdomains and default ports
     assert.ok(!allowlist.allows('140.82.112.3', 443), 'IP literals are denied unless allowlisted, even for allowed hostnames');
 });
 
+test('an IP literal entry allows the address in every spelling', () => {
+    // An administrator may write an IPv6 address expanded; DNS answers and new URL() hand it back compressed.
+    const allowlist = compileEgressAllowlist(['[fd00:0:0:0:0:0:0:5]:5000', 'FD00::0:6', '[::FFFF:7f00:1]:8080', '10.0.0.5']);
+    assert.ok(allowlist.allows('fd00::5', 5000), 'the compressed form of an expanded entry');
+    assert.ok(allowlist.allows('[fd00::5]', 5000), 'bracketed as new URL() returns it');
+    assert.ok(allowlist.allows('fd00:0000:0000:0000:0000:0000:0000:0005', 5000), 'zero-padded groups');
+    assert.ok(!allowlist.allows('fd00::6', 5000), 'another address on the same port');
+    assert.ok(allowlist.allows('fd00:0:0:0:0:0:0:6', 443), 'the expanded form of a compressed entry');
+    assert.ok(allowlist.allows('::ffff:127.0.0.1', 8080), 'an IPv4-mapped address written in hex groups matches the dotted form');
+    assert.ok(allowlist.allows('::ffff:7f00:1', 8080));
+    assert.ok(!allowlist.allows('::ffff:7f00:2', 8080));
+    assert.ok(allowlist.allows('10.0.0.5', 443));
+    assert.deepEqual(parseEgressAllowEntry('[FD00:0:0:0:0:0:0:5]:5000'), { host: 'fd00::5', wildcard: false, port: 5000 }, 'entries are stored canonically');
+    assert.deepEqual(parseEgressAllowEntry('fe80::0001%eth0'), { host: 'fe80::1%eth0', wildcard: false, port: undefined }, 'a zone is kept');
+});
+
 test('wildcards never match IP literals and malformed entries are rejected', () => {
     assert.ok(!compileEgressAllowlist(['*.0.0.1']).allows('127.0.0.1', 443));
     for (const entry of ['*', '*.com', 'a*.example.com', 'example', '', 'host:0', 'host:99999', 'bad_host.example.com', '-a.example.com']) {
@@ -86,7 +102,9 @@ test('wildcards never match IP literals and malformed entries are rejected', () 
 test('every agent base list covers GitHub and the package registries', () => {
     for (const agent of ['claude', 'codex', 'antigravity', 'opencode', 'vibe'] as const) {
         const hosts = baseEgressAllowlist(agent);
-        for (const host of ['github.com', 'api.github.com', 'objects.githubusercontent.com', 'registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org']) {
+        for (const host of ['github.com', 'api.github.com', 'objects.githubusercontent.com', 'registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org',
+            // Git LFS: the batch API is on github.com; objects come from these.
+            'media.githubusercontent.com', 'github-cloud.githubusercontent.com']) {
             assert.ok(hosts.includes(host), `${agent}: ${host}`);
         }
     }
@@ -99,6 +117,7 @@ test('every agent base list covers GitHub and the package registries', () => {
 test('CONNECT authorities are parsed with ports and IPv6 brackets', () => {
     assert.deepEqual(parseAuthority('Example.com:443'), { host: 'example.com', port: 443 });
     assert.deepEqual(parseAuthority('[::1]:22'), { host: '::1', port: 22 });
+    assert.deepEqual(parseAuthority('[FD00:0:0:0:0:0:0:5]:443'), { host: 'fd00::5', port: 443 }, 'an IPv6 authority is canonical, like the allowlist');
     assert.equal(parseAuthority('example.com'), null);
     assert.equal(parseAuthority('example.com:0'), null);
 });

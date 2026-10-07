@@ -8,6 +8,9 @@ import { prepareReviewRepositoryWorkflow } from '../src/jobs/prCommentReviewJob.
 
 after(closeConnection);
 
+/** A wrapped agent container, as the Docker executor starts one. */
+const agentRunArgs = () => ['run', '--rm', '-e', 'PROPR_AGENT_TYPE=claude', '--entrypoint', '/bin/bash', 'agent:test', '-lc', 'exec "$@"', 'claude'];
+
 const report = (overrides: Partial<NetworkEgressReport> = {}): NetworkEgressReport => ({
     mode: 'restricted', source: 'workflow', allow: [], restrictedContainers: 1, fallbacks: [], refusals: [],
     allowedConnections: 12, deniedConnections: 0, deniedHosts: [], omittedDeniedHosts: 0, omittedDeniedAttempts: 0, failedConnections: 0, failedHosts: [], ...overrides,
@@ -98,6 +101,31 @@ test('the aggregated report is recorded once per run, after success and after fa
     assert.equal(await runWithNetworkPolicy(options, async () => 'done'), 'done');
     await assert.rejects(runWithNetworkPolicy(options, async () => { throw new Error('agent failed'); }), /agent failed/);
     assert.deepEqual(recorded.map(entry => [entry.taskId, entry.report.mode]), [['task-1', 'restricted'], ['task-1', 'restricted']]);
+});
+
+test('a run that calls back into runWithNetworkPolicy with the same policy records one event, not two', async () => {
+    const recorded: NetworkEgressReport[] = [];
+    const options = {
+        taskId: 'task-2', correlatedLogger: { warn() {} },
+        resolvePolicy: async () => ({ mode: 'restricted' as const, source: 'instance' as const, allow: ['cache.example.com'] }),
+        record: async (_taskId: string, report: NetworkEgressReport) => { recorded.push(report); },
+    };
+    // A review routing outcome reusing the comment-agent helpers, say: the inner call joins the run's record.
+    const result = await runWithNetworkPolicy(options, async () => {
+        await (await prepareDockerRunNetwork('docker', agentRunArgs()))!.release();
+        return runWithNetworkPolicy({ ...options, resolvePolicy: async () => ({ mode: 'restricted' as const, source: 'instance' as const, allow: ['cache.example.com'] }) }, async () => {
+            await (await prepareDockerRunNetwork('docker', agentRunArgs()))!.release();
+            return 'inner';
+        });
+    });
+    assert.equal(result, 'inner');
+    assert.equal(recorded.length, 1, 'one network.egress event for the run');
+    assert.equal(recorded[0].restrictedContainers, 2, 'covering both containers');
+
+    // The same with a failure inside: still one event, carrying the whole run.
+    recorded.length = 0;
+    await assert.rejects(runWithNetworkPolicy(options, () => runWithNetworkPolicy(options, async () => { throw new Error('agent failed'); })), /agent failed/);
+    assert.equal(recorded.length, 1);
 });
 
 test('a review reads the repository network block and runs under it', async () => {

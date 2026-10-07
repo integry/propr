@@ -1,4 +1,4 @@
-import { isIP } from 'node:net';
+import { SocketAddress, isIP } from 'node:net';
 import type { AgentType } from '../agents/types.js';
 
 /**
@@ -18,6 +18,9 @@ const COMMON_HOSTS = [
     'uploads.github.com',
     'objects.githubusercontent.com',
     'raw.githubusercontent.com',
+    // Git LFS objects (and the raw view of LFS-tracked files) are served from these.
+    'media.githubusercontent.com',
+    'github-cloud.githubusercontent.com',
     'registry.npmjs.org',
     'registry.yarnpkg.com',
     'pypi.org',
@@ -50,6 +53,17 @@ export const AGENT_EGRESS_PROXY_SUPPORT: Record<AgentType, { supported: boolean;
     },
 };
 
+/**
+ * Variables a restricted container gets so an agent's non-essential traffic
+ * (telemetry, error reporting, update checks) is not attempted at all: those
+ * hosts are not in the base list, so every attempt would be a denial that
+ * flags the run as needing attention for nothing. A value the caller set
+ * explicitly is kept.
+ */
+export const AGENT_EGRESS_RESTRICTED_ENV: Partial<Record<AgentType, ReadonlyArray<readonly [string, string]>>> = {
+    claude: [['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '1']],
+};
+
 export function baseEgressAllowlist(agentType: AgentType): string[] {
     return [...new Set([...COMMON_HOSTS, ...AGENT_EGRESS_BASE_HOSTS[agentType]])];
 }
@@ -58,12 +72,32 @@ interface ParsedEntry { host: string; wildcard: boolean; port?: number }
 
 const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
 
-/** Lowercases and strips one trailing dot and IPv6 brackets. */
+/**
+ * The one spelling of an IP literal, so `fd00:0:0:0:0:0:0:5`, `FD00::5` and
+ * `fd00::5` compare equal, as do `::ffff:7f00:1` and `::ffff:127.0.0.1`
+ * (`new URL()` compresses an IPv6 host, DNS answers come compressed, and an
+ * administrator may have typed either). A zone (`fe80::1%eth0`) is kept.
+ * Anything that is not an IP literal is returned unchanged.
+ */
+export function canonicalizeIpLiteral(host: string): string {
+    const family = isIP(host);
+    if (family === 0) return host;
+    const zoneAt = host.indexOf('%');
+    const address = zoneAt < 0 ? host : host.slice(0, zoneAt);
+    try {
+        const canonical = new SocketAddress({ address, family: family === 6 ? 'ipv6' : 'ipv4' }).address;
+        return zoneAt < 0 ? canonical : `${canonical}${host.slice(zoneAt)}`;
+    } catch {
+        return host;
+    }
+}
+
+/** Lowercases, strips one trailing dot and IPv6 brackets, and canonicalizes an IP literal. */
 export function normalizeEgressHost(host: string): string {
     let value = host.trim().toLowerCase();
     if (value.startsWith('[') && value.endsWith(']')) value = value.slice(1, -1);
     if (value.endsWith('.')) value = value.slice(0, -1);
-    return value;
+    return canonicalizeIpLiteral(value);
 }
 
 function isHostname(host: string): boolean {

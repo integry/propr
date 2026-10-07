@@ -35,7 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enforced. Proxies close with their container, and the worker removes socket
   directories left by dead workers. Containerized workers need
   `PROPR_EGRESS_SOCKET_DIR` (default `/tmp/propr-egress`) shared with the Docker
-  host; the bundled Compose files and launcher mount it.
+  host; the bundled Compose files and launcher mount it, and each worker checks
+  once, with a throwaway container, that the Docker host shares it, logging an
+  actionable warning otherwise. IP-literal entries match an IPv6 address in any
+  spelling. The base list includes GitHub's Git LFS object hosts, and a
+  restricted Claude Code container gets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+  so telemetry and update checks are not attempted and denied.
 - **Dashboard HTTP API reference and a documented `@propr/client`**:
   `npm run gen:openapi` generates an OpenAPI 3.1 spec,
   `docs/static/openapi/propr-api.yaml`, from the API route registry and the

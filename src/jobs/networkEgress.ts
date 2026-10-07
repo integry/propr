@@ -56,7 +56,9 @@ export async function resolveRunNetworkPolicy(workflow?: ResolvedRepositoryWorkf
  * Runs one execution under its network policy and records the aggregated
  * result (mode, fallbacks and every denied host) once the containers are gone,
  * whether the execution succeeded or failed. Work without a task (indexing)
- * has no timeline, so a report that needs attention is logged instead.
+ * has no timeline, so a report that needs attention is logged instead. Called
+ * inside another run of the same policy (a job reusing another job's agent
+ * helpers), it joins that run's record rather than writing a second event.
  */
 export async function runWithNetworkPolicy<T>(options: {
     workflow?: ResolvedRepositoryWorkflow; taskId?: string; correlatedLogger: Pick<Logger, 'warn'>;
@@ -71,8 +73,9 @@ export async function runWithNetworkPolicy<T>(options: {
             if (report.deniedConnections || report.failedConnections || report.fallbacks.length || report.refusals.length) options.correlatedLogger.warn({ networkEgress: report }, networkEgressEvent(report).reason);
         };
     try {
-        const { result, report } = await executeWithNetworkPolicy(policy, execute);
-        await record(report);
+        const { result, report, nested } = await executeWithNetworkPolicy(policy, execute);
+        // A scope joined to an enclosing run of the same policy is recorded by that run, once.
+        if (!nested) await record(report);
         return result;
     } catch (error) {
         const report = networkEgressReportFromError(error);
