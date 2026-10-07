@@ -51,6 +51,9 @@ function reportedRun(overrides: Partial<StoredAgentRun> = {}): StoredAgentRun {
   };
 }
 
+/** The cost gate is covered in agentRunCostGate.test.ts; here it always lets acting start. */
+const proceed = () => ({ action: 'proceed' as const });
+
 /** In-memory compare-and-set store for one run. */
 function store(initial: StoredAgentRun) {
   let current = initial;
@@ -116,6 +119,7 @@ describe('advanceAfterReport', () => {
     const jobs: Array<[string, AgentRunJobData, { jobId?: string }]> = [];
     const result = await advanceAfterReport(s.run(), {
       transitionRun: s.transitionRun,
+      gate: proceed,
       startActing: run => enqueueAgentRunActionOrFail(run, {
         failUnclaimedAction: s.failUnclaimedAction,
         enqueue: async (name, data, options) => { jobs.push([name, data, options]); },
@@ -133,6 +137,7 @@ describe('advanceAfterReport', () => {
     const s = store(reportedRun({ autonomyMode: 'auto' }));
     const result = await advanceAfterReport(s.run(), {
       transitionRun: s.transitionRun,
+      gate: proceed,
       startActing: run => enqueueAgentRunActionOrFail(run, {
         failUnclaimedAction: s.failUnclaimedAction,
         enqueue: async () => { throw new Error('Redis unavailable'); },
@@ -148,6 +153,7 @@ describe('advanceAfterReport', () => {
     const started: string[] = [];
     const result = await advanceAfterReport(reportedRun({ autonomyMode: 'auto' }), {
       transitionRun: s.transitionRun,
+      gate: proceed,
       startActing: async run => { started.push(run.id); return run; },
     });
     assert.equal(result, null);

@@ -215,6 +215,18 @@ test('alias-specific capacity is reported for the account that was actually insp
     assert.equal(snapshot?.weeklyPercent, 11);
 });
 
+test('alias-specific capacity carries when the session window resets', async () => {
+    mode = 'bundled';
+    const lastUpdated = new Date(Date.now() - 60_000);
+    bundledSnapshotsByAlias = {
+        claude: { name: 'claude', usage: { session: { percent: 95, resetsInSeconds: 600 } }, lastUpdated: lastUpdated.toISOString() },
+    };
+
+    const snapshot = await new AliasSpecificAgentTankSnapshotProvider().getSnapshot('claude');
+
+    assert.equal(snapshot?.sessionResetsAt?.getTime(), lastUpdated.getTime() + 600_000);
+});
+
 test('alias-specific capacity is reported for a custom alias that was actually inspected', async () => {
     mode = 'bundled';
     // A custom alias is the case the provider-keyed snapshot name cannot satisfy

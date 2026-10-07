@@ -97,6 +97,8 @@ describe('agent definition routes', () => {
     }),
     removeTemporaryUploads: async () => undefined,
     removeAttachmentFiles: async (definitionId, attachments) => { removedFiles.push({ definitionId, attachments }); },
+    gate: () => null,
+    evaluateCapacity: async definition => ({ threshold: 90, capacity: { status: 'near_limit', provider: definition.agentAlias ?? 'claude', sessionPercent: 95 } }),
   });
 
   beforeEach(async () => {
@@ -208,7 +210,7 @@ describe('agent definition routes', () => {
     const other = (body: unknown = {}) => request('mallory', { params, body });
 
     for (const route of [routes.get, routes.update, routes.remove, routes.uploadAttachments, routes.deleteAttachment,
-      routes.triggerRun, routes.listRuns, routes.getRun, routes.cancelRun]) {
+      routes.triggerRun, routes.capacity, routes.listRuns, routes.getRun, routes.cancelRun]) {
       const result = await call(route, other({ name: 'Mine now' }));
       assert.equal(result.status, 404, `${route.name}: ${JSON.stringify(result.body)}`);
     }
@@ -296,6 +298,28 @@ describe('agent definition routes', () => {
       const refused = await call(routes.triggerRun, request('alice', { params: { id: definition.id }, body: { trigger } }));
       assert.equal(refused.status, 400);
     }
+  });
+
+  test('the trigger applies the cost gate and records a held run without enqueueing', async () => {
+    const gated = createAgentDefinitionRoutes({ db: database, services: { ...services(),
+      gate: ({ trigger }) => trigger === 'manual' ? null : { action: 'skip', reason: 'Weekly subscription usage for claude is at 95% (pause threshold 90%).' } } });
+    const definition = await createDefinition('alice');
+    const api = await call(gated.triggerRun, request('alice', { params: { id: definition.id }, body: { trigger: 'api' } }));
+    assert.equal(api.status, 202);
+    assert.equal(api.body.run.state, 'skipped');
+    assert.match(api.body.run.skipReason, /^Weekly subscription usage/);
+    assert.deepEqual(enqueued, []);
+
+    const manual = await call(gated.triggerRun, request('alice', { params: { id: definition.id }, body: { trigger: 'manual' } }));
+    assert.equal(manual.body.run.state, 'queued');
+    assert.deepEqual(enqueued, [manual.body.run.id]);
+  });
+
+  test('capacity reports the definition agent usage and the pause threshold', async () => {
+    const definition = await createDefinition('alice');
+    const result = await call(routes.capacity, request('alice', { params: { id: definition.id } }));
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, { threshold: 90, capacity: { status: 'near_limit', provider: definition.agentAlias ?? 'claude', sessionPercent: 95 } });
   });
 
   test('triggering a disabled agent maps the core error to { error, code }', async () => {

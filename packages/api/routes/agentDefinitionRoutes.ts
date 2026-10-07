@@ -8,12 +8,15 @@ import {
   AttachmentService,
   changeAgentDefinitionAttachments,
   createAgentDefinition,
+  createAgentRunCostGate,
   deleteAgentDefinitionUnlessRunInStates,
   enqueueAgentRunActionOrFail,
+  evaluateProviderCapacity,
   getAgentDefinition,
   getAgentRun,
   listAgentDefinitions,
   listAgentRuns,
+  loadUsagePauseThreshold,
   logger,
   transitionAgentRun,
   triggerAgentRun,
@@ -23,6 +26,7 @@ import {
   type AgentRunGate,
   type Attachment,
   type MulterFile,
+  type ProviderCapacity,
   type StoredAgentDefinition,
   type StoredAgentRun,
   type TriggerAgentRunInput,
@@ -77,8 +81,10 @@ export interface AgentDefinitionRouteServices {
   trigger?: (input: TriggerAgentRunInput) => Promise<TriggerAgentRunResult>;
   validateRuntime?: (definition: StoredAgentDefinition) => Promise<string | null>;
   stopTask?: StopTask;
-  /** Cost gate for triggered runs; attached by the usage gate. */
+  /** Cost gate for triggered runs; defaults to the Agent Tank usage gate (`manual` always proceeds). */
   gate?: AgentRunGate;
+  /** Current provider capacity for a definition, with the pause threshold it was judged against. */
+  evaluateCapacity?: (definition: StoredAgentDefinition) => Promise<{ capacity: ProviderCapacity; threshold: number }>;
   processUpload?: (file: MulterFile, definitionId: string) => Promise<Attachment>;
   removeTemporaryUploads?: (files: readonly MulterFile[]) => Promise<void>;
   removeAttachmentFiles?: (definitionId: string, attachments: readonly Attachment[] | 'all') => Promise<void>;
@@ -265,6 +271,12 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
   const processUpload = services.processUpload ?? defaultProcessUpload;
   const removeTemporaryUploads = services.removeTemporaryUploads ?? removeTemporaryGoalUploads;
   const removeAttachmentFiles = services.removeAttachmentFiles ?? defaultRemoveAttachmentFiles;
+  const gate = services.gate ?? createAgentRunCostGate({ now });
+  const evaluateCapacity = services.evaluateCapacity ?? (async (definition: StoredAgentDefinition) => {
+    const threshold = await loadUsagePauseThreshold();
+    const capacity = await evaluateProviderCapacity(definition.agentAlias, threshold, { modelName: definition.modelName, now });
+    return { capacity, threshold };
+  });
   const startActing = services.startActing
     ?? ((run: StoredAgentRun, note: string | null) => enqueueAgentRunActionOrFail(run, { ...storeDeps, operatorNote: note }));
 
@@ -471,9 +483,15 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
       trigger: runTrigger,
       triggerSource: (body.source as string | undefined)?.trim() || `user:${owner}`,
       idempotencyKey,
-      gate: services.gate,
+      gate,
     });
     res.status(result.created ? 202 : 200).json({ run: publicAgentRun(result.run, { includeReport: true }), created: result.created });
+  });
+
+  /** Subscription capacity of the definition's agent, for the UI's usage warning before Run now. */
+  const capacity = handler('Failed to load agent capacity', async (req, res) => {
+    const definition = await requireDefinition(req, requireOwner(req));
+    res.json(await evaluateCapacity(definition));
   });
 
   const listRuns = handler('Failed to list agent runs', async (req, res) => {
@@ -582,6 +600,6 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
   return {
     list, contract, create, get, update, remove,
     uploadAttachments, deleteAttachment,
-    triggerRun, listRuns, getRun, cancelRun, approveRun, rejectRun,
+    triggerRun, capacity, listRuns, getRun, cancelRun, approveRun, rejectRun,
   };
 }

@@ -79,6 +79,8 @@ export const SETTINGS_CATALOG: SettingEntry[] = [
   execution('ultrafix.pause_seconds', 'Ultrafix pause', 'Settings → Automation → General configuration', ['ultrafix_pause_seconds']),
   { ...execution('execution.default_max_cost_usd', 'Default per-run spend cap', 'Settings → Automation → General configuration', ['default_max_cost_usd', 'spend cap', 'cost cap', 'budget']),
     reason: 'USD; empty or 0 = no cap. A task maxCostUsd override, then .propr/workflow.yml limits.max_cost_usd, take precedence. Retries share the budget. A capped run ends with terminal reason cost_cap_exceeded. LLM_COST_THRESHOLD_USD only alerts.' },
+  { ...execution('agents.usage_pause_percent', 'Agent run usage pause', '', ['agent_run_usage_pause_percent', 'pause at % of subscription usage', 'usage pause threshold']), ui: undefined,
+    description: 'Unattended agent runs (schedule, API, MCP, CLI, and auto acting steps) are deferred or skipped when Agent Tank reports the provider\'s subscription usage at or above this percent (50-100, default 90). Manual Run now always proceeds; unknown usage never blocks.' },
   { ...execution('ultrafix.ci_wait_timeout_ms', 'Ultrafix CI wait timeout', '', ['ultrafix_ci_wait_timeout_ms'], ['ULTRAFIX_CI_WAIT_TIMEOUT_MS']), ui: undefined,
     description: 'How long an Ultrafix review may wait for blocking CI checks before the loop stops with "CI did not settle". Default 2 hours.' },
   execution('execution.agent_stall_timeout_ms', 'Agent stall timeout', 'Settings → Automation → Agent watchdog', ['agent_stall_timeout_ms', 'stall watchdog', 'inactivity timeout'], ['AGENT_STALL_TIMEOUT_MS']),

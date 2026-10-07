@@ -1,5 +1,5 @@
 import { isUsageTipsCooldownDays, MAX_RUN_COST_CAP_USD } from '@propr/shared';
-import { validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
+import { AGENT_RUN_USAGE_PAUSE_PERCENT_MAX, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
 interface SettingFields {
   usage_tips_enabled?: unknown;
@@ -17,6 +17,7 @@ interface SettingFields {
   ultrafix_max_cycles?: unknown;
   ultrafix_pause_seconds?: unknown;
   default_max_cost_usd?: unknown;
+  agent_run_usage_pause_percent?: unknown;
   ultrafix_ci_wait_timeout_ms?: unknown;
   agent_stall_timeout_ms?: unknown;
   agent_tool_stall_timeout_ms?: unknown;
@@ -39,6 +40,7 @@ export type SettingSaveName =
   | 'ultrafix_max_cycles'
   | 'ultrafix_pause_seconds'
   | 'default_max_cost_usd'
+  | 'agent_run_usage_pause_percent'
   | 'ultrafix_ci_wait_timeout_ms'
   | AgentWatchdogSettingName;
 
@@ -170,6 +172,12 @@ function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSaves
     if (v === null) return { error: `default_max_cost_usd must be a number from 0 (no cap) to ${MAX_RUN_COST_CAP_USD}`, saves: [], normalized };
     normalized.default_max_cost_usd = v;
     saves.push({ name: 'default_max_cost_usd' });
+  }
+  if (fields.agent_run_usage_pause_percent !== undefined) {
+    const v = validateStrictInt(fields.agent_run_usage_pause_percent, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, AGENT_RUN_USAGE_PAUSE_PERCENT_MAX);
+    if (v === null) return { error: `agent_run_usage_pause_percent must be an integer from ${AGENT_RUN_USAGE_PAUSE_PERCENT_MIN} to ${AGENT_RUN_USAGE_PAUSE_PERCENT_MAX}`, saves: [], normalized };
+    normalized.agent_run_usage_pause_percent = v;
+    saves.push({ name: 'agent_run_usage_pause_percent' });
   }
   if (fields.ultrafix_ci_wait_timeout_ms !== undefined) {
     const v = validateStrictInt(fields.ultrafix_ci_wait_timeout_ms, 1, Infinity);
