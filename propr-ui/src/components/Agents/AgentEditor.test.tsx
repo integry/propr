@@ -385,6 +385,73 @@ describe('AgentEditor', () => {
     expect(triggerAgentRun).toHaveBeenCalledWith('agent-1');
   });
 
+  it.each([
+    ['uploading an input file', 'upload'],
+    ['removing an input file', 'remove'],
+  ] as const)('ignores a save requested while %s, even before the button re-renders', async (_label, change) => {
+    const attachment = { id: 'file-1', originalName: 'notes.md', size: 10 } as AgentDefinitionRecord['attachments'][number];
+    const before = change === 'remove' ? [attachment] : [];
+    const after = change === 'remove' ? [] : [attachment];
+    vi.mocked(getAgentDefinition).mockResolvedValue({ ...definition, attachments: before });
+    let finish: () => void = () => undefined;
+    const settled = new Promise<void>(resolve => { finish = resolve; });
+    vi.mocked(uploadAgentAttachment).mockImplementation(async () => {
+      await settled;
+      return { definition: { ...definition, attachments: after }, attachments: after };
+    });
+    vi.mocked(deleteAgentAttachment).mockImplementation(async () => { await settled; return { ...definition, attachments: after }; });
+    // A save answered after the attachment change would carry the file list from before it.
+    vi.mocked(updateAgentDefinition).mockResolvedValue({ ...definition, attachments: before, revision: 4 });
+    const { result } = renderHook(() => useAgentEditor('agent-1', { onSaved: vi.fn(), onDeleted: vi.fn() }));
+    await waitFor(() => expect(result.current.definition).not.toBeNull());
+
+    const { upload, removeAttachment, save } = result.current;
+    let pending: Promise<void> = Promise.resolve();
+    await act(async () => {
+      pending = change === 'upload' ? upload([new File(['x'], 'notes.md')]) : removeAttachment('file-1');
+      await save();
+    });
+    expect(updateAgentDefinition).not.toHaveBeenCalled();
+
+    await act(async () => { finish(); await pending; });
+    expect(result.current.definition?.attachments).toEqual(after);
+  });
+
+  it('ignores an attachment change requested while a save is in flight, even before the inputs re-render', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    let finishSave: (saved: AgentDefinitionRecord) => void = () => undefined;
+    vi.mocked(updateAgentDefinition).mockReturnValue(new Promise(resolve => { finishSave = resolve; }));
+    const { result } = renderHook(() => useAgentEditor('agent-1', { onSaved: vi.fn(), onDeleted: vi.fn() }));
+    await waitFor(() => expect(result.current.definition).not.toBeNull());
+
+    const { save, upload, removeAttachment } = result.current;
+    let pendingSave: Promise<void> = Promise.resolve();
+    await act(async () => {
+      pendingSave = save();
+      await upload([new File(['x'], 'notes.md')]);
+      await removeAttachment('file-1');
+    });
+    expect(uploadAgentAttachment).not.toHaveBeenCalled();
+    expect(deleteAgentAttachment).not.toHaveBeenCalled();
+    await act(async () => { finishSave({ ...definition, revision: 4 }); await pendingSave; });
+  });
+
+  it('disables Save while an input file upload is in flight', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    let fail: (error: Error) => void = () => undefined;
+    vi.mocked(uploadAgentAttachment).mockReturnValue(new Promise((_resolve, reject) => { fail = reject; }));
+    renderEditor('agent-1');
+
+    const saveButton = await screen.findByRole('button', { name: 'Save' });
+    expect(saveButton).toBeEnabled();
+    fireEvent.change(screen.getByTestId('agent-attachment-input'), { target: { files: [new File(['x'], 'notes.md')] } });
+    await waitFor(() => expect(saveButton).toBeDisabled());
+
+    await act(async () => { fail(new Error('Upload failed')); });
+    expect(await screen.findByText('Upload failed')).toBeInTheDocument();
+    expect(saveButton).toBeEnabled();
+  });
+
   it('disables Run now while an input file upload is in flight and re-enables it if the upload fails', async () => {
     vi.mocked(getAgentDefinition).mockResolvedValue(definition);
     let fail: (error: Error) => void = () => undefined;

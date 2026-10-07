@@ -70,13 +70,20 @@ async function listAllAgentDefinitions(isActive: () => boolean): Promise<AgentDe
 
 /** How often the latest run of an agent whose run is still in progress is read again. */
 const RUN_STATE_REFRESH_MS = 5_000;
+/**
+ * How often every listed agent's latest run is read, whatever its last known
+ * state: a schedule or trigger can start a run after one has settled, and a
+ * read that failed is retried.
+ */
+const RUN_STATE_DISCOVERY_MS = 30_000;
 
 const isTerminalRunState = (state: AgentRunState) => (TERMINAL_AGENT_RUN_STATES as readonly AgentRunState[]).includes(state);
 
 /**
  * The latest run state of each listed agent. Runs move on after they start,
  * so while an agent's latest run is unfinished it is read again every
- * RUN_STATE_REFRESH_MS until it settles. A read is applied only if nothing
+ * RUN_STATE_REFRESH_MS until it settles, and every agent is read again every
+ * RUN_STATE_DISCOVERY_MS to find runs started outside this page. A read is applied only if nothing
  * newer was recorded for that agent after it was sent: a run started from the
  * editor in the meantime must not be overwritten by the run before it.
  */
@@ -96,7 +103,7 @@ function useLastRunStates(definitions: AgentDefinitionRecord[] | null) {
     setLastRunStates(current => ({ ...current, [definitionId]: state }));
   }, []);
 
-  // A failed read just leaves the row as it was ("Never run" until a state is known).
+  // A failed read leaves the row as it was until the next discovery read.
   const refresh = useCallback((definitionId: string) => {
     if (inFlight.current.has(definitionId)) return;
     inFlight.current.add(definitionId);
@@ -120,6 +127,14 @@ function useLastRunStates(definitions: AgentDefinitionRecord[] | null) {
     const timer = window.setInterval(() => ids.forEach(refresh), RUN_STATE_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [refresh, unfinished]);
+
+  // Read through a ref so the discovery timer is not restarted whenever the list changes.
+  const listedIds = useRef<string[]>([]);
+  listedIds.current = definitions?.map(definition => definition.id) ?? [];
+  useEffect(() => {
+    const timer = window.setInterval(() => listedIds.current.forEach(refresh), RUN_STATE_DISCOVERY_MS);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
 
   return { lastRunStates, recordRun: record, refresh };
 }

@@ -105,7 +105,7 @@ export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerCo
       saveLabel={definition ? 'Save' : 'Create agent'}
       saving={editor.saving}
       {...runAvailability(isDemoMode, editor)}
-      saveDisabled={readOnly || editor.conflict}
+      saveDisabled={readOnly || editor.conflict || editor.attachmentsPending}
     />
   );
 

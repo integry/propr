@@ -220,7 +220,7 @@ describe('AgentsPage', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(within(triage).getByText('Completed')).toBeInTheDocument();
 
-    // Settled agents are no longer read.
+    // Settled agents are no longer read at the in-progress pace.
     vi.mocked(listAgentRuns).mockClear();
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(listAgentRuns).not.toHaveBeenCalled();
@@ -233,6 +233,57 @@ describe('AgentsPage', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(within(review).getByText('Failed')).toBeInTheDocument();
     expect(listAgentRuns).toHaveBeenCalledWith('a1', { limit: 1 });
+  });
+
+  it('discovers runs started outside the editor for settled, never-run and unread agents', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setViewport(true);
+    vi.mocked(listAgentDefinitions).mockResolvedValue({
+      definitions: [agent('a1', 'Dependency review'), agent('a2', 'Issue triage'), agent('a3', 'Docs sweep')],
+      total: 3, limit: 200, offset: 0,
+    });
+    const states: Record<string, string | null> = { a1: 'completed', a2: null };
+    vi.mocked(listAgentRuns).mockImplementation(async id => {
+      if (id === 'a3' && !states.a3) throw new Error('Network down');
+      return { runs: states[id] ? [{ id: `r-${id}`, state: states[id] } as never] : [], total: 1, limit: 1, offset: 0 };
+    });
+    renderAt('/agents');
+
+    const review = await screen.findByRole('link', { name: /Dependency review/ });
+    const triage = screen.getByRole('link', { name: /Issue triage/ });
+    const docs = screen.getByRole('link', { name: /Docs sweep/ });
+    expect(await within(review).findByText('Completed')).toBeInTheDocument();
+    await waitFor(() => expect(listAgentRuns).toHaveBeenCalledWith('a3', { limit: 1 }));
+    expect(within(triage).getByText('Never run')).toBeInTheDocument();
+    expect(within(docs).getByText('Never run')).toBeInTheDocument();
+
+    // The scheduler starts runs while the page stays open, and the failed read would now succeed.
+    Object.assign(states, { a1: 'failed', a2: 'awaiting_approval', a3: 'running' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(within(review).getByText('Failed')).toBeInTheDocument();
+    expect(within(triage).getByText('Awaiting approval')).toBeInTheDocument();
+    expect(within(docs).getByText('Running')).toBeInTheDocument();
+  });
+
+  it('does not let a discovery read sent before a run started overwrite that run', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setViewport(true);
+    vi.mocked(listAgentRuns).mockResolvedValue({ runs: [{ id: 'old', state: 'completed' } as never], total: 1, limit: 1, offset: 0 });
+    renderAt('/agents/a1');
+    const review = await screen.findByRole('link', { name: /Dependency review/ });
+    expect(await within(review).findByText('Completed')).toBeInTheDocument();
+
+    let finishRead: () => void = () => undefined;
+    vi.mocked(listAgentRuns).mockClear();
+    vi.mocked(listAgentRuns).mockImplementation(async id => {
+      if (id === 'a1') await new Promise<void>(resolve => { finishRead = resolve; });
+      return { runs: [{ id: 'old', state: 'completed' } as never], total: 1, limit: 1, offset: 0 };
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(listAgentRuns).toHaveBeenCalledWith('a1', { limit: 1 });
+    act(() => editorCallbacks.get('a1')!.onRunStarted!({ id: 'new', definitionId: 'a1', state: 'queued' } as never));
+    await act(async () => { finishRead(); });
+    expect(within(review).getByText('Queued')).toBeInTheDocument();
   });
 
   it('does not let a read sent before a run started overwrite that run', async () => {

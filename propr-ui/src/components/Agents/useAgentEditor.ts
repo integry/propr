@@ -141,6 +141,8 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
     if (proprMcpSupport === 'unsupported') input.capabilities = input.capabilities?.filter(capability => capability !== 'propr_mcp');
     const invalid = validateAgentDefinitionInput(input);
     if (invalid) { setError(invalid); return; }
+    // Both return a whole definition; a save answered after an attachment change would restore the old file list.
+    if (attachmentsPendingRef.current > 0) return;
     savingRef.current = true;
     setSaving(true);
     setError(null);
@@ -201,12 +203,12 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
   }, [applyAttachments]);
 
   const upload = useCallback(async (files: File[]) => {
-    if (!definition) return;
+    if (!definition || savingRef.current) return;
     await trackAttachments(async () => (await uploadAgentAttachment(definition.id, files)).definition);
   }, [definition, trackAttachments]);
 
   const removeAttachment = useCallback(async (attachmentId: string) => {
-    if (!definition) return;
+    if (!definition || savingRef.current) return;
     await trackAttachments(() => deleteAgentAttachment(definition.id, attachmentId));
   }, [definition, trackAttachments]);
 
