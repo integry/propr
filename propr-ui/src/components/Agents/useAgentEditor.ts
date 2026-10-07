@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentTypeSupportsProprMcp, validateAgentDefinitionInput, type InstanceCatalogAgent } from '@propr/shared';
 import { getInstanceCatalog } from '../../api/proprApi';
 import {
@@ -50,6 +50,8 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Set synchronously while a save is in flight, so a run cannot start on the configuration being replaced. */
+  const savingRef = useRef(false);
 
   const load = useCallback(async (id: string, isActive: () => boolean = () => true) => {
     setLoading(true);
@@ -104,6 +106,7 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
     if (proprMcpSupport === 'unsupported') input.capabilities = input.capabilities?.filter(capability => capability !== 'propr_mcp');
     const invalid = validateAgentDefinitionInput(input);
     if (invalid) { setError(invalid); return; }
+    savingRef.current = true;
     setSaving(true);
     setError(null);
     setNotice(null);
@@ -119,6 +122,7 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
       if (isAgentConflictError(saveFailure)) setConflict(true);
       else setError((saveFailure as Error).message);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }, [definition, form, onSaved, proprMcpSupport]);
@@ -155,7 +159,7 @@ export function useAgentEditor(definitionId: string | null, { onSaved, onDeleted
   }, [applyAttachments, definition]);
 
   const run = useCallback(async () => {
-    if (!definition) return;
+    if (!definition || savingRef.current) return;
     setRunning(true);
     setError(null);
     try {

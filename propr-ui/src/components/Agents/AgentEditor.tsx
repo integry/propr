@@ -80,7 +80,7 @@ export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerCo
       onRun={() => void editor.run()}
       saveLabel={definition ? 'Save' : 'Create agent'}
       saving={editor.saving}
-      runDisabled={isDemoMode || editor.running}
+      runDisabled={isDemoMode || editor.running || editor.saving}
       saveDisabled={readOnly || editor.conflict}
     />
   );

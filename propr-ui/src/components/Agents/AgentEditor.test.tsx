@@ -1,15 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { validateAgentSchedule } from '@propr/shared';
 import { AgentEditor } from './AgentEditor';
 import {
   AgentApiError,
   createAgentDefinition,
   getAgentDefinition,
+  triggerAgentRun,
   updateAgentDefinition,
   type AgentDefinitionRecord,
 } from '../../api/agentDefinitionsApi';
 import { getInstanceCatalog } from '../../api/proprApi';
+import { useAgentEditor } from './useAgentEditor';
 
 vi.mock('../../api/agentDefinitionsApi', async importOriginal => ({
   ...(await importOriginal<typeof import('../../api/agentDefinitionsApi')>()),
@@ -158,5 +160,53 @@ describe('AgentEditor', () => {
     await waitFor(() => expect(screen.getByLabelText('Name')).toBeEnabled());
     expect(screen.getByLabelText('Description')).toBeEnabled();
     expect(screen.getByLabelText('Name')).toHaveValue('Renamed');
+  });
+
+  it('disables Run now while a save is pending so the run cannot use the previous configuration', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    let finish: (saved: AgentDefinitionRecord) => void = () => undefined;
+    vi.mocked(updateAgentDefinition).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    vi.mocked(triggerAgentRun).mockResolvedValue({ created: true, run: { id: 'run-1' } } as unknown as Awaited<ReturnType<typeof triggerAgentRun>>);
+    renderEditor('agent-1');
+
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Renamed' } });
+    const runButton = screen.getByRole('button', { name: 'Run now' });
+    expect(runButton).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(runButton).toBeDisabled());
+    fireEvent.click(runButton);
+    expect(triggerAgentRun).not.toHaveBeenCalled();
+
+    finish({ ...definition, name: 'Renamed', revision: 4 });
+    await waitFor(() => expect(runButton).toBeEnabled());
+    fireEvent.click(runButton);
+    await waitFor(() => expect(triggerAgentRun).toHaveBeenCalledWith('agent-1'));
+  });
+
+  it('ignores a run requested while a save is in flight, even before the button re-renders', async () => {
+    vi.mocked(getAgentDefinition).mockResolvedValue(definition);
+    let finish: (saved: AgentDefinitionRecord) => void = () => undefined;
+    vi.mocked(updateAgentDefinition).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    vi.mocked(triggerAgentRun).mockResolvedValue({ created: true, run: { id: 'run-1' } } as unknown as Awaited<ReturnType<typeof triggerAgentRun>>);
+    const { result } = renderHook(() => useAgentEditor('agent-1', { onSaved: vi.fn(), onDeleted: vi.fn() }));
+    await waitFor(() => expect(result.current.definition).not.toBeNull());
+
+    // Both actions come from the same render, as two clicks handled before React re-renders would.
+    const { save, run } = result.current;
+    let pendingSave: Promise<void> = Promise.resolve();
+    await act(async () => {
+      pendingSave = save();
+      await run();
+    });
+    expect(updateAgentDefinition).toHaveBeenCalledTimes(1);
+    expect(triggerAgentRun).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finish({ ...definition, revision: 4 });
+      await pendingSave;
+    });
+    await act(async () => { await result.current.run(); });
+    expect(triggerAgentRun).toHaveBeenCalledWith('agent-1');
   });
 });
