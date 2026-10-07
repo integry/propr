@@ -1,0 +1,111 @@
+import { nextCronOccurrence, validateAgentSchedule, type AgentAutonomyMode, type AgentRunState } from '@propr/shared';
+import type { AgentDefinitionRecord } from '../../api/agentDefinitionsApi';
+
+/** How the Agents list and editor name and color definitions, schedules and runs. */
+
+export const AUTONOMY_LABELS: Record<AgentAutonomyMode, string> = {
+  dry_run: 'Dry run',
+  preview: 'Preview',
+  auto: 'Auto',
+};
+
+export const AUTONOMY_BADGE_CLASSES: Record<AgentAutonomyMode, string> = {
+  dry_run: 'border-slate-200 bg-white text-slate-600',
+  preview: 'border-amber-300 bg-white text-amber-700',
+  auto: 'border-teal-600 bg-teal-600 text-white',
+};
+
+export const RUN_STATE_LABELS: Record<AgentRunState, string> = {
+  queued: 'Queued',
+  deferred: 'Deferred',
+  running: 'Running',
+  report_ready: 'Report ready',
+  awaiting_approval: 'Awaiting approval',
+  acting: 'Acting',
+  completed: 'Completed',
+  failed: 'Failed',
+  skipped: 'Skipped',
+  rejected: 'Rejected',
+  cancelled: 'Cancelled',
+};
+
+/** Active work is teal, a waiting human is amber, failure is red and finished runs recede to gray. */
+export const RUN_STATE_CLASSES: Record<AgentRunState, string> = {
+  queued: 'text-blue-700',
+  deferred: 'text-amber-700',
+  running: 'text-teal-700',
+  report_ready: 'text-teal-700',
+  awaiting_approval: 'text-amber-700',
+  acting: 'text-teal-700',
+  completed: 'text-slate-500',
+  failed: 'text-red-700',
+  skipped: 'text-slate-500',
+  rejected: 'text-slate-500',
+  cancelled: 'text-slate-500',
+};
+
+/** One-click schedules offered by the editor, all in UTC. */
+export const SCHEDULE_PRESETS = [
+  { label: 'Hourly', expression: '0 * * * *' },
+  { label: 'Daily 09:00', expression: '0 9 * * *' },
+  { label: 'Weekdays 09:00', expression: '0 9 * * 1-5' },
+  { label: 'Weekly Mon 09:00', expression: '0 9 * * 1' },
+] as const;
+
+/** `integry/propr` → `propr`. */
+export const repoShortName = (repository: string): string => repository.split('/').pop() || repository;
+
+const pad = (value: number) => String(value).padStart(2, '0');
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** `Mon 12 Oct 09:00 UTC`: schedules are evaluated in UTC, so they are shown in UTC. */
+export const formatUtc = (date: Date): string =>
+  `${WEEKDAYS[date.getUTCDay()]} ${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())} UTC`;
+
+/** `3h`, `25m`, `2d`. */
+export const formatDuration = (ms: number): string => {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+};
+
+const NAMED_SCHEDULES: Array<{ match: RegExp; describe: (match: RegExpMatchArray) => string }> = [
+  { match: /^(?:@hourly|0 \* \* \* \*)$/, describe: () => 'Hourly' },
+  { match: /^(\d{1,2}) (\d{1,2}) \* \* \*$/, describe: ([, minute, hour]) => `Daily ${pad(+hour)}:${pad(+minute)} UTC` },
+  { match: /^(\d{1,2}) (\d{1,2}) \* \* 1-5$/, describe: ([, minute, hour]) => `Weekdays ${pad(+hour)}:${pad(+minute)} UTC` },
+  { match: /^(\d{1,2}) (\d{1,2}) \* \* ([0-6])$/, describe: ([, minute, hour, day]) => `Weekly ${WEEKDAYS[+day]} ${pad(+hour)}:${pad(+minute)} UTC` },
+  { match: /^@daily$/, describe: () => 'Daily 00:00 UTC' },
+  { match: /^@weekly$/, describe: () => 'Weekly Sun 00:00 UTC' },
+];
+
+/** A readable name for common cron shapes; anything else is shown as the expression itself. */
+export const describeCron = (expression: string): string => {
+  const trimmed = expression.trim();
+  for (const named of NAMED_SCHEDULES) {
+    const match = trimmed.match(named.match);
+    if (match) return named.describe(match);
+  }
+  return `${trimmed} (UTC)`;
+};
+
+/** The next fire time of a valid cron expression, or null. */
+export const nextScheduledRun = (expression: string, now: Date): Date | null => {
+  if (validateAgentSchedule(expression)) return null;
+  try {
+    return nextCronOccurrence(expression, now);
+  } catch {
+    return null;
+  }
+};
+
+/** "Daily 09:00 UTC · next in 3h", or "Manual" when the agent has no active schedule. */
+export const scheduleSummary = (definition: Pick<AgentDefinitionRecord, 'scheduleCron' | 'scheduleEnabled' | 'nextRunAt' | 'enabled'>, now: number): string => {
+  if (!definition.scheduleCron || !definition.scheduleEnabled) return 'Manual';
+  const name = describeCron(definition.scheduleCron);
+  if (!definition.enabled) return `${name} · paused`;
+  const next = definition.nextRunAt ?? nextScheduledRun(definition.scheduleCron, new Date(now))?.getTime() ?? null;
+  return next === null ? name : `${name} · next in ${formatDuration(next - now)}`;
+};

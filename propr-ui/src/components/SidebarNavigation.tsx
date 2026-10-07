@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   LayoutDashboard, ScrollText, ListTodo, BookMarked, Bot, ChartColumn, ChevronDown, ChevronRight,
-  Cpu, Logs, Plug, Settings, ShieldCheck, Inbox, Target, TriangleAlert,
+  Cpu, Logs, Plug, Settings, ShieldCheck, Inbox, Target, TriangleAlert, Workflow,
 } from 'lucide-react';
 import { SIDEBAR_ICON_STROKE_WIDTH, SIDEBAR_ICON_STROKE_CLASS } from './icons/sidebarIconStroke';
 
@@ -51,6 +51,7 @@ const CORE_NAVIGATION: NavItem[] = [
   { name: 'Inbox', href: '/inbox', icon: Inbox },
   { name: 'Tasks', href: '/tasks', icon: ListTodo },
   { name: 'Goals', href: '/goals', icon: Target },
+  { name: 'Agents', href: '/agents', icon: Workflow },
   { name: 'Plans', href: '/plans', icon: ScrollText },
 ];
 
