@@ -211,6 +211,94 @@ describe('agent run scheduler', () => {
       assert.equal(runs[0].idempotencyKey, `schedule:${new Date(T0900).toISOString()}`);
     });
 
+    test('pending slots that keep failing do not starve a due definition beyond a full batch', async () => {
+      const broken = await Promise.all([1, 2, 3, 4].map(index => define({ name: `Broken ${index}` })));
+      for (const definition of broken) {
+        await claimAgentDefinitionScheduleSlot(definition.id, { claimedNextRunAt: T0900, nextRunAt: T0900 + HOUR, slot: T0900 }, { database });
+      }
+      const healthy = await define({ name: 'Healthy' });
+      const brokenIds = new Set(broken.map(definition => definition.id));
+      const failing = deps({
+        batchSize: 4,
+        trigger: input => brokenIds.has(input.definition.id) ? Promise.reject(new Error('boom')) : trigger(input),
+      });
+
+      // Before the fix, the four pending slots filled every batch.
+      const first = await runAgentScheduleSweep(failing);
+      assert.equal(first.created, 1);
+      assert.equal(first.failed, 3);
+      assert.equal((await listAgentRuns(healthy.id, 'alice', {}, { database })).total, 1);
+      for (const definition of broken) {
+        assert.equal(Number((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot), T0900);
+      }
+    });
+
+    test('pending slots that keep failing rotate so every pending slot is retried', async () => {
+      const broken = await Promise.all([1, 2, 3, 4, 5, 6].map(index => define({ name: `Broken ${index}` })));
+      for (const definition of broken) {
+        await claimAgentDefinitionScheduleSlot(definition.id, { claimedNextRunAt: T0900, nextRunAt: T0900 + HOUR, slot: T0900 }, { database });
+      }
+      const attempted = new Set<string>();
+      const failing = deps({
+        batchSize: 4,
+        trigger: input => { attempted.add(input.definition.id); return Promise.reject(new Error('boom')); },
+      });
+
+      assert.equal((await runAgentScheduleSweep(failing)).failed, 4);
+      clock += MINUTE;
+      assert.equal((await runAgentScheduleSweep(failing)).failed, 4);
+      assert.equal(attempted.size, 6);
+
+      // A recovered slot is released and stops taking part in the rotation.
+      clock += MINUTE;
+      assert.equal((await runAgentScheduleSweep(deps({ batchSize: 4 }))).created, 4);
+      assert.equal((await runAgentScheduleSweep(deps({ batchSize: 4 }))).created, 2);
+      for (const definition of broken) {
+        assert.equal((await database('agent_definitions').where({ id: definition.id }).first()).pending_schedule_slot, null);
+      }
+    });
+
+    for (const [label, change, reason] of [
+      ['schedule is turned off', { scheduleEnabled: false }, /schedule was turned off/],
+      ['agent is disabled', { enabled: false }, /Agent is disabled/],
+    ] as const) {
+      for (const withReceipt of [false, true]) {
+        test(`a pending slot whose ${label} while the sweep processes an earlier definition starts no work${withReceipt ? ' (undispatched receipt)' : ''}`, async () => {
+          const earlier = await define({ name: 'Earlier' });
+          const later = await define({ name: 'Later' });
+          for (const definition of [earlier, later]) {
+            await claimAgentDefinitionScheduleSlot(definition.id, { claimedNextRunAt: T0900, nextRunAt: T0900 + HOUR, slot: T0900 }, { database });
+          }
+          // `later` was attempted before, so the batch lists it after `earlier`.
+          await database('agent_definitions').where({ id: later.id }).update({ pending_schedule_attempted_at: T0900 });
+          const receipt = withReceipt
+            ? (await createAgentRun({ definition: later, trigger: 'schedule', idempotencyKey: `schedule:${new Date(T0900).toISOString()}` }, { database, now })).run
+            : null;
+          const triggered: string[] = [];
+
+          const result = await runAgentScheduleSweep(deps({
+            trigger: async input => {
+              triggered.push(input.definition.id);
+              // The owner's edit completes after the sweep read its batch.
+              if (input.definition.id === earlier.id) await updateAgentDefinition(later.id, 'alice', change, { database, now });
+              return trigger(input);
+            },
+          }));
+
+          assert.deepEqual(triggered, [earlier.id]);
+          assert.equal(result.created, 1);
+          const { runs } = await listAgentRuns(later.id, 'alice', {}, { database });
+          assert.equal(runs.length, 1);
+          assert.equal(runs[0].state, 'skipped');
+          assert.match(runs[0].skipReason ?? '', reason);
+          if (receipt) assert.equal(runs[0].id, receipt.id);
+          const earlierRuns = await listAgentRuns(earlier.id, 'alice', {}, { database });
+          assert.deepEqual(enqueued, [earlierRuns.runs[0].id]);
+          assert.equal((await database('agent_definitions').where({ id: later.id }).first()).pending_schedule_slot, null);
+        });
+      }
+    }
+
     test('a pending slot whose run already exists is released without another run', async () => {
       const definition = await define();
       // The receipt was recorded but the sweep stopped before releasing the slot.

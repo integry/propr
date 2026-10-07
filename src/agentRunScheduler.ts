@@ -11,6 +11,7 @@ import {
 } from '@propr/shared';
 import {
     AgentRunTriggerError,
+    admitAgentDefinitionScheduleSlot,
     claimAgentDefinitionScheduleSlot,
     createAgentRunCostGate,
     db,
@@ -57,7 +58,10 @@ import type { AgentRunPhase } from './jobs/agentRuns/toolPolicy.js';
  *   by terminal runs or past their expiry, a backstop for crashed workers.
  *
  * Stuck-run recovery and grant cleanup page through every candidate on each
- * pass, so records that stay ineligible never hide later eligible ones.
+ * pass, so records that stay ineligible never hide later eligible ones. The
+ * schedule batch splits between pending slots and fresh due definitions and
+ * rotates pending slots by last attempt, so slots that keep failing never
+ * starve other definitions.
  */
 
 export const AGENT_SCHEDULE_SWEEP_BATCH_SIZE = 50;
@@ -94,7 +98,7 @@ export interface AgentScheduleSweepResult {
     invalid: number;
     /** Definitions whose schedule was turned off. */
     disabled: number;
-    /** Slots another sweep claimed first. */
+    /** Slots another sweep claimed or recorded first. */
     lost: number;
     failed: number;
 }
@@ -282,13 +286,22 @@ async function fireClaimedSlot(definition: StoredAgentDefinition, slot: number, 
 /**
  * Resumes a pending slot, or claims the latest due one and fires it. A pending
  * slot blocks new claims, so a sweep that resumes one leaves the next due slot
- * to the following sweep.
+ * to the following sweep. Either way the slot is admitted against the stored
+ * definition, not the batch snapshot: a schedule or agent disabled while
+ * earlier definitions in the batch were processed records a skipped receipt
+ * instead of starting work.
  */
 async function fireDueDefinition({ definition, pendingSlot }: DueScheduledAgentDefinition, context: ScheduleContext): Promise<ScheduleOutcome> {
-    if (pendingSlot !== null) return fireClaimedSlot(definition, pendingSlot, context);
-    const claim = await claimDueSlot(definition, context);
-    if ('outcome' in claim) return claim.outcome;
-    return fireClaimedSlot(claim.definition, claim.slot, context);
+    let slot = pendingSlot;
+    if (slot === null) {
+        const claim = await claimDueSlot(definition, context);
+        if ('outcome' in claim) return claim.outcome;
+        slot = claim.slot;
+    }
+    const admitted = await admitAgentDefinitionScheduleSlot(definition.id, slot, { database: context.database, now: context.clock });
+    // Another sweep already recorded the slot, or the schedule was turned off on the system's behalf.
+    if (!admitted) return 'lost';
+    return fireClaimedSlot(admitted, slot, context);
 }
 
 /**
