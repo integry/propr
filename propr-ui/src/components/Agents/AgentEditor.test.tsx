@@ -95,7 +95,9 @@ describe('AgentEditor', () => {
   it('disables the propr_mcp toggle and acting autonomy for an OpenCode agent', async () => {
     renderEditor();
     const agentSelect = await screen.findByTitle('Select AI agent');
-    await waitFor(() => expect(screen.getByRole('option', { name: 'opencode-main' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('option', { name: 'OpenCode' })).toBeInTheDocument());
+    expect(screen.getByRole('option', { name: 'Claude' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'opencode-main' })).not.toBeInTheDocument();
 
     fireEvent.change(agentSelect, { target: { value: 'claude-main' } });
     const mcpToggle = screen.getByRole('switch', { name: /ProPR tools/ });
@@ -106,8 +108,8 @@ describe('AgentEditor', () => {
     fireEvent.change(agentSelect, { target: { value: 'opencode-main' } });
     expect(mcpToggle).toBeDisabled();
     expect(mcpToggle).not.toBeChecked();
-    expect(screen.getByTestId('agent-capability-propr_mcp-hint')).toHaveTextContent('only Claude and Codex');
-    expect(screen.getByTestId('agent-capability-web-hint')).toHaveTextContent('Best effort on opencode');
+    expect(screen.getByTestId('agent-capability-propr_mcp-hint')).toHaveTextContent('Not available for OpenCode: only Claude and Codex');
+    expect(screen.getByTestId('agent-capability-web-hint')).toHaveTextContent('Best effort on OpenCode');
     expect(screen.getByRole('radio', { name: /^Auto/ })).toBeDisabled();
   });
 

@@ -1,6 +1,7 @@
 import React from 'react';
 import { AGENT_CAPABILITIES, type AgentCapability } from '@propr/shared';
 import { AgentFormRow } from './AgentFormRow';
+import { agentTypeLabel } from './agentPresentation';
 
 /**
  * Whether the selected agent can use ProPR's MCP tools: `supported`, `unsupported`
@@ -48,10 +49,10 @@ export const AgentCapabilitiesSection: React.FC<AgentCapabilitiesSectionProps> =
 
   const hintFor = (capability: AgentCapability): string | null => {
     if (capability === 'propr_mcp' && proprMcpSupport === 'unsupported') {
-      return `Not available for ${agentType ?? 'this agent'}: only Claude and Codex agents can use ProPR tools.`;
+      return `Not available for ${agentType ? agentTypeLabel(agentType) : 'this agent'}: only Claude and Codex agents can use ProPR tools.`;
     }
     if (capability === 'web' && agentType && !NATIVE_WEB_RUNTIMES.has(agentType)) {
-      return `Best effort on ${agentType}: web access depends on what the runtime provides.`;
+      return `Best effort on ${agentTypeLabel(agentType)}: web access depends on what the runtime provides.`;
     }
     return null;
   };

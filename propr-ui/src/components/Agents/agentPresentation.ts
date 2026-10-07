@@ -1,5 +1,7 @@
-import { nextCronOccurrence, validateAgentSchedule, type AgentAutonomyMode, type AgentRunState } from '@propr/shared';
+import { nextCronOccurrence, validateAgentSchedule, type AgentAutonomyMode, type AgentRunState, type InstanceCatalogAgent } from '@propr/shared';
 import type { AgentDefinitionRecord } from '../../api/agentDefinitionsApi';
+import { AGENT_DISPLAY, type AgentType } from '../../config/modelDefinitions';
+import { formatModelName } from '../../utils/modelDisplay';
 
 /** How the Agents list and editor name and color definitions, schedules and runs. */
 
@@ -108,4 +110,32 @@ export const scheduleSummary = (definition: Pick<AgentDefinitionRecord, 'schedul
   if (!definition.enabled) return `${name} · paused`;
   const next = definition.nextRunAt ?? nextScheduledRun(definition.scheduleCron, new Date(now))?.getTime() ?? null;
   return next === null ? name : `${name} · next in ${formatDuration(next - now)}`;
+};
+
+/** `claude-main` → `Claude Main`: a configured alias read as words. */
+const humanizeAlias = (alias: string): string =>
+  alias.split(/[-_\s]+/).filter(Boolean).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') || alias;
+
+/** `opencode` → `OpenCode`; a runtime the catalogue does not list is humanized. */
+export const agentTypeLabel = (type: string): string => AGENT_DISPLAY[type as AgentType]?.label ?? humanizeAlias(type);
+
+/**
+ * The name the UI shows for a configured agent: its runtime (`Claude`), with
+ * the humanized alias added only when several enabled agents share that
+ * runtime (`Claude · Main`). A pool reads as `Fast (pool)`, and an alias
+ * missing from the catalog, or without a known runtime, is humanized.
+ */
+export const agentDisplayName = (alias: string, agents: readonly InstanceCatalogAgent[]): string => {
+  const agent = agents.find(candidate => candidate.alias === alias);
+  if (agent?.kind === 'synthetic') return `${humanizeAlias(alias)} (pool)`;
+  if (!agent?.type) return humanizeAlias(alias);
+  const shared = agents.filter(candidate => candidate.type === agent.type).length > 1;
+  return shared ? `${agentTypeLabel(agent.type)} · ${humanizeAlias(alias)}` : agentTypeLabel(agent.type);
+};
+
+/** What runs an agent, for the list: the model's name, else the agent's, else the instance default. */
+export const runnerLabel = (definition: Pick<AgentDefinitionRecord, 'agentAlias' | 'modelName'>, agents: readonly InstanceCatalogAgent[]): string => {
+  if (definition.modelName) return formatModelName(definition.modelName);
+  if (definition.agentAlias) return agentDisplayName(definition.agentAlias, agents);
+  return 'Default agent';
 };

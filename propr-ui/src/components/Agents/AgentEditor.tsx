@@ -11,6 +11,7 @@ import { AgentCapabilitiesSection } from './AgentCapabilitiesSection';
 import { AgentScheduleSection } from './AgentScheduleSection';
 import { AgentAutonomySection } from './AgentAutonomySection';
 import { AgentDeleteDialog } from './AgentDeleteDialog';
+import { agentDisplayName } from './agentPresentation';
 import { CONFLICT_MESSAGE, useAgentEditor, type AgentEditorCallbacks } from './useAgentEditor';
 
 interface AgentEditorProps extends AgentEditorCallbacks {
@@ -160,6 +161,7 @@ export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerCo
               selectedModel={form.model}
               onAgentChange={editor.changeAgent}
               onModelChange={model => update({ model })}
+              formatAgentLabel={agent => agentDisplayName(agent.alias, editor.agents)}
               disabled={readOnly}
             />
           </AgentFormRow>

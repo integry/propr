@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, GripVertical, X } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import type { AgentRunState } from '@propr/shared';
+import type { AgentRunState, InstanceCatalogAgent } from '@propr/shared';
+import { getInstanceCatalog } from '../api/proprApi';
 import { listAgentDefinitions, listAgentRuns, type AgentDefinitionRecord } from '../api/agentDefinitionsApi';
 import { AgentList } from '../components/Agents/AgentList';
 import { AgentEditor } from '../components/Agents/AgentEditor';
@@ -113,6 +114,19 @@ function useAgentDefinitions() {
   return { definitions, lastRunStates, error, upsert, remove, recordRun };
 }
 
+/** The instance's enabled agents, so the list can name them; empty until loaded or if the read fails. */
+function useCatalogAgents(): InstanceCatalogAgent[] {
+  const [agents, setAgents] = useState<InstanceCatalogAgent[]>([]);
+  useEffect(() => {
+    let active = true;
+    getInstanceCatalog()
+      .then(catalog => { if (active) setAgents(catalog.agents.filter(agent => agent.enabled)); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+  return agents;
+}
+
 const PANE_ACTION_CLASSES = 'inline-flex h-7 w-7 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500';
 
 /**
@@ -127,6 +141,7 @@ const AgentsPage: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => {
   const split = useSplitViewport();
   const { isDemoMode } = useDemoMode();
   const { definitions, lastRunStates, error, upsert, remove, recordRun } = useAgentDefinitions();
+  const catalogAgents = useCatalogAgents();
   const { host: editorHost, dockRef } = useEditorDock();
   const editing = isNew || definitionId !== null;
 
@@ -156,7 +171,7 @@ const AgentsPage: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => {
   }, [close, editing, split]);
 
   const list = (
-    <AgentList definitions={definitions} lastRunStates={lastRunStates} error={error} selectedId={definitionId} readOnly={isDemoMode} />
+    <AgentList definitions={definitions} lastRunStates={lastRunStates} error={error} selectedId={definitionId} readOnly={isDemoMode} agents={catalogAgents} />
   );
 
   const editor = editing && createPortal(

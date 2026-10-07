@@ -23,6 +23,8 @@ interface AgentModelSelectorProps {
   onMultiConfirm?: () => void;
   /** Automatically open the multi-select dropdown when switching to multi mode */
   autoOpenMultiDropdown?: boolean;
+  /** Label for an agent option; defaults to its alias. */
+  formatAgentLabel?: (agent: InstanceCatalogAgent) => string;
 }
 
 export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
@@ -39,7 +41,8 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
   selectedModels = [],
   onMultiModelChange,
   onMultiConfirm,
-  autoOpenMultiDropdown = false
+  autoOpenMultiDropdown = false,
+  formatAgentLabel
 }) => {
   const [multiDropdownOpen, setMultiDropdownOpen] = useState(autoOpenMultiDropdown && isMulti);
 
@@ -161,6 +164,7 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
       onAgentChange={handleAgentChange}
       onModelChange={handleModelChange}
       showMultiOption={!!onMultiToggle && enabledAgents.length > 0}
+      formatAgentLabel={formatAgentLabel}
     />
   );
 };

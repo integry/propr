@@ -3,11 +3,14 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import AgentsPage from './AgentsPage';
 import { listAgentDefinitions, listAgentRuns, type AgentDefinitionRecord } from '../api/agentDefinitionsApi';
+import { getInstanceCatalog } from '../api/proprApi';
 
 vi.mock('../api/agentDefinitionsApi', () => ({
   listAgentDefinitions: vi.fn(),
   listAgentRuns: vi.fn(),
 }));
+
+vi.mock('../api/proprApi', () => ({ getInstanceCatalog: vi.fn() }));
 
 // The editor has its own suite; here it only has to say which agent it shows and where its controls are.
 vi.mock('../components/Agents/AgentEditor', () => ({
@@ -56,6 +59,10 @@ describe('AgentsPage', () => {
     vi.mocked(listAgentRuns).mockImplementation(async id => ({
       runs: id === 'a1' ? [{ id: 'r1', state: 'completed' } as never] : [], total: 0, limit: 1, offset: 0,
     }));
+    vi.mocked(getInstanceCatalog).mockResolvedValue({
+      agents: [{ alias: 'claude-main', type: 'claude', enabled: true, supportedModels: ['claude-opus-4-5'] }],
+      repositories: [],
+    } as unknown as Awaited<ReturnType<typeof getInstanceCatalog>>);
   });
 
   afterEach(() => {
@@ -84,6 +91,24 @@ describe('AgentsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close agent' }));
     expect(screen.getByTestId('location')).toHaveTextContent(/^\/agents$/);
     expect(screen.queryByTestId('agent-editor')).not.toBeInTheDocument();
+  });
+
+  it('names models and agents rather than showing their ids', async () => {
+    vi.mocked(listAgentDefinitions).mockResolvedValue({
+      definitions: [
+        agent('a1', 'Dependency review'),
+        agent('a2', 'Issue triage', { modelName: null }),
+        agent('a3', 'Docs sweep', { agentAlias: null, modelName: null }),
+      ],
+      total: 3, limit: 200, offset: 0,
+    });
+    setViewport(true);
+    renderAt('/agents');
+
+    expect(await screen.findByRole('link', { name: /Dependency review/ })).toHaveTextContent('Claude Opus 4.5');
+    expect(await screen.findByRole('link', { name: /Issue triage/ })).toHaveTextContent(/propr\s*Claude\s*Manual/);
+    expect(screen.getByRole('link', { name: /Docs sweep/ })).toHaveTextContent('Default agent');
+    expect(screen.getByRole('list', { name: 'Agents' })).not.toHaveTextContent(/claude-main|claude-opus-4-5/);
   });
 
   it('navigates to the agent on narrow screens and offers a way back to the list', async () => {
