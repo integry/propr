@@ -857,6 +857,21 @@ export async function hasActiveTasksForPR(
     };
 }
 
+async function requestOpenPRsForCommit(
+    owner: string,
+    repoName: string,
+    commitSha: string
+): Promise<Array<{ number: number }>> {
+    const octokit = await getAuthenticatedOctokit();
+    const { data: pulls } = await octokit.request(
+        'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+        { owner, repo: repoName, commit_sha: commitSha, headers: { accept: 'application/vnd.github.groot-preview+json' } }
+    );
+    return pulls
+        .filter((pr: { state: string }) => pr.state === 'open')
+        .map((pr: { number: number }) => ({ number: pr.number }));
+}
+
 /**
  * Finds open PRs whose head SHA matches the given commit.
  * Used by the status event handler to map a commit status update to PRs.
@@ -867,16 +882,102 @@ export async function findPRsForCommit(
     commitSha: string
 ): Promise<Array<{ number: number }>> {
     try {
-        const octokit = await getAuthenticatedOctokit();
-        const { data: pulls } = await octokit.request(
-            'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
-            { owner, repo: repoName, commit_sha: commitSha, headers: { accept: 'application/vnd.github.groot-preview+json' } }
-        );
-        return pulls
-            .filter((pr: { state: string }) => pr.state === 'open')
-            .map((pr: { number: number }) => ({ number: pr.number }));
+        return await requestOpenPRsForCommit(owner, repoName, commitSha);
     } catch (error) {
         logger.warn({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to find PRs for commit');
         return [];
+    }
+}
+
+const COMMIT_PRS_CACHE_KEY_PREFIX = 'propr:commit-open-prs';
+/**
+ * Long enough to absorb the burst of check runs one push produces, short enough
+ * that a PR opened for the commit afterwards is soon seen. A run that misses it
+ * meanwhile is covered by later check events and polling reconciliation.
+ */
+export const COMMIT_PRS_CACHE_TTL_SECONDS = 60;
+/**
+ * "No open PR" is kept much more briefly: a branch pushed and then opened as
+ * a PR seconds later would otherwise have its remaining check runs (and the
+ * suite completion) dropped for a whole minute. Ten seconds still collapses
+ * the burst of a default-branch push, whose commits never have an open PR.
+ */
+export const COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS = 10;
+/**
+ * A commit whose lookups keep coming back empty (a default-branch push whose
+ * jobs finish over several minutes) is cached for longer each time: the TTL
+ * doubles per consecutive empty result in this process, up to the TTL of a
+ * found PR, so the window in which a newly opened PR goes unseen never
+ * exceeds that of a cached positive result.
+ */
+const COMMIT_PRS_EMPTY_STREAK_LIMIT = 1_000;
+const commitPREmptyStreaks = new Map<string, number>();
+const commitPRLookupsInFlight = new Map<string, Promise<Array<{ number: number }>>>();
+
+/** TTL for a lookup result, tracking consecutive empty results for the commit. */
+function commitPRsCacheTtlSeconds(key: string, prs: Array<{ number: number }>): number {
+    if (prs.length > 0) {
+        commitPREmptyStreaks.delete(key);
+        return COMMIT_PRS_CACHE_TTL_SECONDS;
+    }
+    const streak = (commitPREmptyStreaks.get(key) ?? 0) + 1;
+    // Re-insert so the oldest commit is evicted first once the limit is hit.
+    commitPREmptyStreaks.delete(key);
+    commitPREmptyStreaks.set(key, streak);
+    if (commitPREmptyStreaks.size > COMMIT_PRS_EMPTY_STREAK_LIMIT) {
+        commitPREmptyStreaks.delete(commitPREmptyStreaks.keys().next().value!);
+    }
+    return Math.min(COMMIT_PRS_EMPTY_CACHE_TTL_SECONDS * 2 ** (streak - 1), COMMIT_PRS_CACHE_TTL_SECONDS);
+}
+
+type CommitPRsCache = Pick<Redis, 'get' | 'set'>;
+
+async function readCachedCommitPRs(cache: CommitPRsCache, key: string): Promise<Array<{ number: number }> | null> {
+    try {
+        const raw = await cache.get(key);
+        return raw ? JSON.parse(raw) as Array<{ number: number }> : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * `findPRsForCommit` behind a short-lived Redis cache keyed by repository and
+ * commit, plus in-process sharing of a lookup already in flight. Every job of
+ * a push (e.g. 20–30 check runs on the default branch, which list no PRs) then
+ * costs one GitHub lookup instead of one each. A failed lookup is not cached,
+ * and a cache failure falls back to the plain lookup.
+ */
+export async function findPRsForCommitCached(
+    owner: string,
+    repoName: string,
+    commitSha: string,
+    cache: CommitPRsCache = getUltrafixStateRedis(),
+): Promise<Array<{ number: number }>> {
+    const key = `${COMMIT_PRS_CACHE_KEY_PREFIX}:${owner}:${repoName}:${commitSha}`;
+    const inFlight = commitPRLookupsInFlight.get(key);
+    if (inFlight) return inFlight;
+    const lookup = (async () => {
+        const cached = await readCachedCommitPRs(cache, key);
+        if (cached) return cached;
+        let prs: Array<{ number: number }>;
+        try {
+            prs = await requestOpenPRsForCommit(owner, repoName, commitSha);
+        } catch (error) {
+            logger.warn({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to find PRs for commit');
+            return [];
+        }
+        try {
+            await cache.set(key, JSON.stringify(prs), 'EX', commitPRsCacheTtlSeconds(key, prs));
+        } catch (error) {
+            logger.debug({ owner, repoName, commitSha, error: (error as Error).message }, 'Failed to cache PRs for commit');
+        }
+        return prs;
+    })();
+    commitPRLookupsInFlight.set(key, lookup);
+    try {
+        return await lookup;
+    } finally {
+        commitPRLookupsInFlight.delete(key);
     }
 }

@@ -5,7 +5,9 @@ import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type Unproc
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
 import { extractLlmFromLabels, resolveModelAlias } from '@propr/core';
 import { hasValidTriggerLabel } from '@propr/core';
+import { getCheckRunsStatusForRepo, getCurrentPRHead, triggerUltrafixCheckRunHook } from '@propr/core';
 import type { Redis } from 'ioredis';
+import { hasUltrafixResumeCandidate } from '../jobs/ultrafixResumeClaim.js';
 
 type Octokit = {
     paginate: <T>(endpoint: string, options: Record<string, unknown>) => Promise<T[]>;
@@ -19,7 +21,7 @@ interface PullRequest {
     number: number;
     title: string;
     labels: PRLabel[];
-    head: { ref: string };
+    head: { ref: string; sha?: string };
 }
 
 interface PRComment {
@@ -108,13 +110,54 @@ export async function pollForPullRequestComments(
             return;
         }
 
+        const repoContext = { owner, repo, repoFullName, correlationId };
         for (const pr of prs) {
-            await processPullRequestComments(
-                octokit, pr, { owner, repo, repoFullName, correlationId }, config
-            );
+            await processPullRequestComments(octokit, pr, repoContext, config);
+        }
+        // After the comment pass: a resume can wait on queue scans, GitHub and
+        // the label-transition lease, which must not delay comment pickup.
+        for (const pr of prs) {
+            await reconcileUltrafixForPR(pr, repoContext, config.redisClient);
         }
     } catch (error) {
         handleError(error, `Error polling PR comments for repository ${repoFullName}`, { correlationId });
+    }
+}
+
+/**
+ * Polling counterpart of the check_run/check_suite webhooks: when an Ultrafix
+ * PR's head is green, fire the Ultrafix hook so a deferred loop resumes (or a
+ * stranded one is re-armed) even if no webhook delivery ever arrives.
+ */
+export async function reconcileUltrafixForPR(pr: PullRequest, repoContext: RepoContext, redisClient: Redis): Promise<void> {
+    if (!pr.labels?.some(label => label.name === 'ultrafix')) return;
+
+    const { owner, repo, repoFullName, correlationId } = repoContext;
+    const correlatedLogger = logger.withCorrelation(correlationId);
+
+    try {
+        // Redis first: a labelled PR with no deferred record or active loop needs
+        // no GitHub calls, nor does one whose retry is backing off (as in the sweep).
+        if (!await hasUltrafixResumeCandidate(redisClient, { owner, repo, pr: pr.number }, { honourRetryBackoff: true })) {
+            correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number }, 'Ultrafix reconcile skipped: no loop waiting');
+            return;
+        }
+        // The listed PR already carries its head; only fall back to a lookup when it does not.
+        const headSha = pr.head.sha || await getCurrentPRHead(owner, repo, pr.number);
+        if (!headSha) {
+            correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number }, 'Ultrafix reconcile skipped: PR head SHA unavailable');
+            return;
+        }
+        // The loop's own readiness gate: non-blocking checks never hold it, and a
+        // head with no checks at all is ready (no check event will ever come for it).
+        if (!(await getCheckRunsStatusForRepo(owner, repo, headSha)).allPassing) {
+            correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number, headSha }, 'Ultrafix reconcile: checks not green yet');
+            return;
+        }
+        correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: pr.number, headSha }, 'Ultrafix reconcile: checks green, triggering check hook');
+        await triggerUltrafixCheckRunHook({ owner, repo, prNumber: pr.number, headSha }, correlatedLogger);
+    } catch (error) {
+        correlatedLogger.warn({ repository: repoFullName, pullRequestNumber: pr.number, error: (error as Error).message }, 'Ultrafix CI reconciliation failed');
     }
 }
 

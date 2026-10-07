@@ -116,7 +116,6 @@ export async function initializeUltrafix(ioRedisClient: Redis): Promise<void> {
     try {
         const bootstrapPath = await resolveJobModulePath('ultrafixBootstrap.js');
         const continuationPath = await resolveJobModulePath('ultrafixLoopContinuation.js');
-        const orchestrationPath = await resolveJobModulePath('ultrafixOrchestrationService.js');
 
         const { createUltrafixDeps } = await importWithTsFallback(bootstrapPath);
         setUltrafixDeps(createUltrafixDeps());
@@ -141,17 +140,19 @@ export async function initializeUltrafix(ioRedisClient: Redis): Promise<void> {
         });
         logger.info('[ultrafix] Check run hook initialized');
 
-        const orchestrationMod = await importWithTsFallback(orchestrationPath);
+        // Deferred records and stranded-loop retry obligations are both swept, so
+        // a loop whose last trigger could not settle it is retried without a webhook.
         const sweepDeferredContinuations = async (): Promise<void> => {
             try {
-                const keys = await orchestrationMod.listDeferredContinuationKeys(ioRedisClient);
-                for (const key of keys) {
-                    const parsed = orchestrationMod.parseDeferredKey(key);
-                    if (!parsed) continue;
-                    const log = logger.withCorrelation(generateCorrelationId());
-                    const result = await contMod.resumeDeferredContinuation(parsed, ioRedisClient, log);
+                // The lease keeps a daemon sweeping the same Redis from doubling the work.
+                const outcomes = await contMod.sweepUltrafixResumeCandidates(
+                    ioRedisClient,
+                    () => logger.withCorrelation(generateCorrelationId()),
+                    { leaseMs: DEFERRED_SWEEP_INTERVAL_MS },
+                );
+                for (const { prId, result } of outcomes) {
                     if (result.continued) {
-                        log.info({ ...parsed, result }, '[ultrafix] deferred continuation resumed by sweep');
+                        logger.info({ ...prId, result }, '[ultrafix] continuation resumed by sweep');
                     }
                 }
             } catch (error) {
@@ -163,7 +164,7 @@ export async function initializeUltrafix(ioRedisClient: Redis): Promise<void> {
             await sweepDeferredContinuations();
             deferredSweepInterval = setInterval(sweepDeferredContinuations, DEFERRED_SWEEP_INTERVAL_MS);
             deferredSweepInterval.unref?.();
-            logger.info({ intervalMs: DEFERRED_SWEEP_INTERVAL_MS }, '[ultrafix] Deferred continuation sweep initialized');
+            logger.info({ intervalMs: DEFERRED_SWEEP_INTERVAL_MS }, '[ultrafix] Deferred continuation and retry sweep initialized');
         }
     } catch (error) {
         logger.error({ error: (error as Error).message },

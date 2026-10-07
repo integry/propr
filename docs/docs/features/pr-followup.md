@@ -58,7 +58,7 @@ When you want a quality pass on top of your own reading, the loop goes: ask, pru
 
 The split by feedback source keeps intent clear: plain user comments start follow-up work directly the moment you post them, and `/fix` handles the AI review suggestions from `/review`.
 
-For more autonomous cleanup, `/ultrafix` alternates review and fix cycles until the review score reaches its goal, waiting for CI and PR inactivity between cycles; a visible PR label acts as its circuit breaker. When the base branch has moved, `/merge` brings the base branch into the PR branch and resolves conflicts with agent help — you merge the PR itself when you are satisfied.
+For more autonomous cleanup, `/ultrafix` alternates review and fix cycles until the review score reaches its goal, waiting for CI and PR inactivity between cycles; a visible PR label acts as its circuit breaker. If CI goes red after an automatic fix, the loop pauses rather than ending. Once a follow-up fix or your own push turns the required checks green, check-run and check-suite events, or the polling reconciliation, wake the loop and schedule its next review. The cycle limit, the goal, and the label are still respected at that point, and a per-PR lock with BullMQ job ID deduplication stops simultaneous check events from queuing duplicate cycles. See [Recovery From CI Failures](./pr-commands.md#recovery-from-ci-failures). When the base branch has moved, `/merge` brings the base branch into the PR branch and resolves conflicts with agent help — you merge the PR itself when you are satisfied.
 
 Full syntax, parameters, and trigger rules for every command are in [PR Comment Commands](./pr-commands.md).
 
@@ -79,7 +79,7 @@ for reason codes and issue state labels.
 
 ## Automatic Follow-Up For Failed CI
 
-**Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Enable it only where CI failures are trustworthy signals.
+**Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Check runs that GitHub delivers without a PR number, which is common for fork PRs, are matched to open PRs by commit, so they are reported too. Enable it only where CI failures are trustworthy signals.
 
 While Ultrafix is waiting for CI, its periodic check also recovers failed-CI follow-ups whose webhook was missed, such as during a restart. Recovery respects this setting and the repository's non-blocking checks, ignores replaced commits and closed PRs, and shares duplicate protection with webhook delivery.
 
