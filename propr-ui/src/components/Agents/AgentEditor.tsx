@@ -37,10 +37,9 @@ interface AgentEditorTopProps {
   headerControls?: React.ReactNode;
 }
 
-/** The header with Run now and Save; for a saved automation the Settings/Runs tabs, or the breadcrumb of an open run. */
+/** The header with Run now; for a saved automation the Settings/Runs tabs, or the breadcrumb of an open run. */
 const AgentEditorTop: React.FC<AgentEditorTopProps> = ({ definitionId, editor, section, runId, isDemoMode, headerControls }) => {
   const { definition } = editor;
-  const readOnly = isDemoMode || editor.saving;
   const title = definitionId ? (definition?.name || 'Automation') : 'New automation';
   let navigation: React.ReactNode = null;
   if (definitionId && section === 'run' && runId) navigation = <AgentRunBreadcrumb definitionId={definitionId} name={title} runId={runId} />;
@@ -53,11 +52,7 @@ const AgentEditorTop: React.FC<AgentEditorTopProps> = ({ definitionId, editor, s
         canRun={Boolean(definition)}
         running={editor.running}
         onRun={() => void editor.run()}
-        saving={editor.saving}
         {...runAvailability(isDemoMode, { ...editor, disabledAgent: definition?.enabled === false })}
-        saveDisabled={readOnly || editor.conflict || editor.attachmentsPending}
-        showSave={section === 'settings'}
-        isNew={!definitionId}
       />
       {navigation}
     </>
@@ -110,7 +105,7 @@ export const AgentEditor: React.FC<AgentEditorProps> = ({ definitionId, headerCo
       {editor.conflict && <AgentConflictBanner reloadDisabled={editor.attachmentsPending} onReload={() => void editor.reload()} />}
       {editor.error && <p role="alert" className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-800">{editor.error}</p>}
 
-      <AgentSettingsForm editor={editor} readOnly={readOnly} isDemoMode={isDemoMode} hidden={section !== 'settings'} onDelete={() => setConfirmingDelete(true)} />
+      <AgentSettingsForm editor={editor} isNew={!definitionId} readOnly={readOnly} isDemoMode={isDemoMode} hidden={section !== 'settings'} onDelete={() => setConfirmingDelete(true)} />
 
       {section !== 'settings' && definition && (
         <AgentRunsPane definition={definition} runId={section === 'run' ? runId : null} readOnly={isDemoMode} />

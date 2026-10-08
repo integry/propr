@@ -23,7 +23,7 @@ Agents are personal: every definition and run belongs to the user who created it
 
 ## Create an agent
 
-Open **Automations** in the sidebar and choose **New Automation** in the header. Fill in the form and choose **Create automation** (later edits use **Save changes**), then use **Run now** or the **Runs** tab. The REST API (`POST /api/agent-definitions`) accepts the same fields; `GET /api/agent-definitions/contract` and the MCP tool `get_agent_definition_contract` return the authoritative limits.
+Open **Automations** in the sidebar and choose **New Automation** in the header. Fill in the form and choose **Create automation** at the bottom of the form (later edits use **Save changes** in the same place), then use **Run now** or the **Runs** tab. The REST API (`POST /api/agent-definitions`) accepts the same fields; `GET /api/agent-definitions/contract` and the MCP tool `get_agent_definition_contract` return the authoritative limits.
 
 ### Scope
 

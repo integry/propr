@@ -96,13 +96,16 @@ test('the header creates automations, leaving the list toolbar to search', async
   await expect(repositories).toBeVisible();
   expect(await top(name)).toBeLessThan(await top(repositories));
   expect(await top(repositories)).toBeLessThan(await top(prompt));
-  // A new automation is created, not saved; Close sits at the right edge of the pane header, after it.
-  const create = form.getByRole('button', { name: 'Create automation' });
+  // A new automation is created, not saved, from the footer at the bottom of the form; Close stays at the right edge of the pane header.
+  const footer = form.getByTestId('agent-editor-footer');
+  const create = footer.getByRole('button', { name: 'Create automation' });
   const close = form.getByRole('button', { name: 'Close automation' });
   await expect(create).toBeVisible();
   await expect(form.getByRole('button', { name: 'Save changes' })).toHaveCount(0);
+  const bottom = async (locator: Locator) => { const box = (await locator.boundingBox())!; return box.y + box.height; };
+  expect(await top(create)).toBeGreaterThan(await top(prompt));
+  expect(Math.abs(await bottom(footer) - await bottom(form))).toBeLessThan(2);
   const left = async (locator: Locator) => (await locator.boundingBox())!.x;
-  expect(await left(close)).toBeGreaterThan(await left(create));
   expect(await left(close)).toBeGreaterThan(await left(form.getByRole('heading', { name: 'New automation' })));
   await capture(page, 'automations-new-form-top');
 });
@@ -138,7 +141,7 @@ test('on a widescreen the list takes 40% and inputs span up to 672px', async ({ 
 test('editing a saved automation saves changes', async ({ page }) => {
   await page.goto(`/automations/${definition.id}`);
   const form = page.getByTestId('agent-editor');
-  await expect(form.getByRole('button', { name: 'Save changes' })).toBeVisible();
+  await expect(form.getByTestId('agent-editor-footer').getByRole('button', { name: 'Save changes' })).toBeVisible();
   await expect(form.getByRole('button', { name: 'Create automation' })).toHaveCount(0);
 });
 

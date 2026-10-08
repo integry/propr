@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, NavLink } from 'react-router-dom';
-import { AlertTriangle, ChevronRight, Loader2, Play, Plus, RotateCw, Save } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Loader2, Play, RotateCw } from 'lucide-react';
 import { CONFLICT_MESSAGE } from './useAgentEditor';
 
 export const BUTTON_CLASSES = 'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed disabled:opacity-50';
@@ -14,17 +14,11 @@ interface AgentEditorHeaderProps {
   /** Why Run now is unavailable, when the reason is something the user can fix. */
   runHint: string | null;
   onRun: () => void;
-  saving: boolean;
-  saveDisabled: boolean;
-  /** Save belongs to the Settings tab; the run views hide it. */
-  showSave?: boolean;
-  /** A new automation is created rather than saved. */
-  isNew?: boolean;
 }
 
-/** Title on the left; Run now, Create or Save changes, and the pane controls pinned to the right edge. */
+/** Title on the left; Run now and the pane controls pinned to the right edge. Save sits in the form's footer. */
 export const AgentEditorHeader: React.FC<AgentEditorHeaderProps> = ({
-  title, headerControls, canRun, running, runDisabled, runHint, onRun, saving, saveDisabled, showSave = true, isNew = false,
+  title, headerControls, canRun, running, runDisabled, runHint, onRun,
 }) => (
   <header className="flex flex-none items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
     <h1 className="min-w-0 truncate text-base font-semibold text-slate-900">{title}</h1>
@@ -42,20 +36,10 @@ export const AgentEditorHeader: React.FC<AgentEditorHeaderProps> = ({
           Run now
         </button>
       )}
-      {showSave && (
-        <button type="submit" form="agent-editor-form" disabled={saveDisabled} className={`${BUTTON_CLASSES} bg-teal-600 text-white hover:bg-teal-700`}>
-          {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <SubmitIcon isNew={isNew} />}
-          {isNew ? 'Create automation' : 'Save changes'}
-        </button>
-      )}
       {headerControls}
     </div>
   </header>
 );
-
-const SubmitIcon: React.FC<{ isNew: boolean }> = ({ isNew }) => (isNew
-  ? <Plus className="h-4 w-4" aria-hidden="true" />
-  : <Save className="h-4 w-4" aria-hidden="true" />);
 
 export type AgentDetailSection = 'settings' | 'runs' | 'run';
 
