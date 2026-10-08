@@ -12,12 +12,17 @@ import { capture, captureTarget, fixture } from './dashboard-sections.fixture';
 
 const dayKeys = (days: number): string[] => Array.from({ length: days }, (_, index) =>
   new Date(Date.parse('2026-09-23T00:00:00Z') - (days - 1 - index) * 86_400_000).toISOString().slice(0, 10));
+/** The 24 whole UTC hours ending with the fixture's noon, keyed as the API keys hour buckets. */
+const hourKeys = (): string[] => Array.from({ length: 24 }, (_, index) =>
+  new Date(Date.parse('2026-09-23T12:00:00Z') - (23 - index) * 3_600_000).toISOString());
 
 /** Each timeframe answers with different numbers, so a stale section would show. */
 const SCALE: Record<string, number> = { '24h': 1, '7d': 3, '30d': 10, '90d': 24, '1y': 60, all: 80 };
-/** Day periods are whole UTC days ending today; a rolling 24 hours touches two. */
-const DAYS: Record<string, number> = { '24h': 2, '7d': 7, '30d': 30, '90d': 90, '1y': 365, all: 400 };
+/** Day periods are whole UTC days ending today; the last 24 hours are 24 whole UTC hours. */
+const DAYS: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90, '1y': 365, all: 400 };
 const DAY_PERIODS = new Set(['7d', '30d', '90d', '1y']);
+/** The bucket keys a period's activity series carries. */
+const bucketKeys = (period: string): string[] => (period === '24h' ? hourKeys() : dayKeys(DAYS[period] ?? 30));
 
 async function stubAnalytics(page: Page, requests: string[] = []) {
   await page.route('**/api/stats/{tasks,repositories,overview,review-scores}*', route => {
@@ -28,7 +33,7 @@ async function stubAnalytics(page: Page, requests: string[] = []) {
     if (url.pathname === '/api/stats/tasks') {
       return route.fulfill({ json: {
         // A day period lost its eighth (earliest) day; each remaining day keeps its count.
-        dailyCounts: dayKeys(DAYS[period] ?? 30).map((date, index) => ({ date, count: ((index + (DAY_PERIODS.has(period) ? 1 : 0)) * 7 + scale) % 9 })),
+        dailyCounts: bucketKeys(period).map((date, index) => ({ date, count: ((index + (DAY_PERIODS.has(period) ? 1 : 0)) * 7 + scale) % 9 })),
         statusDistribution: [
           { status: 'completed', count: 8 * scale },
           { status: 'failed', count: scale },
@@ -295,6 +300,42 @@ test('the agent efficacy matrix shows one figure per cell, denominators on hover
   expect(await table.evaluate(node => node.parentElement!.scrollWidth - node.parentElement!.clientWidth)).toBeLessThanOrEqual(0);
   await captureTarget(pane, 'analytics-review-quality');
   await captureSettled(page, 'analytics-review-quality-page');
+});
+
+test('the last 24 hours break the chart down by hour, with this hour accumulating', async ({ page }) => {
+  await fixture(page, { width: 1440, height: 900 });
+  await stubAnalytics(page);
+  const runs = [0, 2, 0, 0, 0, 1, 3, 5, 4, 2, 6, 9, 14, 8, 3, 1, 0, 2, 4, 7, 12, 19, 11, 6];
+  const tasks = [0, 1, 0, 0, 0, 1, 1, 2, 2, 1, 3, 4, 5, 3, 1, 0, 0, 1, 2, 3, 5, 8, 4, 2];
+  await page.route('**/api/stats/tasks*', route => route.fulfill({ json: {
+    dailyCounts: hourKeys().map((date, index) => ({ date, count: tasks[index], runs: runs[index] })),
+    statusDistribution: [{ status: 'completed', count: 46 }, { status: 'failed', count: 3 }],
+    avgProcessingTime: [],
+    summary: { total: 49, completed: 46, failed: 3 },
+  } }));
+  await page.goto('/analytics?period=24h');
+  await expect(page.getByRole('heading', { name: /Activity · Last 24 hours/ })).toBeVisible();
+  // One pair per hour, not one per calendar day; an empty hour draws no bar.
+  const chart = page.getByTestId('activity-chart');
+  const taskBars = chart.locator('path[data-testid^="activity-tasks-bar-"]');
+  await expect(chart.locator('path[data-testid^="activity-runs-bar-"]')).toHaveCount(runs.filter(Boolean).length);
+  await expect(taskBars).toHaveCount(tasks.filter(Boolean).length);
+  // Only this hour's tasks bar is teal; the hours that have closed are slate.
+  const taskFills = await taskBars.evaluateAll(paths => paths.map(path => path.getAttribute('fill')));
+  expect(taskFills.slice(0, -1).every(fill => fill === '#334155')).toBe(true);
+  expect(taskFills.at(-1)).toBe('#14B8A6');
+
+  // Clock times step every second hour back from this one at this width, dated where the day turns.
+  const labels = chart.getByTestId('activity-date-label');
+  await expect(labels).toHaveCount(12);
+  const texts = await labels.allTextContents();
+  expect([texts[0], texts[1], texts[5], texts[11]]).toEqual(['14:00Sep 22', '16:00', '00:00Sep 23', '12:00']);
+
+  // Hovering an hour names it with its zone, so a clock time is not read as local.
+  const box = (await chart.locator('.recharts-surface').boundingBox())!;
+  await page.mouse.move(box.x + box.width * (21.5 / 24), box.y + box.height / 2);
+  await expect(chart.getByTestId('activity-tooltip')).toHaveText(/Sep 23, 10:00 UTC: 19 runs · 8 tasks/);
+  await captureSettled(page, 'analytics-activity-hourly');
 });
 
 test('runs and tasks share one chart: each day pairs its runs and tasks side by side', async ({ page }) => {

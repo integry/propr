@@ -103,10 +103,11 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
       const thirtyDaysAgoStr = thirtyDaysAgo.toISOString();
 
       // Volume comes from the aggregation the dashboard widget shares. With a
-      // period every day in the window is listed, including empty ones;
-      // without one, totals are all-time and the days are the last 30, so
-      // only those 30 are grouped.
-      // Runs beside tasks, per day: the compute behind each day's deliverables.
+      // period every bucket in the window is listed, including empty ones:
+      // a day each, or an hour each over the last 24 hours; without one,
+      // totals are all-time and the days are the last 30, so only those 30
+      // are grouped.
+      // Runs beside tasks, per bucket: the compute behind each one's deliverables.
       const dailySince = analyticsWindow ? undefined : thirtyDaysAgo;
       const [summary, dailyRuns] = await Promise.all([
         loadTaskSummary(db, analyticsWindow, 'all', { dailySince }),

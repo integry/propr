@@ -7,10 +7,14 @@ const periodQuery = (period?: AnalyticsTimeframe): string =>
   period ? `?period=${encodeURIComponent(period)}` : '';
 
 export interface DailyCount {
+  /**
+   * The bucket: a UTC day as `YYYY-MM-DD`, or over the 24-hour period a UTC
+   * hour as the ISO instant at its top (`YYYY-MM-DDTHH:00:00.000Z`).
+   */
   date: string;
-  /** Tasks created that day. */
+  /** Tasks created in the bucket. */
   count: number;
-  /** Agent runs started that day; absent from servers that predate it. */
+  /** Agent runs started in the bucket; absent from servers that predate it. */
   runs?: number;
 }
 

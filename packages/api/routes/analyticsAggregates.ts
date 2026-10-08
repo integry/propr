@@ -10,7 +10,15 @@
  */
 
 import type { Knex } from 'knex';
-import { analyticsDayKeys, whereCreatedWithin, windowLastInstant, type AnalyticsWindow } from './analyticsWindow.js';
+import {
+  analyticsBucketKeys,
+  analyticsWindowBucket,
+  bucketKeySql,
+  bucketStart,
+  whereCreatedWithin,
+  windowLastInstant,
+  type AnalyticsWindow,
+} from './analyticsWindow.js';
 import { hasColumn } from './analyticsSchema.js';
 
 export interface TaskSummary {
@@ -20,7 +28,12 @@ export interface TaskSummary {
   completed: number;
   /** Of those, tasks that recorded a failure. */
   failed: number;
-  /** Tasks created per UTC day, every day in the window listed; without a window, only days with tasks. */
+  /**
+   * Tasks created per bucket, every bucket in the window listed; without a
+   * window, only days with tasks. A bucket is a UTC day, keyed `YYYY-MM-DD`,
+   * or for the single-day timeframe a UTC hour, keyed by the ISO instant at
+   * the top of the hour (see `analyticsWindowBucket`).
+   */
   dailyCounts: Array<{ date: string; count: number }>;
 }
 
@@ -53,10 +66,12 @@ export async function loadTaskSummary(
   db: Knex, window: AnalyticsWindow | null, repository = 'all', options: { dailySince?: Date } = {},
 ): Promise<TaskSummary> {
   const { dailySince } = options;
+  const bucket = analyticsWindowBucket(window);
+  const bucketKey = bucketKeySql('created_at', bucket);
   const dailyQuery = db('tasks')
-    .select(db.raw('date(created_at) as date'))
+    .select(db.raw(`${bucketKey} as date`))
     .count('* as count')
-    .groupByRaw('date(created_at)')
+    .groupByRaw(bucketKey)
     .orderBy('date', 'asc');
   whereCreatedWithin(dailyQuery, 'created_at', window);
   scopeToRepository(dailyQuery, 'repository', repository);
@@ -91,10 +106,10 @@ export async function loadTaskSummary(
   ]);
 
   const counts = new Map(dailyRows.map(row => [String(row.date), Number(row.count)]));
-  const from = window?.from ?? (dailyRows.length > 0 ? new Date(`${dailyRows[0].date}T00:00:00.000Z`) : null);
+  const from = window?.from ?? (dailyRows.length > 0 ? bucketStart(String(dailyRows[0].date)) : null);
   const dailyCounts = !window
     ? dailyRows.map(row => ({ date: String(row.date), count: Number(row.count) }))
-    : from ? analyticsDayKeys(from, windowLastInstant(window)).map(date => ({ date, count: counts.get(date) ?? 0 })) : [];
+    : from ? analyticsBucketKeys(from, windowLastInstant(window), bucket).map(date => ({ date, count: counts.get(date) ?? 0 })) : [];
 
   return {
     total: bounded ? Number(bounded.count ?? 0) : dailyRows.reduce((sum, row) => sum + Number(row.count), 0),
@@ -105,12 +120,13 @@ export async function loadTaskSummary(
 }
 
 /**
- * The activity chart's days: tasks created and runs started on each.
+ * The activity chart's buckets: tasks created and runs started in each. A
+ * bucket is a UTC day, or a UTC hour over the single-day timeframe.
  *
- * A fixed-length window lists every one of its days. All time starts at the
- * earliest day with either a task or a run — a planning run can precede the
- * first task, or exist without any — so every run the delivery band totals
- * lands on a day the chart draws.
+ * A fixed-length window lists every one of its buckets. All time starts at
+ * the earliest day with either a task or a run — a planning run can precede
+ * the first task, or exist without any — so every run the delivery band
+ * totals lands on a day the chart draws.
  */
 export function activityDays(
   taskDays: Array<{ date: string; count: number }>, dailyRuns: Map<string, number>, window: AnalyticsWindow,
@@ -119,7 +135,9 @@ export function activityDays(
   if (!window.from) {
     const first = [...taskDays.map(day => day.date), ...dailyRuns.keys()].sort()[0];
     const counts = new Map(taskDays.map(day => [day.date, day.count]));
-    days = first ? analyticsDayKeys(new Date(`${first}T00:00:00.000Z`), windowLastInstant(window)).map(date => ({ date, count: counts.get(date) ?? 0 })) : [];
+    days = first
+      ? analyticsBucketKeys(bucketStart(first), windowLastInstant(window), analyticsWindowBucket(window)).map(date => ({ date, count: counts.get(date) ?? 0 }))
+      : [];
   }
   return days.map(day => ({ date: day.date, count: day.count, runs: dailyRuns.get(day.date) ?? 0 }));
 }
@@ -189,17 +207,19 @@ export async function loadRunVolume(db: Knex, window: AnalyticsWindow | null): P
 }
 
 /**
- * Runs started per UTC day, keyed by day; days without a run are absent.
- * `since` bounds the days for a caller that draws fewer than the window holds.
+ * Runs started per bucket, keyed as `loadTaskSummary` keys its buckets;
+ * buckets without a run are absent. `since` bounds the days for a caller
+ * that draws fewer than the window holds.
  *
  * The same executions `loadRunVolume` totals, bucketed by when each started,
- * so the activity chart's daily runs sum to the delivery band's run count.
+ * so the activity chart's runs sum to the delivery band's run count.
  */
 export async function loadDailyRuns(db: Knex, window: AnalyticsWindow | null, since?: Date): Promise<Map<string, number>> {
+  const bucketKey = bucketKeySql('start_time', analyticsWindowBucket(window));
   const query = db('llm_executions')
-    .select(db.raw('date(start_time) as date'))
+    .select(db.raw(`${bucketKey} as date`))
     .count('* as runs')
-    .groupByRaw('date(start_time)');
+    .groupByRaw(bucketKey);
   whereCreatedWithin(query, 'start_time', window);
   if (since) query.where('start_time', '>=', since.toISOString());
   const rows = await query as unknown as Array<{ date: string | null; runs: number | string }>;

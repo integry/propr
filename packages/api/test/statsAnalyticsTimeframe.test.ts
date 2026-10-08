@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import type { Knex } from 'knex';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
-import { analyticsDayKeys } from '../routes/analyticsWindow.js';
+import { analyticsDayKeys, analyticsHourKeys } from '../routes/analyticsWindow.js';
 import {
   NOW,
   call,
@@ -158,6 +158,42 @@ test('a day period zero-fills one daily count per UTC day, today and the days be
   assert.deepEqual(empty.body.dailyCounts, []);
 });
 
+test('the 24-hour period buckets activity by UTC hour: this hour and the 23 before it', async () => {
+  await seedRecentAndOlder();
+  // A task and two runs earlier in the window, on the day before, each in a different hour.
+  await seedTask(database, {
+    taskId: 'yesterday-evening', repository: 'acme/recent', issueNumber: 4,
+    createdAt: minutesAgo(20 * 60 + 15),
+    states: [{ state: 'completed', timestamp: minutesAgo(20 * 60) }],
+  });
+  await database('llm_executions').insert([
+    { execution_id: 3, task_id: 'yesterday-evening', start_time: minutesAgo(20 * 60 + 10), model_name: 'claude-opus-5-5' },
+    { execution_id: 4, task_id: 'yesterday-evening', start_time: minutesAgo(19 * 60 + 50), model_name: 'claude-opus-5-5' },
+    // Just outside the window: the hour 24 hours ago has closed.
+    { execution_id: 5, task_id: 'older', start_time: minutesAgo(23 * 60 + 30), model_name: 'claude-opus-5-5' },
+  ]);
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+
+  const lastDay = await call(stats.getTaskStats, { period: '24h' });
+  const hours = lastDay.body.dailyCounts as Array<{ date: string; count: number; runs: number }>;
+  assert.equal(hours.length, 24);
+  assert.equal(hours[0].date, '2026-09-22T13:00:00.000Z');
+  assert.equal(hours[hours.length - 1].date, '2026-09-23T12:00:00.000Z');
+  assert.deepEqual(hours.map(hour => hour.date), analyticsHourKeys(new Date('2026-09-22T13:00:00.000Z'), NOW));
+  // Each task and run lands in the hour it started, and the rest are zero-filled.
+  const byHour = Object.fromEntries(hours.filter(hour => hour.count || hour.runs).map(hour => [hour.date, [hour.count, hour.runs]]));
+  assert.deepEqual(byHour, {
+    '2026-09-22T15:00:00.000Z': [1, 1],
+    '2026-09-22T16:00:00.000Z': [0, 1],
+    '2026-09-23T11:00:00.000Z': [1, 1],
+  });
+  // The hourly series sums to what the totals band and the delivery band report for the same period.
+  assert.equal(hours.reduce((total, hour) => total + hour.count, 0), (lastDay.body.summary as { total: number }).total);
+  const overview = await call(stats.getOverview, { period: '24h' });
+  assert.equal(hours.reduce((total, hour) => total + hour.runs, 0), (overview.body.runs as { total: number }).total);
+  assert.equal((overview.body.runs as { total: number }).total, 3);
+});
+
 test('all-time activity starts at the earliest task or run, so its runs match the overview', async () => {
   const stats = createStatsRoutes({ db: database, now: () => NOW });
   const totalRuns = async () => {
@@ -237,6 +273,13 @@ test('analytics day keys cover every UTC day from start to end inclusive', () =>
   assert.deepEqual(
     analyticsDayKeys(new Date('2026-09-29T23:30:00.000Z'), new Date('2026-10-01T00:10:00.000Z')),
     ['2026-09-29', '2026-09-30', '2026-10-01'],
+  );
+});
+
+test('analytics hour keys cover every UTC hour from start to end inclusive, keyed by the top of the hour', () => {
+  assert.deepEqual(
+    analyticsHourKeys(new Date('2026-09-30T22:30:00.000Z'), new Date('2026-10-01T00:10:00.000Z')),
+    ['2026-09-30T22:00:00.000Z', '2026-09-30T23:00:00.000Z', '2026-10-01T00:00:00.000Z'],
   );
 });
 

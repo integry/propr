@@ -39,6 +39,7 @@ import AnalyticsTimeframeSelector from '../components/Analytics/AnalyticsTimefra
 import { AnalyticsMetricStrip, UNAVAILABLE, type AnalyticsMetric } from '../components/Analytics/AnalyticsMetricStrip';
 import { LockedRepositoryScope } from '../components/Analytics/LockedRepositoryScope';
 import { useTimeframeRead } from '../components/Analytics/useTimeframeRead';
+import { formatActivityDate } from '../components/Analytics/activityAxis';
 import {
   formatCompactNumber,
   formatDuration,
@@ -58,9 +59,6 @@ import {
 } from '../api/taskStatsApi';
 import { PageLoadingStatus } from '../components/ui/Skeleton';
 import { SystemAlert } from '../components/ui/SystemAlert';
-
-const formatDate = (dateStr: string): string =>
-  new Date(`${dateStr}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 
 /** A pane of the console: a heading bar and its content, ruled off from the pane above. */
 const Pane: React.FC<{
@@ -173,7 +171,7 @@ const AnalyticsPage: React.FC = () => {
 
   const sparklineData = (tasks.data?.dailyCounts ?? []).map(item => ({
     date: item.date,
-    displayDate: formatDate(item.date),
+    displayDate: formatActivityDate(item.date),
     count: item.count,
     ...(item.runs === undefined ? {} : { runs: item.runs }),
   }));

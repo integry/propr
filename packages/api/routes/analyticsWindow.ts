@@ -7,7 +7,9 @@
 
 import type { Request, Response } from 'express';
 import type { Knex } from 'knex';
-import { ANALYTICS_TIMEFRAMES, analyticsTimeframeStart, type AnalyticsTimeframe } from '@propr/shared';
+import {
+  ANALYTICS_TIMEFRAMES, analyticsTimeframeBucket, analyticsTimeframeStart, type AnalyticsBucket, type AnalyticsTimeframe,
+} from '@propr/shared';
 import { validateEnum } from './validation.js';
 
 export interface AnalyticsWindow {
@@ -58,7 +60,24 @@ export function whereCreatedWithin<T extends Knex.QueryBuilder>(query: T, column
   return query;
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * How the activity series over a window is bucketed: by UTC hour for the
+ * single-day timeframe, by UTC day otherwise and without a window.
+ */
+export const analyticsWindowBucket = (window: AnalyticsWindow | null): AnalyticsBucket =>
+  window ? analyticsTimeframeBucket(window.timeframe) : 'day';
+
+/**
+ * The SQL that keys a timestamp column by bucket, matching the keys
+ * `analyticsBucketKeys` lists: `YYYY-MM-DD` for a day, and the ISO instant
+ * at the top of the hour (`YYYY-MM-DDTHH:00:00.000Z`) for an hour. SQLite
+ * stores these columns as ISO text, which `date` and `strftime` both read.
+ */
+export const bucketKeySql = (column: string, bucket: AnalyticsBucket): string =>
+  bucket === 'hour' ? `strftime('%Y-%m-%dT%H:00:00.000Z', ${column})` : `date(${column})`;
 
 /** Every UTC day touched by [from, to], ascending, as `YYYY-MM-DD`. */
 export function analyticsDayKeys(from: Date, to: Date): string[] {
@@ -69,3 +88,20 @@ export function analyticsDayKeys(from: Date, to: Date): string[] {
   }
   return keys;
 }
+
+/** Every UTC hour touched by [from, to], ascending, as the ISO instant at the top of the hour. */
+export function analyticsHourKeys(from: Date, to: Date): string[] {
+  const keys: string[] = [];
+  const last = Math.floor(to.getTime() / HOUR_MS) * HOUR_MS;
+  for (let hour = Math.floor(from.getTime() / HOUR_MS) * HOUR_MS; hour <= last; hour += HOUR_MS) {
+    keys.push(new Date(hour).toISOString());
+  }
+  return keys;
+}
+
+/** Every bucket touched by [from, to], ascending, keyed as `bucketKeySql` keys them. */
+export const analyticsBucketKeys = (from: Date, to: Date, bucket: AnalyticsBucket): string[] =>
+  bucket === 'hour' ? analyticsHourKeys(from, to) : analyticsDayKeys(from, to);
+
+/** The first instant of a bucket, from its key. */
+export const bucketStart = (key: string): Date => new Date(key.includes('T') ? key : `${key}T00:00:00.000Z`);

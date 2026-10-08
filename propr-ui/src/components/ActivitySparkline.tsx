@@ -1,5 +1,6 @@
 /**
- * Runs against tasks per day, as a pair of bars side by side for each day.
+ * Runs against tasks per day, as a pair of bars side by side for each day;
+ * over the last 24 hours, per hour, so a single day is not one or two bars.
  *
  * Each day's left bar is the compute spent that day (agent runs started), and
  * the right one, the same width, is the deliverables (tasks created). Reading
@@ -11,15 +12,18 @@
  * day's height across to the other, and would cost the pane its height again.
  * Against a server that reports no runs, the chart draws tasks alone.
  *
- * Discrete bars, not a smoothed area: the buckets are whole UTC days, and a
- * monotone curve between them invents values for the hours in between and
- * rounds off the spikes and empty days an operator is looking for. Each bar
- * is exactly one day's count, flat on the zero baseline.
+ * Discrete bars, not a smoothed area: the buckets are whole UTC days (or,
+ * over the last 24 hours, whole UTC hours), and a monotone curve between them
+ * invents values for the time in between and rounds off the spikes and empty
+ * stretches an operator is looking for. Each bar is exactly one bucket's
+ * count, flat on the zero baseline. The API keys a day `YYYY-MM-DD` and an
+ * hour by the ISO instant at its top, so the chart can tell the two apart.
  *
  * History is quiet: a day that has closed is a neutral slate bar, and only
- * today's bar, still accumulating, is brand teal — the dashboard's rule. In
- * the paired chart runs are always light slate and tasks dark slate, as the
- * legend says; only today's tasks bar, the deliverable, takes the teal.
+ * today's bar, still accumulating, is brand teal — the dashboard's rule; on
+ * the hourly chart it is this hour's bar. In the paired chart runs are always
+ * light slate and tasks dark slate, as the legend says; only the current
+ * tasks bar, the deliverable, takes the teal.
  *
  * The scale runs from zero to a round ceiling at least 15% above the window's
  * busiest day, both always labelled, with a lighter dashed midline between
@@ -47,18 +51,19 @@ import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { ChartNoAxesColumn, Slash } from 'lucide-react';
 import { headroomCeiling, midlineTick, tooltipStyle } from './chartConstants';
-import { CURRENT_DAY_FILL, dailyBarFill, utcToday } from './Dashboard/chartPalette';
-import { planActivityAxis, type ActivityAxisLabel } from './Analytics/activityAxis';
+import { CURRENT_DAY_FILL, dailyBarFill, utcThisHour, utcToday } from './Dashboard/chartPalette';
+import { isHourKey, planActivityAxis, type ActivityAxisLabel } from './Analytics/activityAxis';
 import { pairDrift, pairedBarGeometry } from './Analytics/activityPairs';
 import { SkeletonBlock, SkeletonRegion } from './ui/Skeleton';
 import { SystemAlert } from './ui/SystemAlert';
 
 interface ActivityDay {
+  /** The bucket: a UTC day as `YYYY-MM-DD`, or a UTC hour as the ISO instant at its top. */
   date: string;
   displayDate: string;
-  /** Tasks created that day. */
+  /** Tasks created in the bucket. */
   count: number;
-  /** Runs started that day; absent when the server does not report runs. */
+  /** Runs started in the bucket; absent when the server does not report runs. */
   runs?: number;
 }
 
@@ -220,7 +225,8 @@ const DateTick: React.FC<{
 
 const ActivitySparkline: React.FC<ActivitySparklineProps> = ({ data, isLoading = false }) => {
   const paired = hasRuns(data);
-  const today = utcToday();
+  // The bucket still accumulating: this hour on the hourly chart, else today.
+  const today = data.length > 0 && isHourKey(data[0].date) ? utcThisHour() : utcToday();
   const [size, setSize] = useState({ width: 0, height: 0 });
   const frame = useRef<HTMLDivElement>(null);
   // Before paint, so the first frame already has the ceiling its height needs;
