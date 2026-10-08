@@ -177,7 +177,7 @@ const CreationButton: React.FC<CreationButtonProps> = ({
         <div
           role="menu"
           aria-label="More creation options"
-          className="absolute right-0 top-full z-50 mt-1 w-36 rounded border border-slate-200 bg-white p-1 shadow-lg"
+          className="absolute right-0 top-full z-50 mt-1 w-40 rounded border border-slate-200 bg-white p-1 shadow-lg"
         >
           {secondary.map(action => (
             <button

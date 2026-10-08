@@ -8,9 +8,13 @@ interface AgentFormRowProps {
   children: React.ReactNode;
 }
 
-/** Settings layout: label and technical subtext on the left (40%), the control on the right (60%). */
+/**
+ * Settings layout: label and technical subtext in a column of at most 15rem
+ * on the left, the control taking the rest of the pane up to max-w-2xl (672px),
+ * so a wide pane does not leave a void beside short inputs.
+ */
 export const AgentFormRow: React.FC<AgentFormRowProps> = ({ label, hint, htmlFor, children }) => (
-  <div className="grid gap-2 border-b border-slate-100 px-4 py-4 md:grid-cols-[2fr_3fr] md:gap-6">
+  <div className="grid gap-2 border-b border-slate-100 px-4 py-4 md:grid-cols-[minmax(10rem,15rem)_minmax(0,42rem)] md:gap-6">
     <div className="min-w-0">
       {htmlFor
         ? <label htmlFor={htmlFor} className="text-sm font-medium text-slate-900">{label}</label>

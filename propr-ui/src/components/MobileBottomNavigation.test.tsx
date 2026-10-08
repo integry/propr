@@ -82,11 +82,12 @@ describe('MobileBottomNavigation', () => {
   });
 
   it.each([
-    ['/', 'New Task', '/tasks/new', ['New Plan', 'New Goal']],
-    ['/plans', 'New Plan', '/studio/new', ['New Task', 'New Goal']],
-    ['/studio/draft-1', 'New Plan', '/studio/new', ['New Task', 'New Goal']],
-    ['/goals', 'New Goal', '/goals?new=1', ['New Task', 'New Plan']],
-    ['/goals/goal-1', 'New Goal', '/goals?new=1', ['New Task', 'New Plan']],
+    ['/', 'New Task', '/tasks/new', ['New Plan', 'New Goal', 'New Automation']],
+    ['/plans', 'New Plan', '/studio/new', ['New Task', 'New Goal', 'New Automation']],
+    ['/studio/draft-1', 'New Plan', '/studio/new', ['New Task', 'New Goal', 'New Automation']],
+    ['/goals', 'New Goal', '/goals?new=1', ['New Task', 'New Plan', 'New Automation']],
+    ['/goals/goal-1', 'New Goal', '/goals?new=1', ['New Task', 'New Plan', 'New Automation']],
+    ['/automations/def-1', 'New Automation', '/automations/new', ['New Task', 'New Plan', 'New Goal']],
   ])('matches the primary action and More options to %s', (route, label, to, options) => {
     renderNavigation(route);
     fireEvent.click(screen.getByRole('button', { name: 'More' }));

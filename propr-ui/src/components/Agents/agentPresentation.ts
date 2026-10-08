@@ -142,6 +142,20 @@ export const agentDisplayName = (alias: string, agents: readonly InstanceCatalog
   return shared ? `${agentTypeLabel(agent.type)} · ${humanizeAlias(alias)}` : agentTypeLabel(agent.type);
 };
 
+/**
+ * What an automation with no coding agent of its own runs on, resolved like
+ * the worker does: the configured default alias, else the agent named
+ * `default`. Named by its default model, so the editor says which model will
+ * run and bill the job; null when the instance has no default agent.
+ */
+export const defaultRunner = (agents: readonly InstanceCatalogAgent[], configuredAlias: string | null): { label: string; provider: string } | null => {
+  const agent = (configuredAlias ? agents.find(candidate => candidate.alias === configuredAlias) : undefined)
+    ?? agents.find(candidate => candidate.alias === 'default');
+  if (!agent) return null;
+  const name = agent.defaultModel ? formatModelName(agent.defaultModel) : agentDisplayName(agent.alias, agents);
+  return { label: `${name} (Default)`, provider: agent.type ?? agent.alias };
+};
+
 /** What runs an agent, for the list: the model's name, else the agent's, else the instance default. */
 export const runnerLabel = (definition: Pick<AgentDefinitionRecord, 'agentAlias' | 'modelName'>, agents: readonly InstanceCatalogAgent[]): string => {
   if (definition.modelName) return formatModelName(definition.modelName);

@@ -1,6 +1,6 @@
 # Launching Work
 
-Use **New Task** for one bounded change, **New Plan** when you want to review a set of issues before execution, or **New Goal** for a continuing objective. The header defaults to New Task, switches to New Plan in Plans/Planner Studio and New Goal in Goals, and keeps the other two actions in its menu. All three use configured repositories and agents.
+Use **New Task** for one bounded change, **New Plan** when you want to review a set of issues before execution, or **New Goal** for a continuing objective. The header defaults to New Task, switches to New Plan in Plans/Planner Studio, New Goal in Goals and New Automation in [Automations](./agents.md), and keeps the other actions in its menu. All three use configured repositories and agents.
 
 ## Start a task
 

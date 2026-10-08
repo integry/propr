@@ -26,7 +26,7 @@ interface AgentRunHistoryProps {
 const ROW_GRID = 'grid grid-cols-[minmax(5.5rem,auto)_minmax(5rem,auto)_minmax(7rem,auto)_3.5rem_minmax(0,1fr)] items-center gap-3';
 
 const runPath = (definitionId: string, runId: string) =>
-  `/agents/${encodeURIComponent(definitionId)}/runs/${encodeURIComponent(runId)}`;
+  `/automations/${encodeURIComponent(definitionId)}/runs/${encodeURIComponent(runId)}`;
 
 /** Whether a run has a report worth reading for its preview. */
 const hasReport = (run: AgentRunRecord) => run.reportedAt !== null;
@@ -148,7 +148,7 @@ export const AgentRunHistory: React.FC<AgentRunHistoryProps> = ({ definitionId, 
       <div className="flex flex-col items-center px-6 py-16 text-center" data-testid="agent-runs-empty">
         <History className="h-10 w-10 text-slate-300" strokeWidth={1.5} aria-hidden="true" />
         <h2 className="mt-4 text-base font-semibold text-slate-900">No runs yet</h2>
-        <p className="mt-2 max-w-md text-sm text-slate-500">Use Run now, or give the agent a schedule, and its runs and reports will appear here.</p>
+        <p className="mt-2 max-w-md text-sm text-slate-500">Use Run now, or give the automation a schedule, and its runs and reports will appear here.</p>
       </div>
     );
   }

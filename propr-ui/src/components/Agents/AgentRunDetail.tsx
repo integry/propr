@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Ban, Check, Copy, ExternalLink, Loader2 } from 'lucide-react';
+import { Ban, Check, Copy, ExternalLink, Loader2 } from 'lucide-react';
 import type { AgentRunRecord } from '../../api/agentDefinitionsApi';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import MarkdownRenderer from '../TaskDetails/MarkdownRenderer';
@@ -87,18 +87,21 @@ const AgentRunReport: React.FC<{ run: AgentRunRecord }> = ({ run }) => (
   </section>
 );
 
-/** State, trigger, autonomy and timeline of a run. */
-const AgentRunHeader: React.FC<{ run: AgentRunRecord }> = ({ run }) => (
+/** State, trigger, autonomy and timeline of a run, with its actions on the right. */
+const AgentRunHeader: React.FC<{ run: AgentRunRecord; actions?: React.ReactNode }> = ({ run, actions }) => (
   <header className="space-y-3">
-    <div className="flex flex-wrap items-center gap-2">
-      <AgentRunStateBadge state={run.state} data-testid="agent-run-state" />
-      <span className="text-sm text-slate-700" title={run.triggerSource ?? undefined}>
-        {RUN_TRIGGER_LABELS[run.trigger]}
-        {run.triggerSource && <span className="text-slate-500"> · {run.triggerSource}</span>}
-      </span>
-      <span className={`rounded-full border px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${AUTONOMY_BADGE_CLASSES[run.autonomyMode]}`} title="Autonomy mode used by this run">
-        {AUTONOMY_LABELS[run.autonomyMode]}
-      </span>
+    <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <AgentRunStateBadge state={run.state} data-testid="agent-run-state" />
+        <span className="text-sm text-slate-700" title={run.triggerSource ?? undefined}>
+          {RUN_TRIGGER_LABELS[run.trigger]}
+          {run.triggerSource && <span className="text-slate-500"> · {run.triggerSource}</span>}
+        </span>
+        <span className={`rounded-full border px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${AUTONOMY_BADGE_CLASSES[run.autonomyMode]}`} title="Autonomy mode used by this run">
+          {AUTONOMY_LABELS[run.autonomyMode]}
+        </span>
+      </div>
+      {actions}
     </div>
     <dl className="grid grid-cols-3 gap-3">
       <Timestamp label="Created" value={run.createdAt} />
@@ -154,25 +157,17 @@ export const AgentRunDetail: React.FC<AgentRunDetailProps> = ({ definitionId, ru
   useDocumentTitle(`Run · ${agentName}`);
   const { run, foreignDefinitionId, loadError, actionError, pendingAction, reload, act } = useAgentRun(definitionId, runId);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
-  const runsPath = `/agents/${encodeURIComponent(definitionId)}/runs`;
-
-  const back = (
-    <Link to={runsPath} className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900">
-      <ArrowLeft className="h-4 w-4" aria-hidden="true" />Runs
-    </Link>
-  );
 
   if (foreignDefinitionId !== null) {
     return (
       <div className="space-y-4 p-4">
-        {back}
         <SystemAlert>
-          <p>This run belongs to a different agent, so it is not shown under {agentName}.</p>
+          <p>This run belongs to a different automation, so it is not shown under {agentName}.</p>
           <Link
-            to={`/agents/${encodeURIComponent(foreignDefinitionId)}/runs/${encodeURIComponent(runId)}`}
+            to={`/automations/${encodeURIComponent(foreignDefinitionId)}/runs/${encodeURIComponent(runId)}`}
             className="mt-1 inline-block font-medium underline"
           >
-            Open it under its own agent
+            Open it under its own automation
           </Link>
         </SystemAlert>
       </div>
@@ -182,7 +177,6 @@ export const AgentRunDetail: React.FC<AgentRunDetailProps> = ({ definitionId, ru
   if (!run) {
     return (
       <div className="space-y-4 p-4">
-        {back}
         {loadError
           ? <SystemAlert onRetry={reload}>{loadError}</SystemAlert>
           : <ListSkeleton layout="block" rows={4} label="Loading run…" />}
@@ -195,17 +189,15 @@ export const AgentRunDetail: React.FC<AgentRunDetailProps> = ({ definitionId, ru
 
   return (
     <div className="space-y-4 p-4" data-testid="agent-run-detail">
-      <div className="flex items-center justify-between gap-3">
-        {back}
-        {cancellable && (
-          <button type="button" onClick={() => setConfirmingCancel(true)} disabled={readOnly || pendingAction !== null} className={SECONDARY_BUTTON}>
+      <AgentRunHeader
+        run={run}
+        actions={cancellable && (
+          <button type="button" onClick={() => setConfirmingCancel(true)} disabled={readOnly || pendingAction !== null} className={`${SECONDARY_BUTTON} flex-none`}>
             {pendingAction === 'cancel' ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Ban className="h-3.5 w-3.5" aria-hidden="true" />}
             Cancel run
           </button>
         )}
-      </div>
-
-      <AgentRunHeader run={run} />
+      />
 
       {reason && (
         <SystemAlert>
