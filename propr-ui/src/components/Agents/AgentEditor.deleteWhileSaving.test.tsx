@@ -50,7 +50,7 @@ describe('AgentEditor deletion while saving', () => {
 
     await screen.findByLabelText('Name');
     const deleteButton = screen.getByRole('button', { name: 'Delete' });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(deleteButton).toBeDisabled());
     finishSave({ ...definition, revision: 4 });

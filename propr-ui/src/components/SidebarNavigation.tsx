@@ -51,7 +51,7 @@ const CORE_NAVIGATION: NavItem[] = [
   { name: 'Inbox', href: '/inbox', icon: Inbox },
   { name: 'Tasks', href: '/tasks', icon: ListTodo },
   { name: 'Goals', href: '/goals', icon: Target },
-  { name: 'Agents', href: '/agents', icon: Workflow },
+  { name: 'Automations', href: '/automations', icon: Workflow },
   { name: 'Plans', href: '/plans', icon: ScrollText },
 ];
 

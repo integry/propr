@@ -33,7 +33,7 @@ export const AgentScopeSection: React.FC<AgentScopeSectionProps> = ({ repositori
   return (
     <AgentFormRow
       label="Repositories"
-      hint={`The repositories this agent may read. Up to ${MAX_AGENT_REPOSITORIES}; leave empty for an agent that needs no code.`}
+      hint={`The repositories this automation may read. Up to ${MAX_AGENT_REPOSITORIES}; leave empty for an automation that needs no code.`}
     >
       {repositories.length > 0 && (
         <ul className="mb-2 flex flex-wrap gap-1.5" aria-label="Selected repositories">

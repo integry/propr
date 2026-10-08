@@ -105,12 +105,14 @@ describe('GlobalHeader desktop toolbar', () => {
   };
 
   it.each([
-    ['/', 'New Task', '/tasks/new', 'lucide-zap', ['New Plan', 'New Goal']],
-    ['/tasks/task-1', 'New Task', '/tasks/new', 'lucide-zap', ['New Plan', 'New Goal']],
-    ['/plans', 'New Plan', '/studio/new', 'lucide-scroll-text', ['New Task', 'New Goal']],
-    ['/studio/draft-1', 'New Plan', '/studio/new', 'lucide-scroll-text', ['New Task', 'New Goal']],
-    ['/goals', 'New Goal', '/goals?new=1', 'lucide-target', ['New Task', 'New Plan']],
-    ['/goals/goal-1?tab=activity#latest', 'New Goal', '/goals?new=1', 'lucide-target', ['New Task', 'New Plan']],
+    ['/', 'New Task', '/tasks/new', 'lucide-zap', ['New Plan', 'New Goal', 'New Automation']],
+    ['/tasks/task-1', 'New Task', '/tasks/new', 'lucide-zap', ['New Plan', 'New Goal', 'New Automation']],
+    ['/plans', 'New Plan', '/studio/new', 'lucide-scroll-text', ['New Task', 'New Goal', 'New Automation']],
+    ['/studio/draft-1', 'New Plan', '/studio/new', 'lucide-scroll-text', ['New Task', 'New Goal', 'New Automation']],
+    ['/goals', 'New Goal', '/goals?new=1', 'lucide-target', ['New Task', 'New Plan', 'New Automation']],
+    ['/goals/goal-1?tab=activity#latest', 'New Goal', '/goals?new=1', 'lucide-target', ['New Task', 'New Plan', 'New Automation']],
+    ['/automations', 'New Automation', '/automations/new', 'lucide-workflow', ['New Task', 'New Plan', 'New Goal']],
+    ['/automations/def-1/runs/run-1', 'New Automation', '/automations/new', 'lucide-workflow', ['New Task', 'New Plan', 'New Goal']],
   ])('uses the route action and remaining menu options on %s', (route, label, to, icon, options) => {
     renderToolbar(route);
     const primary = screen.getByRole('button', { name: label });
@@ -119,10 +121,10 @@ describe('GlobalHeader desktop toolbar', () => {
     expect(mocks.navigate).toHaveBeenLastCalledWith(to);
 
     const destinations: Record<string, string> = {
-      'New Task': '/tasks/new', 'New Plan': '/studio/new', 'New Goal': '/goals?new=1',
+      'New Task': '/tasks/new', 'New Plan': '/studio/new', 'New Goal': '/goals?new=1', 'New Automation': '/automations/new',
     };
     const icons: Record<string, string> = {
-      'New Task': 'lucide-zap', 'New Plan': 'lucide-scroll-text', 'New Goal': 'lucide-target',
+      'New Task': 'lucide-zap', 'New Plan': 'lucide-scroll-text', 'New Goal': 'lucide-target', 'New Automation': 'lucide-workflow',
     };
     for (const option of options) {
       fireEvent.click(screen.getByRole('button', { name: 'More creation options' }));
@@ -143,15 +145,15 @@ describe('GlobalHeader desktop toolbar', () => {
       expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(options);
     };
     await act(() => router.navigate('/goals/goal-1'));
-    expectActions('New Goal', ['New Task', 'New Plan']);
+    expectActions('New Goal', ['New Task', 'New Plan', 'New Automation']);
     await act(() => router.navigate('/repositories'));
-    expectActions('New Task', ['New Plan', 'New Goal']);
+    expectActions('New Task', ['New Plan', 'New Goal', 'New Automation']);
     await act(() => router.navigate(-1));
-    expectActions('New Goal', ['New Task', 'New Plan']);
+    expectActions('New Goal', ['New Task', 'New Plan', 'New Automation']);
     await act(() => router.navigate(-1));
-    expectActions('New Plan', ['New Task', 'New Goal']);
+    expectActions('New Plan', ['New Task', 'New Goal', 'New Automation']);
     await act(() => router.navigate(1));
-    expectActions('New Goal', ['New Task', 'New Plan']);
+    expectActions('New Goal', ['New Task', 'New Plan', 'New Automation']);
   });
 
   it('re-renders the header search without looping on its result set', () => {

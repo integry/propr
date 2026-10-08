@@ -232,7 +232,7 @@ function useCatalogAgents(): InstanceCatalogAgent[] {
 const PANE_ACTION_CLASSES = 'inline-flex h-7 w-7 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500';
 
 /**
- * `/agents` follows the `/tasks` triage console: on wide screens the list
+ * `/automations` follows the `/tasks` triage console: on wide screens the list
  * stays on the left and the selected agent opens beside it; on narrow screens
  * the list and an agent are separate pages with a "Back to list" link. The
  * selection is the URL path, so a reload or a shared link restores it.
@@ -251,15 +251,15 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
   // navigating would replace whichever editor is open now and discard its edits.
   const onSaved = useCallback((definition: AgentDefinitionRecord, created: boolean, open: boolean) => {
     upsert(definition);
-    if (created && open) navigate(`/agents/${encodeURIComponent(definition.id)}`, { replace: true });
+    if (created && open) navigate(`/automations/${encodeURIComponent(definition.id)}`, { replace: true });
   }, [navigate, upsert]);
 
   const onDeleted = useCallback((id: string, open: boolean) => {
     remove(id);
-    if (open) navigate('/agents', { replace: true });
+    if (open) navigate('/automations', { replace: true });
   }, [navigate, remove]);
 
-  const close = useCallback(() => navigate('/agents'), [navigate]);
+  const close = useCallback(() => navigate('/automations'), [navigate]);
 
   useEffect(() => {
     if (!split || !editing) return;
@@ -285,7 +285,7 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
       section={runId ? 'run' : section}
       runId={runId}
       headerControls={split ? (
-        <button type="button" onClick={close} aria-label="Close agent" title="Close (Esc)" className={PANE_ACTION_CLASSES}>
+        <button type="button" onClick={close} aria-label="Close automation" title="Close (Esc)" className={PANE_ACTION_CLASSES}>
           <X className="h-4 w-4" aria-hidden="true" />
         </button>
       ) : null}
@@ -301,7 +301,7 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
     layout = !editing ? <div className="h-full" data-testid="agents-list-page">{list}</div> : (
       <div className="flex h-full min-h-0 flex-col" data-testid="agents-detail-page">
         <nav className="flex-none border-b border-slate-200 bg-white px-4 py-2">
-          <Link to="/agents" className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900">
+          <Link to="/automations" className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900">
             <ArrowLeft className="h-4 w-4" aria-hidden="true" />Back to list
           </Link>
         </nav>
@@ -319,13 +319,13 @@ const AgentsPage: React.FC<{ isNew?: boolean; section?: 'settings' | 'runs' }> =
             <PanelResizeHandle
               id="agent-split-resize-handle"
               className="group flex w-2 flex-none cursor-col-resize items-center justify-center border-l border-slate-200 bg-slate-50 transition-colors hover:bg-teal-50 focus-visible:bg-teal-50 focus-visible:outline-none"
-              aria-label="Resize agent list and agent details"
+              aria-label="Resize automation list and automation details"
               hitAreaMargins={{ coarse: 12, fine: 6 }}
             >
               <GripVertical size={12} className="text-slate-400 group-hover:text-teal-700" aria-hidden="true" />
             </PanelResizeHandle>
             <Panel id="agent-split-details" order={2} defaultSize={60} minSize={35}>
-              <section ref={dockRef} aria-label="Agent details" className="flex h-full min-h-0 min-w-0 flex-col" data-testid="agent-split-details" />
+              <section ref={dockRef} aria-label="Automation details" className="flex h-full min-h-0 min-w-0 flex-col" data-testid="agent-split-details" />
             </Panel>
           </>
         )}
