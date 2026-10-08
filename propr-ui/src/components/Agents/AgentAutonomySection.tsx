@@ -25,9 +25,12 @@ const AUTONOMY_TEXT: Record<AgentAutonomyMode, { label: string; description: str
   },
 };
 
-const SEGMENT_CLASSES = 'px-3 py-1 text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500 disabled:cursor-not-allowed';
+const SEGMENT_CLASSES = 'px-3 py-1 text-xs font-medium has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-teal-500';
 
-/** What happens once a run has produced its report: a segmented control, with the chosen mode explained beneath it. */
+/**
+ * What happens once a run has produced its report: a segmented control, with the chosen mode explained beneath it.
+ * The segments are native radio inputs, so the browser keeps one Tab stop for the group and moves the selection with the arrow keys.
+ */
 export const AgentAutonomySection: React.FC<AgentAutonomySectionProps> = ({ autonomy, onChange, actingAvailable, disabled }) => (
   <AgentFormRow
     label="Autonomy"
@@ -37,22 +40,25 @@ export const AgentAutonomySection: React.FC<AgentAutonomySectionProps> = ({ auto
       {AGENT_AUTONOMY_MODES.map((mode, index) => {
         const locked = mode !== 'dry_run' && !actingAvailable;
         const selected = autonomy === mode;
-        let tone = 'bg-white text-slate-600 hover:bg-slate-50';
-        if (selected) tone = 'bg-slate-900 text-white';
-        else if (locked) tone = 'bg-white text-slate-400';
+        const unavailable = disabled || locked;
+        let tone = 'cursor-pointer bg-white text-slate-600 hover:bg-slate-50';
+        if (selected) tone = `bg-slate-900 text-white ${unavailable ? 'cursor-not-allowed' : 'cursor-pointer'}`;
+        else if (locked) tone = 'cursor-not-allowed bg-white text-slate-400';
+        else if (disabled) tone = 'cursor-not-allowed bg-white text-slate-600';
         return (
-          <button
-            key={mode}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            aria-describedby={selected ? 'agent-autonomy-description' : undefined}
-            disabled={disabled || locked}
-            onClick={() => onChange(mode)}
-            className={`${SEGMENT_CLASSES} ${index > 0 ? 'border-l border-slate-300' : ''} ${tone}`}
-          >
+          <label key={mode} className={`${SEGMENT_CLASSES} ${index > 0 ? 'border-l border-slate-300' : ''} ${tone}`}>
+            <input
+              type="radio"
+              name="agent-autonomy"
+              value={mode}
+              checked={selected}
+              aria-describedby={selected ? 'agent-autonomy-description' : undefined}
+              disabled={unavailable}
+              onChange={() => onChange(mode)}
+              className="sr-only"
+            />
             {AUTONOMY_TEXT[mode].label}
-          </button>
+          </label>
         );
       })}
     </div>

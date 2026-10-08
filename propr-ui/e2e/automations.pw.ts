@@ -118,10 +118,41 @@ test('the new automation form labels the coding agent and uses a compact autonom
   await expect(form.getByRole('combobox', { name: 'Coding agent' }).locator('option:checked')).toHaveText('Claude Opus 5.5 (Default)');
   await expect(form.getByRole('checkbox', { name: 'Feed previous run reports back into prompt context' })).toBeVisible();
   const autonomy = form.getByRole('radiogroup', { name: 'Autonomy' });
-  await autonomy.getByRole('radio', { name: 'Preview & approve' }).click();
+  // The radio inputs are visually hidden; pointer users click the segment label.
+  await autonomy.getByText('Preview & approve', { exact: true }).click();
+  await expect(autonomy.getByRole('radio', { name: 'Preview & approve' })).toBeChecked();
   await expect(form.getByTestId('agent-autonomy-description')).toContainText('waits for your approval');
   await autonomy.scrollIntoViewIfNeeded();
   await capture(page, 'automations-new-form');
+});
+
+test('the autonomy control is one Tab stop and the arrow keys move the selection', async ({ page }) => {
+  await page.goto('/automations/new');
+  const form = page.getByTestId('agent-editor');
+  const autonomy = form.getByRole('radiogroup', { name: 'Autonomy' });
+  const dryRun = autonomy.getByRole('radio', { name: 'Dry run' });
+  const preview = autonomy.getByRole('radio', { name: 'Preview & approve' });
+  const auto = autonomy.getByRole('radio', { name: 'Auto' });
+  await expect(dryRun).toBeChecked();
+  await dryRun.focus();
+
+  await page.keyboard.press('ArrowRight');
+  await expect(preview).toBeChecked();
+  await expect(preview).toBeFocused();
+  await expect(form.getByTestId('agent-autonomy-description')).toContainText('waits for your approval');
+  await capture(form.getByTestId('agent-autonomy-description').locator('..'), 'automations-autonomy-keyboard');
+  await page.keyboard.press('ArrowRight');
+  await expect(auto).toBeChecked();
+  await page.keyboard.press('ArrowLeft');
+  await expect(preview).toBeChecked();
+
+  // Tab leaves the group rather than stepping through the other options.
+  await page.keyboard.press('Tab');
+  await expect(dryRun).not.toBeFocused();
+  await expect(preview).not.toBeFocused();
+  await expect(auto).not.toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(preview).toBeFocused();
 });
 
 test('on a widescreen the list takes 40% and inputs span up to 672px', async ({ page }) => {
