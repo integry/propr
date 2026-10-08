@@ -23,6 +23,7 @@ const {
     loadGitHubUserProfiles,
     resolveGitHubUserProfiles,
     resolveGitHubUserProfileByLogin,
+    resetUnresolvedGitHubUserIds,
 } = await import('../packages/core/src/services/githubUserProfileService.js');
 type GitHubUserProfileClient = import('../packages/core/src/services/githubUserProfileService.js').GitHubUserProfileClient;
 
@@ -65,7 +66,10 @@ describe('github_user_profiles migration', () => {
 
 describe('githubUserProfileService', () => {
     before(async () => { await runMigrations(); });
-    beforeEach(async () => { await db('github_user_profiles').delete(); });
+    beforeEach(async () => {
+        await db('github_user_profiles').delete();
+        resetUnresolvedGitHubUserIds();
+    });
     after(async () => {
         await closeConnection();
         await rm(root, { recursive: true, force: true });
@@ -124,7 +128,7 @@ describe('githubUserProfileService', () => {
     });
 
     test('resolveGitHubUserProfiles refreshes entries older than the staleness window', async () => {
-        await rememberGitHubUserProfiles([{ id: 20, login: 'old-login' }], T0);
+        await rememberGitHubUserProfiles([{ id: 20, login: 'old-login', name: null, avatar_url: null }], T0);
         const github = fakeGitHub({ '20': { login: 'new-login' } });
 
         const inside = await resolveGitHubUserProfiles(['20'], { github: github.client, staleAfterMs: 2 * HOUR, now: () => new Date(T0.getTime() + HOUR) });
@@ -162,6 +166,74 @@ describe('githubUserProfileService', () => {
         assert.equal(github.calls.length, 2);
     });
 
+    test('partial payloads update what they carry but do not postpone a full refresh', async () => {
+        await rememberGitHubUserProfiles([{ id: 70, login: 'mona', name: 'Old Name', avatar_url: 'https://a/70' }], T0);
+        const github = fakeGitHub({ '70': { login: 'mona', name: 'New Name' } });
+        // Webhook payloads without `name` keep arriving after the name changed on GitHub.
+        for (let hour = 1; hour <= 72; hour += 12) {
+            await rememberGitHubUserProfiles([{ id: 70, login: 'mona', avatar_url: 'https://a/70' }], new Date(T0.getTime() + hour * HOUR));
+        }
+        const row = await db('github_user_profiles').where('github_user_id', '70').first();
+        assert.equal(row.refreshed_at, T0.toISOString(), 'a partial payload does not count as a full refresh');
+        assert.equal(row.display_name, 'Old Name', 'a partial payload still does not erase the name');
+
+        const later = () => new Date(T0.getTime() + 73 * HOUR);
+        const resolved = await resolveGitHubUserProfiles(['70'], { github: github.client, now: later });
+        assert.equal(resolved.get('70')?.displayName, 'New Name');
+        assert.equal(github.calls.length, 1);
+
+        await db('github_user_profiles').where('github_user_id', '70').update({ refreshed_at: T0.toISOString() });
+        await rememberGitHubUserProfiles([{ id: 70, login: 'mona' }], later());
+        assert.equal((await resolveGitHubUserProfileByLogin('mona', { github: github.client, now: later }))?.displayName, 'New Name');
+        assert.equal(github.calls.length, 2, 'the login resolver also refetches a profile only partially observed');
+    });
+
+    test('a profile first seen without a name is hydrated from GitHub', async () => {
+        await rememberGitHubUserProfiles([{ id: 71, login: 'nameless', avatar_url: 'https://a/71' }], T0);
+        assert.equal((await db('github_user_profiles').where('github_user_id', '71').first()).refreshed_at, null);
+        const github = fakeGitHub({ '71': { login: 'nameless', name: 'Has A Name' } });
+
+        const byId = await resolveGitHubUserProfiles(['71'], { github: github.client, now: () => T0 });
+        assert.equal(byId.get('71')?.displayName, 'Has A Name');
+        assert.equal(github.calls.length, 1);
+        assert.equal((await resolveGitHubUserProfiles(['71'], { github: github.client, now: () => T0 })).get('71')?.displayName, 'Has A Name');
+        assert.equal(github.calls.length, 1, 'once hydrated, the profile is fresh');
+
+        await rememberGitHubUserProfiles([{ id: 72, login: 'nameless-two' }], T0);
+        const github2 = fakeGitHub({ '72': { login: 'nameless-two', name: 'Two' } });
+        assert.equal((await resolveGitHubUserProfileByLogin('nameless-two', { github: github2.client, now: () => T0 }))?.displayName, 'Two');
+        assert.equal(github2.calls.length, 1);
+    });
+
+    test('ids GitHub does not know stop starving the ids after them, and are retried later', async () => {
+        const ids = Array.from({ length: 51 }, (_, index) => String(1000 + index));
+        const github = fakeGitHub({ '1050': { login: 'survivor' } });
+
+        const first = await resolveGitHubUserProfiles(ids, { github: github.client, now: () => T0 });
+        assert.equal(github.calls.length, 50, 'the per-call budget still holds');
+        assert.equal(first.size, 0);
+
+        const second = await resolveGitHubUserProfiles(ids, { github: github.client, now: () => new Date(T0.getTime() + 60_000) });
+        assert.equal(second.get('1050')?.login, 'survivor');
+        assert.deepEqual(github.calls.slice(50).map(call => call.parameters.account_id), [1050], 'unresolved ids are not asked again right away');
+
+        const afterWindow = () => new Date(T0.getTime() + 2 * HOUR);
+        await resolveGitHubUserProfiles(ids, { github: github.client, now: afterWindow });
+        assert.equal(github.calls.length, 51 + 50, 'missing accounts are eventually retried');
+    });
+
+    test('an unresolved id observed in a payload is no longer skipped', async () => {
+        const missing = fakeGitHub({});
+        await resolveGitHubUserProfiles(['80'], { github: missing.client, now: () => T0 });
+        await rememberGitHubUserProfiles([{ id: 80, login: 'back', name: 'Back', avatar_url: 'https://a/80' }], T0);
+        await db('github_user_profiles').where('github_user_id', '80').update({ refreshed_at: null });
+
+        const github = fakeGitHub({ '80': { login: 'back', name: 'Back Again' } });
+        const profiles = await resolveGitHubUserProfiles(['80'], { github: github.client, now: () => T0 });
+        assert.equal(profiles.get('80')?.displayName, 'Back Again');
+        assert.equal(github.calls.length, 1);
+    });
+
     test('resolveGitHubUserProfileByLogin turns a login into a stable id', async () => {
         const github = fakeGitHub({ '50': { login: 'Hubot', name: 'Hubot' } });
         const resolved = await resolveGitHubUserProfileByLogin('@hubot', { github: github.client, now: () => T0 });
@@ -181,8 +253,8 @@ describe('githubUserProfileService', () => {
     });
 
     test('resolveGitHubUserProfileByLogin picks the newest holder across case variants', async () => {
-        await rememberGitHubUserProfiles([{ id: 50, login: 'Hubot' }], T0);
-        await rememberGitHubUserProfiles([{ id: 60, login: 'hubot' }], new Date(T0.getTime() + HOUR));
+        await rememberGitHubUserProfiles([{ id: 50, login: 'Hubot', name: null, avatar_url: null }], T0);
+        await rememberGitHubUserProfiles([{ id: 60, login: 'hubot', name: null, avatar_url: null }], new Date(T0.getTime() + HOUR));
         const github = fakeGitHub({});
         const now = () => new Date(T0.getTime() + 2 * HOUR);
 

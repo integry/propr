@@ -25,6 +25,10 @@ const TABLE = 'github_user_profiles';
 export const GITHUB_USER_PROFILE_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 /** Upper bound on GitHub lookups a single resolve call makes. */
 export const GITHUB_USER_PROFILE_MAX_FETCHES = 50;
+/** How long an id GitHub could not resolve (a deleted account) is skipped before it is asked again. */
+export const GITHUB_USER_PROFILE_NOT_FOUND_RETRY_AFTER_MS = 60 * 60 * 1000;
+// Bounds the in-process record of unresolved ids; the oldest entries are dropped first.
+const MAX_UNRESOLVED_IDS = 10_000;
 // Stay well below SQLite's bound-parameter limit on batch reads.
 const READ_CHUNK_SIZE = 500;
 
@@ -47,7 +51,8 @@ export interface GitHubUserProfileRow {
     login: string;
     avatar_url: string | null;
     display_name: string | null;
-    refreshed_at: string;
+    /** When the full profile was last confirmed; null until one is observed. */
+    refreshed_at: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -62,6 +67,8 @@ export interface ResolveGitHubUserProfilesOptions {
     github?: GitHubUserProfileClient;
     staleAfterMs?: number;
     maxFetches?: number;
+    /** How long an id GitHub does not know is skipped before it is looked up again. */
+    notFoundRetryAfterMs?: number;
     now?: () => Date;
 }
 
@@ -115,12 +122,21 @@ async function readRows(ids: string[]): Promise<GitHubUserProfileRow[]> {
     return rows;
 }
 
+// Only a payload carrying every hydrated field confirms the whole profile. A
+// partial one (a webhook user without `name`) updates what it carries but must
+// not mark the omitted fields as current, or they would never be refetched.
+function isFullProfile(profile: NormalizedProfile): boolean {
+    return profile.avatarUrl !== undefined && profile.displayName !== undefined;
+}
+
 async function writeProfiles(profiles: NormalizedProfile[], now: Date): Promise<number> {
     if (profiles.length === 0) return 0;
     const timestamp = now.toISOString();
     await db.transaction(async trx => {
         for (const profile of profiles) {
-            const update: Partial<GitHubUserProfileRow> = { login: profile.login, refreshed_at: timestamp, updated_at: timestamp };
+            const refreshedAt = isFullProfile(profile) ? timestamp : null;
+            const update: Partial<GitHubUserProfileRow> = { login: profile.login, updated_at: timestamp };
+            if (refreshedAt) update.refreshed_at = refreshedAt;
             if (profile.avatarUrl !== undefined) update.avatar_url = profile.avatarUrl;
             if (profile.displayName !== undefined) update.display_name = profile.displayName;
             await trx<GitHubUserProfileRow>(TABLE)
@@ -129,7 +145,7 @@ async function writeProfiles(profiles: NormalizedProfile[], now: Date): Promise<
                     login: profile.login,
                     avatar_url: profile.avatarUrl ?? null,
                     display_name: profile.displayName ?? null,
-                    refreshed_at: timestamp,
+                    refreshed_at: refreshedAt,
                     created_at: timestamp,
                     updated_at: timestamp,
                 })
@@ -151,6 +167,8 @@ export async function rememberGitHubUserProfiles(profiles: Iterable<GitHubUserPr
         const profile = normalizeProfile(input);
         if (profile) byId.set(profile.id, profile);
     }
+    // An observed profile proves the account exists, so it is no longer skipped.
+    for (const id of byId.keys()) unresolvedUntil.delete(id);
     try {
         return await writeProfiles([...byId.values()], now);
     } catch (error) {
@@ -191,6 +209,7 @@ async function defaultClient(): Promise<GitHubUserProfileClient> {
 }
 
 function isFresh(row: GitHubUserProfileRow, now: Date, staleAfterMs: number): boolean {
+    if (!row.refreshed_at) return false;
     const refreshed = Date.parse(row.refreshed_at);
     return Number.isFinite(refreshed) && now.getTime() - refreshed < staleAfterMs;
 }
@@ -205,15 +224,46 @@ async function readCachedRows(ids: string[]): Promise<Map<string, GitHubUserProf
     return cached;
 }
 
+// Ids GitHub answered without a usable profile (deleted accounts), each with
+// the time it may be asked again. Without this, a stable list whose first
+// `maxFetches` ids are all deleted would spend every call's budget on them and
+// never reach the ids after. Kept in process: losing it on restart only costs
+// one more lookup per id.
+const unresolvedUntil = new Map<string, number>();
+
+function isUnresolved(id: string, now: Date): boolean {
+    const until = unresolvedUntil.get(id);
+    if (until === undefined) return false;
+    if (now.getTime() < until) return true;
+    unresolvedUntil.delete(id);
+    return false;
+}
+
+function markUnresolved(id: string, until: number): void {
+    unresolvedUntil.delete(id);
+    unresolvedUntil.set(id, until);
+    if (unresolvedUntil.size > MAX_UNRESOLVED_IDS) {
+        const oldest = unresolvedUntil.keys().next().value;
+        if (oldest !== undefined) unresolvedUntil.delete(oldest);
+    }
+}
+
+/** Forgets every id recorded as unresolved. For tests. */
+export function resetUnresolvedGitHubUserIds(): void {
+    unresolvedUntil.clear();
+}
+
 // Fetches ids one at a time; the first failure (an outage or rate limit) ends
-// the batch and keeps what was resolved so far.
-async function fetchProfilesById(ids: string[], client: GitHubUserProfileClient | undefined): Promise<NormalizedProfile[]> {
+// the batch and keeps what was resolved so far. An id GitHub does not resolve
+// is skipped until `retryAt`, so later calls move on to the ids after it.
+async function fetchProfilesById(ids: string[], client: GitHubUserProfileClient | undefined, retryAt: number): Promise<NormalizedProfile[]> {
     const fetched: NormalizedProfile[] = [];
     try {
         const github = client ?? await defaultClient();
         for (const id of ids) {
             const profile = await fetchFromGitHub(github, 'GET /user/{account_id}', { account_id: Number(id) }, 'resolve GitHub user profile');
             if (profile && profile.id === id) fetched.push(profile);
+            else markUnresolved(id, retryAt);
         }
     } catch (error) {
         logger.warn({ error: (error as Error).message, pending: ids.length, resolved: fetched.length }, 'Failed to resolve GitHub user profiles; serving cached entries');
@@ -234,6 +284,7 @@ export async function resolveGitHubUserProfiles(
     const now = options.now?.() ?? new Date();
     const staleAfterMs = options.staleAfterMs ?? GITHUB_USER_PROFILE_STALE_AFTER_MS;
     const maxFetches = options.maxFetches ?? GITHUB_USER_PROFILE_MAX_FETCHES;
+    const notFoundRetryAfterMs = options.notFoundRetryAfterMs ?? GITHUB_USER_PROFILE_NOT_FOUND_RETRY_AFTER_MS;
     const ids = uniqueUserIds(userIds);
     const profiles = new Map<string, AttributedUser>();
     if (ids.length === 0) return profiles;
@@ -243,11 +294,11 @@ export async function resolveGitHubUserProfiles(
 
     const pending = ids.filter(id => {
         const row = cached.get(id);
-        return !row || !isFresh(row, now, staleAfterMs);
+        return (!row || !isFresh(row, now, staleAfterMs)) && !isUnresolved(id, now);
     }).slice(0, maxFetches);
     if (pending.length === 0) return profiles;
 
-    const fetched = await fetchProfilesById(pending, options.github);
+    const fetched = await fetchProfilesById(pending, options.github, now.getTime() + notFoundRetryAfterMs);
     for (const profile of fetched) {
         const row = cached.get(profile.id);
         profiles.set(profile.id, {
@@ -278,8 +329,9 @@ export async function resolveGitHubUserProfileByLogin(
     let cached: GitHubUserProfileRow | undefined;
     try {
         // A renamed account can leave an older row holding the same login, in any
-        // case; the most recently refreshed of all matching rows is the current holder.
-        cached = await db<GitHubUserProfileRow>(TABLE).whereRaw('LOWER(login) = ?', [wanted.toLowerCase()]).orderBy('refreshed_at', 'desc').first();
+        // case; the most recently observed of all matching rows is the current holder.
+        // `updated_at`, not `refreshed_at`: a partial payload still confirms the login.
+        cached = await db<GitHubUserProfileRow>(TABLE).whereRaw('LOWER(login) = ?', [wanted.toLowerCase()]).orderBy('updated_at', 'desc').first();
     } catch (error) {
         logger.warn({ error: (error as Error).message, login: wanted }, 'Failed to read cached GitHub user profile by login');
     }
