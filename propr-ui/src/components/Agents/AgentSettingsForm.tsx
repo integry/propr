@@ -9,7 +9,7 @@ import { AgentCapabilitiesSection } from './AgentCapabilitiesSection';
 import { AgentScheduleSection } from './AgentScheduleSection';
 import { AgentAutonomySection } from './AgentAutonomySection';
 import { BUTTON_CLASSES } from './AgentEditorHeader';
-import { agentDisplayName } from './agentPresentation';
+import { agentDisplayName, defaultRunner } from './agentPresentation';
 import type { useAgentEditor } from './useAgentEditor';
 
 interface AgentSettingsFormProps {
@@ -25,6 +25,7 @@ interface AgentSettingsFormProps {
 /** The agent's settings: scope, prompt and files, model, capabilities, schedule and autonomy. */
 export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, readOnly, isDemoMode, hidden, onDelete }) => {
   const { definition, form, update } = editor;
+  const runner = defaultRunner(editor.agents, editor.defaultAgentAlias);
   return (
   <form
     id="agent-editor-form"
@@ -67,7 +68,7 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, re
         disabled={readOnly}
       />
 
-      <AgentFormRow label="Coding agent" hint="The coding agent and model that write the report. Left on the default, the instance default agent runs it.">
+      <AgentFormRow label="Coding agent" hint="The coding agent and model that write the report. Left on the default, the instance default agent runs it with its default model.">
         <AgentModelSelector
           agents={editor.agents}
           selectedAgent={form.agentId}
@@ -75,7 +76,8 @@ export const AgentSettingsForm: React.FC<AgentSettingsFormProps> = ({ editor, re
           onAgentChange={editor.changeAgent}
           onModelChange={model => update({ model })}
           formatAgentLabel={agent => agentDisplayName(agent.alias, editor.agents)}
-          agentPlaceholder="Default coding agent"
+          agentPlaceholder={runner?.label ?? 'Default coding agent'}
+          agentPlaceholderProvider={runner?.provider}
           agentLabel="Coding agent"
           disabled={readOnly}
         />

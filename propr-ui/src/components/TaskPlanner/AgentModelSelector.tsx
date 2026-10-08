@@ -27,6 +27,8 @@ interface AgentModelSelectorProps {
   formatAgentLabel?: (agent: InstanceCatalogAgent) => string;
   /** Text of the empty agent option; defaults to "Select Agent". */
   agentPlaceholder?: string;
+  /** Provider whose logo the empty agent option shows, when it stands for a known agent. */
+  agentPlaceholderProvider?: string;
   /** Accessible name of the agent select, matching the field label it sits under. */
   agentLabel?: string;
 }
@@ -48,6 +50,7 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
   autoOpenMultiDropdown = false,
   formatAgentLabel,
   agentPlaceholder,
+  agentPlaceholderProvider,
   agentLabel
 }) => {
   const [multiDropdownOpen, setMultiDropdownOpen] = useState(autoOpenMultiDropdown && isMulti);
@@ -172,6 +175,7 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
       showMultiOption={!!onMultiToggle && enabledAgents.length > 0}
       formatAgentLabel={formatAgentLabel}
       agentPlaceholder={agentPlaceholder}
+      agentPlaceholderProvider={agentPlaceholderProvider}
       agentLabel={agentLabel}
     />
   );

@@ -75,14 +75,14 @@ describe('AgentEditor', () => {
     const message = validateAgentSchedule('61 * * * *')!;
     expect(screen.getByTestId('agent-schedule-feedback')).toHaveTextContent(message);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(message);
     expect(createAgentDefinition).not.toHaveBeenCalled();
   });
 
   it('requires a name before creating', async () => {
     renderEditor();
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('name is required');
     expect(createAgentDefinition).not.toHaveBeenCalled();
   });
@@ -91,7 +91,7 @@ describe('AgentEditor', () => {
     vi.mocked(createAgentDefinition).mockResolvedValue({ ...definition, id: 'agent-2' });
     renderEditor();
     fillRequired();
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
     await waitFor(() => expect(createAgentDefinition).toHaveBeenCalledWith(expect.objectContaining({
       name: 'Nightly triage', prompt: 'Summarize new issues', schedule: null, autonomy: 'dry_run', capabilities: ['repository_read'],
     })));
@@ -135,11 +135,11 @@ describe('AgentEditor', () => {
     renderEditor('agent-1');
 
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Renamed' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     expect(await screen.findByText('Changed elsewhere — reload')).toBeInTheDocument();
     expect(updateAgentDefinition).toHaveBeenCalledWith('agent-1', expect.objectContaining({ name: 'Renamed' }), 3);
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
 
     vi.mocked(getAgentDefinition).mockResolvedValue({ ...definition, name: 'Changed in another tab', revision: 4 });
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
@@ -154,7 +154,7 @@ describe('AgentEditor', () => {
     renderEditor('agent-1');
 
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Renamed' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(screen.getByLabelText('Name')).toBeDisabled());
     expect(screen.getByLabelText('Description')).toBeDisabled();
@@ -175,7 +175,7 @@ describe('AgentEditor', () => {
     await screen.findByLabelText('Name');
     const runButton = screen.getByRole('button', { name: 'Run now' });
     expect(runButton).toBeEnabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(runButton).toBeDisabled());
     fireEvent.click(runButton);
@@ -205,7 +205,7 @@ describe('AgentEditor', () => {
     fireEvent.click(runButton);
     expect(triggerAgentRun).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(runButton).toBeEnabled());
     expect(screen.queryByText('Save your changes to run them')).not.toBeInTheDocument();
     fireEvent.click(runButton);
@@ -241,7 +241,7 @@ describe('AgentEditor', () => {
     const onSaved = vi.fn();
     const { unmount } = render(<AgentEditor definitionId={null} onSaved={onSaved} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
     fillRequired();
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
     await waitFor(() => expect(createAgentDefinition).toHaveBeenCalled());
 
     unmount();
@@ -254,7 +254,7 @@ describe('AgentEditor', () => {
     const onSaved = vi.fn();
     render(<AgentEditor definitionId={null} onSaved={onSaved} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
     fillRequired();
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: 'agent-2' }), true, true));
   });
 
@@ -306,7 +306,7 @@ describe('AgentEditor', () => {
 
     // The form is unchanged, so only the conflict says the server holds something else.
     await screen.findByLabelText('Name');
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await screen.findByText('Changed elsewhere — reload');
     expect(screen.getByRole('button', { name: 'Run now' })).toBeDisabled();
     expect(screen.queryByText('Save your changes to run them')).not.toBeInTheDocument();
@@ -442,7 +442,7 @@ describe('AgentEditor', () => {
     vi.mocked(uploadAgentAttachment).mockReturnValue(new Promise((_resolve, reject) => { fail = reject; }));
     renderEditor('agent-1');
 
-    const saveButton = await screen.findByRole('button', { name: 'Save' });
+    const saveButton = await screen.findByRole('button', { name: 'Save changes' });
     expect(saveButton).toBeEnabled();
     fireEvent.change(screen.getByTestId('agent-attachment-input'), { target: { files: [new File(['x'], 'notes.md')] } });
     await waitFor(() => expect(saveButton).toBeDisabled());

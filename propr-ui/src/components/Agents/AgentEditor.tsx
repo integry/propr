@@ -14,7 +14,7 @@ import type { AgentRunRecord } from '../../api/agentDefinitionsApi';
 interface AgentEditorProps extends AgentEditorCallbacks {
   /** The agent to edit, or null to create one. */
   definitionId: string | null;
-  /** Navigation docked in the header: "Back to list" on narrow screens, pane controls in the split. */
+  /** Pane controls docked at the right edge of the header, such as Close in the split view. */
   headerControls?: React.ReactNode;
   /** Which part of a saved agent is showing: its settings, its run history, or one run. */
   section?: AgentDetailSection;
@@ -57,6 +57,7 @@ const AgentEditorTop: React.FC<AgentEditorTopProps> = ({ definitionId, editor, s
         {...runAvailability(isDemoMode, { ...editor, disabledAgent: definition?.enabled === false })}
         saveDisabled={readOnly || editor.conflict || editor.attachmentsPending}
         showSave={section === 'settings'}
+        isNew={!definitionId}
       />
       {navigation}
     </>

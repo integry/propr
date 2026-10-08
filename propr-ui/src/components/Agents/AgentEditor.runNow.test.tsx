@@ -164,7 +164,7 @@ describe('AgentEditor Run now', () => {
     renderEditor();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Run now' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await act(async () => { answer(roomy); });
     expect(triggerAgentRun).not.toHaveBeenCalled();
 

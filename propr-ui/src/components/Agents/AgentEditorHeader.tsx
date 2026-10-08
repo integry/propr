@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, NavLink } from 'react-router-dom';
-import { AlertTriangle, ChevronRight, Loader2, Play, RotateCw, Save } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Loader2, Play, Plus, RotateCw, Save } from 'lucide-react';
 import { CONFLICT_MESSAGE } from './useAgentEditor';
 
 export const BUTTON_CLASSES = 'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed disabled:opacity-50';
@@ -18,17 +18,16 @@ interface AgentEditorHeaderProps {
   saveDisabled: boolean;
   /** Save belongs to the Settings tab; the run views hide it. */
   showSave?: boolean;
+  /** A new automation is created rather than saved. */
+  isNew?: boolean;
 }
 
-/** Title with the pane's navigation on the left, Run now and Save pinned to the right. */
+/** Title on the left; Run now, Create or Save changes, and the pane controls pinned to the right edge. */
 export const AgentEditorHeader: React.FC<AgentEditorHeaderProps> = ({
-  title, headerControls, canRun, running, runDisabled, runHint, onRun, saving, saveDisabled, showSave = true,
+  title, headerControls, canRun, running, runDisabled, runHint, onRun, saving, saveDisabled, showSave = true, isNew = false,
 }) => (
   <header className="flex flex-none items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
-    <div className="flex min-w-0 items-center gap-2">
-      {headerControls}
-      <h1 className="truncate text-base font-semibold text-slate-900">{title}</h1>
-    </div>
+    <h1 className="min-w-0 truncate text-base font-semibold text-slate-900">{title}</h1>
     <div className="flex flex-none items-center gap-2">
       {canRun && runHint && <span id="agent-run-hint" className="text-xs text-slate-500">{runHint}</span>}
       {canRun && (
@@ -45,13 +44,18 @@ export const AgentEditorHeader: React.FC<AgentEditorHeaderProps> = ({
       )}
       {showSave && (
         <button type="submit" form="agent-editor-form" disabled={saveDisabled} className={`${BUTTON_CLASSES} bg-teal-600 text-white hover:bg-teal-700`}>
-          {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Save className="h-4 w-4" aria-hidden="true" />}
-          Save
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <SubmitIcon isNew={isNew} />}
+          {isNew ? 'Create automation' : 'Save changes'}
         </button>
       )}
+      {headerControls}
     </div>
   </header>
 );
+
+const SubmitIcon: React.FC<{ isNew: boolean }> = ({ isNew }) => (isNew
+  ? <Plus className="h-4 w-4" aria-hidden="true" />
+  : <Save className="h-4 w-4" aria-hidden="true" />);
 
 export type AgentDetailSection = 'settings' | 'runs' | 'run';
 

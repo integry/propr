@@ -89,6 +89,8 @@ export function useAgentEditor(
   const [loading, setLoading] = useState(definitionId !== null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [agents, setAgents] = useState<InstanceCatalogAgent[]>([]);
+  /** The instance's configured default agent alias, which runs an automation that names none. */
+  const [defaultAgentAlias, setDefaultAgentAlias] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [running, setRunning] = useState(false);
@@ -148,7 +150,11 @@ export function useAgentEditor(
   useEffect(() => {
     let active = true;
     getInstanceCatalog()
-      .then(catalog => { if (active) setAgents(catalog.agents.filter(agent => agent.enabled)); })
+      .then(catalog => {
+        if (!active) return;
+        setAgents(catalog.agents.filter(agent => agent.enabled));
+        setDefaultAgentAlias(catalog.defaultAgentAlias?.trim() || null);
+      })
       .catch(() => { /* The selector shows "No agents configured"; the server still validates. */ });
     return () => { active = false; };
   }, []);
@@ -325,7 +331,7 @@ export function useAgentEditor(
   }, [definition, load]);
 
   return {
-    definition, form, agents, loading, loadError, saving, deleting, running, error, conflict, dirty,
+    definition, form, agents, defaultAgentAlias, loading, loadError, saving, deleting, running, error, conflict, dirty,
     attachmentsPending: attachmentsPending > 0,
     proprMcpSupport, agentType, update, changeAgent, save, remove, upload, removeAttachment, run, reload,
     capacityQuestion, confirmRun, dismissRun,

@@ -34,7 +34,11 @@ async function automationsFixture(page: Page) {
       '/api/auth/demo-mode': { demoMode: false },
       '/api/auth/user': user,
       '/api/instance/catalog': {
-        agents: [{ alias: 'codex-main', type: 'codex', enabled: true, supportedModels: ['gpt-5.6-sol'], defaultModel: 'gpt-5.6-sol' }],
+        agents: [
+          { alias: 'claude-main', type: 'claude', enabled: true, supportedModels: ['claude-opus-5-5'], defaultModel: 'claude-opus-5-5' },
+          { alias: 'codex-main', type: 'codex', enabled: true, supportedModels: ['gpt-5.6-sol'], defaultModel: 'gpt-5.6-sol' },
+        ],
+        defaultAgentAlias: 'claude-main',
         repositories: [{ name: 'integry/propr', enabled: true }],
       },
       '/api/agent-definitions': { definitions: [definition], total: 1, limit: 200, offset: 0 },
@@ -92,9 +96,14 @@ test('the header creates automations, leaving the list toolbar to search', async
   await expect(repositories).toBeVisible();
   expect(await top(name)).toBeLessThan(await top(repositories));
   expect(await top(repositories)).toBeLessThan(await top(prompt));
-  // The form submits with Save; the header's New Automation is the only create action.
-  await expect(form.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: /create automation/i })).toHaveCount(0);
+  // A new automation is created, not saved; Close sits at the right edge of the pane header, after it.
+  const create = form.getByRole('button', { name: 'Create automation' });
+  const close = form.getByRole('button', { name: 'Close automation' });
+  await expect(create).toBeVisible();
+  await expect(form.getByRole('button', { name: 'Save changes' })).toHaveCount(0);
+  const left = async (locator: Locator) => (await locator.boundingBox())!.x;
+  expect(await left(close)).toBeGreaterThan(await left(create));
+  expect(await left(close)).toBeGreaterThan(await left(form.getByRole('heading', { name: 'New automation' })));
   await capture(page, 'automations-new-form-top');
 });
 
@@ -102,12 +111,35 @@ test('the new automation form labels the coding agent and uses a compact autonom
   await page.goto('/automations/new');
   const form = page.getByTestId('agent-editor');
   await expect(form.getByRole('combobox', { name: 'Coding agent' })).toBeVisible();
-  await expect(form.getByRole('option', { name: 'Default coding agent' })).toBeAttached();
+  // The default names the model it runs on, the instance default agent's default model.
+  await expect(form.getByRole('combobox', { name: 'Coding agent' }).locator('option:checked')).toHaveText('Claude Opus 5.5 (Default)');
+  await expect(form.getByRole('checkbox', { name: 'Feed previous run reports back into prompt context' })).toBeVisible();
   const autonomy = form.getByRole('radiogroup', { name: 'Autonomy' });
   await autonomy.getByRole('radio', { name: 'Preview & approve' }).click();
   await expect(form.getByTestId('agent-autonomy-description')).toContainText('waits for your approval');
   await autonomy.scrollIntoViewIfNeeded();
   await capture(page, 'automations-new-form');
+});
+
+test('on a widescreen the list takes 40% and inputs span up to 672px', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.goto('/automations/new');
+  const form = page.getByTestId('agent-editor');
+  const width = async (locator: Locator) => (await locator.boundingBox())!.width;
+  const list = await width(page.getByTestId('agent-split-list'));
+  const details = await width(page.getByTestId('agent-split-details'));
+  expect(list / (list + details)).toBeCloseTo(0.4, 1);
+  const name = await width(form.getByLabel('Name'));
+  expect(name).toBeGreaterThan(600);
+  expect(name).toBeLessThanOrEqual(672);
+  await capture(page, 'automations-widescreen');
+});
+
+test('editing a saved automation saves changes', async ({ page }) => {
+  await page.goto(`/automations/${definition.id}`);
+  const form = page.getByTestId('agent-editor');
+  await expect(form.getByRole('button', { name: 'Save changes' })).toBeVisible();
+  await expect(form.getByRole('button', { name: 'Create automation' })).toHaveCount(0);
 });
 
 test('Run now confirms with a toast and opens the run under a breadcrumb', async ({ page }) => {

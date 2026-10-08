@@ -13,7 +13,11 @@ const renderEditor = () =>
 describe('AgentEditor fields', () => {
   beforeEach(() => {
     vi.mocked(getInstanceCatalog).mockResolvedValue({
-      agents: [{ alias: 'claude-main', type: 'claude', enabled: true, supportedModels: ['claude-opus-4-5'], defaultModel: 'claude-opus-4-5' }],
+      agents: [
+        { alias: 'claude-main', type: 'claude', enabled: true, supportedModels: ['claude-opus-5-5'], defaultModel: 'claude-opus-5-5' },
+        { alias: 'codex-main', type: 'codex', enabled: true, supportedModels: ['gpt-5.5'], defaultModel: 'gpt-5.5' },
+      ],
+      defaultAgentAlias: 'claude-main',
       repositories: [],
     } as unknown as Awaited<ReturnType<typeof getInstanceCatalog>>);
   });
@@ -35,10 +39,26 @@ describe('AgentEditor fields', () => {
     expect(group).not.toHaveTextContent('Nothing else happens.');
   });
 
-  it('labels the coding agent field to match its placeholder', async () => {
+  it('names the model the default coding agent runs on', async () => {
     renderEditor();
     const select = await screen.findByRole('combobox', { name: 'Coding agent' });
-    expect(within(select).getByRole('option', { name: 'Default coding agent' })).toHaveValue('');
+    expect(await within(select).findByRole('option', { name: 'Claude Opus 5.5 (Default)' })).toHaveValue('');
     expect(screen.queryByText('Model')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the agent named default when none is configured', async () => {
+    vi.mocked(getInstanceCatalog).mockResolvedValue({
+      agents: [{ alias: 'default', type: 'codex', enabled: true, supportedModels: ['gpt-5.5'], defaultModel: 'gpt-5.5' }],
+      repositories: [],
+    } as unknown as Awaited<ReturnType<typeof getInstanceCatalog>>);
+    renderEditor();
+    const select = await screen.findByRole('combobox', { name: 'Coding agent' });
+    expect(await within(select).findByRole('option', { name: /\(Default\)$/ })).toHaveValue('');
+    expect(within(select).queryByRole('option', { name: 'Default coding agent' })).not.toBeInTheDocument();
+  });
+
+  it('labels the previous reports checkbox without repeating the field name', () => {
+    renderEditor();
+    expect(screen.getByRole('checkbox', { name: 'Feed previous run reports back into prompt context' })).toBeInTheDocument();
   });
 });
