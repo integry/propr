@@ -35,6 +35,7 @@ const ioredis = { Redis: SilentRedis };
 await mock.module('ioredis', { namedExports: ioredis, defaultExport: ioredis });
 
 const { recordLLMMetrics } = await import('../../core/src/utils/llmMetrics.js');
+const { parseCodexStreamOutput } = await import('../../core/src/codex/codexHelpers.js');
 const { loadCacheUsage } = await import('../routes/analyticsAggregates.js');
 /** Claude Opus 5.5's prompt and cache-read prices per token; the official lookup has its own test. */
 const opusPrice = () => ({ prompt: 4 / 1_000_000, cacheRead: 0.2 / 1_000_000 });
@@ -110,6 +111,38 @@ test('an execution without cache telemetry persists no cache counts and stays ou
   await run('cold', [message('z1', { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 })]);
   assert.deepEqual(await storedCache('cold'), { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cache_usage_reported: true });
   assert.equal((await loadCacheUsage(database, null, opusPrice))?.hit_rate, 0.5);
+});
+
+/** One Codex run recorded the way CodexAgent records it: the parsed stream's log and its normalized usage. */
+const codexRun = (sessionId: string, usage: Record<string, number>) => {
+  const parsed = parseCodexStreamOutput([
+    JSON.stringify({ type: 'thread.started', thread_id: sessionId }),
+    JSON.stringify({ type: 'turn.completed', usage }),
+    JSON.stringify({ type: 'result', status: 'success', result: 'done' }),
+  ].join('\n'));
+  return recordLLMMetrics({
+    model: 'gpt-5.6', success: parsed.success, executionTime: 1_000, sessionId: parsed.sessionId, finalResult: { num_turns: 1 },
+    conversationLog: parsed.conversationLog as never, tokenUsage: parsed.tokenUsage,
+  }, issue, { correlationId: sessionId, taskId: 'task-1' });
+};
+
+test('a Codex run without a cached token count stays out of the hit rate, and a reported zero counts', async () => {
+  await database('llm_executions').del();
+  // The Codex usage schema puts cached tokens inside input_tokens; this build omits the cached count altogether.
+  await codexRun('codex-omitted', { input_tokens: 900, output_tokens: 20 });
+  assert.deepEqual(await storedCache('codex-omitted'), { input_tokens: 900, cache_creation_input_tokens: null, cache_read_input_tokens: null, cache_usage_reported: false });
+  assert.equal(await loadCacheUsage(database, null, opusPrice), null);
+
+  // The same run shape reporting an explicit zero is a measured 0% hit rate.
+  await codexRun('codex-cold', { input_tokens: 100, cached_input_tokens: 0, output_tokens: 20 });
+  assert.deepEqual(await storedCache('codex-cold'), { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cache_usage_reported: true });
+  const cold = await loadCacheUsage(database, null, opusPrice);
+  assert.deepEqual({ input_tokens: cold?.input_tokens, cache_read_tokens: cold?.cache_read_tokens, hit_rate: cold?.hit_rate }, { input_tokens: 100, cache_read_tokens: 0, hit_rate: 0 });
+
+  // A reported cache read is the cached share of the inclusive input total, not an addition to it.
+  await codexRun('codex-warm', { input_tokens: 100, cached_input_tokens: 60, output_tokens: 20 });
+  assert.deepEqual(await storedCache('codex-warm'), { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 60, cache_usage_reported: true });
+  assert.equal((await loadCacheUsage(database, null, opusPrice))?.hit_rate, 0.3);
 });
 
 test('the reported total decides whether the breakdown is known when it outranks the log', async () => {

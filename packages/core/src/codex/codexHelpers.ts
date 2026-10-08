@@ -138,6 +138,12 @@ interface ParseState {
         cache_read_input_tokens: number;
         reasoning_output_tokens: number;
     };
+    /**
+     * Whether any usage event carried `cached_input_tokens` at all. Codex
+     * omits the field on some builds; an omitted count is unknown, not a
+     * measured zero, and the metrics store keeps that distinction.
+     */
+    cacheReported: boolean;
 }
 
 function handleItemCompleted(event: CodexEvent, state: ParseState): void {
@@ -194,6 +200,7 @@ function addCodexTokenUsage(usage: CodexEvent['usage'] | undefined, state: Parse
     // cached_input_tokens subset. Store the two portions separately so cached
     // input is neither double-counted nor billed at the full input rate.
     const totalInputTokens = Math.max(0, usage.input_tokens ?? 0);
+    if (typeof usage.cached_input_tokens === 'number') state.cacheReported = true;
     const reportedCachedTokens = Math.max(0, usage.cached_input_tokens ?? 0);
     const cachedInputTokens = totalInputTokens > 0
         ? Math.min(totalInputTokens, reportedCachedTokens)
@@ -302,7 +309,8 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
             output_tokens: 0,
             cache_read_input_tokens: 0,
             reasoning_output_tokens: 0
-        }
+        },
+        cacheReported: false
     };
     const conversationLog: CodexEvent[] = [];
 
@@ -321,10 +329,12 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
     }
 
     const hasTokenUsage = Object.values(state.tokenUsage).some(value => value > 0);
+    // The cache count is present exactly when Codex reported one, so a
+    // reported zero stays a measured zero and an omitted count stays unknown.
     const tokenUsage = hasTokenUsage ? {
         input_tokens: state.tokenUsage.input_tokens,
         output_tokens: state.tokenUsage.output_tokens,
-        ...(state.tokenUsage.cache_read_input_tokens > 0 && {
+        ...(state.cacheReported && {
             cache_read_input_tokens: state.tokenUsage.cache_read_input_tokens
         }),
         ...(state.tokenUsage.reasoning_output_tokens > 0 && {

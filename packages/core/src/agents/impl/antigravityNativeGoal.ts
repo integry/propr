@@ -324,6 +324,8 @@ async function detectContainer(containerName: string | null, callback: AgentTask
 function addTokenUsage(total: TokenUsage, usage: TokenUsage): TokenUsage {
     const sum: TokenUsage = { ...total };
     for (const key of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'reasoning_output_tokens'] as const) {
+        // A cache count no segment reported stays absent: an unknown breakdown, not a measured zero.
+        if (key === 'cache_read_input_tokens' && sum[key] === undefined && usage[key] === undefined) continue;
         sum[key] = (sum[key] ?? 0) + (usage[key] ?? 0);
     }
     return sum;
@@ -427,7 +429,7 @@ function goalAttemptResult(
         modelUsed: model,
         providerModel: reportedModel ?? requestedModel,
         tokenUsage: segments.reduce<TokenUsage>((total, segment) => addTokenUsage(total, segment.tokenUsage), {
-            input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, reasoning_output_tokens: 0,
+            input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0,
         }),
         exitCode: success ? 0 : 1,
         error: success ? undefined : failure || run?.error || 'Antigravity native goal did not complete',

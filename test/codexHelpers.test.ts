@@ -355,6 +355,32 @@ describe('parseCodexStreamOutput', () => {
             });
         });
 
+        test('leaves the cache count absent when every usage event omits cached_input_tokens', () => {
+            const events = [
+                { type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 25 } },
+                { type: 'result', status: 'success', usage: { input_tokens: 40, output_tokens: 5 } }
+            ];
+            const stdout = events.map(e => JSON.stringify(e)).join('\n');
+
+            const result = parseCodexStreamOutput(stdout);
+
+            // An omitted count is unknown telemetry, not a measured zero.
+            assert.deepStrictEqual(result.tokenUsage, { input_tokens: 140, output_tokens: 30 });
+            assert.ok(!('cache_read_input_tokens' in result.tokenUsage!));
+        });
+
+        test('keeps an explicitly reported zero cached_input_tokens as a measured zero', () => {
+            const events = [
+                { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 25 } },
+                { type: 'turn.completed', usage: { input_tokens: 40, output_tokens: 5 } }
+            ];
+            const stdout = events.map(e => JSON.stringify(e)).join('\n');
+
+            const result = parseCodexStreamOutput(stdout);
+
+            assert.deepStrictEqual(result.tokenUsage, { input_tokens: 140, output_tokens: 30, cache_read_input_tokens: 0 });
+        });
+
         test('captures reasoning tokens without adding them to output tokens', () => {
             const event = {
                 type: 'turn.completed',

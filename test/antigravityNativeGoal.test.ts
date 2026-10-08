@@ -401,6 +401,17 @@ describe('Antigravity goal accounting and capability', () => {
         ]), { input_tokens: 150, output_tokens: 8, cache_read_input_tokens: 40, reasoning_output_tokens: 2 });
     });
 
+    test('a cache count no step reported stays absent, while a reported zero is a measured zero', () => {
+        assert.deepEqual(sumAntigravityStepUsage([
+            { input_tokens: 100, output_tokens: 5 },
+            { input_tokens: 50, output_tokens: 3 },
+        ]), { input_tokens: 150, output_tokens: 8, reasoning_output_tokens: 0 });
+        assert.deepEqual(sumAntigravityStepUsage([
+            { input_tokens: 100, output_tokens: 5, cache_read_tokens: 0 },
+            { input_tokens: 50, output_tokens: 3 },
+        ]), { input_tokens: 150, output_tokens: 8, cache_read_input_tokens: 0, reasoning_output_tokens: 0 });
+    });
+
     test('a recorded goal stream splits into its invocations at each init envelope', () => {
         const init = '{"event": "init", "conversation_id": "c", "init": {"model": "m"}}';
         const invocations = splitAntigravityInvocations(['entrypoint banner', init, 'a', init, 'b'].join('\n'));
@@ -542,7 +553,8 @@ describe('Antigravity goal stream adapter', () => {
         assert.deepEqual(stream.textsAfter(0), ['Adding subtract.']);
         assert.deepEqual(stream.result, { status: 'error', response: '' });
         assert.equal(stream.errorText, 'error: interrupted');
-        assert.deepEqual(stream.tokenUsage, { input_tokens: 40, output_tokens: 2, cache_read_input_tokens: 0, reasoning_output_tokens: 0 });
+        // No step reported a cache count, so none is synthesized.
+        assert.deepEqual(stream.tokenUsage, { input_tokens: 40, output_tokens: 2, reasoning_output_tokens: 0 });
         assert.equal(stream.exited, true);
         assert.equal(recorded.length, 5);
     });

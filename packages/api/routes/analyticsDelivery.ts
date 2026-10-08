@@ -88,7 +88,7 @@ function median(values: number[]): number | null {
 const toTime = (value: string | Date): number => new Date(value).getTime();
 
 /** Whether a timestamp falls at or before a merge; with no recorded merge time there is no cutoff. */
-const atOrBefore = (value: string | Date, mergedAt: string | null): boolean =>
+export const atOrBefore = (value: string | Date, mergedAt: string | null): boolean =>
   mergedAt === null || toTime(value) <= toTime(mergedAt);
 
 /**

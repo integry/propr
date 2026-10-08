@@ -3,15 +3,17 @@
  * spend behind review quality's cost per merged PR and runs to merge.
  *
  * A PR's tasks are attached as the delivery band attaches them — every
- * implementation attempt at its issue, whether or not the attempt opened the
- * PR, and every task acting on the PR — so the efficacy matrix and the
- * delivery band count one PR's work alike.
+ * implementation attempt at its issue up to the PR's merge, whether or not
+ * the attempt opened the PR, and every task acting on the PR — so the
+ * efficacy matrix and the delivery band count one PR's work alike. An
+ * attempt at the issue after the merge belongs to whatever PR it opens next,
+ * never to the one already merged.
  */
 
 import type { Knex } from 'knex';
 import { chunk } from './dashboardQueries.js';
 import {
-  attachedTasks, indexRelatedTasks, isImplementationAttempt, loadRelatedTasks, loadRunsToMerge, taskColumns,
+  atOrBefore, attachedTasks, indexRelatedTasks, isImplementationAttempt, loadRelatedTasks, loadRunsToMerge, taskColumns,
   type PullRequest, type TaskRow,
 } from './analyticsDelivery.js';
 
@@ -62,10 +64,13 @@ function issueNumbers(merged: Array<Pick<PullRequest, 'repository' | 'prNumber'>
 
 /**
  * Recorded cost and run count per merged pull request over the tasks the
- * delivery band attaches to it: every implementation attempt at its issue,
- * whether or not the attempt opened the PR, and every task acting on the PR.
- * Cost is the PR's lifetime spend; runs stop at the recorded merge, so a
- * review after the merge never adds a run to merge.
+ * delivery band attaches to it: every implementation attempt at its issue
+ * created at or before the merge, whether or not the attempt opened the PR,
+ * and every task acting on the PR. Cost is the PR's lifetime spend over those
+ * tasks, so a review after the merge still counts, but a later attempt at the
+ * same issue (one that opens the next PR) does not inflate the merged PR's
+ * cost. Runs stop at the recorded merge, so a review after the merge never
+ * adds a run to merge.
  */
 export async function loadPullRequestCosts(
   db: Knex, merged: Array<Pick<PullRequest, 'repository' | 'prNumber'> & { mergedAt: string | null }>,
@@ -85,7 +90,7 @@ export async function loadPullRequestCosts(
   for (const pr of merged) {
     const key = prKey(pr.repository, pr.prNumber);
     const { implementations, followUps } = attachedTasks({ ...pr, issueNumber: issues.get(key) ?? null }, index);
-    attached.set(key, [...implementations, ...followUps]);
+    attached.set(key, [...implementations.filter(task => atOrBefore(task.created_at, pr.mergedAt)), ...followUps]);
   }
   const [costs, runs] = await Promise.all([
     loadTaskCosts(db, [...new Set([...attached.values()].flat().map(task => task.task_id))]),
