@@ -12,7 +12,6 @@ import {
   deleteAgentDefinitionUnlessRunInStates,
   enqueueAgentRunActionOrFail,
   evaluateProviderCapacity,
-  evaluateUnattendedLimits,
   getAgentDefinition,
   getAgentRun,
   listAgentDefinitions,
@@ -32,7 +31,6 @@ import {
   type StoredAgentRun,
   type TriggerAgentRunInput,
   type TriggerAgentRunResult,
-  type UnattendedLimitsStatus,
 } from '@propr/core';
 import {
   AGENT_ACTION_OPERATOR_NOTE_MAX_CHARS,
@@ -87,8 +85,6 @@ export interface AgentDefinitionRouteServices {
   gate?: AgentRunGate;
   /** Current provider capacity for a definition, with the pause threshold it was judged against. */
   evaluateCapacity?: (definition: StoredAgentDefinition) => Promise<{ capacity: ProviderCapacity; threshold: number }>;
-  /** Instance-wide unattended concurrency cap usage and local-time window state. */
-  evaluateUnattended?: () => Promise<UnattendedLimitsStatus>;
   processUpload?: (file: MulterFile, definitionId: string) => Promise<Attachment>;
   removeTemporaryUploads?: (files: readonly MulterFile[]) => Promise<void>;
   removeAttachmentFiles?: (definitionId: string, attachments: readonly Attachment[] | 'all') => Promise<void>;
@@ -275,13 +271,12 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
   const processUpload = services.processUpload ?? defaultProcessUpload;
   const removeTemporaryUploads = services.removeTemporaryUploads ?? removeTemporaryGoalUploads;
   const removeAttachmentFiles = services.removeAttachmentFiles ?? defaultRemoveAttachmentFiles;
-  const gate = services.gate ?? createAgentRunCostGate({ now, database });
+  const gate = services.gate ?? createAgentRunCostGate({ now });
   const evaluateCapacity = services.evaluateCapacity ?? (async (definition: StoredAgentDefinition) => {
     const threshold = await loadUsagePauseThreshold();
     const capacity = await evaluateProviderCapacity(definition.agentAlias, threshold, { modelName: definition.modelName, now });
     return { capacity, threshold };
   });
-  const evaluateUnattended = services.evaluateUnattended ?? (() => evaluateUnattendedLimits({ now, database }));
   const startActing = services.startActing
     ?? ((run: StoredAgentRun, note: string | null) => enqueueAgentRunActionOrFail(run, { ...storeDeps, operatorNote: note }));
 
@@ -493,15 +488,10 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
     res.status(result.created ? 202 : 200).json({ run: publicAgentRun(result.run, { includeReport: true }), created: result.created });
   });
 
-  /**
-   * Subscription capacity of the definition's agent, for the UI's usage
-   * warning before Run now, and the unattended admission limits (cap usage and
-   * window state) that hold back its scheduled and API runs.
-   */
+  /** Subscription capacity of the definition's agent, for the UI's usage warning before Run now. */
   const capacity = handler('Failed to load agent capacity', async (req, res) => {
     const definition = await requireDefinition(req, requireOwner(req));
-    const [usage, unattended] = await Promise.all([evaluateCapacity(definition), evaluateUnattended()]);
-    res.json({ ...usage, unattended });
+    res.json(await evaluateCapacity(definition));
   });
 
   const listRuns = handler('Failed to list agent runs', async (req, res) => {

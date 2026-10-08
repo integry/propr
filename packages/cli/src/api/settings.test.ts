@@ -44,18 +44,3 @@ test('legacy threshold and response deprecation metadata are not writable CLI se
   assert.equal(isValidSettingKey('auto_followup_score_threshold'), false);
   assert.equal(isValidSettingKey('deprecated_settings'), false);
 });
-
-test('unattended agent run limits parse and validate like the server', async () => {
-  const { parseSettingValue, isValidSettingKey } = await import('./settings.js');
-  for (const key of ['agent_run_usage_pause_percent', 'unattended_max_concurrent', 'unattended_window']) {
-    assert.equal(isValidSettingKey(key), true, key);
-  }
-  assert.equal(isValidSettingKey('unattended_window_error'), false);
-  assert.equal(parseSettingValue('agent_run_usage_pause_percent', '80%'), 80);
-  assert.throws(() => parseSettingValue('agent_run_usage_pause_percent', '40'), /50 to 100/);
-  assert.equal(parseSettingValue('unattended_max_concurrent', '2'), 2);
-  assert.throws(() => parseSettingValue('unattended_max_concurrent', '0'), /1 to 100/);
-  assert.equal(parseSettingValue('unattended_window', ' 02:00-07:00@Europe/Riga '), '02:00-07:00@Europe/Riga');
-  assert.equal(parseSettingValue('unattended_window', 'none'), null);
-  assert.throws(() => parseSettingValue('unattended_window', '2am-7am'), /HH:MM-HH:MM/);
-});

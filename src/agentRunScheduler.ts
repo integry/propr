@@ -318,7 +318,7 @@ export async function runAgentScheduleSweep(deps: AgentRunSweepDependencies = {}
         database,
         now: clock = Date.now,
         enqueue,
-        gate = createAgentRunCostGate({ now: clock, database }),
+        gate = createAgentRunCostGate({ now: clock }),
         batchSize = AGENT_SCHEDULE_SWEEP_BATCH_SIZE,
         isMember = ownerId => isAgentOwnerInstanceMember(ownerId, database),
         trigger = input => triggerAgentRun(input, { database, now: clock, enqueue }),
@@ -540,7 +540,7 @@ export function scheduleAgentRunSweeps(
     } = {},
 ): () => Promise<void> {
     // One gate for both sweeps keeps its "usage unknown" log once per provider.
-    const sweepDeps: AgentRunSweepDependencies = { ...deps, gate: deps.gate ?? createAgentRunCostGate({ now: deps.now, database: deps.database }) };
+    const sweepDeps: AgentRunSweepDependencies = { ...deps, gate: deps.gate ?? createAgentRunCostGate({ now: deps.now }) };
     const runs = serializedTick('Agent run sweep', async () => {
         const steps: Array<[string, () => Promise<unknown>]> = [
             ['schedule', () => runAgentScheduleSweep(sweepDeps)],

@@ -2,26 +2,17 @@ import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import knex, { type Knex } from 'knex';
-import { parseUnattendedWindow, unattendedWindowState, type SyntheticAgentConfig } from '@propr/shared';
+import type { SyntheticAgentConfig } from '@propr/shared';
 import type { AgentConfig } from '../packages/core/src/config/configManagerAgents.ts';
 import type { RepoToMonitor } from '../packages/core/src/config/configManager.ts';
 import type { SyntheticUsageSnapshot, SyntheticUsageSnapshotProvider } from '../packages/core/src/services/syntheticRoutingTypes.ts';
 import { createAgentDefinition, type StoredAgentDefinition } from '../packages/core/src/services/agents/agentDefinitionStore.ts';
-import {
-  countActiveUnattendedAgentRuns,
-  createAgentRun,
-  getAgentRunById,
-  transitionAgentRun,
-  transitionDeferredAgentRun,
-  type StoredAgentRun,
-} from '../packages/core/src/services/agents/agentRunStore.ts';
-import { interpretUnattendedWindow } from '../packages/core/src/config/configManagerUnattended.ts';
+import { getAgentRunById, transitionAgentRun, transitionDeferredAgentRun, type StoredAgentRun } from '../packages/core/src/services/agents/agentRunStore.ts';
 import { retryDueDeferredAgentRuns } from '../packages/core/src/services/agents/agentRunDeferredRetry.ts';
 import { triggerAgentRun, type AgentRunGate } from '../packages/core/src/services/agents/agentRunTrigger.ts';
 import {
   createAgentRunCostGate,
   DEFAULT_AGENT_RUN_USAGE_PAUSE_PERCENT,
-  type AgentRunCostGateOptions,
   evaluateProviderCapacity,
   loadUsagePauseThreshold,
   type ProviderCapacityDependencies,
@@ -79,20 +70,11 @@ function capacityDeps(usage: Record<string, Usage>, overrides: ProviderCapacityD
   };
 }
 
-/** Unattended limits that never hold a run: no window and a free concurrency slot. */
-const NO_UNATTENDED_LIMITS = {
-  loadMaxConcurrent: async () => 1,
-  loadWindow: async () => ({ configured: false as const }),
-  countActiveUnattendedRuns: async () => 0,
-};
-
-function gateFor(usage: Record<string, Usage>, threshold = 90, limits: Partial<AgentRunCostGateOptions> = {}) {
+function gateFor(usage: Record<string, Usage>, threshold = 90) {
   return createAgentRunCostGate({
     now: () => NOW,
     loadThreshold: async () => threshold,
     evaluateCapacity: (alias, limit, modelName) => evaluateProviderCapacity(alias, limit, { ...capacityDeps(usage), modelName }),
-    ...NO_UNATTENDED_LIMITS,
-    ...limits,
   });
 }
 
@@ -325,7 +307,7 @@ describe('deferred run retry consumer', () => {
   let usage: Record<string, Usage>;
   const now = () => clock;
   const gate = () => createAgentRunCostGate({
-    now, database, loadThreshold: async () => 90,
+    now, loadThreshold: async () => 90,
     evaluateCapacity: (alias, limit, modelName) => evaluateProviderCapacity(alias, limit, { ...capacityDeps(usage), now, modelName }),
   });
   const enqueue = async (_name: string, data: { runId: string }) => { enqueued.push(data.runId); };
@@ -575,279 +557,5 @@ describe('agent_run_usage_pause_percent setting', () => {
     for (const value of [49, 101, 90.5, 'ninety', null]) {
       assert.match((await extractSettingSaves({ agent_run_usage_pause_percent: value })).error ?? '', /agent_run_usage_pause_percent must be an integer from 50 to 100/, String(value));
     }
-  });
-});
-
-describe('unattended window parsing', () => {
-  test('accepts HH:MM-HH:MM@Zone, overnight windows, 24:00 and a UTC default', () => {
-    assert.deepEqual(parseUnattendedWindow('02:00-07:00@Europe/Riga'), { ok: true, window: { start: 120, end: 420, timeZone: 'Europe/Riga' } });
-    assert.deepEqual(parseUnattendedWindow(' 22:30 - 06:00 @ UTC '), { ok: true, window: { start: 1350, end: 360, timeZone: 'UTC' } });
-    assert.deepEqual(parseUnattendedWindow('9:00-24:00'), { ok: true, window: { start: 540, end: 1440, timeZone: 'UTC' } });
-  });
-
-  test('rejects malformed windows with a reason', () => {
-    for (const [value, reason] of [
-      ['02:00 to 07:00', /HH:MM-HH:MM@Time\/Zone/],
-      ['25:00-07:00@UTC', /between 00:00 and 24:00/],
-      ['02:60-07:00@UTC', /between 00:00 and 24:00/],
-      ['24:00-07:00@UTC', /between 00:00 and 24:00/],
-      ['02:00-02:00@UTC', /different times/],
-      ['00:00-24:00@UTC', /different times/],
-      ['02:00-07:00@Mars/Olympus', /unknown time zone "Mars\/Olympus"/],
-    ] as const) {
-      const parsed = parseUnattendedWindow(value);
-      assert.equal(parsed.ok, false, value);
-      assert.match((parsed as { error: string }).error, reason, value);
-    }
-  });
-
-  test('a stored window is interpreted as none, valid or malformed', () => {
-    assert.deepEqual(interpretUnattendedWindow(null), { configured: false });
-    assert.deepEqual(interpretUnattendedWindow('  '), { configured: false });
-    assert.equal((interpretUnattendedWindow('02:00-07:00@Europe/Riga') as { window?: unknown }).window !== undefined, true);
-    assert.deepEqual(interpretUnattendedWindow(42), { configured: true, value: '42', error: 'the stored value is not text' });
-    assert.match((interpretUnattendedWindow('nightly') as { error: string }).error, /HH:MM-HH:MM/);
-  });
-});
-
-describe('unattended admission limits in the cost gate', () => {
-  const window = (value: string) => ({ loadWindow: async () => interpretUnattendedWindow(value) });
-  const capacityUnknown = async () => ({ status: 'unknown' as const, provider: 'claude' });
-  const gateAt = (timestamp: number, limits: Partial<AgentRunCostGateOptions>) => createAgentRunCostGate({
-    now: () => timestamp, loadThreshold: async () => 90, evaluateCapacity: capacityUnknown, ...NO_UNATTENDED_LIMITS, ...limits,
-  });
-  const context = (trigger: StoredAgentRun['trigger'], existing?: StoredAgentRun) =>
-    ({ definition: definition(), trigger, triggerSource: null, run: existing });
-
-  test('with the cap reached an unattended run is deferred one short step with the reason', async () => {
-    const gate = gateFor({}, 90, { loadMaxConcurrent: async () => 1, countActiveUnattendedRuns: async () => 2 });
-    for (const trigger of ['schedule', 'api', 'mcp', 'cli'] as const) {
-      const decision = await gate(context(trigger));
-      assert.equal(decision?.action, 'defer', trigger);
-      assert.equal((decision as { until: number }).until, NOW + 5 * MINUTE);
-      assert.notEqual((decision as { countsDeferral?: boolean }).countsDeferral, false);
-      assert.equal((decision as { reason: string }).reason,
-        '2 unattended runs are already active (cap 1), so the run was deferred until 2026-10-06 14:35 UTC.');
-    }
-
-    const one = await gateFor({}, 90, { loadMaxConcurrent: async () => 1, countActiveUnattendedRuns: async () => 1 })(context('schedule'));
-    assert.match((one as { reason: string }).reason, /^1 unattended run is already active \(cap 1\)/);
-
-    const free = gateFor({}, 90, { loadMaxConcurrent: async () => 3, countActiveUnattendedRuns: async () => 2 });
-    assert.deepEqual(await free(context('schedule')), { action: 'proceed' });
-  });
-
-  test('cap deferrals count against the deferral limit', async () => {
-    const gate = gateFor({}, 90, { countActiveUnattendedRuns: async () => 1 });
-    assert.equal((await gate(context('schedule', run({ state: 'deferred', deferrals: 5 }))))?.action, 'defer');
-    const skipped = await gate(context('schedule', run({ state: 'deferred', deferrals: 6 })));
-    assert.equal(skipped?.action, 'skip');
-    assert.equal((skipped as { reason: string }).reason,
-      '1 unattended run is already active (cap 1), and the run was already deferred 6 times, so it was skipped.');
-  });
-
-  test('outside the window an unattended run is deferred until it opens, without counting a deferral', async () => {
-    // NOW is 17:30 in Riga (UTC+3); the window opens at 02:00 local, 23:00 UTC.
-    const gate = gateFor({}, 90, window('02:00-07:00@Europe/Riga'));
-    for (const deferrals of [0, 6, 20]) {
-      const decision = await gate(context('schedule', deferrals ? run({ state: 'deferred', deferrals }) : undefined));
-      assert.deepEqual(decision, {
-        action: 'defer',
-        until: Date.UTC(2026, 9, 6, 23, 0),
-        countsDeferral: false,
-        reason: 'Outside the unattended window 02:00-07:00 Europe/Riga, so the run was deferred until it opens at 02:00 Europe/Riga (2026-10-06 23:00 UTC).',
-      }, `deferrals ${deferrals}`);
-    }
-    assert.deepEqual(await gateFor({}, 90, window('17:00-18:00@Europe/Riga'))(context('api')), { action: 'proceed' });
-    // Overnight: 22:00-06:00 UTC is closed at 14:30 UTC and opens at 22:00 the same day.
-    assert.equal((await gateFor({}, 90, window('22:00-06:00@UTC'))(context('api')) as { until: number }).until, Date.UTC(2026, 9, 6, 22, 0));
-  });
-
-  test('inside the window the concurrency cap still applies', async () => {
-    const gate = gateFor({}, 90, { ...window('17:00-18:00@Europe/Riga'), countActiveUnattendedRuns: async () => 1 });
-    assert.equal((await gate(context('schedule')))?.action, 'defer');
-  });
-
-  test('a malformed window skips unattended runs with a reason instead of allowing them', async () => {
-    const decision = await gateFor({}, 90, window('25:00-07:00@Europe/Riga'))(context('schedule'));
-    assert.deepEqual(decision, {
-      action: 'skip',
-      reason: 'The unattended window setting "25:00-07:00@Europe/Riga" is malformed (times must be between 00:00 and 24:00), so unattended runs are blocked until it is fixed in Settings.',
-    });
-    const zone = await gateFor({}, 90, window('02:00-07:00@Europe/Atlantis'))(context('api'));
-    assert.match((zone as { reason: string }).reason, /unknown time zone "Europe\/Atlantis"/);
-  });
-
-  test('the window follows DST: the spring gap and the autumn offset change', async () => {
-    // Riga springs forward on 2027-03-28 at 03:00 EET (01:00 UTC) to 04:00 EEST. A window that
-    // starts at 03:30 has no 03:30 that day, so it opens at the first local minute after the gap.
-    const gapWindow = parseUnattendedWindow('03:30-07:00@Europe/Riga');
-    assert.ok(gapWindow.ok);
-    assert.deepEqual(unattendedWindowState(gapWindow.window, Date.UTC(2027, 2, 28, 0, 30)), { open: false, opensAt: Date.UTC(2027, 2, 28, 1, 0) });
-    const gapDecision = await gateAt(Date.UTC(2027, 2, 28, 0, 30), window('03:30-07:00@Europe/Riga'))(context('schedule'));
-    assert.equal((gapDecision as { until: number }).until, Date.UTC(2027, 2, 28, 1, 0));
-    assert.match((gapDecision as { reason: string }).reason, /opens at 04:00 Europe\/Riga \(2027-03-28 01:00 UTC\)\.$/);
-    // It closes at 07:00 EEST (04:00 UTC), one hour earlier in UTC than the day before.
-    assert.equal(unattendedWindowState(gapWindow.window, Date.UTC(2027, 2, 28, 2, 0)).closesAt, Date.UTC(2027, 2, 28, 4, 0));
-    assert.equal(unattendedWindowState(gapWindow.window, Date.UTC(2027, 2, 27, 2, 0)).closesAt, Date.UTC(2027, 2, 27, 5, 0));
-
-    // Riga falls back on 2026-10-25 at 04:00 EEST to 03:00 EET: 02:00 local is 23:00 UTC before
-    // the change and 00:00 UTC after it.
-    const before = await gateAt(Date.UTC(2026, 9, 24, 12, 0), window('02:00-07:00@Europe/Riga'))(context('schedule'));
-    assert.equal((before as { until: number }).until, Date.UTC(2026, 9, 24, 23, 0));
-    const after = await gateAt(Date.UTC(2026, 9, 25, 12, 0), window('02:00-07:00@Europe/Riga'))(context('schedule'));
-    assert.equal((after as { until: number }).until, Date.UTC(2026, 9, 26, 0, 0));
-    // The repeated 03:00-04:00 hour opens the window at its first occurrence (03:00 EEST, 00:00 UTC).
-    const repeated = parseUnattendedWindow('03:00-03:30@Europe/Riga');
-    assert.ok(repeated.ok);
-    assert.deepEqual(unattendedWindowState(repeated.window, Date.UTC(2026, 9, 24, 22, 0)), { open: false, opensAt: Date.UTC(2026, 9, 25, 0, 0) });
-  });
-
-  test('manual runs are exempt and the limits are not even read', async () => {
-    let reads = 0;
-    const counting = {
-      loadMaxConcurrent: async () => { reads += 1; return 1; },
-      loadWindow: async () => { reads += 1; return interpretUnattendedWindow('nonsense'); },
-      countActiveUnattendedRuns: async () => { reads += 1; return 5; },
-    };
-    assert.deepEqual(await gateFor({}, 90, counting)(context('manual')), { action: 'proceed' });
-    assert.equal(reads, 0);
-  });
-
-  test('the usage checks come first', async () => {
-    const gate = gateFor({ claude: { weeklyPercent: 95 } }, 90, { ...window('02:00-07:00@Europe/Riga'), countActiveUnattendedRuns: async () => 3 });
-    const decision = await gate(context('schedule'));
-    assert.equal(decision?.action, 'skip');
-    assert.match((decision as { reason: string }).reason, /^Weekly subscription usage for claude is at 95%/);
-  });
-
-  test('an admitted auto run\'s acting step is not held by the window or the cap', async () => {
-    const gate = gateFor({}, 90, { ...window('25:00-07:00@UTC'), countActiveUnattendedRuns: async () => 3 });
-    assert.deepEqual(await gate(context('schedule', run({ state: 'report_ready' }))), { action: 'proceed' });
-  });
-});
-
-describe('unattended admission limits with stored settings', () => {
-  let database: Knex;
-  let enqueued: string[];
-  let stored: StoredAgentDefinition;
-  let clock: number;
-  const now = () => clock;
-  const gate = () => createAgentRunCostGate({ now, database, loadThreshold: async () => 90, evaluateCapacity: async () => ({ status: 'unknown', provider: 'claude' }) });
-  const enqueue = async (_name: string, data: { runId: string }) => { enqueued.push(data.runId); };
-  const deps = () => ({ database, now, enqueue, loadRepos: async () => [] as RepoToMonitor[], loadAgents: async () => agents, loadSyntheticAgents: async () => [] });
-  const setConfig = (key: string, value: unknown) => database('system_configs')
-    .insert({ key, value: JSON.stringify(value), created_at: database.fn.now(), updated_at: database.fn.now() })
-    .onConflict('key').merge(['value']);
-
-  beforeEach(async () => {
-    database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
-    await database.raw('PRAGMA foreign_keys = ON');
-    await database.migrate.latest({ directory: migrations });
-    enqueued = [];
-    clock = NOW;
-    stored = await createAgentDefinition({ ownerId: 'alice', name: 'Triage', prompt: 'Summarize', repositories: [],
-      agentAlias: 'claude', modelName: 'opus' }, { database, now });
-  });
-
-  afterEach(async () => {
-    await database.destroy();
-  });
-
-  test('only queued, running and acting runs with an unattended trigger are counted', async () => {
-    const base = { definition: stored };
-    const states = [['schedule', 'queued'], ['api', 'running'], ['cli', 'acting'], ['manual', 'running'],
-      ['schedule', 'deferred'], ['mcp', 'awaiting_approval'], ['schedule', 'completed']] as const;
-    for (const [index, [trigger, state]] of states.entries()) {
-      const { run: created } = await createAgentRun({ ...base, trigger, idempotencyKey: `k${index}` }, { database, now });
-      await database('agent_runs').where({ id: created.id }).update({ state });
-    }
-    assert.equal(await countActiveUnattendedAgentRuns({ database }), 3);
-  });
-
-  test('with the default cap of 1 a second scheduled run is deferred, a manual run is not', async () => {
-    const first = await triggerAgentRun({ definition: stored, trigger: 'schedule', idempotencyKey: 'a', gate: gate() }, deps());
-    assert.equal(first.run.state, 'queued');
-    const second = await triggerAgentRun({ definition: stored, trigger: 'api', idempotencyKey: 'b', gate: gate() }, deps());
-    assert.equal(second.run.state, 'deferred');
-    assert.equal(second.run.deferrals, 1);
-    assert.equal(second.run.deferredUntil, NOW + 5 * MINUTE);
-    assert.equal(second.run.skipReason, '1 unattended run is already active (cap 1), so the run was deferred until 2026-10-06 14:35 UTC.');
-    const manual = await triggerAgentRun({ definition: stored, trigger: 'manual', idempotencyKey: 'c', gate: gate() }, deps());
-    assert.equal(manual.run.state, 'queued');
-    assert.deepEqual(enqueued, [first.run.id, manual.run.id]);
-
-    await setConfig('unattended_max_concurrent', 2);
-    const third = await triggerAgentRun({ definition: stored, trigger: 'cli', idempotencyKey: 'd', gate: gate() }, deps());
-    assert.equal(third.run.state, 'queued');
-  });
-
-  test('a window wait is retried when the window opens and never counts a deferral', async () => {
-    await setConfig('unattended_window', '02:00-07:00@Europe/Riga');
-    const { run: deferred } = await triggerAgentRun({ definition: stored, trigger: 'schedule', gate: gate() }, deps());
-    assert.equal(deferred.state, 'deferred');
-    assert.equal(deferred.deferrals, 0);
-    assert.equal(deferred.deferredUntil, Date.UTC(2026, 9, 6, 23, 0));
-
-    // Due, but the window moved meanwhile: waiting again still counts nothing.
-    await setConfig('unattended_window', '05:00-07:00@Europe/Riga');
-    clock = deferred.deferredUntil!;
-    assert.equal((await retryDueDeferredAgentRuns({ database, now, enqueue, gate: gate() })).deferred, 1);
-    const waiting = (await getAgentRunById(deferred.id, { database }))!;
-    assert.equal(waiting.deferrals, 0);
-    assert.equal(waiting.deferredUntil, Date.UTC(2026, 9, 7, 2, 0));
-
-    clock = waiting.deferredUntil!;
-    assert.equal((await retryDueDeferredAgentRuns({ database, now, enqueue, gate: gate() })).queued, 1);
-    assert.deepEqual(enqueued, [deferred.id]);
-  });
-
-  test('a malformed stored window records the scheduled run as skipped', async () => {
-    await setConfig('unattended_window', '2am-7am');
-    const { run: skipped } = await triggerAgentRun({ definition: stored, trigger: 'schedule', gate: gate() }, deps());
-    assert.equal(skipped.state, 'skipped');
-    assert.match(skipped.skipReason ?? '', /^The unattended window setting "2am-7am" is malformed/);
-    assert.deepEqual(enqueued, []);
-  });
-});
-
-describe('unattended limit settings', () => {
-  test('unattended_max_concurrent accepts integers from 1 to 100', async () => {
-    const { extractSettingSaves } = await import('../packages/api/routes/configSettings.ts');
-    for (const value of [1, 4, 100]) {
-      const result = await extractSettingSaves({ unattended_max_concurrent: value });
-      assert.equal(result.error, undefined);
-      assert.equal(result.normalized.unattended_max_concurrent, value);
-    }
-    for (const value of [0, 101, 1.5, 'two', null]) {
-      assert.match((await extractSettingSaves({ unattended_max_concurrent: value })).error ?? '', /unattended_max_concurrent must be an integer from 1 to 100/, String(value));
-    }
-  });
-
-  test('the settings response reports a stored window that no longer parses', async () => {
-    const { agentUnattendedSettingsResponse } = await import('../packages/api/routes/configRoutesSettings.ts');
-    const storeWith = (values: Record<string, unknown>) =>
-      ({ getConfig: async (key: string, fallback: unknown) => key in values ? values[key] : fallback }) as never;
-    assert.deepEqual(await agentUnattendedSettingsResponse(storeWith({})),
-      { agent_run_usage_pause_percent: 90, unattended_max_concurrent: 1, unattended_window: null });
-    assert.deepEqual(await agentUnattendedSettingsResponse(storeWith({ unattended_max_concurrent: 3, unattended_window: '02:00-07:00@Europe/Riga' })),
-      { agent_run_usage_pause_percent: 90, unattended_max_concurrent: 3, unattended_window: '02:00-07:00@Europe/Riga' });
-    assert.deepEqual(await agentUnattendedSettingsResponse(storeWith({ unattended_window: '26:00-07:00@UTC' })), {
-      agent_run_usage_pause_percent: 90, unattended_max_concurrent: 1, unattended_window: '26:00-07:00@UTC',
-      unattended_window_error: 'times must be between 00:00 and 24:00',
-    });
-  });
-
-  test('unattended_window accepts a valid window, clears on empty or null and rejects malformed values', async () => {
-    const { extractSettingSaves } = await import('../packages/api/routes/configSettings.ts');
-    const saved = await extractSettingSaves({ unattended_window: ' 02:00-07:00@Europe/Riga ' });
-    assert.equal(saved.error, undefined);
-    assert.equal(saved.normalized.unattended_window, '02:00-07:00@Europe/Riga');
-    assert.deepEqual(saved.saves, [{ name: 'unattended_window' }]);
-    for (const cleared of ['', null]) {
-      assert.equal((await extractSettingSaves({ unattended_window: cleared })).normalized.unattended_window, null);
-    }
-    assert.match((await extractSettingSaves({ unattended_window: '02:00-07:00@Nowhere/City' })).error ?? '', /unattended_window is malformed: unknown time zone/);
-    assert.match((await extractSettingSaves({ unattended_window: 7 })).error ?? '', /unattended_window must be a string or null/);
   });
 });

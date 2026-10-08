@@ -4,7 +4,6 @@ import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import GeneralSettingsSection from './GeneralSettingsSection';
 import AgentWatchdogSettingsSection from './AgentWatchdogSettingsSection';
 import AgentNetworkSettingsSection from './AgentNetworkSettingsSection';
-import UnattendedAgentRunsSettingsSection from './UnattendedAgentRunsSettingsSection';
 import AIModelSelectionSection from './AIModelSelectionSection';
 import PrLabelSection from './PrLabelSection';
 import TagListSection from './TagListSection';
@@ -61,7 +60,7 @@ const AdminSettingsPage: React.FC = () => {
     handleModelSelectionChange,
     handleEscalationModelsChange,
     handleReviewContextEnabledChange,
-    handleAgentRunSettingChange, handleUnattendedSettingChange,
+    handleAgentRunSettingChange,
     handleReviewContextBudgetPercentCommit,
     handleRemoveLegacyReviewCap,
     addWhitelistItem,
@@ -191,13 +190,21 @@ const AdminSettingsPage: React.FC = () => {
         />
       )
     },
-    { id: 'unattended-agent-runs', category: 'automation', searchText: 'unattended agent runs scheduled usage pause threshold subscription concurrency cap concurrent window local time night quiet hours timezone',
-      content: <UnattendedAgentRunsSettingsSection values={settings} windowError={settings.unattended_window_error} onCommit={(name, value) => void handleUnattendedSettingChange(name, value)} /> },
     {
       id: 'agent-watchdog',
       category: 'automation',
       searchText: 'agent watchdog stall timeout inactivity silent hung tool stall degenerate whitespace output limit',
-      content: <AgentWatchdogSettingsSection values={settings} defaults={settings.agent_watchdog_defaults} onCommit={handleAgentRunSettingChange} />
+      content: (
+        <AgentWatchdogSettingsSection
+          values={{
+            agent_stall_timeout_ms: settings.agent_stall_timeout_ms,
+            agent_tool_stall_timeout_ms: settings.agent_tool_stall_timeout_ms,
+            agent_degenerate_output_limit: settings.agent_degenerate_output_limit
+          }}
+          defaults={settings.agent_watchdog_defaults}
+          onCommit={handleAgentRunSettingChange}
+        />
+      )
     },
     { id: 'agent-network', category: 'automation', searchText: 'agent network restricted open egress proxy allowlist firewall hosts outbound internet enforce',
       content: <AgentNetworkSettingsSection values={settings} defaults={settings.agent_network_defaults} onCommit={handleAgentRunSettingChange} /> },

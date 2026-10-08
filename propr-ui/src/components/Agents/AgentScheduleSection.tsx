@@ -8,8 +8,6 @@ interface AgentScheduleSectionProps {
   expression: string;
   onChange: (change: { scheduleEnabled?: boolean; schedule?: string }) => void;
   disabled: boolean;
-  /** Why scheduled runs are held right now by the instance's unattended limits, if they are. */
-  unattendedNotice?: string | null;
 }
 
 const SEGMENT_CLASSES = 'px-3 py-1 text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 disabled:cursor-not-allowed';
@@ -25,7 +23,7 @@ function useMinuteClock(): Date {
 }
 
 /** Off, or a UTC cron expression with presets, a live next-run preview and inline validation. */
-export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({ enabled, expression, onChange, disabled, unattendedNotice }) => {
+export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({ enabled, expression, onChange, disabled }) => {
   const now = useMinuteClock();
   const error = enabled && expression.trim() ? validateAgentSchedule(expression.trim()) : null;
   const next = enabled && !error && expression.trim() ? nextScheduledRun(expression.trim(), now) : null;
@@ -85,11 +83,6 @@ export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({ enab
                 ? <span className="text-slate-600">Next run: <span className="font-mono text-slate-800">{formatUtc(next)}</span></span>
                 : <span className="text-slate-500">Enter a 5-field cron expression or pick a preset.</span>}
           </p>
-          {unattendedNotice && (
-            <p role="status" data-testid="agent-unattended-notice" className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
-              {unattendedNotice}
-            </p>
-          )}
         </div>
       )}
     </AgentFormRow>
