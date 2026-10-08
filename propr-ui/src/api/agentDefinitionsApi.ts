@@ -78,6 +78,27 @@ export interface AgentRunRecord {
   updatedAt: number;
 }
 
+export type AgentUnattendedWindow =
+  | { configured: false }
+  | {
+    configured: true;
+    value: string;
+    description: string;
+    timeZone: string;
+    open: boolean;
+    opensAt?: number;
+    opensAtLocal?: string;
+    closesAt?: number;
+    closesAtLocal?: string;
+  }
+  | { configured: true; value: string; error: string };
+
+/** Instance-wide limits that hold back scheduled, API, MCP and CLI runs (not Run now). */
+export interface AgentUnattendedLimits {
+  concurrency: { active: number; cap: number; reached: boolean };
+  window: AgentUnattendedWindow;
+}
+
 export interface AgentCapacity {
   capacity: {
     status: string;
@@ -87,6 +108,8 @@ export interface AgentCapacity {
     provider: string;
   };
   threshold: number;
+  /** Absent from servers that predate the unattended limits. */
+  unattended?: AgentUnattendedLimits;
 }
 
 export type AgentDefinitionContract = typeof AGENT_DEFINITION_CONTRACT;

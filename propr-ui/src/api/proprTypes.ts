@@ -229,6 +229,14 @@ export interface SystemSettings {
   ultrafix_pause_seconds?: number;
   /** Instance default per-run spend cap in USD; 0 = no cap. */
   default_max_cost_usd?: number;
+  /** Unattended agent runs pause at this percent of subscription usage (50-100). */
+  agent_run_usage_pause_percent?: number;
+  /** Most unattended agent runs active at once (1-100). */
+  unattended_max_concurrent?: number;
+  /** Local-time window for unattended agent runs (HH:MM-HH:MM@Time/Zone); null = none. */
+  unattended_window?: string | null;
+  /** Why the stored window is unusable; unattended agent runs are blocked until it is fixed. */
+  unattended_window_error?: string;
   /** Agent watchdog overrides; null uses the environment default. */
   agent_stall_timeout_ms?: number | null;
   agent_tool_stall_timeout_ms?: number | null;

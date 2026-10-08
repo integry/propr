@@ -64,6 +64,28 @@ export const recalledReportPreview = (runId: string): string | null | undefined 
 export const forgetReportPreviews = (): void => reportPreviews.clear();
 
 /**
+ * Why scheduled and API runs of an agent are held right now, e.g. "Unattended
+ * runs wait: outside the unattended window until 02:00 Europe/Riga.", or
+ * null when nothing holds them. Run now is never held by these limits.
+ */
+export const unattendedNotice = ({ unattended }: Pick<AgentCapacity, 'unattended'>): string | null => {
+  if (!unattended) return null;
+  const { window, concurrency } = unattended;
+  if (window.configured && 'error' in window) {
+    return `Unattended runs are blocked: the unattended window setting "${window.value}" is malformed (${window.error}). Fix it in Settings → Automation.`;
+  }
+  if (window.configured && !window.open) {
+    const until = window.opensAtLocal ? ` until ${window.opensAtLocal} ${window.timeZone}` : '';
+    return `Unattended runs wait: outside the unattended window${until}.`;
+  }
+  if (concurrency.reached) {
+    const active = concurrency.active === 1 ? '1 unattended run is' : `${concurrency.active} unattended runs are`;
+    return `Unattended runs wait: ${active} already active (cap ${concurrency.cap}).`;
+  }
+  return null;
+};
+
+/**
  * "Claude is at 94% of its session window (pause threshold 90%). Run anyway?",
  * or null when the agent's subscription is not near its limit.
  */

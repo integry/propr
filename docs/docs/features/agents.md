@@ -234,7 +234,7 @@ Only one autonomy mode applies to every action. Per-action-kind autonomy (for ex
 
 Unattended runs (`schedule`, `api`, `cli`, `mcp`) start while nobody is watching. Before one is queued, before a deferred run is retried and before an `auto` acting step starts, ProPR compares the provider's subscription usage from [Agent Tank](../operations/agent-tank.md) with the instance's **pause threshold**.
 
-The threshold is the instance setting `agent_run_usage_pause_percent` (50–100, default 90). Change it with `propr setting update agent_run_usage_pause_percent 80` or MCP `update_execution_settings`. It is not in the Settings UI in v1.
+The threshold is the instance setting `agent_run_usage_pause_percent` (50–100, default 90). Change it under **Settings → Automation → Unattended agent runs**, with `propr setting update agent_run_usage_pause_percent 80`, or with MCP `update_execution_settings`.
 
 | Situation | Result |
 | --- | --- |
@@ -250,12 +250,27 @@ Every deferral and skip reason is a full sentence in the run history, for exampl
 
 For a synthetic pool, a run is held back only when every enabled member is over the threshold. The gate only reads the snapshot Agent Tank already has and never starts a refresh. It is a brake, not an accounting system. Each run also stays subject to the ordinary [per-run spend cap](./execution-safety.md#spend-caps), and v1 never escalates an agent run to another model.
 
+### Unattended concurrency and time window
+
+After the usage checks, the same gate applies two instance-wide limits to unattended runs when they are queued and when a deferred run is retried. They do not hold back the `auto` acting step of a run that was already admitted, and `manual` (Run now) is exempt from both.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `unattended_max_concurrent` | 1 | At most this many unattended runs may be `queued`, `running` or `acting` at once, across all agents (1–100). Another run is **deferred** 5 minutes at a time, for example "2 unattended runs are already active (cap 1), so the run was deferred until 2026-10-07 02:05 UTC.", and **skipped** once it has been deferred 6 times. |
+| `unattended_window` | none | A local-time window such as `02:00-07:00@Europe/Riga`. Outside it, unattended runs are **deferred** until it opens. Waiting for the window does not count toward the 6 deferrals. |
+
+The window is written `HH:MM-HH:MM@Time/Zone` with an IANA time zone, which defaults to UTC when left out. An end time earlier than the start time spans midnight (`22:00-06:00@UTC`), and `24:00` may end a window. Times follow the zone's daylight saving changes. If the start time does not exist on a spring-forward day, the window opens at the first local minute after the gap. In the repeated hour of an autumn change, it opens at the first occurrence.
+
+A stored window that cannot be parsed (for example an unknown time zone) does **not** let runs through at any hour. Unattended runs are skipped with "The unattended window setting … is malformed …", and Settings shows a warning until you fix or clear it.
+
+Change both limits under **Settings → Automation → Unattended agent runs**, with `propr setting update unattended_max_concurrent 2` and `propr setting update unattended_window 02:00-07:00@Europe/Riga` (`none` removes the window), or with MCP `update_execution_settings`. When an agent's schedule is on, its editor shows why scheduled runs would wait right now, for example "Unattended runs wait: outside the unattended window until 02:00 Europe/Riga." `GET /api/agent-definitions/:id/capacity` returns the same state in `unattended`: `concurrency` (`active`, `cap`, `reached`) and `window` (`open`, `opensAt`, `opensAtLocal`, `closesAt`, `timeZone`, or `error` for a malformed window).
+
 ## Run states
 
 | State | Meaning |
 | --- | --- |
 | `queued` | Accepted; waiting for a worker |
-| `deferred` | Held back by the cost gate; retried automatically |
+| `deferred` | Held back by the cost gate (usage, concurrency cap or time window); retried automatically |
 | `running` | The report run is executing |
 | `report_ready` | The report is stored; the autonomy mode is being applied |
 | `awaiting_approval` | A `preview` report (or a held-back `auto` step) waits for Approve or Reject |
@@ -270,7 +285,7 @@ For a synthetic pool, a run is held back only when every enabled member is over 
 
 ## Troubleshooting
 
-- **A run is `skipped` or `deferred`.** Read the reason on the run. Usage reasons come from the [cost gate](#cost-control): wait for the window to reset, raise `agent_run_usage_pause_percent`, or use **Run now**. "The scheduled run was skipped: Agent is disabled" or "the schedule was turned off" means the definition changed after the slot was claimed.
+- **A run is `skipped` or `deferred`.** Read the reason on the run. Usage reasons come from the [cost gate](#cost-control): wait for the window to reset, raise `agent_run_usage_pause_percent`, or use **Run now**. Concurrency and time window reasons come from the [unattended limits](#unattended-concurrency-and-time-window): raise `unattended_max_concurrent`, widen `unattended_window`, or fix a malformed window. "The scheduled run was skipped: Agent is disabled" or "the schedule was turned off" means the definition changed after the slot was claimed.
 - **`GITHUB_AUTHORIZATION_REQUIRED`.** A run with `propr_mcp`, or an acting step, failed with "ProPR MCP grant request failed (GITHUB_AUTHORIZATION_REQUIRED): The agent owner must sign in to ProPR to authorize GitHub access." The owner's stored GitHub authorization is missing or expired. Sign in to the Web UI again, then trigger a new run.
 - **`MCP_DISABLED`.** The grant request failed because ProPR's MCP server is not enabled on this instance. An administrator enables it under **Settings → Integrations → MCP Server** (see [MCP](./mcp.md)). Until then, use `dry_run` agents without `propr_mcp`.
 - **`SYSTEM_TASK_SECRET_MISSING` or "ProPR API unreachable".** The worker could not request the grant. `SYSTEM_TASK_SECRET` must be set, and identical, on the API and worker. The worker must reach the API at `PROPR_INTERNAL_API_URL` (default `http://api:4000`). Agent containers must reach the MCP endpoint at `PROPR_AGENT_MCP_URL`. See [execution safety](./execution-safety.md#agent-runs).

@@ -1,4 +1,4 @@
-import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, parseUsageTipsSettings } from '@propr/shared';
+import { DEFAULT_MAX_PROVIDER_REPLACEMENTS, DEFAULT_UNATTENDED_MAX_CONCURRENT, parseUsageTipsSettings } from '@propr/shared';
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
 import { Settings } from './types';
 import { agentTankModeFromLegacyEnabled, isAgentTankMode, normalizeReviewContextBudgetPercent } from '@propr/shared';
@@ -40,6 +40,10 @@ interface SettingsApiData {
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;
   default_max_cost_usd?: number;
+  agent_run_usage_pause_percent?: number;
+  unattended_max_concurrent?: number;
+  unattended_window?: string | null;
+  unattended_window_error?: string;
   agent_stall_timeout_ms?: number | null;
   agent_tool_stall_timeout_ms?: number | null;
   agent_degenerate_output_limit?: number | null;
@@ -50,6 +54,16 @@ interface SettingsApiData {
   agent_network_ignore_repository_allow?: unknown;
   agent_network_defaults?: Settings['agent_network_defaults'];
 }
+
+/** The server's default for `agent_run_usage_pause_percent`. */
+export const DEFAULT_AGENT_RUN_USAGE_PAUSE_PERCENT = 90;
+
+/** Unattended agent run limits before the server's values load. */
+export const DEFAULT_UNATTENDED_SETTINGS = {
+  agent_run_usage_pause_percent: DEFAULT_AGENT_RUN_USAGE_PAUSE_PERCENT,
+  unattended_max_concurrent: DEFAULT_UNATTENDED_MAX_CONCURRENT,
+  unattended_window: '',
+};
 
 /** The spend cap as typed in Settings: empty for no cap (0 or unset). */
 function costCapInput(amount: number | undefined): string {
@@ -105,6 +119,16 @@ export function runLimitSettingsToSave(settings: Settings) {
   };
 }
 
+/** Unattended agent run limits; an older server that omits them reads as the defaults. */
+function unattendedSettings(data: SettingsApiData): Pick<Settings, 'agent_run_usage_pause_percent' | 'unattended_max_concurrent' | 'unattended_window' | 'unattended_window_error'> {
+  return {
+    agent_run_usage_pause_percent: data.agent_run_usage_pause_percent ?? DEFAULT_AGENT_RUN_USAGE_PAUSE_PERCENT,
+    unattended_max_concurrent: data.unattended_max_concurrent ?? DEFAULT_UNATTENDED_MAX_CONCURRENT,
+    unattended_window: data.unattended_window ?? '',
+    ...(data.unattended_window_error ? { unattended_window_error: data.unattended_window_error } : {}),
+  };
+}
+
 function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig[]): Settings {
   return {
     worker_concurrency: settingsData.worker_concurrency || '',
@@ -133,6 +157,7 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     ultrafix_max_cycles: settingsData.ultrafix_max_cycles ?? 5,
     ultrafix_pause_seconds: settingsData.ultrafix_pause_seconds ?? 60,
     default_max_cost_usd: costCapInput(settingsData.default_max_cost_usd),
+    ...unattendedSettings(settingsData),
     agent_stall_timeout_ms: watchdogOverride(settingsData.agent_stall_timeout_ms),
     agent_tool_stall_timeout_ms: watchdogOverride(settingsData.agent_tool_stall_timeout_ms),
     agent_degenerate_output_limit: watchdogOverride(settingsData.agent_degenerate_output_limit),

@@ -173,6 +173,8 @@ export interface CreateAgentRunInput {
   deferredUntil?: number | null;
   /** Why the run was held; recorded when `initialState` is `skipped` or `deferred`. */
   skipReason?: string | null;
+  /** False for a deferral that does not count against the deferral limit (a wait for the unattended window). */
+  deferralCounted?: boolean;
 }
 
 export interface CreateAgentRunResult {
@@ -215,7 +217,7 @@ export async function createAgentRun(
     approved_by: null,
     operator_note: null,
     deferred_until: state === 'deferred' ? input.deferredUntil ?? null : null,
-    deferrals: state === 'deferred' ? 1 : 0,
+    deferrals: state === 'deferred' && input.deferralCounted !== false ? 1 : 0,
     created_at: timestamp,
     started_at: null,
     reported_at: null,
@@ -507,22 +509,37 @@ export async function markRetriedAgentRunDispatched(
   return Number(updated) > 0;
 }
 
+export interface AgentRunDeferral {
+  until: number;
+  reason: string;
+  /** False for a wait that does not count against the deferral limit (the unattended window). */
+  counted?: boolean;
+}
+
 /**
- * Defers a due deferred run again, counting the deferral. Guarded by the
- * `deferred_until` the caller evaluated, so two retries of the same due run
- * cannot both count a deferral. Returns null when the run left `deferred` or
- * was already re-deferred.
+ * Defers a due deferred run again, counting the deferral unless it is marked
+ * uncounted. Guarded by the `deferred_until` the caller evaluated, so two
+ * retries of the same due run cannot both count a deferral. Returns null when
+ * the run left `deferred` or was already re-deferred.
  */
-// eslint-disable-next-line max-params -- the run, the evaluated retry time and the new deferral, plus the shared store dependencies
 export async function redeferAgentRun(
   id: string,
   evaluatedDeferredUntil: number,
-  deferredUntil: number,
-  skipReason: string,
+  { until, reason, counted = true }: AgentRunDeferral,
   { database = db, now = Date.now }: AgentRunStoreDependencies = {},
 ): Promise<StoredAgentRun | null> {
   const [updated] = await database(TABLE).where({ id, state: 'deferred', deferred_until: evaluatedDeferredUntil })
-    .update({ deferred_until: deferredUntil, skip_reason: skipReason, deferrals: database.raw('deferrals + 1'), updated_at: now() })
+    .update({ deferred_until: until, skip_reason: reason, deferrals: counted ? database.raw('deferrals + 1') : database.raw('deferrals'), updated_at: now() })
     .returning('*') as AgentRunRow[];
   return updated ? rowToAgentRun(updated) : null;
+}
+
+/** States in which a run holds (or is about to hold) a worker and spends tokens. */
+export const ACTIVE_AGENT_RUN_STATES: readonly AgentRunState[] = ['queued', 'running', 'acting'];
+
+/** Active runs of every definition whose trigger is not `manual`, for the unattended concurrency cap. */
+export async function countActiveUnattendedAgentRuns({ database = db }: AgentRunStoreDependencies = {}): Promise<number> {
+  const row = await database(TABLE).whereIn('state', [...ACTIVE_AGENT_RUN_STATES]).whereNot('trigger', 'manual')
+    .count<{ count: number | string }[]>({ count: '*' }).first();
+  return Number(row?.count ?? 0);
 }

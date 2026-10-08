@@ -69,6 +69,26 @@ export async function agentNetworkSettingsResponse(configStore: typeof configMan
   };
 }
 
+/**
+ * Unattended agent run limits. A stored window that no longer parses is
+ * returned as stored with `unattended_window_error`, so Settings can warn that
+ * unattended runs are blocked until it is fixed.
+ */
+export async function agentUnattendedSettingsResponse(configStore: typeof configManager): Promise<Record<string, unknown>> {
+  const readConfig = <T>(key: string, fallback: T) => configStore.getConfig(key, fallback);
+  const [usagePausePercent, maxConcurrent, window] = await Promise.all([
+    configManager.loadUsagePauseThreshold({ readConfig }),
+    configManager.loadUnattendedMaxConcurrent({ readConfig }),
+    configManager.loadUnattendedWindow({ readConfig }),
+  ]);
+  return {
+    agent_run_usage_pause_percent: usagePausePercent,
+    unattended_max_concurrent: maxConcurrent,
+    unattended_window: window.configured ? window.value : null,
+    ...(window.configured && 'error' in window ? { unattended_window_error: window.error } : {}),
+  };
+}
+
 interface SettingsStore {
   handleSettingsSaveSideEffects: typeof configManager.handleSettingsSaveSideEffects;
   loadSettings: typeof configManager.loadSettings;
@@ -266,6 +286,8 @@ async function saveNormalizedSettingsWithRollback({
     ultrafix_pause_seconds,
     default_max_cost_usd,
     agent_run_usage_pause_percent,
+    unattended_max_concurrent,
+    unattended_window,
     ultrafix_ci_wait_timeout_ms,
     agent_stall_timeout_ms,
     agent_tool_stall_timeout_ms,
@@ -294,6 +316,8 @@ async function saveNormalizedSettingsWithRollback({
     ultrafix_pause_seconds,
     default_max_cost_usd,
     agent_run_usage_pause_percent,
+    unattended_max_concurrent,
+    unattended_window,
     ultrafix_ci_wait_timeout_ms,
     agent_stall_timeout_ms,
     agent_tool_stall_timeout_ms,
