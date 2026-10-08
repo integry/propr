@@ -238,13 +238,21 @@ export interface CacheUsage {
  * back). The persisted input is therefore the denominator as it is; adding the
  * cache counts to it again would count every cached token twice and halve the
  * hit rate of a well-cached run.
+ *
+ * Only executions with a known breakdown enter the denominator. The producer
+ * now persists null cache counts and `cache_usage_reported = false` for an
+ * agent that reported none, and `true` beside the counts it did report, zero
+ * included. Rows from before that column stored a zero for missing telemetry
+ * too, so without the flag a row counts only if it shows some cache activity:
+ * a historical zero is unknown, not a measured 0%, and must not dilute the rate.
  */
 export async function loadCacheUsage(
   db: Knex, window: AnalyticsWindow | null, priceOf: CachePriceLookup,
 ): Promise<CacheUsage | null> {
-  const [hasInput, hasCacheRead] = await Promise.all([
+  const [hasInput, hasCacheRead, hasReported] = await Promise.all([
     hasColumn(db, 'llm_executions', 'input_tokens'),
     hasColumn(db, 'llm_executions', 'cache_read_input_tokens'),
+    hasColumn(db, 'llm_executions', 'cache_usage_reported'),
   ]);
   if (!hasInput || !hasCacheRead) return null;
 
@@ -253,6 +261,10 @@ export async function loadCacheUsage(
     .sum({ input: 'input_tokens', cached: 'cache_read_input_tokens' })
     .whereNotNull('cache_read_input_tokens')
     .whereNotNull('input_tokens')
+    .where(known => {
+      known.where('cache_read_input_tokens', '>', 0).orWhere('cache_creation_input_tokens', '>', 0);
+      if (hasReported) known.orWhere('cache_usage_reported', true);
+    })
     .groupBy('model_name');
   whereCreatedWithin(query, 'start_time', window);
   const rows = await query as unknown as Array<{

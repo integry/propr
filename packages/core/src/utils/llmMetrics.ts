@@ -22,14 +22,18 @@ function extractMetricsFromClaudeResult(claudeResult: ClaudeResult | null): Extr
 interface CumulativeTokenUsage {
     inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number;
     totalInputWithCache: number;  // input + cache_creation + cache_read (for cost calc and display)
+    /** Whether the counted usage carried a cache breakdown at all; zero cache counts without one are unknown, not zero. */
+    cacheReported: boolean;
 }
+const reportsCache = (usage: TokenUsage | undefined): boolean =>
+    typeof usage?.cache_read_input_tokens === 'number' || typeof usage?.cache_creation_input_tokens === 'number';
 interface GenericConversationStep {
     message?: ConversationStep['message'] | string; timestamp?: string; type?: string; isError?: boolean; metadata?: Record<string, unknown>;
     role?: string; content?: string; tool?: string; params?: unknown; result?: string; usage?: TokenUsage;
     item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean }> };
 }
 function calculateTokens(conversationLog: ConversationStep[] | undefined, reportedTokenUsage?: TokenUsage): CumulativeTokenUsage {
-    let aggrInput = 0, aggrOutput = 0, aggrCacheCreate = 0, aggrCacheRead = 0;
+    let aggrInput = 0, aggrOutput = 0, aggrCacheCreate = 0, aggrCacheRead = 0, aggrReported = false;
     if (conversationLog && Array.isArray(conversationLog)) {
         const seenIds = new Set<string>(); // Deduplicate by message ID (per Claude docs, same ID = same usage)
         conversationLog.forEach(step => {
@@ -42,6 +46,7 @@ function calculateTokens(conversationLog: ConversationStep[] | undefined, report
                 if (msgId) seenIds.add(msgId);
                 aggrInput += usage.input_tokens ?? 0; aggrOutput += usage.output_tokens ?? 0;
                 aggrCacheCreate += usage.cache_creation_input_tokens ?? 0; aggrCacheRead += usage.cache_read_input_tokens ?? 0;
+                aggrReported ||= reportsCache(usage);
             }
         });
     }
@@ -52,7 +57,22 @@ function calculateTokens(conversationLog: ConversationStep[] | undefined, report
     const useAggr = aggrTotal > rptTotal; // Use whichever is higher to avoid undercounting
     const [inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens] = useAggr
         ? [aggrInput, aggrOutput, aggrCacheCreate, aggrCacheRead] : [rptInput, rptOutput, rptCacheCreate, rptCacheRead];
-    return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, totalInputWithCache: inputTokens + cacheCreationTokens + cacheReadTokens };
+    const cacheReported = useAggr ? aggrReported : reportsCache(reportedTokenUsage);
+    return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, totalInputWithCache: inputTokens + cacheCreationTokens + cacheReadTokens, cacheReported };
+}
+
+/**
+ * The cumulative usage as the execution row stores it (the same shape the PR
+ * comment prints). An agent that reported no cache breakdown persists none: a
+ * defaulted zero would read as a measured 0% cache hit rate.
+ */
+function toPersistedTokenUsage(tokens: CumulativeTokenUsage): TokenUsage {
+    const usage: TokenUsage = { input_tokens: tokens.totalInputWithCache, output_tokens: tokens.outputTokens };
+    if (tokens.cacheReported) {
+        usage.cache_creation_input_tokens = tokens.cacheCreationTokens;
+        usage.cache_read_input_tokens = tokens.cacheReadTokens;
+    }
+    return usage;
 }
 
 async function calculateCost(model: string, tokens: CumulativeTokenUsage, claudeResult: ClaudeResult | null): Promise<number> {
@@ -203,7 +223,7 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
     }
 }
 async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<void> {
-    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, correlationId } = metrics;
+    const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, cacheUsageReported, correlationId } = metrics;
 
     // Check if taskId exists in tasks table (drafts won't exist)
     // Use null for task_id if it doesn't exist (FK allows null now)
@@ -223,8 +243,11 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
             prompt_length: null, output_length: null,
             input_tokens: tokenUsage?.input_tokens ?? null,
             output_tokens: tokenUsage?.output_tokens ?? null,
+            // Null cache counts mean the agent reported none, not that it read none;
+            // the flag lets a reported zero stay a measured zero.
             cache_creation_input_tokens: tokenUsage?.cache_creation_input_tokens ?? null,
-            cache_read_input_tokens: tokenUsage?.cache_read_input_tokens ?? null
+            cache_read_input_tokens: tokenUsage?.cache_read_input_tokens ?? null,
+            cache_usage_reported: cacheUsageReported ?? null
         };
         const [insertedExecution] = await db('llm_executions').insert(executionData).returning('execution_id');
         const executionId = (insertedExecution as { execution_id: string }).execution_id;
@@ -279,14 +302,10 @@ export async function recordLLMMetrics(claudeResult: ClaudeResult | null, issueR
         logger.info({ correlationId, issueNumber: issueRef.number, model, success, costUsd, executionTimeSec, numTurns }, 'LLM metrics recorded');
         logConversationDebug(claudeResult, correlationId, taskId);
         if (claudeResult) {
-            // Build cumulative token usage from conversation log (same as PR comment)
-            const cumulativeTokenUsage: TokenUsage = {
-                input_tokens: cumulativeTokens.totalInputWithCache,
-                output_tokens: cumulativeTokens.outputTokens,
-                cache_creation_input_tokens: cumulativeTokens.cacheCreationTokens,
-                cache_read_input_tokens: cumulativeTokens.cacheReadTokens
-            };
-            await persistToDatabase(claudeResult, taskId, { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage: cumulativeTokenUsage, correlationId, executionType });
+            await persistToDatabase(claudeResult, taskId, {
+                sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd,
+                tokenUsage: toPersistedTokenUsage(cumulativeTokens), cacheUsageReported: cumulativeTokens.cacheReported, correlationId, executionType,
+            });
         }
     } catch (error) {
         logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId }, 'Failed to record LLM metrics');

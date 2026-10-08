@@ -123,6 +123,8 @@ export interface PersistMetrics {
     numTurns: number;
     costUsd: number;
     tokenUsage?: TokenUsage;
+    /** Whether `tokenUsage`'s cache counts were reported by the agent, as opposed to defaulted. */
+    cacheUsageReported?: boolean;
     correlationId?: string;
     executionType?: ExecutionType;
 }

@@ -21,6 +21,7 @@ before(async () => {
     table.integer('input_tokens');
     table.integer('cache_read_input_tokens');
     table.integer('cache_creation_input_tokens');
+    table.boolean('cache_usage_reported');
   });
 });
 after(async () => database.destroy());
@@ -77,6 +78,23 @@ test('cache usage reports the hit rate over the whole prompt and what cached rea
 
   await database('llm_executions').del();
   assert.equal(await loadCacheUsage(database, WEEK, prices), null);
+});
+
+test('only executions with a known cache breakdown enter the hit rate', async () => {
+  await database('llm_executions').insert([
+    // Reported a breakdown and read everything back from the cache.
+    { task_id: 'a', start_time: daysAgo(1), model_name: 'm', input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 100, cache_usage_reported: true },
+    // Reported a breakdown and found nothing cached: a measured 0% that does count.
+    { task_id: 'b', start_time: daysAgo(1), model_name: 'm', input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cache_usage_reported: true },
+    // Reported input and output only; the producer now stores no cache counts for it.
+    { task_id: 'c', start_time: daysAgo(1), model_name: 'm', input_tokens: 9_000, cache_creation_input_tokens: null, cache_read_input_tokens: null, cache_usage_reported: false },
+    // Written before the flag existed: zeros that may be missing telemetry rather than a cold cache.
+    { task_id: 'd', start_time: daysAgo(1), model_name: 'm', input_tokens: 9_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cache_usage_reported: null },
+    // Written before the flag existed, but with cache writes: the breakdown was evidently reported.
+    { task_id: 'e', start_time: daysAgo(1), model_name: 'm', input_tokens: 200, cache_creation_input_tokens: 200, cache_read_input_tokens: 0, cache_usage_reported: null },
+  ]);
+  // 100 of 400, not 100 of 18,400: unknown telemetry neither dilutes nor inflates the rate.
+  assert.deepEqual(await loadCacheUsage(database, WEEK, () => null), { input_tokens: 400, cache_read_tokens: 100, hit_rate: 0.25, saved_usd: null });
 });
 
 test('a prompt holds at least its cached reads, so a malformed row cannot report a hit rate above 100%', async () => {
