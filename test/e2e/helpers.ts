@@ -154,6 +154,10 @@ export async function createAndGeneratePlan(
 
   const currentPlan = await getPlan(plan.draft_id, client);
   if (!sawGenerating || currentPlan.status === "failed") {
+    const reason = currentPlan.generation_trace?.error;
+    if (typeof reason === "string" && reason) {
+      console.log(`    Plan ${plan.draft_id.substring(0, 8)} failed: ${reason}`);
+    }
     return { planId: plan.draft_id, issues: [] };
   }
   if (currentPlan.status !== "review") {
