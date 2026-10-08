@@ -10,7 +10,7 @@
  */
 
 import type { Knex } from 'knex';
-import { analyticsDayKeys, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
+import { analyticsDayKeys, whereCreatedWithin, windowLastInstant, type AnalyticsWindow } from './analyticsWindow.js';
 import { hasColumn } from './analyticsSchema.js';
 
 export interface TaskSummary {
@@ -94,7 +94,7 @@ export async function loadTaskSummary(
   const from = window?.from ?? (dailyRows.length > 0 ? new Date(`${dailyRows[0].date}T00:00:00.000Z`) : null);
   const dailyCounts = !window
     ? dailyRows.map(row => ({ date: String(row.date), count: Number(row.count) }))
-    : from ? analyticsDayKeys(from, window.to).map(date => ({ date, count: counts.get(date) ?? 0 })) : [];
+    : from ? analyticsDayKeys(from, windowLastInstant(window)).map(date => ({ date, count: counts.get(date) ?? 0 })) : [];
 
   return {
     total: bounded ? Number(bounded.count ?? 0) : dailyRows.reduce((sum, row) => sum + Number(row.count), 0),
@@ -119,7 +119,7 @@ export function activityDays(
   if (!window.from) {
     const first = [...taskDays.map(day => day.date), ...dailyRuns.keys()].sort()[0];
     const counts = new Map(taskDays.map(day => [day.date, day.count]));
-    days = first ? analyticsDayKeys(new Date(`${first}T00:00:00.000Z`), window.to).map(date => ({ date, count: counts.get(date) ?? 0 })) : [];
+    days = first ? analyticsDayKeys(new Date(`${first}T00:00:00.000Z`), windowLastInstant(window)).map(date => ({ date, count: counts.get(date) ?? 0 })) : [];
   }
   return days.map(day => ({ date: day.date, count: day.count, runs: dailyRuns.get(day.date) ?? 0 }));
 }
@@ -211,8 +211,8 @@ export type CachePriceLookup = (model: string) => { prompt: number; cacheRead?: 
 
 export interface CacheUsage {
   /**
-   * Prompt tokens across executions that reported a cache breakdown: ordinary
-   * input, cache writes and cache reads together.
+   * Prompt tokens across executions that reported a cache breakdown: the
+   * whole prompt, cache writes and cache reads included.
    */
   input_tokens: number;
   /** Of those, tokens served from the prompt cache. */
@@ -231,18 +231,20 @@ export interface CacheUsage {
  * a cache breakdown, so an agent that never reports one does not read as a
  * 0% hit rate.
  *
- * Executions store the prompt as disjoint parts, in Anthropic's convention:
- * `input_tokens` is only the uncached portion, beside separate cache-write
- * and cache-read counts (Codex's inclusive count is split the same way before
- * it is stored). The whole prompt is therefore their sum.
+ * Executions persist `input_tokens` as the whole prompt: `recordLLMMetrics`
+ * stores the sum of uncached input, cache writes and cache reads there, beside
+ * the separate cache-write and cache-read counts (an agent that reports an
+ * inclusive count, as Codex does, is split into those parts first, then summed
+ * back). The persisted input is therefore the denominator as it is; adding the
+ * cache counts to it again would count every cached token twice and halve the
+ * hit rate of a well-cached run.
  */
 export async function loadCacheUsage(
   db: Knex, window: AnalyticsWindow | null, priceOf: CachePriceLookup,
 ): Promise<CacheUsage | null> {
-  const [hasInput, hasCacheRead, hasCacheCreation] = await Promise.all([
+  const [hasInput, hasCacheRead] = await Promise.all([
     hasColumn(db, 'llm_executions', 'input_tokens'),
     hasColumn(db, 'llm_executions', 'cache_read_input_tokens'),
-    hasColumn(db, 'llm_executions', 'cache_creation_input_tokens'),
   ]);
   if (!hasInput || !hasCacheRead) return null;
 
@@ -252,10 +254,9 @@ export async function loadCacheUsage(
     .whereNotNull('cache_read_input_tokens')
     .whereNotNull('input_tokens')
     .groupBy('model_name');
-  if (hasCacheCreation) query.select(db.raw('sum(coalesce(cache_creation_input_tokens, 0)) as written'));
   whereCreatedWithin(query, 'start_time', window);
   const rows = await query as unknown as Array<{
-    model_name: string | null; input: number | string | null; cached: number | string | null; written?: number | string | null;
+    model_name: string | null; input: number | string | null; cached: number | string | null;
   }>;
 
   let prompt = 0;
@@ -264,7 +265,9 @@ export async function loadCacheUsage(
   let priced = false;
   for (const row of rows) {
     const rowCached = Number(row.cached ?? 0);
-    prompt += Number(row.input ?? 0) + Number(row.written ?? 0) + rowCached;
+    // A prompt holds at least the tokens read back from the cache: a row that
+    // somehow stored fewer cannot push the hit rate past 100%.
+    prompt += Math.max(Number(row.input ?? 0), rowCached);
     cached += rowCached;
     const price = row.model_name ? priceOf(row.model_name) : null;
     if (price && price.cacheRead !== undefined && rowCached > 0) {

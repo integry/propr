@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, test } from 'node:test';
 import type { Knex } from 'knex';
+import { analyticsTimeframeStart } from '@propr/shared';
 import { createStatsRoutes } from '../routes/statsRoutes.js';
 import {
   NOW,
@@ -75,6 +76,27 @@ test('dashboard stats compare against the previous period and report recorded sp
   assert.equal(empty.body.recordedSpend, null);
   assert.equal(empty.body.tasks, 0);
   assert.equal((empty.body.dailyTasks as unknown[]).length, 30);
+});
+
+test('the previous period ends exactly where the current one starts', async () => {
+  // The current week's first instant, and the last instant before it.
+  const start = analyticsTimeframeStart('7d', NOW)!;
+  const atStart = start.toISOString();
+  const justBefore = new Date(start.getTime() - 1).toISOString();
+  await seedTask({ taskId: 'at-start', repository: 'acme/seam', issueNumber: 1, states: [{ state: 'completed', timestamp: atStart }] });
+  await seedTask({ taskId: 'just-before', repository: 'acme/seam', issueNumber: 2, states: [{ state: 'failed', timestamp: justBefore, reason: 'nope' }] });
+  await database('llm_executions').insert([
+    { task_id: 'at-start', start_time: atStart, cost_usd: 1 },
+    { task_id: 'just-before', start_time: justBefore, cost_usd: 2 },
+  ]);
+
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+  const response = await call(stats.getDashboardStats, { repository: 'acme/seam', period: '7d' });
+  // Each task and each run falls in exactly one of the two periods.
+  assert.equal(response.body.tasks, 1);
+  assert.equal(response.body.completed, 1);
+  assert.equal(response.body.recordedSpend, 1);
+  assert.deepEqual(response.body.previous, { tasks: 1, completed: 0, successRate: 0, recordedSpend: 2 });
 });
 
 test('historical stats keep a recorded failure once its retry starts', async () => {

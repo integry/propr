@@ -50,20 +50,20 @@ test('runs per task divides total runs by total tasks, so the two figures beside
 });
 
 test('cache usage reports the hit rate over the whole prompt and what cached reads saved at known prices', async () => {
-  // Rows as executions persist them: `input_tokens` is only the uncached part of
-  // the prompt, beside separate cache-write and cache-read counts.
+  // Rows as `recordLLMMetrics` persists them: `input_tokens` is the whole
+  // prompt, cache writes and reads included, beside the separate cache counts.
   await database('llm_executions').insert([
-    // A Claude run: almost all of its prompt is read back from the cache.
-    { task_id: 'a', start_time: daysAgo(1), model_name: 'priced', input_tokens: 2_000, cache_creation_input_tokens: 8_000, cache_read_input_tokens: 150_000 },
-    // A Codex run, its inclusive input already split into uncached and cached parts; it reports no cache writes.
-    { task_id: 'b', start_time: daysAgo(1), model_name: 'unpriced', input_tokens: 30_000, cache_creation_input_tokens: null, cache_read_input_tokens: 70_000 },
+    // A Claude run: 2k uncached, 8k written to the cache, 150k read back from it.
+    { task_id: 'a', start_time: daysAgo(1), model_name: 'priced', input_tokens: 160_000, cache_creation_input_tokens: 8_000, cache_read_input_tokens: 150_000 },
+    // A Codex run: its inclusive count split into 30k uncached and 70k cached, then stored whole again; it reports no cache writes.
+    { task_id: 'b', start_time: daysAgo(1), model_name: 'unpriced', input_tokens: 100_000, cache_creation_input_tokens: null, cache_read_input_tokens: 70_000 },
     // An execution that never reported a breakdown stays out of the denominator.
     { task_id: 'c', start_time: daysAgo(1), model_name: 'priced', input_tokens: 5_000_000, cache_read_input_tokens: null },
   ]);
   const prices = (model: string) => (model === 'priced' ? { prompt: 4 / 1_000_000, cacheRead: 0.2 / 1_000_000 } : null);
   const usage = await loadCacheUsage(database, WEEK, prices);
   assert.deepEqual(usage, {
-    // 160k from the Claude run and 100k from the Codex run.
+    // 160k from the Claude run and 100k from the Codex run, each counted once.
     input_tokens: 260_000,
     cache_read_tokens: 220_000,
     hit_rate: 0.8462,
@@ -77,6 +77,16 @@ test('cache usage reports the hit rate over the whole prompt and what cached rea
 
   await database('llm_executions').del();
   assert.equal(await loadCacheUsage(database, WEEK, prices), null);
+});
+
+test('a prompt holds at least its cached reads, so a malformed row cannot report a hit rate above 100%', async () => {
+  // A row written by a producer that stored only the uncached portion.
+  await database('llm_executions').insert({
+    task_id: 'a', start_time: daysAgo(1), model_name: 'm', input_tokens: 2_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 8_000,
+  });
+  const usage = await loadCacheUsage(database, WEEK, () => null);
+  assert.equal(usage?.input_tokens, 8_000);
+  assert.equal(usage?.hit_rate, 1);
 });
 
 test('autonomy counts finished tasks that never failed or asked for an operator', async () => {

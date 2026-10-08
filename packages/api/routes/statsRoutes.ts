@@ -90,7 +90,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const cachePrice: CachePriceLookup = deps.cachePrice ?? (() => null);
-  const allTimeCache = deps.analyticsCache ?? createAnalyticsCache();
+  const aggregationCache = deps.analyticsCache ?? createAnalyticsCache();
 
   async function getTaskStats(req: Request, res: Response): Promise<void> {
     const analyticsWindow = readAnalyticsWindow(req, res, now());
@@ -321,14 +321,16 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
 
       // 2-3. Token, cost and model usage
       const usage = await loadOverviewUsage(analyticsWindow);
-      const modelUsage = await loadModelUsage(db, analyticsWindow, allTimeCache);
+      const modelUsage = await loadModelUsage(db, analyticsWindow, aggregationCache);
 
-      // Run volume, prompt caching, delivery and autonomy
+      // Run volume, prompt caching, delivery and autonomy. Delivery and
+      // autonomy read PR and task history, so they are remembered briefly
+      // between the page's refreshes; see `analyticsCache`.
       const [runs, cache, delivery, autonomy] = await Promise.all([
         loadRunVolume(db, analyticsWindow),
         loadCacheUsage(db, analyticsWindow, cachePrice),
-        allTimeCache.remember('delivery', analyticsWindow, () => loadDeliveryMetrics(db, analyticsWindow)),
-        loadAutonomy(db, analyticsWindow),
+        aggregationCache.remember('delivery', analyticsWindow, () => loadDeliveryMetrics(db, analyticsWindow)),
+        aggregationCache.remember('autonomy', analyticsWindow, () => loadAutonomy(db, analyticsWindow)),
       ]);
 
       // 4. PR Iterations Average - count tasks per unique issue
@@ -431,9 +433,13 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
       const to = now();
       const from = analyticsTimeframeStart(period, to)!;
       const current: AnalyticsWindow = { timeframe: period, from, to };
-      // The same number of whole days, ending the moment the current window starts.
-      const previousTo = new Date(from.getTime() - 1);
-      const previous: AnalyticsWindow = { timeframe: period, from: analyticsTimeframeStart(period, previousTo)!, to: previousTo };
+      // The same number of whole days, ending where the current window starts:
+      // `from` is the current period's first instant, so it is outside the
+      // previous one, whose last whole day is the day before.
+      const previousLastInstant = new Date(from.getTime() - 1);
+      const previous: AnalyticsWindow = {
+        timeframe: period, from: analyticsTimeframeStart(period, previousLastInstant)!, to: from, toExclusive: true,
+      };
 
       const [currentStats, previousStats, currentSpend, previousSpend] = await timeApiStage(
         'dashboard.stats',

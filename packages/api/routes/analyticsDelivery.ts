@@ -30,8 +30,9 @@ export interface DeliveryMetrics {
   prs_closed: number;
   /**
    * Merged PRs that needed no fix: one implementation task for their issue, no
-   * follow-up fix task on the PR (Ultrafix's included) and no Ultrafix fix
-   * cycle. n is merged PRs.
+   * follow-up fix task on the PR (Ultrafix's included; a review or a
+   * merge-conflict resolution is not a fix) and no Ultrafix fix cycle. n is
+   * merged PRs.
    */
   first_time_pass: { rate: number | null; passed: number; n: number };
   /** Wall-clock minutes from the issue's first task to the merge. n is merged PRs with a merge time. */
@@ -86,12 +87,15 @@ const atOrBefore = (value: string | Date, mergedAt: string | null): boolean =>
   mergedAt === null || toTime(value) <= toTime(mergedAt);
 
 /**
- * Any task acting on a PR is a fix unless it only reviews. An Ultrafix loop's
- * fix step is a fix like any other: the task itself is the evidence, whether
- * or not a later review of the fixed code was ever scored.
+ * Any task acting on a PR is a fix unless it only reviews, or only resolves a
+ * merge conflict. An Ultrafix loop's fix step is a fix like any other: the
+ * task itself is the evidence, whether or not a later review of the fixed
+ * code was ever scored. A merge-conflict resolution replays the same change
+ * onto a base that moved underneath it; nothing about the change was found
+ * wanting, so it does not cost the PR its first-time pass.
  */
 function isFixTask(task: TaskRow): boolean {
-  return task.task_type !== 'review' && task.command_mode !== 'review';
+  return task.task_type !== 'review' && task.task_type !== 'merge_conflict' && task.command_mode !== 'review';
 }
 
 async function loadOutcomes(db: Knex, pullRequests: PullRequest[]): Promise<Map<string, { merged_at: string | null; outcome: string | null }>> {

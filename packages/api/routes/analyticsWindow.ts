@@ -14,9 +14,19 @@ export interface AnalyticsWindow {
   timeframe: AnalyticsTimeframe;
   /** Inclusive lower bound; null for all time. */
   from: Date | null;
-  /** Inclusive upper bound: the moment the request was served. */
+  /** Upper bound: the moment the request was served, inclusive unless `toExclusive`. */
   to: Date;
+  /**
+   * When set, rows at exactly `to` fall outside the window. A previous
+   * period ends where the current one starts, so the two meet at one instant
+   * with neither a gap nor an overlap.
+   */
+  toExclusive?: boolean;
 }
+
+/** The last instant inside a window, for listing its calendar days. */
+export const windowLastInstant = (window: AnalyticsWindow): Date =>
+  window.toExclusive ? new Date(window.to.getTime() - 1) : window.to;
 
 /**
  * Reads `period` from the query string.
@@ -44,7 +54,7 @@ export function readAnalyticsWindow(req: Request, res: Response, now: Date): Ana
 export function whereCreatedWithin<T extends Knex.QueryBuilder>(query: T, column: string, window: AnalyticsWindow | null): T {
   if (!window) return query;
   if (window.from) query.where(column, '>=', window.from.toISOString());
-  query.where(column, '<=', window.to.toISOString());
+  query.where(column, window.toExclusive ? '<' : '<=', window.to.toISOString());
   return query;
 }
 

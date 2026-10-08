@@ -308,7 +308,9 @@ describe('AnalyticsPage', () => {
       ...overview,
       usage: {
         ...overview.usage,
-        cache: { input_tokens: 3_000_000, cache_read_tokens: 2_526_000, hit_rate: 0.842, saved_usd: 820.4 },
+        // A run of 2k uncached, 8k cache-write and 150k cache-read tokens, as the
+        // server reports it: 160k prompt tokens, of which 150k came from the cache.
+        cache: { input_tokens: 160_000, cache_read_tokens: 150_000, hit_rate: 0.9375, saved_usd: 0.57 },
       },
       model_usage: [
         { model: 'claude-opus-5-5', runs: 552, tasks: 100, tokens: 3_100_000, cost_usd: 9.4 },
@@ -352,8 +354,9 @@ describe('AnalyticsPage', () => {
     expect(within(delivery).getByTestId('metric-autonomy-detail')).toHaveTextContent('12% required operator');
 
     const tokens = screen.getByTestId('token-consumption');
-    expect(within(tokens).getByTestId('token-row-cache-hit-rate')).toHaveTextContent('Cache hit rate84.2%');
-    expect(within(tokens).getByTestId('token-row-cache-savings')).toHaveTextContent('Saved by caching~$820.40');
+    // 150k of 160k, not 150k of the three counts added together.
+    expect(within(tokens).getByTestId('token-row-cache-hit-rate')).toHaveTextContent('Cache hit rate93.8%');
+    expect(within(tokens).getByTestId('token-row-cache-savings')).toHaveTextContent('Saved by caching~$0.57');
   });
 
   it('reads unknown delivery figures as a dash, never as zero', async () => {

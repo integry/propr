@@ -286,6 +286,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `All Repos`. `GET /api/stats/overview` adds `model_usage`, a per-model list
   of tasks, tokens and cost, and `usage.input_tokens` / `usage.output_tokens`.
 
+### Changed
+
+- **`GET /api/stats/dashboard`** reports its daily series as `dailyTasks`
+  (tasks created per UTC day, the series the Analytics activity chart plots)
+  and no longer reports `dailyCompleted` (completions per day). The bundled
+  dashboard reads `dailyTasks`, and still draws `dailyCompleted` from an older
+  server; a script that read `dailyCompleted` should read `dailyTasks`.
+
 ### Removed
 
 - **`scripts/init-firewall.sh`**: the iptables firewall script shipped in the

@@ -26,9 +26,10 @@ after(async () => {
 
 test('the overview\'s official price lookup is per token, so savings come out in dollars', async () => {
   // 1M tokens read from the cache on Claude Opus 5.5: $4/M at the full prompt price, $0.20/M cached.
+  // The persisted `input_tokens` is the whole prompt, the cached reads included.
   await database('llm_executions').insert({
     task_id: 'a', start_time: daysAgo(1), model_name: 'claude-opus-5-5',
-    input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 1_000_000,
+    input_tokens: 1_000_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 1_000_000,
   });
   const price = officialCachePrice('claude-opus-5-5');
   assert.ok(price && price.prompt < 0.001, 'a per-million price would read as dollars per token');

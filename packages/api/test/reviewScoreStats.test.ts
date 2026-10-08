@@ -419,11 +419,11 @@ test('runs to merge count an earlier implementation attempt at the issue, as the
   }
 });
 
-test('an all-time summary is remembered by the shared cache; a bounded period is not', async () => {
+test('the shared cache remembers an all-time summary for a minute and a bounded period for seconds', async () => {
   const repository = 'acme/cached';
   await seedScore({ pr: 70, score: 6, at: daysAgo(1), model: OPUS, repository });
   let clock = NOW.getTime();
-  const analyticsCache = createAnalyticsCache({ ttlMs: 1_000, now: () => clock });
+  const analyticsCache = createAnalyticsCache({ ttlMs: 1_000, boundedTtlMs: 100, now: () => clock });
   const cached = createReviewScoreRoutes({ db: database, now: () => NOW, analyticsCache });
   const read = async (period?: string) => {
     const state = await invoke(cached.getSummary, { repository, ...(period ? { period } : {}) });
@@ -432,12 +432,17 @@ test('an all-time summary is remembered by the shared cache; a bounded period is
   try {
     assert.equal(await read('all'), 1);
     assert.equal(await read(), 1);
+    assert.equal(await read('7d'), 1);
     await seedScore({ pr: 70, score: 8, at: daysAgo(0.5), model: OPUS, repository });
-    // The bounded period reads afresh; the all-time reads keep their remembered copies until they expire.
+    // Every period keeps its remembered copy until it expires; the bounded one expires first.
+    assert.equal(await read('7d'), 1);
+    assert.equal(await read('all'), 1);
+    assert.equal(await read(), 1);
+    clock += 101;
     assert.equal(await read('7d'), 2);
     assert.equal(await read('all'), 1);
     assert.equal(await read(), 1);
-    clock += 1_001;
+    clock += 900;
     assert.equal(await read('all'), 2);
     assert.equal(await read(), 2);
   } finally {

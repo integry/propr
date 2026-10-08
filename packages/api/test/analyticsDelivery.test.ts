@@ -115,6 +115,29 @@ test('an Ultrafix fix whose next review was never scored still fails first-time 
   assert.deepEqual(delivery.first_time_pass, { rate: 0.5, passed: 1, n: 2 });
 });
 
+test('a merge-conflict resolution is not a fix, so a merged PR that only needed one still passes first time', async () => {
+  /** The task the merge-conflict handler records against PR `pr`, with one run. */
+  const seedConflictResolution = async (pr: number) => {
+    await database('tasks').insert({
+      task_id: `merge-conflict-${pr}`, repository: REPOSITORY, issue_number: pr, pr_number: null, task_type: 'merge_conflict',
+      model_name: 'claude-opus-5', created_at: daysAgo(2), initial_job_data: JSON.stringify({}), final_result: null,
+    });
+    await database('llm_executions').insert({ task_id: `merge-conflict-${pr}`, start_time: daysAgo(2) });
+  };
+  // The base moved under the PR; the same change was replayed onto it and merged.
+  await seedMergedPullRequest(40, 140);
+  await seedConflictResolution(40);
+  // A PR that needed a real fix after its rebase still fails.
+  await seedMergedPullRequest(41, 141);
+  await seedConflictResolution(41);
+  await seedFollowUp('fix-41', 41, { commandMode: 'fix' });
+
+  const delivery = await loadDeliveryMetrics(database, WEEK);
+  assert.deepEqual(delivery.first_time_pass, { rate: 0.5, passed: 1, n: 2 });
+  // The resolution's run still counts toward runs per merged PR.
+  assert.deepEqual(delivery.runs_per_merged_pr, { mean: 2, n: 2 });
+});
+
 test('extra runs on the one implementation task do not fail first-time pass', async () => {
   // An auxiliary call or a usage-limit requeue records a second run on the same task.
   await seedMergedPullRequest(20, 120, 2);
