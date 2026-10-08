@@ -92,6 +92,9 @@ test('the header creates automations, leaving the list toolbar to search', async
   await expect(repositories).toBeVisible();
   expect(await top(name)).toBeLessThan(await top(repositories));
   expect(await top(repositories)).toBeLessThan(await top(prompt));
+  // The form submits with Save; the header's New Automation is the only create action.
+  await expect(form.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /create automation/i })).toHaveCount(0);
   await capture(page, 'automations-new-form-top');
 });
 

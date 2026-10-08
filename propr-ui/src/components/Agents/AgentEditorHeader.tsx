@@ -14,7 +14,6 @@ interface AgentEditorHeaderProps {
   /** Why Run now is unavailable, when the reason is something the user can fix. */
   runHint: string | null;
   onRun: () => void;
-  saveLabel: string;
   saving: boolean;
   saveDisabled: boolean;
   /** Save belongs to the Settings tab; the run views hide it. */
@@ -23,7 +22,7 @@ interface AgentEditorHeaderProps {
 
 /** Title with the pane's navigation on the left, Run now and Save pinned to the right. */
 export const AgentEditorHeader: React.FC<AgentEditorHeaderProps> = ({
-  title, headerControls, canRun, running, runDisabled, runHint, onRun, saveLabel, saving, saveDisabled, showSave = true,
+  title, headerControls, canRun, running, runDisabled, runHint, onRun, saving, saveDisabled, showSave = true,
 }) => (
   <header className="flex flex-none items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
     <div className="flex min-w-0 items-center gap-2">
@@ -47,7 +46,7 @@ export const AgentEditorHeader: React.FC<AgentEditorHeaderProps> = ({
       {showSave && (
         <button type="submit" form="agent-editor-form" disabled={saveDisabled} className={`${BUTTON_CLASSES} bg-teal-600 text-white hover:bg-teal-700`}>
           {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Save className="h-4 w-4" aria-hidden="true" />}
-          {saveLabel}
+          Save
         </button>
       )}
     </div>

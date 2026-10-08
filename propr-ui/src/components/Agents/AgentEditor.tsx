@@ -53,7 +53,6 @@ const AgentEditorTop: React.FC<AgentEditorTopProps> = ({ definitionId, editor, s
         canRun={Boolean(definition)}
         running={editor.running}
         onRun={() => void editor.run()}
-        saveLabel={definition ? 'Save' : 'Create automation'}
         saving={editor.saving}
         {...runAvailability(isDemoMode, { ...editor, disabledAgent: definition?.enabled === false })}
         saveDisabled={readOnly || editor.conflict || editor.attachmentsPending}

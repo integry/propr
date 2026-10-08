@@ -75,14 +75,14 @@ describe('AgentEditor', () => {
     const message = validateAgentSchedule('61 * * * *')!;
     expect(screen.getByTestId('agent-schedule-feedback')).toHaveTextContent(message);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(message);
     expect(createAgentDefinition).not.toHaveBeenCalled();
   });
 
   it('requires a name before creating', async () => {
     renderEditor();
-    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('name is required');
     expect(createAgentDefinition).not.toHaveBeenCalled();
   });
@@ -91,7 +91,7 @@ describe('AgentEditor', () => {
     vi.mocked(createAgentDefinition).mockResolvedValue({ ...definition, id: 'agent-2' });
     renderEditor();
     fillRequired();
-    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(createAgentDefinition).toHaveBeenCalledWith(expect.objectContaining({
       name: 'Nightly triage', prompt: 'Summarize new issues', schedule: null, autonomy: 'dry_run', capabilities: ['repository_read'],
     })));
@@ -241,7 +241,7 @@ describe('AgentEditor', () => {
     const onSaved = vi.fn();
     const { unmount } = render(<AgentEditor definitionId={null} onSaved={onSaved} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
     fillRequired();
-    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(createAgentDefinition).toHaveBeenCalled());
 
     unmount();
@@ -254,7 +254,7 @@ describe('AgentEditor', () => {
     const onSaved = vi.fn();
     render(<AgentEditor definitionId={null} onSaved={onSaved} onDeleted={vi.fn()} />, { wrapper: MemoryRouter });
     fillRequired();
-    fireEvent.click(screen.getByRole('button', { name: 'Create automation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: 'agent-2' }), true, true));
   });
 
