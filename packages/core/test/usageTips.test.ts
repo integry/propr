@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import knex from 'knex';
 import { randomUUID } from 'node:crypto';
-import { USAGE_TIPS_CATALOG, USAGE_TIPS_DAY_MS as DAY, usageTipCooldownDays, isUsageTipEligible,
-  resolveUsageTips, rotateUsageTipCandidates, isUsageTipsCooldownDays } from '@propr/shared';
+import { USAGE_TIPS_CATALOG, USAGE_TIPS_DAY_MS as DAY, isUsageTipEligible,
+  resolveUsageTips, rotateUsageTipCandidates } from '@propr/shared';
 import { createUsageTipsStore } from '../src/services/usageTips/store.js';
 import { selectUsageTips, heuristicUsageTipCandidates } from '../src/services/usageTips/selection.js';
 import { collectUsageTipSignals, usageSignalTimestamp } from '../src/services/usageTips/signals.js';
 import { up, down } from '../src/db/migrations/20260928000000_add_usage_tips.js';
+import { up as removeCooldownSetting } from '../src/db/migrations/20261008000000_remove_usage_tips_cooldown_setting.js';
 
 const candidates = USAGE_TIPS_CATALOG.slice(0, 6).map(t => ({ id: t.id, score: 85, reason: 'Recorded usage gap.' }));
 const selection = { candidates, signals: {}, model: null, source: 'heuristic' as const, generatedAt: 100, rotationEpoch: 0 };
@@ -20,23 +21,22 @@ async function fixture(run: (database: ReturnType<typeof knex>) => Promise<void>
   } finally { await database.destroy(); }
 }
 
-test('progressive finite cooldowns, exact boundary, current settings, no dismissal eligibility', () => {
-  assert.deepEqual([1, 2, 3, 4, 5, 9999].map(n => usageTipCooldownDays(45, n)), [45, 180, 720, 2880, 3650, 3650]);
-  const dismissal = { tip_id: candidates[0].id, dismissed_at: 1000, dismissal_count: 1 };
-  assert.equal(isUsageTipEligible(undefined, 45, 1000), true);
-  assert.equal(isUsageTipEligible(dismissal, 45, 1000 + 45 * DAY - 1), false);
-  assert.equal(isUsageTipEligible(dismissal, 45, 1000 + 45 * DAY), true);
-  assert.equal(isUsageTipEligible(dismissal, 90, 1000 + 45 * DAY), false);
-  assert.equal(isUsageTipEligible(dismissal, 1, 1000 + DAY), true);
-  for (const invalid of [null, true, '45', 0, 366, 1.1, Infinity, NaN]) assert.equal(isUsageTipsCooldownDays(invalid), false);
+test('fixed cooldown regardless of repeat dismissals, exact boundary, no dismissal eligibility', () => {
+  assert.equal(isUsageTipEligible(undefined, 1000), true);
+  for (const dismissal_count of [1, 2, 9999]) {
+    const dismissal = { tip_id: candidates[0].id, dismissed_at: 1000, dismissal_count };
+    assert.equal(isUsageTipEligible(dismissal, 1000 + 45 * DAY - 1), false);
+    assert.equal(isUsageTipEligible(dismissal, 1000 + 45 * DAY), true);
+  }
+  assert.equal(isUsageTipEligible({ tip_id: candidates[0].id, dismissed_at: -1, dismissal_count: 1 }, 1000 + 45 * DAY), false);
 });
 
 test('eligibility and unknown-ID filtering happen before cap; sole candidates recur forever', () => {
   const dismissals = candidates.slice(0, 3).map(c => ({ tip_id: c.id, dismissed_at: 0, dismissal_count: 1 }));
   const pool = [{ id: 'removed', score: 100, reason: 'old' }, ...candidates];
-  assert.deepEqual(resolveUsageTips(pool, dismissals, 45, 1).map(t => t.id), candidates.slice(3).map(c => c.id));
-  assert.deepEqual(resolveUsageTips(pool, dismissals, 45, 45 * DAY).map(t => t.id), candidates.slice(0, 3).map(c => c.id));
-  for (let epoch = 0; epoch < 10; epoch++) assert.equal(resolveUsageTips(rotateUsageTipCandidates([candidates[0]], epoch), [], 45, epoch * DAY).length, 1);
+  assert.deepEqual(resolveUsageTips(pool, dismissals, 1).map(t => t.id), candidates.slice(3).map(c => c.id));
+  assert.deepEqual(resolveUsageTips(pool, dismissals, 45 * DAY).map(t => t.id), candidates.slice(0, 3).map(c => c.id));
+  for (let epoch = 0; epoch < 10; epoch++) assert.equal(resolveUsageTips(rotateUsageTipCandidates([candidates[0]], epoch), [], epoch * DAY).length, 1);
 });
 
 test('rotation preserves ten-point bands and varies the first three within a band', () => {
@@ -85,13 +85,13 @@ test('atomic durable deduplication, concurrency, isolation, expiry and read-only
 
 test('migration seeds defaults, rollback owns only its keys, and constraints protect storage', async () => fixture(async db => {
   await db('system_configs').insert({ key: 'unrelated', value: '7' });
-  assert.deepEqual(await createUsageTipsStore(db).settings(), { enabled: true, cooldownDays: 45 });
+  assert.deepEqual(await createUsageTipsStore(db).settings(), { enabled: true });
   await assert.rejects(db('usage_tip_selection').insert({ id: 2, candidates: '[]', signals: '{}', source: 'heuristic', generated_at: 0, rotation_epoch: 0 }));
+  await removeCooldownSetting(db);
+  assert.equal(await db('system_configs').where({ key: 'usage_tips_dismissal_cooldown_days' }).first(), undefined);
+  assert.ok(await db('system_configs').where({ key: 'usage_tips_enabled' }).first());
   await down(db);
   assert.deepEqual(await db('system_configs'), [{ key: 'unrelated', value: '7' }]);
-  await db('system_configs').insert({ key: 'usage_tips_dismissal_cooldown_days', value: '60' });
-  await up(db);
-  assert.equal((await createUsageTipsStore(db).settings()).cooldownDays, 60);
 }));
 
 test('event insertion rolls back if dismissal update fails', async () => fixture(async db => {
@@ -157,7 +157,7 @@ test('personalized model advice survives persistence and replaces catalog copy w
 test('offline advice explains the observed workflow and benefit, including slow-only indexing', async () => {
   const selected = await selectUsageTips({ signals: { indexingSlow: 2, indexingFailures: null }, epoch: 0,
     generate: async () => { throw new Error('offline'); } });
-  const [tip] = resolveUsageTips(selected.candidates, [], 45, Date.now());
+  const [tip] = resolveUsageTips(selected.candidates, [], Date.now());
   assert.match(tip.body, /Indexing calls are taking at least two minutes/);
   assert.match(tip.body, /keep repository context available for your tasks/);
   assert.doesNotMatch(tip.body, /failures/);
@@ -273,20 +273,20 @@ test('discovery requires exact zero usage and known prerequisite activity', asyn
 test('mix preserves pool order, caps both kinds, and fills all slots for a sole kind', () => {
   const corrective = candidates.slice(0, 5).map((c, i) => ({ ...c, score: 95 - i * 2 }));
   for (const pool of [[...corrective, ...discoveryPool.slice(0, 2)], [...discoveryPool, ...corrective]]) {
-    const shown = resolveUsageTips(pool, [], 45, 1);
+    const shown = resolveUsageTips(pool, [], 1);
     assert.equal(shown.length, 3);
     assert.ok(shown.filter(t => t.kind === 'discovery').length >= 1);
     assert.ok(shown.filter(t => t.kind === 'corrective').length >= 1);
     assert.deepEqual(shown.map(t => t.id), pool.filter(c => shown.some(t => t.id === c.id)).map(c => c.id));
   }
-  assert.equal(resolveUsageTips(discoveryPool, [], 45, 1).length, 3);
-  assert.equal(resolveUsageTips(corrective, [], 45, 1).length, 3);
+  assert.equal(resolveUsageTips(discoveryPool, [], 1).length, 3);
+  assert.equal(resolveUsageTips(corrective, [], 1).length, 3);
   for (const [primary, secondary] of [[corrective, discoveryPool], [discoveryPool, corrective]]) {
     const pool = [...primary, ...secondary];
     const dismissals = secondary.slice(0, 1).map(c => ({ tip_id: c.id, dismissed_at: 0, dismissal_count: 1 }));
-    assert.deepEqual(resolveUsageTips(pool, dismissals, 45, 1).map(t => t.id), [primary[0].id, primary[1].id, secondary[1].id]);
+    assert.deepEqual(resolveUsageTips(pool, dismissals, 1).map(t => t.id), [primary[0].id, primary[1].id, secondary[1].id]);
     const allSecondary = secondary.map(c => ({ tip_id: c.id, dismissed_at: 0, dismissal_count: 1 }));
-    assert.deepEqual(resolveUsageTips(pool, allSecondary, 45, 1).map(t => t.id), primary.slice(0, 3).map(c => c.id));
+    assert.deepEqual(resolveUsageTips(pool, allSecondary, 1).map(t => t.id), primary.slice(0, 3).map(c => c.id));
   }
 });
 
@@ -300,12 +300,12 @@ for (const [kind, primaryIds, secondaryIds, scores] of [
 
   test(`interleaved ${kind}-majority pool replaces either kind without changing its allocation`, () => {
     assert.deepEqual(pool.map(c => c.id), ids);
-    assert.deepEqual(resolveUsageTips(pool, [], 45, 1).map(t => t.id), initialIds);
+    assert.deepEqual(resolveUsageTips(pool, [], 1).map(t => t.id), initialIds);
     for (const dismissedId of initialIds) {
       const replacement = dismissedId === secondaryIds[0] ? secondaryIds[1] : primaryIds[2];
       const expected = new Set([...initialIds.filter(id => id !== dismissedId), replacement]);
       const dismissals = [{ tip_id: dismissedId, dismissed_at: 0, dismissal_count: 1 }];
-      assert.deepEqual(resolveUsageTips(pool, dismissals, 45, 1).map(t => t.id), ids.filter(id => expected.has(id)));
+      assert.deepEqual(resolveUsageTips(pool, dismissals, 1).map(t => t.id), ids.filter(id => expected.has(id)));
     }
   });
 
@@ -338,7 +338,7 @@ test('rotation never lets discovery scores displace urgent corrective scores, in
   for (let epoch = 0; epoch < 10; epoch++) {
     const rotated = rotateUsageTipCandidates([...discoveryPool, ...urgent], epoch);
     assert.deepEqual(new Set(rotated.slice(0, 3).map(c => c.id)), new Set(urgent.map(c => c.id)));
-    const resolved = resolveUsageTips(rotated, [], 45, 1);
+    const resolved = resolveUsageTips(rotated, [], 1);
     assert.deepEqual(resolved.slice(0, 2).map(t => t.kind), ['corrective', 'corrective']);
     assert.equal(resolved[2].kind, 'discovery');
   }

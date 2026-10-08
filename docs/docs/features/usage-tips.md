@@ -8,18 +8,15 @@ Goals support two launch strategies: **Direct** (the agent implements directly) 
 
 ## Temporary dismissal
 
-Dismissals belong to your user account. Dismissing a tip hides it immediately and starts a cooling-off period. At the default 45 days, successive deliberate dismissals cool down for **45, 180, 720, and 2,880 days**. Further growth is capped at **3,650 days**. Expiry retains the lifetime dismissal count. A tip becomes eligible exactly at the cooldown boundary, but only appears if it remains relevant in the current selection. New relevance never overrides an active cooldown.
+Dismissals belong to your user account. Dismissing a tip hides it immediately for **45 days** from that dismissal; dismissing it again later simply restarts the same 45-day period. A tip becomes eligible exactly at the cooldown boundary, but only appears if it remains relevant in the current selection. New relevance never overrides an active cooldown.
 
-Settings → Automation → **Usage tips** exposes **Show usage tips** (enabled by default) and **Dismissal cooldown days** (an integer from 1 to 365, default 45). Changing the base period recalculates existing cooldowns from each stored dismissal timestamp and lifetime count. Disabling tips hides the strip and stops daily selection.
-
-The CLI exposes the same settings:
+Settings → Automation → **Usage tips**, at the bottom of the tab, exposes **Show usage tips** (enabled by default). Disabling tips hides the strip and stops daily selection. The CLI exposes the same setting:
 
 ```sh
 propr setting update usage_tips_enabled false
-propr setting update usage_tips_dismissal_cooldown_days 60
 ```
 
-A failed dismissal is retried with the same event identifier. If persistence still fails, the tip returns with a quiet retry control. Duplicate delivery never increases the count or restarts the cooldown.
+A failed dismissal is retried with the same event identifier. If persistence still fails, the tip returns with a quiet retry control. Duplicate delivery never restarts the cooldown.
 
 ## Relevance and privacy
 

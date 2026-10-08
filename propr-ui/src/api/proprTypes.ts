@@ -213,7 +213,6 @@ export interface SystemSettings {
   auto_followup_score_threshold?: number;
   deprecated_settings?: Record<string, string>;
   usage_tips_enabled?: boolean;
-  usage_tips_dismissal_cooldown_days?: number;
   auto_resolve_merge_conflicts?: boolean;
   model_reasoning_level?: string;
   pr_review_model?: string;

@@ -517,7 +517,6 @@ Settings keys:
 | `dashboard_summary_enabled` | Enable AI-generated dashboard activity summaries |
 | `model_reasoning_level` | System reasoning preference for Claude, Codex, and Antigravity, resolved against the selected model's supported levels (empty = default effort; model overrides and explicit run / `level-*` selections take precedence). See [Reasoning Levels](./agents-and-models.md#reasoning-levels). |
 | `usage_tips_enabled` | Show daily documentation tips on the dashboard |
-| `usage_tips_dismissal_cooldown_days` | Base dismissal cooldown for tips (1–365 days) |
 | `pr_review_model` | Model for full PR reviews |
 | `pr_review_prompt` | Override for the PR review prompt guidance (empty = built-in default) |
 | `pr_review_context_enabled` | Gather related unchanged code before PR reviews |

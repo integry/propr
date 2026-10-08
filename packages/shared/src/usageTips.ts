@@ -2,7 +2,8 @@ import catalog from './usageTips.catalog.json' with { type: 'json' };
 
 export const MAX_SELECTED_USAGE_TIPS = 3;
 export const MAX_USAGE_TIP_CANDIDATES = 30;
-export const DEFAULT_USAGE_TIPS_COOLDOWN_DAYS = 45;
+/** A dismissed tip stays hidden for this many days after its latest dismissal. */
+export const USAGE_TIP_DISMISSAL_COOLDOWN_DAYS = 45;
 export const USAGE_TIPS_DAY_MS = 86_400_000;
 export const USAGE_TIP_KINDS = ['corrective', 'discovery'] as const;
 export type UsageTipKind = typeof USAGE_TIP_KINDS[number];
@@ -33,24 +34,13 @@ export interface UsageTipSelection {
   rotationEpoch: number;
 }
 export interface UsageTipsResponse { enabled: boolean; tips: UsageTip[] }
-export function isUsageTipsCooldownDays(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 365;
-}
 export function parseUsageTipsSettings(values: Record<string, unknown>) {
-  return {
-    enabled: values.usage_tips_enabled !== false && values.usage_tips_enabled !== 'false',
-    cooldownDays: isUsageTipsCooldownDays(values.usage_tips_dismissal_cooldown_days)
-      ? values.usage_tips_dismissal_cooldown_days : DEFAULT_USAGE_TIPS_COOLDOWN_DAYS,
-  };
+  return { enabled: values.usage_tips_enabled !== false && values.usage_tips_enabled !== 'false' };
 }
-export function usageTipCooldownDays(baseDays: number, count: number): number {
-  if (!isUsageTipsCooldownDays(baseDays) || !Number.isSafeInteger(count) || count < 1) throw new Error('Invalid cooldown');
-  return Math.min(3650, baseDays * 4 ** Math.min(count - 1, 6));
-}
-export function isUsageTipEligible(dismissal: UsageTipDismissal | undefined, baseDays: number, now: number): boolean {
+export function isUsageTipEligible(dismissal: UsageTipDismissal | undefined, now: number): boolean {
   if (!dismissal) return true;
-  if (!Number.isSafeInteger(dismissal.dismissed_at) || dismissal.dismissed_at < 0 || !Number.isSafeInteger(dismissal.dismissal_count) || dismissal.dismissal_count < 1) return false;
-  return now >= dismissal.dismissed_at + usageTipCooldownDays(baseDays, dismissal.dismissal_count) * USAGE_TIPS_DAY_MS;
+  if (!Number.isSafeInteger(dismissal.dismissed_at) || dismissal.dismissed_at < 0) return false;
+  return now >= dismissal.dismissed_at + USAGE_TIP_DISMISSAL_COOLDOWN_DAYS * USAGE_TIPS_DAY_MS;
 }
 /** Strict shape validation; unknown catalog identities are safely discarded. */
 export function parseUsageTipCandidates(raw: unknown): UsageTipCandidate[] {
@@ -82,10 +72,10 @@ export function rotateUsageTipCandidates(candidates: UsageTipCandidate[], epoch:
     return [...band.slice(offset), ...band.slice(0, offset)];
   });
 }
-export function resolveUsageTips(candidates: UsageTipCandidate[], dismissals: UsageTipDismissal[], baseDays: number, now: number): UsageTip[] {
+export function resolveUsageTips(candidates: UsageTipCandidate[], dismissals: UsageTipDismissal[], now: number): UsageTip[] {
   const byId = new Map(dismissals.map(d => [d.tip_id, d]));
   const pool = parseUsageTipCandidates(candidates);
-  const eligible = pool.filter(c => isUsageTipEligible(byId.get(c.id), baseDays, now));
+  const eligible = pool.filter(c => isUsageTipEligible(byId.get(c.id), now));
   const selected = new Set<string>();
   // Derive slots from the saved pool before cooldowns, so dismissals retain
   // the same kind allocation across reads without recording display history.

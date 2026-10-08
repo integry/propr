@@ -75,7 +75,7 @@ export interface ConfigUpdateResponse {
 
 export const updateSettings = async (settings: Record<string, unknown>): Promise<ConfigUpdateResponse> => {
   const result = await postJson<ConfigUpdateResponse>('/api/config/settings', { settings });
-  if ('usage_tips_enabled' in settings || 'usage_tips_dismissal_cooldown_days' in settings) {
+  if ('usage_tips_enabled' in settings) {
     window.dispatchEvent(new Event(USAGE_TIPS_SETTINGS_CHANGED));
   }
   return result;

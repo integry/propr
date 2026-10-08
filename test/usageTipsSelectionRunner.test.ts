@@ -20,7 +20,7 @@ function fixture() {
       },
     } as UsageTipsRunnerDependencies['redis'],
     store: {
-      settings: async () => ({ enabled, cooldownDays: 45 }),
+      settings: async () => ({ enabled }),
       current: async () => selected,
       persist: async (next, previous) => {
         if (previous !== (selected?.rotationEpoch ?? null)) return false;
