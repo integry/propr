@@ -70,6 +70,31 @@ test('the sidebar names the feature Automations, apart from Coding Agents', asyn
   await expect(page.getByRole('link', { name: /User issue summary/ })).toBeVisible();
 });
 
+test('the header creates automations, leaving the list toolbar to search', async ({ page }) => {
+  await page.goto('/automations');
+  const toolbar = page.locator('header.desktop-content-toolbar');
+  await expect(toolbar.getByRole('button', { name: 'New Automation' })).toBeVisible();
+  await expect(toolbar.getByRole('button', { name: 'New Task' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'New automation' })).toHaveCount(0);
+  const search = page.getByRole('textbox', { name: 'Search automations' });
+  // The placeholder fits without truncation now that the toolbar holds only the title and search.
+  expect(await search.evaluate((input: HTMLInputElement) => input.scrollWidth <= input.clientWidth)).toBe(true);
+  await capture(page, 'automations-header-action');
+
+  await toolbar.getByRole('button', { name: 'New Automation' }).click();
+  await expect(page).toHaveURL(/\/automations\/new$/);
+  const form = page.getByTestId('agent-editor');
+  const top = async (locator: Locator) => (await locator.boundingBox())!.y;
+  const name = form.getByLabel('Name');
+  const repositories = form.getByText('Repositories', { exact: true });
+  const prompt = form.getByText('Prompt', { exact: true }).first();
+  await expect(name).toBeVisible();
+  await expect(repositories).toBeVisible();
+  expect(await top(name)).toBeLessThan(await top(repositories));
+  expect(await top(repositories)).toBeLessThan(await top(prompt));
+  await capture(page, 'automations-new-form-top');
+});
+
 test('the new automation form labels the coding agent and uses a compact autonomy control', async ({ page }) => {
   await page.goto('/automations/new');
   const form = page.getByTestId('agent-editor');

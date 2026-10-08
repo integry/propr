@@ -7,15 +7,18 @@ describe('route creation actions', () => {
     ['/studio', 'plan'], ['/studio/new', 'plan'], ['/studio/draft-1', 'plan'],
     ['/goals', 'goal'], ['/goals/', 'goal'], ['/goals/goal-1', 'goal'],
     ['/Goals/goal-1', 'goal'],
+    ['/automations', 'automation'], ['/automations/new', 'automation'],
+    ['/automations/def-1/runs/run-1', 'automation'],
     ['/', 'task'], ['/tasks', 'task'], ['/tasks/new', 'task'],
     ['/tasks/task-1', 'task'], ['/repositories', 'task'],
     ['/repositories/acme/goals', 'task'], ['/settings', 'task'],
     ['/plans-other', 'task'], ['/studio-other', 'task'], ['/goals-other', 'task'],
-  ])('%s selects %s and offers the other two actions', (pathname, expected) => {
+    ['/automations-other', 'task'],
+  ])('%s selects %s and offers the other actions', (pathname, expected) => {
     const { primary, secondary } = getCreationActions(pathname);
     expect(primary.id).toBe(expected);
     expect(secondary.map(action => action.id)).toEqual(
-      ['task', 'plan', 'goal'].filter(id => id !== expected),
+      ['task', 'plan', 'goal', 'automation'].filter(id => id !== expected),
     );
   });
 });

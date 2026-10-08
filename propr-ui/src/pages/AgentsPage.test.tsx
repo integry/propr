@@ -133,8 +133,16 @@ describe('AgentsPage', () => {
     expect(await screen.findByRole('link', { name: /Dependency review/ })).toBeInTheDocument();
   });
 
-  it('opens the new-agent editor from the list', async () => {
+  it('leaves creation to the global header once automations exist', async () => {
     setViewport(true);
+    renderAt('/automations');
+    await screen.findByRole('link', { name: /Dependency review/ });
+    expect(screen.queryByRole('link', { name: 'New automation' })).not.toBeInTheDocument();
+  });
+
+  it('opens the new-automation editor from the empty state', async () => {
+    setViewport(true);
+    vi.mocked(listAgentDefinitions).mockResolvedValue({ definitions: [], total: 0, limit: 200, offset: 0 });
     renderAt('/automations');
     fireEvent.click(await screen.findByRole('link', { name: 'New automation' }));
     expect(screen.getByTestId('location')).toHaveTextContent('/automations/new');

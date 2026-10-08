@@ -21,7 +21,7 @@ interface AgentListProps {
   lastRunStates: Record<string, AgentRunState>;
   error: string | null;
   selectedId: string | null;
-  /** Disables "New automation" (demo mode). */
+  /** Disables the empty state's "New automation" (demo mode). */
   readOnly?: boolean;
   /** Reference time for the "next in" summaries. */
   now?: number;
@@ -99,7 +99,6 @@ export const AgentList: React.FC<AgentListProps> = ({ definitions, lastRunStates
       <header className="flex flex-none items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
         <h1 className="text-base font-semibold text-slate-900">Automations</h1>
         <ListSearchInput value={query} onChange={setQuery} onClear={() => setQuery('')} label="Search automations" className="min-w-0 flex-1" />
-        {newAgent}
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
