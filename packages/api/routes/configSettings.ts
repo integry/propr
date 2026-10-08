@@ -1,4 +1,4 @@
-import { isUsageTipsCooldownDays, MAX_RUN_COST_CAP_USD, parseUnattendedWindow, UNATTENDED_MAX_CONCURRENT_MAX, UNATTENDED_MAX_CONCURRENT_MIN } from '@propr/shared';
+import { isUsageTipsCooldownDays, MAX_RUN_COST_CAP_USD } from '@propr/shared';
 import { AGENT_RUN_USAGE_PAUSE_PERCENT_MAX, AGENT_RUN_USAGE_PAUSE_PERCENT_MIN, validateAgentNetworkSetting, validateModelReasoningLevel, validatePrReviewModelValue } from '@propr/core';
 
 interface SettingFields {
@@ -18,8 +18,6 @@ interface SettingFields {
   ultrafix_pause_seconds?: unknown;
   default_max_cost_usd?: unknown;
   agent_run_usage_pause_percent?: unknown;
-  unattended_max_concurrent?: unknown;
-  unattended_window?: unknown;
   ultrafix_ci_wait_timeout_ms?: unknown;
   agent_stall_timeout_ms?: unknown;
   agent_tool_stall_timeout_ms?: unknown;
@@ -47,8 +45,6 @@ export type SettingSaveName =
   | 'ultrafix_pause_seconds'
   | 'default_max_cost_usd'
   | 'agent_run_usage_pause_percent'
-  | 'unattended_max_concurrent'
-  | 'unattended_window'
   | 'ultrafix_ci_wait_timeout_ms'
   | AgentWatchdogSettingName
   | AgentNetworkSettingName;
@@ -190,34 +186,11 @@ function extractRunLimitSettingSaves(fields: SettingFields, result: SettingSaves
     normalized.agent_run_usage_pause_percent = v;
     saves.push({ name: 'agent_run_usage_pause_percent' });
   }
-  const unattended = extractUnattendedSettingSaves(fields, result);
-  if (unattended.error) return unattended;
   if (fields.ultrafix_ci_wait_timeout_ms !== undefined) {
     const v = validateStrictInt(fields.ultrafix_ci_wait_timeout_ms, 1, Infinity);
     if (v === null) return { error: 'ultrafix_ci_wait_timeout_ms must be a positive integer', saves: [], normalized };
     normalized.ultrafix_ci_wait_timeout_ms = v;
     saves.push({ name: 'ultrafix_ci_wait_timeout_ms' });
-  }
-  return result;
-}
-
-/** The unattended agent run cap, and the local-time window (null or an empty string removes it). */
-function extractUnattendedSettingSaves(fields: SettingFields, result: SettingSavesResult): SettingSavesResult {
-  const { saves, normalized } = result;
-  if (fields.unattended_max_concurrent !== undefined) {
-    const v = validateStrictInt(fields.unattended_max_concurrent, UNATTENDED_MAX_CONCURRENT_MIN, UNATTENDED_MAX_CONCURRENT_MAX);
-    if (v === null) return { error: `unattended_max_concurrent must be an integer from ${UNATTENDED_MAX_CONCURRENT_MIN} to ${UNATTENDED_MAX_CONCURRENT_MAX}`, saves: [], normalized };
-    normalized.unattended_max_concurrent = v;
-    saves.push({ name: 'unattended_max_concurrent' });
-  }
-  const window = fields.unattended_window;
-  if (window !== undefined) {
-    if (window !== null && typeof window !== 'string') return { error: 'unattended_window must be a string or null', saves: [], normalized };
-    const text = window?.trim() ?? '';
-    const parsed = text ? parseUnattendedWindow(text) : null;
-    if (parsed && !parsed.ok) return { error: `unattended_window is malformed: ${parsed.error}`, saves: [], normalized };
-    normalized.unattended_window = text || null;
-    saves.push({ name: 'unattended_window' });
   }
   return result;
 }

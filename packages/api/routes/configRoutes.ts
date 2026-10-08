@@ -10,7 +10,7 @@ import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes, validateDefaultAgentSetting } from './configRoutesAgents.js';
 import { createSyntheticAgentConfigRoutes } from './configRoutesSyntheticAgents.js';
-import { agentNetworkSettingsResponse, agentUnattendedSettingsResponse, agentWatchdogSettingsResponse, reviewContextBudgetSettingsResponse, saveSettingsWithRollback } from './configRoutesSettings.js';
+import { agentNetworkSettingsResponse, agentWatchdogSettingsResponse, reviewContextBudgetSettingsResponse, saveSettingsWithRollback } from './configRoutesSettings.js';
 import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
@@ -277,7 +277,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         ultrafix_max_cycles: ultrafixCycles.value,
         ultrafix_pause_seconds: ultrafixPause.value,
         default_max_cost_usd: defaultMaxCostUsd,
-        ...await agentUnattendedSettingsResponse(configStore),
+        agent_run_usage_pause_percent: await configManager.loadUsagePauseThreshold({ readConfig: (key, fallback) => configStore.getConfig(key, fallback) }),
         ultrafix_ci_wait_timeout_ms: ultrafixCiWait.value,
         ...await agentWatchdogSettingsResponse(configStore),
         ...await agentNetworkSettingsResponse(configStore),

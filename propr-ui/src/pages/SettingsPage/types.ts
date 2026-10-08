@@ -26,13 +26,6 @@ export interface Settings {
   ultrafix_pause_seconds: number;
   /** Instance default per-run spend cap in USD as typed; empty or 0 = no cap. */
   default_max_cost_usd: string;
-  /** Unattended agent run limits; changes save immediately on their own. */
-  agent_run_usage_pause_percent: number;
-  unattended_max_concurrent: number;
-  /** HH:MM-HH:MM@Time/Zone, or empty for no window. */
-  unattended_window: string;
-  /** Why the stored window is unusable (unattended runs are blocked), from the server. */
-  unattended_window_error?: string;
   /** Watchdog overrides; null uses the environment default. */
   agent_stall_timeout_ms: number | null;
   agent_tool_stall_timeout_ms: number | null;
@@ -47,13 +40,6 @@ export interface Settings {
   /** Environment defaults reported by the server (read-only). */
   agent_network_defaults?: AgentNetworkDefaults;
   // github_user_whitelist is now handled as string[] in main state
-}
-
-export type UnattendedSettingName = 'agent_run_usage_pause_percent' | 'unattended_max_concurrent' | 'unattended_window';
-export interface UnattendedSettingValues {
-  agent_run_usage_pause_percent: number;
-  unattended_max_concurrent: number;
-  unattended_window: string;
 }
 
 export type AgentWatchdogSettingName = 'agent_stall_timeout_ms' | 'agent_tool_stall_timeout_ms' | 'agent_degenerate_output_limit';

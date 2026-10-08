@@ -604,7 +604,6 @@ export * from './services/agents/agentRunStore.js';
 export * from './services/agents/agentRunReports.js';
 export * from './services/agents/agentRunTrigger.js';
 export * from './services/agents/agentRunCostGate.js';
-export * from './services/agents/agentRunUnattendedLimits.js';
 export * from './services/agents/agentRunDeferredRetry.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/reviewScoreStore.js';

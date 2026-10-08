@@ -1,4 +1,4 @@
-import { isUnattendedMaxConcurrent, isUsageTipsCooldownDays, MAX_PROVIDER_REPLACEMENTS_LIMIT, parseMaxProviderReplacements, parseUnattendedWindow, UNATTENDED_MAX_CONCURRENT_MAX, UNATTENDED_MAX_CONCURRENT_MIN } from '@propr/shared';
+import { isUsageTipsCooldownDays, MAX_PROVIDER_REPLACEMENTS_LIMIT, parseMaxProviderReplacements } from '@propr/shared';
 /**
  * System Settings API
  *
@@ -139,15 +139,6 @@ export interface SystemSettings {
    */
   default_max_cost_usd?: number;
 
-  /** Pause unattended agent runs at this percent of Agent Tank subscription usage (50-100). */
-  agent_run_usage_pause_percent?: number;
-
-  /** Most unattended agent runs (schedule, API, MCP, CLI) active at once. */
-  unattended_max_concurrent?: number;
-
-  /** Local-time window for unattended agent runs (HH:MM-HH:MM@Time/Zone); null = no window. */
-  unattended_window?: string | null;
-
   /**
    * Milliseconds an Ultrafix review may wait for blocking CI before the loop stops.
    */
@@ -172,9 +163,6 @@ export interface SystemSettings {
   agent_watchdog_defaults?: Record<string, number>;
   /** Thresholds in force for the next agent run. */
   agent_watchdog_effective?: Record<string, number>;
-
-  /** Why the stored unattended window is unusable; unattended agent runs are blocked until it is fixed. */
-  unattended_window_error?: string;
 }
 
 export const NAMED_CONFIG_ENDPOINTS = {
@@ -317,15 +305,6 @@ export interface UpdateSettingsOptions {
    */
   default_max_cost_usd?: number;
 
-  /** Pause unattended agent runs at this percent of Agent Tank subscription usage (50-100). */
-  agent_run_usage_pause_percent?: number;
-
-  /** Most unattended agent runs (schedule, API, MCP, CLI) active at once. */
-  unattended_max_concurrent?: number;
-
-  /** Local-time window for unattended agent runs (HH:MM-HH:MM@Time/Zone); null = no window. */
-  unattended_window?: string | null;
-
   /**
    * Milliseconds an Ultrafix review may wait for blocking CI before the loop stops.
    */
@@ -366,7 +345,7 @@ export interface UpdateSettingsResponse {
 /**
  * Valid setting keys that can be updated.
  */
-export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings' | 'agent_watchdog_defaults' | 'agent_watchdog_effective' | 'agent_network_defaults' | 'agent_network_effective' | 'unattended_window_error'>;
+export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_threshold' | 'deprecated_settings' | 'agent_watchdog_defaults' | 'agent_watchdog_effective' | 'agent_network_defaults' | 'agent_network_effective'>;
 
 /**
  * List of valid setting keys for validation.
@@ -398,9 +377,6 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
   "default_max_cost_usd",
-  "agent_run_usage_pause_percent",
-  "unattended_max_concurrent",
-  "unattended_window",
   "ultrafix_ci_wait_timeout_ms",
   "agent_stall_timeout_ms",
   "agent_tool_stall_timeout_ms",
@@ -531,28 +507,6 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
         throw new Error(`Invalid value for ${key}: must be a USD amount from 0 (no cap) to 100000`);
       }
       return parsed;
-    }
-    case "agent_run_usage_pause_percent": {
-      const parsed = /^\d+%?$/.test(value.trim()) ? Number(value.trim().replace(/%$/, "")) : Number.NaN;
-      if (!Number.isInteger(parsed) || parsed < 50 || parsed > 100) {
-        throw new Error(`Invalid value for ${key}: must be an integer from 50 to 100`);
-      }
-      return parsed;
-    }
-    case "unattended_max_concurrent": {
-      const parsed = /^\d+$/.test(value.trim()) ? Number(value.trim()) : Number.NaN;
-      if (!isUnattendedMaxConcurrent(parsed)) {
-        throw new Error(`Invalid value for ${key}: must be an integer from ${UNATTENDED_MAX_CONCURRENT_MIN} to ${UNATTENDED_MAX_CONCURRENT_MAX}`);
-      }
-      return parsed;
-    }
-    case "unattended_window": {
-      // "none" (or an empty value) removes the window.
-      const trimmed = value.trim();
-      if (trimmed === "" || /^(none|null|off)$/i.test(trimmed)) return null;
-      const parsed = parseUnattendedWindow(trimmed);
-      if (!parsed.ok) throw new Error(`Invalid value for ${key}: ${parsed.error}`);
-      return trimmed;
     }
     case "pr_review_max_context_tokens": {
       const parsed = /^\d+$/.test(value) ? Number(value) : Number.NaN;

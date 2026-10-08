@@ -22,10 +22,6 @@ after(closeConnection);
 
 const migrations = fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url));
 const NOW = Date.UTC(2026, 9, 6, 15, 0);
-const UNATTENDED_WINDOW = {
-  configured: true as const, value: '02:00-07:00@Europe/Riga', description: '02:00-07:00 Europe/Riga', timeZone: 'Europe/Riga',
-  open: false, opensAt: Date.UTC(2026, 9, 6, 23, 0), opensAtLocal: '02:00',
-};
 
 interface RequestOptions {
   params?: Record<string, string>;
@@ -103,7 +99,6 @@ describe('agent definition routes', () => {
     removeAttachmentFiles: async (definitionId, attachments) => { removedFiles.push({ definitionId, attachments }); },
     gate: () => null,
     evaluateCapacity: async definition => ({ threshold: 90, capacity: { status: 'near_limit', provider: definition.agentAlias ?? 'claude', sessionPercent: 95 } }),
-    evaluateUnattended: async () => ({ concurrency: { active: 1, cap: 1, reached: true }, window: UNATTENDED_WINDOW }),
   });
 
   beforeEach(async () => {
@@ -320,15 +315,11 @@ describe('agent definition routes', () => {
     assert.deepEqual(enqueued, [manual.body.run.id]);
   });
 
-  test('capacity reports the definition agent usage, the pause threshold and the unattended limits', async () => {
+  test('capacity reports the definition agent usage and the pause threshold', async () => {
     const definition = await createDefinition('alice');
     const result = await call(routes.capacity, request('alice', { params: { id: definition.id } }));
     assert.equal(result.status, 200);
-    assert.deepEqual(result.body, {
-      threshold: 90,
-      capacity: { status: 'near_limit', provider: definition.agentAlias ?? 'claude', sessionPercent: 95 },
-      unattended: { concurrency: { active: 1, cap: 1, reached: true }, window: UNATTENDED_WINDOW },
-    });
+    assert.deepEqual(result.body, { threshold: 90, capacity: { status: 'near_limit', provider: definition.agentAlias ?? 'claude', sessionPercent: 95 } });
   });
 
   test('triggering a disabled agent maps the core error to { error, code }', async () => {

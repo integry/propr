@@ -22,8 +22,6 @@ export const SPECIALIZED_SETTING_NAMES = [
   'ultrafix_pause_seconds',
   'default_max_cost_usd',
   'agent_run_usage_pause_percent',
-  'unattended_max_concurrent',
-  'unattended_window',
   'ultrafix_ci_wait_timeout_ms',
   'agent_stall_timeout_ms',
   'agent_tool_stall_timeout_ms',

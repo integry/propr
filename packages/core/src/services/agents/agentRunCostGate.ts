@@ -1,4 +1,3 @@
-import type { Knex } from 'knex';
 import type { SyntheticAgentConfig } from '@propr/shared';
 import { getConfig } from '../../config/configManager.js';
 import { loadAgents, type AgentConfig } from '../../config/configManagerAgents.js';
@@ -6,15 +5,7 @@ import { loadSyntheticAgents } from '../../config/configManagerSyntheticAgents.j
 import logger from '../../utils/logger.js';
 import type { SyntheticUsageSnapshotProvider } from '../syntheticRoutingTypes.js';
 import { AliasSpecificAgentTankSnapshotProvider } from '../syntheticUsageSnapshotProvider.js';
-import type { StoredAgentRun } from './agentRunStore.js';
 import { loadConfiguredDefaultAgentAlias, type AgentRunGate, type AgentRunGateDecision } from './agentRunTrigger.js';
-import {
-  DEFAULT_AGENT_RUN_CAP_DEFER_STEP_MS,
-  evaluateUnattendedLimits,
-  formatAgentRunUtc,
-  unattendedLimitsDecision,
-  type UnattendedLimitsDependencies,
-} from './agentRunUnattendedLimits.js';
 
 /**
  * Agent Tank usage gate for unattended agent runs.
@@ -34,12 +25,6 @@ import {
  * - Session usage at or over the threshold defers the run until shortly after
  *   the session window resets (at most `deferStepMs` at a time), and skips it
  *   after `maxDeferrals` deferrals.
- *
- * After the usage checks, a run being admitted (a new run or a deferred retry,
- * not an admitted run's `auto` acting step) must also pass the instance's
- * unattended admission limits (`agentRunUnattendedLimits.ts`): the local-time
- * window (`unattended_window`) and the cap on active unattended runs
- * (`unattended_max_concurrent`).
  *
  * The gate only reads the snapshot Agent Tank already holds; it never asks the
  * bundled Agent Tank to refresh (that may start a container). A stale snapshot
@@ -236,22 +221,14 @@ export interface AgentRunCostGateOptions {
   deferStepMs?: number;
   loadThreshold?: () => Promise<number>;
   evaluateCapacity?: (agentAlias: string | null, threshold: number, modelName: string | null) => Promise<ProviderCapacity>;
-  /** Deferral while the unattended concurrency cap is reached. */
-  capDeferStepMs?: number;
-  /** Database the active unattended runs are counted in. */
-  database?: Knex;
-  loadMaxConcurrent?: UnattendedLimitsDependencies['loadMaxConcurrent'];
-  loadWindow?: UnattendedLimitsDependencies['loadWindow'];
-  countActiveUnattendedRuns?: UnattendedLimitsDependencies['countActiveUnattendedRuns'];
 }
 
 function formatPercent(percent: number): string {
   return `${Math.round(percent)}%`;
 }
 
-/** A run being admitted: a new run, or a deferred run being retried (not an admitted run's acting step). */
-function isAdmission(run: StoredAgentRun | null | undefined): boolean {
-  return !run || run.state === 'deferred';
+function formatUtc(timestamp: number): string {
+  return `${new Date(timestamp).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
 /**
@@ -264,15 +241,13 @@ export function createAgentRunCostGate({
   deferStepMs = DEFAULT_AGENT_RUN_DEFER_STEP_MS,
   loadThreshold = () => loadUsagePauseThreshold(),
   evaluateCapacity = (agentAlias, threshold, modelName) => evaluateProviderCapacity(agentAlias, threshold, { modelName, now }),
-  capDeferStepMs = DEFAULT_AGENT_RUN_CAP_DEFER_STEP_MS,
-  database,
-  loadMaxConcurrent,
-  loadWindow,
-  countActiveUnattendedRuns,
 }: AgentRunCostGateOptions = {}): AgentRunGate {
   const loggedUnknown = new Set<string>();
 
-  const usageDecision = async ({ definition, run }: Parameters<AgentRunGate>[0]): Promise<AgentRunGateDecision> => {
+  return async ({ definition, trigger, run }): Promise<AgentRunGateDecision> => {
+    // Attended: the person who clicked Run now sees the capacity warning instead.
+    if (trigger === 'manual') return { action: 'proceed' };
+
     const threshold = await loadThreshold();
     const capacity = await evaluateCapacity(definition.agentAlias, threshold, definition.modelName);
     const providerKey = `${definition.agentAlias ?? ''}:${capacity.provider}`;
@@ -306,17 +281,6 @@ export function createAgentRunCostGate({
     const timestamp = now();
     const afterReset = capacity.resetsInMs !== undefined ? timestamp + capacity.resetsInMs + AGENT_RUN_DEFER_RESET_MARGIN_MS : Infinity;
     const until = Math.min(afterReset, timestamp + deferStepMs);
-    return { action: 'defer', until, reason: `${session}, so the run was deferred until ${formatAgentRunUtc(until)}.` };
-  };
-
-  return async (context): Promise<AgentRunGateDecision> => {
-    // Attended: the person who clicked Run now sees the capacity warning instead.
-    if (context.trigger === 'manual') return { action: 'proceed' };
-
-    const usage = await usageDecision(context);
-    if (usage.action !== 'proceed' || !isAdmission(context.run)) return usage;
-
-    const limits = await evaluateUnattendedLimits({ now, database, loadMaxConcurrent, loadWindow, countActiveUnattendedRuns });
-    return unattendedLimitsDecision(limits, { now: now(), deferrals: context.run?.deferrals ?? 0, maxDeferrals, capDeferStepMs });
+    return { action: 'defer', until, reason: `${session}, so the run was deferred until ${formatUtc(until)}.` };
   };
 }
