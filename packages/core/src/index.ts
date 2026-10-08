@@ -607,3 +607,16 @@ export * from './services/agents/agentRunCostGate.js';
 export * from './services/agents/agentRunDeferredRetry.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/reviewScoreStore.js';
+
+// GitHub user profile cache: maps stored GitHub numeric user ids to the login
+// and avatar an assignee is rendered with.
+export * from './services/githubUserProfileService.js';
+export {
+    TASK_ASSIGNMENT_FILTERS,
+    MAX_TASK_ASSIGNMENT_FILTER_LOGINS,
+    parseTaskAssignmentFilter,
+    formatTaskAssignmentFilter,
+    type TaskAssignmentFilter,
+    type TaskAssignmentFilterMode,
+    type TaskAssignmentFilterParseResult,
+} from '@propr/shared';
