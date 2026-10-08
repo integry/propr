@@ -10,6 +10,7 @@ import { up } from '../../core/src/db/migrations/20260922000000_add_task_submiss
 import { up as identityMigration } from '../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js';
 import { up as repoTodosMigration } from '../../core/src/db/migrations/20260317000000_create_repo_todos.js';
 import { up as todoIssueLinkMigration } from '../../core/src/db/migrations/20261013000000_add_todo_issue_link.js';
+import { up as submissionTodosLinkedMigration } from '../../core/src/db/migrations/20261013010000_add_task_submission_todos_linked.js';
 import { createTaskSubmissionRoutes, authorizeTaskSubmissionRepository, uploadSubmissionImages, submissionIssueTitle } from '../routes/taskSubmissionRoutes.js';
 import { configureDemoMode } from '../demoMode.js';
 
@@ -28,6 +29,7 @@ async function fixture() {
   await identityMigration(db);
   await repoTodosMigration(db);
   await todoIssueLinkMigration(db);
+  await submissionTodosLinkedMigration(db);
   return db;
 }
 
@@ -153,8 +155,60 @@ test('an accepted submission completes and links its to-dos once, and to-do fail
     assert.equal(unwritable.state.status, 200);
     assert.equal(unwritable.state.body.state, 'queued');
     assert.equal(unwritable.state.body.issueNumber, 8);
-    assert.equal(completions, 4);
+    assert.equal(completions, 2);
     assert.equal((await db('repo_todos').where({ todo_id: 'todo-1' }).first()).linked_issue_number, 7);
+
+    failTodos = false;
+    const recovered = response();
+    await routes.retry(request({}, 'second-key'), recovered.res);
+    assert.equal(recovered.state.body.state, 'queued');
+    assert.equal(completions, 3);
+    assert.equal((await db('repo_todos').where({ todo_id: 'todo-1' }).first()).linked_issue_number, 8);
+  } finally { await db.destroy(); }
+});
+
+test('replaying an older submission leaves a reopened or relaunched to-do alone', async () => {
+  configureDemoMode(false);
+  const db = await fixture();
+  await db('repo_todos').insert({ todo_id: 'todo-1', user_id: 'alice', repository: 'owner/repo', content: 'todo-1', order_index: 0, is_completed: false, linked_draft_id: null });
+  let issues = 41;
+  const routes = createTaskSubmissionRoutes({ db, services: {
+    authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true }),
+    routing: async () => ({ agentAlias: 'agent', model: 'model', routingLabel: 'llm-agent-model' }),
+    processingLabels: async () => ['AI'],
+    enqueue: async () => {},
+    getOctokit: async () => ({ request: async (route: string) => {
+      if (route === 'POST /repos/{owner}/{repo}/issues') { issues++; return { data: { number: issues, html_url: `https://github.com/owner/repo/issues/${issues}` } }; }
+      return { data: [] };
+    } }) as never,
+  } });
+  const todo = () => db('repo_todos').where({ todo_id: 'todo-1' }).first();
+  const replayA = async () => {
+    const duplicate = response();
+    await routes.submit(request(launchA, 'launch-a'), duplicate.res);
+    assert.equal(duplicate.state.body.issueNumber, 42);
+    const retried = response();
+    await routes.retry(request({}, 'launch-a'), retried.res);
+    assert.equal(retried.state.body.issueNumber, 42);
+  };
+  const launchA = { repository: 'owner/repo', instruction: 'Fix it', todoIds: ['todo-1'] };
+  try {
+    const first = response();
+    await routes.submit(request(launchA, 'launch-a'), first.res);
+    assert.equal(first.state.body.issueNumber, 42);
+    assert.equal((await todo()).linked_issue_number, 42);
+
+    await db('repo_todos').where({ todo_id: 'todo-1' }).update({ is_completed: false });
+    await replayA();
+    assert.equal(Boolean((await todo()).is_completed), false);
+
+    const launchB = response();
+    await routes.submit(request({ ...launchA, instruction: 'Fix it properly' }, 'launch-b'), launchB.res);
+    assert.equal(launchB.state.body.issueNumber, 43);
+    await replayA();
+    const relaunched = await todo();
+    assert.equal(Boolean(relaunched.is_completed), true);
+    assert.equal(relaunched.linked_issue_number, 43);
   } finally { await db.destroy(); }
 });
 

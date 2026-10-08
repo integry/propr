@@ -277,17 +277,23 @@ function parseSubmissionRequest(req: Request): { body: SubmissionRequest; key: s
 
 /**
  * Completes the to-dos a submission was launched from once its issue exists
- * and records that issue on them. Resuming the same submission always names
- * the same issue, so repeats are harmless. This is bookkeeping only: the issue
- * and run already exist, so a failure is logged and never reported.
+ * and records that issue on them. The submission's receipt commits with the
+ * to-do update, so duplicate POSTs and retries never reapply it over a later
+ * reopen or relaunch, while a failed update stays retryable. This is
+ * bookkeeping only: the issue and run already exist, so a failure is logged
+ * and never reported.
  */
 export async function linkSubmissionTodos(db: Knex, row: TaskSubmission, complete: typeof completeTodosForIssue = completeTodosForIssue): Promise<void> {
-  if (!row.issue_number) return;
+  if (!row.issue_number || row.todos_linked) return;
   let todoIds: string[] = [];
   try {
     todoIds = (JSON.parse(row.payload) as SubmissionPayload).todoIds ?? [];
     if (!todoIds.length) return;
-    await complete({ todoIds, userId: row.user_id, repository: row.repository, issueNumber: row.issue_number, taskId: row.task_id }, db);
+    await db.transaction(async trx => {
+      const claimed = await trx('task_submissions').where({ id: row.id, todos_linked: false }).update({ todos_linked: true });
+      if (!claimed) return;
+      await complete({ todoIds, userId: row.user_id, repository: row.repository, issueNumber: row.issue_number!, taskId: row.task_id }, trx);
+    });
   } catch (error) {
     logger.warn({ error: (error as Error).message, submissionId: row.id, todoIds, issueNumber: row.issue_number }, 'Could not complete to-dos for a launched task');
   }
