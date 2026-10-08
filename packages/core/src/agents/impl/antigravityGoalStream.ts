@@ -52,12 +52,10 @@ export function sumAntigravityStepUsage(stepUsage: Iterable<StreamUsage>): Token
         else if ((usage.input_tokens ?? 0) > 0) cacheIncomplete = true;
         total.reasoning_output_tokens! += usage.thinking_tokens ?? 0;
     }
-    if (cacheIncomplete) {
-        // The cached tokens the other steps counted are still prompt tokens: they return to
-        // input_tokens so the invocation's total survives, and only the breakdown is withheld.
-        total.input_tokens! += total.cache_read_input_tokens ?? 0;
-        delete total.cache_read_input_tokens;
-    }
+    // The cached tokens the other steps counted keep their discount: the subtotal stays separate
+    // from input_tokens and is marked incomplete, so pricing bills it as cached while the hit rate
+    // never reads it as a measurement of the whole prompt.
+    if (cacheIncomplete && total.cache_read_input_tokens !== undefined) total.cache_usage_incomplete = true;
     return total;
 }
 

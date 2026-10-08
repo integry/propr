@@ -31,9 +31,13 @@ interface CumulativeTokenUsage {
 }
 const reportsCache = (usage: TokenUsage | undefined): boolean =>
     typeof usage?.cache_read_input_tokens === 'number' || typeof usage?.cache_creation_input_tokens === 'number';
-/** A usage whose prompt tokens have no cache breakdown; one such usage makes the run's breakdown incomplete. */
+/**
+ * A usage whose prompt tokens have no cache breakdown, or whose breakdown the
+ * agent marked as covering only some of them; one such usage makes the run's
+ * breakdown incomplete. Its known cached subtotal still prices as cached.
+ */
 const omitsCache = (usage: TokenUsage | undefined): boolean =>
-    !reportsCache(usage) && (usage?.input_tokens ?? 0) > 0;
+    usage?.cache_usage_incomplete === true || (!reportsCache(usage) && (usage?.input_tokens ?? 0) > 0);
 interface GenericConversationStep {
     message?: ConversationStep['message'] | string; timestamp?: string; type?: string; isError?: boolean; metadata?: Record<string, unknown>;
     role?: string; content?: string; tool?: string; params?: unknown; result?: string; usage?: TokenUsage;
@@ -65,14 +69,18 @@ function calculateTokens(conversationLog: ConversationStep[] | undefined, report
     const useAggr = aggrTotal > rptTotal; // Use whichever is higher to avoid undercounting
     const [inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens] = useAggr
         ? [aggrInput, aggrOutput, aggrCacheCreate, aggrCacheRead] : [rptInput, rptOutput, rptCacheCreate, rptCacheRead];
-    const cacheReported = useAggr ? aggrReported && !aggrIncomplete : reportsCache(reportedTokenUsage);
+    // Pricing always sees the cached subtotal above; the flag only decides whether
+    // the breakdown is persisted as a measurement of the whole prompt.
+    const cacheReported = useAggr ? aggrReported && !aggrIncomplete : reportsCache(reportedTokenUsage) && !omitsCache(reportedTokenUsage);
     return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, totalInputWithCache: inputTokens + cacheCreationTokens + cacheReadTokens, cacheReported };
 }
 
 /**
  * The cumulative usage as the execution row stores it (the same shape the PR
- * comment prints). An agent that reported no cache breakdown persists none: a
- * defaulted zero would read as a measured 0% cache hit rate.
+ * comment prints). An agent that reported no cache breakdown, or one covering
+ * only some prompts, persists none: a defaulted zero would read as a measured
+ * 0% cache hit rate, and a partial count as the whole prompt's. The row's cost
+ * was already priced with whatever cached subtotal was known.
  */
 function toPersistedTokenUsage(tokens: CumulativeTokenUsage): TokenUsage {
     const usage: TokenUsage = { input_tokens: tokens.totalInputWithCache, output_tokens: tokens.outputTokens };

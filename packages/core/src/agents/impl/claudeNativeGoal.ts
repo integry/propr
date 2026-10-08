@@ -165,7 +165,7 @@ export class ClaudeGoalStream {
     private texts: string[] = [];
     private wake: (() => void) | null = null;
     private requestSequence = 0;
-    private usage: Required<Omit<TokenUsage, 'reasoning_output_tokens'>> = {
+    private usage: Required<Omit<TokenUsage, 'reasoning_output_tokens' | 'cache_usage_incomplete'>> = {
         input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
     };
     sessionId?: string;

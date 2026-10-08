@@ -331,21 +331,19 @@ function addTokenUsage(total: TokenUsage, usage: TokenUsage): TokenUsage {
     for (const key of ['input_tokens', 'output_tokens', 'reasoning_output_tokens'] as const) {
         sum[key] = (sum[key] ?? 0) + (usage[key] ?? 0);
     }
-    // The cache count is a measurement of the whole prompt only when every prompt-bearing
-    // segment reported one; a segment that omitted it leaves the sum's breakdown unknown.
-    const reported = total.cache_read_input_tokens !== undefined || usage.cache_read_input_tokens !== undefined;
-    if (reported && cacheKnown(total) && cacheKnown(usage)) {
+    // A cached subtotal either side counted keeps its discount, so the counts add whenever one
+    // exists. The sum measures the whole prompt only when every prompt-bearing segment reported
+    // one; otherwise it is marked incomplete so it is priced as cached but stays out of the hit rate.
+    if (total.cache_read_input_tokens !== undefined || usage.cache_read_input_tokens !== undefined) {
         sum.cache_read_input_tokens = (total.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
-    } else {
-        // Cached tokens either side counted are still prompt tokens: they return to input_tokens
-        // so the goal's total survives, and only the breakdown is withheld.
-        sum.input_tokens = (sum.input_tokens ?? 0) + (total.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
-        delete sum.cache_read_input_tokens;
+        if (total.cache_usage_incomplete || usage.cache_usage_incomplete || !cacheKnown(total) || !cacheKnown(usage)) {
+            sum.cache_usage_incomplete = true;
+        }
     }
     return sum;
 }
 
-/** The whole goal's usage: every segment's prompt and output, with a cache count only when every segment measured one. */
+/** The whole goal's usage: every segment's prompt and output, with a cache count marked complete only when every segment measured one. */
 export function sumAntigravitySegmentUsage(segments: ReadonlyArray<Pick<AntigravityGoalSegment, 'tokenUsage'>>): TokenUsage {
     return segments.reduce<TokenUsage>((total, segment) => addTokenUsage(total, segment.tokenUsage), {
         input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0,
