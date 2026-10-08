@@ -45,7 +45,7 @@ const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | '
     variant="default"
     labelLayout="stacked"
     hideCountOnMobile
-    className="flex-1 min-w-0 sm:flex-none sm:w-[320px]"
+    className="flex-1 min-w-0 sm:flex-initial sm:w-[320px]"
   />
   );
 };
@@ -85,14 +85,14 @@ export const Filters: React.FC<FiltersProps> = ({
       <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
         {!hideFilters && (
           <>
-            {/* Takes the room the filters leave, so it stays usable in a list pane beside an open task. */}
+            {/* Takes the room the filters leave, and keeps enough of it that the repository picker gives way first in a list pane beside an open task. */}
             {!isMobile && (
               <ListSearchInput
                 value={searchQuery}
                 onChange={setSearchQuery}
                 onClear={() => setSearchQuery('')}
                 label="Search tasks"
-                className="hidden sm:block min-w-[8rem] flex-1 max-w-xs"
+                className="hidden sm:block min-w-[13rem] flex-1 max-w-xs"
               />
             )}
             <div className="flex items-center gap-2 min-w-0 max-sm:flex-1">
