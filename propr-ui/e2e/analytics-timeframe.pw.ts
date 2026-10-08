@@ -74,6 +74,17 @@ async function stubAnalytics(page: Page, requests: string[] = []) {
   });
 }
 
+type DailyCount = { date: string; count: number; runs: number };
+/** Replaces the tasks endpoint with a given activity series and its status totals. */
+async function stubTaskSeries(page: Page, dailyCounts: DailyCount[], completed: number, failed: number) {
+  await page.route('**/api/stats/tasks*', route => route.fulfill({ json: {
+    dailyCounts,
+    statusDistribution: [{ status: 'completed', count: completed }, { status: 'failed', count: failed }],
+    avgProcessingTime: [],
+    summary: { total: completed + failed, completed, failed },
+  } }));
+}
+
 async function openAnalytics(page: Page, width: number, search = '', requests: string[] = []) {
   await fixture(page, { width, height: 900 });
   await stubAnalytics(page, requests);
@@ -307,12 +318,7 @@ test('the last 24 hours break the chart down by hour, with this hour accumulatin
   await stubAnalytics(page);
   const runs = [0, 2, 0, 0, 0, 1, 3, 5, 4, 2, 6, 9, 14, 8, 3, 1, 0, 2, 4, 7, 12, 19, 11, 6];
   const tasks = [0, 1, 0, 0, 0, 1, 1, 2, 2, 1, 3, 4, 5, 3, 1, 0, 0, 1, 2, 3, 5, 8, 4, 2];
-  await page.route('**/api/stats/tasks*', route => route.fulfill({ json: {
-    dailyCounts: hourKeys().map((date, index) => ({ date, count: tasks[index], runs: runs[index] })),
-    statusDistribution: [{ status: 'completed', count: 46 }, { status: 'failed', count: 3 }],
-    avgProcessingTime: [],
-    summary: { total: 49, completed: 46, failed: 3 },
-  } }));
+  await stubTaskSeries(page, hourKeys().map((date, index) => ({ date, count: tasks[index], runs: runs[index] })), 46, 3);
   await page.goto('/analytics?period=24h');
   await expect(page.getByRole('heading', { name: /Activity · Last 24 hours/ })).toBeVisible();
   // One pair per hour, not one per calendar day; an empty hour draws no bar.
@@ -344,12 +350,7 @@ test('runs and tasks share one chart: each day pairs its runs and tasks side by 
   // A week where Tuesday thrashed: 571 runs to deliver 210 tasks.
   const runs = [96, 120, 70, 52, 140, 571, 31];
   const tasks = [44, 61, 30, 25, 66, 210, 14];
-  await page.route('**/api/stats/tasks*', route => route.fulfill({ json: {
-    dailyCounts: dayKeys(7).map((date, index) => ({ date, count: tasks[index], runs: runs[index] })),
-    statusDistribution: [{ status: 'completed', count: 400 }, { status: 'failed', count: 50 }],
-    avgProcessingTime: [],
-    summary: { total: 450, completed: 400, failed: 50 },
-  } }));
+  await stubTaskSeries(page, dayKeys(7).map((date, index) => ({ date, count: tasks[index], runs: runs[index] })), 400, 50);
   await page.goto('/analytics?period=7d');
   await expect(page.getByText('design-system')).toBeVisible();
 
@@ -454,12 +455,7 @@ for (const [period, days] of [['1y', 365], ['all', 400]] as const) {
       await fixture(page, viewport);
       await stubAnalytics(page);
       // Every day has both a run and a task, so every day draws two bars.
-      await page.route('**/api/stats/tasks*', route => route.fulfill({ json: {
-        dailyCounts: dayKeys(days).map((date, index) => ({ date, count: 1 + (index % 5), runs: 2 + ((index * 7) % 11) })),
-        statusDistribution: [{ status: 'completed', count: 400 }],
-        avgProcessingTime: [],
-        summary: { total: 400, completed: 400, failed: 0 },
-      } }));
+      await stubTaskSeries(page, dayKeys(days).map((date, index) => ({ date, count: 1 + (index % 5), runs: 2 + ((index * 7) % 11) })), 400, 0);
       await page.goto(`/analytics?period=${period}`);
       const chart = page.getByTestId('activity-chart');
       const runBars = chart.locator('path[data-testid^="activity-runs-bar-"]');
