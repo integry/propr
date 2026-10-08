@@ -37,7 +37,7 @@ beforeEach(() => {
   vi.mocked(getCategories).mockResolvedValue(categories);
   vi.mocked(createTodo).mockResolvedValue({
     todoId: 'todo-1', categoryId: 'bugs', content: 'Fix invoice dates', orderIndex: 0,
-    isCompleted: false, linkedDraftId: null, createdAt: '', updatedAt: '',
+    isCompleted: false, linkedDraftId: null, linkedIssueRepository: null, linkedIssueNumber: null, linkedTaskId: null, createdAt: '', updatedAt: '',
   });
 });
 

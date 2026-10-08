@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Check, ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
 import { RepoTodo } from '../../../api/repoTodosApi';
+import TodoIssueLink from './TodoIssueLink';
 
 export interface CompletedItemsAccordionProps {
   todos: RepoTodo[];
@@ -58,9 +59,12 @@ const CompletedItemsAccordion: React.FC<CompletedItemsAccordionProps> = ({
               >
                 <Check size={10} className="m-auto" />
               </button>
-              <p className="flex-1 text-sm text-slate-400 line-through break-words">
-                {todo.content}
-              </p>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-slate-400 line-through break-words">
+                  {todo.content}
+                </p>
+                <TodoIssueLink todo={todo} className="mt-1" />
+              </div>
               <button
                 onClick={() => onDeleteTodo(todo.todoId)}
                 disabled={disabled}

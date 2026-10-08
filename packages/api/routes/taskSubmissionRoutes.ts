@@ -7,7 +7,7 @@ import type { Knex } from 'knex';
 import {
   AttachmentService, AgentRegistry, getAuthenticatedOctokit, loadMonitoredReposRaw,
   loadPrimaryProcessingLabels, resolvePlanIssueDefaultSelection, safeAddLabel, logger,
-  insertTaskSubmission, resumeTaskSubmission, submissionMarker, submissionAssetPath, resolveVisualPreviewUploadToken,
+  insertTaskSubmission, resumeTaskSubmission, completeTodosForIssue, submissionMarker, submissionAssetPath, resolveVisualPreviewUploadToken,
   type MulterFile, type SubmissionAttachment, type SubmissionPayload, type TaskSubmission,
 } from '@propr/core';
 import { resolveGitHubMetadataToken, handleGitHubRepositoryAccessError } from '../githubMetadataAuth.js';
@@ -275,6 +275,24 @@ function parseSubmissionRequest(req: Request): { body: SubmissionRequest; key: s
   return { body, key };
 }
 
+/**
+ * Completes the to-dos a submission was launched from once its issue exists
+ * and records that issue on them. Resuming the same submission always names
+ * the same issue, so repeats are harmless. This is bookkeeping only: the issue
+ * and run already exist, so a failure is logged and never reported.
+ */
+export async function linkSubmissionTodos(db: Knex, row: TaskSubmission, complete: typeof completeTodosForIssue = completeTodosForIssue): Promise<void> {
+  if (!row.issue_number) return;
+  let todoIds: string[] = [];
+  try {
+    todoIds = (JSON.parse(row.payload) as SubmissionPayload).todoIds ?? [];
+    if (!todoIds.length) return;
+    await complete({ todoIds, userId: row.user_id, repository: row.repository, issueNumber: row.issue_number, taskId: row.task_id }, db);
+  } catch (error) {
+    logger.warn({ error: (error as Error).message, submissionId: row.id, todoIds, issueNumber: row.issue_number }, 'Could not complete to-dos for a launched task');
+  }
+}
+
 export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; services?: Partial<{
   authorize: typeof authorizeTaskSubmissionRepository;
   routing: typeof routing;
@@ -282,11 +300,17 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
   processingLabels: typeof loadPrimaryProcessingLabels;
   enqueue: typeof enqueueIssueImplementationJob;
   images: SubmissionImageUploadServices;
+  completeTodos: typeof completeTodosForIssue;
 }> }) {
   const checkAccess = services.authorize ?? authorizeTaskSubmissionRepository;
   const resolveRouting = services.routing ?? routing;
   const getOctokit = services.getOctokit ?? getAuthenticatedOctokit;
   const processingLabels = services.processingLabels ?? loadPrimaryProcessingLabels;
+  const resume = async (id: string) => {
+    const result = await resumeTaskSubmission(db, id, submissionServices(await getOctokit(), services.enqueue, services.images));
+    await linkSubmissionTodos(db, result, services.completeTodos);
+    return result;
+  };
   const sendError = async (req: Request, res: Response, error: unknown) => {
     if (error instanceof SyntaxError) { res.status(400).json({ error: 'Invalid request payload' }); return; }
     if (await handleGitHubRepositoryAccessError(req, res, error)) return;
@@ -317,7 +341,7 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
         row = await insertTaskSubmission(db, { user_id: String(req.user!.id), submission_key: key, payload_hash: payloadHash,
           repository, payload: JSON.stringify(payload), attachments: JSON.stringify(attachments) });
       }
-      const result = await resumeTaskSubmission(db, row.id, submissionServices(await getOctokit(), services.enqueue, services.images));
+      const result = await resume(row.id);
       res.status(result.state === 'queued' ? 200 : 202).json(publicSubmission(result));
     } catch (error) { await sendError(req, res, error); }
     finally { await removeTemporaryGoalUploads(files); }
@@ -334,7 +358,7 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
       await checkAccess(req, row.repository);
       const payload = JSON.parse(row.payload) as SubmissionPayload;
       await resolveRouting(payload);
-      res.json(publicSubmission(await resumeTaskSubmission(db, row.id, submissionServices(await getOctokit(), services.enqueue, services.images))));
+      res.json(publicSubmission(await resume(row.id)));
     } catch (error) { await sendError(req, res, error); }
   };
   return { submit, get, retry };

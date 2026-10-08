@@ -286,6 +286,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `All Repos`. `GET /api/stats/overview` adds `model_usage`, a per-model list
   of tasks, tokens and cost, and `usage.input_tokens` / `usage.output_tokens`.
 
+### Changed
+
+- **Repository to-dos**: launching a task from a to-do (**Run task**, MCP
+  `create_task` with `todoIds`, or a submission retry) now marks the to-do
+  completed once its GitHub issue exists and records that issue
+  (`linkedIssueRepository`, `linkedIssueNumber`, `linkedTaskId`). The REST API,
+  MCP `list_todos`/`get_todo`, the CLI and the Web UI carry the link, and the
+  UI shows a `#<issue number>` chip opening the issue on active and completed
+  to-dos. Only the submitting user's to-dos in the issue's repository are
+  touched, and a failed to-do write never fails the submission.
+
 ### Removed
 
 - **`scripts/init-firewall.sh`**: the iptables firewall script shipped in the
