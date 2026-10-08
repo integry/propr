@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { Filters } from './Filters';
@@ -15,17 +15,24 @@ const props = {
 };
 
 describe('Filters', () => {
-  it('names the selected repository without its owner', () => {
+  it('shows the selected repository in the stacked owner-over-name format', () => {
     render(<MemoryRouter><Filters {...props} repoFilter="integry/propr" /></MemoryRouter>);
     const trigger = screen.getByRole('button', { name: /propr/ });
-    expect(trigger).toHaveTextContent('propr');
-    expect(trigger).not.toHaveTextContent('integry/');
+    expect(within(trigger).getByText('integry')).toHaveClass('text-[10px]');
+    expect(within(trigger).getByText('propr')).toHaveClass('font-medium');
   });
 
-  it('keeps the owner when two owners share a repository name', () => {
-    const availableRepos = [...props.availableRepos, { name: 'acme/propr', enabled: true, count: 3 }];
+  it('lists All Repos first, above starred repositories, in a menu wide enough for long names', () => {
+    const availableRepos = [
+      { name: 'integry/propr', enabled: true, count: 14767, starred: true },
+      { name: 'all', enabled: true, displayName: 'All Repos', count: 14768 },
+      { name: 'integry/desktop', enabled: true, count: 1 },
+    ];
     render(<MemoryRouter><Filters {...props} availableRepos={availableRepos} repoFilter="integry/propr" /></MemoryRouter>);
-    expect(screen.getByRole('button', { name: /propr/ })).toHaveTextContent('integry/propr');
+    fireEvent.click(screen.getByRole('button', { name: /propr/ }));
+    const rows = screen.getAllByTestId('repo-item');
+    expect(rows.map(row => row.getAttribute('data-repository-name'))).toEqual(['all', 'integry/propr', 'integry/desktop']);
+    expect(rows[0].closest('.absolute')).toHaveClass('min-w-[20rem]');
   });
 
   it('leaves the filter dropdowns to do the filtering, with no separate filter icon', () => {
