@@ -34,7 +34,7 @@ async function seedFollowUp(taskId: string, pr: number, jobData: Record<string, 
 /** PR `pr` opened for issue `issue` by one implementation task with `runs` runs, then merged. */
 async function seedMergedPullRequest(pr: number, issue: number, runs = 1): Promise<void> {
   await seedTask(database, { taskId: `impl-${pr}`, issueNumber: issue, prNumber: pr, states: [{ state: 'completed', timestamp: daysAgo(3) }] });
-  await database('llm_executions').insert(Array.from({ length: runs }, () => ({ task_id: `impl-${pr}`, start_time: daysAgo(3) })));
+  if (runs > 0) await database('llm_executions').insert(Array.from({ length: runs }, () => ({ task_id: `impl-${pr}`, start_time: daysAgo(3) })));
   await database('notification_pull_request_state').insert({
     repository: REPOSITORY, pr_number: pr, merged_at: daysAgo(1), outcome: 'merged', closed_at: daysAgo(1),
   });
@@ -136,6 +136,26 @@ test('a merge-conflict resolution is not a fix, so a merged PR that only needed 
   assert.deepEqual(delivery.first_time_pass, { rate: 0.5, passed: 1, n: 2 });
   // The resolution's run still counts toward runs per merged PR.
   assert.deepEqual(delivery.runs_per_merged_pr, { mean: 2, n: 2 });
+});
+
+test('a merged PR without a recorded run is unknown, not zero runs to merge', async () => {
+  // PR 50 recorded four runs; PR 51's agent recorded none.
+  await seedMergedPullRequest(50, 150, 4);
+  await seedMergedPullRequest(51, 151, 0);
+
+  const delivery = await loadDeliveryMetrics(database, WEEK);
+  // Both merged, but only the recorded one is averaged, as review quality's runs to merge does.
+  assert.deepEqual(delivery.first_time_pass, { rate: 1, passed: 2, n: 2 });
+  assert.deepEqual(delivery.runs_per_merged_pr, { mean: 4, n: 1 });
+
+  // A run on the follow-up alone still makes the PR's runs known.
+  await seedFollowUp('review-51', 51, { commandMode: 'review' });
+  await database('llm_executions').insert({ task_id: 'review-51', start_time: daysAgo(2) });
+  assert.deepEqual((await loadDeliveryMetrics(database, WEEK)).runs_per_merged_pr, { mean: 2.5, n: 2 });
+
+  // With no merged PR recording a run, the figure is unknown rather than 0.
+  await database('llm_executions').del();
+  assert.deepEqual((await loadDeliveryMetrics(database, WEEK)).runs_per_merged_pr, { mean: null, n: 0 });
 });
 
 test('extra runs on the one implementation task do not fail first-time pass', async () => {

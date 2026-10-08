@@ -86,6 +86,18 @@ interface RepositoryStatsRow {
   in_progress: number;
 }
 
+/**
+ * The days on which anything happened, in order: those with a task created
+ * and those with only a run started, which the task grouping alone omits.
+ */
+function recordedActivityDays(
+  taskDays: DailyCountRow[], dailyRuns: Map<string, number>,
+): Array<DailyCountRow & { runs: number }> {
+  const tasks = new Map(taskDays.map(day => [day.date, day.count]));
+  return [...new Set([...tasks.keys(), ...dailyRuns.keys()])].sort()
+    .map(date => ({ date, count: tasks.get(date) ?? 0, runs: dailyRuns.get(date) ?? 0 }));
+}
+
 export function createStatsRoutes(deps: StatsRoutesDeps) {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
@@ -106,7 +118,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
       // period every bucket in the window is listed, including empty ones:
       // a day each, or an hour each over the last 24 hours; without one,
       // totals are all-time and the days are the last 30, so only those 30
-      // are grouped.
+      // are grouped, listing just the days with a task or a run.
       // Runs beside tasks, per bucket: the compute behind each one's deliverables.
       const dailySince = analyticsWindow ? undefined : thirtyDaysAgo;
       const [summary, dailyRuns] = await Promise.all([
@@ -115,7 +127,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
       ]);
       const dailyCounts: Array<DailyCountRow & { runs: number }> = analyticsWindow
         ? activityDays(summary.dailyCounts, dailyRuns, analyticsWindow)
-        : summary.dailyCounts.map(day => ({ ...day, runs: dailyRuns.get(day.date) ?? 0 }));
+        : recordedActivityDays(summary.dailyCounts, dailyRuns);
 
       // Status distribution from latest task_history entries
       const statusDistributionQuery = db('task_history as h')

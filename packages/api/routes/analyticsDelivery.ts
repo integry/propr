@@ -37,7 +37,12 @@ export interface DeliveryMetrics {
   first_time_pass: { rate: number | null; passed: number; n: number };
   /** Wall-clock minutes from the issue's first task to the merge. n is merged PRs with a merge time. */
   time_to_merge_minutes: { mean: number | null; median: number | null; n: number };
-  /** Agent executions across each merged PR's tasks, started at or before its merge. */
+  /**
+   * Agent executions across each merged PR's tasks, started at or before its
+   * merge. n is merged PRs with a recorded run: a PR without one has unknown
+   * telemetry, not zero runs, and review quality's runs to merge leaves it
+   * out the same way.
+   */
   runs_per_merged_pr: { mean: number | null; n: number };
 }
 
@@ -268,14 +273,15 @@ function mergedPullRequestEvidence(pr: PullRequest & { mergedAt: string | null }
 
 interface MergedPullRequest {
   firstTimePass: boolean;
-  runs: number;
+  /** Null when no execution was recorded up to the merge. */
+  runs: number | null;
   /** Null when the merge time or the submission is unknown. */
   minutesToMerge: number | null;
 }
 
 /** How one merged PR got there, from the evidence recorded up to its merge. */
 function mergedPullRequestFacts(
-  pr: { mergedAt: string | null; ultrafixFixed: boolean }, evidence: MergedPullRequestEvidence, runs: number,
+  pr: { mergedAt: string | null; ultrafixFixed: boolean }, evidence: MergedPullRequestEvidence, runs: number | undefined,
 ): MergedPullRequest {
   const { mergedAt, ultrafixFixed } = pr;
   const { implementations, followUps } = evidence;
@@ -290,7 +296,7 @@ function mergedPullRequestFacts(
   // that fixed the PR belongs to a follow-up task, judged by isFixTask.
   return {
     firstTimePass: implementations.length <= 1 && !followUps.some(isFixTask) && !ultrafixFixed,
-    runs,
+    runs: runs && runs > 0 ? runs : null,
     minutesToMerge,
   };
 }
@@ -340,12 +346,12 @@ export async function loadDeliveryMetrics(db: Knex, window: AnalyticsWindow | nu
   const merged: MergedPullRequest[] = [...mergedPullRequests].map(([key, pr]) => {
     const fixedAt = ultrafixFixTimes.get(key);
     const ultrafixFixed = fixedAt !== undefined && atOrBefore(fixedAt, pr.mergedAt);
-    return mergedPullRequestFacts({ mergedAt: pr.mergedAt, ultrafixFixed }, evidence.get(key)!, runs.get(key) ?? 0);
+    return mergedPullRequestFacts({ mergedAt: pr.mergedAt, ultrafixFixed }, evidence.get(key)!, runs.get(key));
   });
 
   const passed = merged.filter(pr => pr.firstTimePass).length;
   const minutesToMerge = merged.flatMap(pr => pr.minutesToMerge === null ? [] : [pr.minutesToMerge]);
-  const runsToMerge = merged.map(pr => pr.runs);
+  const runsToMerge = merged.flatMap(pr => pr.runs === null ? [] : [pr.runs]);
   return {
     prs_opened: pullRequests.size,
     prs_merged: merged.length,

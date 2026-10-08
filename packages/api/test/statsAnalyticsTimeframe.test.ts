@@ -110,6 +110,27 @@ test('without a period the endpoints keep their historical scope', async () => {
   assert.deepEqual(overview.body.runs, { total: 2, tasks: 3, per_task: 0.67 });
 });
 
+test('without a period the daily series still lists a day with only a run', async () => {
+  await seedRecentAndOlder();
+  // The older task ran again the next day, a day on which no task was created;
+  // a day 40 days back is outside the 30 drawn, even with a run on it.
+  await database('llm_executions').insert([
+    { execution_id: 3, task_id: 'older', start_time: daysAgo(1), model_name: 'gpt-5.6' },
+    { execution_id: 4, task_id: 'older', start_time: daysAgo(40), model_name: 'gpt-5.6' },
+  ]);
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+
+  const tasks = await call(stats.getTaskStats);
+  assert.equal(tasks.status, 200);
+  assert.deepEqual(tasks.body.dailyCounts, [
+    { date: daysAgo(2).slice(0, 10), count: 1, runs: 1 },
+    { date: daysAgo(1).slice(0, 10), count: 0, runs: 1 },
+    { date: minutesAgo(30).slice(0, 10), count: 1, runs: 1 },
+  ]);
+  // Totals are untouched: the extra runs created no task.
+  assert.deepEqual(tasks.body.summary, { total: 2, completed: 1, failed: 1 });
+});
+
 test('a period bounds task counts to tasks created inside the window', async () => {
   await seedRecentAndOlder();
   const stats = createStatsRoutes({ db: database, now: () => NOW });
