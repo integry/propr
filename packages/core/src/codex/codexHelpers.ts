@@ -144,6 +144,12 @@ interface ParseState {
      * measured zero, and the metrics store keeps that distinction.
      */
     cacheReported: boolean;
+    /**
+     * Whether some prompt-bearing usage event omitted `cached_input_tokens`.
+     * The cache portion of that prompt is unknown, so the run's breakdown is
+     * incomplete and cannot be reported as a measurement of the whole prompt.
+     */
+    cacheIncomplete: boolean;
 }
 
 function handleItemCompleted(event: CodexEvent, state: ParseState): void {
@@ -201,6 +207,7 @@ function addCodexTokenUsage(usage: CodexEvent['usage'] | undefined, state: Parse
     // input is neither double-counted nor billed at the full input rate.
     const totalInputTokens = Math.max(0, usage.input_tokens ?? 0);
     if (typeof usage.cached_input_tokens === 'number') state.cacheReported = true;
+    else if (totalInputTokens > 0) state.cacheIncomplete = true;
     const reportedCachedTokens = Math.max(0, usage.cached_input_tokens ?? 0);
     const cachedInputTokens = totalInputTokens > 0
         ? Math.min(totalInputTokens, reportedCachedTokens)
@@ -310,7 +317,8 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
             cache_read_input_tokens: 0,
             reasoning_output_tokens: 0
         },
-        cacheReported: false
+        cacheReported: false,
+        cacheIncomplete: false
     };
     const conversationLog: CodexEvent[] = [];
 
@@ -329,12 +337,13 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
     }
 
     const hasTokenUsage = Object.values(state.tokenUsage).some(value => value > 0);
-    // The cache count is present exactly when Codex reported one, so a
-    // reported zero stays a measured zero and an omitted count stays unknown.
+    // The cache count is present exactly when Codex reported one for every
+    // prompt, so a reported zero stays a measured zero, an omitted count stays
+    // unknown, and a partially reported run is not passed off as measured.
     const tokenUsage = hasTokenUsage ? {
         input_tokens: state.tokenUsage.input_tokens,
         output_tokens: state.tokenUsage.output_tokens,
-        ...(state.cacheReported && {
+        ...(state.cacheReported && !state.cacheIncomplete && {
             cache_read_input_tokens: state.tokenUsage.cache_read_input_tokens
         }),
         ...(state.tokenUsage.reasoning_output_tokens > 0 && {

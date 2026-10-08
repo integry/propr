@@ -22,18 +22,25 @@ function extractMetricsFromClaudeResult(claudeResult: ClaudeResult | null): Extr
 interface CumulativeTokenUsage {
     inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number;
     totalInputWithCache: number;  // input + cache_creation + cache_read (for cost calc and display)
-    /** Whether the counted usage carried a cache breakdown at all; zero cache counts without one are unknown, not zero. */
+    /**
+     * Whether every counted prompt carried a cache breakdown; zero cache counts
+     * without one are unknown, not zero, and a breakdown that covers only part
+     * of the prompt tokens is not a measurement of the whole.
+     */
     cacheReported: boolean;
 }
 const reportsCache = (usage: TokenUsage | undefined): boolean =>
     typeof usage?.cache_read_input_tokens === 'number' || typeof usage?.cache_creation_input_tokens === 'number';
+/** A usage whose prompt tokens have no cache breakdown; one such usage makes the run's breakdown incomplete. */
+const omitsCache = (usage: TokenUsage | undefined): boolean =>
+    !reportsCache(usage) && (usage?.input_tokens ?? 0) > 0;
 interface GenericConversationStep {
     message?: ConversationStep['message'] | string; timestamp?: string; type?: string; isError?: boolean; metadata?: Record<string, unknown>;
     role?: string; content?: string; tool?: string; params?: unknown; result?: string; usage?: TokenUsage;
     item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean }> };
 }
 function calculateTokens(conversationLog: ConversationStep[] | undefined, reportedTokenUsage?: TokenUsage): CumulativeTokenUsage {
-    let aggrInput = 0, aggrOutput = 0, aggrCacheCreate = 0, aggrCacheRead = 0, aggrReported = false;
+    let aggrInput = 0, aggrOutput = 0, aggrCacheCreate = 0, aggrCacheRead = 0, aggrReported = false, aggrIncomplete = false;
     if (conversationLog && Array.isArray(conversationLog)) {
         const seenIds = new Set<string>(); // Deduplicate by message ID (per Claude docs, same ID = same usage)
         conversationLog.forEach(step => {
@@ -47,6 +54,7 @@ function calculateTokens(conversationLog: ConversationStep[] | undefined, report
                 aggrInput += usage.input_tokens ?? 0; aggrOutput += usage.output_tokens ?? 0;
                 aggrCacheCreate += usage.cache_creation_input_tokens ?? 0; aggrCacheRead += usage.cache_read_input_tokens ?? 0;
                 aggrReported ||= reportsCache(usage);
+                aggrIncomplete ||= omitsCache(usage);
             }
         });
     }
@@ -57,7 +65,7 @@ function calculateTokens(conversationLog: ConversationStep[] | undefined, report
     const useAggr = aggrTotal > rptTotal; // Use whichever is higher to avoid undercounting
     const [inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens] = useAggr
         ? [aggrInput, aggrOutput, aggrCacheCreate, aggrCacheRead] : [rptInput, rptOutput, rptCacheCreate, rptCacheRead];
-    const cacheReported = useAggr ? aggrReported : reportsCache(reportedTokenUsage);
+    const cacheReported = useAggr ? aggrReported && !aggrIncomplete : reportsCache(reportedTokenUsage);
     return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, totalInputWithCache: inputTokens + cacheCreationTokens + cacheReadTokens, cacheReported };
 }
 

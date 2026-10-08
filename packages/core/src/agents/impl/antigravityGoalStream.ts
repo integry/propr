@@ -42,13 +42,17 @@ interface StreamEnvelope {
  */
 export function sumAntigravityStepUsage(stepUsage: Iterable<StreamUsage>): TokenUsage {
     const total: TokenUsage = { input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 };
+    let cacheIncomplete = false;
     for (const usage of stepUsage) {
         total.input_tokens! += usage.input_tokens ?? 0;
         total.output_tokens! += usage.output_tokens ?? 0;
-        // A step that reports no cache count leaves the breakdown unknown rather than adding a zero.
+        // A step that reports no cache count leaves the breakdown unknown rather than adding a zero,
+        // and if that step carried a prompt the whole invocation's breakdown is incomplete.
         if (usage.cache_read_tokens !== undefined) total.cache_read_input_tokens = (total.cache_read_input_tokens ?? 0) + usage.cache_read_tokens;
+        else if ((usage.input_tokens ?? 0) > 0) cacheIncomplete = true;
         total.reasoning_output_tokens! += usage.thinking_tokens ?? 0;
     }
+    if (cacheIncomplete) delete total.cache_read_input_tokens;
     return total;
 }
 

@@ -321,14 +321,32 @@ async function detectContainer(containerName: string | null, callback: AgentTask
     }
 }
 
+/** Whether a usage's cache breakdown is known: it reported one, or it carried no prompt to break down. */
+function cacheKnown(usage: TokenUsage): boolean {
+    return usage.cache_read_input_tokens !== undefined || !(usage.input_tokens ?? 0);
+}
+
 function addTokenUsage(total: TokenUsage, usage: TokenUsage): TokenUsage {
     const sum: TokenUsage = { ...total };
-    for (const key of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'reasoning_output_tokens'] as const) {
-        // A cache count no segment reported stays absent: an unknown breakdown, not a measured zero.
-        if (key === 'cache_read_input_tokens' && sum[key] === undefined && usage[key] === undefined) continue;
+    for (const key of ['input_tokens', 'output_tokens', 'reasoning_output_tokens'] as const) {
         sum[key] = (sum[key] ?? 0) + (usage[key] ?? 0);
     }
+    // The cache count is a measurement of the whole prompt only when every prompt-bearing
+    // segment reported one; a segment that omitted it leaves the sum's breakdown unknown.
+    const reported = total.cache_read_input_tokens !== undefined || usage.cache_read_input_tokens !== undefined;
+    if (reported && cacheKnown(total) && cacheKnown(usage)) {
+        sum.cache_read_input_tokens = (total.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+    } else {
+        delete sum.cache_read_input_tokens;
+    }
     return sum;
+}
+
+/** The whole goal's usage: every segment's prompt and output, with a cache count only when every segment measured one. */
+export function sumAntigravitySegmentUsage(segments: ReadonlyArray<Pick<AntigravityGoalSegment, 'tokenUsage'>>): TokenUsage {
+    return segments.reduce<TokenUsage>((total, segment) => addTokenUsage(total, segment.tokenUsage), {
+        input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0,
+    });
 }
 
 export interface AntigravityNativeGoalLaunch {
@@ -428,9 +446,7 @@ function goalAttemptResult(
         conversationId: run?.conversationId,
         modelUsed: model,
         providerModel: reportedModel ?? requestedModel,
-        tokenUsage: segments.reduce<TokenUsage>((total, segment) => addTokenUsage(total, segment.tokenUsage), {
-            input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0,
-        }),
+        tokenUsage: sumAntigravitySegmentUsage(segments),
         exitCode: success ? 0 : 1,
         error: success ? undefined : failure || run?.error || 'Antigravity native goal did not complete',
     };

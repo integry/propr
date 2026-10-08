@@ -64,3 +64,48 @@ for (const executionType of [undefined, 'implementation', 'pr-review'] as const)
         assert.ok(redisWrites.includes('llm:metrics:correlation-2683'));
     });
 }
+
+test('a conversation whose prompts all carry a cache breakdown persists it as reported', async () => {
+    await recordLLMMetrics({
+        model: 'test-model', success: true, sessionId: 'session-cache', executionTime: 1000,
+        conversationLog: [
+            { type: 'assistant', message: { id: 'm1', usage: { input_tokens: 100, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 100 } } },
+            { type: 'assistant', message: { id: 'm2', usage: { input_tokens: 50, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } },
+        ],
+    }, { repoOwner: 'integry', repoName: 'propr', number: 2683 }, { taskId: 'task-2683', correlationId: 'correlation-cache' });
+    assert.deepEqual(errors, []);
+    const execution = persisted[0].value as Record<string, unknown>;
+    assert.equal(execution.cache_usage_reported, true);
+    assert.equal(execution.cache_read_input_tokens, 100);
+    assert.equal(execution.input_tokens, 250);
+});
+
+test('a conversation whose cache breakdown covers only some prompts is persisted as unreported', async () => {
+    // The second prompt's cache usage is unknown, so storing the first prompt's
+    // count as the execution's measurement would read as a 10% hit rate over 1,000 tokens.
+    await recordLLMMetrics({
+        model: 'test-model', success: true, sessionId: 'session-partial', executionTime: 1000,
+        conversationLog: [
+            { type: 'assistant', message: { id: 'm1', usage: { input_tokens: 0, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 100 } } },
+            { type: 'assistant', message: { id: 'm2', usage: { input_tokens: 900, output_tokens: 5 } } },
+        ],
+    }, { repoOwner: 'integry', repoName: 'propr', number: 2683 }, { taskId: 'task-2683', correlationId: 'correlation-partial' });
+    assert.deepEqual(errors, []);
+    const execution = persisted[0].value as Record<string, unknown>;
+    assert.equal(execution.cache_usage_reported, false);
+    assert.equal(execution.cache_read_input_tokens, null);
+    assert.equal(execution.cache_creation_input_tokens, null);
+    assert.equal(execution.input_tokens, 1000);
+});
+
+test('a reported usage whose breakdown covers every prompt is trusted when the log lacks usage', async () => {
+    await recordLLMMetrics({
+        model: 'test-model', success: true, sessionId: 'session-reported', executionTime: 1000,
+        tokenUsage: { input_tokens: 40, output_tokens: 5, cache_read_input_tokens: 60 },
+        conversationLog: [{ type: 'assistant', message: { content: [{ type: 'text' }] } }],
+    }, { repoOwner: 'integry', repoName: 'propr', number: 2683 }, { taskId: 'task-2683', correlationId: 'correlation-reported' });
+    assert.deepEqual(errors, []);
+    const execution = persisted[0].value as Record<string, unknown>;
+    assert.equal(execution.cache_usage_reported, true);
+    assert.equal(execution.cache_read_input_tokens, 60);
+});
