@@ -337,6 +337,9 @@ function addTokenUsage(total: TokenUsage, usage: TokenUsage): TokenUsage {
     if (reported && cacheKnown(total) && cacheKnown(usage)) {
         sum.cache_read_input_tokens = (total.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
     } else {
+        // Cached tokens either side counted are still prompt tokens: they return to input_tokens
+        // so the goal's total survives, and only the breakdown is withheld.
+        sum.input_tokens = (sum.input_tokens ?? 0) + (total.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
         delete sum.cache_read_input_tokens;
     }
     return sum;

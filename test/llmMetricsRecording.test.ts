@@ -33,18 +33,21 @@ await mock.module('../packages/core/src/db/connection.js', { namedExports: {
 await mock.module('../packages/core/src/utils/logger.js', { defaultExport: {
     info() {}, debug() {}, warn() {}, error(error: unknown) { errors.push(error); },
 } });
+let pricing: Record<string, number> | null = null;
+const costInputs: Array<Record<string, number>> = [];
 await mock.module('../packages/core/src/services/pricingService.js', { namedExports: {
-    getModelPricing: async () => null,
+    getModelPricing: async () => pricing,
 } });
 await mock.module('../packages/core/src/config/modelAliases.js', { namedExports: {
     getOpenRouterId: (model: string) => model,
 } });
 await mock.module('../packages/core/src/utils/tokenCalculation.js', { namedExports: {
-    calculateCostWithCachePricing: () => 0,
+    calculateCostWithCachePricing: (_model: string, tokens: Record<string, number>) => { costInputs.push(tokens); return 0; },
 } });
 const { recordLLMMetrics } = await import('../packages/core/src/utils/llmMetrics.js');
+const { parseCodexStreamOutput } = await import('../packages/core/src/codex/codexHelpers.js');
 
-beforeEach(() => { persisted.length = 0; redisWrites.length = 0; errors.length = 0; queueConstructions = 0; });
+beforeEach(() => { persisted.length = 0; redisWrites.length = 0; errors.length = 0; queueConstructions = 0; pricing = null; costInputs.length = 0; });
 
 for (const executionType of [undefined, 'implementation', 'pr-review'] as const) {
     test(`recording ${executionType ?? 'default implementation'} persists the execution and conversation without creating a queue`, async () => {
@@ -108,4 +111,29 @@ test('a reported usage whose breakdown covers every prompt is trusted when the l
     const execution = persisted[0].value as Record<string, unknown>;
     assert.equal(execution.cache_usage_reported, true);
     assert.equal(execution.cache_read_input_tokens, 60);
+});
+
+test('a Codex execution whose cache count covers only its first prompt keeps every prompt token', async () => {
+    // 60 of the first prompt's 100 tokens were cached; the second prompt reported no
+    // cache count. All 1,000 prompt tokens are stored and priced, while the cache
+    // breakdown is withheld so the Analytics hit rate excludes the incomplete measurement.
+    const stdout = [
+        { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 60, output_tokens: 25 } },
+        { type: 'turn.completed', usage: { input_tokens: 900, output_tokens: 5 } },
+    ].map(event => JSON.stringify(event)).join('\n');
+    const codexOutput = parseCodexStreamOutput(stdout);
+    pricing = { prompt: 1, completion: 2 };
+    await recordLLMMetrics({
+        model: 'test-model', success: true, sessionId: 'session-mixed', executionTime: 1000,
+        tokenUsage: codexOutput.tokenUsage, conversationLog: codexOutput.conversationLog as never,
+    }, { repoOwner: 'integry', repoName: 'propr', number: 2683 }, { taskId: 'task-2683', correlationId: 'correlation-mixed' });
+    assert.deepEqual(errors, []);
+    const execution = persisted[0].value as Record<string, unknown>;
+    assert.equal(execution.input_tokens, 1000);
+    assert.equal(execution.output_tokens, 30);
+    assert.equal(execution.cache_usage_reported, false);
+    assert.equal(execution.cache_read_input_tokens, null);
+    assert.equal(costInputs.length, 1);
+    assert.equal(costInputs[0].totalInputWithCache, 1000);
+    assert.equal(costInputs[0].totalTokens, 1030);
 });

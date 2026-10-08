@@ -340,10 +340,16 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
     // The cache count is present exactly when Codex reported one for every
     // prompt, so a reported zero stays a measured zero, an omitted count stays
     // unknown, and a partially reported run is not passed off as measured.
+    // Cached tokens counted for only some prompts are still prompt tokens, so
+    // when the breakdown cannot be reported whole they return to input_tokens
+    // rather than vanishing from the run's total and its cost.
+    const cacheMeasured = state.cacheReported && !state.cacheIncomplete;
     const tokenUsage = hasTokenUsage ? {
-        input_tokens: state.tokenUsage.input_tokens,
+        input_tokens: cacheMeasured
+            ? state.tokenUsage.input_tokens
+            : state.tokenUsage.input_tokens + state.tokenUsage.cache_read_input_tokens,
         output_tokens: state.tokenUsage.output_tokens,
-        ...(state.cacheReported && !state.cacheIncomplete && {
+        ...(cacheMeasured && {
             cache_read_input_tokens: state.tokenUsage.cache_read_input_tokens
         }),
         ...(state.tokenUsage.reasoning_output_tokens > 0 && {

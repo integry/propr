@@ -396,6 +396,21 @@ describe('parseCodexStreamOutput', () => {
             assert.ok(!('cache_read_input_tokens' in result.tokenUsage!));
         });
 
+        test('returns a partially counted cached subtotal to input_tokens instead of dropping it', () => {
+            // The first prompt's 60 cached tokens are prompt tokens the run
+            // consumed; withholding the breakdown must not shrink the total.
+            const events = [
+                { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 60, output_tokens: 25 } },
+                { type: 'turn.completed', usage: { input_tokens: 900, output_tokens: 5 } }
+            ];
+            const stdout = events.map(e => JSON.stringify(e)).join('\n');
+
+            const result = parseCodexStreamOutput(stdout);
+
+            assert.deepStrictEqual(result.tokenUsage, { input_tokens: 1000, output_tokens: 30 });
+            assert.ok(!('cache_read_input_tokens' in result.tokenUsage!));
+        });
+
         test('keeps the cache count when the only event without cached_input_tokens carries no prompt', () => {
             const events = [
                 { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 60, output_tokens: 25 } },

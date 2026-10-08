@@ -418,6 +418,12 @@ describe('Antigravity goal accounting and capability', () => {
             { input_tokens: 100, output_tokens: 5, cache_read_tokens: 0 },
             { input_tokens: 900, output_tokens: 3 },
         ]), { input_tokens: 1000, output_tokens: 8, reasoning_output_tokens: 0 });
+        // The cached tokens the first step counted are still prompt tokens, so they return to
+        // input_tokens rather than vanishing with the withheld breakdown.
+        assert.deepEqual(sumAntigravityStepUsage([
+            { input_tokens: 100, output_tokens: 5, cache_read_tokens: 60 },
+            { input_tokens: 900, output_tokens: 3 },
+        ]), { input_tokens: 1060, output_tokens: 8, reasoning_output_tokens: 0 });
         // A step with no prompt has nothing to break down and does not spoil the measurement.
         assert.deepEqual(sumAntigravityStepUsage([
             { input_tokens: 100, output_tokens: 5, cache_read_tokens: 60 },
@@ -443,6 +449,25 @@ describe('Antigravity goal accounting and capability', () => {
             segment({ input_tokens: 100, output_tokens: 5 }),
             segment({ input_tokens: 50, output_tokens: 3 }),
         ]), { input_tokens: 150, output_tokens: 8, reasoning_output_tokens: 0 });
+    });
+
+    test('a goal that withholds a partial cache breakdown keeps the cached tokens in its prompt total', () => {
+        const segment = (tokenUsage: Record<string, number>) => ({ tokenUsage });
+        // Whichever segment omitted the count, the 60 cached tokens are prompt tokens the goal consumed.
+        assert.deepEqual(sumAntigravitySegmentUsage([
+            segment({ input_tokens: 40, output_tokens: 5, cache_read_input_tokens: 60 }),
+            segment({ input_tokens: 900, output_tokens: 3 }),
+        ]), { input_tokens: 1000, output_tokens: 8, reasoning_output_tokens: 0 });
+        assert.deepEqual(sumAntigravitySegmentUsage([
+            segment({ input_tokens: 900, output_tokens: 3 }),
+            segment({ input_tokens: 40, output_tokens: 5, cache_read_input_tokens: 60 }),
+        ]), { input_tokens: 1000, output_tokens: 8, reasoning_output_tokens: 0 });
+        // A measured segment after the breakdown is already withheld folds its count the same way.
+        assert.deepEqual(sumAntigravitySegmentUsage([
+            segment({ input_tokens: 40, output_tokens: 5, cache_read_input_tokens: 60 }),
+            segment({ input_tokens: 900, output_tokens: 3 }),
+            segment({ input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 30 }),
+        ]), { input_tokens: 1040, output_tokens: 9, reasoning_output_tokens: 0 });
     });
 
     test('a recorded goal stream splits into its invocations at each init envelope', () => {
