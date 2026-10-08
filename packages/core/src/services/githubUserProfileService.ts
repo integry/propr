@@ -277,10 +277,9 @@ export async function resolveGitHubUserProfileByLogin(
 
     let cached: GitHubUserProfileRow | undefined;
     try {
-        // A renamed account can leave an older row holding the same login; the
-        // most recently refreshed row is the current holder.
-        cached = await db<GitHubUserProfileRow>(TABLE).where('login', wanted).orderBy('refreshed_at', 'desc').first()
-            ?? await db<GitHubUserProfileRow>(TABLE).whereRaw('LOWER(login) = ?', [wanted.toLowerCase()]).orderBy('refreshed_at', 'desc').first();
+        // A renamed account can leave an older row holding the same login, in any
+        // case; the most recently refreshed of all matching rows is the current holder.
+        cached = await db<GitHubUserProfileRow>(TABLE).whereRaw('LOWER(login) = ?', [wanted.toLowerCase()]).orderBy('refreshed_at', 'desc').first();
     } catch (error) {
         logger.warn({ error: (error as Error).message, login: wanted }, 'Failed to read cached GitHub user profile by login');
     }

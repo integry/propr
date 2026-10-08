@@ -75,7 +75,14 @@ export function parseTaskAssignmentFilter(value: unknown): TaskAssignmentFilterP
   return { ok: true, filter: { mode: 'users', logins } };
 }
 
-/** Serializes a filter back to its `assignee` query value. */
+/**
+ * Serializes a filter back to its `assignee` query value. A lone login that
+ * reads as a keyword (a user named `all` or `me`) keeps an `@` prefix so it
+ * parses back as that user rather than the keyword.
+ */
 export function formatTaskAssignmentFilter(filter: TaskAssignmentFilter): string {
-  return filter.mode === 'users' ? filter.logins.join(',') : filter.mode;
+  if (filter.mode !== 'users') return filter.mode;
+  const value = filter.logins.join(',');
+  const keyword = value.toLowerCase();
+  return keyword === 'all' || keyword === 'me' ? `@${value}` : value;
 }

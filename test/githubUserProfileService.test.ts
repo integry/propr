@@ -179,6 +179,18 @@ describe('githubUserProfileService', () => {
         const stale = await resolveGitHubUserProfileByLogin('hubot', { github: failing.client, now: () => new Date(T0.getTime() + 48 * HOUR) });
         assert.equal(stale?.id, '50', 'a GitHub failure falls back to the stale cached entry');
     });
+
+    test('resolveGitHubUserProfileByLogin picks the newest holder across case variants', async () => {
+        await rememberGitHubUserProfiles([{ id: 50, login: 'Hubot' }], T0);
+        await rememberGitHubUserProfiles([{ id: 60, login: 'hubot' }], new Date(T0.getTime() + HOUR));
+        const github = fakeGitHub({});
+        const now = () => new Date(T0.getTime() + 2 * HOUR);
+
+        for (const login of ['Hubot', 'hubot', 'HUBOT']) {
+            assert.equal((await resolveGitHubUserProfileByLogin(login, { github: github.client, now }))?.id, '60', login);
+        }
+        assert.equal(github.calls.length, 0, 'the fresh newest holder is served from the cache');
+    });
 });
 
 describe('parseTaskAssignmentFilter', () => {
@@ -195,6 +207,19 @@ describe('parseTaskAssignmentFilter', () => {
         assert.ok(parsed.ok);
         assert.equal(formatTaskAssignmentFilter(parsed.filter), 'octocat,Hubot,propr-dev[bot]');
         assert.deepEqual(parseTaskAssignmentFilter(' , '), { ok: true, filter: { mode: 'all' } });
+    });
+
+    test('round-trips explicit users named like keywords', () => {
+        for (const value of ['@all', '@me', '@ALL', '@Me', 'all ,', 'ME,']) {
+            const parsed = parseTaskAssignmentFilter(value);
+            assert.ok(parsed.ok && parsed.filter.mode === 'users', value);
+            const formatted = formatTaskAssignmentFilter(parsed.filter);
+            assert.deepEqual(parseTaskAssignmentFilter(formatted), parsed, `${value} -> ${formatted}`);
+        }
+        assert.equal(formatTaskAssignmentFilter({ mode: 'users', logins: ['Me'] }), '@Me');
+        assert.equal(formatTaskAssignmentFilter({ mode: 'users', logins: ['all', 'me'] }), 'all,me');
+        assert.equal(formatTaskAssignmentFilter({ mode: 'all' }), 'all');
+        assert.equal(formatTaskAssignmentFilter({ mode: 'me' }), 'me');
     });
 
     test('rejects invalid logins, non-strings and over-long lists', () => {
