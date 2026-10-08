@@ -141,3 +141,53 @@ test('replaying an older submission leaves a reopened or relaunched to-do alone'
     assert.equal(relaunched.linked_issue_number, 43);
   } finally { await db.destroy(); }
 });
+
+test('recovering an older submission\'s failed to-do write keeps a newer launch\'s link', async () => {
+  configureDemoMode(false);
+  const db = await fixture();
+  await db('repo_todos').insert({ todo_id: 'todo-1', user_id: 'alice', repository: 'owner/repo', content: 'todo-1', order_index: 0, is_completed: false, linked_draft_id: null });
+  let issues = 41;
+  let failTodos = true;
+  let completions = 0;
+  const routes = createTaskSubmissionRoutes({ db, services: {
+    authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true }),
+    routing: async () => ({ agentAlias: 'agent', model: 'model', routingLabel: 'llm-agent-model' }),
+    processingLabels: async () => ['AI'],
+    enqueue: async () => {},
+    getOctokit: async () => ({ request: async (route: string) => {
+      if (route === 'POST /repos/{owner}/{repo}/issues') { issues++; return { data: { number: issues, html_url: `https://github.com/owner/repo/issues/${issues}` } }; }
+      return { data: [] };
+    } }) as never,
+    completeTodos: async (params, database) => {
+      completions++;
+      if (failTodos) throw new Error('repo_todos is read-only');
+      return completeTodosForIssue(params, database);
+    },
+  } });
+  const todo = () => db('repo_todos').where({ todo_id: 'todo-1' }).first();
+  const launch = { repository: 'owner/repo', instruction: 'Fix it', todoIds: ['todo-1'] };
+  try {
+    const a = response();
+    await routes.submit(request(launch, 'launch-a'), a.res);
+    assert.equal(a.state.body.issueNumber, 42);
+    assert.equal(Boolean((await todo()).is_completed), false);
+
+    failTodos = false;
+    const b = response();
+    await routes.submit(request({ ...launch, instruction: 'Fix it properly' }, 'launch-b'), b.res);
+    assert.equal(b.state.body.issueNumber, 43);
+    assert.equal((await todo()).linked_issue_number, 43);
+
+    const recovered = response();
+    await routes.retry(request({}, 'launch-a'), recovered.res);
+    assert.equal(recovered.state.body.issueNumber, 42);
+    assert.equal(completions, 3);
+    const kept = await todo();
+    assert.equal(Boolean(kept.is_completed), true);
+    assert.equal(kept.linked_issue_number, 43);
+    assert.equal(Boolean((await db('task_submissions').where({ submission_key: 'launch-a' }).first()).todos_linked), true);
+
+    await routes.retry(request({}, 'launch-a'), response().res);
+    assert.equal(completions, 3);
+  } finally { await db.destroy(); }
+});

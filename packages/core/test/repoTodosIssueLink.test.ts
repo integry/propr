@@ -61,6 +61,22 @@ test('repeating the completion is idempotent and a relaunch retargets the to-do'
   } finally { await db.destroy(); }
 });
 
+test('an older issue never replaces the link a newer launch recorded', async () => {
+  const db = await fixture();
+  try {
+    const params = { todoIds: ['mine'], userId: 'alice', repository: 'owner/repo' };
+    await completeTodosForIssue({ ...params, issueNumber: 43, taskId: 'task-b' }, db);
+    await db('repo_todos').where({ todo_id: 'mine' }).update({ is_completed: false });
+    assert.equal(await completeTodosForIssue({ ...params, issueNumber: 42, taskId: 'task-a' }, db), 0);
+    const kept = await row(db, 'mine');
+    assert.equal(Boolean(kept.is_completed), false);
+    assert.equal(kept.linked_issue_number, 43);
+    assert.equal(kept.linked_task_id, 'task-b');
+    assert.equal(await completeTodosForIssue({ ...params, issueNumber: 44 }, db), 1);
+    assert.equal((await row(db, 'mine')).linked_issue_number, 44);
+  } finally { await db.destroy(); }
+});
+
 test('the issue link migration rolls back cleanly', async () => {
   const db = await fixture();
   try {

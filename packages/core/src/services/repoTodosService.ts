@@ -212,7 +212,9 @@ export async function completeTodosForDraft(draftId: string): Promise<number> {
  * Mark the to-dos a task was launched from as completed and record the issue
  * they produced. Scoped to the submitting user and the issue's repository so
  * stale or forged ids match nothing. Re-running with the same issue is a no-op
- * in effect, which keeps submission retries idempotent.
+ * in effect, which keeps submission retries idempotent. A to-do already linked
+ * to a later issue in the same repository (issue numbers only grow) belongs to
+ * a newer launch, so a delayed older submission leaves it alone.
  */
 export async function completeTodosForIssue(params: CompleteTodosForIssueParams, database: Knex = db): Promise<number> {
   const { todoIds, userId, repository, issueNumber, taskId = null } = params;
@@ -220,6 +222,8 @@ export async function completeTodosForIssue(params: CompleteTodosForIssueParams,
   try {
     const updated = await database<RepoTodoRecord>('repo_todos').whereIn('todo_id', todoIds).andWhere('user_id', userId)
       .andWhereRaw('lower(repository) = ?', [repository.toLowerCase()])
+      .andWhere(fresh => fresh.whereNull('linked_issue_number').orWhere('linked_issue_number', '<=', issueNumber)
+        .orWhereRaw('lower(linked_issue_repository) <> ?', [repository.toLowerCase()]))
       .update({ is_completed: true, linked_issue_repository: repository, linked_issue_number: issueNumber, linked_task_id: taskId, updated_at: database.fn.now() });
     logger.info({ todoIds, repository, issueNumber, updated }, 'Completed todos linked to launched issue');
     return updated;
