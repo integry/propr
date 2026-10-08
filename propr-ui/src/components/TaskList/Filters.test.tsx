@@ -32,7 +32,7 @@ describe('Filters', () => {
     fireEvent.click(screen.getByRole('button', { name: /propr/ }));
     const rows = screen.getAllByTestId('repo-item');
     expect(rows.map(row => row.getAttribute('data-repository-name'))).toEqual(['all', 'integry/propr', 'integry/desktop']);
-    expect(rows[0].closest('.absolute')).toHaveClass('min-w-[20rem]');
+    expect(rows[0].closest('.absolute')).toHaveClass('min-w-[min(20rem,calc(100vw-1rem))]');
   });
 
   it('leaves the filter dropdowns to do the filtering, with no separate filter icon', () => {

@@ -46,7 +46,7 @@ interface RepositorySelectorProps {
   appearance?: 'field' | 'title';
   className?: string;
   labelLayout?: 'inline' | 'stacked';
-  /** Layout of the open list's rows; defaults to `labelLayout`. A stacked list opens at least 20rem wide so long names fit. */
+  /** Layout of the open list's rows; defaults to `labelLayout`. A stacked list opens at least 20rem wide so long names fit, narrowing to fit the viewport on smaller screens. */
   menuLabelLayout?: 'inline' | 'stacked';
   /** Drops the selected repository's count from the trigger below `sm`; the open list still shows every count. */
   hideCountOnMobile?: boolean;
@@ -348,7 +348,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
     ? 'left-0 w-72'
     : menuLabelLayout === 'stacked'
       // Filters sit at the right of their toolbar, so a menu wider than its trigger grows leftward.
-      ? 'right-0 w-full min-w-[20rem] max-w-[calc(100vw-1rem)]'
+      ? 'right-0 w-full min-w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)]'
       : size === 'compact' ? 'right-0 w-72' : 'left-0 right-0';
 
   const dropdownContent = isOpen && (

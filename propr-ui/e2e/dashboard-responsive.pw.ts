@@ -568,4 +568,18 @@ for (const width of NARROW_WIDTHS) {
     expect(Math.round(geometry.firstPane)).toBe(Math.round(geometry.summaryBottom));
     await capture(page, `dashboard-responsive-${width}-scope`);
   });
+
+  test(`the open repository menu stays inside the viewport at ${width}px`, async ({ page }) => {
+    await openDashboard(page, width);
+    await page.getByTestId('dashboard-scope-bar').getByRole('button').click();
+
+    // The stacked menu asks for 20rem, but on a phone that is wider than the
+    // room left of the trigger's right edge, so it must narrow rather than
+    // run off the left of the screen and cut into the search field.
+    const menu = page.getByTestId('repo-item').first().locator('xpath=ancestor::div[contains(@class, "absolute")][1]');
+    const bounds = await menu.evaluate(node => node.getBoundingClientRect().toJSON() as DOMRect);
+    expect(bounds.left).toBeGreaterThanOrEqual(0);
+    expect(bounds.right).toBeLessThanOrEqual(width);
+    await expect(menu.getByRole('textbox')).toBeInViewport({ ratio: 1 });
+  });
 }
