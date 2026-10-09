@@ -42,6 +42,28 @@ export interface AssignableUsersResponse {
   truncated: boolean;
 }
 
+/**
+ * GitHub applied part of a `setTaskAssignees` update and rejected the rest. The
+ * assignment did change, so the error carries the confirmed set alongside the
+ * rejected users for the caller to reconcile with.
+ */
+export class TaskAssigneesRejectedError extends Error {
+  readonly status = 422;
+  readonly code = 'GITHUB_REJECTED';
+
+  constructor(
+    message: string,
+    readonly subject: TaskAssignmentSubject,
+    /** The assignees GitHub confirmed after applying what it accepted. */
+    readonly assignees: AttributedUser[],
+    /** Requested users GitHub did not assign. */
+    readonly rejected: AttributedUser[],
+  ) {
+    super(message);
+    this.name = 'TaskAssigneesRejectedError';
+  }
+}
+
 const taskAssignmentUrl = (taskId: string, path: string): string =>
   `${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/${path}`;
 
@@ -62,7 +84,16 @@ export const setTaskAssignees = async (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ logins, mode }),
   });
-  await handleApiResponse(response);
+  try {
+    await handleApiResponse(response);
+  } catch (error) {
+    // Demo-mode, session and other typed errors keep their own class.
+    if (response.status !== 422 || !(error instanceof Error) || error.constructor !== Error) throw error;
+    const body = await response.clone().json().catch(() => null) as Partial<SetTaskAssigneesResponse> & { code?: unknown } | null;
+    // Only a partial result has a confirmed set; an outright GitHub rejection stays an ordinary error.
+    if (body?.code !== 'GITHUB_REJECTED' || !body.subject || !Array.isArray(body.assignees) || !Array.isArray(body.rejected)) throw error;
+    throw new TaskAssigneesRejectedError(error.message, body.subject, body.assignees, body.rejected);
+  }
   return response.json();
 };
 

@@ -12,7 +12,7 @@ vi.mock('../api/apiClient', () => ({
   ...apiClientMocks,
 }));
 
-import { getAssignableUsers, getTaskAssignees, setTaskAssignees } from '../api/taskAssignment';
+import { getAssignableUsers, getTaskAssignees, setTaskAssignees, TaskAssigneesRejectedError } from '../api/taskAssignment';
 import {
   ASSIGNEE_STACK_LIMIT,
   AssigneeChip,
@@ -198,5 +198,67 @@ describe('task assignment client', () => {
   it('surfaces API errors from handleApiResponse', async () => {
     apiClientMocks.handleApiResponse.mockRejectedValueOnce(new Error('forbidden'));
     await expect(setTaskAssignees(taskId, [])).rejects.toThrow('forbidden');
+  });
+
+  describe('when GitHub rejects some of the requested users', () => {
+    const subject = { owner: 'integry', repo: 'propr', number: 7, kind: 'issue' as const };
+    const message = 'GitHub did not assign hubot; they may not have access to integry/propr.';
+
+    beforeEach(async () => {
+      const actual = await vi.importActual<typeof import('../api/apiClient')>('../api/apiClient');
+      apiClientMocks.handleApiResponse.mockImplementation(actual.handleApiResponse);
+    });
+
+    const respond = (status: number, body: Record<string, unknown>) => {
+      apiClientMocks.apiFetch.mockResolvedValueOnce(new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    };
+
+    it('keeps the confirmed assignment and the rejected users from the 422 body', async () => {
+      respond(422, {
+        error: message,
+        code: 'GITHUB_REJECTED',
+        message,
+        subject,
+        assignees: [octocat],
+        rejected: [user('hubot')],
+      });
+
+      const error = await setTaskAssignees(taskId, ['octocat', 'hubot']).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(TaskAssigneesRejectedError);
+      expect(error).toMatchObject({
+        message,
+        status: 422,
+        code: 'GITHUB_REJECTED',
+        subject,
+        assignees: [octocat],
+        rejected: [user('hubot')],
+      });
+    });
+
+    it('keeps an ordinary error when GitHub rejected the whole request', async () => {
+      respond(422, { error: 'Validation Failed', code: 'GITHUB_REJECTED', message: 'Validation Failed' });
+
+      const error = await setTaskAssignees(taskId, ['hubot']).catch((caught: unknown) => caught);
+      expect(error).not.toBeInstanceOf(TaskAssigneesRejectedError);
+      expect(error).toEqual(new Error('Validation Failed'));
+    });
+
+    it('keeps an ordinary error for other failures', async () => {
+      respond(403, {
+        error: 'Write access required',
+        code: 'REPOSITORY_WRITE_ACCESS_REQUIRED',
+        message: 'Write access required',
+        subject,
+        assignees: [octocat],
+        rejected: [user('hubot')],
+      });
+
+      const error = await setTaskAssignees(taskId, ['hubot']).catch((caught: unknown) => caught);
+      expect(error).not.toBeInstanceOf(TaskAssigneesRejectedError);
+      expect(error).toEqual(new Error('Write access required'));
+    });
   });
 });
