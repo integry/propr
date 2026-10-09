@@ -113,6 +113,8 @@ export interface GetTasksOptions {
   groupBy?: 'task';
   /** With `groupBy: 'task'`: only the task this run belongs to, with all its runs, whatever the filters. */
   task?: string;
+  /** `all`, `me`, `unassigned` or comma-separated GitHub logins; see `formatTaskAssignmentFilter`. */
+  assignee?: string;
 }
 
 export interface MonitoredRepo {
