@@ -468,7 +468,13 @@ export async function verifyPullRequestWrites(
     // An identifier the review does not offer is named, never dropped.
     const unknown = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F99'], suggestionIds: ['S9'] });
     assert.equal(unknown.state, 'failed');
-    assert.equal(unknown.result.error.code, 'STALE_FINDINGS');
+    assert.equal(unknown.result.error.code, 'FINDINGS_UNAVAILABLE');
+    assert.equal(unknown.result.error.stage, 'precondition');
+    assert.deepEqual(unknown.result.error.details.unavailable, [
+      { id: 'F99', kind: 'finding', reason: 'not_in_review' },
+      { id: 'S9', kind: 'suggestion', reason: 'not_in_review' },
+    ]);
+    assert.deepEqual(unknown.result.error.details.offeredFindingIds, ['F20', 'F21']);
     assert.ok(unknown.result.error.message.includes('F99'), unknown.result.error.message);
     assert.ok(unknown.result.error.message.includes('S9'), unknown.result.error.message);
     assert.ok(unknown.result.error.message.includes('F20, F21'), unknown.result.error.message);
@@ -477,8 +483,18 @@ export async function verifyPullRequestWrites(
     // A suggestion an earlier run already implemented is no longer selectable.
     redis.consume(`${reviewCommentId}:S:S31`);
     const consumed = await mutate('fix_review_findings', { ...pull, reviewCommentId, suggestionIds: ['S31'] });
-    assert.equal(consumed.result.error.code, 'STALE_FINDINGS');
+    assert.equal(consumed.result.error.code, 'FINDINGS_UNAVAILABLE');
+    assert.deepEqual(consumed.result.error.details.unavailable, [{ id: 'S31', kind: 'suggestion', reason: 'consumed' }]);
     assert.ok(consumed.result.error.message.includes('S31'), consumed.result.error.message);
+
+    // A review older than the window /fix reads back offers nothing, and says why.
+    const expiredCommentId = 962;
+    comments.push({ id: expiredCommentId, repository: 'acme/repo', pullRequest: 42, author: 'propr-dev[bot]',
+      createdAt: new Date(Date.now() - 8 * 24 * 3600 * 1000).toISOString(), body: fixtureReviewBody(head) });
+    const expired = await mutate('fix_review_findings', { ...pull, reviewCommentId: expiredCommentId, findingIds: ['F20'] });
+    assert.equal(expired.result.error.code, 'FINDINGS_UNAVAILABLE');
+    assert.deepEqual(expired.result.error.details.unavailable, [{ id: 'F20', kind: 'finding', reason: 'expired' }]);
+    assert.ok(expired.result.error.message.includes('seven days'), expired.result.error.message);
 
     // A namespace mismatch is refused by the schema before anything is posted.
     await assert.rejects(mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['S32'] }));
@@ -492,7 +508,8 @@ export async function verifyPullRequestWrites(
     const pinnedOlder = await mutate('fix_review_findings', { ...pull, expectedHead: 'b'.repeat(40), reviewCommentId: staleCommentId, findingIds: ['F20'] });
     assert.equal(pinnedOlder.result.error.code, 'STALE_HEAD');
     const notAReview = await mutate('fix_review_findings', { ...pull, reviewCommentId: plainCommentId, findingIds: ['F20'] });
-    assert.equal(notAReview.result.error.code, 'STALE_FINDINGS');
+    assert.equal(notAReview.result.error.code, 'NOT_A_REVIEW');
+    assert.equal(notAReview.result.error.details.reviewCommentId, plainCommentId);
 
     assert.equal(posted(), before, 'no rejected selection may reach GitHub');
   });

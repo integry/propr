@@ -4,7 +4,9 @@
  * Makes a review that is deferred for CI visible on the PR (one comment per
  * deferral, not per poll) and bounds the wait: once blocking checks have held
  * the loop back for longer than the configured timeout, the loop stops with
- * "CI did not settle" instead of staying silently deferred forever.
+ * "CI did not settle" instead of staying silently deferred forever. The
+ * waiting comment is edited in place with the wait's outcome: the stop
+ * comment on a timeout, or the review's own comment once checks settle.
  */
 
 import type { Logger } from 'pino';
@@ -23,7 +25,8 @@ import {
     type UltrafixReadinessResult,
 } from './ultrafixOrchestrationService.js';
 import type { ContinuationResult, UltrafixContinuationParams } from './ultrafixLoopContinuation.js';
-import { postPrComment } from './ultrafixLoopContinuationHelpers.js';
+import { postPrComment, updatePrComment } from './ultrafixLoopContinuationHelpers.js';
+import { stashUltrafixCiWaitNotice } from './ultrafixCiWaitNotice.js';
 
 const CI_WAIT_KEY_PREFIX = 'ultrafix:ci-wait';
 const CI_WAIT_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -36,6 +39,8 @@ export interface UltrafixCiWaitRecord {
     since: string;
     /** ISO timestamp of the deferral comment, once posted. */
     noticePostedAt?: string;
+    /** GitHub id of the deferral comment, so its outcome can replace it in place. */
+    noticeCommentId?: number;
     blockingFailed: string[];
     blockingPending: string[];
     lastScore?: number | null;
@@ -71,7 +76,8 @@ export interface UltrafixCiWaitDeps {
     recoverFailures?: typeof recoverCiFailureFollowups;
     now: () => number;
     loadTimeoutMs: () => Promise<number>;
-    postComment: (options: { owner: string; repo: string; pullRequestNumber: number; body: string; correlatedLogger: Logger }) => Promise<void>;
+    /** Posts the deferral comment; resolves to its id when known. */
+    postComment: (options: { owner: string; repo: string; pullRequestNumber: number; body: string; correlatedLogger: Logger }) => Promise<number | null | void>;
     stopLoop: (input: UltrafixCiTimeoutStopInput) => Promise<boolean>;
 }
 
@@ -85,6 +91,8 @@ export interface UltrafixCiTimeoutStopInput {
     lastScore?: number | null;
     waitedMs: number;
     blockingChecks: string[];
+    /** The waiting comment to rewrite with the stop comment instead of posting a new one. */
+    noticeCommentId?: number;
     correlatedLogger: Logger;
 }
 
@@ -104,6 +112,18 @@ export async function loadUltrafixCiWait(redis: Redis, owner: string, repo: stri
 
 export async function clearUltrafixCiWait(redis: Redis, owner: string, repo: string, pr: number): Promise<void> {
     await redis.del(getUltrafixCiWaitKey(owner, repo, pr));
+}
+
+/**
+ * Forget a wait whose blocking checks have settled, handing its waiting
+ * comment to the review that now runs so that review replaces it in place.
+ */
+export async function settleUltrafixCiWait(redis: Redis, owner: string, repo: string, pr: number): Promise<void> {
+    const record = await loadUltrafixCiWait(redis, owner, repo, pr);
+    if (record?.noticeCommentId !== undefined) {
+        await stashUltrafixCiWaitNotice(redis, { owner, repo, pr }, { commentId: record.noticeCommentId, headSha: record.headSha });
+    }
+    await clearUltrafixCiWait(redis, owner, repo, pr);
 }
 
 /** Human-readable duration for PR comments, e.g. "2 hours" or "90 minutes". */
@@ -164,13 +184,13 @@ export async function stopUltrafixLoopForCiTimeout(input: UltrafixCiTimeoutStopI
         });
         if (!completed) return false;
         await clearDeferredContinuationIfCurrent(redis, identity, workEpoch);
-        await postPrComment({
-            owner,
-            repo,
-            pullRequestNumber: pr,
-            body: buildCiTimeoutComment({ ...input, goal: input.goal ?? completed.goal }),
-            correlatedLogger,
-        });
+        const body = buildCiTimeoutComment({ ...input, goal: input.goal ?? completed.goal });
+        // Turn the waiting comment into the stop comment rather than leave it looking like a live wait.
+        const replaced = input.noticeCommentId !== undefined
+            && await updatePrComment({ owner, repo, pullRequestNumber: pr, commentId: input.noticeCommentId, body, correlatedLogger });
+        if (!replaced) {
+            await postPrComment({ owner, repo, pullRequestNumber: pr, body, correlatedLogger });
+        }
         return true;
     });
     if (stopped) {
@@ -224,6 +244,7 @@ export async function handleUltrafixCiDeferral(
         headSha: ci.headSha,
         since: sameDeferral ? existing.since : new Date(nowMs).toISOString(),
         ...(sameDeferral && existing.noticePostedAt ? { noticePostedAt: existing.noticePostedAt } : {}),
+        ...(sameDeferral && existing.noticeCommentId !== undefined ? { noticeCommentId: existing.noticeCommentId } : {}),
         blockingFailed: ci.status.blockingFailed ?? [],
         blockingPending: ci.status.blockingPending ?? [],
         lastScore: input.lastScore !== undefined ? input.lastScore : (sameDeferral ? existing.lastScore : undefined),
@@ -246,19 +267,21 @@ export async function handleUltrafixCiDeferral(
             lastScore: record.lastScore,
             waitedMs,
             blockingChecks,
+            ...(record.noticeCommentId !== undefined ? { noticeCommentId: record.noticeCommentId } : {}),
             correlatedLogger,
         });
         return { stopped, waitedMs, blockingChecks };
     }
 
     if (!record.noticePostedAt) {
-        await deps.postComment({
+        const commentId = await deps.postComment({
             owner,
             repo,
             pullRequestNumber: pr,
             body: buildCiDeferralComment(record, timeoutMs),
             correlatedLogger,
         });
+        if (typeof commentId === 'number') record.noticeCommentId = commentId;
         record.noticePostedAt = new Date(nowMs).toISOString();
         correlatedLogger.info(
             { pullRequestNumber: pr, headSha: ci.headSha, blockingChecks },

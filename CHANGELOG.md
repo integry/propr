@@ -296,6 +296,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reuse the existing `github_user_whitelist` setting with revision checks, are
   skipped when the whitelist is empty or would become empty, and can be
   declined.
+- **Ultrafix CI wait comment**: the "Ultrafix is waiting for CI before the next
+  `/review`" comment is now edited in place with the wait's outcome instead of
+  staying on the PR next to it. The review that runs once blocking checks pass
+  turns it into its "AI Code Review Complete" comment, and a CI wait timeout
+  turns it into the "CI did not settle" stop comment.
 - **`GET /api/stats/dashboard`** reports its daily series as `dailyTasks`
   (tasks created per UTC day, the series the Analytics activity chart plots)
   and no longer reports `dailyCompleted` (completions per day). The bundled
