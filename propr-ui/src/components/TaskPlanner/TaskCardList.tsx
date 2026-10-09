@@ -101,10 +101,14 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
 
   // Scroll only the specification container. scrollIntoView would also scroll every
   // ancestor (including overflow-hidden ones), shifting the tab bar out of place.
+  // Manual scrolling ignores CSS scroll-margin, so the step container's margin is applied here
+  // to land the step heading just below the top of the pane instead of flush against (or past) it.
   const scrollTaskIntoView = (card: Element | null | undefined) => {
     const container = listRef.current;
-    if (!container || !card) return;
-    const top = container.scrollTop + card.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    const step = card?.closest('[data-task-index]') ?? card;
+    if (!container || !step) return;
+    const scrollMargin = parseFloat(getComputedStyle(step).scrollMarginTop) || 0;
+    const top = Math.max(0, container.scrollTop + step.getBoundingClientRect().top - container.getBoundingClientRect().top - scrollMargin);
     clickScrollTargetRef.current = top;
     lockScrollSpy(1000);
     container.scrollTo({ top, behavior: 'smooth' });
@@ -226,7 +230,7 @@ export const TaskCardList: React.FC<TaskCardListProps> = ({
                       layout: { duration: 0.3 },
                       opacity: { duration: 0.2 },
                     }}
-                    className="relative"
+                    className="relative scroll-mt-6"
                   >
                     {/* Highlight pulse effect */}
                     {isHighlighted && (
