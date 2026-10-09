@@ -40,6 +40,11 @@ interface EpicProgressOctokit {
 
 export interface EpicMergeProgressDependencies {
     getOctokit?: () => Promise<EpicProgressOctokit>;
+    /**
+     * Confirms the caller still holds the epic's update lease; throws if not.
+     * Runs after the reads and before each comment write.
+     */
+    assertOwned?: () => Promise<void>;
 }
 
 export interface EpicMergeProgressResult {
@@ -168,7 +173,8 @@ async function listChildPullRequests(octokit: EpicProgressOctokit, owner: string
  * Keeps a single "x of y PRs merged" tracking comment on the epic PR up to
  * date, and posts a one-time confirmation comment once every child PR has
  * merged. Both comments are located by their hidden markers, so webhook
- * redeliveries edit in place instead of posting duplicates.
+ * redeliveries edit in place instead of posting duplicates. Ownership is
+ * re-checked before every write, so a stale snapshot is never written.
  */
 export async function updateEpicMergeProgress(
     request: EpicMergeProgressRequest,
@@ -179,6 +185,7 @@ export async function updateEpicMergeProgress(
     const getOctokit = dependencies.getOctokit
         ?? (async () => await getAuthenticatedOctokit() as unknown as EpicProgressOctokit);
     const octokit = await getOctokit();
+    const assertOwned = dependencies.assertOwned ?? (async () => {});
     const { owner, repo, epicPrNumber } = request;
 
     const children = await listChildPullRequests(octokit, owner, repo, request.epicBranch);
@@ -189,11 +196,13 @@ export async function updateEpicMergeProgress(
     const existing = comments.find(comment => comment.body.includes(EPIC_PROGRESS_MARKER));
     let trackingComment: EpicMergeProgressResult['trackingComment'];
     if (!existing) {
+        await assertOwned();
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner, repo, issue_number: epicPrNumber, body,
         });
         trackingComment = 'created';
     } else if (existing.body !== body) {
+        await assertOwned();
         await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
             owner, repo, comment_id: existing.id, body,
         });
@@ -204,6 +213,7 @@ export async function updateEpicMergeProgress(
 
     let completionPosted = false;
     if (isEpicMergeComplete(progress) && !comments.some(comment => comment.body.includes(EPIC_COMPLETE_MARKER))) {
+        await assertOwned();
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner, repo, issue_number: epicPrNumber, body: buildEpicCompleteComment(progress, request.planName),
         });

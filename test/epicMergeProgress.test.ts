@@ -221,6 +221,36 @@ describe('updateEpicMergeProgress', () => {
         assert.ok(!octokit.comments.some(c => c.body.includes(EPIC_COMPLETE_MARKER)));
     });
 
+    test('writes nothing once ownership of the epic is lost after the reads', async () => {
+        const octokit = createOctokit([{ number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z' }]);
+        let checks = 0;
+        await assert.rejects(updateEpicMergeProgress(baseRequest, 'test', {
+            getOctokit: async () => octokit,
+            assertOwned: async () => {
+                checks++;
+                // Both reads have completed before ownership is checked.
+                assert.strictEqual(octokit.calls.length, 2);
+                throw new Error('lease lost');
+            },
+        }), /lease lost/);
+        assert.strictEqual(checks, 1);
+        assert.strictEqual(octokit.comments.length, 0);
+    });
+
+    test('checks ownership before each comment write', async () => {
+        const octokit = createOctokit([{ number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z' }]);
+        let checks = 0;
+        await assert.rejects(updateEpicMergeProgress(baseRequest, 'test', {
+            getOctokit: async () => octokit,
+            assertOwned: async () => {
+                if (++checks === 2) throw new Error('lease lost');
+            },
+        }), /lease lost/);
+        // The tracking comment was written; the completion notice was not.
+        assert.strictEqual(octokit.comments.length, 1);
+        assert.ok(octokit.comments[0].body.includes(EPIC_PROGRESS_MARKER));
+    });
+
     test('ignores marker comments not authored by the bot', async () => {
         const octokit = createOctokit(
             [{ number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z' }, { number: 202, state: 'open', merged_at: null }],

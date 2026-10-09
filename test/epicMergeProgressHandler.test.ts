@@ -16,6 +16,8 @@ const planIssueRows = [
 ];
 // Number of plan-issue list reads that fail before the database recovers.
 let failingPlanListReads = 0;
+// Number of epic PR lookups that fail before GitHub recovers.
+let failingEpicLookups = 0;
 
 function fakeQuery(table: string) {
     let filter: Record<string, unknown> = {};
@@ -43,14 +45,20 @@ await mock.module('../packages/core/src/db/connection.js', {
 await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
     ...actualGithubAuth,
     getAuthenticatedOctokit: async () => ({ request: async (route: string) => {
-        if (route === 'GET /repos/{owner}/{repo}/pulls') return { data: [{ number: 500, body: '' }] };
+        if (route === 'GET /repos/{owner}/{repo}/pulls') {
+            if (failingEpicLookups > 0) {
+                failingEpicLookups--;
+                throw new Error('GitHub unavailable');
+            }
+            return { data: [{ number: 500, body: '' }] };
+        }
         if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') return { data: { title: 'Issue' } };
         if (route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}') return { data: {} };
         throw new Error(`Unexpected request ${route}`);
     } }),
 } });
 
-/** In-memory Redis covering the retry hash, the lease, and their compare-and-delete scripts. */
+/** In-memory Redis covering the retry hash, the lease, and their compare-and-delete/extend scripts. */
 function fakeRedis() {
     const hash = new Map<string, string>();
     const keys = new Map<string, string>();
@@ -71,6 +79,7 @@ function fakeRedis() {
                 return Number(hash.delete(args[0]));
             }
             if (keys.get(key) !== args[0]) return 0;
+            if (script.includes('PEXPIRE')) return 1;
             return Number(keys.delete(key));
         },
     };
@@ -100,6 +109,7 @@ const logger = (await import('../packages/core/src/utils/logger.js')).default;
 
 beforeEach(() => {
     failingPlanListReads = 0;
+    failingEpicLookups = 0;
     failingProgressUpdates = 0;
     completionNotices = 0;
     progressRequests.length = 0;
@@ -184,4 +194,37 @@ test('retries a failed plan read and counts the planned issues once it recovers'
     assert.equal(progressRequests.length, 1);
     assert.equal((progressRequests[0].planIssues as unknown[]).length, 3);
     assert.equal(progressRequests[0].planName, 'Big Plan');
+});
+
+test('recovers the final merge when the epic PR lookup fails', async () => {
+    failingEpicLookups = 1;
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    assert.equal(progressRequests.length, 0);
+    const [retry] = [...redis.hash.values()].map(value => JSON.parse(value));
+    assert.equal(retry.epicPrNumber, null);
+    assert.equal(retry.epicBranch, EPIC_BRANCH);
+    assert.equal(retry.mergedChildPrNumber, 201);
+
+    // GitHub recovers; the sweep resolves the epic PR and confirms completion.
+    elapseRetryBackoff();
+    assert.equal(await retryPendingEpicMergeProgress(), 1);
+    assert.equal(progressRequests.length, 1);
+    assert.equal(progressRequests[0].epicPrNumber, 500);
+    assert.equal(progressRequests[0].mergedChildPrNumber, 201);
+    assert.equal(completionNotices, 1);
+    assert.equal(redis.hash.size, 0);
+});
+
+test('keeps the obligation when the epic PR lookup fails again during a retry', async () => {
+    failingEpicLookups = 2;
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    elapseRetryBackoff();
+    assert.equal(await retryPendingEpicMergeProgress(), 0);
+    const retry = JSON.parse([...redis.hash.values()][0]);
+    assert.equal(retry.epicPrNumber, null);
+    assert.equal(retry.attempts, 2);
+
+    elapseRetryBackoff();
+    assert.equal(await retryPendingEpicMergeProgress(), 1);
+    assert.equal(completionNotices, 1);
 });

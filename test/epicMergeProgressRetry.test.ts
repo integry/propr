@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import { after, describe, test } from 'node:test';
+import { after, describe, mock, test } from 'node:test';
 import { closeConnection } from '../packages/core/src/db/connection.js';
+import { EPIC_COMPLETE_MARKER, EPIC_PROGRESS_MARKER, updateEpicMergeProgress } from '../packages/core/src/webhook/epicMergeProgress.js';
 import {
-    EPIC_PROGRESS_RETRY_KEY, EPIC_PROGRESS_RETRY_MAX_AGE_MS, epicProgressRetryField, runEpicProgressUpdate, sweepEpicProgressRetries,
+    EPIC_PROGRESS_RETRY_KEY, EPIC_PROGRESS_RETRY_MAX_AGE_MS, EpicProgressLeaseLostError, epicProgressRetryField,
+    recordEpicProgressRetry, runEpicProgressUpdate, sweepEpicProgressRetries,
     type EpicProgressTarget,
 } from '../packages/core/src/webhook/epicMergeProgressRetry.js';
 
@@ -15,9 +17,11 @@ const field = epicProgressRetryField(target.owner, target.repo, target.epicBranc
 function fakeRedis() {
     const hash = new Map<string, string>();
     const keys = new Map<string, string>();
+    const extensions: string[] = [];
     return {
         hash,
         keys,
+        extensions,
         async hget(_key: string, f: string) { return hash.get(f) ?? null; },
         async hset(_key: string, f: string, value: string) { hash.set(f, value); return 1; },
         async hgetall(key: string) { assert.equal(key, EPIC_PROGRESS_RETRY_KEY); return Object.fromEntries(hash); },
@@ -32,6 +36,10 @@ function fakeRedis() {
                 return Number(hash.delete(args[0]));
             }
             if (keys.get(key) !== args[0]) return 0;
+            if (script.includes('PEXPIRE')) {
+                extensions.push(args[1]);
+                return 1;
+            }
             return Number(keys.delete(key));
         },
     };
@@ -75,7 +83,141 @@ describe('runEpicProgressUpdate', () => {
     });
 });
 
+/** One epic PR's bot comments, with a comment-list read that can be held open. */
+function fakeEpicOctokit() {
+    const comments: Array<{ id: number; body: string; user: { login: string } }> = [];
+    let holdNextCommentRead: { until: Promise<void>; onHeld: () => void } | null = null;
+    return {
+        comments,
+        /** Holds the next comment read open after its snapshot is taken. */
+        holdCommentRead(until: Promise<void>, onHeld: () => void) { holdNextCommentRead = { until, onHeld }; },
+        async paginate(route: string) {
+            if (route === 'GET /repos/{owner}/{repo}/pulls') return [{ number: 203, state: 'closed', merged_at: '2026-10-09T00:00:00Z' }];
+            const snapshot = comments.map(comment => ({ ...comment }));
+            const hold = holdNextCommentRead;
+            holdNextCommentRead = null;
+            if (hold) {
+                hold.onHeld();
+                await hold.until;
+            }
+            return snapshot;
+        },
+        async request(route: string, parameters: Record<string, unknown>) {
+            assert.equal(route, 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments');
+            comments.push({ id: comments.length + 1, body: parameters.body as string, user: { login: 'propr-dev[bot]' } });
+            return { data: {} };
+        },
+    };
+}
+
+describe('runEpicProgressUpdate lease ownership', () => {
+    test('an update whose lease expired during a comment read writes nothing', async () => {
+        const redis = fakeRedis();
+        const octokit = fakeEpicOctokit();
+        let releaseRead!: () => void;
+        let readHeld!: () => void;
+        const held = new Promise<void>(resolve => { readHeld = resolve; });
+        octokit.holdCommentRead(new Promise<void>(resolve => { releaseRead = resolve; }), readHeld);
+
+        const stale = runEpicProgressUpdate(target, {
+            redis: redis as never, log, now: () => 1_000,
+            update: lease => updateEpicMergeProgress({ ...target, epicPrNumber: 500 }, 'test', { getOctokit: async () => octokit, assertOwned: lease.assertOwned })
+                .then(() => true),
+        });
+        // The stale update has read an empty comment list and is waiting on the response.
+        await held;
+        // The lease expires while the read is outstanding, and another delivery takes over.
+        redis.keys.clear();
+        const fresh = await runEpicProgressUpdate(target, {
+            redis: redis as never, log, now: () => 2_000,
+            update: lease => updateEpicMergeProgress({ ...target, epicPrNumber: 500 }, 'test', { getOctokit: async () => octokit, assertOwned: lease.assertOwned })
+                .then(() => true),
+        });
+        releaseRead();
+
+        assert.equal(fresh, 'updated');
+        assert.equal(await stale, 'retry_scheduled');
+        assert.equal(octokit.comments.filter(c => c.body.includes(EPIC_PROGRESS_MARKER)).length, 1);
+        assert.equal(octokit.comments.filter(c => c.body.includes(EPIC_COMPLETE_MARKER)).length, 1);
+        // The aborted update keeps its obligation for the sweep.
+        assert.equal(JSON.parse(redis.hash.get(field)!).attempts, 1);
+    });
+
+    test('assertOwned extends a held lease and rejects once it is taken over', async () => {
+        const redis = fakeRedis();
+        await runEpicProgressUpdate(target, {
+            redis: redis as never, log,
+            update: async lease => {
+                await lease.assertOwned();
+                assert.deepEqual(redis.extensions, [String(2 * 60 * 1000)]);
+                redis.keys.set([...redis.keys.keys()][0], 'other-owner');
+                await assert.rejects(lease.assertOwned(), EpicProgressLeaseLostError);
+                return true;
+            },
+        });
+        // The other owner's lease is not released.
+        assert.deepEqual([...redis.keys.values()], ['other-owner']);
+    });
+
+    test('renews the lease while a slow update runs', async () => {
+        mock.timers.enable({ apis: ['setInterval'] });
+        try {
+            const redis = fakeRedis();
+            let finish!: () => void;
+            const outcome = runEpicProgressUpdate(target, {
+                redis: redis as never, log,
+                update: () => new Promise<boolean>(resolve => { finish = () => resolve(true); }),
+            });
+            await new Promise(resolve => setImmediate(resolve));
+            mock.timers.tick(30_000);
+            mock.timers.tick(30_000);
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(redis.extensions.length, 2);
+            finish();
+            assert.equal(await outcome, 'updated');
+        } finally {
+            mock.timers.reset();
+        }
+    });
+
+    test('never runs the update when the lease is busy and the retry cannot be recorded', async () => {
+        const redis = fakeRedis();
+        redis.keys.set(`epic:merge-progress-lock:${field}`, 'other-owner');
+        redis.hset = async () => { throw new Error('redis write failed'); };
+        let updates = 0;
+        const outcome = await runEpicProgressUpdate(target, {
+            redis: redis as never, log, update: async () => { updates++; return true; },
+        });
+        assert.equal(outcome, 'skipped');
+        assert.equal(updates, 0);
+        assert.deepEqual([...redis.keys.values()], ['other-owner']);
+    });
+});
+
+describe('recordEpicProgressRetry', () => {
+    test('keeps a known epic PR number when a later failure could not locate it', async () => {
+        const redis = fakeRedis();
+        await recordEpicProgressRetry(redis as never, target, 1_000);
+        await recordEpicProgressRetry(redis as never, { ...target, epicPrNumber: null, mergedChildPrNumber: 204 }, 2_000);
+        const retry = JSON.parse(redis.hash.get(field)!);
+        assert.equal(retry.epicPrNumber, 500);
+        assert.equal(retry.mergedChildPrNumber, 204);
+        assert.equal(retry.attempts, 2);
+    });
+});
+
 describe('sweepEpicProgressRetries', () => {
+    test('retries an obligation whose epic PR is not known yet', async () => {
+        const redis = fakeRedis();
+        await recordEpicProgressRetry(redis as never, { ...target, epicPrNumber: null }, 0);
+        const retried: EpicProgressTarget[] = [];
+        await sweepEpicProgressRetries({
+            redis: redis as never, log, now: () => 10 * 60 * 1000,
+            retry: async pending => { retried.push(pending); return 'updated'; },
+        });
+        assert.deepEqual(retried, [{ ...target, epicPrNumber: null }]);
+    });
+
     test('drops a retry that has failed beyond the maximum age', async () => {
         const redis = fakeRedis();
         redis.hash.set(field, JSON.stringify({ ...target, attempts: 40, firstFailedAt: 0, nextAttemptAt: 0 }));

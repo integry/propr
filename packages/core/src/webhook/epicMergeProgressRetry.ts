@@ -3,14 +3,15 @@ import type { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 
 /**
- * Epic merge progress updates that could not be completed (plan unreadable,
- * GitHub request failed, or another update held the epic). The last child
+ * Epic merge progress updates that could not be completed (epic PR lookup or
+ * plan unreadable, GitHub request failed, or another update held the epic). The last child
  * merge has no successor to refresh the tracking comment, so the obligation is
  * kept here and retried by the daemon sweep until an update succeeds.
  */
 export const EPIC_PROGRESS_RETRY_KEY = 'epic:merge-progress-retry';
 const EPIC_PROGRESS_LOCK_PREFIX = 'epic:merge-progress-lock:';
 const EPIC_PROGRESS_LOCK_TTL_MS = 2 * 60 * 1000;
+const EPIC_PROGRESS_LOCK_RENEW_INTERVAL_MS = EPIC_PROGRESS_LOCK_TTL_MS / 4;
 const RETRY_BASE_DELAY_MS = 60 * 1000;
 const RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
 /** A failure lasting this long is no longer transient; the obligation is dropped. */
@@ -30,13 +31,21 @@ end
 return 0
 `;
 
+const COMPARE_AND_EXTEND_KEY = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+`;
+
 export type EpicProgressRetryRedis = Pick<Redis, 'hget' | 'hset' | 'hgetall' | 'set' | 'eval'>;
 
 export interface EpicProgressTarget {
     owner: string;
     repo: string;
     epicBranch: string;
-    epicPrNumber: number;
+    /** Null when the epic PR could not be located yet; the retry resolves it. */
+    epicPrNumber: number | null;
     mergedChildPrNumber: number;
 }
 
@@ -46,12 +55,30 @@ export interface EpicProgressRetry extends EpicProgressTarget {
     nextAttemptAt: number;
 }
 
-export type EpicProgressUpdateOutcome = 'updated' | 'retry_scheduled';
+/** 'skipped': another update held the epic and no retry could be recorded. */
+export type EpicProgressUpdateOutcome = 'updated' | 'retry_scheduled' | 'skipped';
+
+/** Thrown by {@link EpicProgressLease.assertOwned} once another update may hold the epic. */
+export class EpicProgressLeaseLostError extends Error {
+    constructor() {
+        super('Epic progress lease lost');
+        this.name = 'EpicProgressLeaseLostError';
+    }
+}
+
+export interface EpicProgressLease {
+    /**
+     * Confirms the lease is still held and extends it. Call after reads and
+     * before every comment write, so an update whose lease expired while it
+     * waited on GitHub aborts instead of writing from a stale snapshot.
+     */
+    assertOwned: () => Promise<void>;
+}
 
 export interface EpicProgressUpdateOptions {
     redis: EpicProgressRetryRedis;
     /** Performs the update; returns false when it cannot be completed yet (e.g. plan unavailable). */
-    update: () => Promise<boolean>;
+    update: (lease: EpicProgressLease) => Promise<boolean>;
     now?: () => number;
     log?: ReturnType<typeof logger.withCorrelation>;
 }
@@ -65,7 +92,8 @@ function parseRetry(value: string | null | undefined): EpicProgressRetry | null 
     try {
         const parsed = JSON.parse(value) as Partial<EpicProgressRetry>;
         if (typeof parsed.owner !== 'string' || typeof parsed.repo !== 'string' || typeof parsed.epicBranch !== 'string'
-            || typeof parsed.epicPrNumber !== 'number' || typeof parsed.mergedChildPrNumber !== 'number') return null;
+            || (typeof parsed.epicPrNumber !== 'number' && parsed.epicPrNumber !== null)
+            || typeof parsed.mergedChildPrNumber !== 'number') return null;
         return {
             owner: parsed.owner, repo: parsed.repo, epicBranch: parsed.epicBranch,
             epicPrNumber: parsed.epicPrNumber, mergedChildPrNumber: parsed.mergedChildPrNumber,
@@ -78,12 +106,17 @@ function parseRetry(value: string | null | undefined): EpicProgressRetry | null 
     }
 }
 
-async function recordRetry(redis: EpicProgressRetryRedis, target: EpicProgressTarget, now: number): Promise<void> {
+/**
+ * Records (or extends) the retry obligation for an epic. A target without an
+ * epic PR number keeps the number already known from an earlier failure.
+ */
+export async function recordEpicProgressRetry(redis: EpicProgressRetryRedis, target: EpicProgressTarget, now: number = Date.now()): Promise<void> {
     const field = epicProgressRetryField(target.owner, target.repo, target.epicBranch);
     const previous = parseRetry(await redis.hget(EPIC_PROGRESS_RETRY_KEY, field));
     const attempts = (previous?.attempts ?? 0) + 1;
     const retry: EpicProgressRetry = {
         ...target,
+        epicPrNumber: target.epicPrNumber ?? previous?.epicPrNumber ?? null,
         attempts,
         firstFailedAt: previous?.firstFailedAt || now,
         nextAttemptAt: now + Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** (attempts - 1)),
@@ -93,7 +126,10 @@ async function recordRetry(redis: EpicProgressRetryRedis, target: EpicProgressTa
 
 /**
  * Runs one epic progress update under a per-epic lease, so a retry and a
- * webhook never post the completion notice twice. A pending obligation is
+ * webhook never post the completion notice twice. The lease is renewed while
+ * the update runs, and the update must confirm it through
+ * {@link EpicProgressLease.assertOwned} before each comment write; losing it
+ * aborts the update and keeps the obligation. A pending obligation is
  * released only if it is still the one observed before the update started;
  * one recorded meanwhile describes a later failure and is kept. Any failure,
  * including a busy lease, leaves an obligation for the retry sweep.
@@ -106,30 +142,59 @@ export async function runEpicProgressUpdate(
     const lockKey = `${EPIC_PROGRESS_LOCK_PREFIX}${field}`;
     const token = randomUUID();
     let pending: string | null = null;
-    let locked = false;
+    let acquired: boolean | null = null;
     try {
         pending = await redis.hget(EPIC_PROGRESS_RETRY_KEY, field);
-        if (await redis.set(lockKey, token, 'PX', EPIC_PROGRESS_LOCK_TTL_MS, 'NX') !== 'OK') {
-            await recordRetry(redis, target, now());
-            log.info({ ...target }, 'Epic progress update already running, scheduled a retry');
-            return 'retry_scheduled';
-        }
-        locked = true;
+        acquired = await redis.set(lockKey, token, 'PX', EPIC_PROGRESS_LOCK_TTL_MS, 'NX') === 'OK';
     } catch (error) {
         // Without Redis neither the lease nor a retry is available; update unguarded.
         log.warn({ ...target, error: (error as Error).message }, 'Epic progress retry state unavailable');
     }
 
+    if (acquired === false) {
+        // Another update owns the epic; never fall through into an unguarded update.
+        try {
+            await recordEpicProgressRetry(redis, target, now());
+            log.info({ ...target }, 'Epic progress update already running, scheduled a retry');
+            return 'retry_scheduled';
+        } catch (error) {
+            log.error({ ...target, error: (error as Error).message }, 'Epic progress update already running and its retry could not be recorded');
+            return 'skipped';
+        }
+    }
+
+    const locked = acquired === true;
+    let lost = false;
+    const extend = async (): Promise<void> => {
+        if (!locked || lost) return;
+        if (Number(await redis.eval(COMPARE_AND_EXTEND_KEY, 1, lockKey, token, String(EPIC_PROGRESS_LOCK_TTL_MS))) !== 1) lost = true;
+    };
+    const lease: EpicProgressLease = {
+        assertOwned: async () => {
+            await extend();
+            if (lost) throw new EpicProgressLeaseLostError();
+        },
+    };
+    const heartbeat = locked
+        ? setInterval(() => {
+            extend().catch(error => log.warn({ ...target, error: (error as Error).message }, 'Failed to renew Epic PR merge progress lease'));
+        }, EPIC_PROGRESS_LOCK_RENEW_INTERVAL_MS)
+        : undefined;
+    heartbeat?.unref?.();
+
     try {
         let completed = false;
         try {
-            completed = await update();
+            completed = await update(lease);
         } catch (error) {
-            log.warn({ ...target, error: (error as Error).message }, 'Failed to update Epic PR merge progress');
+            const message = error instanceof EpicProgressLeaseLostError
+                ? 'Lost Epic PR merge progress lease, aborted the update'
+                : 'Failed to update Epic PR merge progress';
+            log.warn({ ...target, error: (error as Error).message }, message);
         }
         try {
             if (!completed) {
-                await recordRetry(redis, target, now());
+                await recordEpicProgressRetry(redis, target, now());
                 return 'retry_scheduled';
             }
             if (pending) await redis.eval(COMPARE_AND_DELETE_FIELD, 1, EPIC_PROGRESS_RETRY_KEY, field, pending);
@@ -138,6 +203,7 @@ export async function runEpicProgressUpdate(
         }
         return completed ? 'updated' : 'retry_scheduled';
     } finally {
+        if (heartbeat) clearInterval(heartbeat);
         if (locked) {
             try {
                 await redis.eval(COMPARE_AND_DELETE_KEY, 1, lockKey, token);

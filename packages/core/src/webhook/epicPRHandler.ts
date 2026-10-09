@@ -3,7 +3,10 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { isEpicBranch, EPIC_BRANCH_PATTERN } from '../services/taskExecutionService.js';
 import { createEpicPRWithDraftFallback } from '../services/epicPRService.js';
 import { updateEpicMergeProgress } from './epicMergeProgress.js';
-import { runEpicProgressUpdate, sweepEpicProgressRetries, type EpicProgressRetryRedis, type EpicProgressTarget } from './epicMergeProgressRetry.js';
+import {
+    recordEpicProgressRetry, runEpicProgressUpdate, sweepEpicProgressRetries,
+    type EpicProgressLease, type EpicProgressRetryRedis, type EpicProgressTarget,
+} from './epicMergeProgressRetry.js';
 import { getUltrafixStateRedis } from './checkRunHelpers.js';
 import { db } from '../db/connection.js';
 import type { PlanIssue } from '../config/planIssueManager.js';
@@ -280,39 +283,70 @@ export async function handleEpicPRCreationOnMerge(
         }, 'Failed to create Epic PR after child merge');
     }
 
-    if (epicPrNumber === null) return;
-
     const target: EpicProgressTarget = { owner, repo, epicBranch: baseBranch, epicPrNumber, mergedChildPrNumber: payload.pull_request.number };
+    if (epicPrNumber === null) {
+        // The epic PR could not be located; keep the obligation so the retry
+        // sweep resolves the epic PR and refreshes its progress.
+        try {
+            await recordEpicProgressRetry(getUltrafixStateRedis(), target);
+        } catch (error) {
+            correlatedLogger.error({ ...target, error: (error as Error).message }, 'Failed to record Epic PR merge progress retry');
+        }
+        return;
+    }
+
     await runEpicProgressUpdate(target, {
         redis: getUltrafixStateRedis(),
-        update: () => applyEpicMergeProgress(target, planLookup, correlationId, correlatedLogger),
+        update: lease => applyEpicMergeProgress(target, planLookup, { lease, correlationId, correlatedLogger }),
         log: correlatedLogger,
     });
 }
 
+/** Looks up the open Epic PR of an epic branch; null when there is none. */
+async function findOpenEpicPRNumber(owner: string, repo: string, epicBranch: string): Promise<number | null> {
+    const octokit = await getAuthenticatedOctokit();
+    const response = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+        owner,
+        repo,
+        head: `${owner}:${epicBranch}`,
+        state: 'open'
+    });
+    return response.data[0]?.number ?? null;
+}
+
 /**
  * Refreshes the epic's merge progress comments. Returns false when the plan
- * could not be read, so the caller keeps a retry obligation.
+ * could not be read, so the caller keeps a retry obligation. A target whose
+ * epic PR was not located yet is resolved first.
  */
 async function applyEpicMergeProgress(
     target: EpicProgressTarget,
     planLookup: PlanLookup,
-    correlationId: string,
-    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+    { lease, correlationId, correlatedLogger }: {
+        lease: EpicProgressLease;
+        correlationId: string;
+        correlatedLogger: ReturnType<typeof logger.withCorrelation>;
+    }
 ): Promise<boolean> {
+    const epicPrNumber = target.epicPrNumber ?? await findOpenEpicPRNumber(target.owner, target.repo, target.epicBranch);
+    if (epicPrNumber === null) {
+        correlatedLogger.warn({ baseBranch: target.epicBranch }, 'No open Epic PR to track merge progress on');
+        return true;
+    }
     if (planLookup.status === 'unavailable') {
         // Without the plan, unstarted planned work is invisible and progress
         // could falsely read as complete. Leave the tracking comment as is
         // until a retry can read the plan.
-        correlatedLogger.warn({ epicPrNumber: target.epicPrNumber, baseBranch: target.epicBranch }, 'Plan details unavailable, deferring Epic PR merge progress update');
+        correlatedLogger.warn({ epicPrNumber, baseBranch: target.epicBranch }, 'Plan details unavailable, deferring Epic PR merge progress update');
         return false;
     }
     const planDetails = planLookup.status === 'found' ? planLookup.details : null;
     await updateEpicMergeProgress({
         ...target,
+        epicPrNumber,
         planName: planDetails?.planName,
         planIssues: planDetails?.issues
-    }, correlationId);
+    }, correlationId, { assertOwned: lease.assertOwned });
     return true;
 }
 
@@ -332,11 +366,10 @@ export async function retryPendingEpicMergeProgress(
         retry: target => runEpicProgressUpdate(target, {
             redis,
             log: correlatedLogger,
-            update: async () => applyEpicMergeProgress(
+            update: async lease => applyEpicMergeProgress(
                 target,
                 await loadPlanDetails(target.epicBranch, `${target.owner}/${target.repo}`, correlatedLogger),
-                correlationId,
-                correlatedLogger
+                { lease, correlationId, correlatedLogger }
             ),
         }),
     });
