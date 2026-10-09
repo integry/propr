@@ -497,3 +497,9 @@ export {
     loadInstanceNetworkPolicy,
     saveAgentNetworkSetting,
 } from './configManagerAgentNetwork.js';
+
+export {
+    FOLLOWUP_REQUIRES_ASSIGNMENT_CONFIG_KEY,
+    loadFollowupRequiresAssignment,
+    saveFollowupRequiresAssignment,
+} from './configManagerAssignment.js';

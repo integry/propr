@@ -265,6 +265,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         usage_tips_enabled: parseUsageTipsSettings({ usage_tips_enabled: await configStore.getConfig('usage_tips_enabled', true) }).enabled,
         usage_tips_dismissal_cooldown_days: parseUsageTipsSettings({ usage_tips_dismissal_cooldown_days: await configStore.getConfig('usage_tips_dismissal_cooldown_days', 45) }).cooldownDays,
         dashboard_summary_enabled: (await configStore.getConfig('dashboard_summary_enabled', true)) !== false,
+        followup_requires_assignment: configManager.parseBooleanSetting(await configStore.getConfig(configManager.FOLLOWUP_REQUIRES_ASSIGNMENT_CONFIG_KEY, false)) ?? false,
         model_reasoning_level: modelReasoningLevel,
         pr_review_model: prReviewModel,
         ...await configStore.loadUltrafixEscalationSettings().then(escalation => ({

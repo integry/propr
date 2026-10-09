@@ -7,6 +7,7 @@ interface SettingFields {
   auto_followup_score_threshold?: unknown;
   auto_resolve_merge_conflicts?: unknown;
   dashboard_summary_enabled?: unknown;
+  followup_requires_assignment?: unknown;
   model_reasoning_level?: unknown;
   pr_review_model?: unknown;
   ultrafix_escalation_enabled?: unknown;
@@ -34,6 +35,7 @@ export type SettingSaveName =
   | 'auto_followup_score_threshold'
   | 'auto_resolve_merge_conflicts'
   | 'dashboard_summary_enabled'
+  | 'followup_requires_assignment'
   | 'model_reasoning_level'
   | 'pr_review_model'
   | 'ultrafix_escalation_enabled'
@@ -130,6 +132,12 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
     if (typeof fields.dashboard_summary_enabled !== 'boolean') return { error: 'dashboard_summary_enabled must be a boolean', saves: [], normalized };
     normalized.dashboard_summary_enabled = fields.dashboard_summary_enabled;
     saves.push({ name: 'dashboard_summary_enabled' });
+  }
+
+  if (fields.followup_requires_assignment !== undefined) {
+    if (typeof fields.followup_requires_assignment !== 'boolean') return { error: 'followup_requires_assignment must be a boolean', saves: [], normalized };
+    normalized.followup_requires_assignment = fields.followup_requires_assignment;
+    saves.push({ name: 'followup_requires_assignment' });
   }
 
   if (fields.model_reasoning_level !== undefined) {
