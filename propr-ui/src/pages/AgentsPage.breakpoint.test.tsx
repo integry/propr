@@ -44,8 +44,8 @@ const stubViewport = (wide: boolean) => {
 const renderAt = (url: string) => render(
   <MemoryRouter initialEntries={[url]}>
     <Routes>
-      <Route path="/agents/new" element={<AgentsPage isNew />} />
-      <Route path="/agents/:definitionId" element={<AgentsPage />} />
+      <Route path="/automations/new" element={<AgentsPage isNew />} />
+      <Route path="/automations/:definitionId" element={<AgentsPage />} />
     </Routes>
   </MemoryRouter>,
 );
@@ -69,7 +69,7 @@ describe('AgentsPage across the split breakpoint', () => {
 
   it('keeps an unsaved new agent when the viewport narrows and widens again', async () => {
     const resize = stubViewport(true);
-    renderAt('/agents/new');
+    renderAt('/automations/new');
 
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Nightly triage' } });
     fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Summarize new issues' } });
@@ -82,14 +82,14 @@ describe('AgentsPage across the split breakpoint', () => {
 
     resize(true);
     expect(screen.getByTestId('agent-split-details')).toContainElement(screen.getByTestId('agent-editor'));
-    expect(screen.getByRole('button', { name: 'Close agent' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close automation' })).toBeInTheDocument();
     expect(screen.getByLabelText('Name')).toHaveValue('Nightly triage');
     expect(screen.getByLabelText('Prompt')).toHaveValue('Summarize new issues');
   });
 
   it('keeps edits to a saved agent when the viewport widens and narrows again without reloading it', async () => {
     const resize = stubViewport(false);
-    renderAt('/agents/a1');
+    renderAt('/automations/a1');
 
     const name = await screen.findByLabelText('Name');
     expect(name).toHaveValue('Dependency review');

@@ -14,7 +14,7 @@ async function fixture(page: Page, discovery = false, savedCandidates?: UsageTip
     ...(discovery ? { mcpUsage: 0, visualPreviewRepos: 0 } : {}) });
   const savedPool = savedCandidates ?? pool.map(id => candidates.find(c => c.id === id)!);
   let reads = 0;
-  const settings = { usage_tips_enabled: true, usage_tips_dismissal_cooldown_days: 45 };
+  const settings = { usage_tips_enabled: true };
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url()).pathname;
@@ -23,7 +23,7 @@ async function fixture(page: Page, discovery = false, savedCandidates?: UsageTip
       return route.fulfill({ json: { enabled: settings.usage_tips_enabled,
         tips: settings.usage_tips_enabled ? resolveUsageTips(savedPool,
           [...dismissed].map(([tip_id, dismissed_at]) => ({ tip_id, dismissed_at, dismissal_count: 1 })),
-          settings.usage_tips_dismissal_cooldown_days, Date.now()) : [] } });
+          Date.now()) : [] } });
     }
     if (url === '/api/usage-tips/dismiss') {
       const body = route.request().postDataJSON(); events.push(body.eventId); dismissed.set(body.tipId, Date.now());
@@ -103,15 +103,12 @@ test('dashboard places tips below stats, persists only deliberate dismissal and 
   await capture(page, 'usage-tips-mobile.png', '[aria-label="Usage tips"]');
 });
 
-test('automation settings save both tip fields', async ({ page }) => {
+test('automation settings save the tips toggle from the last section', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const state = await fixture(page);
   await page.goto('/settings?tab=automation');
-  const cooldown = page.getByLabel('Dismissal cooldown days');
-  await expect(cooldown).toHaveValue('45');
-  await cooldown.fill('60');
-  await cooldown.blur();
-  await expect.poll(() => state.settings.usage_tips_dismissal_cooldown_days).toBe(60);
+  await expect(page.getByLabel('Dismissal cooldown days')).toHaveCount(0);
+  await expect(page.locator('#settings-panel-automation [data-settings-section]').last()).toHaveAttribute('data-settings-section', 'usage-tips');
   await capture(page, 'usage-tips-settings.png', '[data-settings-section="usage-tips"]');
   await page.getByLabel('Show usage tips').uncheck();
   await page.getByLabel('Show usage tips').blur();

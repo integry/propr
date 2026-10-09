@@ -1,4 +1,4 @@
-import { isUsageTipsCooldownDays, MAX_PROVIDER_REPLACEMENTS_LIMIT, parseMaxProviderReplacements } from '@propr/shared';
+import { MAX_PROVIDER_REPLACEMENTS_LIMIT, parseMaxProviderReplacements } from '@propr/shared';
 /**
  * System Settings API
  *
@@ -30,7 +30,6 @@ const MAX_PR_REVIEW_PROMPT_LENGTH = 20000;
  */
 export interface SystemSettings {
   usage_tips_enabled: boolean;
-  usage_tips_dismissal_cooldown_days: number;
   /**
    * Alias of the default implementation agent.
    */
@@ -202,7 +201,6 @@ export type GetSettingsResponse = SystemSettings;
  */
 export interface UpdateSettingsOptions {
   usage_tips_enabled?: boolean;
-  usage_tips_dismissal_cooldown_days?: number;
   /**
    * Alias of the default implementation agent.
    */
@@ -352,7 +350,6 @@ export type SettingKey = Exclude<keyof SystemSettings, 'auto_followup_score_thre
  */
 export const VALID_SETTING_KEYS: SettingKey[] = [
   "usage_tips_enabled",
-  "usage_tips_dismissal_cooldown_days",
   "default_agent_alias",
   "worker_concurrency",
   "max_provider_replacements",
@@ -442,11 +439,6 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       // Comma-separated hostnames; "default" restores the environment list.
       if (/^(default|null)$/i.test(value.trim())) return null;
       return value.split(",").map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0);
-    case "usage_tips_dismissal_cooldown_days": {
-      const parsed = /^\d+$/.test(value) ? Number(value) : NaN;
-      if (!isUsageTipsCooldownDays(parsed)) throw new Error('Cooldown must be an integer from 1 to 365');
-      return parsed;
-    }
     case "worker_concurrency": {
       if (!/^-?\d+$/.test(value)) {
         throw new Error(`Invalid value for ${key}: must be an integer`);

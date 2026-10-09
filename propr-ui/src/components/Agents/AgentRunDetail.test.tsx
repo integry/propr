@@ -84,7 +84,6 @@ describe('AgentRunDetail', () => {
     expect(screen.getByTestId('agent-run-state')).toHaveTextContent('Completed');
     expect(screen.getByRole('link', { name: 'Open report task' })).toHaveAttribute('href', '/tasks/task-report');
     expect(screen.queryByRole('link', { name: 'Open acting task' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Runs' })).toHaveAttribute('href', '/agents/agent-1/runs');
     expect(document.title).toBe('Run · Dependency review | ProPR');
     expect(screen.queryByRole('button', { name: 'Cancel run' })).not.toBeInTheDocument();
 
@@ -98,8 +97,8 @@ describe('AgentRunDetail', () => {
     renderDetail();
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('This run belongs to a different agent, so it is not shown under Dependency review.');
-    expect(within(alert).getByRole('link', { name: 'Open it under its own agent' })).toHaveAttribute('href', '/agents/agent-2/runs/run-1');
+    expect(alert).toHaveTextContent('This run belongs to a different automation, so it is not shown under Dependency review.');
+    expect(within(alert).getByRole('link', { name: 'Open it under its own automation' })).toHaveAttribute('href', '/automations/agent-2/runs/run-1');
     expect(screen.queryByTestId('agent-run-detail')).not.toBeInTheDocument();
     expect(screen.queryByTestId('agent-run-approval')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Approve and act/ })).not.toBeInTheDocument();

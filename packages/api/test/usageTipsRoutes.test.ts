@@ -50,22 +50,13 @@ test('GET uses only indexed reads; POST authenticates, validates, deduplicates a
     now += 45 * USAGE_TIPS_DAY_MS;
     const expired = response<UsageTipsResponse>(); await routes.get(request('alice'), expired.res); assert.equal(expired.body.tips[0].id, pool[0].id);
     assert.equal((await db('usage_tip_dismissals').first()).dismissal_count, 1);
-    await db('system_configs').where({ key: 'usage_tips_dismissal_cooldown_days' }).update({ value: '90' });
-    const longer = response<UsageTipsResponse>(); await routes.get(request('alice'), longer.res); assert.equal(longer.body.tips[0].id, pool[1].id);
     await db('system_configs').where({ key: 'usage_tips_enabled' }).update({ value: 'false' });
     const disabled = response(); await routes.get(request('bob'), disabled.res); assert.deepEqual(disabled.body, { enabled: false, tips: [] });
   } finally { await db.destroy(); }
 });
 
-test('API and CLI validate both settings consistently', async () => {
-  for (const value of [0, 366, 1.5, Infinity, NaN, '45', null, true, {}, []]) {
-    assert.ok((await extractSettingSaves({ usage_tips_dismissal_cooldown_days: value })).error, String(value));
-  }
-  for (const value of [1, 45, 365]) {
-    assert.equal((await extractSettingSaves({ usage_tips_dismissal_cooldown_days: value })).normalized.usage_tips_dismissal_cooldown_days, value);
-    assert.equal(parseSettingValue('usage_tips_dismissal_cooldown_days', String(value)), value);
-  }
-  for (const value of ['0', '366', '1.5', 'Infinity', 'NaN', '', '45days']) assert.throws(() => parseSettingValue('usage_tips_dismissal_cooldown_days', value));
+test('API and CLI validate the usage tips setting and no longer accept a cooldown', async () => {
+  assert.equal(isValidSettingKey('usage_tips_dismissal_cooldown_days'), false);
   assert.equal(isValidSettingKey('usage_tips_enabled'), true);
   assert.equal(parseSettingValue('usage_tips_enabled', 'false'), false);
   assert.ok((await extractSettingSaves({ usage_tips_enabled: 'false' })).error);

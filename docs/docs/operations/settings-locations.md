@@ -12,7 +12,6 @@ Use the MCP `find_setting` tool to search this same catalog by setting name, ali
 | Setting | UI | MCP | CLI | Environment | Restart | Notes |
 |---|---|---|---|---|---|---|
 | **Usage tips**<br />`automation.usage_tips_enabled` | Settings → Automation → Usage tips | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update usage_tips_enabled <value>` | — | No |  |
-| **Usage tip dismissal cooldown**<br />`automation.usage_tips_dismissal_cooldown_days` | Settings → Automation → Usage tips | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update usage_tips_dismissal_cooldown_days <value>` | — | No |  |
 | **Default coding agent**<br />`models.default_agent_alias` | Settings → Models → Model selection | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update default_agent_alias <value>` | — | No |  |
 | **Worker concurrency**<br />`automation.worker_concurrency` | Settings → Automation → General configuration | read: `get_execution_settings`<br />write: `update_execution_settings` | `propr setting update worker_concurrency <value>` | `WORKER_CONCURRENCY` | No |  [Reference](./configuration-reference.md). |
 | **Allowed GitHub users**<br />`trigger.user_allowlist` | Settings → Automation → GitHub User Whitelist | read: `get_trigger_access_configuration`<br />write: `update_trigger_access_configuration` | `propr setting update github_user_whitelist <csv>` | `GITHUB_USER_WHITELIST` | No |  [Reference](./configuration-reference.md). |

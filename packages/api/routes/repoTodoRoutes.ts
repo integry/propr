@@ -73,6 +73,9 @@ function toTodoDomain(record: RepoTodoRecord): RepoTodo {
     orderIndex: record.order_index,
     isCompleted: Boolean(record.is_completed),
     linkedDraftId: record.linked_draft_id,
+    linkedIssueRepository: record.linked_issue_repository ?? null,
+    linkedIssueNumber: record.linked_issue_number ?? null,
+    linkedTaskId: record.linked_task_id ?? null,
     createdAt: record.created_at,
     updatedAt: record.updated_at
   };

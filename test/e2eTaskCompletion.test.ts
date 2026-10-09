@@ -16,6 +16,7 @@ function result(alias: string, model: string, finalState: string, failureReason:
 
 describe("E2E model task completion", () => {
   const invalidatedToken = "Task failed: Encountered invalidated oauth token for user, failing request";
+  const expiredSession = "Task failed: Failed to authenticate: OAuth session expired and could not be refreshed";
 
   test("reports invalidated provider credentials when another model completed", (t) => {
     const warnings: string[] = [];
@@ -59,13 +60,24 @@ describe("E2E model task completion", () => {
     }
   });
 
+  test("tolerates an expired Claude OAuth session when another model completed", () => {
+    assert.doesNotThrow(() => assertModelTasksSucceeded([
+      result("codex", "gpt-6.1-sol", "completed"),
+      result("claude", "claude-opus-5-5", "failed", expiredSession),
+    ]));
+    assert.throws(() => assertModelTasksSucceeded([
+      result("claude", "claude-opus-5-5", "failed", expiredSession),
+    ]), /did not complete successfully/);
+  });
+
   test("classifies only explicit credential rejections on failed tasks", () => {
     assert.equal(isProviderAuthenticationFailure("failed", invalidatedToken), true);
+    assert.equal(isProviderAuthenticationFailure("failed", expiredSession), true);
     assert.equal(isProviderAuthenticationFailure("failed", invalidatedToken.toUpperCase()), true);
     for (const state of [null, "completed", "cancelled", "claude_execution"]) {
       assert.equal(isProviderAuthenticationFailure(state, invalidatedToken), false);
     }
-    for (const reason of [null, "", "oauth token", "HTTP 401 Unauthorized", "GitHub API authentication failed (401)"]) {
+    for (const reason of [null, "", "oauth token", "OAuth session expired", "HTTP 401 Unauthorized", "GitHub API authentication failed (401)"]) {
       assert.equal(isProviderAuthenticationFailure("failed", reason), false);
     }
     assert.throws(() => assertModelTasksSucceeded([

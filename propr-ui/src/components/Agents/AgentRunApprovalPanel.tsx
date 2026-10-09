@@ -24,7 +24,7 @@ export const AgentRunApprovalPanel: React.FC<AgentRunApprovalPanelProps> = ({ re
   const [note, setNote] = useState('');
   const [confirming, setConfirming] = useState<'approve' | 'reject' | null>(null);
   const busy = pending !== null;
-  const scope = repositories.length > 0 ? repositories.map(repoShortName).join(', ') : "this agent's repositories";
+  const scope = repositories.length > 0 ? repositories.map(repoShortName).join(', ') : "this automation's repositories";
 
   const confirm = async () => {
     const ok = confirming === 'approve' ? await onApprove(note.trim()) : await onReject();

@@ -535,7 +535,8 @@ export {
     batchReorderTodos,
     linkTodosToDraft,
     completeTodosForDraft,
-    getTodosForDraft
+    getTodosForDraft,
+    completeTodosForIssue
 } from './services/repoTodosService.js';
 export type {
     RepoTodoCategoryRecord,
@@ -546,7 +547,8 @@ export type {
     UpdateCategoryParams,
     CreateTodoParams,
     UpdateTodoParams,
-    BatchReorderItem
+    BatchReorderItem,
+    CompleteTodosForIssueParams
 } from './services/repoTodosService.js';
 
 // Authenticated Inbox persistence and keyset pagination

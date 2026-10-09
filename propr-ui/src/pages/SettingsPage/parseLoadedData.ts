@@ -22,7 +22,6 @@ interface SettingsApiData {
   default_agent_alias?: string;
   github_user_whitelist?: string[];
   usage_tips_enabled?: boolean;
-  usage_tips_dismissal_cooldown_days?: number;
   auto_resolve_merge_conflicts?: boolean;
   dashboard_summary_enabled?: boolean;
   model_reasoning_level?: string;
@@ -115,7 +114,6 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     default_agent_alias: resolveDefaultAgentAlias(settingsData.default_agent_alias, enabledAgents),
     auto_resolve_merge_conflicts: settingsData.auto_resolve_merge_conflicts ?? false,
     usage_tips_enabled: parseUsageTipsSettings({ ...settingsData }).enabled,
-    usage_tips_dismissal_cooldown_days: parseUsageTipsSettings({ ...settingsData }).cooldownDays,
     dashboard_summary_enabled: settingsData.dashboard_summary_enabled ?? true,
     model_reasoning_level: settingsData.model_reasoning_level || '',
     pr_review_model: settingsData.pr_review_model || '',

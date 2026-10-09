@@ -29,7 +29,7 @@ export const AgentScheduleSection: React.FC<AgentScheduleSectionProps> = ({ enab
   const next = enabled && !error && expression.trim() ? nextScheduledRun(expression.trim(), now) : null;
 
   return (
-    <AgentFormRow label="Schedule" hint="Run automatically on a cron schedule, evaluated in UTC. Off means the agent only runs when triggered.">
+    <AgentFormRow label="Schedule" hint="Run automatically on a cron schedule, evaluated in UTC. Off means the automation only runs when triggered.">
       <div role="radiogroup" aria-label="Schedule" className="inline-flex overflow-hidden rounded-md border border-slate-300">
         {([false, true] as const).map(value => (
           <button

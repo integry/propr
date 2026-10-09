@@ -293,6 +293,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and no longer reports `dailyCompleted` (completions per day). The bundled
   dashboard reads `dailyTasks`, and still draws `dailyCompleted` from an older
   server; a script that read `dailyCompleted` should read `dailyTasks`.
+- **Repository to-dos**: launching a task from a to-do (**Run task**, MCP
+  `create_task` with `todoIds`, or a submission retry) now marks the to-do
+  completed once its GitHub issue exists and records that issue
+  (`linkedIssueRepository`, `linkedIssueNumber`, `linkedTaskId`). The REST API,
+  MCP `list_todos`/`get_todo`, the CLI and the Web UI carry the link, and the
+  UI shows a `#<issue number>` chip opening the issue on active and completed
+  to-dos. Only the submitting user's to-dos in the issue's repository are
+  touched, and a failed to-do write never fails the submission.
 
 ### Removed
 

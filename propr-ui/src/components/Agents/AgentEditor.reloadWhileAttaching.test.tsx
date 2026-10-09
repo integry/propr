@@ -131,7 +131,7 @@ describe('AgentEditor reload while input files change', () => {
     vi.mocked(uploadAgentAttachment).mockReturnValue(new Promise((_resolve, reject) => { fail = reject; }));
     renderEditor('agent-1');
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save changes' }));
     const reloadButton = await screen.findByRole('button', { name: 'Reload' });
     expect(reloadButton).toBeEnabled();
     fireEvent.change(screen.getByTestId('agent-attachment-input'), { target: { files: [new File(['x'], 'notes.md')] } });
