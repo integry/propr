@@ -249,6 +249,18 @@ export async function syncTaskAssignees(taskId: string, options: TaskAssignmentO
     }
 }
 
+/**
+ * Replaces the task's stored set with the live assignees of an explicit
+ * subject, for a caller that knows the subject before the task row records it
+ * (an implementation's new pull request). Unlike `syncTaskAssignees`, a GitHub
+ * or database failure throws, so the caller can retry.
+ */
+export async function refreshTaskAssignees(taskId: string, subject: TaskSubject, options: TaskAssignmentOptions = {}): Promise<AttributedUser[]> {
+    const now = options.now?.() ?? new Date();
+    const github = options.github ?? await defaultClient();
+    return await persistObserved(taskId, await fetchAssignees(github, subject), now);
+}
+
 async function readTasksOnSubject(subject: TaskSubject): Promise<string[]> {
     const rows: TaskSubjectSource[] = await db('tasks')
         .select('task_id', 'repository', 'issue_number', 'pr_number', 'task_type')

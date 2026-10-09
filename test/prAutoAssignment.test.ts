@@ -29,8 +29,15 @@ const setTaskAssignees = mock.fn(async (_taskId: string, logins: string[], optio
     };
 });
 
+// Mirrors `refreshTaskAssignees`: re-reads the subject and stores its assignees.
+const refreshTaskAssignees = mock.fn(async (_taskId: string, subject: Subject, options: { github: { request: (route: string, parameters: Record<string, unknown>) => Promise<{ data: unknown }> } }) => {
+    await options.github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner: subject.owner, repo: subject.repo, issue_number: subject.number });
+    return [];
+});
+
 await mock.module('@propr/core', {
     namedExports: {
+        refreshTaskAssignees,
         resolveRepositoryAutoAssignment,
         setTaskAssignees,
         TaskStates: { COMPLETED: 'completed', FAILED: 'failed', CANCELLED: 'cancelled', POST_PROCESSING: 'post_processing' },
@@ -40,6 +47,7 @@ await mock.module('@propr/core', {
 const {
     autoAssignImplementationPullRequest,
     autoAssignmentClaimKey,
+    autoAssignmentLeaseKey,
     recordAutoAssignmentEvent,
     PR_AUTO_ASSIGNMENT_EVENT,
 } = await import('../src/github/prAutoAssignment.ts');
@@ -88,12 +96,18 @@ async function request(route: string, parameters: Record<string, unknown>): Prom
 const octokit = { request: request as <T = unknown>(route: string, parameters: Record<string, unknown>) => Promise<T> };
 
 const redisKeys = new Map<string, string>();
+const redisTtls = new Map<string, number>();
 const redis = {
     failing: false,
-    async set(key: string, value: string, _mode: 'EX', _seconds: number, _condition: 'NX') {
+    async get(key: string) {
         if (this.failing) throw new Error('Redis unavailable');
-        if (redisKeys.has(key)) return null;
+        return redisKeys.get(key) ?? null;
+    },
+    async set(key: string, value: string, _mode: 'EX', seconds: number, condition?: 'NX') {
+        if (this.failing) throw new Error('Redis unavailable');
+        if (condition === 'NX' && redisKeys.has(key)) return null;
         redisKeys.set(key, value);
+        redisTtls.set(key, seconds);
         return 'OK';
     },
     async del(key: string) {
@@ -128,8 +142,10 @@ beforeEach(() => {
     });
     redis.failing = false;
     redisKeys.clear();
+    redisTtls.clear();
     logs.length = 0;
     setTaskAssignees.mock.resetCalls();
+    refreshTaskAssignees.mock.resetCalls();
 });
 
 describe('autoAssignImplementationPullRequest', () => {
@@ -194,6 +210,78 @@ describe('autoAssignImplementationPullRequest', () => {
         const outcome = await run();
         assert.equal(outcome.status, 'already_assigned');
         assert.deepEqual(writes(), []);
+    });
+
+    test('refreshes the task\'s stored assignees from the pull request when the target is already assigned', async () => {
+        github.assignees = ['alice'];
+        const outcome = await run();
+        assert.equal(outcome.status, 'already_assigned');
+        assert.equal(setTaskAssignees.mock.callCount(), 0);
+        const [taskId, subject] = refreshTaskAssignees.mock.calls[0].arguments;
+        assert.equal(taskId, 'task-1');
+        assert.deepEqual(subject, { owner: 'integry', repo: 'propr', number: 34, kind: 'pull_request' });
+    });
+
+    test('a retry after GitHub assigned but storing the result failed repairs the stored assignees', async () => {
+        // GitHub accepts the assignee, then persisting the confirmed set fails.
+        const assign = mock.fn(async (taskId: string, logins: string[], options: never) => {
+            await setTaskAssignees(taskId, logins, options);
+            throw new Error('database unavailable');
+        });
+        const first = await run({ assign });
+        assert.equal(first.status, 'failed');
+        assert.deepEqual(github.assignees, ['alice']);
+        assert.equal(redisKeys.size, 0);
+
+        const retry = await run();
+        assert.equal(retry.status, 'already_assigned');
+        assert.equal(refreshTaskAssignees.mock.callCount(), 1);
+        assert.ok(redisKeys.has(autoAssignmentClaimKey('integry', 'propr', 34, 'abc123')));
+    });
+
+    test('a failed refresh of the stored assignees stays retryable', async () => {
+        github.assignees = ['alice'];
+        refreshTaskAssignees.mock.mockImplementationOnce(async () => { throw new Error('database unavailable'); });
+        const outcome = await run();
+        assert.equal(outcome.status, 'failed');
+        assert.match(outcome.reason, /database unavailable/);
+        assert.equal(redisKeys.size, 0);
+
+        assert.equal((await run()).status, 'already_assigned');
+        assert.equal(refreshTaskAssignees.mock.callCount(), 2);
+        assert.ok(redisKeys.has(autoAssignmentClaimKey('integry', 'propr', 34, 'abc123')));
+    });
+
+    test('records completion only after the assignment succeeds, under a short in-progress lease', async () => {
+        const completedKey = autoAssignmentClaimKey('integry', 'propr', 34, 'abc123');
+        const leaseKey = autoAssignmentLeaseKey('integry', 'propr', 34, 'abc123');
+        const assign = mock.fn(async (taskId: string, logins: string[], options: never) => {
+            assert.ok(redisKeys.has(leaseKey));
+            assert.ok(!redisKeys.has(completedKey));
+            return await setTaskAssignees(taskId, logins, options);
+        });
+        assert.equal((await run({ assign })).status, 'assigned');
+        assert.equal(assign.mock.callCount(), 1);
+        assert.ok(redisKeys.has(completedKey));
+        assert.ok(!redisKeys.has(leaseKey));
+        assert.ok(redisTtls.get(leaseKey)! <= 15 * 60);
+        assert.ok(redisTtls.get(completedKey)! > redisTtls.get(leaseKey)!);
+    });
+
+    test('an attempt interrupted before assigning does not suppress the retry once its lease expires', async () => {
+        // A worker died after taking the lease and before any GitHub write.
+        const leaseKey = autoAssignmentLeaseKey('integry', 'propr', 34, 'abc123');
+        redisKeys.set(leaseKey, new Date().toISOString());
+
+        const whileLeased = await run();
+        assert.equal(whileLeased.status, 'skipped');
+        assert.match(whileLeased.reason, /in progress/);
+        assert.deepEqual(writes(), []);
+
+        redisKeys.delete(leaseKey); // the lease TTL elapses
+        const retry = await run();
+        assert.equal(retry.status, 'assigned');
+        assert.deepEqual(github.assignees, ['alice']);
     });
 
     test('a second pass for the same pull request and head performs no GitHub writes', async () => {

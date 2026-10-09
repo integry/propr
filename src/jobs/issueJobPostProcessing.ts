@@ -20,7 +20,8 @@ import { handleCreatedPlanIssuePR, handleNoCodeChanges } from './issueJobPostPro
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { describePushFailure, formatIssuePushFailure, pushImplementationBranch, type GitHubToken } from './issueJobPush.js';
 import { prepareProviderReplacement } from './providerReplacement.js';
-import { autoAssignCompletedPullRequest } from './issueJobAutoAssignment.js';
+import { autoAssignCompletedPullRequest, type CompletedPullRequestAssignmentContext } from './issueJobAutoAssignment.js';
+import { retryPRCreationViaAPI } from './issueJobPRRetry.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
@@ -318,10 +319,15 @@ export interface PRValidationOptions {
     correlationId: string;
     correlatedLogger: Logger;
     jobId: string | undefined;
+    /** For auto-assigning a pull request this validation finds or recreates. */
+    taskId?: string;
+    stateManager?: WorkerStateManager;
+    currentIssueData?: CompletedPullRequestAssignmentContext['currentIssueData'];
 }
 
 export async function handlePRValidation(options: PRValidationOptions): Promise<PostProcessingResult | null> {
     const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger } = options;
+    const assignmentContext = { octokit, issueRef, correlatedLogger, taskId: options.taskId, stateManager: options.stateManager, currentIssueData: options.currentIssueData };
 
     // After a rejected push the salvage ladder already ran; another push would be refused too.
     if (!worktreeInfo || postProcessingResult?.pushFailure) return postProcessingResult;
@@ -340,6 +346,8 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
             await linkPRToPlanIssue(repository, issueRef.number, finalPRValidation.pr.number);
             correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber: finalPRValidation.pr.number }, 'Linked PR to plan issue (found during validation)');
         }
+        // Post-processing never saw this pull request, so it was not assigned there.
+        await autoAssignCompletedPullRequest(assignmentContext, finalPRValidation);
 
         return { success: true, pr: finalPRValidation.pr ? { number: finalPRValidation.pr.number, url: finalPRValidation.pr.url, title: finalPRValidation.pr.title } : null, updatedLabels: postProcessingResult?.updatedLabels || [] };
     }
@@ -350,7 +358,8 @@ export async function handlePRValidation(options: PRValidationOptions): Promise<
     // 3. There were actual commits (commitResult !== null means changes were made and a PR is expected)
     const shouldPublishAgentWork = hasPublishableAgentWork(claudeResult);
     if (!finalPRValidation.isValid && shouldPublishAgentWork && commitResult !== null) {
-        await retryPRCreationViaAPI({ worktreeInfo, issueRef, repoValidation, correlatedLogger });
+        const recoveredPr = await retryPRCreationViaAPI({ worktreeInfo, issueRef, repoValidation, correlatedLogger });
+        await autoAssignCompletedPullRequest(assignmentContext, { pr: recoveredPr });
     } else if (!finalPRValidation.isValid && shouldPublishAgentWork && commitResult === null) {
         correlatedLogger.info({ issueNumber: issueRef.number }, 'No PR validation needed - no code changes were made');
     }
@@ -396,94 +405,22 @@ export interface FinalValidationOptions {
     jobId: string | undefined;
     correlationId: string;
     correlatedLogger: Logger;
+    taskId?: string;
+    stateManager?: WorkerStateManager;
+    currentIssueData?: CompletedPullRequestAssignmentContext['currentIssueData'];
 }
 
 export async function performFinalValidation(options: FinalValidationOptions): Promise<void> {
-    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger } = options;
+    const { claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, localRepoPath, jobId, correlationId, correlatedLogger, taskId, stateManager, currentIssueData } = options;
     let resolvedPostProcessingResult = postProcessingResult;
 
     if (claudeResult?.success && worktreeInfo?.branchName) {
         try {
-            resolvedPostProcessingResult = await handlePRValidation({ claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger, jobId });
+            resolvedPostProcessingResult = await handlePRValidation({ claudeResult, worktreeInfo, issueRef, octokit, postProcessingResult, commitResult, repoValidation, AI_PROCESSING_TAG, AI_DONE_TAG, correlationId, correlatedLogger, jobId, taskId, stateManager, currentIssueData });
         } catch (validationError) {
             correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (validationError as Error).message }, 'Final PR validation failed');
         }
     }
 
     await cleanupWorktreeIfExists({ worktreeInfo, localRepoPath, claudeResult, postProcessingResult: resolvedPostProcessingResult, jobId, issueRef, correlatedLogger });
-}
-
-interface RetryPRCreationOptions {
-    worktreeInfo: WorktreeInfo;
-    issueRef: IssueJobData;
-    repoValidation: RepoValidation;
-    correlatedLogger: Logger;
-}
-
-/**
- * Retries PR creation via GitHub API when the initial PR creation failed.
- * This is a fallback that uses direct API calls instead of having Claude create the PR.
- */
-async function retryPRCreationViaAPI(options: RetryPRCreationOptions): Promise<void> {
-    const { worktreeInfo, issueRef, repoValidation, correlatedLogger } = options;
-
-    const targetBaseBranch = issueRef.baseBranch || repoValidation.repoData?.defaultBranch || 'main';
-
-    correlatedLogger.info({
-        issueNumber: issueRef.number,
-        branchName: worktreeInfo.branchName,
-        baseBranch: targetBaseBranch
-    }, 'Retrying PR creation via GitHub API');
-
-    try {
-        const octokit = await getAuthenticatedOctokit();
-
-        const prResponse = await octokit.request('POST /repos/{owner}/{repo}/pulls', {
-            owner: issueRef.repoOwner,
-            repo: issueRef.repoName,
-            title: `Fix issue #${issueRef.number}`,
-            head: worktreeInfo.branchName,
-            base: targetBaseBranch,
-            body: `Resolves #${issueRef.number}\n\n_PR created via retry mechanism_`
-        });
-
-        const prNumber = prResponse.data.number;
-        correlatedLogger.info({ issueNumber: issueRef.number, prNumber }, 'PR creation retry successful');
-
-        // Link PR to plan issue
-        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
-        await linkPRToPlanIssue(repository, issueRef.number, prNumber);
-        correlatedLogger.info({ repository, issueNumber: issueRef.number, prNumber }, 'Linked PR to plan issue (retry creation)');
-
-    } catch (error) {
-        const err = error as Error & { status?: number };
-
-        // If PR already exists (422), try to find it
-        if (err.status === 422) {
-            correlatedLogger.info({ issueNumber: issueRef.number }, 'PR already exists, searching for it');
-
-            const octokit = await getAuthenticatedOctokit();
-            const existingPRs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
-                owner: issueRef.repoOwner,
-                repo: issueRef.repoName,
-                head: `${issueRef.repoOwner}:${worktreeInfo.branchName}`,
-                state: 'open'
-            });
-
-            if (existingPRs.data.length > 0) {
-                const existingPR = existingPRs.data[0];
-                correlatedLogger.info({ issueNumber: issueRef.number, prNumber: existingPR.number }, 'Found existing PR');
-
-                const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
-                await linkPRToPlanIssue(repository, issueRef.number, existingPR.number);
-            }
-        } else {
-            correlatedLogger.error({
-                issueNumber: issueRef.number,
-                branchName: worktreeInfo.branchName,
-                error: err.message,
-                status: err.status
-            }, 'PR creation retry failed');
-        }
-    }
 }

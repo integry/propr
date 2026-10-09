@@ -4,16 +4,20 @@
  *
  * Bound to the `AI-processing` -> `AI-done` swap in post-processing rather than
  * to a webhook, so it runs once per completed implementation. The write is
- * additive (`setTaskAssignees` in `add` mode keeps manual assignees), and a
- * Redis key scoped to repository, pull request and head SHA makes a retry of
- * the same state a no-op while a new head after follow-up is a new
- * opportunity. Every failure is logged and reported in the outcome; nothing
- * here throws, because a failed assignment must not fail a successful
- * implementation.
+ * additive (`setTaskAssignees` in `add` mode keeps manual assignees). Two
+ * Redis keys scoped to repository, pull request and head SHA keep it
+ * idempotent: a short lease marks an attempt in progress, and a completion
+ * marker, written only after the assignment, its stored projection and any
+ * review request succeed, makes a retry of the same state a no-op. A worker
+ * that dies mid-attempt leaves only the lease, so a retry after it expires
+ * tries again; a new head after follow-up is a new opportunity. Every failure
+ * is logged and reported in the outcome; nothing here throws, because a
+ * failed assignment must not fail a successful implementation.
  */
 
 import type { Logger } from 'pino';
 import {
+    refreshTaskAssignees,
     resolveRepositoryAutoAssignment,
     setTaskAssignees,
     TaskStates,
@@ -22,10 +26,15 @@ import {
     type SetTaskAssigneesOptions,
     type SetTaskAssigneesResult,
     type TaskAssignmentClient,
+    type TaskAssignmentOptions,
+    type TaskSubject,
 } from '@propr/core';
 
 const CLAIM_KEY_PREFIX = 'propr:pr-auto-assignment';
-const CLAIM_TTL_SECONDS = 30 * 24 * 60 * 60;
+const COMPLETED_TTL_SECONDS = 30 * 24 * 60 * 60;
+// Longer than an attempt's GitHub calls with their retries take, short enough
+// that an attempt cut off by a worker crash is retried soon after.
+const LEASE_TTL_SECONDS = 10 * 60;
 
 /** The timeline event recorded for an assignment decision. */
 export const PR_AUTO_ASSIGNMENT_EVENT = 'pull_request.auto_assignment';
@@ -44,9 +53,10 @@ type GitHubClient = {
     request: <T = unknown>(route: string, parameters: Record<string, unknown>) => Promise<T>;
 };
 
-/** The slice of ioredis the idempotency claim uses. */
+/** The slice of ioredis the idempotency lease and completion marker use. */
 export interface AutoAssignmentClaimStore {
-    set(key: string, value: string, mode: 'EX', seconds: number, condition: 'NX'): Promise<unknown>;
+    get(key: string): Promise<string | null>;
+    set(key: string, value: string, mode: 'EX', seconds: number, condition?: 'NX'): Promise<unknown>;
     del(key: string): Promise<unknown>;
 }
 
@@ -64,6 +74,7 @@ export interface AutoAssignPullRequestOptions {
     /** Injectable for tests. */
     resolvePolicy?: (owner: string, repo: string) => Promise<RepositoryAutoAssignment>;
     assign?: (taskId: string, logins: string[], options: SetTaskAssigneesOptions) => Promise<SetTaskAssigneesResult>;
+    refresh?: (taskId: string, subject: TaskSubject, options: TaskAssignmentOptions) => Promise<unknown>;
 }
 
 interface PullRequestState {
@@ -80,8 +91,13 @@ export function isBotLogin(login: string): boolean {
     return login.toLowerCase().endsWith('[bot]');
 }
 
+/** The completion marker's key; the in-progress lease adds a `:lease` suffix. */
 export function autoAssignmentClaimKey(owner: string, repo: string, prNumber: number, headSha: string): string {
     return `${CLAIM_KEY_PREFIX}:${owner}/${repo}`.toLowerCase() + `:${prNumber}:${headSha}`;
+}
+
+export function autoAssignmentLeaseKey(owner: string, repo: string, prNumber: number, headSha: string): string {
+    return `${autoAssignmentClaimKey(owner, repo, prNumber, headSha)}:lease`;
 }
 
 function loginOf(user: unknown): string | null {
@@ -141,15 +157,39 @@ async function requestReview(
     return { status: 'requested', reason: `requested a review from ${assignee}` };
 }
 
-async function claim(options: AutoAssignPullRequestOptions, key: string): Promise<boolean> {
+type Claim = { state: 'acquired' | 'unavailable' } | { state: 'completed' } | { state: 'in_progress' };
+
+/**
+ * Takes the in-progress lease, then checks the completion marker. Completion
+ * is written before the lease is released, so reading it under the lease
+ * cannot miss an attempt that finished meanwhile.
+ */
+async function claim(options: AutoAssignPullRequestOptions, completedKey: string, leaseKey: string): Promise<Claim> {
     try {
-        return await options.redis.set(key, new Date().toISOString(), 'EX', CLAIM_TTL_SECONDS, 'NX') === 'OK';
+        if (await options.redis.set(leaseKey, new Date().toISOString(), 'EX', LEASE_TTL_SECONDS, 'NX') !== 'OK') return { state: 'in_progress' };
+        if (await options.redis.get(completedKey)) {
+            await release(options, leaseKey);
+            return { state: 'completed' };
+        }
+        return { state: 'acquired' };
     } catch (error) {
         // The writes below are safe to repeat (additive assignment, deduplicated
         // review request), so an unreachable Redis only loses the fast path.
-        options.logger.warn({ key, error: (error as Error).message }, 'Could not claim pull request auto-assignment; continuing without the idempotency key');
-        return true;
+        options.logger.warn({ key: completedKey, error: (error as Error).message }, 'Could not claim pull request auto-assignment; continuing without the idempotency key');
+        return { state: 'unavailable' };
     }
+}
+
+async function markCompleted(options: AutoAssignPullRequestOptions, key: string): Promise<void> {
+    try {
+        await options.redis.set(key, new Date().toISOString(), 'EX', COMPLETED_TTL_SECONDS);
+    } catch (error) {
+        options.logger.warn({ key, error: (error as Error).message }, 'Could not record pull request auto-assignment completion');
+    }
+}
+
+function isComplete(outcome: AutoAssignmentOutcome): boolean {
+    return (outcome.status === 'assigned' || outcome.status === 'already_assigned') && outcome.review?.status !== 'failed';
 }
 
 async function release(options: AutoAssignPullRequestOptions, key: string): Promise<void> {
@@ -167,16 +207,17 @@ async function assignAndRequestReview(
     pullRequest: PullRequestState,
 ): Promise<AutoAssignmentOutcome> {
     const { owner, repo, prNumber, taskId } = options;
+    const subject: TaskSubject = { owner, repo, number: prNumber, kind: 'pull_request' };
+    const github = options.octokit as unknown as TaskAssignmentClient;
     let outcome: AutoAssignmentOutcome;
     if (pullRequest.assignees.some(login => sameLogin(login, assignee))) {
+        // An earlier attempt may have assigned on GitHub and then failed to
+        // store the result; bring the task's stored assignees up to date.
+        await (options.refresh ?? refreshTaskAssignees)(taskId!, subject, { github });
         outcome = { status: 'already_assigned', reason: `${assignee} is already assigned`, assignee };
     } else {
         const assign = options.assign ?? setTaskAssignees;
-        const result = await assign(taskId!, [assignee], {
-            mode: 'add',
-            subject: { owner, repo, number: prNumber, kind: 'pull_request' },
-            github: options.octokit as unknown as TaskAssignmentClient,
-        });
+        const result = await assign(taskId!, [assignee], { mode: 'add', subject, github });
         outcome = result.rejected.length > 0
             ? { status: 'not_assigned', reason: `GitHub did not assign ${assignee}, who may lack repository access`, assignee }
             : { status: 'assigned', reason: `assigned ${assignee}`, assignee };
@@ -205,7 +246,7 @@ async function assignAndRequestReview(
 export async function autoAssignImplementationPullRequest(options: AutoAssignPullRequestOptions): Promise<AutoAssignmentOutcome> {
     const { owner, repo, prNumber, logger } = options;
     const context = { repository: `${owner}/${repo}`, prNumber, issueNumber: options.issueNumber };
-    let claimKey: string | null = null;
+    let leaseKey: string | null = null;
 
     try {
         const policy = await (options.resolvePolicy ?? resolveRepositoryAutoAssignment)(owner, repo);
@@ -225,22 +266,31 @@ export async function autoAssignImplementationPullRequest(options: AutoAssignPul
         }
 
         const pullRequest = await readPullRequest(options);
-        const key = autoAssignmentClaimKey(owner, repo, prNumber, pullRequest.headSha);
-        if (!await claim(options, key)) {
-            const reason = `already handled for head ${pullRequest.headSha.slice(0, 12)}`;
+        const head = pullRequest.headSha.slice(0, 12);
+        const completedKey = autoAssignmentClaimKey(owner, repo, prNumber, pullRequest.headSha);
+        const claimed = await claim(options, completedKey, autoAssignmentLeaseKey(owner, repo, prNumber, pullRequest.headSha));
+        if (claimed.state === 'completed') {
+            const reason = `already handled for head ${head}`;
             logger.info({ ...context, assignee: target.assignee, reason }, 'Pull request auto-assignment skipped: already assigned');
             return { status: 'already_assigned', reason, assignee: target.assignee };
         }
-        claimKey = key;
+        if (claimed.state === 'in_progress') {
+            const reason = `another attempt for head ${head} is in progress`;
+            logger.info({ ...context, assignee: target.assignee, reason }, 'Pull request auto-assignment skipped');
+            return { status: 'skipped', reason, assignee: target.assignee };
+        }
+        if (claimed.state === 'acquired') leaseKey = autoAssignmentLeaseKey(owner, repo, prNumber, pullRequest.headSha);
 
         const outcome = await assignAndRequestReview(options, policy, target.assignee, pullRequest);
-        // Let a retry of the same head try again after a rejection or a failed review request.
-        if (outcome.status === 'not_assigned' || outcome.review?.status === 'failed') await release(options, key);
+        // Only a finished attempt suppresses retries; after a rejection or a
+        // failed review request a retry of the same head tries again.
+        if (isComplete(outcome)) await markCompleted(options, completedKey);
+        if (leaseKey) await release(options, leaseKey);
         return outcome;
     } catch (error) {
         const reason = (error as Error).message;
         logger.warn({ ...context, error: reason }, 'Pull request auto-assignment failed');
-        if (claimKey) await release(options, claimKey);
+        if (leaseKey) await release(options, leaseKey);
         return { status: 'failed', reason };
     }
 }
