@@ -3,7 +3,8 @@ import { buildRepositoriesForDisplay, defaultVisualPreview, updateRepositoryAuto
 
 const repo = (id: string, name: string, autoResolveMergeConflicts?: boolean | null, baseBranch?: string): ManagedRepo => ({
   id, name, enabled: true, baseBranch, autoFollowupOnFailedCi: false, cancelCiDuringFollowup: false,
-  cancelCiDuringFollowupWorkflows: [], nonBlockingChecks: [], notificationsEnabled: true, visualPreview: defaultVisualPreview(),
+  cancelCiDuringFollowupWorkflows: [], nonBlockingChecks: [], notificationsEnabled: true, autoAssignPullRequests: false, autoAssignDefaultAssignee: null, autoAssignRequestReview: false,
+  visualPreview: defaultVisualPreview(),
   ...(autoResolveMergeConflicts !== undefined ? { autoResolveMergeConflicts } : {}),
 });
 

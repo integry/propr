@@ -133,6 +133,12 @@ export interface MonitoredRepo {
   notificationsEnabled?: boolean;
   /** Repository-wide merge-conflict auto-resolve override; missing or null inherits the instance default. */
   autoResolveMergeConflicts?: boolean | null;
+  /** Whether ProPR assigns its finished pull requests. Missing values are off. */
+  autoAssignPullRequests?: boolean;
+  /** GitHub login to assign; missing or null assigns the issue author. */
+  autoAssignDefaultAssignee?: string | null;
+  /** Whether a review is also requested from the assignee. Missing values are off. */
+  autoAssignRequestReview?: boolean;
   /** Generated media to embed in PRs when a change has a visible result. */
   visualPreview?: {
     githubAttachmentPlan?: GitHubAttachmentPlanOverride;

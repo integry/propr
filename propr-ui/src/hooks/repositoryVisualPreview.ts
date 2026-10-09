@@ -1,10 +1,13 @@
-import { normalizeGitHubAttachmentPlanOverride } from '@propr/shared';
+import { isGitHubLogin, normalizeGitHubAttachmentPlanOverride } from '@propr/shared';
 import type { MonitoredRepo } from '../api/proprApi';
 
 export type VisualPreviewSettings = NonNullable<MonitoredRepo['visualPreview']>;
 
-export type ManagedRepo = Omit<MonitoredRepo, 'autoFollowupOnFailedCi' | 'cancelCiDuringFollowup' | 'cancelCiDuringFollowupWorkflows' | 'nonBlockingChecks' | 'visualPreview'> & {
+export type ManagedRepo = Omit<MonitoredRepo, 'autoFollowupOnFailedCi' | 'cancelCiDuringFollowup' | 'cancelCiDuringFollowupWorkflows' | 'nonBlockingChecks' | 'autoAssignPullRequests' | 'autoAssignDefaultAssignee' | 'autoAssignRequestReview' | 'visualPreview'> & {
   autoFollowupOnFailedCi: boolean;
+  autoAssignPullRequests: boolean;
+  autoAssignDefaultAssignee: string | null;
+  autoAssignRequestReview: boolean;
   cancelCiDuringFollowup: boolean;
   cancelCiDuringFollowupWorkflows: string[];
   nonBlockingChecks: string[];
@@ -127,6 +130,71 @@ export function updateRepositoryCancelCiWorkflows(repos: ManagedRepo[], repoId: 
     : repo);
 }
 
+export interface RepositoryAutoAssign {
+  enabled: boolean;
+  defaultAssignee: string | null;
+  requestReview: boolean;
+}
+
+/**
+ * A default assignee as the server stores it: a GitHub login without the `@`,
+ * or `null` for the issue author. Returns `undefined` for an invalid login.
+ */
+export function parseAutoAssignDefaultAssignee(value: unknown): string | null | undefined {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') return undefined;
+  const login = value.trim().replace(/^@/, '');
+  if (!login) return null;
+  return isGitHubLogin(login) ? login : undefined;
+}
+
+/**
+ * Repository-wide automatic assignment, mirroring the server: an option is on
+ * when any branch entry opts in, and the default assignee is the first configured one.
+ */
+export function resolveRepositoryAutoAssign(repos: readonly ManagedRepo[], repositoryKey: string): RepositoryAutoAssign {
+  const entries = repos.filter(repo => getRepositoryConfigKey(repo.name) === repositoryKey);
+  return {
+    enabled: entries.some(repo => repo.autoAssignPullRequests === true),
+    defaultAssignee: entries.map(repo => parseAutoAssignDefaultAssignee(repo.autoAssignDefaultAssignee)).find(login => typeof login === 'string') ?? null,
+    requestReview: entries.some(repo => repo.autoAssignRequestReview === true)
+  };
+}
+
+/** Flip the resolved repository-wide value so every branch entry converges on one state. */
+export function toggleRepositoryAutoAssign(repos: ManagedRepo[], repoId: string): ManagedRepo[] {
+  const targetRepo = repos.find(repo => repo.id === repoId);
+  if (!targetRepo) return repos;
+  const repositoryKey = getRepositoryConfigKey(targetRepo.name);
+  const autoAssignPullRequests = !resolveRepositoryAutoAssign(repos, repositoryKey).enabled;
+  return repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
+    ? { ...repo, autoAssignPullRequests }
+    : repo);
+}
+
+/** Every branch entry of a repository shares one default assignee; `null` assigns the issue author. An invalid login changes nothing. */
+export function updateRepositoryAutoAssignTarget(repos: ManagedRepo[], repoId: string, login: string | null): ManagedRepo[] {
+  const targetRepo = repos.find(repo => repo.id === repoId);
+  if (!targetRepo) return repos;
+  const autoAssignDefaultAssignee = parseAutoAssignDefaultAssignee(login);
+  if (autoAssignDefaultAssignee === undefined) return repos;
+  const repositoryKey = getRepositoryConfigKey(targetRepo.name);
+  return repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
+    ? { ...repo, autoAssignDefaultAssignee }
+    : repo);
+}
+
+/** Flip the resolved repository-wide value so every branch entry converges on one state. */
+export function toggleRepositoryAutoAssignReview(repos: ManagedRepo[], repoId: string): ManagedRepo[] {
+  const targetRepo = repos.find(repo => repo.id === repoId);
+  if (!targetRepo) return repos;
+  const repositoryKey = getRepositoryConfigKey(targetRepo.name);
+  const autoAssignRequestReview = !resolveRepositoryAutoAssign(repos, repositoryKey).requestReview;
+  return repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
+    ? { ...repo, autoAssignRequestReview }
+    : repo);
+}
+
 /** Flip the resolved repository-wide value so every branch entry converges on one state. */
 export function toggleRepositoryCancelCiDuringFollowup(repos: ManagedRepo[], repoId: string): ManagedRepo[] {
   const targetRepo = repos.find(repo => repo.id === repoId);
@@ -168,14 +236,20 @@ export function buildRepositoriesForDisplay(repos: ManagedRepo[]): ManagedRepo[]
     }
   }
 
-  return repos.map(repo => ({
-    ...repo,
-    autoFollowupOnFailedCi: autoCiFollowupByRepository.get(getRepositoryConfigKey(repo.name)) === true,
-    cancelCiDuringFollowup: cancelCiByRepository.get(getRepositoryConfigKey(repo.name)) === true,
-    cancelCiDuringFollowupWorkflows: cancelCiWorkflowsByRepository.get(getRepositoryConfigKey(repo.name)) ?? [],
-    nonBlockingChecks: nonBlockingChecksByRepository.get(getRepositoryConfigKey(repo.name)) ?? [],
-    notificationsEnabled: resolveRepositoryNotificationsEnabled(repos, getRepositoryConfigKey(repo.name)),
-    autoResolveMergeConflicts: resolveRepositoryAutoResolveMergeConflicts(repos, getRepositoryConfigKey(repo.name)),
-    visualPreview: visualPreviewByRepository.get(getRepositoryConfigKey(repo.name)) || defaultVisualPreview()
-  }));
+  return repos.map(repo => {
+    const autoAssign = resolveRepositoryAutoAssign(repos, getRepositoryConfigKey(repo.name));
+    return {
+      ...repo,
+      autoAssignPullRequests: autoAssign.enabled,
+      autoAssignDefaultAssignee: autoAssign.defaultAssignee,
+      autoAssignRequestReview: autoAssign.requestReview,
+      autoFollowupOnFailedCi: autoCiFollowupByRepository.get(getRepositoryConfigKey(repo.name)) === true,
+      cancelCiDuringFollowup: cancelCiByRepository.get(getRepositoryConfigKey(repo.name)) === true,
+      cancelCiDuringFollowupWorkflows: cancelCiWorkflowsByRepository.get(getRepositoryConfigKey(repo.name)) ?? [],
+      nonBlockingChecks: nonBlockingChecksByRepository.get(getRepositoryConfigKey(repo.name)) ?? [],
+      notificationsEnabled: resolveRepositoryNotificationsEnabled(repos, getRepositoryConfigKey(repo.name)),
+      autoResolveMergeConflicts: resolveRepositoryAutoResolveMergeConflicts(repos, getRepositoryConfigKey(repo.name)),
+      visualPreview: visualPreviewByRepository.get(getRepositoryConfigKey(repo.name)) || defaultVisualPreview()
+    };
+  });
 }
