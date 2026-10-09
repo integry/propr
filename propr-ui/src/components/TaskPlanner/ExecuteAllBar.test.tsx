@@ -20,6 +20,25 @@ describe('ExecuteAllBar', () => {
     expect(onExecuteAll).toHaveBeenCalledTimes(1);
   });
 
+  it('starts a fresh epic instead of queueing "remaining" tasks when nothing has run yet', () => {
+    render(<ExecuteAllBar {...baseProps} remainingCount={16} taskCount={16} useEpic onExecuteAll={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'Start Epic PR (16 tasks)' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: /Queue Remaining/ })).not.toBeInTheDocument();
+  });
+
+  it('starts every task of a fresh auto-merge plan', () => {
+    render(<ExecuteAllBar {...baseProps} remainingCount={3} taskCount={3} autoMerge onExecuteAll={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'Start All (3 tasks)' })).toBeEnabled();
+  });
+
+  it('queues the remaining tasks once the first one is running', () => {
+    render(<ExecuteAllBar {...baseProps} remainingCount={16} taskCount={16} useEpic hasRunningIssues onExecuteAll={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'Queue Remaining (16 tasks)' })).toBeEnabled();
+  });
+
   it('shows a quiet hint instead of a dead button when no chaining mode is on', () => {
     render(<ExecuteAllBar {...baseProps} onExecuteAll={vi.fn()} />);
 

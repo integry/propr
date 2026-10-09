@@ -53,7 +53,7 @@ export const StudioPhaseSwitcher: React.FC<StudioPhaseSwitcherProps> = ({ counts
       >
         Step {current.number}/{STEPS.length}
       </span>
-      <ol className="hidden md:flex items-center gap-0.5 rounded-md border border-slate-200 bg-white p-0.5 text-xs">
+      <ol className="hidden md:flex h-8 items-center gap-0.5 rounded-md border border-slate-200 bg-white p-0.5 text-xs">
         {STEPS.map((step, index) => {
           const state = getStepState(step.id, currentStage);
           const count = counts?.[step.id];
@@ -62,7 +62,7 @@ export const StudioPhaseSwitcher: React.FC<StudioPhaseSwitcherProps> = ({ counts
               {index > 0 && <ChevronRight size={12} className="text-slate-300" aria-hidden="true" />}
               <span
                 aria-current={state === 'active' ? 'step' : undefined}
-                className={`flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 ${
+                className={`flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 leading-4 ${
                   state === 'active'
                     ? 'bg-teal-50 font-medium text-teal-800'
                     : state === 'completed'
@@ -73,7 +73,7 @@ export const StudioPhaseSwitcher: React.FC<StudioPhaseSwitcherProps> = ({ counts
                 {state === 'completed' ? (
                   <Check size={12} className="text-teal-600" aria-label="Done" />
                 ) : (
-                  <span className="font-mono tabular-nums">{step.number}</span>
+                  <span className="inline-flex h-3 w-3 items-center justify-center leading-none tabular-nums">{step.number}</span>
                 )}
                 <span>{step.shortLabel}</span>
                 {count !== undefined && <span className="tabular-nums opacity-70">({count})</span>}

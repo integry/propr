@@ -73,8 +73,14 @@ export interface ConfigUpdateResponse {
   warnings?: string[];
 }
 
-export const updateSettings = async (settings: Record<string, unknown>): Promise<ConfigUpdateResponse> => {
-  const result = await postJson<ConfigUpdateResponse>('/api/config/settings', { settings });
+export const updateSettings = async (
+  settings: Record<string, unknown>,
+  options: { expectedRevision?: string } = {}
+): Promise<ConfigUpdateResponse> => {
+  const result = await postJson<ConfigUpdateResponse>('/api/config/settings', {
+    settings,
+    ...(options.expectedRevision ? { expectedRevision: options.expectedRevision } : {})
+  });
   if ('usage_tips_enabled' in settings) {
     window.dispatchEvent(new Event(USAGE_TIPS_SETTINGS_CHANGED));
   }

@@ -199,7 +199,7 @@ test('a retried phase replaces its grant and revokes the previous token', async 
   await assert.rejects(policy.authenticate(second.accessToken));
 });
 
-test('removing the owner\'s explicit membership ends the agent grant', async () => {
+test('removing the owner\'s assigned instance role ends the agent grant', async () => {
   const issued = await issueAgentRunGrant({ ownerId: OWNER, definitionName: 'Nightly triage', runId: 'run-1', phase: 'report', repositories: ['acme/repo'] }, grantDeps);
   await policy.authenticate(issued.accessToken);
   // GitHub identity and the whitelist stay valid, so the owner is still implicitly authorized.

@@ -213,7 +213,7 @@ export class InstanceMemberService {
         return this.database.transaction(async trx => {
             const existing = await trx<MemberRow>('instance_members').where({ github_user_id: target.id }).first();
             if (existing) {
-                throw new InstanceMemberError('This GitHub user already has an explicit instance role', 409, 'MEMBER_EXISTS');
+                throw new InstanceMemberError('This GitHub user already has an assigned instance role', 409, 'MEMBER_EXISTS');
             }
             await trx('instance_members').insert({
                 github_user_id: target.id,
