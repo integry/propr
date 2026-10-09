@@ -27,6 +27,7 @@ import { isReviewRun, type TaskRunEntry } from '../TaskList/rowModel';
 import DesktopTaskHeader from './DesktopTaskHeader';
 import { useTaskHeaderView } from './useTaskHeaderView';
 import { useLiveRunStop } from './useLiveRunStop';
+import { useTaskAssignment } from './useTaskAssignment';
 
 const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }> = ({ className, children }) => (
   <div className="h-full bg-white flex items-center justify-center">
@@ -233,6 +234,9 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   }), [taskData.history, taskData.taskInfo, taskData.usageMetricRecords, tokenUsage, taskData.budget]);
   const { headerProps, contextStripProps, runStripProps, runState, inspection, headerRun } = useTaskHeaderView(taskId, runs, ownSummary);
   const liveRun = useLiveRunStop(inspection?.head, Boolean(inspection?.headActive));
+  // One read serves the desktop header and the mobile summary; the compact bar never shows it.
+  const assignment = useTaskAssignment(taskId);
+  const assignedStripProps = { ...contextStripProps, assignment };
 
   const handleFollowupSubmit = useCallback(async (body: string) => {
     if (!taskId) {
@@ -328,7 +332,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
       <header className="hidden sm:block flex-shrink-0 sticky top-0 z-10 bg-white">
         <DesktopTaskHeader
           headerProps={headerProps}
-          contextStripProps={contextStripProps}
+          contextStripProps={assignedStripProps}
           runStripProps={runStripProps}
           runState={runState}
           actionBarProps={actionBarProps}
@@ -342,7 +346,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
 
       <MobileSummary
         ref={mobileHeader.summaryRef}
-        contextStripProps={contextStripProps}
+        contextStripProps={assignedStripProps}
         actionBarProps={actionBarProps}
         todos={taskData.liveDetails.todos}
       />

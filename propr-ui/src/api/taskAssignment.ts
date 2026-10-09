@@ -64,12 +64,43 @@ export class TaskAssigneesRejectedError extends Error {
   }
 }
 
+/**
+ * An assignment request the server answered with an error status, carrying the
+ * status and the body's `code` so callers can tell a task without an issue or
+ * pull request (409) or a viewer without write access (403) from an outage.
+ */
+export class TaskAssignmentRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly code: string | undefined) {
+    super(message);
+    this.name = 'TaskAssignmentRequestError';
+  }
+}
+
+/** The codes a 409 carries when a task has no issue or pull request to assign, as a goal task does. */
+export const NO_ASSIGNMENT_SUBJECT_CODES: readonly string[] = ['NO_GITHUB_SUBJECT', 'NO_ASSIGNMENT_SUBJECT'];
+
+export const isNoAssignmentSubjectError = (error: unknown): boolean =>
+  error instanceof TaskAssignmentRequestError && error.status === 409
+  && (error.code === undefined || NO_ASSIGNMENT_SUBJECT_CODES.includes(error.code));
+
+/** Re-throws `handleApiResponse`'s plain errors with the response's status and code. */
+const handleAssignmentResponse = async (response: Response): Promise<void> => {
+  try {
+    await handleApiResponse(response);
+  } catch (error) {
+    // Demo-mode, session and other typed errors keep their own class.
+    if (!(error instanceof Error) || error.constructor !== Error) throw error;
+    const body = await response.clone().json().catch(() => null) as { code?: unknown } | null;
+    throw new TaskAssignmentRequestError(error.message, response.status, typeof body?.code === 'string' ? body.code : undefined);
+  }
+};
+
 const taskAssignmentUrl = (taskId: string, path: string): string =>
   `${API_BASE_URL}/api/task/${encodeURIComponent(taskId)}/${path}`;
 
 export const getTaskAssignees = async (taskId: string): Promise<TaskAssigneesResponse> => {
   const response = await apiFetch(taskAssignmentUrl(taskId, 'assignees'), { credentials: 'include' });
-  await handleApiResponse(response);
+  await handleAssignmentResponse(response);
   return response.json();
 };
 
@@ -85,13 +116,12 @@ export const setTaskAssignees = async (
     body: JSON.stringify({ logins, mode }),
   });
   try {
-    await handleApiResponse(response);
+    await handleAssignmentResponse(response);
   } catch (error) {
-    // Demo-mode, session and other typed errors keep their own class.
-    if (response.status !== 422 || !(error instanceof Error) || error.constructor !== Error) throw error;
-    const body = await response.clone().json().catch(() => null) as Partial<SetTaskAssigneesResponse> & { code?: unknown } | null;
+    if (!(error instanceof TaskAssignmentRequestError) || error.status !== 422) throw error;
+    const body = await response.clone().json().catch(() => null) as Partial<SetTaskAssigneesResponse> | null;
     // Only a partial result has a confirmed set; an outright GitHub rejection stays an ordinary error.
-    if (body?.code !== 'GITHUB_REJECTED' || !body.subject || !Array.isArray(body.assignees) || !Array.isArray(body.rejected)) throw error;
+    if (error.code !== 'GITHUB_REJECTED' || !body?.subject || !Array.isArray(body.assignees) || !Array.isArray(body.rejected)) throw error;
     throw new TaskAssigneesRejectedError(error.message, body.subject, body.assignees, body.rejected);
   }
   return response.json();
@@ -99,6 +129,6 @@ export const setTaskAssignees = async (
 
 export const getAssignableUsers = async (taskId: string): Promise<AssignableUsersResponse> => {
   const response = await apiFetch(taskAssignmentUrl(taskId, 'assignable-users'), { credentials: 'include' });
-  await handleApiResponse(response);
+  await handleAssignmentResponse(response);
   return response.json();
 };
