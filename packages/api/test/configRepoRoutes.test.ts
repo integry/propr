@@ -47,7 +47,7 @@ test('GET repository config returns false for legacy entries with a missing opti
       name: 'integry/propr',
       enabled: true,
       autoFollowupOnFailedCi: false, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [], nonBlockingChecks: [],
-      notificationsEnabled: true, githubPrTemplateFallback: true,
+      notificationsEnabled: true, githubPrTemplateFallback: true, autoAssignPullRequests: false, autoAssignDefaultAssignee: null, autoAssignRequestReview: false,
       visualPreview: { enabled: false, types: ['image'], githubAttachmentPlan: 'auto', githubAttachmentCapacity: resolveGitHubAttachmentCapacity() }
     }]
   });
@@ -75,7 +75,7 @@ test('POST repository config persists an enabled option without enabling other r
       name: 'integry/propr',
       enabled: true,
       autoFollowupOnFailedCi: true, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [], nonBlockingChecks: [],
-      notificationsEnabled: true, githubPrTemplateFallback: true,
+      notificationsEnabled: true, githubPrTemplateFallback: true, autoAssignPullRequests: false, autoAssignDefaultAssignee: null, autoAssignRequestReview: false,
       visualPreview: { enabled: false, types: ['image'] },
       alias: undefined,
       baseBranch: undefined,
@@ -87,7 +87,7 @@ test('POST repository config persists an enabled option without enabling other r
       name: 'integry/other',
       enabled: true,
       autoFollowupOnFailedCi: false, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [], nonBlockingChecks: [],
-      notificationsEnabled: true, githubPrTemplateFallback: true,
+      notificationsEnabled: true, githubPrTemplateFallback: true, autoAssignPullRequests: false, autoAssignDefaultAssignee: null, autoAssignRequestReview: false,
       visualPreview: { enabled: false, types: ['image'] },
       alias: undefined,
       baseBranch: undefined,

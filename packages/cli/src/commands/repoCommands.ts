@@ -1,4 +1,4 @@
-import { describeGitHubAttachmentCapacity, resolveGitHubAttachmentCapacity, type GitHubAttachmentPlanOverride } from "@propr/shared";
+import { describeGitHubAttachmentCapacity, isGitHubLogin, resolveGitHubAttachmentCapacity, type GitHubAttachmentPlanOverride } from "@propr/shared";
 /**
  * Repository Management Commands
  *
@@ -67,6 +67,53 @@ export function parseAutoResolveConflicts(value: string): boolean | null {
 export function formatAutoResolveConflicts(override: boolean | null | undefined, instanceDefault?: boolean): string {
   if (typeof override === "boolean") return override ? "On" : "Off";
   return instanceDefault === undefined ? "Inherit" : `Inherit (${instanceDefault ? "On" : "Off"})`;
+}
+
+/** Parses an explicit `on`/`off` flag value; any other string is an error, never truthy. */
+export function parseOnOff(value: string, flag: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "on") return true;
+  if (normalized === "off") return false;
+  throw new Error(`${flag} must be on or off`);
+}
+
+/** Parses `--auto-assign-to <login|none>`; `none` (null) assigns the issue author again. */
+export function parseAutoAssignTo(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.toLowerCase() === "none") return null;
+  const login = trimmed.replace(/^@/, "");
+  if (!isGitHubLogin(login)) throw new Error("--auto-assign-to must be a GitHub login or none");
+  return login;
+}
+
+export interface AutoAssignFlags {
+  autoAssign?: string;
+  autoAssignTo?: string;
+  autoAssignReview?: string;
+}
+
+/** Only flags the user supplied are sent, so the server keeps every other stored value. */
+export function parseAutoAssignFlags(options: AutoAssignFlags): {
+  autoAssignPullRequests?: boolean;
+  autoAssignDefaultAssignee?: string | null;
+  autoAssignRequestReview?: boolean;
+} {
+  return {
+    ...(options.autoAssign !== undefined && { autoAssignPullRequests: parseOnOff(options.autoAssign, "--auto-assign") }),
+    ...(options.autoAssignTo !== undefined && { autoAssignDefaultAssignee: parseAutoAssignTo(options.autoAssignTo) }),
+    ...(options.autoAssignReview !== undefined && { autoAssignRequestReview: parseOnOff(options.autoAssignReview, "--auto-assign-review") }),
+  };
+}
+
+export function hasAutoAssignFlags(options: AutoAssignFlags): boolean {
+  return options.autoAssign !== undefined || options.autoAssignTo !== undefined || options.autoAssignReview !== undefined;
+}
+
+/** Shows whether pull requests are assigned, to whom, and whether a review is requested. */
+export function formatAutoAssign(repo: Pick<MonitoredRepo, "autoAssignPullRequests" | "autoAssignDefaultAssignee" | "autoAssignRequestReview">): string {
+  if (repo.autoAssignPullRequests !== true) return "Off";
+  const assignee = repo.autoAssignDefaultAssignee ? `@${repo.autoAssignDefaultAssignee}` : "issue author";
+  return `On (${assignee}${repo.autoAssignRequestReview === true ? ", review" : ""})`;
 }
 
 /** Best-effort read of the instance default; listing still works without it. */
@@ -219,6 +266,10 @@ function displayReposTable(repos: MonitoredRepo[], autoResolveDefault?: boolean)
     "Auto-resolve conflicts".length,
     ...repos.map((r) => formatAutoResolveConflicts(r.autoResolveMergeConflicts, autoResolveDefault).length)
   );
+  const autoAssignWidth = Math.max(
+    "Auto-assign PRs".length,
+    ...repos.map((r) => formatAutoAssign(r).length)
+  );
   const visualPreviewWidth = Math.max(
     "Visual previews".length,
     ...repos.map((r) => formatVisualPreview(r.visualPreview).length)
@@ -232,6 +283,7 @@ function displayReposTable(repos: MonitoredRepo[], autoResolveDefault?: boolean)
     "Auto CI follow-up".padEnd(autoCiFollowupWidth),
     "Notifications".padEnd(notificationsWidth),
     "Auto-resolve conflicts".padEnd(autoResolveWidth),
+    "Auto-assign PRs".padEnd(autoAssignWidth),
     "Visual previews".padEnd(visualPreviewWidth),
   ].join("  ");
 
@@ -247,6 +299,7 @@ function displayReposTable(repos: MonitoredRepo[], autoResolveDefault?: boolean)
       formatEnabled(repo.autoFollowupOnFailedCi).padEnd(autoCiFollowupWidth),
       formatEnabled(repo.notificationsEnabled !== false).padEnd(notificationsWidth),
       formatAutoResolveConflicts(repo.autoResolveMergeConflicts, autoResolveDefault).padEnd(autoResolveWidth),
+      formatAutoAssign(repo).padEnd(autoAssignWidth),
       formatVisualPreview(repo.visualPreview).padEnd(visualPreviewWidth),
     ].join("  ");
 
@@ -324,6 +377,9 @@ Examples:
     .option("--auto-ci-followup", "Enable automatic follow-up when CI fails (default: off)")
     .option("--no-notifications", "Do not generate Inbox or push notifications for this repository (default: on)")
     .option("--auto-resolve-conflicts <mode>", "Merge-conflict auto-resolution: on, off, or inherit the instance default (default: inherit)")
+    .option("--auto-assign <on|off>", "Assign ProPR pull requests automatically (default: off)")
+    .option("--auto-assign-to <login|none>", "GitHub login assigned instead of the issue author; none uses the issue author")
+    .option("--auto-assign-review <on|off>", "Also request a GitHub review from the assigned user (default: off)")
     .option("--visual-previews", "Enable visual previews for user-visible changes")
     .option("--github-attachment-plan <plan>", "GitHub attachment capacity: auto, free, paid (default: auto)")
     .option("--preview-types <types>", "Comma-separated preview types: image,video")
@@ -338,12 +394,13 @@ Examples:
   $ propr repo add myorg/myrepo --auto-ci-followup
   $ propr repo add myorg/myrepo --no-notifications
   $ propr repo add myorg/myrepo --auto-resolve-conflicts on
+  $ propr repo add myorg/myrepo --auto-assign on --auto-assign-to octocat --auto-assign-review on
   $ propr repo add myorg/myrepo --visual-previews --preview-types image,video
 `)
     .action(
       async (
         fullName: string,
-        options: { alias?: string; branch?: string; autoCiFollowup?: boolean; notifications?: boolean; autoResolveConflicts?: string; visualPreviews?: boolean; previewTypes?: string; previewInstructions?: string; githubAttachmentPlan?: string },
+        options: AutoAssignFlags & { alias?: string; branch?: string; autoCiFollowup?: boolean; notifications?: boolean; autoResolveConflicts?: string; visualPreviews?: boolean; previewTypes?: string; previewInstructions?: string; githubAttachmentPlan?: string },
         command: Command
       ) => {
         try {
@@ -376,6 +433,7 @@ Examples:
           const autoResolveMergeConflicts = options.autoResolveConflicts === undefined
             ? undefined
             : parseAutoResolveConflicts(options.autoResolveConflicts);
+          const autoAssign = parseAutoAssignFlags(options);
 
           const result = await addRepo(fullName, {
             alias: options.alias,
@@ -384,6 +442,7 @@ Examples:
             autoFollowupOnFailedCi: options.autoCiFollowup ?? false,
             notificationsEnabled,
             autoResolveMergeConflicts,
+            ...autoAssign,
             visualPreview: {
               ...(options.githubAttachmentPlan !== undefined ? { githubAttachmentPlan: parseAttachmentPlan(options.githubAttachmentPlan) } : {}),
               enabled: previewRequested,
@@ -407,6 +466,7 @@ Examples:
             const savedRepo = result.repos_to_monitor.find((r) => r.name.toLowerCase() === fullName.toLowerCase());
             console.log(`  Notifications: ${formatEnabled((savedRepo?.notificationsEnabled ?? notificationsEnabled) !== false)}`);
             console.log(`  Auto-resolve merge conflicts: ${formatAutoResolveConflicts(savedRepo?.autoResolveMergeConflicts ?? autoResolveMergeConflicts)}`);
+            console.log(`  Auto-assign pull requests: ${formatAutoAssign(savedRepo ?? autoAssign)}`);
             console.log(`  Visual previews: ${formatVisualPreview({
               ...(options.githubAttachmentPlan !== undefined ? { githubAttachmentPlan: parseAttachmentPlan(options.githubAttachmentPlan) } : {}),
               enabled: previewRequested,
@@ -519,7 +579,7 @@ Example:
   // repo toggle
   repo
     .command("toggle <fullName>")
-    .description("Update monitoring, automatic CI follow-up, notifications, merge-conflict auto-resolution, GitHub PR template fallback, or visual previews for a repository")
+    .description("Update monitoring, automatic CI follow-up, notifications, merge-conflict auto-resolution, GitHub PR template fallback, automatic pull request assignment, or visual previews for a repository")
     .option("--enable", "Enable monitoring for the repository")
     .option("--disable", "Disable monitoring for the repository")
     .option("--auto-ci-followup", "Enable automatic follow-up when CI fails")
@@ -529,6 +589,9 @@ Example:
     .option("--auto-resolve-conflicts <mode>", "Merge-conflict auto-resolution for every branch of the repository: on, off, or inherit the instance default")
     .option("--github-pr-template", "Append the repository's GitHub pull request template when it has no .propr/pr-template.md (default)")
     .option("--no-github-pr-template", "Never append the repository's GitHub pull request template to PR descriptions")
+    .option("--auto-assign <on|off>", "Assign ProPR pull requests automatically for every branch of the repository")
+    .option("--auto-assign-to <login|none>", "GitHub login assigned instead of the issue author; none uses the issue author again")
+    .option("--auto-assign-review <on|off>", "Also request a GitHub review from the assigned user")
     .option("--visual-previews", "Enable visual previews")
     .option("--no-visual-previews", "Disable visual previews")
     .option("--github-attachment-plan <plan>", "GitHub attachment capacity: auto, free, paid (default: auto)")
@@ -539,7 +602,7 @@ Argument:
   fullName    Repository in owner/repo format
 
 Note:
-  Specify at least one monitoring, automatic CI follow-up, notification, merge-conflict auto-resolution, GitHub PR template, or visual preview option.
+  Specify at least one monitoring, automatic CI follow-up, notification, merge-conflict auto-resolution, GitHub PR template, automatic assignment, or visual preview option.
 
 Examples:
   $ propr repo toggle myorg/myrepo --enable
@@ -549,12 +612,13 @@ Examples:
   $ propr repo toggle myorg/myrepo --no-notifications
   $ propr repo toggle myorg/myrepo --auto-resolve-conflicts inherit
   $ propr repo toggle myorg/myrepo --no-github-pr-template
+  $ propr repo toggle myorg/myrepo --auto-assign on --auto-assign-to none
   $ propr repo toggle myorg/myrepo --visual-previews --preview-types image,video
 `)
     .action(
       async (
         fullName: string,
-        options: { enable?: boolean; disable?: boolean; autoCiFollowup?: boolean; notifications?: boolean; autoResolveConflicts?: string; githubPrTemplate?: boolean; visualPreviews?: boolean; previewTypes?: string; previewInstructions?: string; githubAttachmentPlan?: string }
+        options: AutoAssignFlags & { enable?: boolean; disable?: boolean; autoCiFollowup?: boolean; notifications?: boolean; autoResolveConflicts?: string; githubPrTemplate?: boolean; visualPreviews?: boolean; previewTypes?: string; previewInstructions?: string; githubAttachmentPlan?: string }
       ) => {
         try {
           if (options.enable && options.disable) {
@@ -564,9 +628,9 @@ Examples:
             process.exit(1);
           }
 
-          if (!options.enable && !options.disable && options.autoCiFollowup === undefined && options.notifications === undefined && options.autoResolveConflicts === undefined && options.githubPrTemplate === undefined && options.visualPreviews === undefined && options.previewTypes === undefined && options.previewInstructions === undefined && options.githubAttachmentPlan === undefined) {
+          if (!options.enable && !options.disable && options.autoCiFollowup === undefined && options.notifications === undefined && options.autoResolveConflicts === undefined && options.githubPrTemplate === undefined && options.visualPreviews === undefined && options.previewTypes === undefined && options.previewInstructions === undefined && options.githubAttachmentPlan === undefined && !hasAutoAssignFlags(options)) {
             console.error(
-              "Error: Must specify a monitoring, automatic CI follow-up, notification, merge-conflict auto-resolution, GitHub PR template, or visual preview option."
+              "Error: Must specify a monitoring, automatic CI follow-up, notification, merge-conflict auto-resolution, GitHub PR template, automatic assignment, or visual preview option."
             );
             console.log("");
             console.log("Usage:");
@@ -576,6 +640,7 @@ Examples:
             console.log(`  propr repo toggle ${fullName} --no-auto-ci-followup`);
             console.log(`  propr repo toggle ${fullName} --no-notifications`);
             console.log(`  propr repo toggle ${fullName} --auto-resolve-conflicts <on|off|inherit>`);
+            console.log(`  propr repo toggle ${fullName} --auto-assign <on|off> --auto-assign-to <login|none> --auto-assign-review <on|off>`);
             console.log(`  propr repo toggle ${fullName} --visual-previews --preview-types image,video`);
             process.exit(1);
           }
@@ -593,6 +658,7 @@ Examples:
           const autoResolveMergeConflicts = options.autoResolveConflicts === undefined
             ? undefined
             : parseAutoResolveConflicts(options.autoResolveConflicts);
+          const autoAssign = parseAutoAssignFlags(options);
           const visualPreviewUpdate = options.visualPreviews !== undefined || options.previewTypes !== undefined || options.previewInstructions !== undefined || options.githubAttachmentPlan !== undefined
             ? {
                 ...(options.githubAttachmentPlan !== undefined && { githubAttachmentPlan: parseAttachmentPlan(options.githubAttachmentPlan) }),
@@ -611,6 +677,7 @@ Examples:
             ...(options.notifications !== undefined && { notificationsEnabled: options.notifications }),
             ...(autoResolveMergeConflicts !== undefined && { autoResolveMergeConflicts }),
             ...(options.githubPrTemplate !== undefined && { githubPrTemplateFallback: options.githubPrTemplate }),
+            ...autoAssign,
             ...(visualPreviewUpdate && { visualPreview: visualPreviewUpdate }),
           });
 
@@ -633,6 +700,15 @@ Examples:
             }
             if (options.githubPrTemplate !== undefined) {
               console.log(`  GitHub PR template fallback: ${formatEnabled(options.githubPrTemplate)}`);
+            }
+            if (autoAssign.autoAssignPullRequests !== undefined) {
+              console.log(`  Auto-assign pull requests: ${autoAssign.autoAssignPullRequests ? "On" : "Off"}`);
+            }
+            if (autoAssign.autoAssignDefaultAssignee !== undefined) {
+              console.log(`  Auto-assign to: ${autoAssign.autoAssignDefaultAssignee ? `@${autoAssign.autoAssignDefaultAssignee}` : "issue author"}`);
+            }
+            if (autoAssign.autoAssignRequestReview !== undefined) {
+              console.log(`  Request review from assignee: ${autoAssign.autoAssignRequestReview ? "On" : "Off"}`);
             }
             if (visualPreviewUpdate) {
               const previewState = options.visualPreviews === false

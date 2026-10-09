@@ -377,6 +377,8 @@ export {
     isMonitoredRepository, isAutoCiFollowupEnabledForRepository, isCancelCiDuringFollowupEnabledForRepository,
     getCancelCiDuringFollowupWorkflowsForRepository,
     getNonBlockingChecksForRepository,
+    resolveRepositoryAutoAssignment,
+    type RepositoryAutoAssignment,
     resolveMonitoredRepositories,
     getAiPrimaryTag,
     getPrimaryProcessingLabels,

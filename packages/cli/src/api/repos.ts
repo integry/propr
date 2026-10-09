@@ -191,6 +191,23 @@ export interface MonitoredRepo {
   githubPrTemplateFallback?: boolean;
 
   /**
+   * Whether ProPR pull requests are assigned automatically. Omitted by older
+   * servers; treat omission as disabled.
+   */
+  autoAssignPullRequests?: boolean;
+
+  /**
+   * GitHub login assigned instead of the issue author; null or omitted means
+   * the issue author is assigned.
+   */
+  autoAssignDefaultAssignee?: string | null;
+
+  /**
+   * Whether a GitHub review is requested from the assigned user. Omission reads as disabled.
+   */
+  autoAssignRequestReview?: boolean;
+
+  /**
    * Visual evidence generated for changes with a user-visible result.
    */
   visualPreview?: VisualPreviewSettings;
@@ -260,6 +277,15 @@ export interface AddRepoOptions {
    */
   autoResolveMergeConflicts?: boolean | null;
 
+  /** Automatic pull request assignment. Omitted keeps the stored repository-wide value (off by default). */
+  autoAssignPullRequests?: boolean;
+
+  /** Login assigned instead of the issue author. Omitted keeps the stored value; null assigns the issue author. */
+  autoAssignDefaultAssignee?: string | null;
+
+  /** Request a GitHub review from the assigned user. Omitted keeps the stored value (off by default). */
+  autoAssignRequestReview?: boolean;
+
   /** Visual preview policy. Defaults to disabled with image capture selected. */
   visualPreview?: VisualPreviewSettings;
 }
@@ -296,6 +322,15 @@ export interface UpdateRepoOptions {
 
   /** Optional repository-wide GitHub pull request template fallback state. */
   githubPrTemplateFallback?: boolean;
+
+  /** Automatic pull request assignment. Omitted keeps the stored repository-wide value (off by default). */
+  autoAssignPullRequests?: boolean;
+
+  /** Login assigned instead of the issue author. Omitted keeps the stored value; null assigns the issue author. */
+  autoAssignDefaultAssignee?: string | null;
+
+  /** Request a GitHub review from the assigned user. Omitted keeps the stored value (off by default). */
+  autoAssignRequestReview?: boolean;
 
   /** Optional visual preview policy update. */
   visualPreview?: Omit<Partial<VisualPreviewSettings>, 'instructions'> & { instructions?: string | null };
@@ -387,6 +422,10 @@ export async function addRepo(
     ...(options.notificationsEnabled !== undefined && { notificationsEnabled: options.notificationsEnabled }),
     // Omitted keeps the stored repository-wide override; explicit null clears it (inherit the instance default).
     ...(options.autoResolveMergeConflicts !== undefined && { autoResolveMergeConflicts: options.autoResolveMergeConflicts }),
+    // Omitted keeps the stored repository-wide value; the server applies an explicit value to every branch entry.
+    ...(options.autoAssignPullRequests !== undefined && { autoAssignPullRequests: options.autoAssignPullRequests }),
+    ...(options.autoAssignDefaultAssignee !== undefined && { autoAssignDefaultAssignee: options.autoAssignDefaultAssignee }),
+    ...(options.autoAssignRequestReview !== undefined && { autoAssignRequestReview: options.autoAssignRequestReview }),
     visualPreview: options.visualPreview ?? { enabled: false, types: ['image'] },
     alias: options.alias?.trim() || undefined,
     baseBranch: options.baseBranch?.trim() || undefined,
@@ -453,6 +492,10 @@ export async function updateRepo(
     ...(updates.notificationsEnabled !== undefined && { notificationsEnabled: updates.notificationsEnabled }),
     // The server applies the change to every branch entry of the repository; null clears it.
     ...(updates.autoResolveMergeConflicts !== undefined && { autoResolveMergeConflicts: updates.autoResolveMergeConflicts }),
+    // Omitted keeps the stored repository-wide value; the server applies an explicit value to every branch entry.
+    ...(updates.autoAssignPullRequests !== undefined && { autoAssignPullRequests: updates.autoAssignPullRequests }),
+    ...(updates.autoAssignDefaultAssignee !== undefined && { autoAssignDefaultAssignee: updates.autoAssignDefaultAssignee }),
+    ...(updates.autoAssignRequestReview !== undefined && { autoAssignRequestReview: updates.autoAssignRequestReview }),
     ...(updates.visualPreview !== undefined && {
       visualPreview: {
         ...((updates.visualPreview.githubAttachmentPlan ?? existingRepo.visualPreview?.githubAttachmentPlan) !== undefined
