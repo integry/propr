@@ -56,7 +56,7 @@ interface EditorProps {
 
 /** The popover: a filterable checkbox list of assignable users, the current assignees pre-checked. */
 const AssignmentEditor: React.FC<EditorProps> = ({ id, assignment, onClose }) => {
-  const { assignees, assignable, loadAssignableUsers, save } = assignment;
+  const { assignees, assignable, loadAssignableUsers, save, saving } = assignment;
   const ref = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const [initial] = useState(() => new Set(assignees.map(user => loginKey(user.login))));
@@ -122,6 +122,8 @@ const AssignmentEditor: React.FC<EditorProps> = ({ id, assignment, onClose }) =>
   };
 
   const submit = () => {
+    // Saves run one at a time, so an editor left open in the other layout waits for the first.
+    if (saving) return;
     if (!changed) { onClose(true); return; }
     // Logins keep the casing GitHub gave them.
     const byKey = new Map(users.map(user => [loginKey(user.login), user.login]));
@@ -214,7 +216,7 @@ const AssignmentEditor: React.FC<EditorProps> = ({ id, assignment, onClose }) =>
         </button>
         <button
           type="button"
-          disabled={!changed}
+          disabled={!changed || saving}
           onClick={submit}
           className="rounded bg-teal-600 px-2.5 py-1 font-medium text-white hover:bg-teal-700 disabled:opacity-50 disabled:hover:bg-teal-600"
         >
@@ -288,9 +290,11 @@ const AssignmentControl: React.FC<{ assignment: TaskAssignment }> = ({ assignmen
           aria-haspopup="dialog"
           aria-expanded={open}
           aria-controls={open ? editorId : undefined}
+          // Not `disabled`: Save hands focus back to this button just as the save starts.
+          aria-disabled={saving || undefined}
           data-testid="assignment-trigger"
-          onClick={() => setOpen(value => !value)}
-          className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+          onClick={() => { if (!saving) setOpen(value => !value); }}
+          className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 aria-disabled:cursor-wait aria-disabled:opacity-50 aria-disabled:hover:bg-transparent aria-disabled:hover:text-slate-500"
         >
           <UserPlus size={12} aria-hidden="true" />
           {assignees.length === 0 && <span>Assign</span>}

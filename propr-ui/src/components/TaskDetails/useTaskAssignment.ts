@@ -40,7 +40,10 @@ export interface TaskAssignment {
   /** False once a save was refused for lack of write access; the editor is not offered again. */
   editable: boolean;
   saving: boolean;
-  /** Replaces the assignees with `logins` (an empty list unassigns); resolves whether it succeeded. */
+  /**
+   * Replaces the assignees with `logins` (an empty list unassigns); resolves whether it succeeded.
+   * One save runs at a time: a call made while another is in flight is refused and resolves false.
+   */
   save: (logins: string[]) => Promise<boolean>;
   assignable: AssignableUsersState;
   /** Reads the assignable users the first time it is called; later calls reuse them. */
@@ -67,13 +70,17 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
   // Answers for a task that is no longer on screen are dropped.
   const currentTaskId = useRef(taskId);
   currentTaskId.current = taskId;
-  const assigneesRef = useRef(assignees);
-  assigneesRef.current = assignees;
+  // What GitHub last confirmed, as opposed to the optimistic display; a failed save restores it.
+  const confirmedAssignees = useRef<AttributedUser[]>([]);
+  // Set synchronously, so a second save started before React re-renders is still refused.
+  const saveInFlight = useRef(false);
   const assignableRequested = useRef(false);
   const saveGeneration = useRef(0);
 
   useEffect(() => {
     setAssignees([]);
+    confirmedAssignees.current = [];
+    saveInFlight.current = false;
     setSubject(null);
     setError(null);
     setUnavailable(false);
@@ -96,6 +103,7 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
           setError('Unexpected assignees response');
           return;
         }
+        confirmedAssignees.current = response.assignees;
         setAssignees(response.assignees);
         setSubject(response.subject ?? null);
       })
@@ -128,24 +136,29 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
   }, [taskId]);
 
   const save = useCallback(async (logins: string[]): Promise<boolean> => {
-    if (!taskId) return false;
-    const previous = assigneesRef.current;
+    if (!taskId || saveInFlight.current) return false;
+    saveInFlight.current = true;
+    const previous = confirmedAssignees.current;
     const known = new Map([...(assignable.users ?? []), ...previous].map(user => [user.login.toLowerCase(), user]));
     const generation = ++saveGeneration.current;
     const isCurrent = () => currentTaskId.current === taskId && saveGeneration.current === generation;
-    setAssignees(logins.map(login => known.get(login.toLowerCase())
-      ?? { id: `login:${login}`, login, displayName: null, avatarUrl: null }));
+    const optimistic = logins.map(login => known.get(login.toLowerCase())
+      ?? { id: `login:${login}`, login, displayName: null, avatarUrl: null });
+    setAssignees(optimistic);
     setSaving(true);
     try {
       const response = await setTaskAssignees(taskId, logins, 'replace');
       if (!isCurrent()) return true;
-      if (Array.isArray(response?.assignees)) setAssignees(response.assignees);
+      // The write succeeded, so what it asked for stands unless GitHub reports otherwise.
+      confirmedAssignees.current = Array.isArray(response?.assignees) ? response.assignees : optimistic;
+      setAssignees(confirmedAssignees.current);
       if (response?.subject) setSubject(response.subject);
       return true;
     } catch (err) {
       if (!isCurrent()) return false;
       if (err instanceof TaskAssigneesRejectedError) {
         // GitHub applied part of the change; show what it confirmed.
+        confirmedAssignees.current = err.assignees;
         setAssignees(err.assignees);
         addToast({ type: 'error', message: err.message });
         return false;
@@ -160,7 +173,10 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
       }
       return false;
     } finally {
-      if (isCurrent()) setSaving(false);
+      if (isCurrent()) {
+        saveInFlight.current = false;
+        setSaving(false);
+      }
     }
   }, [taskId, assignable.users, addToast]);
 
