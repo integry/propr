@@ -57,7 +57,7 @@ Each capability can be switched on or off separately. The default is `repository
 
 The acting step of `preview` and `auto` agents always uses ProPR's MCP server, so those modes also require Claude Code or Codex (or a synthetic pool whose enabled members all support it). `web` in the acting step follows the definition.
 
-If web access must be blocked, choose Claude Code or Codex. For the other runtimes, also consider the instance's optional [network firewall](./execution-safety.md#network-firewall-optional-off-by-default).
+If web access must be blocked, choose Claude Code or Codex. For the other runtimes, also consider the instance's optional [network firewall](./execution-safety.md#restricted-network-mode).
 
 ### Schedule
 

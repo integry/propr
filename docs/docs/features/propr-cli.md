@@ -382,6 +382,7 @@ With `--json`, every command prints a `{ "version": 1, "kind": ... }` document w
 propr task list                            # All tasks
 propr task list -s processing              # Filter by status
 propr task list --search "auth" -l 100     # Search with a result limit
+propr task list --assignee me              # Tasks assigned to you (unassigned, all, or logins)
 propr task inspect                         # Active tasks, including queued work
 propr task inspect --state queued          # One exact server lifecycle state
 propr task inspect <task-id>               # Current details and full run history
@@ -392,6 +393,8 @@ propr task followup <task-id> "Also add tests"    # Post and queue a follow-up (
 propr task import "Recover missing tasks"  # Reconcile or recover tasks from GitHub
 propr task revert owner/repo <pr> <sha> [comment-id]   # Revert a commit from a PR (--dry-run to preview)
 ```
+
+`--assignee` filters by [task assignment](./assignment.md): `me` (tasks assigned to you), `unassigned`, `all` (the default), or one or more comma-separated GitHub logins such as `octocat,hubot`. A leading `@` is accepted. The filter is applied on the server before the limit, so the total counts the same tasks.
 
 Status values for `-s`: `pending`, `queued`, `processing`, `completed`, `failed`, `cancelled`, `all`. These are queue-level filters; task details additionally display the finer-grained worker states `claude_execution` ("Executing", agent run for any agent type) and `post_processing` (see [Worker Runtime](../architecture/worker-runtime.md)).
 
@@ -435,6 +438,10 @@ propr repo toggle owner/repo --visual-previews --preview-types image,video
 propr repo toggle owner/repo --no-visual-previews
 propr repo toggle owner/repo --no-github-pr-template  # Don't append the GitHub PR template
 propr repo toggle owner/repo --auto-resolve-conflicts on       # Always auto-resolve merge conflicts (off, inherit)
+propr repo add owner/repo --auto-assign on --auto-assign-to octocat --auto-assign-review on
+propr repo toggle owner/repo --auto-assign on          # Assign PRs to the source issue author
+propr repo toggle owner/repo --auto-assign-to none     # Clear the default assignee
+propr repo toggle owner/repo --auto-assign-review off  # Stop requesting reviews
 propr repo index owner/repo                  # Full reindex
 propr repo index owner/repo --incremental    # Incremental reindex
 propr repo status                            # Indexing status for all repos
@@ -442,6 +449,8 @@ propr repo validate                          # Check .propr/pr-template.md in th
 ```
 
 Automatic CI follow-up is configured per repository and is **off by default**. Enable it only for repositories whose CI failures are high-quality, trusted signals; noisy or flaky checks can otherwise create unnecessary follow-up work. `propr repo list` shows the current setting for every monitored repository.
+
+Automatic pull request assignment is per repository and **off by default**, as are both of its sub-options. `--auto-assign <on|off>` turns it on or off. `--auto-assign-to <login|none>` sets the person to assign; with none, which is the default, the source issue author is assigned, and bot authors are skipped. `--auto-assign-review <on|off>` also requests that person's review (default off). The options apply to every branch of the repository, and flags you leave out keep their stored value. `propr repo list` shows them in the **Auto-assign PRs** column. See [Automatic Pull Request Assignment](./pr-followup.md#automatic-pull-request-assignment).
 
 Visual previews are also per-repository and **off by default**. `--preview-types` accepts `image`, `video`, or `image,video`; use `--preview-instructions` to add project-specific capture details. See [Visual Previews](./visual-previews.md) for generation and publication behavior.
 
@@ -493,6 +502,7 @@ propr setting get                                  # All settings
 propr setting get -k worker_concurrency
 propr setting update worker_concurrency 4
 propr setting update github_user_whitelist "a,b,c"
+propr setting update followup_requires_assignment true   # Turn on the assignment gate (default false)
 
 propr log list                       # Recent LLM logs
 propr log list -m <model> --failed   # Filter by model, failures only
@@ -514,6 +524,7 @@ Settings keys:
 | `planner_context_model` | Model for planner context generation |
 | `planner_generation_model` | Model for planner generation |
 | `auto_resolve_merge_conflicts` | Automatically resolve merge conflicts |
+| `followup_requires_assignment` | Only people assigned to a pull request may start follow-up work on it; unassigned pull requests are unaffected (default `false`). See [the assignment gate](./assignment.md#the-assignment-gate). |
 | `dashboard_summary_enabled` | Enable AI-generated dashboard activity summaries |
 | `model_reasoning_level` | System reasoning preference for Claude, Codex, and Antigravity, resolved against the selected model's supported levels (empty = default effort; model overrides and explicit run / `level-*` selections take precedence). See [Reasoning Levels](./agents-and-models.md#reasoning-levels). |
 | `usage_tips_enabled` | Show daily documentation tips on the dashboard |
