@@ -14,7 +14,7 @@ import {
 import { reconcileTerminalSubmissionProgress, type SubmissionProgress } from './submissionProgress.js';
 import { isUltrafixCommandTool } from './ultrafix.js';
 
-const commentTools = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'start_ultrafix', 'comment_on_pull_request'];
+const commentTools = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'start_ultrafix', 'resolve_merge_conflicts', 'comment_on_pull_request'];
 const trackedTools = ['create_task', 'retry_task_submission', ...commentTools, 'send_task_followup', 'revert_pull_request_commit', 'index_repository'];
 const terminalStates = ['completed', 'failed', 'cancelled'];
 

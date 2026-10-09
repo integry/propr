@@ -428,6 +428,7 @@ function createMockJob(overrides: Partial<{
     pullRequestNumber: number;
     headBranch: string;
     baseBranch: string;
+    commandCommentId: number;
 }> = {}) {
     return {
         id: 'test-job-123',
@@ -443,6 +444,7 @@ function createMockJob(overrides: Partial<{
             triggerSource: 'push' as const,
             correlationId: 'test-corr-123',
             systemGenerated: true as const,
+            ...(overrides.commandCommentId === undefined ? {} : { commandCommentId: overrides.commandCommentId }),
         },
     } as never;
 }
@@ -673,6 +675,11 @@ describe('processMergeConflictJob', () => {
         const createCall = mockStateManager.createTaskStateIfAbsent.mock.calls[0];
         assert.strictEqual(createCall.arguments[1].modelName, 'gpt-5.5');
         assert.strictEqual(mockConfiguredAgent.executeTask.mock.callCount(), 1);
+    });
+
+    test('records the /merge command comment on the initial task state', async () => {
+        await processMergeConflictJob(createMockJob({ commandCommentId: 9001 }));
+        assert.strictEqual(mockStateManager.createTaskStateIfAbsent.mock.calls[0].arguments[1].commandCommentId, 9001);
     });
 
     test('failed merge: reports error and sets FAILED state', async () => {

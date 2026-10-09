@@ -244,7 +244,7 @@ export function assertMergePreconditions(
     'branchUpToDate', snapshot,
   );
   if (snapshot.mergeStateStatus === 'DIRTY') throw preconditionError(
-    'MERGE_CONFLICT', `Cannot merge ${name}: the branch has merge conflicts with ${snapshot.base ?? 'its base branch'}.`,
+    'MERGE_CONFLICT', `Cannot merge ${name}: the branch has merge conflicts with ${snapshot.base ?? 'its base branch'}. Use resolve_merge_conflicts, then wait for checks to finish.`,
     'mergeable', snapshot,
   );
   if (snapshot.mergeStateStatus === 'BLOCKED') throw preconditionError(

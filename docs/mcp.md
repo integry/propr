@@ -1001,8 +1001,9 @@ Account-level limits, such as a model the provider account cannot run, show up
 as that model's failed review rather than as a rejection at call time.
 
 The state-changing `merge_pull_request`, `update_pull_request_branch`,
-`start_ultrafix`, `stop_ultrafix`, `set_pull_request_model` and
-`revert_pull_request_commit` tools still require `expectedHead`. The pin
+`resolve_merge_conflicts`, `start_ultrafix`, `stop_ultrafix`,
+`set_pull_request_model` and `revert_pull_request_commit` tools still require
+`expectedHead`. The pin
 prevents them from acting on unseen code; for `start_ultrafix` and
 `stop_ultrafix`, a moved head may contain a fix the loop should still see.
 
@@ -1052,6 +1053,30 @@ The receipt reports the resolved `goal` and `maxCycles`, the posted
 `circuitBreaker: "requested"`. Follow it with `get_operation`; its lifecycle and
 progress are the same as `run_ultrafix`, and `stop_ultrafix` marks it as
 stopping.
+
+`update_pull_request_branch` only covers a branch that merges cleanly: it calls
+GitHub's update-branch endpoint, which GitHub rejects with `GITHUB_REJECTED`
+("merge conflict") when the branch conflicts with its base. For that case use
+`resolve_merge_conflicts`, the MCP equivalent of typing `/merge` on the pull
+request. It takes `repository`, `pullRequest`, required `expectedHead` and
+`idempotencyKey`; a moved head fails with `STALE_HEAD` before anything is
+posted. The tool posts the same `/merge` command a hand-typed comment does, so
+the normal intake merges the base branch into the PR branch and lets an agent
+resolve the conflicts. Like `/merge`, it only runs on pull requests that carry
+a ProPR processing label; without one the call fails with
+`PULL_REQUEST_NOT_MANAGED` and nothing is posted. It is listed under execute
+scope and never merges the pull request itself.
+
+```json
+{ "repository": "acme/web", "pullRequest": 42,
+  "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
+  "idempotencyKey": "pr-42-resolve-conflicts-1" }
+```
+
+The receipt reports the posted `commentId`, `resolvedHead` and `baseBranch`.
+Follow it with `get_operation`: it is `running` once the merge task picks up
+the comment, then `completed` or `failed` with that task, and `unknown` with
+`COMMAND_NOT_PICKED_UP` if no worker picks it up.
 
 **5. Follow a one-off task.** After `create_task`, keep both the returned
 `operationId` and `submissionId`. The submission view explains the handoff from

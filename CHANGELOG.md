@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP `resolve_merge_conflicts`**: the MCP equivalent of typing `/merge` on a
+  pull request. It posts the same `/merge` command, whose intake merges the base
+  branch into the PR branch and resolves conflicts with an agent. It requires
+  `expectedHead` (a moved head fails with `STALE_HEAD`) and an `idempotencyKey`,
+  refuses a PR without a ProPR processing label with `PULL_REQUEST_NOT_MANAGED`,
+  and returns a durable receipt that `get_operation` follows to the merge task.
+  `update_pull_request_branch` is unchanged and still covers the clean case
+  GitHub can update itself.
 - **Agents (v1)**: saved, reusable definitions (prompt, input files,
   repositories, agent and model, previous reports, capabilities, schedule and
   autonomy) that run as an isolated task and produce a free-form Markdown

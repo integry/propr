@@ -204,6 +204,8 @@ export interface MergeConflictJobData {
     headSha: string;
     baseSha: string;
     triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment' | 'sweep';
+    /** The `/merge` comment that requested this run, so its task can be traced back to it. */
+    commandCommentId?: number;
     correlationId: string;
     systemGenerated: true;    // Distinguishes from user-authored follow-up comments
 }

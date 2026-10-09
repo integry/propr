@@ -325,6 +325,39 @@ export async function verifyPullRequestWrites(
     await saveUltrafixRatingGoal(8);
   });
 
+  await t.test('resolve_merge_conflicts posts /merge at a pinned head on a labelled pull request', async () => {
+    const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
+    const posted = () => comments.filter(comment => comment.repository === 'acme/repo' && comment.pullRequest === 42 && comment.body.startsWith('/merge')).length;
+    const before = posted();
+    const stale = await mutate('resolve_merge_conflicts', { ...pull, expectedHead: 'f'.repeat(40) });
+    assert.equal(stale.result.error.code, 'STALE_HEAD');
+    assert.equal(stale.result.error.stage, 'precondition');
+    // /merge intake ignores pull requests without a processing label, so the tool refuses up front.
+    const unmanaged = await mutate('resolve_merge_conflicts', pull);
+    assert.equal(unmanaged.result.error.code, 'PULL_REQUEST_NOT_MANAGED');
+    assert.equal(unmanaged.result.error.stage, 'precondition');
+    assert.equal(posted(), before, 'a refused merge must post nothing');
+
+    const labels = findPullRequest('acme/repo', 42).labels;
+    labels.push('AI');
+    try {
+      const started = await mutate('resolve_merge_conflicts', pull);
+      assert.equal(started.state, 'posted');
+      assert.equal(started.lifecycle.state, 'accepted');
+      assert.equal(started.result.resolvedHead, 'a'.repeat(40));
+      assert.equal(started.result.headSource, 'caller');
+      assert.equal(started.result.state, 'posted');
+      const body = comments.at(-1)!.body;
+      assert.match(body, /^\/merge\n\n<!-- propr-mcp:[^;]+; head:a{40} -->$/);
+      assert.equal(started.result.commentId, comments.at(-1)!.id);
+      assert.equal(posted(), before + 1);
+      // The comment-driven path does the merge; the clean update-branch endpoint is never called.
+      assert.ok(!restCalls.some(item => item.route === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch'));
+    } finally {
+      labels.splice(labels.indexOf('AI'), 1);
+    }
+  });
+
   await t.test('a truncated label list leaves the ultrafix breaker undetermined', async () => {
     const listed = await call('list_pull_requests', { repository: 'acme/other' });
     const crowded = listed.pullRequests.find((pull: Args) => pull.number === 6);
