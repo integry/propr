@@ -460,12 +460,7 @@ for (const width of NARROW_WIDTHS) {
     const schema = await page.evaluate(() => {
       const box = (node: Element) => {
         const rect = node.getBoundingClientRect();
-        return {
-          top: Math.round(rect.top),
-          left: Math.round(rect.left),
-          right: Math.round(rect.right),
-          middle: Math.round(rect.top + rect.height / 2),
-        };
+        return { top: Math.round(rect.top), left: Math.round(rect.left), right: Math.round(rect.right), middle: Math.round(rect.top + rect.height / 2) };
       };
       const attentionRow = document.querySelector('[data-testid="needs-attention-panel"] li > div') as HTMLElement;
       const activeRow = document.querySelector('[data-testid="happening-now-list"] li') as HTMLElement;
@@ -545,6 +540,16 @@ for (const width of NARROW_WIDTHS) {
     const bar = page.getByTestId('dashboard-scope-bar');
     await expect(bar).toHaveText('All Repos');
     await bar.getByRole('button').click();
+
+    // The stacked menu asks for 20rem, but on a phone that is wider than the
+    // room left of the trigger's right edge, so it must narrow rather than
+    // run off the left of the screen and cut into the search field.
+    const menu = page.getByTestId('repo-item').first().locator('xpath=ancestor::div[contains(@class, "absolute")][1]');
+    const menuBounds = await menu.evaluate(node => node.getBoundingClientRect().toJSON() as DOMRect);
+    expect(menuBounds.left).toBeGreaterThanOrEqual(0);
+    expect(menuBounds.right).toBeLessThanOrEqual(width);
+    await expect(menu.getByRole('textbox')).toBeInViewport({ ratio: 1 });
+
     await page.getByTestId('repo-item').filter({ hasText: 'design-system' }).click();
     await expect(bar).toHaveText('example/design-system (main)');
 
@@ -568,4 +573,5 @@ for (const width of NARROW_WIDTHS) {
     expect(Math.round(geometry.firstPane)).toBe(Math.round(geometry.summaryBottom));
     await capture(page, `dashboard-responsive-${width}-scope`);
   });
+
 }

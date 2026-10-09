@@ -67,16 +67,22 @@ export function RepositoryRow({ repo, icon, control, label, trailing, selected, 
   repo.starred && h(Star, { className: 'propr-repo-star', 'aria-hidden': true }));
 }
 
-export function RepositoryGroups<T extends RepositoryOption>({ starredRepos, otherRepos, renderRow }: {
+/** Synthetic options such as `All Repos` carry no owner; a picker pins them above every section. */
+export const isPinnedRepository = (repo: RepositoryOption): boolean => !repo.name.includes('/');
+
+export function RepositoryGroups<T extends RepositoryOption>({ pinnedRepos = [], starredRepos, otherRepos, renderRow }: {
+  /** Rendered first, without a heading, so they never sink below a long starred list. */
+  pinnedRepos?: T[];
   starredRepos: T[];
   otherRepos: T[];
   renderRow: (repo: T) => ReactNode;
 }) {
-  if (!starredRepos.length && !otherRepos.length) return h('div', { className: 'propr-repo-empty' }, 'No repositories found');
+  if (!pinnedRepos.length && !starredRepos.length && !otherRepos.length) return h('div', { className: 'propr-repo-empty' }, 'No repositories found');
   const section = (repos: T[], title?: string) => h('div', { 'data-repository-section': true },
     title && h('div', { className: 'propr-repo-section' }, title),
     repos.map(repo => h(Fragment, { key: repositoryKey(repo) }, renderRow(repo))));
   return h(Fragment, null,
+    pinnedRepos.length > 0 && section(pinnedRepos),
     starredRepos.length > 0 && section(starredRepos, 'Starred'),
     otherRepos.length > 0 && section(otherRepos, starredRepos.length ? 'All Repositories' : undefined));
 }

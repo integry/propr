@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Search, Star, ChevronDown, X, Github, Loader2 } from 'lucide-react';
 import { fetchEnabledRepos } from '../utils/repoHelpers';
 import { RepositoryIcon } from './RepositoryIcon';
-import { RepositoryGroups, RepositoryRow, repositoryListStyles, repositoryKey as repoKey, sortRepositories as sortRepos } from '@propr/shared/dist/repositoryPresentation.js';
+import { RepositoryGroups, RepositoryRow, isPinnedRepository, repositoryListStyles, repositoryKey as repoKey, sortRepositories as sortRepos } from '@propr/shared/dist/repositoryPresentation.js';
 
 export interface RepoOption {
   name: string;
@@ -46,6 +46,8 @@ interface RepositorySelectorProps {
   appearance?: 'field' | 'title';
   className?: string;
   labelLayout?: 'inline' | 'stacked';
+  /** Layout of the open list's rows; defaults to `labelLayout`. A stacked list opens at least 20rem wide so long names fit, narrowing to fit the viewport on smaller screens. */
+  menuLabelLayout?: 'inline' | 'stacked';
   /** Drops the selected repository's count from the trigger below `sm`; the open list still shows every count. */
   hideCountOnMobile?: boolean;
   /** Breadcrumb only: appended to the repository label, e.g. a `/main` branch suffix on phones. */
@@ -62,7 +64,7 @@ const StackedRepoLabel: React.FC<{ repo: RepoOption }> = ({ repo }) => {
   const parts = repo.name.split('/');
 
   if (repo.displayName || parts.length !== 2) {
-    return <span className="truncate">{repo.displayName || repo.name}</span>;
+    return <span className="block truncate text-sm">{repo.displayName || repo.name}</span>;
   }
 
   return (
@@ -165,7 +167,7 @@ const defaultTriggerStyles = (size: 'default' | 'compact', appearance: 'field' |
   const title = appearance === 'title';
   return {
     iconClassName: compact ? 'w-3.5 h-3.5' : 'w-4 h-4',
-    padding: compact ? 'h-7 px-2 gap-1.5 text-xs' : `px-3 ${labelLayout === 'stacked' ? 'py-1' : 'py-2'} gap-2`,
+    padding: compact ? 'h-7 px-2 gap-1.5 text-xs' : `px-3 ${labelLayout === 'stacked' ? 'py-1 min-h-[38px]' : 'py-2'} gap-2`,
     textSize: compact ? 'text-xs' : title ? 'text-sm font-semibold' : 'text-sm',
     // A title hugs its label in the middle of the bar; a field fills it from the left.
     labelFlow: title ? 'min-w-0' : 'flex-1 min-w-0 text-left',
@@ -231,6 +233,7 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
   appearance = 'field',
   className = '',
   labelLayout = 'inline',
+  menuLabelLayout = labelLayout,
   hideCountOnMobile = false,
   labelSuffix
 }) => {
@@ -270,16 +273,18 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
 
   useEffect(() => { if (isOpen && inputRef.current) inputRef.current.focus(); }, [isOpen]);
 
-  const { starredRepos, otherRepos } = useMemo(() => {
+  const { pinnedRepos, starredRepos, otherRepos } = useMemo(() => {
     const lowerFilter = filter.toLowerCase();
     const filtered = repos.filter(repo =>
       repo.name.toLowerCase().includes(lowerFilter) ||
       (repo.displayName && repo.displayName.toLowerCase().includes(lowerFilter)) ||
       (repo.searchText && repo.searchText.toLowerCase().includes(lowerFilter))
     );
+    const listed = filtered.filter(r => !isPinnedRepository(r));
     return {
-      starredRepos: sortRepos(filtered.filter(r => r.starred)),
-      otherRepos: sortRepos(filtered.filter(r => !r.starred)),
+      pinnedRepos: filtered.filter(isPinnedRepository),
+      starredRepos: sortRepos(listed.filter(r => r.starred)),
+      otherRepos: sortRepos(listed.filter(r => !r.starred)),
     };
   }, [repos, filter]);
 
@@ -326,11 +331,11 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
       e.stopPropagation();
       setIsOpen(false);
       setFilter('');
-    } else if (e.key === 'Enter' && starredRepos.length + otherRepos.length === 1) {
-      const singleRepo = starredRepos[0] || otherRepos[0];
+    } else if (e.key === 'Enter' && pinnedRepos.length + starredRepos.length + otherRepos.length === 1) {
+      const singleRepo = pinnedRepos[0] || starredRepos[0] || otherRepos[0];
       handleSelect(singleRepo);
     }
-  }, [starredRepos, otherRepos, handleSelect]);
+  }, [pinnedRepos, starredRepos, otherRepos, handleSelect]);
 
   const handleToggle = useCallback(() => {
     if (!disabled && !effectiveLoading) setIsOpen(prev => {
@@ -339,13 +344,20 @@ export const RepositorySelector: React.FC<RepositorySelectorProps> = ({
     });
   }, [disabled, effectiveLoading]);
 
+  const menuPosition = variant === 'breadcrumb'
+    ? 'left-0 w-72'
+    : menuLabelLayout === 'stacked'
+      // Filters sit at the right of their toolbar, so a menu wider than its trigger grows leftward.
+      ? 'right-0 w-full min-w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)]'
+      : size === 'compact' ? 'right-0 w-72' : 'left-0 right-0';
+
   const dropdownContent = isOpen && (
-    <div className={`absolute top-full ${variant === 'breadcrumb' ? 'left-0 w-72' : size === 'compact' ? 'right-0 w-72' : 'left-0 right-0'} mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden`}>
+    <div className={`absolute top-full ${menuPosition} mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden`}>
       <FilterInput inputRef={inputRef} value={filter} onChange={setFilter} onKeyDown={handleKeyDown} />
       <div className="max-h-64 overflow-y-auto">
         <style>{repositoryListStyles}</style>
-        <RepositoryGroups starredRepos={starredRepos} otherRepos={otherRepos} renderRow={repo => (
-          <RepoItem repo={repo} isSelected={selectedRepoKeyValue === repoKey(repo)} onSelect={handleSelect} labelLayout={labelLayout} />
+        <RepositoryGroups pinnedRepos={pinnedRepos} starredRepos={starredRepos} otherRepos={otherRepos} renderRow={repo => (
+          <RepoItem repo={repo} isSelected={selectedRepoKeyValue === repoKey(repo)} onSelect={handleSelect} labelLayout={menuLabelLayout} />
         )} />
       </div>
     </div>
