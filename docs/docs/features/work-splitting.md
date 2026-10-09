@@ -54,6 +54,8 @@ For larger efforts:
 
 That gives you more control than launching every generated issue at once. When the issues are genuinely sequential, Epic mode with auto-merge runs them one after another, merging each PR before starting the next issue. If the repository's [auto-merge policy](./repository-workflow.md#auto-merge-policy) declines to arm auto-merge for a PR (for example because it touches a protected path), the queue waits for a person to merge that PR, shows *Waiting for human merge*, and then continues.
 
+As child PRs merge into the epic branch, ProPR keeps a single progress comment on the epic PR up to date (for example **2 of 5 PRs merged**) instead of posting a new comment for every merge. The total comes from the plan's issues; issues closed without a merge are left out of the count. When the last child PR merges, ProPR posts a one-time *Epic fully merged* confirmation comment so you know the epic PR is ready for final review.
+
 A second kind of splitting works across models instead of across scope: add several `llm-*` labels to one issue and ProPR produces one branch and PR per model, so you can compare implementations of the same unit. See [Agents and Models](./agents-and-models.md).
 
 ## Follow-Up Work

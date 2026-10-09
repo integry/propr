@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Epic merge progress**: when a child PR merges into an epic branch, ProPR
+  updates a single "x of y PRs merged" tracking comment on the epic PR in
+  place, and posts a one-time *Epic fully merged* confirmation comment once
+  the final child PR has merged.
 - **Agents (v1)**: saved, reusable definitions (prompt, input files,
   repositories, agent and model, previous reports, capabilities, schedule and
   autonomy) that run as an isolated task and produce a free-form Markdown

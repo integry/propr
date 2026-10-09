@@ -2,6 +2,7 @@ import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { isEpicBranch, EPIC_BRANCH_PATTERN } from '../services/taskExecutionService.js';
 import { createEpicPRWithDraftFallback } from '../services/epicPRService.js';
+import { updateEpicMergeProgress } from './epicMergeProgress.js';
 import { db } from '../db/connection.js';
 import { getPlanIssuesByDraft, type PlanIssue } from '../config/planIssueManager.js';
 import type { PullRequestEvent } from '@octokit/webhooks-types';
@@ -150,10 +151,11 @@ ${fixesLine}
  * Ensures Epic PR exists when a child PR is merged to an epic branch.
  * When the epic branch was first created, there were no commits so the PR couldn't be created.
  * Now that a child PR has merged, we can create the Epic PR with proper details.
+ * Afterwards the Epic PR's merge progress comment is refreshed.
  */
 export async function handleEpicPRCreationOnMerge(
     payload: PullRequestEvent,
-    _correlationId: string,
+    correlationId: string,
     correlatedLogger: ReturnType<typeof logger.withCorrelation>
 ): Promise<void> {
     // Only process closed PRs that were merged
@@ -178,6 +180,9 @@ export async function handleEpicPRCreationOnMerge(
         repo
     }, 'Child PR merged to epic branch, ensuring Epic PR exists');
 
+    let epicPrNumber: number | null = null;
+    let planDetails: PlanDetails | null = null;
+
     try {
         const octokit = await getAuthenticatedOctokit();
 
@@ -197,8 +202,10 @@ export async function handleEpicPRCreationOnMerge(
                 baseBranch
             }, 'Epic PR already exists, updating body');
 
+            epicPrNumber = existingPR.number;
+
             // Get plan details and update the PR body
-            const planDetails = await getPlanDetailsFromBranch(baseBranch, repository, correlatedLogger);
+            planDetails = await getPlanDetailsFromBranch(baseBranch, repository, correlatedLogger);
             if (planDetails) {
                 const issueNumbers = planDetails.issues.map(i => i.issue_number);
                 const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
@@ -216,51 +223,9 @@ export async function handleEpicPRCreationOnMerge(
                     issueCount: issueDetails.length
                 }, 'Updated Epic PR body with latest issues');
             }
-            return;
-        }
-
-        // Get the default branch to use as base
-        const repoResponse = await octokit.request('GET /repos/{owner}/{repo}', {
-            owner,
-            repo
-        });
-        const defaultBranch = repoResponse.data.default_branch;
-
-        // Get plan details for the Epic PR
-        const planDetails = await getPlanDetailsFromBranch(baseBranch, repository, correlatedLogger);
-
-        let title: string;
-        let body: string;
-
-        if (planDetails) {
-            const issueNumbers = planDetails.issues.map(i => i.issue_number);
-            const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
-
-            title = `[Epic] ${planDetails.planName}`;
-            body = buildEpicPRBody(planDetails.planName, issueDetails);
         } else {
-            // Fallback if plan details not found
-            title = `[Epic] ${baseBranch}`;
-            body = `## Epic PR\n\nThis PR aggregates all changes from child PRs merged to the \`${baseBranch}\` branch.\n\n---\n*Created automatically by ProPR*`;
+            ({ epicPrNumber, planDetails } = await createEpicPR(octokit, owner, repo, repository, baseBranch, correlatedLogger));
         }
-
-        // Create the Epic PR
-        const prResponse = await createEpicPRWithDraftFallback(octokit, {
-            owner,
-            repo,
-            title,
-            head: baseBranch,
-            base: defaultBranch,
-            body
-        });
-
-        correlatedLogger.info({
-            prNumber: prResponse.data.number,
-            prUrl: prResponse.data.html_url,
-            baseBranch,
-            planName: planDetails?.planName
-        }, 'Epic PR created after child PR merge');
-
     } catch (error) {
         const err = error as Error & { status?: number };
         correlatedLogger.warn({
@@ -270,6 +235,82 @@ export async function handleEpicPRCreationOnMerge(
             repo
         }, 'Failed to create Epic PR after child merge');
     }
+
+    if (epicPrNumber === null) return;
+
+    try {
+        await updateEpicMergeProgress({
+            owner,
+            repo,
+            epicBranch: baseBranch,
+            epicPrNumber,
+            mergedChildPrNumber: payload.pull_request.number,
+            planName: planDetails?.planName,
+            planIssues: planDetails?.issues
+        }, correlationId);
+    } catch (error) {
+        correlatedLogger.warn({
+            error: (error as Error).message,
+            epicPrNumber,
+            baseBranch
+        }, 'Failed to update Epic PR merge progress');
+    }
+}
+
+/**
+ * Creates the Epic PR for an epic branch that does not have one yet.
+ */
+async function createEpicPR(
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
+    owner: string,
+    repo: string,
+    repository: string,
+    baseBranch: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<{ epicPrNumber: number; planDetails: PlanDetails | null }> {
+    // Get the default branch to use as base
+    const repoResponse = await octokit.request('GET /repos/{owner}/{repo}', {
+        owner,
+        repo
+    });
+    const defaultBranch = repoResponse.data.default_branch;
+
+    // Get plan details for the Epic PR
+    const planDetails = await getPlanDetailsFromBranch(baseBranch, repository, correlatedLogger);
+
+    let title: string;
+    let body: string;
+
+    if (planDetails) {
+        const issueNumbers = planDetails.issues.map(i => i.issue_number);
+        const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
+
+        title = `[Epic] ${planDetails.planName}`;
+        body = buildEpicPRBody(planDetails.planName, issueDetails);
+    } else {
+        // Fallback if plan details not found
+        title = `[Epic] ${baseBranch}`;
+        body = `## Epic PR\n\nThis PR aggregates all changes from child PRs merged to the \`${baseBranch}\` branch.\n\n---\n*Created automatically by ProPR*`;
+    }
+
+    // Create the Epic PR
+    const prResponse = await createEpicPRWithDraftFallback(octokit, {
+        owner,
+        repo,
+        title,
+        head: baseBranch,
+        base: defaultBranch,
+        body
+    });
+
+    correlatedLogger.info({
+        prNumber: prResponse.data.number,
+        prUrl: prResponse.data.html_url,
+        baseBranch,
+        planName: planDetails?.planName
+    }, 'Epic PR created after child PR merge');
+
+    return { epicPrNumber: prResponse.data.number, planDetails };
 }
 
 /**
