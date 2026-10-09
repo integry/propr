@@ -25,6 +25,8 @@ export interface PlanIssue {
   agent_alias: string | null;
   model_name: string | null;
   followup_count: number;
+  /** Review scores the PR received, oldest first; one per review run. */
+  review_scores?: number[];
   task_id: string | null;
   run_ultrafix?: boolean | null;
   ultrafix_goal?: number | null;
