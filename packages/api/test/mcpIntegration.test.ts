@@ -299,6 +299,7 @@ test('MCP task, goal and plan lists paginate in deterministic newest-first order
     todo_id: 'todo-1', repository, title: 'Keep list payloads compact', summary: null,
     is_completed: false, category: { id: 'category-1', name: 'API' },
     linked_plan: { id: 'plan-b-new', title: 'MCP list summaries', status: 'merged' },
+    linked_issue: null,
     order_index: 0, created_at: newest, updated_at: newest,
   });
 

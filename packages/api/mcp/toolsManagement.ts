@@ -29,7 +29,8 @@ export function addManagementTools(tools: McpTool[], deps: ToolDeps, { todos, co
       .where({ 'todo.repository': args.repository, 'todo.user_id': principal.user.id })
       .select('todo.todo_id', 'todo.repository', 'todo.content', 'todo.is_completed', 'todo.category_id',
         'category.name as category_name', 'todo.linked_draft_id', 'plan.name as linked_plan_name',
-        'plan.status as linked_plan_status', 'todo.order_index', 'todo.created_at', 'todo.updated_at')
+        'plan.status as linked_plan_status', 'todo.linked_issue_repository', 'todo.linked_issue_number', 'todo.linked_task_id',
+        'todo.order_index', 'todo.created_at', 'todo.updated_at')
       .orderBy('todo.order_index').orderBy('todo.id').offset(args.offset).limit(args.limit);
     const items = rows.map(row => summarizeTodo(row));
     return ok({ items, nextOffset: rows.length === args.limit ? args.offset + args.limit : null });

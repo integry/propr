@@ -28,6 +28,10 @@ export interface RepoTodo {
   orderIndex: number;
   isCompleted: boolean;
   linkedDraftId: string | null;
+  /** owner/repo of the GitHub issue opened when a task was launched from this to-do. */
+  linkedIssueRepository: string | null;
+  linkedIssueNumber: number | null;
+  linkedTaskId: string | null;
   createdAt: string;
   updatedAt: string;
 }

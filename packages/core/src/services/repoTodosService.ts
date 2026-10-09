@@ -2,11 +2,12 @@
  * Service for managing repository to-dos and categories.
  */
 
+import type { Knex } from 'knex';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
-import type { RepoTodoCategoryRecord, RepoTodoRecord, RepoTodoCategory, RepoTodo, CreateCategoryParams, UpdateCategoryParams, CreateTodoParams, UpdateTodoParams, BatchReorderItem } from './repoTodosTypes.js';
+import type { RepoTodoCategoryRecord, RepoTodoRecord, RepoTodoCategory, RepoTodo, CreateCategoryParams, UpdateCategoryParams, CreateTodoParams, UpdateTodoParams, BatchReorderItem, CompleteTodosForIssueParams } from './repoTodosTypes.js';
 
-export type { RepoTodoCategoryRecord, RepoTodoRecord, RepoTodoCategory, RepoTodo, CreateCategoryParams, UpdateCategoryParams, CreateTodoParams, UpdateTodoParams, BatchReorderItem } from './repoTodosTypes.js';
+export type { RepoTodoCategoryRecord, RepoTodoRecord, RepoTodoCategory, RepoTodo, CreateCategoryParams, UpdateCategoryParams, CreateTodoParams, UpdateTodoParams, BatchReorderItem, CompleteTodosForIssueParams } from './repoTodosTypes.js';
 
 // Helper functions to convert database records to domain objects
 function toCategoryDomain(record: RepoTodoCategoryRecord): RepoTodoCategory {
@@ -14,7 +15,7 @@ function toCategoryDomain(record: RepoTodoCategoryRecord): RepoTodoCategory {
 }
 
 function toTodoDomain(record: RepoTodoRecord): RepoTodo {
-  return { todoId: record.todo_id, categoryId: record.category_id, content: record.content, orderIndex: record.order_index, isCompleted: Boolean(record.is_completed), linkedDraftId: record.linked_draft_id, createdAt: record.created_at, updatedAt: record.updated_at };
+  return { todoId: record.todo_id, categoryId: record.category_id, content: record.content, orderIndex: record.order_index, isCompleted: Boolean(record.is_completed), linkedDraftId: record.linked_draft_id, linkedIssueRepository: record.linked_issue_repository ?? null, linkedIssueNumber: record.linked_issue_number ?? null, linkedTaskId: record.linked_task_id ?? null, createdAt: record.created_at, updatedAt: record.updated_at };
 }
 
 /** Get all categories for a user and repository, ordered by order_index. */
@@ -203,6 +204,31 @@ export async function completeTodosForDraft(draftId: string): Promise<number> {
     return updated;
   } catch (error) {
     logger.error({ error: (error as Error).message, draftId }, 'Failed to complete todos for draft');
+    throw error;
+  }
+}
+
+/**
+ * Mark the to-dos a task was launched from as completed and record the issue
+ * they produced. Scoped to the submitting user and the issue's repository so
+ * stale or forged ids match nothing. Re-running with the same issue is a no-op
+ * in effect, which keeps submission retries idempotent. A to-do already linked
+ * to a later issue in the same repository (issue numbers only grow) belongs to
+ * a newer launch, so a delayed older submission leaves it alone.
+ */
+export async function completeTodosForIssue(params: CompleteTodosForIssueParams, database: Knex = db): Promise<number> {
+  const { todoIds, userId, repository, issueNumber, taskId = null } = params;
+  if (!todoIds.length) return 0;
+  try {
+    const updated = await database<RepoTodoRecord>('repo_todos').whereIn('todo_id', todoIds).andWhere('user_id', userId)
+      .andWhereRaw('lower(repository) = ?', [repository.toLowerCase()])
+      .andWhere(fresh => fresh.whereNull('linked_issue_number').orWhere('linked_issue_number', '<=', issueNumber)
+        .orWhereRaw('lower(linked_issue_repository) <> ?', [repository.toLowerCase()]))
+      .update({ is_completed: true, linked_issue_repository: repository, linked_issue_number: issueNumber, linked_task_id: taskId, updated_at: database.fn.now() });
+    logger.info({ todoIds, repository, issueNumber, updated }, 'Completed todos linked to launched issue');
+    return updated;
+  } catch (error) {
+    logger.error({ error: (error as Error).message, todoIds, repository, issueNumber }, 'Failed to complete todos for issue');
     throw error;
   }
 }
