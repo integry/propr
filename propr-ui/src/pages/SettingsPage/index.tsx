@@ -83,7 +83,7 @@ const AdminSettingsPage: React.FC = () => {
   const handleGeneralSettingChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const settingName = event.target.name;
     let value: string | number | boolean;
-    const numericFields = ['max_provider_replacements', 'ultrafix_escalation_patience', 'ultrafix_escalation_max_reasoning_levels', 'usage_tips_dismissal_cooldown_days', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
+    const numericFields = ['max_provider_replacements', 'ultrafix_escalation_patience', 'ultrafix_escalation_max_reasoning_levels', 'ultrafix_rating_goal', 'ultrafix_max_cycles', 'ultrafix_pause_seconds'];
     if (numericFields.includes(settingName)) {
       const raw = event.target.value;
       // Only accept strings that are strictly integer digits (with optional leading minus)
@@ -157,12 +157,6 @@ const AdminSettingsPage: React.FC = () => {
           isReindexing={isReindexing}
         />
       )
-    },
-    {
-      id: 'usage-tips',
-      category: 'automation',
-      searchText: 'usage tips documentation dismissal cooldown days',
-      content: <UsageTipsSettingsSection settings={settings} onChange={handleGeneralSettingChange} onBlur={triggerSettingsSave} />,
     },
     {
       id: 'general-configuration',
@@ -351,6 +345,13 @@ const AdminSettingsPage: React.FC = () => {
       category: 'notifications',
       searchText: 'personal notifications browser web push inbox badge quiet hours timezone plans tasks reviews pull requests indexing system failures',
       content: <NotificationSettingsSection />
+    },
+    // Least important section; keep it last.
+    {
+      id: 'usage-tips',
+      category: 'automation',
+      searchText: 'usage tips documentation',
+      content: <UsageTipsSettingsSection settings={settings} onChange={handleGeneralSettingChange} onBlur={triggerSettingsSave} />,
     }
   ];
 

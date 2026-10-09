@@ -221,7 +221,6 @@ export interface SystemSettings {
   auto_followup_score_threshold?: number;
   deprecated_settings?: Record<string, string>;
   usage_tips_enabled?: boolean;
-  usage_tips_dismissal_cooldown_days?: number;
   auto_resolve_merge_conflicts?: boolean;
   /** Only users assigned to a task may start follow-up work on it. */
   followup_requires_assignment?: boolean;

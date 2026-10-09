@@ -38,19 +38,39 @@ const fixturePayload = pathname => {
   return JSON.parse(JSON.stringify(value));
 };
 
-const interfaceFields = (name, source = taskStatsApiSource) => {
+const declaredFields = (name, source = taskStatsApiSource) => {
   const match = source.match(new RegExp(`export interface ${name}(?: extends ([A-Za-z0-9_]+))? \\{([\\s\\S]*?)\\n\\}`));
   assert.ok(match, `${name} interface is missing`);
-  const own = [...match[2].matchAll(/^\s{2}([A-Za-z_][A-Za-z0-9_]*):/gm)].map(field => field[1]);
-  return match[1] ? [...interfaceFields(match[1], source), ...own] : own;
+  const own = [...match[2].matchAll(/^\s{2}([A-Za-z_][A-Za-z0-9_]*)(\??):/gm)]
+    .map(field => ({ name: field[1], optional: field[2] === '?' }));
+  return match[1] ? [...declaredFields(match[1], source), ...own] : own;
 };
 
-/** Field presence, not declaration order: an inherited field can sit anywhere. */
-const assertSameFields = (payload, name, source) => assert.deepEqual(
-  Object.keys(payload).sort(),
-  interfaceFields(name, source).sort(),
-  `${name} fields differ from the fixture`,
-);
+/** Required fields only, in declaration order. */
+const interfaceFields = (name, source = taskStatsApiSource) => declaredFields(name, source)
+  .filter(field => !field.optional)
+  .map(field => field.name);
+
+/**
+ * Field presence, not declaration order: an inherited field can sit anywhere.
+ * The fixture sends every required field and nothing undeclared; an optional
+ * field is one older servers omit, so the fixture may leave it out.
+ */
+const assertSameFields = (payload, name, source) => {
+  const declared = declaredFields(name, source).map(field => field.name);
+  const required = interfaceFields(name, source);
+  const sent = Object.keys(payload);
+  assert.deepEqual(
+    sent.filter(field => !declared.includes(field)).sort(),
+    [],
+    `${name} does not declare these fixture fields`,
+  );
+  assert.deepEqual(
+    required.filter(field => !sent.includes(field)).sort(),
+    [],
+    `${name} requires fields the fixture omits`,
+  );
+};
 
 describe('packaged acceptance stats fixtures', () => {
   it('returns the paginated draft shape consumed by the dashboard header', () => {
@@ -173,11 +193,12 @@ describe('packaged acceptance stats fixtures', () => {
     assert.match(happeningNowSource, /data\?\.counts\.running/);
     assert.match(happeningNowSource, /data\.queue\.queuedCount/);
     assert.match(happeningNowSource, /data\.queue\.reason/);
-    assert.match(historicalStatsSource, /<DailyCompletionsChart data=\{data\.dailyCompleted\} \/>/);
+    assert.match(historicalStatsSource, /<DailyCompletionsChart data=\{data\.dailyTasks\} unit="tasks" \/>/);
     assert.equal(typeof active.counts.running, 'number');
     assert.equal(typeof active.queue.queuedCount, 'number');
     assert.equal(typeof stats.previous.completed, 'number');
-    assert.ok(Array.isArray(stats.dailyCompleted));
+    assert.ok(Array.isArray(stats.dailyTasks));
+    assert.equal(typeof stats.previous.tasks, 'number');
 
     // The remaining sections map their rows, which have to arrive as arrays.
     assert.match(needsAttentionSource, /data\?\.items \?\? \[\]/);

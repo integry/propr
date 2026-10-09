@@ -10,7 +10,6 @@ import type { SystemSettings } from "../api/settings.js";
 
 const SETTINGS: SystemSettings = {
   usage_tips_enabled: true,
-  usage_tips_dismissal_cooldown_days: 45,
   default_agent_alias: "codex",
   worker_concurrency: 2,
   github_user_whitelist: ["octocat"],

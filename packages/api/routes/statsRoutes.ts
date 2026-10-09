@@ -1,27 +1,41 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
+import { analyticsTimeframeStart } from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { validateEnum, validateRepositoryFilter } from './validation.js';
-import { loadCompletionStats, loadRecordedSpend, successRate as calculateSuccessRate } from './dashboardStatsQueries.js';
-import { analyticsDayKeys, readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
+import { successRate as calculateSuccessRate } from './dashboardStatsQueries.js';
+import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
 import { loadModelUsage } from './analyticsModelUsage.js';
+import {
+  loadCacheUsage,
+  loadRecordedSpend,
+  loadRunVolume,
+  loadDailyRuns,
+  loadTaskSummary,
+  activityDays,
+  type CachePriceLookup,
+} from './analyticsAggregates.js';
+import { loadAutonomy, loadDeliveryMetrics } from './analyticsDelivery.js';
+import { createAnalyticsCache, type AnalyticsCache } from './analyticsCache.js';
 
 /** Periods the dashboard's historical stats section can request. */
 export const DASHBOARD_STATS_PERIODS = ['7d', '30d'] as const;
 export type DashboardStatsPeriod = typeof DASHBOARD_STATS_PERIODS[number];
 
-const PERIOD_DAYS: Record<DashboardStatsPeriod, number> = { '7d': 7, '30d': 30 };
-
-/** Window boundaries are whole days so the daily chart buckets line up. */
-function statsWindow(now: Date, days: number): { from: Date; to: Date } {
-  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-  return { from: new Date(to.getTime() - days * 24 * 60 * 60 * 1000), to };
-}
-
 interface StatsRoutesDeps {
   db: Knex;
   /** Seam for tests that need a fixed window. */
   now?: () => Date;
+  /**
+   * Prompt and cache-read prices per recorded model name, for the cache
+   * savings estimate. Without one, savings are reported as unknown.
+   */
+  cachePrice?: CachePriceLookup;
+  /**
+   * Remembers the all-time delivery and review-quality aggregations for a
+   * short while; shared with the review score routes so both read one copy.
+   */
+  analyticsCache?: AnalyticsCache;
 }
 
 interface DailyCountRow {
@@ -52,7 +66,6 @@ interface OverviewTaskStats {
 interface UsageAggregation {
   inputTokens: number | string | null;
   outputTokens: number | string | null;
-  cost: number | string | null;
 }
 
 interface ModelCountRow {
@@ -73,9 +86,23 @@ interface RepositoryStatsRow {
   in_progress: number;
 }
 
+/**
+ * The days on which anything happened, in order: those with a task created
+ * and those with only a run started, which the task grouping alone omits.
+ */
+function recordedActivityDays(
+  taskDays: DailyCountRow[], dailyRuns: Map<string, number>,
+): Array<DailyCountRow & { runs: number }> {
+  const tasks = new Map(taskDays.map(day => [day.date, day.count]));
+  return [...new Set([...tasks.keys(), ...dailyRuns.keys()])].sort()
+    .map(date => ({ date, count: tasks.get(date) ?? 0, runs: dailyRuns.get(date) ?? 0 }));
+}
+
 export function createStatsRoutes(deps: StatsRoutesDeps) {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
+  const cachePrice: CachePriceLookup = deps.cachePrice ?? (() => null);
+  const aggregationCache = deps.analyticsCache ?? createAnalyticsCache();
 
   async function getTaskStats(req: Request, res: Response): Promise<void> {
     const analyticsWindow = readAnalyticsWindow(req, res, now());
@@ -87,28 +114,20 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
       const thirtyDaysAgoStr = thirtyDaysAgo.toISOString();
 
-      // Daily task counts
-      const dailyCountsQuery = db('tasks')
-        .select(db.raw("date(created_at) as date"))
-        .count('* as count');
-      if (analyticsWindow) {
-        whereCreatedWithin(dailyCountsQuery, 'created_at', analyticsWindow);
-      } else {
-        dailyCountsQuery.where('created_at', '>=', thirtyDaysAgoStr);
-      }
-      const dailyCountRows = await dailyCountsQuery
-        .groupByRaw('date(created_at)')
-        .orderBy('date', 'asc') as unknown as DailyCountRow[];
-
-      // With a period every day in the window is listed, including empty ones
-      let dailyCounts = dailyCountRows;
-      if (analyticsWindow) {
-        const counts = new Map(dailyCountRows.map(row => [String(row.date), Number(row.count)]));
-        const from = analyticsWindow.from ?? (dailyCountRows.length > 0 ? new Date(`${dailyCountRows[0].date}T00:00:00.000Z`) : null);
-        dailyCounts = from
-          ? analyticsDayKeys(from, analyticsWindow.to).map(date => ({ date, count: counts.get(date) ?? 0 }))
-          : [];
-      }
+      // Volume comes from the aggregation the dashboard widget shares. With a
+      // period every bucket in the window is listed, including empty ones:
+      // a day each, or an hour each over the last 24 hours; without one,
+      // totals are all-time and the days are the last 30, so only those 30
+      // are grouped, listing just the days with a task or a run.
+      // Runs beside tasks, per bucket: the compute behind each one's deliverables.
+      const dailySince = analyticsWindow ? undefined : thirtyDaysAgo;
+      const [summary, dailyRuns] = await Promise.all([
+        loadTaskSummary(db, analyticsWindow, 'all', { dailySince }),
+        loadDailyRuns(db, analyticsWindow, dailySince),
+      ]);
+      const dailyCounts: Array<DailyCountRow & { runs: number }> = analyticsWindow
+        ? activityDays(summary.dailyCounts, dailyRuns, analyticsWindow)
+        : recordedActivityDays(summary.dailyCounts, dailyRuns);
 
       // Status distribution from latest task_history entries
       const statusDistributionQuery = db('task_history as h')
@@ -155,28 +174,11 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
         .groupByRaw('date(t.created_at)')
         .orderBy('date', 'asc') as unknown as AvgProcessingTimeRow[];
 
-      // Total counts for summary
-      const totalCountsQuery = db('tasks').count('* as total');
-      whereCreatedWithin(totalCountsQuery, 'created_at', analyticsWindow);
-      const totalCounts = await totalCountsQuery.first() as unknown as CountRow | undefined;
-
-      const outcomeCount = (state: string): Promise<CountRow | undefined> => {
-        const query = db('task_history as h')
-          .countDistinct('h.task_id as count')
-          .where('h.state', state);
-        if (analyticsWindow) {
-          query.join('tasks as t', 't.task_id', 'h.task_id');
-          whereCreatedWithin(query, 't.created_at', analyticsWindow);
-        }
-        return query.first() as unknown as Promise<CountRow | undefined>;
-      };
-      const completedCount = await outcomeCount('completed');
-      const failedCount = await outcomeCount('failed');
-
       res.json({
         dailyCounts: dailyCounts.map((row) => ({
           date: String(row.date),
-          count: Number(row.count)
+          count: Number(row.count),
+          runs: row.runs,
         })),
         statusDistribution: statusDistribution.map((row) => ({
           status: String(row.state),
@@ -186,11 +188,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
           date: String(row.date),
           avgMinutes: row.avg_minutes ? Number(Number(row.avg_minutes).toFixed(2)) : 0
         })),
-        summary: {
-          total: Number(totalCounts?.total || 0),
-          completed: Number(completedCount?.count || 0),
-          failed: Number(failedCount?.count || 0)
-        }
+        summary: { total: summary.total, completed: summary.completed, failed: summary.failed }
       });
     } catch (error) {
       console.error('Error in /api/stats/tasks:', error);
@@ -269,15 +267,14 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
     }
     const usageStats = await usageStatsQuery.first() as unknown as UsageAggregation | undefined;
 
-    const costStatsQuery = db('llm_executions')
-      .sum({
-        cost: 'cost_usd'
-      });
-    whereCreatedWithin(costStatsQuery, 'start_time', analyticsWindow);
-    const costStats = await costStatsQuery.first() as unknown as { cost: number | string | null } | undefined;
+    // The same recorded spend the dashboard widget reports
+    const recordedSpend = await loadRecordedSpend(db, analyticsWindow);
 
-    // Model Distribution - count unique tasks per model from llm_executions
-    // This gives accurate counts since a task may use multiple models or have retries
+    // Model Distribution - count unique tasks per model from llm_executions.
+    // This is the legacy `usage.models` figure: distinct tasks, not runs.
+    // `model_usage` (loadModelUsage) carries runs per model, and the Models
+    // table only falls back to this one when a server predates it; the two
+    // are kept apart so older clients keep reading the figure they expect.
     const modelStatsQuery = db('llm_executions')
       .select('model_name')
       .countDistinct('task_id as count')
@@ -297,7 +294,7 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
 
     const inputTokens = Number(usageStats?.inputTokens || 0);
     const outputTokens = Number(usageStats?.outputTokens || 0);
-    const totalCost = Number(costStats?.cost || 0);
+    const totalCost = recordedSpend ?? 0;
     return {
       total_tokens: inputTokens + outputTokens,
       input_tokens: inputTokens, output_tokens: outputTokens,
@@ -337,7 +334,17 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
 
       // 2-3. Token, cost and model usage
       const usage = await loadOverviewUsage(analyticsWindow);
-      const modelUsage = await loadModelUsage(db, analyticsWindow);
+      const modelUsage = await loadModelUsage(db, analyticsWindow, aggregationCache);
+
+      // Run volume, prompt caching, delivery and autonomy. Delivery and
+      // autonomy read PR and task history, so they are remembered briefly
+      // between the page's refreshes; see `analyticsCache`.
+      const [runs, cache, delivery, autonomy] = await Promise.all([
+        loadRunVolume(db, analyticsWindow),
+        loadCacheUsage(db, analyticsWindow, cachePrice),
+        aggregationCache.remember('delivery', analyticsWindow, () => loadDeliveryMetrics(db, analyticsWindow)),
+        aggregationCache.remember('autonomy', analyticsWindow, () => loadAutonomy(db, analyticsWindow)),
+      ]);
 
       // 4. PR Iterations Average - count tasks per unique issue
       const allIssueIterationsQuery = db('tasks')
@@ -393,8 +400,11 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
           merged_prs: Number(prsCreated?.count || 0),
           total_followups: totalFollowups
         },
-        usage,
+        usage: { ...usage, cache },
         model_usage: modelUsage,
+        runs,
+        delivery,
+        autonomy,
         system: {
           repos_indexed: Number(repoStats?.count || 0)
         }
@@ -407,6 +417,11 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
 
   /**
    * Period-aware historical stats for the dashboard.
+   *
+   * The widget is a summary of the Analytics page, so it reads the same
+   * aggregation over the same rolling window the page uses for the same
+   * period: its task count, success rate, spend and daily curve always match
+   * the page's totals band and activity chart.
    *
    * Every scalar is nullable: unavailable data is null, never 0. Cost is
    * reported as recorded spend, because only executions that recorded a cost
@@ -426,30 +441,40 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
       return;
     }
     const period: DashboardStatsPeriod = periodValidation.value ?? '7d';
-    const days = PERIOD_DAYS[period];
 
     try {
-      const current = statsWindow(now(), days);
-      const previous = { from: new Date(current.from.getTime() - days * 24 * 60 * 60 * 1000), to: current.from };
+      const to = now();
+      const from = analyticsTimeframeStart(period, to)!;
+      const current: AnalyticsWindow = { timeframe: period, from, to };
+      // The same number of whole days, ending where the current window starts:
+      // `from` is the current period's first instant, so it is outside the
+      // previous one, whose last whole day is the day before.
+      const previousLastInstant = new Date(from.getTime() - 1);
+      const previous: AnalyticsWindow = {
+        timeframe: period, from: analyticsTimeframeStart(period, previousLastInstant)!, to: from, toExclusive: true,
+      };
 
       const [currentStats, previousStats, currentSpend, previousSpend] = await timeApiStage(
         'dashboard.stats',
         () => Promise.all([
-          loadCompletionStats(db, repository, current),
-          loadCompletionStats(db, repository, previous),
-          loadRecordedSpend(db, repository, current),
-          loadRecordedSpend(db, repository, previous),
+          loadTaskSummary(db, current, repository),
+          loadTaskSummary(db, previous, repository),
+          loadRecordedSpend(db, current, repository),
+          loadRecordedSpend(db, previous, repository),
         ]),
       );
 
       res.json({
         period,
         repository,
+        tasks: currentStats.total,
         completed: currentStats.completed,
+        failed: currentStats.failed,
         successRate: calculateSuccessRate(currentStats.completed, currentStats.failed),
         recordedSpend: currentSpend,
-        dailyCompleted: currentStats.dailyCompleted,
+        dailyTasks: currentStats.dailyCounts,
         previous: {
+          tasks: previousStats.total,
           completed: previousStats.completed,
           successRate: calculateSuccessRate(previousStats.completed, previousStats.failed),
           recordedSpend: previousSpend,

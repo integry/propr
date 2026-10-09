@@ -1,5 +1,11 @@
 /**
- * Per-model breakdown for the Analytics console: tasks, tokens and cost.
+ * Per-model breakdown for the Analytics console: runs, tokens and cost.
+ *
+ * A model is credited with runs — agent executions — not tasks. One task
+ * usually takes several runs, often on different models (one writes the code,
+ * another reviews it, the first fixes it), so a per-model task count would
+ * credit the same deliverable to every model that touched it. Task volume is
+ * reported once, in the totals band.
  *
  * Presentational: the page reads the overview once per timeframe and hands it
  * in, so the table and the metric strip above it can never disagree. The
@@ -9,7 +15,9 @@
  * catalogue has since dropped read the same way (`Claude Opus 5.5`,
  * `GPT-5.6`) instead of a display name beside a raw slug.
  *
- * Each row opens the LLM log filtered to its model.
+ * Each row opens the LLM log filtered to its model. Runs that recorded no
+ * model share one "Unknown model" row, listed last and opening nothing, so the
+ * runs column still sums to the period's total runs.
  */
 
 import React from 'react';
@@ -68,7 +76,7 @@ type ModelRow = Omit<StatsOverviewModelUsage, 'tokens' | 'cost_usd'> & { tokens:
 const modelRows = (overview: StatsOverviewResponse): ModelRow[] =>
   overview.model_usage
     ?? Object.entries(overview.usage.models)
-      .map(([model, tasks]) => ({ model, tasks, tokens: null, cost_usd: null }))
+      .map(([model, tasks]) => ({ model: model as string | null, tasks, tokens: null, cost_usd: null }))
       .sort((a, b) => b.tasks - a.tasks);
 
 const HEAD = 'whitespace-nowrap px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 sm:px-4';
@@ -79,12 +87,19 @@ const HEAD = 'whitespace-nowrap px-3 py-2 text-[10px] font-bold uppercase tracki
 const METRIC_COLUMN = 'w-20 2xl:w-28';
 const CELL = 'px-3 py-2 text-sm tabular-nums sm:px-4';
 const UNKNOWN = '—';
+const UNKNOWN_MODEL = 'Unknown model';
 
-const TableHead: React.FC = () => (
+/** Runs, or tasks from a server that predates run counts. */
+const TableHead: React.FC<{ countsRuns?: boolean }> = ({ countsRuns = true }) => (
   <thead>
     <tr className="border-b border-slate-200">
       <th className={`${HEAD} text-left`}>Model</th>
-      <th className={`${HEAD} ${METRIC_COLUMN} text-right`}>Tasks</th>
+      <th
+        className={`${HEAD} ${METRIC_COLUMN} text-right`}
+        title={countsRuns ? 'Agent executions on the model in the period' : 'Distinct tasks with a run on the model'}
+      >
+        {countsRuns ? 'Runs' : 'Tasks'}
+      </th>
       <th className={`${HEAD} ${METRIC_COLUMN} text-right`}>Tokens</th>
       <th className={`${HEAD} ${METRIC_COLUMN} text-right`}>Cost</th>
     </tr>
@@ -122,28 +137,52 @@ const TopModels: React.FC<TopModelsProps> = ({ overview, loading, error, limit }
   }
 
   const displayModels = limit ? rows.slice(0, limit) : rows;
+  const countsRuns = rows.every(row => row.runs !== undefined);
 
   return (
     <table className="w-full table-fixed" data-testid="model-breakdown-table">
-      <TableHead />
+      <TableHead countsRuns={countsRuns} />
       <tbody>
-        {displayModels.map(row => (
-          <DrillDownRow key={row.model} to={modelLogsHref(row.model)}>
-            <DrillDownCell to={modelLogsHref(row.model)} label={`LLM log for ${row.model}`} className={CELL}>
-              <ModelIcon modelId={row.model} />
-              <span className="truncate font-medium text-slate-800" title={row.model}>
-                {formatModelName(row.model)}
-              </span>
-            </DrillDownCell>
-            <td className={`${CELL} text-right text-slate-800`}>{row.tasks.toLocaleString()}</td>
-            <td className={`${CELL} text-right text-slate-600`}>
-              {row.tokens === null ? UNKNOWN : formatCompactNumber(row.tokens)}
-            </td>
-            <td className={`${CELL} text-right text-slate-600`}>
-              {row.cost_usd === null ? UNKNOWN : formatUsd(row.cost_usd)}
-            </td>
-          </DrillDownRow>
-        ))}
+        {displayModels.map(row => {
+          const figures = (
+            <>
+              <td className={`${CELL} text-right text-slate-800`} data-testid="model-run-count">
+                {(countsRuns ? row.runs ?? 0 : row.tasks).toLocaleString()}
+              </td>
+              <td className={`${CELL} text-right text-slate-600`}>
+                {row.tokens === null ? UNKNOWN : formatCompactNumber(row.tokens)}
+              </td>
+              <td className={`${CELL} text-right text-slate-600`}>
+                {row.cost_usd === null ? UNKNOWN : formatUsd(row.cost_usd)}
+              </td>
+            </>
+          );
+          // No model to filter the LLM log by, so the unknown row opens nothing.
+          if (row.model === null) {
+            return (
+              <tr key="unknown-model" className="border-b border-slate-100 last:border-b-0" data-testid="model-unknown-row">
+                <td className={CELL}>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <ModelIcon modelId="" />
+                    <span className="truncate font-medium text-slate-500" title="Runs that recorded no model">{UNKNOWN_MODEL}</span>
+                  </span>
+                </td>
+                {figures}
+              </tr>
+            );
+          }
+          return (
+            <DrillDownRow key={row.model} to={modelLogsHref(row.model)}>
+              <DrillDownCell to={modelLogsHref(row.model)} label={`LLM log for ${row.model}`} className={CELL}>
+                <ModelIcon modelId={row.model} />
+                <span className="truncate font-medium text-slate-800" title={row.model}>
+                  {formatModelName(row.model)}
+                </span>
+              </DrillDownCell>
+              {figures}
+            </DrillDownRow>
+          );
+        })}
       </tbody>
     </table>
   );

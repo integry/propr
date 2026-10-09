@@ -40,7 +40,8 @@ configuration. Live provider and chat-host acceptance are separate from this cat
 | Starting or re-arming an ultrafix loop | `start_ultrafix`; requires `expectedHead` and rejects a moved head with `STALE_HEAD`. Posts the same `/ultrafix` command a hand-typed comment does, whose intake re-adds the `ultrafix` label and starts the loop. Optional `ultrafixGoal`/`ultrafixMaxCycles` default to the instance `ultrafix_rating_goal`/`ultrafix_max_cycles`. Listed under execute scope and additionally requires review scope; returns a durable receipt tracked like `run_ultrafix` |
 | Stopping an ultrafix loop | `stop_ultrafix`; requires `expectedHead` because a moved head may contain a human fix the loop should still review. Removes the `ultrafix` label so the loop starts no further cycle. Listed under execute scope and additionally requires review scope; a cycle already running may still finish |
 | PR read/review/fix/ultrafix | `get_pull_request`, `get_pull_request_discussion`, `review_pull_request`, `fix_review_findings`, `run_ultrafix`; the three append-only commands accept optional `expectedHead` and report `resolvedHead`/`headSource`, plus exact comment and F#/S# selection (merge blockers required, named suggestions optional), reviewed head, partial coverage and consumed records. `review_pull_request` takes an optional `model` alias or list of aliases; each is validated against enabled models, fans out one independent `/review <model>` per model at the same head, returns one `reviews` receipt per model and never changes the PR's model labels |
-| Update branch (`/merge`) | `update_pull_request_branch`; `expectedHead` is required to avoid updating code the caller has not seen |
+| Update branch (clean) | `update_pull_request_branch`; GitHub's update-branch for a branch that merges cleanly. `expectedHead` is required to avoid updating code the caller has not seen; a conflicting branch is rejected with `GITHUB_REJECTED` |
+| Resolve merge conflicts (`/merge`) | `resolve_merge_conflicts`; requires `expectedHead` and rejects a moved head with `STALE_HEAD`. Posts the same `/merge` command a hand-typed comment does, whose intake merges the base into the PR branch and resolves conflicts with an agent. A PR without a ProPR processing label is rejected with `PULL_REQUEST_NOT_MANAGED` before anything is posted. Execute scope; returns a durable receipt that `get_operation` follows to the merge task |
 | Guarded PR merge | `merge_pull_request`; `expectedHead` is required to avoid merging code the caller has not seen |
 | Preview/revert a PR commit | `get_pull_request_revert_preview`, `revert_pull_request_commit`; exact commit, comment and head |
 | Published visual evidence | `list_visual_previews`, `get_visual_preview`; list exact task/PR preview metadata, then fetch bounded/downscaled image content. Videos remain metadata-only; `repositories/{owner}/{repo}/previews/{previewId}` resource |
@@ -66,7 +67,7 @@ configuration. Live provider and chat-host acceptance are separate from this cat
 | Execution/review/context | `get_execution_settings`, `update_execution_settings`; worker concurrency, analysis/planner models, review model/prompt/context enablement/model/budget, reasoning, bounded ultrafix defaults and the `followup_requires_assignment` assignment gate (default off) |
 | Workflow labels and keywords | `get_`/`update_` tools for `followup_keywords`, `followup_ignore_keywords`, `primary_processing_labels`, `pr_label`, `ai_primary_tag` |
 | Runtime package configuration/build | `get_runtime_configuration`, `update_runtime_configuration` |
-| Instance membership administration | `list_instance_members`, `add_instance_member`, `set_instance_member_role`, `remove_instance_member`, `get_instance_role_audit`; existing last-admin guards |
+| Instance membership administration | `list_instance_members`, `add_instance_member`, `set_instance_member_role`, `remove_instance_member`, `get_instance_role_audit` manage directly assigned instance roles; existing last-admin guards. Trigger whitelist changes stay separate: follow up with `update_trigger_access_configuration`, as the web UI offers after an add or remove |
 | Shared repository chat history | `get_repository_chat`, `save_repository_chat_message`, `delete_repository_chat_message` |
 | MCP access observability | Durable `mcp_access_log` row per tool call, resource read, prompt fetch and authentication failure; `GET /api/admin/mcp/logs` and `GET /api/admin/mcp/logs/stats`, both behind the existing `instance.manage_settings` permission; last-used and 24-hour request counts per connected app on `/mcp/apps`. Only names, identifiers, counts, sizes and outcomes are stored, and no MCP tool reads the log |
 | GitHub credentials, provider login, agent secrets, push subscription | Browser settings/login links from connection/setup; never collect secrets through tools |
@@ -201,8 +202,11 @@ the current head rather than rejected: records whose cited files were all
 deleted since the review, with no surviving file gaining lines the code could
 have moved into, are reported in `skipped` and left out, the rest are
 posted and listed in `applied`, and `reviewedHead`/`resolvedHead`/`reanchored`
-report the move. A caller-supplied `expectedHead` still fails with `STALE_HEAD`
-on a mismatch. A suggestion is
+report the move. A moved head alone never refuses the call; the only refusals
+are `NOT_A_REVIEW`, `FINDINGS_UNAVAILABLE` (per-identifier `reason` of
+`not_in_review`, `consumed` or `expired`) and `FINDINGS_CODE_REMOVED` (nothing
+selected can still be located). A caller-supplied `expectedHead` still fails
+with `STALE_HEAD` on a mismatch. A suggestion is
 in fix scope only because it was named, and naming one never relaxes a merge
 blocker. Comment content remains untrusted data.
 

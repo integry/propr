@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP `resolve_merge_conflicts`**: the MCP equivalent of typing `/merge` on a
+  pull request. It posts the same `/merge` command, whose intake merges the base
+  branch into the PR branch and resolves conflicts with an agent. It requires
+  `expectedHead` (a moved head fails with `STALE_HEAD`) and an `idempotencyKey`,
+  refuses a PR without a ProPR processing label with `PULL_REQUEST_NOT_MANAGED`,
+  and returns a durable receipt that `get_operation` follows to the merge task.
+  `update_pull_request_branch` is unchanged and still covers the clean case
+  GitHub can update itself.
 - **Agents (v1)**: saved, reusable definitions (prompt, input files,
   repositories, agent and model, previous reports, capabilities, schedule and
   autonomy) that run as an isolated task and produce a free-form Markdown
@@ -285,6 +293,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open the LLM log for that model. The toolbar shows the repository scope as a locked
   `All Repos`. `GET /api/stats/overview` adds `model_usage`, a per-model list
   of tasks, tokens and cost, and `usage.input_tokens` / `usage.output_tokens`.
+
+### Changed
+
+- **Instance access**: role assignments are now described as assigned
+  instance roles instead of "explicit" assignments across the **Access** page,
+  the `add_instance_member` MCP description, the `MEMBER_EXISTS` error and the
+  docs. After adding a user, the page offers to add them to the GitHub trigger
+  whitelist; after removing one, it offers to remove them from it. Both offers
+  reuse the existing `github_user_whitelist` setting with revision checks, are
+  skipped when the whitelist is empty or would become empty, and can be
+  declined.
+- **Ultrafix CI wait comment**: the "Ultrafix is waiting for CI before the next
+  `/review`" comment is now edited in place with the wait's outcome instead of
+  staying on the PR next to it. The review that runs once blocking checks pass
+  turns it into its "AI Code Review Complete" comment, and a CI wait timeout
+  turns it into the "CI did not settle" stop comment.
+- **`GET /api/stats/dashboard`** reports its daily series as `dailyTasks`
+  (tasks created per UTC day, the series the Analytics activity chart plots)
+  and no longer reports `dailyCompleted` (completions per day). The bundled
+  dashboard reads `dailyTasks`, and still draws `dailyCompleted` from an older
+  server; a script that read `dailyCompleted` should read `dailyTasks`.
+- **Repository to-dos**: launching a task from a to-do (**Run task**, MCP
+  `create_task` with `todoIds`, or a submission retry) now marks the to-do
+  completed once its GitHub issue exists and records that issue
+  (`linkedIssueRepository`, `linkedIssueNumber`, `linkedTaskId`). The REST API,
+  MCP `list_todos`/`get_todo`, the CLI and the Web UI carry the link, and the
+  UI shows a `#<issue number>` chip opening the issue on active and completed
+  to-dos. Only the submitting user's to-dos in the issue's repository are
+  touched, and a failed to-do write never fails the submission.
 
 ### Removed
 

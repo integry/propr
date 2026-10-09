@@ -274,7 +274,7 @@ export function summarizeLifecycle(tool: string, lifecycle: Record<string, unkno
   }
   const names: Record<string, string> = {
     review_pull_request: 'Pull request review', fix_review_findings: 'Review fix',
-    comment_on_pull_request: 'Pull request comment',
+    comment_on_pull_request: 'Pull request comment', resolve_merge_conflicts: 'Merge conflict resolution',
   };
   const subject = names[tool] ?? 'Operation';
   if (state === 'accepted') return `${subject} was accepted and is waiting to start.`;

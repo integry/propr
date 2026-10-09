@@ -33,7 +33,6 @@ const environment = (
 /** Stable, non-secret location metadata for every supported UI/MCP setting and documented environment group. */
 export const SETTINGS_CATALOG: SettingEntry[] = [
   execution('automation.usage_tips_enabled', 'Usage tips', 'Settings → Automation → Usage tips', ['usage tips enabled']),
-  execution('automation.usage_tips_dismissal_cooldown_days', 'Usage tip dismissal cooldown', 'Settings → Automation → Usage tips', ['tip cooldown days']),
   execution('models.default_agent_alias', 'Default coding agent', 'Settings → Models → Model selection', ['default_agent_alias', 'default agent']),
   execution('automation.worker_concurrency', 'Worker concurrency', 'Settings → Automation → General configuration', ['parallel jobs', 'worker_concurrency'], ['WORKER_CONCURRENCY']),
   {

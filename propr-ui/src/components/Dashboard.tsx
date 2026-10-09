@@ -165,6 +165,7 @@ const Dashboard: React.FC = () => {
             {...repositoryFilterProps}
             variant="default"
             size="compact"
+            menuLabelLayout="stacked"
             className="w-36 xl:w-48"
           />,
           headerScopeSlot,
@@ -178,6 +179,7 @@ const Dashboard: React.FC = () => {
               {...repositoryFilterProps}
               variant="default"
               appearance="title"
+              menuLabelLayout="stacked"
               className="w-full"
             />
           </div>

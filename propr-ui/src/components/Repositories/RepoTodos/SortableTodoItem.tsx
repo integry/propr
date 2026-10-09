@@ -4,6 +4,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { GripVertical, Check, Trash2, Edit3, Sparkles } from 'lucide-react';
 import { RepoTodo } from '../../../api/repoTodosApi';
 import { CreatorMarker } from '../../CreatorMarker';
+import TodoIssueLink from './TodoIssueLink';
 
 export interface SortableTodoItemProps {
   todo: RepoTodo;
@@ -23,6 +24,22 @@ const TodoCreator: React.FC<{ todo: RepoTodo; show?: boolean }> = ({ todo, show 
     <CreatorMarker creator={todo.createdBy} avatarOnly />
   </span>
 ) : null);
+
+/** Links from a to-do to the plan or issue it was turned into. */
+const TodoLinkChips: React.FC<{ todo: RepoTodo }> = ({ todo }) => {
+  if (!todo.linkedDraftId && !todo.linkedIssueNumber) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1 mt-1">
+      {todo.linkedDraftId && (
+        <span className="inline-flex items-center gap-1 text-[10px] text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded">
+          <Sparkles size={10} />
+          Linked to plan
+        </span>
+      )}
+      <TodoIssueLink todo={todo} />
+    </div>
+  );
+};
 
 const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
   todo,
@@ -152,12 +169,7 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
             {todo.content}
           </p>
         )}
-        {todo.linkedDraftId && (
-          <span className="inline-flex items-center gap-1 mt-1 text-[10px] text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded">
-            <Sparkles size={10} />
-            Linked to plan
-          </span>
-        )}
+        <TodoLinkChips todo={todo} />
       </div>
 
       <TodoCreator todo={todo} show={showCreator} />

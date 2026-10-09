@@ -191,7 +191,7 @@ describe('instance member service', () => {
         assert.equal((await service.listAudit())[0].action, 'admin_claimed');
     });
 
-    test('adds explicit members and writes an audit entry', async () => {
+    test('adds directly assigned members and writes an audit entry', async () => {
         const service = new InstanceMemberService(database);
 
         const member = await service.addMember(actor, { id: '200', username: 'developer' }, 'member');

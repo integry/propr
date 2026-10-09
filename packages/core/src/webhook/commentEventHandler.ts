@@ -343,6 +343,8 @@ async function handleMergeSlashCommand(opts: MergeCommandOptions): Promise<void>
             repoName: repo,
             prNumber,
             ...(payload.sender?.id === undefined ? {} : { userId: String(payload.sender.id) }),
+            // Only issue comments share the id space MCP command receipts follow.
+            ...(eventContext.eventType === 'issue_comment' ? { commentId: comment.id } : {}),
             redisClient,
             correlationId,
         });

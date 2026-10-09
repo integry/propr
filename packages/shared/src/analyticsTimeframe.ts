@@ -43,6 +43,24 @@ export const ANALYTICS_TIMEFRAME_DURATION_MS: Record<AnalyticsTimeframe, number 
   all: null,
 };
 
+/**
+ * Windows read in whole UTC days: "7 days" is today and the six days before
+ * it, so a daily chart over the window has exactly seven bars. A rolling
+ * 7 × 24h window would touch eight calendar days and draw eight.
+ */
+const WHOLE_DAY_TIMEFRAMES: ReadonlySet<AnalyticsTimeframe> = new Set(['7d', '30d', '90d', '1y']);
+
+/** How the activity chart buckets a timeframe: a day is too coarse for a single day. */
+export type AnalyticsBucket = 'hour' | 'day';
+
+/**
+ * "24 hours" is read in whole UTC hours, as the day timeframes are read in
+ * whole days: this hour and the 23 before it, so an hourly chart over the
+ * window has exactly 24 bars. Everything longer is bucketed by day.
+ */
+export const analyticsTimeframeBucket = (timeframe: AnalyticsTimeframe): AnalyticsBucket =>
+  timeframe === '24h' ? 'hour' : 'day';
+
 export function isAnalyticsTimeframe(value: unknown): value is AnalyticsTimeframe {
   return typeof value === 'string' && (ANALYTICS_TIMEFRAMES as readonly string[]).includes(value);
 }
@@ -52,8 +70,18 @@ export function parseAnalyticsTimeframe(value: unknown): AnalyticsTimeframe {
   return isAnalyticsTimeframe(value) ? value : DEFAULT_ANALYTICS_TIMEFRAME;
 }
 
-/** Start of the window ending at `now`; null for all time. */
+/**
+ * Start of the window ending at `now`; null for all time. Day timeframes
+ * start at UTC midnight, `days - 1` days before today; `24h` starts at the
+ * top of the hour, 23 hours before this one.
+ */
 export function analyticsTimeframeStart(timeframe: AnalyticsTimeframe, now: Date): Date | null {
   const duration = ANALYTICS_TIMEFRAME_DURATION_MS[timeframe];
-  return duration === null ? null : new Date(now.getTime() - duration);
+  if (duration === null) return null;
+  if (WHOLE_DAY_TIMEFRAMES.has(timeframe)) {
+    const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    return new Date(today - duration + DAY_MS);
+  }
+  const thisHour = Math.floor(now.getTime() / HOUR_MS) * HOUR_MS;
+  return new Date(thisHour - duration + HOUR_MS);
 }

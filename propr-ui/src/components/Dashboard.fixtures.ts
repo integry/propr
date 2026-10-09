@@ -96,10 +96,12 @@ export const outcomesResponse = (items: OutcomeItem[] = []): DashboardOutcomesRe
 export const statsResponse = (over: Partial<DashboardStatsResponse> = {}): DashboardStatsResponse => ({
   period: '7d',
   repository: 'all',
+  tasks: 15,
   completed: 12,
+  failed: 3,
   successRate: 80,
   recordedSpend: 3.5,
-  dailyCompleted: [{ date: '2026-09-22', count: 2 }],
-  previous: { completed: 10, successRate: 75, recordedSpend: 2 },
+  dailyTasks: [{ date: '2026-09-22', count: 2 }],
+  previous: { tasks: 13, completed: 10, successRate: 75, recordedSpend: 2 },
   ...over,
 });

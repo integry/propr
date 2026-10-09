@@ -83,7 +83,7 @@ documented pre-authentication exceptions:
 - `DELETE /api/desktop/tokens/:tokenId` - Revoke one of the current user's instance tokens
 - `GET /api/catalog` - Get the sanitized enabled repository/agent catalog needed by member workflows
 - `GET /api/repositories/indexing-status` - Get indexing status projected to enabled catalog repository/branch entries
-- `GET /api/admin/members` - List explicit role assignments (administrator)
+- `GET /api/admin/members` - List directly assigned instance roles (administrator)
 - `POST /api/admin/members/claim` - Store a configured bootstrap administrator by numeric GitHub ID
 - `POST /api/admin/members` - Add a role assignment by GitHub username (administrator)
 - `PATCH /api/admin/members/:githubUserId` - Change an assigned role (administrator)

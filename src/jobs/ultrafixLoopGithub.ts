@@ -94,13 +94,14 @@ export async function removeUltrafixLabel(
     }
 }
 
+/** Posts an Ultrafix status comment; returns its id, or null when posting failed. */
 export async function postPrComment(options: {
     owner: string;
     repo: string;
     pullRequestNumber: number;
     body: string;
     correlatedLogger: Logger;
-}): Promise<void> {
+}): Promise<number | null> {
     const { owner, repo, pullRequestNumber, body, correlatedLogger } = options;
     try {
         const octokit = await withRetry(
@@ -108,14 +109,45 @@ export async function postPrComment(options: {
             { ...retryConfigs.githubApi },
             'get_authenticated_octokit_ultrafix_comment',
         );
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        const response = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner,
             repo,
             issue_number: pullRequestNumber,
             body,
         });
+        return typeof response?.data?.id === 'number' ? response.data.id : null;
     } catch (err) {
         correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Failed to post ultrafix status comment');
+        return null;
+    }
+}
+
+/** Rewrites an earlier Ultrafix status comment in place; false when it could not be edited. */
+export async function updatePrComment(options: {
+    owner: string;
+    repo: string;
+    pullRequestNumber: number;
+    commentId: number;
+    body: string;
+    correlatedLogger: Logger;
+}): Promise<boolean> {
+    const { owner, repo, pullRequestNumber, commentId, body, correlatedLogger } = options;
+    try {
+        const octokit = await withRetry(
+            () => getAuthenticatedOctokit(),
+            { ...retryConfigs.githubApi },
+            'get_authenticated_octokit_ultrafix_comment_update',
+        );
+        await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+            owner,
+            repo,
+            comment_id: commentId,
+            body,
+        });
+        return true;
+    } catch (err) {
+        correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber, commentId }, 'Failed to update ultrafix status comment');
+        return false;
     }
 }
 

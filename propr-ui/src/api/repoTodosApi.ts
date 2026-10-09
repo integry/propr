@@ -31,6 +31,10 @@ export interface RepoTodo {
   linkedDraftId: string | null;
   /** Who created the to-do; null when their profile is not cached. */
   createdBy?: AttributedUser | null;
+  /** owner/repo of the GitHub issue opened when a task was launched from this to-do. */
+  linkedIssueRepository: string | null;
+  linkedIssueNumber: number | null;
+  linkedTaskId: string | null;
   createdAt: string;
   updatedAt: string;
 }
