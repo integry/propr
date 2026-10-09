@@ -17,6 +17,7 @@ const {
     TaskAssignmentError,
     resolveTaskSubject,
     syncTaskAssignees,
+    refreshTaskAssignees,
     setTaskAssignees,
     loadTaskAssignees,
     taskIdsAssignedTo,
@@ -180,6 +181,26 @@ describe('taskAssignmentService', () => {
         const result = await syncTaskAssignees('issue-7', { github: github.client });
         assert.deepEqual(result.subject, { owner: 'acme', repo: 'widgets', number: 88, kind: 'pull_request' });
         assert.deepEqual(result.assignees.map(a => a.login), ['hubot']);
+    });
+
+    test('refreshTaskAssignees stores the explicit subject\'s assignees, not the task row\'s', async () => {
+        // The implementation task has not recorded its new PR yet.
+        await insertTask({ task_id: 'issue-7', issue_number: 7 });
+        const github = fakeGitHub({ 7: ['2'], 88: ['1', '4'] });
+        const assignees = await refreshTaskAssignees('issue-7', { owner: 'acme', repo: 'widgets', number: 88, kind: 'pull_request' }, { github: github.client, now: () => T0 });
+        assert.deepEqual(assignees.map(a => a.login), ['human', 'octocat']);
+        assert.deepEqual(await storedIds('issue-7'), ['1', '4']);
+        assert.deepEqual(github.calls.map(call => call.parameters.issue_number), [88]);
+    });
+
+    test('refreshTaskAssignees throws when GitHub fails and leaves the stored set untouched', async () => {
+        await insertTask({ task_id: 'issue-7', issue_number: 7 });
+        await syncTaskAssignees('issue-7', { github: fakeGitHub({ 7: ['1'] }).client, now: () => T0 });
+        await assert.rejects(
+            refreshTaskAssignees('issue-7', { owner: 'acme', repo: 'widgets', number: 88, kind: 'pull_request' }, { github: fakeGitHub({}, { fail: true }).client }),
+            /GitHub is down/,
+        );
+        assert.deepEqual(await storedIds('issue-7'), ['1']);
     });
 
     test("setTaskAssignees in add mode keeps assignees added in GitHub's UI", async () => {

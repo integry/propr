@@ -182,3 +182,18 @@ describe('TaskStatusTable replacement events', () => {
     expect(screen.getByText('Replacement skipped: the replacement cap was reached')).toBeInTheDocument();
   });
 });
+
+describe('pull request auto-assignment events', () => {
+  it('shows the assignment as its own step after the pull request is created', () => {
+    render(<TaskStatusTable history={[
+      { state: 'POST_PROCESSING', timestamp: at(1) },
+      {
+        state: 'POST_PROCESSING', timestamp: at(5), reason: 'Assigned pull request to alice and requested their review',
+        metadata: { event: 'pull_request.auto_assignment', description: 'Assigned pull request to alice and requested their review' },
+      },
+      { state: 'COMPLETED', timestamp: at(6) },
+    ]} />);
+    expect(screen.getByText('Creating Pull Request')).toBeInTheDocument();
+    expect(screen.getByText('Assigned pull request to alice and requested their review')).toBeInTheDocument();
+  });
+});

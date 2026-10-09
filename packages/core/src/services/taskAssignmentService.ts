@@ -70,6 +70,12 @@ export type TaskAssignmentMode = 'add' | 'replace';
 
 export interface SetTaskAssigneesOptions extends TaskAssignmentOptions {
     mode: TaskAssignmentMode;
+    /**
+     * Assigns this issue or pull request instead of the one resolved from the
+     * task row, for a caller that knows it before the task records it (an
+     * implementation's new pull request, during post-processing).
+     */
+    subject?: TaskSubject;
 }
 
 export interface TaskAssigneeSyncResult {
@@ -243,6 +249,18 @@ export async function syncTaskAssignees(taskId: string, options: TaskAssignmentO
     }
 }
 
+/**
+ * Replaces the task's stored set with the live assignees of an explicit
+ * subject, for a caller that knows the subject before the task row records it
+ * (an implementation's new pull request). Unlike `syncTaskAssignees`, a GitHub
+ * or database failure throws, so the caller can retry.
+ */
+export async function refreshTaskAssignees(taskId: string, subject: TaskSubject, options: TaskAssignmentOptions = {}): Promise<AttributedUser[]> {
+    const now = options.now?.() ?? new Date();
+    const github = options.github ?? await defaultClient();
+    return await persistObserved(taskId, await fetchAssignees(github, subject), now);
+}
+
 async function readTasksOnSubject(subject: TaskSubject): Promise<string[]> {
     const rows: TaskSubjectSource[] = await db('tasks')
         .select('task_id', 'repository', 'issue_number', 'pr_number', 'task_type')
@@ -331,7 +349,7 @@ export async function setTaskAssignees(taskId: string, logins: string[], options
     const now = options.now?.() ?? new Date();
     const task = await readTask(taskId);
     if (!task) throw new TaskAssignmentError('TASK_NOT_FOUND', `Task ${taskId} was not found`);
-    const subject = resolveTaskSubject(task);
+    const subject = options.subject ?? resolveTaskSubject(task);
     if (!subject) throw new TaskAssignmentError('NO_GITHUB_SUBJECT', `Task ${taskId} has no GitHub issue or pull request to assign`);
     const github = options.github ?? await defaultClient();
 
