@@ -276,6 +276,25 @@ describe('task assignment routes', () => {
       assert.equal(response.status, 502);
     });
 
+    test('a GitHub outage during the write-access check answers 502 and changes nothing', async () => {
+      for (const status of [500, 502, 503]) {
+        const github = fakeGitHub({ 7: ['1'] });
+        const unavailable = Object.assign(new Error('Service Unavailable'), { status });
+        const response = await setup(github, { canWrite: unavailable }).call('putAssignees', 'issue-7', { body: { logins: ['octocat'] } });
+        assert.equal(response.status, 502, String(status));
+        assert.equal(response.body.code, 'GITHUB_UNAVAILABLE');
+        assert.equal(github.calls.length, 0);
+        assert.deepEqual(github.assigned[7], ['1']);
+      }
+    });
+
+    test('a non-GitHub failure during the write-access check still answers 500', async () => {
+      const github = fakeGitHub({ 7: ['1'] });
+      const response = await setup(github, { canWrite: new Error('boom') }).call('putAssignees', 'issue-7', { body: { logins: [] } });
+      assert.equal(response.status, 500);
+      assert.equal(github.calls.length, 0);
+    });
+
     test('a task with no subject answers 409, an unknown task 404', async () => {
       const github = fakeGitHub({});
       const { call, accessChecks } = setup(github);
@@ -333,7 +352,21 @@ describe('task assignment routes', () => {
       assert.equal(response.status, 200);
       assert.equal((response.body.users as unknown[]).length, MAX_ASSIGNABLE_USERS);
       assert.equal(response.body.truncated, true);
-      assert.equal(github.calls.length, MAX_ASSIGNABLE_USERS / 100);
+      // One page past the cap establishes that more users exist.
+      assert.equal(github.calls.length, MAX_ASSIGNABLE_USERS / 100 + 1);
+    });
+
+    test('reports truncation only when the repository has more users than the cap', async () => {
+      for (const [assignable, listed, truncated] of [
+        [MAX_ASSIGNABLE_USERS - 1, MAX_ASSIGNABLE_USERS - 1, false],
+        [MAX_ASSIGNABLE_USERS, MAX_ASSIGNABLE_USERS, false],
+        [MAX_ASSIGNABLE_USERS + 1, MAX_ASSIGNABLE_USERS, true],
+      ] as const) {
+        const response = await setup(fakeGitHub({}, { assignable })).call('getAssignableUsers', 'issue-7');
+        assert.equal(response.status, 200, String(assignable));
+        assert.equal((response.body.users as unknown[]).length, listed, String(assignable));
+        assert.equal(response.body.truncated, truncated, String(assignable));
+      }
     });
 
     test('does not cache a failed read', async () => {

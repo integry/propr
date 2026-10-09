@@ -140,8 +140,9 @@ export function createTaskAssignmentRoutes(deps: TaskAssignmentRoutesDeps) {
   async function fetchAssignableUsers(subject: TaskSubject): Promise<AssignableUsers> {
     const client = await github();
     const listed: Array<{ id: string; login: string; avatar_url: string | null }> = [];
-    let truncated = false;
-    for (let page = 1; ; page++) {
+    // Reading on past the cap until a short page or one user more than fits
+    // establishes `truncated`; a full page at exactly the cap proves nothing.
+    for (let page = 1; listed.length <= MAX_ASSIGNABLE_USERS; page++) {
       const response = await client.request('GET /repos/{owner}/{repo}/assignees', {
         owner: subject.owner, repo: subject.repo, per_page: ASSIGNABLE_USERS_PAGE_SIZE, page,
       });
@@ -151,9 +152,8 @@ export function createTaskAssignmentRoutes(deps: TaskAssignmentRoutesDeps) {
         if (user) listed.push(user);
       }
       if (entries.length < ASSIGNABLE_USERS_PAGE_SIZE) break;
-      if (listed.length >= MAX_ASSIGNABLE_USERS) { truncated = true; break; }
     }
-    if (listed.length > MAX_ASSIGNABLE_USERS) truncated = true;
+    const truncated = listed.length > MAX_ASSIGNABLE_USERS;
     const users = listed.slice(0, MAX_ASSIGNABLE_USERS);
     await rememberGitHubUserProfiles(users);
     // The listing carries no display names; previously cached profiles fill them in.
@@ -213,6 +213,9 @@ export function createTaskAssignmentRoutes(deps: TaskAssignmentRoutesDeps) {
       } catch (error) {
         if (error instanceof GitHubRepositoryWriteAccessError) { sendError(res, 403, 'REPOSITORY_WRITE_ACCESS_REQUIRED', error.message); return; }
         if (await handleGitHubRepositoryAccessError(req, res, error)) return;
+        // GitHub being unavailable during the permission check is the same outage as during the write.
+        const status = (error as { status?: unknown } | null)?.status;
+        if (typeof status === 'number' && status >= 500) { sendError(res, 502, 'GITHUB_UNAVAILABLE', 'GitHub could not be reached to check repository access'); return; }
         throw error;
       }
 
