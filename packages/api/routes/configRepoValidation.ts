@@ -1,8 +1,9 @@
 import { normalizeGitHubAttachmentPlanOverride } from '@propr/shared';
 import { randomUUID } from 'crypto';
-import { assertGitHubRepositoryIdentity } from '../../core/src/git/repositoryPaths.js';
 import type { RepoToMonitor, VisualPreviewSettings, VisualPreviewType } from '@propr/core';
 import { normalizeOptionalBranchName } from './branchNameValidation.js';
+import { normalizeContextRepositories } from './configRepoContext.js';
+import { normalizeRepoAutoAssign, preserveRepoAutoAssign, withDefaultRepoAutoAssign } from './configRepoAutoAssign.js';
 import { isValidAutoResolveMergeConflicts, normalizeStoredAutoResolveMergeConflicts, preserveRepoAutoResolveMergeConflicts, withAutoResolveMergeConflicts } from './configRepoAutoResolve.js';
 
 const MAX_VISUAL_PREVIEW_INSTRUCTIONS_LENGTH = 4000;
@@ -74,7 +75,7 @@ export function withDefaultRepoAutoFollowup(repo: RepoToMonitor): RepoToMonitor 
 
 export function withDefaultRepoOptions(repo: RepoToMonitor): RepoToMonitor {
   return {
-    ...withAutoResolveMergeConflicts(withDefaultRepoAutoFollowup(repo), normalizeStoredAutoResolveMergeConflicts(repo.autoResolveMergeConflicts)),
+    ...withAutoResolveMergeConflicts(withDefaultRepoAutoAssign(withDefaultRepoAutoFollowup(repo)), normalizeStoredAutoResolveMergeConflicts(repo.autoResolveMergeConflicts)),
     cancelCiDuringFollowup: repo.cancelCiDuringFollowup === true,
     cancelCiDuringFollowupWorkflows: normalizeStoredWorkflowSelection(repo.cancelCiDuringFollowupWorkflows),
     nonBlockingChecks: normalizeStoredWorkflowSelection(repo.nonBlockingChecks),
@@ -362,7 +363,7 @@ function normalizeNonBlockingChecks(value: unknown, repoName: string): Validatio
 }
 
 /** Optional booleans that are rejected when present with a non-boolean value. */
-const OPTIONAL_BOOLEAN_FIELDS = ['autoFollowupOnFailedCi', 'cancelCiDuringFollowup', 'notificationsEnabled', 'githubPrTemplateFallback'] as const;
+const OPTIONAL_BOOLEAN_FIELDS = ['autoFollowupOnFailedCi', 'cancelCiDuringFollowup', 'notificationsEnabled', 'githubPrTemplateFallback', 'autoAssignPullRequests', 'autoAssignRequestReview'] as const;
 
 function validateOptionalBooleans(candidate: Partial<RepoToMonitor>, repoName: string): ValidationResult<undefined> {
   for (const field of OPTIONAL_BOOLEAN_FIELDS) {
@@ -372,24 +373,6 @@ function validateOptionalBooleans(candidate: Partial<RepoToMonitor>, repoName: s
   }
   if (!isValidAutoResolveMergeConflicts(candidate.autoResolveMergeConflicts)) return failure(`Invalid autoResolveMergeConflicts format for ${repoName}: must be a boolean or null`);
   return success(undefined);
-}
-
-function isValidContextRepositoryName(value: string): boolean {
-  const parts = value.split('/');
-  if (parts.length !== 2) return false;
-  try {
-    assertGitHubRepositoryIdentity(parts[0], parts[1]);
-    return true;
-  } catch { return false; }
-}
-
-function normalizeContextRepositories(context: RepoToMonitor['contextRepositories']): ValidationResult<RepoToMonitor['contextRepositories']> {
-  if (context !== undefined && context !== 'all' && context !== 'none'
-      && (!Array.isArray(context) || context.length > 499 || context.some(entry =>
-        typeof entry !== 'string' || !isValidContextRepositoryName(entry)))) {
-    return failure('Context repositories must be all, none, or up to 499 owner/repository names');
-  }
-  return success(Array.isArray(context) ? [...new Set(context.map(name => name.toLowerCase()))] : context);
 }
 
 export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonitor> {
@@ -419,6 +402,8 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
   if (!context.ok) return context;
   const visualPreview = normalizeVisualPreview(candidate.visualPreview, name);
   if (!visualPreview.ok) return visualPreview;
+  const autoAssign = normalizeRepoAutoAssign(candidate, name);
+  if (!autoAssign.ok) return autoAssign;
 
   return success(withAutoResolveMergeConflicts({
     id: candidate.id?.trim() || randomUUID(),
@@ -432,6 +417,7 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
     notificationsEnabled: candidate.notificationsEnabled !== false,
     githubPrTemplateFallback: candidate.githubPrTemplateFallback !== false,
     visualPreview: visualPreview.value,
+    ...autoAssign.value,
     alias: alias.value,
     baseBranch: baseBranch.value,
     defaultBranch: defaultBranch.value
@@ -483,6 +469,6 @@ export function preserveRepoSettings(
   repos = preserveRepoCancelCiWorkflows(previousRepos, repos, incomingRepos);
   repos = preserveRepoNonBlockingChecks(previousRepos, repos, incomingRepos);
   repos = preserveRepoAutoResolveMergeConflicts(previousRepos, preserveRepoNotifications(previousRepos, repos, incomingRepos), incomingRepos);
-  repos = preserveRepoGitHubPrTemplateFallback(previousRepos, repos, incomingRepos);
+  repos = preserveRepoAutoAssign(previousRepos, preserveRepoGitHubPrTemplateFallback(previousRepos, repos, incomingRepos), incomingRepos);
   return preserveRepoVisualPreview(previousRepos, repos, incomingRepos);
 }

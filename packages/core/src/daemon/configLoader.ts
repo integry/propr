@@ -1,3 +1,4 @@
+import { isGitHubLogin } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadMonitoredRepos, loadMonitoredReposRaw, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from '../config/configManager.js';
@@ -124,6 +125,53 @@ export async function getCancelCiDuringFollowupWorkflowsForRepository(
         logger.warn({ repository, error: err.message },
             'Failed to load the follow-up CI cancellation workflow selection; cancelling nothing until it can be read');
         return null;
+    }
+}
+
+/** The effective automatic pull request assignment settings for a repository. */
+export interface RepositoryAutoAssignment {
+    enabled: boolean;
+    /** GitHub login assigned instead of the issue author; null assigns the issue author. */
+    defaultAssignee: string | null;
+    requestReview: boolean;
+}
+
+const DISABLED_AUTO_ASSIGNMENT: RepositoryAutoAssignment = { enabled: false, defaultAssignee: null, requestReview: false };
+
+/**
+ * Automatic pull request assignment for a repository. The options are
+ * repository-wide: branch-specific entries share a repository name, a boolean
+ * option is on when any entry opts in, and the first valid default assignee
+ * wins. Missing or malformed options read as disabled, and an unreadable
+ * configuration fails closed so nobody is assigned on a guess.
+ */
+export async function resolveRepositoryAutoAssignment(
+    owner: string,
+    repo: string,
+    loadConfiguredRepos: typeof loadMonitoredReposRaw = loadMonitoredReposRaw,
+): Promise<RepositoryAutoAssignment> {
+    const repository = `${owner.trim()}/${repo.trim()}`.toLowerCase();
+    if (repository === '/') return { ...DISABLED_AUTO_ASSIGNMENT };
+
+    try {
+        const entries = (await loadConfiguredRepos()).filter(candidate => candidate.name.trim().toLowerCase() === repository);
+        let defaultAssignee: string | null = null;
+        for (const entry of entries) {
+            const login = typeof entry.autoAssignDefaultAssignee === 'string' ? entry.autoAssignDefaultAssignee.trim().replace(/^@/, '') : '';
+            if (login && isGitHubLogin(login)) {
+                defaultAssignee = login;
+                break;
+            }
+        }
+        return {
+            enabled: entries.some(entry => entry.autoAssignPullRequests === true),
+            defaultAssignee,
+            requestReview: entries.some(entry => entry.autoAssignRequestReview === true),
+        };
+    } catch (error) {
+        const err = error as Error;
+        logger.warn({ repository, error: err.message }, 'Failed to load automatic pull request assignment configuration; treating it as disabled');
+        return { ...DISABLED_AUTO_ASSIGNMENT };
     }
 }
 
