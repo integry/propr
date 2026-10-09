@@ -13,9 +13,15 @@ function normalizeWhitelist(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === 'string').map(entry => entry.trim()).filter(Boolean);
 }
 
-async function whitelistRevision(whitelist: string[]): Promise<string | undefined> {
+/**
+ * Without a revision the server would accept the write unguarded and could overwrite a concurrent
+ * edit, so the update is refused when hashing is unavailable (e.g. HTTP on a non-loopback host).
+ */
+async function whitelistRevision(whitelist: string[]): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
-  if (!subtle) return undefined;
+  if (!subtle) {
+    throw new Error('This browser cannot safely update the trigger whitelist here because secure hashing is unavailable. Edit the whitelist in Settings instead.');
+  }
   const digest = await subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(whitelist)));
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
@@ -38,6 +44,10 @@ async function saveTriggerWhitelist(current: string[], next: string[]): Promise<
 export const addToTriggerWhitelist = async (login: string): Promise<string[]> => {
   const current = await getTriggerWhitelist();
   if (isLoginInWhitelist(current, login)) return current;
+  // The list may have been cleared since the offer was made; adding an entry now would restrict access.
+  if (current.length === 0) {
+    throw new Error('The trigger whitelist is now empty, so every GitHub user can trigger ProPR. Adding this user would restrict access to them alone. Edit the whitelist in Settings instead.');
+  }
   return saveTriggerWhitelist(current, [...current, login]);
 };
 

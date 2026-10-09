@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getSettings, updateSettings } from './configApi';
 import { addToTriggerWhitelist, isLoginInWhitelist, removeFromTriggerWhitelist } from './triggerWhitelistApi';
 
@@ -55,5 +55,36 @@ describe('triggerWhitelistApi', () => {
 
     await expect(removeFromTriggerWhitelist('developer')).rejects.toThrow(/open trigger access/);
     expect(mockUpdateSettings).not.toHaveBeenCalled();
+  });
+
+  it('refuses to add when the whitelist was cleared after the offer, which would restrict open access', async () => {
+    mockGetSettings.mockResolvedValue({ github_user_whitelist: [] } as never);
+
+    await expect(addToTriggerWhitelist('developer')).rejects.toThrow(/whitelist is now empty/);
+    expect(mockUpdateSettings).not.toHaveBeenCalled();
+  });
+
+  describe('without secure hashing', () => {
+    beforeEach(() => {
+      vi.stubGlobal('crypto', {});
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('never posts an unguarded addition', async () => {
+      mockGetSettings.mockResolvedValue({ github_user_whitelist: ['owner'] } as never);
+
+      await expect(addToTriggerWhitelist('developer')).rejects.toThrow(/secure hashing is unavailable/);
+      expect(mockUpdateSettings).not.toHaveBeenCalled();
+    });
+
+    it('never posts an unguarded removal', async () => {
+      mockGetSettings.mockResolvedValue({ github_user_whitelist: ['owner', 'developer'] } as never);
+
+      await expect(removeFromTriggerWhitelist('developer')).rejects.toThrow(/secure hashing is unavailable/);
+      expect(mockUpdateSettings).not.toHaveBeenCalled();
+    });
   });
 });
