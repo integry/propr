@@ -46,7 +46,7 @@ ProPR picks up the comment, includes PR context and the comment content, and que
 - Line-level review comments carry their file path, line, and diff hunk to the agent, so "fix this" on a specific line has real context.
 - Images attached to comments are available to the agent — paste a screenshot of the bug and the agent sees it.
 
-Comment pickup is gated by processing labels, trigger keywords, and author permissions; see [Who Can Trigger Commands](./pr-commands.md#who-can-trigger-commands) for the rules.
+Comment pickup is gated by processing labels, trigger keywords, author permissions and, when it is turned on, the [assignment gate](./assignment.md#the-assignment-gate); see [Who Can Trigger Commands](./pr-commands.md#who-can-trigger-commands) for the rules.
 
 ## The Review And Fix Loop
 
@@ -82,6 +82,71 @@ for reason codes and issue state labels.
 **Auto CI follow-up** (Repositories → repository → Automation, or `propr repo toggle owner/repo --auto-ci-followup`) is off by default. When enabled, a failing check run or commit status on the current head of a pull request makes ProPR post one comment naming the check, the commit, and the failure output; that comment starts follow-up work like any other, without a processing label or trigger keyword. Each failing check is reported at most once per commit. Check runs that GitHub delivers without a PR number, which is common for fork PRs, are matched to open PRs by commit, so they are reported too. Enable it only where CI failures are trustworthy signals.
 
 While Ultrafix is waiting for CI, its periodic check also recovers failed-CI follow-ups whose webhook was missed, such as during a restart. Recovery respects this setting and the repository's non-blocking checks, ignores replaced commits and closed PRs, and shares duplicate protection with webhook delivery.
+
+## Automatic Pull Request Assignment
+
+When work on a ProPR pull request completes, ProPR can assign the pull request to someone, and optionally request their review, so it lands in a person's queue instead of waiting unowned. It is off unless you turn it on. See [Task Assignment](./assignment.md) for how assignment works in general.
+
+### Where it is configured
+
+| Option | Where | Values |
+|---|---|---|
+| Assign pull requests | Repositories → repository → Automation → **Assign the pull request when ProPR finishes**, MCP `update_repository_configuration` (`autoAssignPullRequests`), `propr repo add\|toggle owner/repo --auto-assign <on\|off>` | on / off (default off) |
+| Default assignee | The **Assignee** field under that option, MCP `update_repository_configuration` (`autoAssignDefaultAssignee`), `propr repo add\|toggle owner/repo --auto-assign-to <login\|none>` | A GitHub login, or empty for the source issue author (default empty) |
+| Request a review | **Also request a review from the assignee** under that option, MCP `update_repository_configuration` (`autoAssignRequestReview`), `propr repo add\|toggle owner/repo --auto-assign-review <on\|off>` | on / off (default off) |
+
+There is no instance default: each repository opts in for itself. The options are repository-wide, so every branch entry of a monitored repository shares them. `none` (or `null` through MCP, or clearing the **Assignee** field) removes the default assignee. A leading `@` is accepted, and a value that is not a valid GitHub login is rejected. Clients that do not send a field never change it. MCP `get_repository_configuration` returns all three fields, and `propr repo list` shows them in its **Auto-assign PRs** column, for example `Off` or `On (@octocat, review)`.
+
+### When it runs
+
+Assignment is tied to work **completing**, never to work starting:
+
+- **Implementation done.** When an implementation publishes its pull request and the issue moves to `<trigger>-done`. This also covers a final validation that finds or recreates a pull request that post-processing missed.
+- **Follow-up done.** When a follow-up, including `/fix`, pushes a commit. If the work was published to a continuation pull request, that pull request is assigned instead.
+
+**Resumed work triggers nothing.** ProPR switches the label back to `<trigger>-processing` and posts its "starting work" comment when a follow-up begins, and neither assigns anyone nor requests a review. A `/review` run and a follow-up that pushed no commit do not change the pull request, so they trigger nothing either.
+
+Each commit is one opportunity. A completed attempt is remembered per repository, pull request and head commit, so a retry or redelivery for the same commit does nothing, while the next follow-up commit is a new opportunity. An attempt that a crashed worker left unfinished is retried after 10 minutes.
+
+### Who is assigned
+
+The assignee is resolved in this order:
+
+1. The repository's **default assignee**, when one is set.
+2. Otherwise the **author of the source issue**: the issue the implementation was created from, or for a follow-up, the first issue the pull request body closes (`Closes #123`). **Bot authors are skipped.** An issue opened by a bot, such as a ProPR planner issue, leaves the pull request unassigned unless a default assignee is set.
+
+The person who wrote a follow-up comment is never the target. A follow-up keeps the pull request with the issue author or default assignee.
+
+**Manual assignees are preserved.** ProPR only adds its assignee and never removes anyone already assigned, by hand or otherwise. If the target is already assigned, nothing is written.
+
+### Review requests
+
+With **Also request a review from the assignee** on, ProPR asks the assignee for a GitHub review after assigning them:
+
+- **A review is requested at most once.** Nothing is sent while a review from that person is still pending, and a commit that was already handled sends nothing again, so the implementation and a follow-up never stack two requests. Only after the assignee has answered the earlier request can a later follow-up commit ask them again.
+- **The pull request author is never asked to review their own pull request.** GitHub refuses such requests, so ProPR skips the request and records why.
+- When GitHub refused the assignment, no review is requested either.
+
+A failed review request does not undo the assignment, and a retry of the same commit tries the review request again.
+
+### Why a pull request was not assigned
+
+Each decision is recorded on the task timeline (event `pull_request.auto_assignment`) and logged as `Pull request auto-assignment decision`, `... skipped` or `... failed` with `{ repository, prNumber, opportunity, reason }`. A repository with the option off records nothing on the timeline. Every decision not to assign:
+
+| Status | Reason | Meaning |
+|---|---|---|
+| `disabled` | `disabled for the repository` | Automatic assignment is off for this repository. Nothing is read from GitHub. |
+| `already_assigned` | `already handled for head <sha>` | This commit was already handled, for example by an earlier attempt or a redelivery. |
+| `already_assigned` | `<login> is already assigned` | The target is already assigned. Only the review request, if enabled, is considered. |
+| `skipped` | `another attempt for head <sha> is in progress` | Another worker is handling this commit right now. |
+| `skipped` | `the pull request has no linked source issue` | No default assignee, and no source issue to take the author from. |
+| `skipped` | `the source issue has no author` | No default assignee, and GitHub returned no author for the source issue. |
+| `skipped` | `the source issue author <login> is a bot` | No default assignee, and the issue was opened by a bot. |
+| `skipped` | `no task to record the assignment on` | The completion had no ProPR task to record the decision on. |
+| `not_assigned` | `GitHub did not assign <login>, who may lack repository access` | GitHub refused the assignee, usually because they cannot access the repository. Check the default assignee. |
+| `failed` | The error message | Reading the pull request or issue, or assigning, failed. The failure never fails the implementation or follow-up itself. |
+
+Review requests record their own outcome alongside the assignment: `requested`, `skipped` (`<login> authored the pull request`, or `a review from <login> is already requested`), or `failed` with the error.
 
 ## Automatic Merge-Conflict Resolution
 
