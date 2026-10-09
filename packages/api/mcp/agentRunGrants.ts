@@ -16,7 +16,7 @@ import { McpStore } from './store.js';
  * definition's repositories and to the scopes of one phase. The grant is an
  * ordinary MCP grant, so `McpPolicy.authenticate` re-checks membership and
  * GitHub access on every call (the grant records the owner's membership source,
- * as browser consent does, so losing an explicit membership ends it), it is listed on the Connected apps page and its
+ * as browser consent does, so losing an assigned instance role ends it), it is listed on the Connected apps page and its
  * calls are recorded in the MCP access log. Expiry is only a backstop: the
  * worker revokes the grant when the phase ends.
  */
@@ -133,7 +133,7 @@ export async function issueAgentRunGrant(
   const oauth = await provider(deps);
   const credential = await ownerCredential(input.ownerId, database, deps.userGrants ?? githubUserGrantService);
   // Record the owner's own membership source, as browser consent does, so
-  // `McpPolicy.authenticate` ends the grant when an explicit membership is removed.
+  // `McpPolicy.authenticate` ends the grant when an assigned instance role is removed.
   const authorization = await resolveInstanceAuthorization(credential, database);
   if (authorization.source === 'demo') throw new McpError('ACCESS_REVOKED', 'Current instance access denied.', 403);
   await oauth.store.put('client', AGENT_RUN_MCP_CLIENT_ID, AGENT_RUN_MCP_CLIENT);
