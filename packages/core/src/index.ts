@@ -611,6 +611,8 @@ export * from './services/reviewScoreStore.js';
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login
 // and avatar an assignee is rendered with.
 export * from './services/githubUserProfileService.js';
+// Task assignment, mapped onto GitHub issue and pull request assignment.
+export * from './services/taskAssignmentService.js';
 export {
     TASK_ASSIGNMENT_FILTERS,
     MAX_TASK_ASSIGNMENT_FILTER_LOGINS,
