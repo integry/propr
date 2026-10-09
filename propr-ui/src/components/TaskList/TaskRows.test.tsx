@@ -55,9 +55,9 @@ describe('task ledger rows', () => {
     expect(runsCell.parentElement!.children).toHaveLength(1);
   });
 
-  it('shows the newest run\'s assignees as a stack in the row and on the card, and a dash when unassigned', () => {
+  it('shows the assignees of every run as a stack in the row and on the card, and a dash when unassigned', () => {
     const user = (login: string) => ({ id: login, login, displayName: null, avatarUrl: null });
-    const assigned: TaskGroup = { ...group, tasks: group.tasks.map((task, index) => ({ ...task, assignees: index ? [user('stale')] : [user('octocat'), user('hubot')] })) };
+    const assigned: TaskGroup = { ...group, tasks: group.tasks.map((task, index) => ({ ...task, assignees: index ? [user('hubot')] : [user('octocat')] })) };
     const unassigned: TaskGroup = { ...group, key: 'integry/propr-pr-1', prNumber: 1, tasks: [{ ...group.tasks[0], id: 'other', prNumber: 1 }] };
     render(<Fixture groups={[assigned, unassigned]} />);
     const table = screen.getByRole('table', { name: 'Tasks' });

@@ -73,8 +73,10 @@ export interface TaskRowView {
   outcome: string | null;
   previewCount: number;
   /**
-   * Who the task is assigned to. Assignment belongs to the issue or pull
-   * request every run shares, so the newest run's copy is the current one.
+   * Who the task is assigned to: everyone assigned on any run of the group,
+   * newest run first and each user once. A group can join a linked issue and
+   * pull request, which carry their own assignees, and the assignee filter
+   * selects the group when any of its runs matches, so the row shows them all.
    */
   assignees: AttributedUser[];
   earlierRuns: TaskRunView[];
@@ -209,6 +211,17 @@ export function runOutcome(task: Task): string {
   }
 }
 
+/** Every assignee across the runs, newest run first, each user once by id. */
+function groupAssignees(tasks: Task[]): AttributedUser[] {
+  const byId = new Map<string, AttributedUser>();
+  for (const task of tasks) {
+    for (const user of task.assignees ?? []) {
+      if (!byId.has(user.id)) byId.set(user.id, user);
+    }
+  }
+  return [...byId.values()];
+}
+
 export function buildTaskRow(group: TaskGroup): TaskRowView {
   const [task, ...earlier] = group.tasks;
   const { title, fullTitle } = entityTitle(group.tasks);
@@ -224,7 +237,7 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     detail: newest.delta,
     outcome: newest.delta ? null : runOutcome(task),
     previewCount: previewCount(task),
-    assignees: task.assignees ?? [],
+    assignees: groupAssignees(group.tasks),
     earlierRuns: earlier.map(run => {
       const { type, delta } = runDelta(run, title);
       return {

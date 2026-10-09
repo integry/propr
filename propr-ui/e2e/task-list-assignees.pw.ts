@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { capture, fixture, tasks } from './task-list-desktop.fixture';
+import { ago, capture, fixture, tag, tasks } from './task-list-desktop.fixture';
 
 const user = (login: string, id: number) => ({ id: String(id), login, displayName: null, avatarUrl: null });
 const me = user('mona', 1);
@@ -17,7 +17,8 @@ const signedIn = {
 };
 
 /** The task-list fixture plus assignees, an assignee-aware `/api/tasks`, and optionally a signed-in user. */
-async function assigneeFixture(page: Page, { signedInUser = true } = {}) {
+async function assigneeFixture(page: Page, { signedInUser = true, extraTasks = [] as Array<{ assignees: ReturnType<typeof user>[] }> } = {}) {
+  const pageTasks: Array<{ assignees: ReturnType<typeof user>[] }> = [...assignedTasks, ...extraTasks];
   await fixture(page);
   const requests: URL[] = [];
   // Registered after the fixture's catch-all, so these answer first. Without a user the
@@ -31,7 +32,7 @@ async function assigneeFixture(page: Page, { signedInUser = true } = {}) {
       return route.fulfill({ status: 400, json: { error: `assignee contains an invalid GitHub login: ${assignee}` } });
     }
     const login = assignee === 'me' ? me.login : assignee?.replace(/^@/, '');
-    const matching = assignedTasks.filter(task => !assignee ? true
+    const matching = pageTasks.filter(task => !assignee ? true
       : assignee === 'unassigned' ? task.assignees.length === 0
         : task.assignees.some(person => person.login === login));
     return route.fulfill({ json: { tasks: matching, total: assignee ? matching.length : 1842, totalRuns: 14769 } });
@@ -68,6 +69,30 @@ test('1440px the ledger shows an Assignees column between Agent and Duration', a
   expect(layout.overflow).toBe(false);
   expect(await pageFits(page)).toBe(true);
   await capture(page, 'tasks-assignees-1440');
+});
+
+// An implementation run of issue #2650, assigned to octocat, that the list groups under PR #2654.
+// The PR's newer runs carry its own assignees, and it has none.
+const linkedIssueRun = {
+  ...assignedTasks.find(task => task.id === 'pr-2654-run-1')!,
+  id: 'issue-2650-run-0', issueNumber: 2650, prNumber: null, linkedIssueNumber: null,
+  title: `New Issue: ${tag(2650)} Retry webhook deliveries that time out`, subtitle: null,
+  createdAt: ago(300), processedAt: ago(300), completedAt: ago(290), assignees: [octocat],
+};
+
+test('a PR grouped with its assigned issue shows the issue\'s assignees in the row and on the card', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await assigneeFixture(page, { extraTasks: [linkedIssueRun] });
+  await page.goto('/tasks');
+  const row = page.getByRole('table', { name: 'Tasks' }).getByTestId('task-row').filter({ hasText: 'Retry webhook deliveries' });
+  await expect(row.getByRole('img', { name: '3 runs' })).toBeVisible();
+  await expect(row.getByTestId('task-assignees').getByLabel('Assigned to @octocat')).toBeVisible();
+  await expect(row.getByTestId('assignee-unassigned')).toHaveCount(0);
+  await capture(page, 'tasks-assignees-linked-issue-1440');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const card = page.getByTestId('task-card').filter({ hasText: 'Retry webhook deliveries' });
+  await expect(card.getByTestId('task-card-assignees').getByRole('listitem')).toHaveCount(1);
 });
 
 test('1200px expanding a row or resizing the window never shifts the columns', async ({ page }) => {
