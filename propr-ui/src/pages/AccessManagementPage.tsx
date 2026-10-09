@@ -8,6 +8,12 @@ import {
   removeInstanceMember,
   updateInstanceMemberRole
 } from '../api/instanceMembersApi';
+import {
+  addToTriggerWhitelist,
+  getTriggerWhitelist,
+  isLoginInWhitelist,
+  removeFromTriggerWhitelist
+} from '../api/triggerWhitelistApi';
 import type {
   InstanceMember,
   InstanceMembersResponse,
@@ -32,6 +38,11 @@ function auditDescription(entry: InstanceRoleAuditEntry): string {
   return `${entry.action.replace(/_/g, ' ')} for`;
 }
 
+interface WhitelistOffer {
+  action: 'add' | 'remove';
+  username: string;
+}
+
 type CollectionState = 'refreshing' | 'loading' | 'error' | 'empty' | 'ready';
 
 function getCollectionState(loading: boolean, itemCount: number, error: string): CollectionState {
@@ -52,6 +63,8 @@ const AccessManagementPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [auditError, setAuditError] = useState('');
+  const [triggerWhitelist, setTriggerWhitelist] = useState<string[] | null>(null);
+  const [whitelistOffer, setWhitelistOffer] = useState<WhitelistOffer | null>(null);
   const membersRequestIdRef = useRef(0);
   const auditRequestIdRef = useRef(0);
 
@@ -87,24 +100,67 @@ const AccessManagementPage: React.FC = () => {
     }
   }, []);
 
+  // The trigger whitelist is optional context: when it cannot be read, no whitelist offers are made.
+  const loadTriggerWhitelist = useCallback(async (): Promise<string[] | null> => {
+    try {
+      const whitelist = await getTriggerWhitelist();
+      setTriggerWhitelist(whitelist);
+      return whitelist;
+    } catch {
+      setTriggerWhitelist(null);
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     void loadMembers();
     void loadAudit();
+    void loadTriggerWhitelist();
     return () => {
       membersRequestIdRef.current += 1;
       auditRequestIdRef.current += 1;
     };
-  }, [loadAudit, loadMembers]);
+  }, [loadAudit, loadMembers, loadTriggerWhitelist]);
 
-  const runMutation = async (mutation: () => Promise<unknown>) => {
+  const runMutation = async (mutation: () => Promise<unknown>): Promise<boolean> => {
     setSaving(true);
     setError('');
     try {
       await mutation();
       await refreshCurrentUser();
       await Promise.all([loadMembers(), loadAudit()]);
+      return true;
     } catch (mutationError) {
       setError(mutationError instanceof Error ? mutationError.message : 'Role update failed');
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // An empty whitelist lets every GitHub user trigger ProPR, so adding the first entry would lock
+  // everyone else out and removing the last one would open access; neither is offered here.
+  const offerWhitelistChange = async (action: WhitelistOffer['action'], githubUsername: string) => {
+    const whitelist = await loadTriggerWhitelist();
+    if (!whitelist || whitelist.length === 0) return;
+    const listed = isLoginInWhitelist(whitelist, githubUsername);
+    if (action === 'add' && !listed) setWhitelistOffer({ action, username: githubUsername });
+    if (action === 'remove' && listed && whitelist.length > 1) setWhitelistOffer({ action, username: githubUsername });
+  };
+
+  const applyWhitelistOffer = async () => {
+    if (!whitelistOffer) return;
+    const { action, username: offerUsername } = whitelistOffer;
+    setSaving(true);
+    setError('');
+    try {
+      const updated = action === 'add'
+        ? await addToTriggerWhitelist(offerUsername)
+        : await removeFromTriggerWhitelist(offerUsername);
+      setTriggerWhitelist(updated);
+      setWhitelistOffer(null);
+    } catch (whitelistError) {
+      setError(whitelistError instanceof Error ? whitelistError.message : 'Trigger whitelist update failed');
     } finally {
       setSaving(false);
     }
@@ -114,10 +170,13 @@ const AccessManagementPage: React.FC = () => {
     event.preventDefault();
     const normalizedUsername = username.trim();
     if (!normalizedUsername) return;
-    await runMutation(async () => {
-      await addInstanceMember(normalizedUsername, role);
+    setWhitelistOffer(null);
+    let added: InstanceMember | undefined;
+    const succeeded = await runMutation(async () => {
+      added = await addInstanceMember(normalizedUsername, role);
       setUsername('');
     });
+    if (succeeded) await offerWhitelistChange('add', added?.githubUsername ?? normalizedUsername);
   };
 
   const updateRole = (member: InstanceMember, nextRole: InstanceRole) => {
@@ -125,9 +184,11 @@ const AccessManagementPage: React.FC = () => {
     void runMutation(() => updateInstanceMemberRole(member.githubUserId, nextRole));
   };
 
-  const removeMember = (member: InstanceMember) => {
-    if (!window.confirm(`Remove the explicit role assignment for @${member.githubUsername}?`)) return;
-    void runMutation(() => removeInstanceMember(member.githubUserId));
+  const removeMember = async (member: InstanceMember) => {
+    if (!window.confirm(`Remove the instance role assigned to @${member.githubUsername}?`)) return;
+    setWhitelistOffer(null);
+    const succeeded = await runMutation(() => removeInstanceMember(member.githubUserId));
+    if (succeeded) await offerWhitelistChange('remove', member.githubUsername);
   };
 
   const canStoreBootstrapRole = currentUser?.authorizationSource === 'bootstrap'
@@ -180,8 +241,36 @@ const AccessManagementPage: React.FC = () => {
         </div>
       )}
 
+      {whitelistOffer && (
+        <div role="status" className="mb-6 flex flex-col gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 sm:flex-row sm:items-center">
+          <p className="flex-1 text-sm text-blue-900">
+            {whitelistOffer.action === 'add'
+              ? <>@{whitelistOffer.username} is not on the trigger whitelist, so they cannot start ProPR tasks from GitHub. Add them to it too?</>
+              : <>@{whitelistOffer.username} is still on the trigger whitelist and can start ProPR tasks from GitHub. Remove them from it too?</>}
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void applyWhitelistOffer()}
+              className="rounded-md bg-primary-600 px-3 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
+            >
+              {whitelistOffer.action === 'add' ? 'Add to trigger whitelist' : 'Remove from trigger whitelist'}
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => setWhitelistOffer(null)}
+              className="rounded-md border border-blue-200 bg-white px-3 py-2 text-sm font-medium text-blue-900 hover:bg-blue-100 disabled:opacity-50"
+            >
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
+
       <form onSubmit={addMember} className="mb-8 rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-        <h2 className="font-medium text-gray-900">Add explicit role assignment</h2>
+        <h2 className="font-medium text-gray-900">Assign an instance role</h2>
         <div className="mt-4 flex flex-col gap-3 sm:flex-row">
           <label className="flex-1">
             <span className="sr-only">GitHub username</span>
@@ -214,19 +303,20 @@ const AccessManagementPage: React.FC = () => {
           </button>
         </div>
         <p className="mt-3 text-xs text-gray-500">
-          Role assignments do not alter the GitHub trigger whitelist. Add allowed trigger actors in Settings separately.
+          Instance roles and the GitHub trigger whitelist are separate. After adding or removing a user, you
+          will be offered the matching trigger whitelist change; the full whitelist is managed in Settings.
         </p>
       </form>
 
       <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
         <div className="border-b border-gray-200 px-5 py-4">
-          <h2 className="font-medium text-gray-900">Explicit assignments</h2>
+          <h2 className="font-medium text-gray-900">Assigned instance roles</h2>
         </div>
         {memberState === 'loading' ? (
           <ListSkeleton rows={3} layout="row" label="Loading access assignments…" className="px-5 py-4" />
         ) : memberState === 'error' ? null
         : memberState === 'empty' ? (
-          <div className="p-8 text-center text-sm text-gray-500">No durable assignments yet.</div>
+          <div className="p-8 text-center text-sm text-gray-500">No instance roles assigned yet.</div>
         ) : (
           <ul className="divide-y divide-gray-200">
             {data.members.map(member => {
@@ -241,6 +331,8 @@ const AccessManagementPage: React.FC = () => {
                     </div>
                     <div className="mt-1 text-xs text-gray-500">
                       GitHub ID {member.githubUserId} · source: {member.source}
+                      {triggerWhitelist && triggerWhitelist.length > 0 && isLoginInWhitelist(triggerWhitelist, member.githubUsername)
+                        && ' · on trigger whitelist'}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -257,9 +349,9 @@ const AccessManagementPage: React.FC = () => {
                     <button
                       type="button"
                       aria-label={`Remove ${member.githubUsername}`}
-                      title="Remove durable assignment"
+                      title="Remove assigned instance role"
                       disabled={saving}
-                      onClick={() => removeMember(member)}
+                      onClick={() => void removeMember(member)}
                       className="rounded-md p-2 text-gray-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
                     >
                       <Trash2 className="h-4 w-4" />
