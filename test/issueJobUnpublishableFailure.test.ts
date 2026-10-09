@@ -48,6 +48,10 @@ await mock.module('../src/jobs/issueJobPostProcessingHelpers.js', {
     },
 });
 
+await mock.module('../src/jobs/issueJobAutoAssignment.js', {
+    namedExports: { autoAssignCompletedPullRequest: mock.fn(async () => undefined) },
+});
+
 const { performPostProcessing } = await import('../src/jobs/issueJobPostProcessing.js');
 
 const logger = {

@@ -70,6 +70,12 @@ export type TaskAssignmentMode = 'add' | 'replace';
 
 export interface SetTaskAssigneesOptions extends TaskAssignmentOptions {
     mode: TaskAssignmentMode;
+    /**
+     * Assigns this issue or pull request instead of the one resolved from the
+     * task row, for a caller that knows it before the task records it (an
+     * implementation's new pull request, during post-processing).
+     */
+    subject?: TaskSubject;
 }
 
 export interface TaskAssigneeSyncResult {
@@ -331,7 +337,7 @@ export async function setTaskAssignees(taskId: string, logins: string[], options
     const now = options.now?.() ?? new Date();
     const task = await readTask(taskId);
     if (!task) throw new TaskAssignmentError('TASK_NOT_FOUND', `Task ${taskId} was not found`);
-    const subject = resolveTaskSubject(task);
+    const subject = options.subject ?? resolveTaskSubject(task);
     if (!subject) throw new TaskAssignmentError('NO_GITHUB_SUBJECT', `Task ${taskId} has no GitHub issue or pull request to assign`);
     const github = options.github ?? await defaultClient();
 

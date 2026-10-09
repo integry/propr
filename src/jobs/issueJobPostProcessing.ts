@@ -20,6 +20,7 @@ import { handleCreatedPlanIssuePR, handleNoCodeChanges } from './issueJobPostPro
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { describePushFailure, formatIssuePushFailure, pushImplementationBranch, type GitHubToken } from './issueJobPush.js';
 import { prepareProviderReplacement } from './providerReplacement.js';
+import { autoAssignCompletedPullRequest } from './issueJobAutoAssignment.js';
 
 type RepoValidation = RepoValidationResult;
 type PRValidation = PRValidationResult;
@@ -109,7 +110,7 @@ export interface PostProcessOptions {
     octokit: Octokit & Pick<Awaited<ReturnType<typeof getAuthenticatedOctokit>>, 'auth'>;
     issueRef: IssueJobData;
     worktreeInfo: WorktreeInfo;
-    currentIssueData: { data: { title: string; labels: Array<{ name: string }> } };
+    currentIssueData: { data: { title: string; labels: Array<{ name: string }>; user?: { login?: string } | null } };
     claudeResult: ClaudeCodeResponse;
     modelName: string;
     repoValidation: RepoValidation;
@@ -285,6 +286,8 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
             { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
             [AI_PROCESSING_TAG], [AI_DONE_TAG]
         );
+
+        await autoAssignCompletedPullRequest(options, postProcessingResult);
 
     } catch (postProcessingError) {
         // A completed execution or an actual commit can be marked done during
