@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { INSTANCE_PERMISSIONS, MAX_RUN_COST_CAP_USD } from '@propr/shared';
+import { INSTANCE_PERMISSIONS, MAX_RUN_COST_CAP_USD, MAX_TASK_ASSIGNEES } from '@propr/shared';
 
 /**
  * Request and response schemas for the dashboard HTTP API reference.
@@ -243,6 +243,35 @@ export const TaskFollowupResult = component('TaskFollowupResult', z.object({
   message: z.string().optional().describe('Present when the queue submission could not be confirmed.'),
 }), 'Result of posting a follow-up comment. `state: unknown` means inspect the job before retrying.');
 
+export const TaskSubject = component('TaskSubject', z.object({
+  owner: z.string(),
+  repo: z.string(),
+  number: z.number().int().describe('Issue or pull request number.'),
+  kind: z.enum(['issue', 'pull_request']),
+}), 'The GitHub issue or pull request a task is assigned through.');
+
+export const TaskAssignees = component('TaskAssignees', z.object({
+  subject: TaskSubject,
+  assignees: z.array(AttributedUser),
+  synced: z.boolean().describe('True when `assignees` was just read from GitHub; false when it is the stored set.'),
+}), 'The assignees of a task\'s GitHub issue or pull request.');
+
+export const TaskAssigneesUpdate = component('TaskAssigneesUpdate', z.object({
+  logins: z.array(z.string()).max(MAX_TASK_ASSIGNEES).describe('GitHub logins to assign. With `replace`, an empty list clears the assignment.'),
+  mode: z.enum(['add', 'replace']).optional().describe('`replace` (default) makes `logins` the whole set; `add` keeps current assignees.'),
+}), 'A change to a task\'s assignees.');
+
+export const TaskAssigneesResult = component('TaskAssigneesResult', z.object({
+  subject: TaskSubject,
+  assignees: z.array(AttributedUser).describe('The assignees GitHub confirmed.'),
+  rejected: z.array(AttributedUser).describe('Requested users GitHub did not assign; empty on success.'),
+}), 'The assignment GitHub confirmed after a change.');
+
+export const AssignableUsers = component('AssignableUsers', z.object({
+  users: z.array(AttributedUser),
+  truncated: z.boolean().describe('True when the repository has more assignable users than were listed.'),
+}), 'Users that can be assigned to issues and pull requests of a repository.');
+
 export const NotificationUnreadCount = component('NotificationUnreadCount', z.object({
   unreadCount: z.number().int().min(0),
 }));
@@ -274,6 +303,10 @@ export const ListTasksQuery = querySet('ListTasksQuery', z.object({
   task: z.string().optional().describe('With `groupBy=task`: only the task this run belongs to.'),
   assignee: z.string().optional().describe('`all` (default), `me` (the signed-in user), `unassigned`, or comma-separated GitHub logins.'),
   syncAssignees: z.enum(['true', 'false']).optional().describe('With `task`: refresh that run\'s assignees from GitHub first.'),
+}));
+
+export const TaskAssigneesQuery = querySet('TaskAssigneesQuery', z.object({
+  refresh: z.enum(['true', 'false']).optional().describe('`false` serves the stored set without calling GitHub.'),
 }));
 
 export const DeleteTaskQuery = querySet('DeleteTaskQuery', z.object({
