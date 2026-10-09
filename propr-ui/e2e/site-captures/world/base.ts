@@ -23,11 +23,16 @@ export const USER = {
   permissions: ['instance.manage_agents', 'instance.manage_members', 'instance.manage_runtime', 'instance.manage_settings'],
 };
 
+/** Real agent types and model ids (packages/shared/src/modelDefinitions.ts), so the UI shows proper labels. */
 export const AGENTS = [
   { id: 'claude', type: 'claude', alias: 'claude', enabled: true, dockerImage: 'propr/agent:latest', configPath: '~/.claude', supportedModels: ['claude-opus-5-5', 'claude-sonnet-5-5'], defaultModel: 'claude-opus-5-5' },
-  { id: 'codex', type: 'codex', alias: 'codex', enabled: true, dockerImage: 'propr/agent:latest', configPath: '~/.codex', supportedModels: ['gpt-5.5-codex'], defaultModel: 'gpt-5.5-codex' },
-  { id: 'gemini', type: 'gemini', alias: 'gemini', enabled: true, dockerImage: 'propr/agent:latest', configPath: '~/.gemini', supportedModels: ['gemini-3.1-pro'], defaultModel: 'gemini-3.1-pro' },
+  { id: 'codex', type: 'codex', alias: 'codex', enabled: true, dockerImage: 'propr/agent:latest', configPath: '~/.codex', supportedModels: ['gpt-6-astra', 'gpt-5.5'], defaultModel: 'gpt-6-astra' },
+  { id: 'antigravity', type: 'antigravity', alias: 'antigravity', enabled: true, dockerImage: 'propr/agent:latest', configPath: '~/.gemini', supportedModels: ['antigravity-gemini-3.1-pro'], defaultModel: 'antigravity-gemini-3.1-pro' },
 ];
+
+export const REPO_ALIASES: Record<string, string> = {
+  [REPOS.web]: 'Storefront', [REPOS.api]: 'Orders API', [REPOS.mobile]: 'Courier app', [REPOS.infra]: 'Platform infra',
+};
 
 export const base = area('base', {
   '/api/auth/demo-mode': { demoMode: false },
@@ -46,8 +51,9 @@ export const base = area('base', {
   '/api/config/agents': { agents: AGENTS },
   '/api/config/summarization': { enabled: false, agent_alias: '', fallback_agent_alias: '' },
   '/api/instance/catalog': {
-    agents: AGENTS.map(agent => ({ id: agent.id, kind: 'direct', alias: agent.alias, enabled: true, supportedModels: agent.supportedModels })),
-    repositories: Object.values(REPOS).map(fullName => ({ fullName, enabled: true })),
+    agents: AGENTS.map(({ id, type, alias, supportedModels, defaultModel }) => ({ id, kind: 'direct', type, alias, enabled: true, supportedModels, defaultModel })),
+    defaultAgentAlias: 'claude',
+    repositories: Object.values(REPOS).map(name => ({ name, enabled: true, alias: REPO_ALIASES[name], baseBranch: 'main' })),
   },
   '/api/notifications/config': { push: { configured: true, vapidPublicKey: null } },
   '/api/notifications/unread-count': { unreadCount: 3 },

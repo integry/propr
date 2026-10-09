@@ -15,8 +15,8 @@ export interface ShotOptions {
   alt: string;
   /** Site pages that use it, for the contact sheet and for knowing what a change affects. */
   usedOn: string[];
-  /** CSS pixels of breathing room around the target (default 12). */
-  padding?: number;
+  /** CSS pixels of breathing room around the target (default 12), or per side. */
+  padding?: number | { top?: number; right?: number; bottom?: number; left?: number };
   /** Extra elements the crop must include (the union of all boxes is captured). */
   include?: Locator[];
   /** Crop limits in CSS pixels; the crop keeps the target's top-left and trims the rest. */
@@ -39,12 +39,15 @@ export async function shot(page: Page, target: Locator, options: ShotOptions, te
     if (!box) throw new Error(`${options.id}: element has no box`);
     boxes.push(box);
   }
-  const pad = options.padding ?? 12;
+  const padding = options.padding ?? 12;
+  const pad = typeof padding === 'number'
+    ? { top: padding, right: padding, bottom: padding, left: padding }
+    : { top: 0, right: 0, bottom: 0, left: 0, ...padding };
   const viewport = page.viewportSize()!;
-  let x = Math.max(0, Math.min(...boxes.map(b => b.x)) - pad);
-  let y = Math.max(0, Math.min(...boxes.map(b => b.y)) - pad);
-  let right = Math.min(viewport.width, Math.max(...boxes.map(b => b.x + b.width)) + pad);
-  let bottom = Math.min(viewport.height, Math.max(...boxes.map(b => b.y + b.height)) + pad);
+  let x = Math.max(0, Math.min(...boxes.map(b => b.x)) - pad.left);
+  let y = Math.max(0, Math.min(...boxes.map(b => b.y)) - pad.top);
+  let right = Math.min(viewport.width, Math.max(...boxes.map(b => b.x + b.width)) + pad.right);
+  let bottom = Math.min(viewport.height, Math.max(...boxes.map(b => b.y + b.height)) + pad.bottom);
   if (options.maxWidth) right = Math.min(right, x + options.maxWidth);
   if (options.maxHeight) bottom = Math.min(bottom, y + options.maxHeight);
   const clip = { x: Math.floor(x), y: Math.floor(y), width: Math.ceil(right - x), height: Math.ceil(bottom - y) };

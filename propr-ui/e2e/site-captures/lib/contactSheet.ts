@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { manifestPath, outDir } from './shot';
 
-/** Writes contact-sheet.html next to the captures so a run can be reviewed at a glance. */
+/** Writes contact-sheet.html next to the captures so a run can be reviewed at a glance, and compacts the manifest. */
 export default async function contactSheet(): Promise<void> {
   if (!existsSync(manifestPath)) return;
   const latest = new Map<string, Record<string, unknown>>();
@@ -11,8 +11,11 @@ export default async function contactSheet(): Promise<void> {
     const entry = JSON.parse(line) as Record<string, unknown>;
     latest.set(String(entry.id), entry);
   }
+  const entries = [...latest.values()].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  // Compact to the latest entry per id so the manifest stays a clean index of what's on disk.
+  await writeFile(manifestPath, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
   const esc = (value: unknown) => String(value).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
-  const cards = [...latest.values()].sort((a, b) => String(a.id).localeCompare(String(b.id))).map(entry => `
+  const cards = entries.map(entry => `
     <figure>
       <img src="${esc(entry.id)}@2x.webp" width="${esc(entry.width)}" height="${esc(entry.height)}" alt="${esc(entry.alt)}">
       <figcaption><b>${esc(entry.id)}</b> · ${esc(entry.width)}×${esc(entry.height)} · ${esc((entry.usedOn as string[]).join(', '))}
