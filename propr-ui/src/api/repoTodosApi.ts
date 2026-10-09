@@ -1,4 +1,5 @@
 // Repository To-Dos API
+import type { AttributedUser } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 const refreshDesktopActiveWork = (): void => {
@@ -28,6 +29,8 @@ export interface RepoTodo {
   orderIndex: number;
   isCompleted: boolean;
   linkedDraftId: string | null;
+  /** Who created the to-do; null when their profile is not cached. */
+  createdBy?: AttributedUser | null;
   createdAt: string;
   updatedAt: string;
 }

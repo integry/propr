@@ -26,6 +26,7 @@ import {
   CompletedItemsAccordion,
   useRepoTodos,
 } from './RepoTodos';
+import { useDistinctCreators } from '../CreatorMarker';
 
 export interface RepoTodosPanelProps {
   repositoryName: string;
@@ -68,6 +69,9 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, repositor
 
     return filtered;
   }, [todosByCategory, searchQuery]);
+
+  const visibleTodos = useMemo(() => Object.values(filteredTodosByCategory).flat(), [filteredTodosByCategory]);
+  const { show: showCreator } = useDistinctCreators(visibleTodos);
 
   const filteredCompletedTodos = useMemo(() => {
     if (!searchQuery.trim()) return completedTodos;
@@ -321,6 +325,7 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, repositor
                   isAddingTodo={addingToCategory === category.categoryId}
                   onConfirmAddTodo={onConfirmAddTodo}
                   onCancelAddTodo={() => setAddingToCategory(false)}
+                  showCreator={showCreator}
                 />
               );
             })}
@@ -341,6 +346,7 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, repositor
               isAddingTodo={addingToCategory === null}
               onConfirmAddTodo={onConfirmAddTodo}
               onCancelAddTodo={() => setAddingToCategory(false)}
+              showCreator={showCreator}
             />
           )}
           <DragOverlay>{activeTodo ? <TodoItemOverlay todo={activeTodo} /> : null}</DragOverlay>

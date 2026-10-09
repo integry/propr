@@ -35,7 +35,7 @@ const LOGIN_TEXT = 'truncate font-mono text-xs text-slate-600';
 
 const atLogins = (users: AttributedUser[]): string => users.map(user => `@${user.login}`).join(', ');
 
-const assigneeAccessibleName = (user: AttributedUser): string => `Assigned to @${user.login}`;
+const assigneeAccessibleName = (user: AttributedUser, relation = 'Assigned to'): string => `${relation} @${user.login}`;
 
 const AssigneeAvatar = ({ user, className }: { user: AttributedUser; className: string }) => (
   <UserAvatar
@@ -53,22 +53,34 @@ interface AssigneeChipProps {
   variant?: AssigneeVariant;
   /** `listitem` inside an `AssigneeList`; a lone chip is a named `group`. */
   role?: 'listitem' | 'group';
+  /** How the user relates to the item, leading the accessible name; `Assigned to` by default. */
+  relation?: string;
+  /** Avatar only: the login stays in the accessible name and the tooltip. */
+  avatarOnly?: boolean;
+  /**
+   * Report the login's text baseline rather than the avatar's bottom edge, so the chip lines up
+   * in a row that aligns on baselines; the avatar centres itself.
+   */
+  baseline?: boolean;
+  'data-testid'?: string;
 }
 
 /** One `avatar + @login` pair, named `Assigned to @login` whatever the viewport shows. */
-export const AssigneeChip = ({ user, variant = 'default', role = 'group' }: AssigneeChipProps) => {
+export const AssigneeChip = ({
+  user, variant = 'default', role = 'group', relation, avatarOnly = false, baseline = false, 'data-testid': testId = 'assignee-chip',
+}: AssigneeChipProps) => {
   const style = VARIANTS[variant];
-  const name = assigneeAccessibleName(user);
+  const name = assigneeAccessibleName(user, relation);
   return (
     <span
       role={role}
       aria-label={name}
       title={user.displayName ? `${name} (${user.displayName})` : name}
-      data-testid="assignee-chip"
-      className={`inline-flex min-w-0 items-center ${style.gap}`}
+      data-testid={testId}
+      className={`inline-flex min-w-0 ${baseline ? 'items-baseline' : 'items-center'} ${style.gap}`}
     >
-      <AssigneeAvatar user={user} className={style.avatar} />
-      <span aria-hidden="true" className={`${LOGIN_TEXT} ${style.login}`}>@{user.login}</span>
+      <AssigneeAvatar user={user} className={`${style.avatar}${baseline ? ' self-center' : ''}`} />
+      {!avatarOnly && <span aria-hidden="true" className={`${LOGIN_TEXT} ${style.login}`}>@{user.login}</span>}
     </span>
   );
 };

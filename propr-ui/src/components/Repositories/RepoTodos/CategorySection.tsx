@@ -29,6 +29,8 @@ export interface CategorySectionProps {
   isAddingTodo?: boolean;
   onConfirmAddTodo?: (content: string) => void;
   onCancelAddTodo?: () => void;
+  /** Show each to-do's creator because the list has more than one. */
+  showCreator?: boolean;
 }
 
 interface TodoListContentProps {
@@ -44,6 +46,8 @@ interface TodoListContentProps {
   isAddingTodo: boolean;
   onConfirmAddTodo?: (content: string) => void;
   onCancelAddTodo?: () => void;
+  /** Show each to-do's creator because the list has more than one. */
+  showCreator?: boolean;
 }
 
 const TodoListContent: React.FC<TodoListContentProps> = ({
@@ -59,6 +63,7 @@ const TodoListContent: React.FC<TodoListContentProps> = ({
   isAddingTodo,
   onConfirmAddTodo,
   onCancelAddTodo,
+  showCreator,
 }) => {
   const todoIds = todos.map((t) => t.todoId);
   const showAddTodoInput = isAddingTodo && onConfirmAddTodo && onCancelAddTodo;
@@ -85,6 +90,7 @@ const TodoListContent: React.FC<TodoListContentProps> = ({
             onDelete={onDeleteTodo}
             onEdit={onEditTodo}
             disabled={disabled}
+            showCreator={showCreator}
           />
         ))}
       </SortableContext>
@@ -115,6 +121,7 @@ const CategorySection: React.FC<CategorySectionProps> = ({
   isAddingTodo = false,
   onConfirmAddTodo,
   onCancelAddTodo,
+  showCreator,
 }) => {
   const categoryId = category?.categoryId || null;
   const droppableId = `category-drop-${categoryId || 'uncategorized'}`;
@@ -188,6 +195,7 @@ const CategorySection: React.FC<CategorySectionProps> = ({
             isAddingTodo={isAddingTodo}
             onConfirmAddTodo={onConfirmAddTodo}
             onCancelAddTodo={onCancelAddTodo}
+            showCreator={showCreator}
           />
         </div>
       )}

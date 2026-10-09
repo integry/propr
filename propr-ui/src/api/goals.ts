@@ -1,4 +1,4 @@
-import { trustedPreviewMedia, type GoalAttention, type PublishedVisualPreview } from '@propr/shared';
+import { trustedPreviewMedia, type AttributedUser, type GoalAttention, type PublishedVisualPreview } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 export interface GoalCapability {
@@ -50,6 +50,8 @@ export interface Goal {
   previewMedia?: PublishedVisualPreview[];
   id: string;
   owner: string;
+  /** Who created the goal; null when their profile is not cached. */
+  createdBy?: AttributedUser | null;
   repository: string;
   title: string;
   objective: string;
