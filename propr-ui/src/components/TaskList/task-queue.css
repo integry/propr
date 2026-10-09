@@ -131,17 +131,22 @@
    label for screen readers; the assignee select still opens the full list,
    its text is hidden, and its icon turns teal while a filter other than All
    assignees applies. Search and the gaps tighten too, so the row still fits
-   inside the pane. */
+   inside the pane. A phone hides search, so the repository picker keeps its
+   label there and only the assignee filter collapses. */
 .task-filters { container: task-filters / inline-size; }
 .task-assignee-filter-icon { display: none; }
+@media (min-width: 640px) {
+  @container task-filters (max-width: 49rem) {
+    .task-filter-controls .task-search { min-width: 9rem; }
+    .task-filter-controls [data-testid="task-status-filter"] select { width: 9rem; }
+    .task-filter-controls .task-repo-filter { flex: none; width: 2.5rem; }
+    .task-repo-filter > button { justify-content: center; padding-left: 0; padding-right: 0; }
+    .task-repo-filter > button > :nth-child(2) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .task-repo-filter > button > :nth-child(n+3) { display: none; }
+  }
+}
 @container task-filters (max-width: 49rem) {
   .task-filter-controls { column-gap: .5rem; }
-  .task-filter-controls .task-search { min-width: 9rem; }
-  .task-filter-controls [data-testid="task-status-filter"] select { width: 9rem; }
-  .task-filter-controls .task-repo-filter { flex: none; width: 2.5rem; }
-  .task-repo-filter > button { justify-content: center; padding-left: 0; padding-right: 0; }
-  .task-repo-filter > button > :nth-child(2) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .task-repo-filter > button > :nth-child(n+3) { display: none; }
   .task-assignee-filter { flex: none; width: 2.5rem; }
   .task-assignee-filter select { width: 100%; padding-left: 0; padding-right: 0; color: transparent; background-image: none; appearance: none; }
   .task-assignee-filter select option, .task-assignee-filter select optgroup { color: #374151; }
