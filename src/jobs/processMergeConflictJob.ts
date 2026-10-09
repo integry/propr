@@ -322,7 +322,7 @@ async function releaseMergeJobResources(options: {
  * 3. Posts GitHub comments about the outcome
  */
 export async function processMergeConflictJob(job: Job<MergeConflictJobData>): Promise<JobResult> {
-    const { pullRequestNumber, repoOwner, repoName, headBranch, baseBranch, headSha, baseSha, triggerSource, correlationId } = job.data;
+    const { pullRequestNumber, repoOwner, repoName, headBranch, baseBranch, headSha, baseSha, triggerSource, commandCommentId, correlationId } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     correlatedLogger.info({
@@ -342,6 +342,8 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
         await stateManager.createTaskStateIfAbsent(taskId, {
             number: pullRequestNumber, repoOwner, repoName, modelName,
             type: 'merge_conflict', pullRequestNumber,
+            // Lets a /merge comment posted through MCP find the task it started.
+            ...(commandCommentId === undefined ? {} : { commandCommentId }),
         } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId, String(job.id ?? taskId));
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state');

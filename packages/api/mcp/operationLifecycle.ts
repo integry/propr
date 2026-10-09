@@ -250,7 +250,7 @@ export async function syncLifecycle(
   const lifecycleProgress = progressFromReceipt(receipt, result, target, outcome);
   if (lifecycleProgress && !outcome) await operations.recordProgress(row.id, lifecycleProgress);
 
-  const pickedUpCommand = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'start_ultrafix', 'comment_on_pull_request'].includes(row.tool)
+  const pickedUpCommand = ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'start_ultrafix', 'resolve_merge_conflicts', 'comment_on_pull_request'].includes(row.tool)
     && (typeof artifacts.taskId === 'string' || Array.isArray(artifacts.taskIds));
   const startedAt = pickedUpCommand ? epochMilliseconds(target?.timestamp) ?? Date.now()
     : observedStartTimestamp(target, result, targetState);

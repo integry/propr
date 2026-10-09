@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import type { RedisClientType } from 'redis';
 import { type ReviewComment, projectDiscussionComment, readDiscussionComment, readNewestComments } from './reviewDiscussion.js';
 import { z } from 'zod';
 import {
@@ -12,6 +10,7 @@ import {
   formatReviewFeedbackSelection,
   reviewFeedbackSelectionSize,
 } from '@propr/shared';
+import { hasValidTriggerLabel } from '@propr/core';
 import { McpError } from './config.js';
 import { beforeSideEffects } from './errorEnvelope.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
@@ -28,6 +27,7 @@ import {
 } from './pullRequestPreconditions.js';
 import { type FixReanchorReport, type FixRecord, appliedSelection, reanchorFixRecords } from './fixReanchor.js';
 import { MAX_REVIEW_MODELS, postModelReviews, resolveReviewModels, reviewModelSchema } from './reviewModels.js';
+import { withModelLabelLease } from './modelLabelLease.js';
 import { ULTRAFIX_COMMAND_TOOLS, resolveUltrafixGoal, resolveUltrafixMaxCycles, ultrafixGoalSchema } from './ultrafix.js';
 
 /** Slash commands must go through the dedicated tools so scope and head preconditions are checked. */
@@ -35,13 +35,6 @@ const SLASH_COMMAND = /^\s*\/(?:merge|review|fix|ultrafix|deploy|use|switch)\b/i
 
 /** The `/ultrafix` command line, in the key=value form the worker's command parser documents. */
 const ultrafixCommand = (goal: number, maxCycles: number) => `/ultrafix goal=${goal} max=${maxCycles}`;
-
-const MODEL_LABEL_LEASE_MS = 60_000;
-const MODEL_LABEL_WAIT_MS = 15_000;
-/** Renewal stops after this long, so a hung GitHub read cannot hold the lease forever. */
-const MODEL_LABEL_MAX_HOLD_MS = 5 * 60_000;
-const RELEASE_LEASE = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end return 0`;
-const RENEW_LEASE = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) end return 0`;
 
 function definitiveMergeRejection(error: unknown): string | null {
   if (!error || typeof error !== 'object') return null;
@@ -91,52 +84,6 @@ async function loadRemainingCheckContexts(
   }
   connection.nodes = nodes;
   connection.pageInfo = pageInfo;
-}
-
-interface ModelLabelLease {
-  /** Prove the lease is still held and extend it; throws before a write when it was lost. */
-  confirm(): Promise<void>;
-}
-
-/**
- * Serialize model-label convergence per pull request across API processes, so two
- * routings cannot both read "no managed label" and each add their own. The caller
- * reads labels inside the lease and confirms it before every label write, because a
- * lease that lapsed during a slow GitHub read may already belong to another routing
- * whose labels the caller never saw. Label edits made outside ProPR remain a race no
- * lease can close.
- */
-async function withModelLabelLease<T>(redis: RedisClientType, repository: string, pullRequest: number, run: (lease: ModelLabelLease) => Promise<T>): Promise<T> {
-  const key = `mcp:pull-request-model:${repository.toLowerCase()}#${pullRequest}`;
-  const token = randomUUID();
-  const deadline = Date.now() + MODEL_LABEL_WAIT_MS;
-  while (await redis.set(key, token, { NX: true, PX: MODEL_LABEL_LEASE_MS }) !== 'OK') {
-    if (Date.now() >= deadline) throw new McpError('PULL_REQUEST_BUSY', 'Another model change for this pull request is still running. Read the pull request again, then retry.', 409);
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  const acquiredAt = Date.now();
-  const release = () => redis.eval(RELEASE_LEASE, { keys: [key], arguments: [token] });
-  // Compare-and-extend: a lease that expired or passed to another routing is never revived.
-  const renew = async () => Number(await redis.eval(RENEW_LEASE, { keys: [key], arguments: [token, String(MODEL_LABEL_LEASE_MS)] })) === 1;
-  const lease: ModelLabelLease = {
-    confirm: async () => {
-      if (!await renew()) throw new McpError('MODEL_LABEL_LEASE_LOST', 'Another model change took over this pull request before this one could write its labels. Read the pull request labels again before retrying.', 409);
-    },
-  };
-  // Keep the lease alive through slow reads; confirm() still decides before each write.
-  const heartbeat = setInterval(() => {
-    if (Date.now() - acquiredAt >= MODEL_LABEL_MAX_HOLD_MS) clearInterval(heartbeat);
-    else renew().catch(() => undefined);
-  }, MODEL_LABEL_LEASE_MS / 3);
-  heartbeat.unref?.();
-  let result: T;
-  try { result = await run(lease); }
-  catch (error) { await release().catch(() => undefined); throw error; }
-  finally { clearInterval(heartbeat); }
-  // A lease that expired mid-convergence no longer proves exclusivity, so the
-  // outcome is reported as uncertain rather than as a converged label set.
-  if (Number(await release()) !== 1) throw new Error('Model label lease expired before convergence completed.');
-  return result;
 }
 
 /**
@@ -436,13 +383,28 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead,
         resolvedHead: pr.head.sha, headSource: 'caller', state: 'posted', goal, maxCycles, wasActive, circuitBreaker: 'requested' } };
     } });
-  tools.push({ name: 'update_pull_request_branch', description: 'Update the PR branch from its base, matching /merge semantics. expectedHead is required to avoid updating code you have not seen. Does not merge the pull request.', scope: 'execute', schema: z.object(mutation).strict(), run: async ({ principal, args }) => {
+  tools.push({ name: 'update_pull_request_branch', description: 'Update the PR branch from its base through GitHub\'s update-branch endpoint, for a branch that merges cleanly. expectedHead is required to avoid updating code you have not seen. GitHub rejects it (GITHUB_REJECTED) when the branch conflicts with its base; use resolve_merge_conflicts then. Does not merge the pull request.', scope: 'execute', schema: z.object(mutation).strict(), run: async ({ principal, args }) => {
     const { owner, repo, pr } = await pull(principal, args);
     assertPullRequestOpen(pr, 'update the branch for');
     assertPullRequestHead(pr, args.expectedHead);
     const response = await principal.github.request('PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch', { owner, repo, pull_number: args.pullRequest, expected_head_sha: args.expectedHead });
     return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, expectedHead: args.expectedHead, url: response.data.url, message: response.data.message } };
   } });
+  tools.push({ name: 'resolve_merge_conflicts', description: 'Merge the base branch into an open PR branch and let an agent resolve any conflicts, by posting the same /merge command a hand-typed comment does; its normal intake starts the merge task. Use it when update_pull_request_branch is rejected for a merge conflict. expectedHead is required because the merge should start from the code you have seen; a moved head is rejected with STALE_HEAD. The pull request must carry a ProPR processing label, which /merge requires; otherwise it is rejected with PULL_REQUEST_NOT_MANAGED and nothing is posted. Returns a durable receipt that follows the merge task through get_operation. Does not merge the pull request.', scope: 'execute',
+    schema: z.object(mutation).strict(), run: async ({ principal, args, operationId }) => {
+      const { owner, repo, pr } = await pull(principal, args);
+      assertPullRequestOpen(pr, 'resolve merge conflicts on');
+      assertPullRequestHead(pr, args.expectedHead);
+      // The /merge intake silently ignores pull requests without a trigger label, which
+      // would otherwise surface only as a pickup timeout on the receipt.
+      if (!await beforeSideEffects(() => hasValidTriggerLabel(pr.labels))) {
+        throw new McpError('PULL_REQUEST_NOT_MANAGED', 'The /merge command only runs on pull requests that carry a ProPR processing label (for example the AI or propr label). Add one, then retry.', 409, { stage: 'precondition', details: { labels: labelNames(pr.labels) } });
+      }
+      const body = `/merge\n\n<!-- propr-mcp:${operationId}; head:${pr.head.sha} -->`;
+      const { data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body });
+      return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead,
+        resolvedHead: pr.head.sha, headSource: 'caller', baseBranch: pr.base.ref, state: 'posted' } };
+    } });
   tools.push({ name: 'get_pull_request_revert_preview', description: 'Preview reverting an exact commit belonging to a pull request using the existing backend.', scope: 'read', readOnly: true,
     schema: z.object({ ...shape, commit: z.string().regex(/^[0-9a-f]{40}$/) }).strict(), run: async ({ principal, args }) => {
       const { owner, repo } = await pull(principal, args);
