@@ -70,9 +70,6 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, repositor
     return filtered;
   }, [todosByCategory, searchQuery]);
 
-  const visibleTodos = useMemo(() => Object.values(filteredTodosByCategory).flat(), [filteredTodosByCategory]);
-  const { show: showCreator } = useDistinctCreators(visibleTodos);
-
   const filteredCompletedTodos = useMemo(() => {
     if (!searchQuery.trim()) return completedTodos;
 
@@ -100,6 +97,16 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, repositor
     const categoryIds = new Set(['uncategorized', ...categories.map((c) => c.categoryId)]);
     setExpandedCategories(categoryIds);
   }, [categories]);
+
+  // Only the sections rendered below with their rows expanded count towards the creator decision,
+  // so collapsing the only category holding a second creator hides the markers on the rest.
+  const visibleTodos = useMemo(
+    () => [...categories.map((c) => c.categoryId), 'uncategorized']
+      .filter((id) => expandedCategories.has(id))
+      .flatMap((id) => filteredTodosByCategory[id] || []),
+    [categories, expandedCategories, filteredTodosByCategory],
+  );
+  const { show: showCreator } = useDistinctCreators(visibleTodos);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),

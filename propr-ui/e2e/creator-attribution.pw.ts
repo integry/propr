@@ -52,15 +52,16 @@ const definition = (index: number, createdBy: Creator) => ({
   autonomyMode: 'dry_run', enabled: true, revision: 1, createdAt: now - 86_400_000, updatedAt: now - 86_400_000,
 });
 
-const todo = (index: number, createdBy: Creator) => ({
-  todoId: `todo-${index}`, categoryId: null, content: index === 0 ? longTitle : `To-do number ${index + 1}`,
+const todo = (index: number, createdBy: Creator, categoryId: string | null = null) => ({
+  todoId: `todo-${index}`, categoryId, content: index === 0 ? longTitle : `To-do number ${index + 1}`,
   orderIndex: index, isCompleted: false, linkedDraftId: index === 1 ? 'draft-1' : null, createdBy,
   createdAt: ago(60), updatedAt: ago(60),
 });
 
 const repos = [{ id: 'propr', name: 'integry/propr', enabled: true, visualPreview: { enabled: false, types: ['image'] } }];
 
-async function stub(page: Page, creators: Creator[]) {
+/** `todoCategories[i]` names the category of to-do `i`; unnamed to-dos stay uncategorized. */
+async function stub(page: Page, creators: Creator[], todoCategories: (string | null)[] = []) {
   await page.clock.install({ time: now });
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('**/api/**', route => {
@@ -90,8 +91,12 @@ async function stub(page: Page, creators: Creator[]) {
       '/api/user/repo-preferences': { preferences: {} },
       '/api/repositories/indexing-status': { repositories: [] },
       '/api/repos/chat/messages': { messages: [] },
-      '/api/repos/todos': { todos: creators.map((creator, index) => todo(index, creator)) },
-      '/api/repos/todos/categories': { categories: [] },
+      '/api/repos/todos': { todos: creators.map((creator, index) => todo(index, creator, todoCategories[index] ?? null)) },
+      '/api/repos/todos/categories': {
+        categories: [...new Set(todoCategories.filter(Boolean))].map((name, index) => ({
+          categoryId: name, name, orderIndex: index, createdAt: ago(90), updatedAt: ago(90),
+        })),
+      },
       '/api/tasks': { tasks: [], total: 0 },
       '/api/queue/stats': { active: 0, waiting: 0, completed: 0, failed: 0 },
       '/api/notifications/unread-count': { unreadCount: 0 },
@@ -222,6 +227,29 @@ for (const surface of surfaces) {
     }
   });
 }
+
+test('to-dos hide the creator once the only category with a second creator is collapsed', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await stub(page, [octocat, octocat, hubot], ['Alpha', 'Alpha', 'Beta']);
+  await surfaces[3].open(page);
+  await expect(page.getByText('To-do number 3')).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Created by @hubot' })).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Created by @octocat' })).toHaveCount(2);
+  await capture(page, 'creator-to-dos-categories-expanded');
+
+  // The header's first <button> is the expand toggle; the drag handle before it is a div with role="button".
+  const beta = page.locator('div.group', { has: page.locator('> span', { hasText: /^Beta$/ }) });
+  await beta.locator('> button').first().click();
+  await expect(page.getByText('To-do number 3')).toHaveCount(0);
+  // Only octocat's to-dos are on screen now, so no row carries a marker.
+  await expect(page.getByText('To-do number 2')).toBeVisible();
+  await expect(page.getByTestId('creator-marker')).toHaveCount(0);
+  await capture(page, 'creator-to-dos-category-collapsed');
+
+  await beta.locator('> button').first().click();
+  await expect(page.getByRole('group', { name: 'Created by @hubot' })).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Created by @octocat' })).toHaveCount(2);
+});
 
 test('the plans row stays one line on desktop with the creator in the status strip', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 900 });
