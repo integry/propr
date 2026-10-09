@@ -5,6 +5,7 @@ import type {
   AgentRunState,
   AgentRunTrigger,
   AGENT_DEFINITION_CONTRACT,
+  AttributedUser,
 } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
@@ -44,6 +45,8 @@ export interface AgentDefinitionRecord {
   enabled: boolean;
   /** Optimistic concurrency token; send it back as `expectedRevision`. */
   revision: number;
+  /** Who created the automation; null when their profile is not cached. */
+  createdBy?: AttributedUser | null;
   createdAt: number;
   updatedAt: number;
 }

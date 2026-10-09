@@ -3,6 +3,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical, Check, Trash2, Edit3, Sparkles } from 'lucide-react';
 import { RepoTodo } from '../../../api/repoTodosApi';
+import { CreatorMarker } from '../../CreatorMarker';
 
 export interface SortableTodoItemProps {
   todo: RepoTodo;
@@ -12,7 +13,16 @@ export interface SortableTodoItemProps {
   onDelete: (todoId: string) => void;
   onEdit: (todoId: string, content: string) => void;
   disabled?: boolean;
+  /** Show who created the to-do because the list has more than one creator. */
+  showCreator?: boolean;
 }
+
+/** Avatar only, in the row's own line box, so the item stays one dense row; nothing at all when the creator is unknown. */
+const TodoCreator: React.FC<{ todo: RepoTodo; show?: boolean }> = ({ todo, show }) => (show && todo.createdBy ? (
+  <span className="flex-shrink-0 flex mt-[3px]">
+    <CreatorMarker creator={todo.createdBy} avatarOnly />
+  </span>
+) : null);
 
 const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
   todo,
@@ -22,6 +32,7 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
   onDelete,
   onEdit,
   disabled,
+  showCreator,
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(todo.content);
@@ -148,6 +159,8 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
           </span>
         )}
       </div>
+
+      <TodoCreator todo={todo} show={showCreator} />
 
       {/* Completion button */}
       <button

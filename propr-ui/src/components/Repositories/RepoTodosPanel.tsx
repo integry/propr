@@ -26,6 +26,7 @@ import {
   CompletedItemsAccordion,
   useRepoTodos,
 } from './RepoTodos';
+import { useDistinctCreators } from '../CreatorMarker';
 
 export interface RepoTodosPanelProps {
   repositoryName: string;
@@ -96,6 +97,16 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, repositor
     const categoryIds = new Set(['uncategorized', ...categories.map((c) => c.categoryId)]);
     setExpandedCategories(categoryIds);
   }, [categories]);
+
+  // Only the sections rendered below with their rows expanded count towards the creator decision,
+  // so collapsing the only category holding a second creator hides the markers on the rest.
+  const visibleTodos = useMemo(
+    () => [...categories.map((c) => c.categoryId), 'uncategorized']
+      .filter((id) => expandedCategories.has(id))
+      .flatMap((id) => filteredTodosByCategory[id] || []),
+    [categories, expandedCategories, filteredTodosByCategory],
+  );
+  const { show: showCreator } = useDistinctCreators(visibleTodos);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -321,6 +332,7 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, repositor
                   isAddingTodo={addingToCategory === category.categoryId}
                   onConfirmAddTodo={onConfirmAddTodo}
                   onCancelAddTodo={() => setAddingToCategory(false)}
+                  showCreator={showCreator}
                 />
               );
             })}
@@ -341,6 +353,7 @@ const RepoTodosPanel: React.FC<RepoTodosPanelProps> = ({ repositoryId, repositor
               isAddingTodo={addingToCategory === null}
               onConfirmAddTodo={onConfirmAddTodo}
               onCancelAddTodo={() => setAddingToCategory(false)}
+              showCreator={showCreator}
             />
           )}
           <DragOverlay>{activeTodo ? <TodoItemOverlay todo={activeTodo} /> : null}</DragOverlay>
