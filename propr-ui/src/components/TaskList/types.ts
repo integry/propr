@@ -1,4 +1,4 @@
-import type { PublishedVisualPreview } from '@propr/shared';
+import type { AttributedUser, PublishedVisualPreview } from '@propr/shared';
 export interface Task {
   previewMedia?: PublishedVisualPreview[];
   id: string;
@@ -22,6 +22,8 @@ export interface Task {
   commitHash?: string | null;
   /** The score the run recorded when it completed (a review's `6/10`), when it was scored. */
   score?: number | null;
+  /** Users assigned to the task's issue or pull request; absent from servers that predate assignment. */
+  assignees?: AttributedUser[];
 }
 
 export interface TaskListProps {

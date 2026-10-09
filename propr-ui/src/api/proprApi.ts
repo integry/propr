@@ -84,6 +84,7 @@ const getTasksRequest = async (
   if (options.excludeMerged) params.append('excludeMerged', 'true');
   if (options.groupBy) params.append('groupBy', options.groupBy);
   if (options.task) params.append('task', options.task);
+  if (options.assignee) params.append('assignee', options.assignee);
   const response = await apiFetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, {
     credentials: 'include',
     ...(signal ? { signal } : {}),
@@ -345,6 +346,7 @@ export * from './planRevisionsApi';
 export * from './repoChatApi';
 export * from './repoImprovementsApi';
 export * from './tasks';
+export * from './taskAssignment';
 export * from './repoTodosApi';
 export * from './userRepoPreferencesApi';
 export * from './revertApi';
