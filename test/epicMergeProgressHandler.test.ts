@@ -4,6 +4,8 @@ import type { PullRequestEvent } from '@octokit/webhooks-types';
 
 const actualConnection = await import('../packages/core/src/db/connection.js');
 const actualGithubAuth = await import('../packages/core/src/auth/githubAuth.js');
+const actualCheckRunHelpers = await import('../packages/core/src/webhook/checkRunHelpers.js');
+const { EPIC_PROGRESS_RETRY_KEY } = await import('../packages/core/src/webhook/epicMergeProgressRetry.js');
 after(actualConnection.closeConnection);
 
 const EPIC_BRANCH = '100-epic-big-plan-abc';
@@ -47,18 +49,67 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
         throw new Error(`Unexpected request ${route}`);
     } }),
 } });
+
+/** In-memory Redis covering the retry hash, the lease, and their compare-and-delete scripts. */
+function fakeRedis() {
+    const hash = new Map<string, string>();
+    const keys = new Map<string, string>();
+    return {
+        hash,
+        async hget(key: string, field: string) { assert.equal(key, EPIC_PROGRESS_RETRY_KEY); return hash.get(field) ?? null; },
+        async hset(key: string, field: string, value: string) { assert.equal(key, EPIC_PROGRESS_RETRY_KEY); hash.set(field, value); return 1; },
+        async hgetall(key: string) { assert.equal(key, EPIC_PROGRESS_RETRY_KEY); return Object.fromEntries(hash); },
+        async set(key: string, value: string, ...args: unknown[]) {
+            assert.ok(args.includes('NX'));
+            if (keys.has(key)) return null;
+            keys.set(key, value);
+            return 'OK';
+        },
+        async eval(script: string, _numberOfKeys: number, key: string, ...args: string[]) {
+            if (script.includes('HGET')) {
+                if (hash.get(args[0]) !== args[1]) return 0;
+                return Number(hash.delete(args[0]));
+            }
+            if (keys.get(key) !== args[0]) return 0;
+            return Number(keys.delete(key));
+        },
+    };
+}
+let redis = fakeRedis();
+await mock.module('../packages/core/src/webhook/checkRunHelpers.js', {
+    namedExports: { ...actualCheckRunHelpers, getUltrafixStateRedis: () => redis },
+});
+
+// Mirrors the epic PR's bot comments: one completion notice, posted once the epic is complete.
 const progressRequests: Array<Record<string, unknown>> = [];
+let failingProgressUpdates = 0;
+let completionNotices = 0;
 await mock.module('../packages/core/src/webhook/epicMergeProgress.js', { namedExports: {
-    updateEpicMergeProgress: async (request: Record<string, unknown>) => { progressRequests.push(request); },
+    updateEpicMergeProgress: async (request: Record<string, unknown>) => {
+        if (failingProgressUpdates > 0) {
+            failingProgressUpdates--;
+            throw new Error('GitHub comment request failed');
+        }
+        progressRequests.push(request);
+        if (completionNotices === 0) completionNotices++;
+    },
 } });
 
-const { handleEpicPRCreationOnMerge } = await import('../packages/core/src/webhook/epicPRHandler.js');
+const { handleEpicPRCreationOnMerge, retryPendingEpicMergeProgress } = await import('../packages/core/src/webhook/epicPRHandler.js');
 const logger = (await import('../packages/core/src/utils/logger.js')).default;
 
 beforeEach(() => {
     failingPlanListReads = 0;
+    failingProgressUpdates = 0;
+    completionNotices = 0;
     progressRequests.length = 0;
+    redis = fakeRedis();
 });
+
+/** Makes every recorded retry due, as if its backoff had elapsed. */
+function elapseRetryBackoff() {
+    for (const [field, value] of redis.hash) redis.hash.set(field, JSON.stringify({ ...JSON.parse(value), nextAttemptAt: 0 }));
+}
 
 const payload = {
     action: 'closed',
@@ -66,10 +117,65 @@ const payload = {
     repository: { full_name: 'integry/propr', name: 'propr', owner: { login: 'integry' } },
 } as unknown as PullRequestEvent;
 
-test('skips the progress update when the plan cannot be read', async () => {
+test('skips the progress update when the plan cannot be read, keeping a retry', async () => {
     failingPlanListReads = Infinity;
     await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
     assert.deepEqual(progressRequests, []);
+    const [retry] = [...redis.hash.values()].map(value => JSON.parse(value));
+    assert.equal(retry.epicPrNumber, 500);
+    assert.equal(retry.epicBranch, EPIC_BRANCH);
+    assert.equal(retry.attempts, 1);
+});
+
+test('recovers the final merge after the plan becomes readable again', async () => {
+    failingPlanListReads = Infinity;
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    // Not due yet: the backoff has not elapsed.
+    assert.equal(await retryPendingEpicMergeProgress(), 0);
+    assert.equal(progressRequests.length, 0);
+
+    failingPlanListReads = 0;
+    elapseRetryBackoff();
+    assert.equal(await retryPendingEpicMergeProgress(), 1);
+    assert.equal(progressRequests.length, 1);
+    assert.equal((progressRequests[0].planIssues as unknown[]).length, 3);
+    assert.equal(progressRequests[0].mergedChildPrNumber, 201);
+    assert.equal(completionNotices, 1);
+    assert.equal(redis.hash.size, 0);
+});
+
+test('recovers a failed comment write on the final merge with exactly one completion notice', async () => {
+    failingProgressUpdates = 2;
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    assert.equal(completionNotices, 0);
+    assert.equal(redis.hash.size, 1);
+
+    // The first retry fails too; the obligation survives with a longer backoff.
+    elapseRetryBackoff();
+    assert.equal(await retryPendingEpicMergeProgress(), 0);
+    const retry = JSON.parse([...redis.hash.values()][0]);
+    assert.equal(retry.attempts, 2);
+    assert.ok(retry.nextAttemptAt > Date.now());
+
+    elapseRetryBackoff();
+    assert.equal(await retryPendingEpicMergeProgress(), 1);
+    assert.equal(completionNotices, 1);
+    assert.equal(redis.hash.size, 0);
+
+    // Nothing left to retry, so no further updates or notices.
+    elapseRetryBackoff();
+    assert.equal(await retryPendingEpicMergeProgress(), 0);
+    assert.equal(progressRequests.length, 1);
+    assert.equal(completionNotices, 1);
+});
+
+test('a successful update clears a retry left by an earlier failed merge', async () => {
+    failingProgressUpdates = 1;
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    assert.equal(redis.hash.size, 1);
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    assert.equal(progressRequests.length, 1);
+    assert.equal(redis.hash.size, 0);
 });
 
 test('retries a failed plan read and counts the planned issues once it recovers', async () => {

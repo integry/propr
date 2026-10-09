@@ -1,8 +1,10 @@
-import logger from '../utils/logger.js';
+import logger, { generateCorrelationId } from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { isEpicBranch, EPIC_BRANCH_PATTERN } from '../services/taskExecutionService.js';
 import { createEpicPRWithDraftFallback } from '../services/epicPRService.js';
 import { updateEpicMergeProgress } from './epicMergeProgress.js';
+import { runEpicProgressUpdate, sweepEpicProgressRetries, type EpicProgressRetryRedis, type EpicProgressTarget } from './epicMergeProgressRetry.js';
+import { getUltrafixStateRedis } from './checkRunHelpers.js';
 import { db } from '../db/connection.js';
 import type { PlanIssue } from '../config/planIssueManager.js';
 import type { PullRequestEvent } from '@octokit/webhooks-types';
@@ -280,32 +282,64 @@ export async function handleEpicPRCreationOnMerge(
 
     if (epicPrNumber === null) return;
 
+    const target: EpicProgressTarget = { owner, repo, epicBranch: baseBranch, epicPrNumber, mergedChildPrNumber: payload.pull_request.number };
+    await runEpicProgressUpdate(target, {
+        redis: getUltrafixStateRedis(),
+        update: () => applyEpicMergeProgress(target, planLookup, correlationId, correlatedLogger),
+        log: correlatedLogger,
+    });
+}
+
+/**
+ * Refreshes the epic's merge progress comments. Returns false when the plan
+ * could not be read, so the caller keeps a retry obligation.
+ */
+async function applyEpicMergeProgress(
+    target: EpicProgressTarget,
+    planLookup: PlanLookup,
+    correlationId: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<boolean> {
     if (planLookup.status === 'unavailable') {
         // Without the plan, unstarted planned work is invisible and progress
-        // could falsely read as complete. Leave the tracking comment as is;
-        // the next child merge (or a redelivery) recomputes it from scratch.
-        correlatedLogger.warn({ epicPrNumber, baseBranch }, 'Plan details unavailable, skipping Epic PR merge progress update');
-        return;
+        // could falsely read as complete. Leave the tracking comment as is
+        // until a retry can read the plan.
+        correlatedLogger.warn({ epicPrNumber: target.epicPrNumber, baseBranch: target.epicBranch }, 'Plan details unavailable, deferring Epic PR merge progress update');
+        return false;
     }
     const planDetails = planLookup.status === 'found' ? planLookup.details : null;
+    await updateEpicMergeProgress({
+        ...target,
+        planName: planDetails?.planName,
+        planIssues: planDetails?.issues
+    }, correlationId);
+    return true;
+}
 
-    try {
-        await updateEpicMergeProgress({
-            owner,
-            repo,
-            epicBranch: baseBranch,
-            epicPrNumber,
-            mergedChildPrNumber: payload.pull_request.number,
-            planName: planDetails?.planName,
-            planIssues: planDetails?.issues
-        }, correlationId);
-    } catch (error) {
-        correlatedLogger.warn({
-            error: (error as Error).message,
-            epicPrNumber,
-            baseBranch
-        }, 'Failed to update Epic PR merge progress');
-    }
+/**
+ * Retries epic merge progress updates whose earlier attempt failed. Run
+ * periodically by the daemon, so the final child merge is confirmed without
+ * waiting for another merge or a webhook redelivery.
+ */
+export async function retryPendingEpicMergeProgress(
+    redis: EpicProgressRetryRedis = getUltrafixStateRedis(),
+    correlationId = generateCorrelationId()
+): Promise<number> {
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    return await sweepEpicProgressRetries({
+        redis,
+        log: correlatedLogger,
+        retry: target => runEpicProgressUpdate(target, {
+            redis,
+            log: correlatedLogger,
+            update: async () => applyEpicMergeProgress(
+                target,
+                await loadPlanDetails(target.epicBranch, `${target.owner}/${target.repo}`, correlatedLogger),
+                correlationId,
+                correlatedLogger
+            ),
+        }),
+    });
 }
 
 /**
