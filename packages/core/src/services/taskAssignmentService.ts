@@ -95,7 +95,7 @@ export type TaskAssignmentErrorCode =
 
 export class TaskAssignmentError extends Error {
     readonly code: TaskAssignmentErrorCode;
-    /** For `UNKNOWN_LOGIN`, the logins that could not be resolved. */
+    /** For `UNKNOWN_LOGIN`, the logins that were empty or could not be resolved. */
     readonly logins: string[];
     /** For `GITHUB_WRITE_FAILED`, the HTTP status GitHub answered with, when known. */
     readonly status?: number;
@@ -262,6 +262,25 @@ async function writeAssignees(github: TaskAssignmentClient, subject: TaskSubject
 }
 
 /**
+ * De-duplicates requested logins case-insensitively, dropping a leading `@`.
+ * An entry that normalizes to nothing ('', '  ', '@') fails like an unknown
+ * login; silently dropping it would turn a replace into a clear-all.
+ */
+function normalizeRequestedLogins(logins: string[]): Map<string, string> {
+    const wanted = new Map<string, string>();
+    const invalid: string[] = [];
+    for (const login of logins) {
+        const trimmed = typeof login === 'string' ? login.trim().replace(/^@/, '') : '';
+        if (!trimmed) invalid.push(String(login));
+        else if (!wanted.has(trimmed.toLowerCase())) wanted.set(trimmed.toLowerCase(), trimmed);
+    }
+    if (invalid.length > 0) {
+        throw new TaskAssignmentError('UNKNOWN_LOGIN', `Invalid GitHub login${invalid.length === 1 ? '' : 's'}: ${invalid.map(login => JSON.stringify(login)).join(', ')}`, { logins: invalid });
+    }
+    return wanted;
+}
+
+/**
  * Assigns the task's GitHub issue or pull request, then persists the set
  * GitHub confirmed. GitHub is written first and only its response is stored,
  * so ProPR never shows an assignment GitHub did not accept; GitHub silently
@@ -270,7 +289,8 @@ async function writeAssignees(github: TaskAssignmentClient, subject: TaskSubject
  * always kept; `replace` unassigns only current assignees not requested.
  *
  * Throws `TaskAssignmentError` when the task or its subject is missing, a
- * login does not resolve (before anything is written), or GitHub fails.
+ * login is empty or does not resolve (before anything is written), or GitHub
+ * fails. An empty `logins` array in `replace` mode clears every assignee.
  */
 export async function setTaskAssignees(taskId: string, logins: string[], options: SetTaskAssigneesOptions): Promise<SetTaskAssigneesResult> {
     const now = options.now?.() ?? new Date();
@@ -280,11 +300,7 @@ export async function setTaskAssignees(taskId: string, logins: string[], options
     if (!subject) throw new TaskAssignmentError('NO_GITHUB_SUBJECT', `Task ${taskId} has no GitHub issue or pull request to assign`);
     const github = options.github ?? await defaultClient();
 
-    const wanted = new Map<string, string>();
-    for (const login of logins) {
-        const trimmed = typeof login === 'string' ? login.trim().replace(/^@/, '') : '';
-        if (trimmed && !wanted.has(trimmed.toLowerCase())) wanted.set(trimmed.toLowerCase(), trimmed);
-    }
+    const wanted = normalizeRequestedLogins(logins);
     const requested = new Map<string, AttributedUser>();
     const unknown: string[] = [];
     for (const login of wanted.values()) {

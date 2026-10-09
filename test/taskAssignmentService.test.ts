@@ -228,6 +228,32 @@ describe('taskAssignmentService', () => {
         assert.deepEqual(await storedIds('issue-7'), ['2']);
     });
 
+    test('setTaskAssignees rejects logins that normalize to empty and writes nothing', async () => {
+        await insertTask({ task_id: 'issue-7', issue_number: 7 });
+        await syncTaskAssignees('issue-7', { github: fakeGitHub({ 7: ['2'] }).client, now: () => T0 });
+
+        for (const [mode, logins] of [['replace', ['@']], ['replace', ['   ']], ['replace', ['octocat', '']], ['add', [' @ ']]] as const) {
+            const github = fakeGitHub({ 7: ['2'] });
+            await assert.rejects(
+                setTaskAssignees('issue-7', [...logins], { mode, github: github.client }),
+                (error: unknown) => error instanceof TaskAssignmentError && error.code === 'UNKNOWN_LOGIN' && error.logins.length === 1,
+            );
+            assert.deepEqual(github.calls, [], `${mode} ${JSON.stringify(logins)} must not call GitHub`);
+            assert.deepEqual(await storedIds('issue-7'), ['2']);
+        }
+    });
+
+    test('setTaskAssignees with an empty list in replace mode clears every assignee', async () => {
+        await insertTask({ task_id: 'issue-7', issue_number: 7 });
+        await syncTaskAssignees('issue-7', { github: fakeGitHub({ 7: ['2'] }).client, now: () => T0 });
+        const github = fakeGitHub({ 7: ['2'] });
+
+        const result = await setTaskAssignees('issue-7', [], { mode: 'replace', github: github.client, now: () => T0 });
+
+        assert.deepEqual(result.assignees, []);
+        assert.deepEqual(await storedIds('issue-7'), []);
+    });
+
     test('setTaskAssignees propagates GitHub write failures and missing subjects', async () => {
         await insertTask({ task_id: 'issue-7', issue_number: 7 });
         await insertTask({ task_id: 'draft', issue_number: null });
