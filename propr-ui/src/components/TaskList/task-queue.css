@@ -127,10 +127,13 @@
    the assignee filter at full width as well (the list pane beside an open
    task), the filter collapses to an icon the size of a button: the native
    select still opens the full list, its text is hidden, and the icon turns
-   teal while a filter other than All assignees applies. */
+   teal while a filter other than All assignees applies. The gap before the
+   filters tightens too, so search keeps its minimum width and the icon still
+   fits inside the pane. */
 .task-filters { container: task-filters / inline-size; }
 .task-assignee-filter-icon { display: none; }
 @container task-filters (max-width: 49rem) {
+  .task-filter-controls { column-gap: .5rem; }
   .task-assignee-filter { flex: none; width: 2.5rem; }
   .task-assignee-filter select { width: 100%; padding-left: 0; padding-right: 0; color: transparent; background-image: none; appearance: none; }
   .task-assignee-filter select option, .task-assignee-filter select optgroup { color: #374151; }

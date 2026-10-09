@@ -159,7 +159,7 @@ export const Filters: React.FC<FiltersProps> = ({
   const header = (
     <div className={`${hideFilters ? '' : 'task-filters '}flex items-center justify-between gap-2 sm:gap-4`}>
       {!hideFilters && <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Tasks</h1>}
-      <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
+      <div className="task-filter-controls flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
         {!hideFilters && (
           <>
             {/* Takes the room the filters leave, and keeps enough of it that the repository picker gives way first in a list pane beside an open task. */}
