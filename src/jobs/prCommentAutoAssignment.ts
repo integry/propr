@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import type { WorkerStateManager } from '@propr/core';
-import { autoAssignImplementationPullRequest, recordAutoAssignmentEvent, type AutoAssignmentClaimStore } from '../github/prAutoAssignment.js';
+import { autoAssignImplementationPullRequest, recordAutoAssignmentEvent, type AutoAssignmentClaimStore, type LinkedIssueReference } from '../github/prAutoAssignment.js';
 import type { ContinuationRecord } from './prContinuation.js';
 
 export interface FollowUpAssignmentContext {
@@ -15,7 +15,7 @@ export interface FollowUpAssignmentContext {
     /** The commit the follow-up pushed; absent when it produced none. */
     commit: { commitHash?: string } | null | undefined;
     /** The source issue the pull request closes, when the job already resolved it. */
-    linkedIssueNumber?: number | null;
+    linkedIssue?: LinkedIssueReference | null;
     taskId: string;
     stateManager: Pick<WorkerStateManager, 'getTaskState' | 'updateTaskState'>;
     redis: AutoAssignmentClaimStore;
@@ -37,7 +37,7 @@ export async function autoAssignFollowUpPullRequest(context: FollowUpAssignmentC
     try {
         const outcome = await autoAssignImplementationPullRequest({
             owner: context.repoOwner, repo: context.repoName, prNumber, taskId,
-            opportunity: 'followup_done', headSha: commit.commitHash, linkedIssueNumber: context.linkedIssueNumber,
+            opportunity: 'followup_done', headSha: commit.commitHash, linkedIssue: context.linkedIssue,
             octokit: context.octokit, redis: context.redis, logger,
         });
         await recordAutoAssignmentEvent({ stateManager, taskId, prNumber, outcome, logger });

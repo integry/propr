@@ -42,6 +42,7 @@ import { recordPushSalvageEvent } from './pushSalvageTimeline.js';
 import { savePublicationCheckpoint } from './prContinuation.js';
 import { buildWorkNotificationRecap } from './notificationRecap.js';
 import { autoAssignFollowUpPullRequest } from './prCommentAutoAssignment.js';
+import type { LinkedIssueReference } from '../github/prAutoAssignment.js';
 
 interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
@@ -78,6 +79,8 @@ export interface PublicationCompletion {
     unprocessedReviewComments: AIReviewComment[];
     llm?: string | null;
     taskUrl: string;
+    /** The source issue resolved during execution; absent from checkpoints written before it was saved. */
+    linkedIssue?: LinkedIssueReference | null;
     commitResult: Awaited<ReturnType<typeof commitChanges>>;
     changesSummary: string;
     commitMessage: string;
@@ -98,7 +101,7 @@ interface PostExecutionParams {
     /** The run's effective preview settings, already restricted by its workflow snapshot. */
     visualPreviewSettings?: VisualPreviewSettings;
     /** The source issue the pull request closes, for auto-assignment. */
-    linkedIssueNumber?: number | null;
+    linkedIssue?: LinkedIssueReference | null;
 }
 
 interface UndoContextParams {
@@ -129,6 +132,11 @@ async function commitAndPush(
     }
 
     return { commitResult, changesSummary, commitMessage };
+}
+
+/** A recovered publication uses the source issue its checkpoint saved; legacy checkpoints saved none. */
+function followUpSourceIssue(params: PostExecutionParams): LinkedIssueReference | null | undefined {
+    return params.recoveredCompletion ? params.recoveredCompletion.linkedIssue : params.linkedIssue;
 }
 
 async function persistCommitHash(taskId: string, commitHash: string | undefined, correlatedLogger: Logger): Promise<void> {
@@ -329,7 +337,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
             taskId, instructionCommentIds: state.unprocessedComments.map(comment => comment.id),
             jobData: job.data, claudeResult: state.claudeResult, authorsText: state.authorsText,
             unprocessedComments: state.unprocessedComments, startingWorkComment: state.startingWorkComment,
-            unprocessedReviewComments, llm, taskUrl,
+            unprocessedReviewComments, llm, taskUrl, linkedIssue: params.linkedIssue,
         });
         requirePartialExecutionChanges(partial, commitResult, terminationReason);
         if (commitResult?.filesChanged?.length) state.claudeResult.modifiedFiles = commitResult.filesChanged;
@@ -362,7 +370,8 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         // Before the terminal update, which would refuse the timeline entry.
         await autoAssignFollowUpPullRequest({
             octokit: state.octokit, repoOwner, repoName, pullRequestNumber, continuation: context.publication.continuation,
-            commandMode: job.data.commandMode, commit: commitResult, linkedIssueNumber: params.linkedIssueNumber,
+            commandMode: job.data.commandMode, commit: commitResult,
+            linkedIssue: followUpSourceIssue(params),
             taskId, stateManager, redis: redisClient, logger: correlatedLogger,
         });
 

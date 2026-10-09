@@ -67,6 +67,13 @@ export interface AutoAssignmentClaimStore {
     del(key: string): Promise<unknown>;
 }
 
+/** An issue together with the repository it lives in, which may differ from the pull request's. */
+export interface LinkedIssueReference {
+    owner: string;
+    repo: string;
+    number: number;
+}
+
 export interface AutoAssignPullRequestOptions {
     owner: string;
     repo: string;
@@ -74,9 +81,9 @@ export interface AutoAssignPullRequestOptions {
     issueNumber?: number;
     /**
      * The pull request's linked source issue, when the caller already resolved
-     * it. Without either issue number the pull request body's `Closes #n` is read.
+     * it. Without either issue the pull request body's `Closes #n` is read.
      */
-    linkedIssueNumber?: number | null;
+    linkedIssue?: LinkedIssueReference | null;
     prNumber: number;
     taskId?: string;
     /** Defaults to `implementation_done`. */
@@ -126,17 +133,22 @@ function loginOf(user: unknown): string | null {
     return typeof login === 'string' && login ? login : null;
 }
 
-async function readIssueAuthor(options: AutoAssignPullRequestOptions, issueNumber: number): Promise<string | null> {
+async function readIssueAuthor(options: AutoAssignPullRequestOptions, issue: LinkedIssueReference): Promise<string | null> {
     if (options.issueAuthor) return options.issueAuthor;
     const response = await options.octokit.request<{ data: { user?: unknown } }>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-        owner: options.owner, repo: options.repo, issue_number: issueNumber,
+        owner: issue.owner, repo: issue.repo, issue_number: issue.number,
     });
     return loginOf(response.data?.user);
 }
 
-/** The source issue: the caller's, otherwise the first one the pull request body closes. */
-function sourceIssueNumber(options: AutoAssignPullRequestOptions, pullRequest: PullRequestState): number | null {
-    return options.issueNumber ?? options.linkedIssueNumber ?? parseLinkedIssueNumbers(pullRequest.body)[0] ?? null;
+/**
+ * The source issue: the caller's, otherwise the first one the pull request body
+ * closes. Only a linked issue can live in another repository; the others are local.
+ */
+function sourceIssue(options: AutoAssignPullRequestOptions, pullRequest: PullRequestState): LinkedIssueReference | null {
+    if (options.linkedIssue && !options.issueNumber) return options.linkedIssue;
+    const number = options.issueNumber ?? parseLinkedIssueNumbers(pullRequest.body)[0];
+    return number ? { owner: options.owner, repo: options.repo, number } : null;
 }
 
 async function readPullRequest(options: AutoAssignPullRequestOptions): Promise<PullRequestState> {
@@ -163,9 +175,9 @@ async function resolveTarget(
     pullRequest: PullRequestState,
 ): Promise<{ assignee: string } | { skipped: string }> {
     if (policy.defaultAssignee) return { assignee: policy.defaultAssignee };
-    const issueNumber = sourceIssueNumber(options, pullRequest);
-    if (!issueNumber) return { skipped: 'the pull request has no linked source issue' };
-    const author = await readIssueAuthor(options, issueNumber);
+    const issue = sourceIssue(options, pullRequest);
+    if (!issue) return { skipped: 'the pull request has no linked source issue' };
+    const author = await readIssueAuthor(options, issue);
     if (!author) return { skipped: 'the source issue has no author' };
     if (isBotLogin(author)) return { skipped: `the source issue author ${author} is a bot` };
     return { assignee: author };
@@ -279,7 +291,7 @@ async function assignAndRequestReview(
 export async function autoAssignImplementationPullRequest(options: AutoAssignPullRequestOptions): Promise<AutoAssignmentOutcome> {
     const { owner, repo, prNumber, logger } = options;
     const opportunity = options.opportunity ?? 'implementation_done';
-    const context = { repository: `${owner}/${repo}`, prNumber, issueNumber: options.issueNumber ?? options.linkedIssueNumber, opportunity };
+    const context = { repository: `${owner}/${repo}`, prNumber, issueNumber: options.issueNumber ?? options.linkedIssue?.number, opportunity };
     let leaseKey: string | null = null;
 
     try {

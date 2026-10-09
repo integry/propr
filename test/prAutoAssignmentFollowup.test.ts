@@ -92,6 +92,8 @@ interface FakePullRequest { head: string; body: string; assignees: string[]; req
 
 const github = {
     issueAuthors: new Map<number, string>(),
+    /** Authors of issues in repositories other than integry/propr, keyed `owner/repo#n`. */
+    foreignIssueAuthors: new Map<string, string>(),
     pulls: new Map<number, FakePullRequest>(),
     failAssign: false,
     calls: [] as Array<{ route: string; parameters: Record<string, unknown> }>,
@@ -109,7 +111,9 @@ async function request(route: string, parameters: Record<string, unknown>): Prom
         case 'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}':
             return { data: { id: parameters.comment_id, html_url: `https://github.com/integry/propr/pull/${ORIGINAL_PR}#issuecomment-1`, body: parameters.body } };
         case 'GET /repos/{owner}/{repo}/issues/{issue_number}': {
-            const author = github.issueAuthors.get(parameters.issue_number as number);
+            const local = parameters.owner === 'integry' && parameters.repo === 'propr';
+            const author = local ? github.issueAuthors.get(parameters.issue_number as number)
+                : github.foreignIssueAuthors.get(`${parameters.owner}/${parameters.repo}#${parameters.issue_number}`);
             return { data: { user: author ? { login: author } : null } };
         }
         case 'GET /repos/{owner}/{repo}/pulls/{pull_number}': {
@@ -176,8 +180,13 @@ interface FollowUpOptions {
     commit?: string | null;
     commandMode?: string;
     continuationPr?: number;
-    linkedIssueNumber?: number | null;
+    linkedIssue?: { owner: string; repo: string; number: number } | null;
+    /** Completes a recovered publication from this checkpoint instead of committing. */
+    recoveredCompletion?: Record<string, unknown>;
 }
+
+/** The completion inputs the last push checkpointed. */
+let pushedCompletion: Record<string, unknown> | undefined;
 
 /** Runs one follow-up's post-execution: commit, push, completion comment, terminal state. */
 async function runFollowUp(options: FollowUpOptions = {}) {
@@ -189,7 +198,8 @@ async function runFollowUp(options: FollowUpOptions = {}) {
         status: '',
         continuation: options.continuationPr ? { continuation_pr: options.continuationPr } : undefined,
         pendingCompletion: undefined,
-        push: async () => {
+        push: async (_worktreePath: string, completion: Record<string, unknown>) => {
+            pushedCompletion = completion;
             // The pushed commit becomes the head of the pull request that received it.
             if (commit) pull(target).head = commit;
             return { commitHash: commit };
@@ -206,7 +216,10 @@ async function runFollowUp(options: FollowUpOptions = {}) {
         taskId: TASK_ID, stateManager,
         context: { pullRequestNumber: ORIGINAL_PR, repoOwner: 'integry', repoName: 'propr', publication, correlatedLogger: logger },
         unprocessedReviewComments: [], llm: null, redisClient, prProcessingLockKey: 'lock', prProcessingLockToken: 'token',
-        linkedIssueNumber: options.linkedIssueNumber,
+        linkedIssue: options.linkedIssue,
+        recoveredCompletion: options.recoveredCompletion && {
+            commitResult: nextCommit, changesSummary: 'Handled the empty case', commitMessage: 'commit', ...options.recoveredCompletion,
+        },
     } as never, 'https://propr.test/tasks/task-followup');
 }
 
@@ -214,6 +227,8 @@ beforeEach(() => {
     policy = { enabled: true, defaultAssignee: null, requestReview: false };
     policyError = null;
     github.issueAuthors = new Map([[12, 'alice'], [77, 'dana']]);
+    github.foreignIssueAuthors = new Map([['acme/tracker#77', 'erin']]);
+    pushedCompletion = undefined;
     github.pulls = new Map([
         [ORIGINAL_PR, { head: 'a'.repeat(40), body: 'Implements the feature.\n\nCloses #12', assignees: [], requestedReviewers: [] }],
         [CONTINUATION_PR, { head: 'd'.repeat(40), body: 'Continuation of #34.\n\nCloses #12', assignees: [], requestedReviewers: [] }],
@@ -249,8 +264,47 @@ describe('re-assignment after follow-up work', () => {
     });
 
     test('prefers the linked issue the job already resolved', async () => {
-        await runFollowUp({ linkedIssueNumber: 77 });
+        await runFollowUp({ linkedIssue: { owner: 'integry', repo: 'propr', number: 77 } });
         assert.deepEqual(pull(ORIGINAL_PR).assignees, ['dana']);
+    });
+
+    test('a linked issue in another repository is read there, not as the same-numbered local issue', async () => {
+        policy = { enabled: true, defaultAssignee: null, requestReview: true };
+        await runFollowUp({ linkedIssue: { owner: 'acme', repo: 'tracker', number: 77 } });
+        assert.deepEqual(pull(ORIGINAL_PR).assignees, ['erin']);
+        assert.deepEqual(pull(ORIGINAL_PR).requestedReviewers, ['erin']);
+        const issueReads = github.calls.filter(call => call.route === 'GET /repos/{owner}/{repo}/issues/{issue_number}');
+        assert.deepEqual(issueReads.map(call => call.parameters), [{ owner: 'acme', repo: 'tracker', issue_number: 77 }]);
+    });
+
+    test('the publication checkpoint saves the resolved source issue', async () => {
+        const linkedIssue = { owner: 'acme', repo: 'tracker', number: 77 };
+        await runFollowUp({ continuationPr: CONTINUATION_PR, linkedIssue });
+        assert.deepEqual(pushedCompletion?.linkedIssue, linkedIssue);
+    });
+
+    test('a recovered publication assigns the source issue saved at checkpoint, not one parsed from the body', async () => {
+        // `Fix #12` is a closing keyword GitHub resolves but the body parser does not.
+        pull(CONTINUATION_PR).body = 'Continuation of #34.\n\nFix #12';
+        await runFollowUp({
+            continuationPr: CONTINUATION_PR, commit: 'e'.repeat(40),
+            recoveredCompletion: { linkedIssue: { owner: 'integry', repo: 'propr', number: 12 } },
+        });
+        assert.equal(pushedCompletion, undefined, 'recovery does not commit or push again');
+        assert.deepEqual(pull(CONTINUATION_PR).assignees, ['alice']);
+    });
+
+    test('a recovered publication from a cross-repository checkpoint keeps the issue\'s repository', async () => {
+        await runFollowUp({
+            continuationPr: CONTINUATION_PR,
+            recoveredCompletion: { linkedIssue: { owner: 'acme', repo: 'tracker', number: 77 } },
+        });
+        assert.deepEqual(pull(CONTINUATION_PR).assignees, ['erin']);
+    });
+
+    test('a legacy checkpoint without a saved source issue falls back to the pull request body', async () => {
+        await runFollowUp({ continuationPr: CONTINUATION_PR, recoveredCompletion: {} });
+        assert.deepEqual(pull(CONTINUATION_PR).assignees, ['alice']);
     });
 
     test('assigns the configured default assignee when one is set', async () => {
