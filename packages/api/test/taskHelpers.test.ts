@@ -57,6 +57,16 @@ async function createDatabase(): Promise<Knex> {
     table.text('analysis_report');
     table.index('task_id');
   });
+  await database.schema.createTable('task_assignees', table => {
+    table.string('task_id');
+    table.string('github_user_id');
+  });
+  await database.schema.createTable('github_user_profiles', table => {
+    table.string('github_user_id').primary();
+    table.string('login');
+    table.string('display_name');
+    table.text('avatar_url');
+  });
   return database;
 }
 
@@ -172,8 +182,9 @@ test('presentation enrichment queries are constrained to the selected page', asy
   database.on('query', event => queries.push({ sql: event.sql, bindings: event.bindings ?? [] }));
   await getTasksFromDb({ db: database, status: 'all', repository: 'all', limit: 1, offset: 0 });
 
-  assert.equal(queries.length, 6);
+  assert.equal(queries.length, 7);
   assert.ok(queries.every(query => !/analysis_report/i.test(query.sql)));
+  assert.match(queries[6].sql, /from `task_assignees`/i);
   assert.doesNotMatch(queries[0].sql, /ROW_NUMBER|processing_start_timestamp|analysis_report/i);
   assert.doesNotMatch(queries[1].sql, /ROW_NUMBER|processing_start_timestamp|analysis_report/i);
   for (const query of queries.slice(2)) {

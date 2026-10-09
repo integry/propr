@@ -7,6 +7,15 @@
  */
 /* eslint-disable */
 
+/** A GitHub user work is assigned or attributed to. */
+export interface AttributedUser {
+  /** Stable GitHub numeric user id. */
+  id: string;
+  login: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+}
+
 /** The signed-in GitHub user and their instance role. */
 export interface AuthenticatedUser {
   id: string;
@@ -301,6 +310,8 @@ export interface TaskSummary {
   planIssueStatus: string | null;
   /** Final review score of the run, when it was reviewed. */
   score: number | null;
+  /** Assignees of the GitHub issue or pull request, as last synced; empty when nobody is assigned. */
+  assignees: AttributedUser[];
   [key: string]: unknown;
 }
 
@@ -327,4 +338,8 @@ export interface ListTasksQuery {
   groupBy?: "task";
   /** With `groupBy=task`: only the task this run belongs to. */
   task?: string;
+  /** `all` (default), `me` (the signed-in user), `unassigned`, or comma-separated GitHub logins. */
+  assignee?: string;
+  /** With `task`: refresh that run's assignees from GitHub first. */
+  syncAssignees?: "true" | "false";
 }

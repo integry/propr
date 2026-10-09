@@ -142,6 +142,13 @@ export const DemoModeStatus = component('DemoModeStatus', z.object({
   demoMode: z.boolean(),
 }));
 
+export const AttributedUser = component('AttributedUser', z.object({
+  id: z.string().describe('Stable GitHub numeric user id.'),
+  login: z.string(),
+  displayName: z.string().nullable(),
+  avatarUrl: z.string().nullable(),
+}), 'A GitHub user work is assigned or attributed to.');
+
 export const TaskSummary = component('TaskSummary', z.object({
   id: z.string().describe('Task (run) identifier.'),
   issueId: z.string().describe('Same value as `id`; kept for older clients.'),
@@ -165,6 +172,7 @@ export const TaskSummary = component('TaskSummary', z.object({
   llmProvider: z.string().nullable(),
   planIssueStatus: z.string().nullable(),
   score: z.number().nullable().describe('Final review score of the run, when it was reviewed.'),
+  assignees: z.array(AttributedUser).describe('Assignees of the GitHub issue or pull request, as last synced; empty when nobody is assigned.'),
 }).loose(), 'One task run as listed by `GET /api/tasks`.');
 
 export const TaskPage = component('TaskPage', z.object({
@@ -264,6 +272,8 @@ export const ListTasksQuery = querySet('ListTasksQuery', z.object({
   excludeMerged: z.enum(['true', 'false']).optional(),
   groupBy: z.literal('task').optional().describe('Page by task instead of by run.'),
   task: z.string().optional().describe('With `groupBy=task`: only the task this run belongs to.'),
+  assignee: z.string().optional().describe('`all` (default), `me` (the signed-in user), `unassigned`, or comma-separated GitHub logins.'),
+  syncAssignees: z.enum(['true', 'false']).optional().describe('With `task`: refresh that run\'s assignees from GitHub first.'),
 }));
 
 export const DeleteTaskQuery = querySet('DeleteTaskQuery', z.object({
