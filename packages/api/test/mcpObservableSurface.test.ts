@@ -309,6 +309,8 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'checkpoint', 'condition', 'event', 'lifecycle', 'matched', 'terminal', 'timed_out', 'unreachable',
     // Re-anchoring report fields returned by fix_review_findings.
     'applied', 'skipped', 'comparison', 'same_head', 'compared', 'unavailable', 'code_removed',
+    // Reasons fix_review_findings gives for an identifier it cannot locate.
+    'not_in_review', 'consumed', 'expired',
     // Instance settings the omitted ultrafix bounds resolve from.
     'ultrafix_rating_goal', 'ultrafix_max_cycles', 'goal', 'maxCycles',
     // Input fields and categories accepted by generate_repository_improvements.

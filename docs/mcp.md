@@ -920,9 +920,25 @@ could have moved into). Only applied records are posted in the
 `/fix` command; `findingIds` and `suggestionIds` report exactly those.
 `comparison` is `same_head`, `compared`, or `unavailable` when the changes since
 the review could not be read (for example after a force-push), in which case
-every record is posted. The call fails with `STALE_FINDINGS` only when no
-selected record still applies, with the skipped records in `details`. To refuse
-a moved head outright, pass `expectedHead`: a mismatch is still `STALE_HEAD`.
+every record is posted. A moved head alone never refuses the call, so an MCP
+caller can fix whatever a hand-typed `/fix` comment could. The call is refused
+only where the selection genuinely cannot be carried out, each with its own
+code at the `precondition` stage:
+
+- `NOT_A_REVIEW` (422): `reviewCommentId` is not a parseable ProPR review.
+- `FINDINGS_UNAVAILABLE` (409): a selected identifier cannot be located in the
+  review. `details.unavailable` lists each one with its `kind` and a `reason`:
+  `not_in_review` (a typo, or the wrong review), `consumed` (an earlier `/fix`
+  already addressed it) or `expired` (the review is older than the seven days
+  `/fix` reads back). `details.offeredFindingIds` and
+  `details.offeredSuggestionIds` list what the review still offers.
+- `FINDINGS_CODE_REMOVED` (409): every selected record was skipped as
+  `code_removed`, so no `/fix` is left to post. `details` carries
+  `reviewedHead`, `currentHead` and the skipped records.
+
+To refuse a moved head outright, pass `expectedHead`: a mismatch is still
+`STALE_HEAD`. `expectedHead` pins the pull request head, not the review's, so a
+current `expectedHead` with a review of an older head is re-anchored as above.
 Retries must preserve whether `expectedHead` was omitted or supplied; changing
 that argument while reusing an idempotency key returns `IDEMPOTENCY_CONFLICT`.
 
