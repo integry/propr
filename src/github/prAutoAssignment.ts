@@ -1,9 +1,11 @@
 /**
- * Automatic pull request assignment when an implementation reaches the done
- * label.
+ * Automatic pull request assignment when work on a pull request completes:
+ * an implementation reaching the done label, or a follow-up that pushed a
+ * commit.
  *
- * Bound to the `AI-processing` -> `AI-done` swap in post-processing rather than
- * to a webhook, so it runs once per completed implementation. The write is
+ * Bound to the code that performs the completion (the `AI-processing` ->
+ * `AI-done` swap in post-processing, and follow-up publication) rather than to
+ * a label webhook, so work starting never assigns. The write is
  * additive (`setTaskAssignees` in `add` mode keeps manual assignees). Two
  * Redis keys scoped to repository, pull request and head SHA keep it
  * idempotent: a short lease marks an attempt in progress, and a completion
@@ -16,6 +18,7 @@
  */
 
 import type { Logger } from 'pino';
+import { parseLinkedIssueNumbers } from './linkedIssueReferences.js';
 import {
     refreshTaskAssignees,
     resolveRepositoryAutoAssignment,
@@ -42,8 +45,12 @@ export const PR_AUTO_ASSIGNMENT_EVENT = 'pull_request.auto_assignment';
 export type AutoAssignmentStatus = 'disabled' | 'skipped' | 'assigned' | 'already_assigned' | 'not_assigned' | 'failed';
 export type ReviewRequestStatus = 'requested' | 'skipped' | 'failed';
 
+/** The completion that offered the assignment. */
+export type AutoAssignmentOpportunity = 'implementation_done' | 'followup_done';
+
 export interface AutoAssignmentOutcome {
     status: AutoAssignmentStatus;
+    opportunity?: AutoAssignmentOpportunity;
     reason: string;
     assignee?: string;
     review?: { status: ReviewRequestStatus; reason: string };
@@ -60,12 +67,32 @@ export interface AutoAssignmentClaimStore {
     del(key: string): Promise<unknown>;
 }
 
+/** An issue together with the repository it lives in, which may differ from the pull request's. */
+export interface LinkedIssueReference {
+    owner: string;
+    repo: string;
+    number: number;
+}
+
 export interface AutoAssignPullRequestOptions {
     owner: string;
     repo: string;
-    issueNumber: number;
+    /** The issue the implementation was created from. */
+    issueNumber?: number;
+    /**
+     * The pull request's linked source issue, when the caller already resolved
+     * it. Without either issue the pull request body's `Closes #n` is read.
+     */
+    linkedIssue?: LinkedIssueReference | null;
     prNumber: number;
     taskId?: string;
+    /** Defaults to `implementation_done`. */
+    opportunity?: AutoAssignmentOpportunity;
+    /**
+     * The commit the completed work produced. Keys the idempotency guard, so a
+     * new commit is a new opportunity; defaults to the pull request's head.
+     */
+    headSha?: string;
     /** The source issue's author when the caller already read the issue. */
     issueAuthor?: string | null;
     octokit: GitHubClient;
@@ -79,6 +106,7 @@ export interface AutoAssignPullRequestOptions {
 
 interface PullRequestState {
     headSha: string;
+    body: string | null;
     author: string | null;
     assignees: string[];
 }
@@ -105,34 +133,51 @@ function loginOf(user: unknown): string | null {
     return typeof login === 'string' && login ? login : null;
 }
 
-async function readIssueAuthor(options: AutoAssignPullRequestOptions): Promise<string | null> {
+async function readIssueAuthor(options: AutoAssignPullRequestOptions, issue: LinkedIssueReference): Promise<string | null> {
     if (options.issueAuthor) return options.issueAuthor;
     const response = await options.octokit.request<{ data: { user?: unknown } }>('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-        owner: options.owner, repo: options.repo, issue_number: options.issueNumber,
+        owner: issue.owner, repo: issue.repo, issue_number: issue.number,
     });
     return loginOf(response.data?.user);
 }
 
+/**
+ * The source issue: the caller's, otherwise the first one the pull request body
+ * closes. Only a linked issue can live in another repository; the others are local.
+ */
+function sourceIssue(options: AutoAssignPullRequestOptions, pullRequest: PullRequestState): LinkedIssueReference | null {
+    if (options.linkedIssue && !options.issueNumber) return options.linkedIssue;
+    const number = options.issueNumber ?? parseLinkedIssueNumbers(pullRequest.body)[0];
+    return number ? { owner: options.owner, repo: options.repo, number } : null;
+}
+
 async function readPullRequest(options: AutoAssignPullRequestOptions): Promise<PullRequestState> {
-    const response = await options.octokit.request<{ data: { head?: { sha?: unknown }; user?: unknown; assignees?: unknown[] } }>('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+    const response = await options.octokit.request<{ data: { head?: { sha?: unknown }; body?: unknown; user?: unknown; assignees?: unknown[] } }>('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
         owner: options.owner, repo: options.repo, pull_number: options.prNumber,
     });
     const headSha = typeof response.data?.head?.sha === 'string' ? response.data.head.sha : '';
     if (!headSha) throw new Error(`Pull request #${options.prNumber} has no head SHA`);
     return {
         headSha,
+        body: typeof response.data?.body === 'string' ? response.data.body : null,
         author: loginOf(response.data?.user),
         assignees: (response.data?.assignees ?? []).map(loginOf).filter((login): login is string => !!login),
     };
 }
 
-/** The repository default assignee, otherwise the issue author unless that is a bot. */
+/**
+ * The repository default assignee, otherwise the source issue's author unless
+ * that is a bot. Never whoever commented: a follow-up keeps the issue author.
+ */
 async function resolveTarget(
     options: AutoAssignPullRequestOptions,
     policy: RepositoryAutoAssignment,
+    pullRequest: PullRequestState,
 ): Promise<{ assignee: string } | { skipped: string }> {
     if (policy.defaultAssignee) return { assignee: policy.defaultAssignee };
-    const author = await readIssueAuthor(options);
+    const issue = sourceIssue(options, pullRequest);
+    if (!issue) return { skipped: 'the pull request has no linked source issue' };
+    const author = await readIssueAuthor(options, issue);
     if (!author) return { skipped: 'the source issue has no author' };
     if (isBotLogin(author)) return { skipped: `the source issue author ${author} is a bot` };
     return { assignee: author };
@@ -222,7 +267,7 @@ async function assignAndRequestReview(
             ? { status: 'not_assigned', reason: `GitHub did not assign ${assignee}, who may lack repository access`, assignee }
             : { status: 'assigned', reason: `assigned ${assignee}`, assignee };
     }
-    options.logger.info({ repository: `${owner}/${repo}`, prNumber, assignee, status: outcome.status, reason: outcome.reason }, 'Pull request auto-assignment decision');
+    options.logger.info({ repository: `${owner}/${repo}`, prNumber, opportunity: options.opportunity, assignee, status: outcome.status, reason: outcome.reason }, 'Pull request auto-assignment decision');
     // Nobody to request a review from: GitHub refuses reviewers it would not assign.
     if (outcome.status === 'not_assigned') return outcome;
 
@@ -239,49 +284,51 @@ async function assignAndRequestReview(
 }
 
 /**
- * Assigns a completed implementation's pull request to the repository default
+ * Assigns a pull request whose work completed to the repository default
  * assignee or the source issue's author, and optionally requests their review.
  * Disabled repositories return before any GitHub call. Never throws.
  */
 export async function autoAssignImplementationPullRequest(options: AutoAssignPullRequestOptions): Promise<AutoAssignmentOutcome> {
     const { owner, repo, prNumber, logger } = options;
-    const context = { repository: `${owner}/${repo}`, prNumber, issueNumber: options.issueNumber };
+    const opportunity = options.opportunity ?? 'implementation_done';
+    const context = { repository: `${owner}/${repo}`, prNumber, issueNumber: options.issueNumber ?? options.linkedIssue?.number, opportunity };
     let leaseKey: string | null = null;
 
     try {
         const policy = await (options.resolvePolicy ?? resolveRepositoryAutoAssignment)(owner, repo);
         if (!policy.enabled) {
             logger.info({ ...context, reason: 'disabled for the repository' }, 'Pull request auto-assignment skipped');
-            return { status: 'disabled', reason: 'disabled for the repository' };
+            return { status: 'disabled', reason: 'disabled for the repository', opportunity };
         }
         if (!options.taskId) {
             logger.info({ ...context, reason: 'no task to record the assignment on' }, 'Pull request auto-assignment skipped');
-            return { status: 'skipped', reason: 'no task to record the assignment on' };
-        }
-
-        const target = await resolveTarget(options, policy);
-        if ('skipped' in target) {
-            logger.info({ ...context, reason: target.skipped }, 'Pull request auto-assignment skipped');
-            return { status: 'skipped', reason: target.skipped };
+            return { status: 'skipped', reason: 'no task to record the assignment on', opportunity };
         }
 
         const pullRequest = await readPullRequest(options);
-        const head = pullRequest.headSha.slice(0, 12);
-        const completedKey = autoAssignmentClaimKey(owner, repo, prNumber, pullRequest.headSha);
-        const claimed = await claim(options, completedKey, autoAssignmentLeaseKey(owner, repo, prNumber, pullRequest.headSha));
+        const target = await resolveTarget(options, policy, pullRequest);
+        if ('skipped' in target) {
+            logger.info({ ...context, reason: target.skipped }, 'Pull request auto-assignment skipped');
+            return { status: 'skipped', reason: target.skipped, opportunity };
+        }
+
+        const headSha = options.headSha || pullRequest.headSha;
+        const head = headSha.slice(0, 12);
+        const completedKey = autoAssignmentClaimKey(owner, repo, prNumber, headSha);
+        const claimed = await claim(options, completedKey, autoAssignmentLeaseKey(owner, repo, prNumber, headSha));
         if (claimed.state === 'completed') {
             const reason = `already handled for head ${head}`;
             logger.info({ ...context, assignee: target.assignee, reason }, 'Pull request auto-assignment skipped: already assigned');
-            return { status: 'already_assigned', reason, assignee: target.assignee };
+            return { status: 'already_assigned', reason, assignee: target.assignee, opportunity };
         }
         if (claimed.state === 'in_progress') {
             const reason = `another attempt for head ${head} is in progress`;
             logger.info({ ...context, assignee: target.assignee, reason }, 'Pull request auto-assignment skipped');
-            return { status: 'skipped', reason, assignee: target.assignee };
+            return { status: 'skipped', reason, assignee: target.assignee, opportunity };
         }
-        if (claimed.state === 'acquired') leaseKey = autoAssignmentLeaseKey(owner, repo, prNumber, pullRequest.headSha);
+        if (claimed.state === 'acquired') leaseKey = autoAssignmentLeaseKey(owner, repo, prNumber, headSha);
 
-        const outcome = await assignAndRequestReview(options, policy, target.assignee, pullRequest);
+        const outcome: AutoAssignmentOutcome = { opportunity, ...await assignAndRequestReview({ ...options, opportunity }, policy, target.assignee, pullRequest) };
         // Only a finished attempt suppresses retries; after a rejection or a
         // failed review request a retry of the same head tries again.
         if (isComplete(outcome)) await markCompleted(options, completedKey);
@@ -291,12 +338,17 @@ export async function autoAssignImplementationPullRequest(options: AutoAssignPul
         const reason = (error as Error).message;
         logger.warn({ ...context, error: reason }, 'Pull request auto-assignment failed');
         if (leaseKey) await release(options, leaseKey);
-        return { status: 'failed', reason };
+        return { status: 'failed', reason, opportunity };
     }
 }
 
 /** The one-line timeline summary of an outcome. */
 export function describeAutoAssignmentOutcome(outcome: AutoAssignmentOutcome): string {
+    const summary = describeAssignment(outcome);
+    return outcome.opportunity === 'followup_done' ? `After follow-up: ${summary}` : summary;
+}
+
+function describeAssignment(outcome: AutoAssignmentOutcome): string {
     const review = !outcome.review ? ''
         : outcome.review.status === 'requested' ? ' and requested their review'
             : outcome.review.status === 'skipped' ? `; review not requested: ${outcome.review.reason}`
