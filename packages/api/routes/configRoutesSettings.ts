@@ -29,6 +29,11 @@ export function reviewContextBudgetSettingsResponse(settings: Record<string, unk
   };
 }
 
+/** Unreadable or non-boolean stored values read as disabled. */
+export async function followupRequiresAssignmentResponse(configStore: typeof configManager): Promise<boolean> {
+  return configManager.parseBooleanSetting(await configStore.getConfig<unknown>(configManager.FOLLOWUP_REQUIRES_ASSIGNMENT_CONFIG_KEY, false)) ?? false;
+}
+
 /**
  * Watchdog thresholds: the stored override (null when the environment default
  * applies), the environment default and the value in force for the next run.
