@@ -2,13 +2,10 @@ import type { Request, Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import {
   db,
-  getCategoriesForRepository,
   createCategory,
   updateCategory,
   deleteCategory,
   batchReorderCategories,
-  getTodosForRepository,
-  getTodo,
   createTodo,
   updateTodo,
   deleteTodo,
@@ -19,7 +16,9 @@ import {
   type RepoTodoRecord,
 } from '@propr/core';
 import crypto from 'crypto';
+import type { AttributedUser } from '@propr/shared';
 import { isDemoMode } from '../demoMode.js';
+import { creatorFrom, projectCreator, projectCreators, rememberCreator } from '../services/creatorProjection.js';
 
 interface CreateCategoryRequest {
   repository: string;
@@ -55,17 +54,21 @@ interface BatchReorderRequest {
   }>;
 }
 
-function toCategoryDomain(record: RepoTodoCategoryRecord): RepoTodoCategory {
+type CreatorProfiles = ReadonlyMap<string, AttributedUser>;
+const NO_CREATORS: CreatorProfiles = new Map();
+
+function toCategoryDomain(record: RepoTodoCategoryRecord, creators: CreatorProfiles = NO_CREATORS): RepoTodoCategory {
   return {
     categoryId: record.category_id,
     name: record.name,
     orderIndex: record.order_index,
     createdAt: record.created_at,
-    updatedAt: record.updated_at
+    updatedAt: record.updated_at,
+    createdBy: creatorFrom(creators, record.user_id),
   };
 }
 
-function toTodoDomain(record: RepoTodoRecord): RepoTodo {
+function toTodoDomain(record: RepoTodoRecord, creators: CreatorProfiles = NO_CREATORS): RepoTodo {
   return {
     todoId: record.todo_id,
     categoryId: record.category_id,
@@ -74,33 +77,50 @@ function toTodoDomain(record: RepoTodoRecord): RepoTodo {
     isCompleted: Boolean(record.is_completed),
     linkedDraftId: record.linked_draft_id,
     createdAt: record.created_at,
-    updatedAt: record.updated_at
+    updatedAt: record.updated_at,
+    createdBy: creatorFrom(creators, record.user_id),
   };
 }
 
-async function getDemoCategoriesForRepository(repository: string): Promise<RepoTodoCategory[]> {
-  const records = await db<RepoTodoCategoryRecord>('repo_todo_categories')
-    .where('repository', repository)
-    .orderBy('order_index', 'asc')
-    .orderBy('name', 'asc')
-    .orderBy('category_id', 'asc');
-  return records.map(toCategoryDomain);
+/**
+ * The core service's domain objects omit `user_id`, so the list reads select the records here
+ * and resolve every creator with one profile read. A null owner is the demo's unscoped read.
+ */
+async function getCategoryRecords(ownerId: string | null, repository: string): Promise<RepoTodoCategoryRecord[]> {
+  const query = db<RepoTodoCategoryRecord>('repo_todo_categories').where('repository', repository);
+  if (ownerId === null) return query.orderBy('order_index', 'asc').orderBy('name', 'asc').orderBy('category_id', 'asc');
+  return query.andWhere('user_id', ownerId).orderBy('order_index', 'asc');
 }
 
-async function getDemoTodosForRepository(repository: string): Promise<RepoTodo[]> {
-  const records = await db<RepoTodoRecord>('repo_todos')
-    .where('repository', repository)
-    .orderBy('order_index', 'asc')
-    .orderBy('category_id', 'asc')
-    .orderBy('todo_id', 'asc');
-  return records.map(toTodoDomain);
+async function getTodoRecords(ownerId: string | null, repository: string): Promise<RepoTodoRecord[]> {
+  const query = db<RepoTodoRecord>('repo_todos').where('repository', repository);
+  if (ownerId === null) return query.orderBy('order_index', 'asc').orderBy('category_id', 'asc').orderBy('todo_id', 'asc');
+  return query.andWhere('user_id', ownerId).orderBy('category_id', 'asc').orderBy('order_index', 'asc');
 }
 
-async function getDemoTodo(todoId: string): Promise<RepoTodo | null> {
-  const record = await db<RepoTodoRecord>('repo_todos')
-    .where('todo_id', todoId)
-    .first();
-  return record ? toTodoDomain(record) : null;
+async function getTodoRecord(ownerId: string | null, todoId: string): Promise<RepoTodoRecord | undefined> {
+  const query = db<RepoTodoRecord>('repo_todos').where('todo_id', todoId);
+  if (ownerId !== null) query.andWhere('user_id', ownerId);
+  return query.first();
+}
+
+async function categoriesWithCreators(records: RepoTodoCategoryRecord[]): Promise<RepoTodoCategory[]> {
+  const creators = await projectCreators(records.map(record => record.user_id));
+  return records.map(record => toCategoryDomain(record, creators));
+}
+
+async function todosWithCreators(records: RepoTodoRecord[]): Promise<RepoTodo[]> {
+  const creators = await projectCreators(records.map(record => record.user_id));
+  return records.map(record => toTodoDomain(record, creators));
+}
+
+/** Attaches a creator to a domain object the core service returned for an owner-scoped write. */
+async function withCreator<T extends RepoTodo | RepoTodoCategory>(item: T, ownerId: string): Promise<T> {
+  return { ...item, createdBy: await projectCreator(ownerId) };
+}
+
+function ownerScope(userId: string): string | null {
+  return isDemoMode() ? null : userId;
 }
 
 export function createRepoTodoRoutes() {
@@ -126,9 +146,7 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      const categories = isDemoMode()
-        ? await getDemoCategoriesForRepository(repository)
-        : await getCategoriesForRepository(req.user.id, repository);
+      const categories = await categoriesWithCreators(await getCategoryRecords(ownerScope(req.user.id), repository));
       res.json({ categories });
     } catch (error) {
       console.error('Error getting categories:', error);
@@ -168,7 +186,8 @@ export function createRepoTodoRoutes() {
         orderIndex,
       });
 
-      res.status(201).json(category);
+      await rememberCreator(req.user);
+      res.status(201).json(await withCreator(category, req.user.id));
     } catch (error) {
       console.error('Error creating category:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
@@ -201,7 +220,7 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      res.json(category);
+      res.json(await withCreator(category, req.user.id));
     } catch (error) {
       console.error('Error updating category:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
@@ -287,9 +306,7 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      const todos = isDemoMode()
-        ? await getDemoTodosForRepository(repository)
-        : await getTodosForRepository(req.user.id, repository);
+      const todos = await todosWithCreators(await getTodoRecords(ownerScope(req.user.id), repository));
       res.json({ todos });
     } catch (error) {
       console.error('Error getting todos:', error);
@@ -315,15 +332,14 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      const todo = isDemoMode()
-        ? await getDemoTodo(todoId)
-        : await getTodo(todoId, req.user.id);
+      const record = await getTodoRecord(ownerScope(req.user.id), todoId);
 
-      if (!todo) {
+      if (!record) {
         res.status(404).json({ error: 'Todo not found' });
         return;
       }
 
+      const [todo] = await todosWithCreators([record]);
       res.json(todo);
     } catch (error) {
       console.error('Error getting todo:', error);
@@ -364,7 +380,8 @@ export function createRepoTodoRoutes() {
         orderIndex,
       });
 
-      res.status(201).json(todo);
+      await rememberCreator(req.user);
+      res.status(201).json(await withCreator(todo, req.user.id));
     } catch (error) {
       console.error('Error creating todo:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
@@ -402,7 +419,7 @@ export function createRepoTodoRoutes() {
         return;
       }
 
-      res.json(todo);
+      res.json(await withCreator(todo, req.user.id));
     } catch (error) {
       console.error('Error updating todo:', error);
       res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
