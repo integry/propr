@@ -224,7 +224,7 @@ export async function handleEpicPRCreationOnMerge(
                 }, 'Updated Epic PR body with latest issues');
             }
         } else {
-            ({ epicPrNumber, planDetails } = await createEpicPR(octokit, owner, repo, repository, baseBranch, correlatedLogger));
+            ({ epicPrNumber, planDetails } = await createEpicPR(octokit, { owner, repo, repository, baseBranch }, correlatedLogger));
         }
     } catch (error) {
         const err = error as Error & { status?: number };
@@ -262,10 +262,7 @@ export async function handleEpicPRCreationOnMerge(
  */
 async function createEpicPR(
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
-    owner: string,
-    repo: string,
-    repository: string,
-    baseBranch: string,
+    { owner, repo, repository, baseBranch }: { owner: string; repo: string; repository: string; baseBranch: string },
     correlatedLogger: ReturnType<typeof logger.withCorrelation>
 ): Promise<{ epicPrNumber: number; planDetails: PlanDetails | null }> {
     // Get the default branch to use as base
