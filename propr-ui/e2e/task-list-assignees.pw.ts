@@ -233,6 +233,17 @@ for (const width of [768, 1440, 1920]) {
       });
     });
     expect(fits).toBe(true);
+    // Where the toolbar is narrow, the repository picker collapses to an icon button of its own
+    // rather than a sliver whose overflowing button reads as a second border around the assignee filter.
+    const pickers = await list.evaluate(node => {
+      const repo = node.querySelector('.task-repo-filter')!;
+      const box = (element: Element) => element.getBoundingClientRect();
+      const [wrapper, trigger] = [box(repo), box(repo.querySelector('button')!)];
+      return { width: Math.round(wrapper.width), overflow: trigger.right > wrapper.right + 1, gap: box(node.querySelector('.task-assignee-filter')!).left - wrapper.right };
+    });
+    if (width === 1440) expect(pickers.width).toBe(40);
+    expect(pickers.overflow).toBe(false);
+    expect(pickers.gap).toBeGreaterThanOrEqual(7);
     expect(await pageFits(page)).toBe(true);
     await capture(page, `tasks-assignees-split-${width}`);
   });

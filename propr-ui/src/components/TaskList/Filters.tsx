@@ -61,7 +61,7 @@ const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | '
     variant="default"
     labelLayout="stacked"
     hideCountOnMobile
-    className="flex-1 min-w-0 sm:flex-initial sm:w-[320px]"
+    className="task-repo-filter flex-1 min-w-0 sm:flex-initial sm:w-[320px]"
   />
   );
 };
@@ -75,7 +75,8 @@ const SELECT_CLASSES = 'py-2 border border-gray-300 rounded-md text-sm bg-white 
  * the options do not hold (a login typed into the URL) still gets its own
  * option, so the select names what is applied instead of falling back to
  * `All assignees`. In a toolbar too narrow for it, the select collapses to an
- * icon (see `task-queue.css`).
+ * icon, beside the repository picker collapsed the same way (see
+ * `task-queue.css`).
  */
 const AssigneeFilter: React.FC<Pick<FiltersProps, 'assigneeFilter' | 'setAssigneeFilter' | 'assigneeOptions' | 'canFilterToMe'> & {
   className?: string;
@@ -169,7 +170,7 @@ export const Filters: React.FC<FiltersProps> = ({
                 onChange={setSearchQuery}
                 onClear={() => setSearchQuery('')}
                 label="Search tasks"
-                className="hidden sm:block min-w-[13rem] flex-1 max-w-xs"
+                className="task-search hidden sm:block min-w-[13rem] flex-1 max-w-xs"
               />
             )}
             <div className="flex items-center gap-2 min-w-0 max-sm:flex-1">
