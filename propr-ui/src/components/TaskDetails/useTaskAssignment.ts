@@ -91,8 +91,13 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
     getTaskAssignees(taskId)
       .then(response => {
         if (cancelled) return;
+        // A malformed answer is a failed read; it hides the control rather than breaking the page.
+        if (!Array.isArray(response?.assignees)) {
+          setError('Unexpected assignees response');
+          return;
+        }
         setAssignees(response.assignees);
-        setSubject(response.subject);
+        setSubject(response.subject ?? null);
       })
       .catch(err => {
         if (cancelled) return;
@@ -134,8 +139,8 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
     try {
       const response = await setTaskAssignees(taskId, logins, 'replace');
       if (!isCurrent()) return true;
-      setAssignees(response.assignees);
-      setSubject(response.subject);
+      if (Array.isArray(response?.assignees)) setAssignees(response.assignees);
+      if (response?.subject) setSubject(response.subject);
       return true;
     } catch (err) {
       if (!isCurrent()) return false;
