@@ -140,6 +140,8 @@ await mock.module('@propr/core', {
         extractLlmFromLabels: () => null,
         resolveModelAlias: (model: string) => model,
         hasValidTriggerLabel: () => false,
+        createFollowupGateEvaluator: async () => ({ decide: async () => ({ allowed: true, reason: 'gate_disabled' }) }),
+        refuseGatedComment: async () => undefined,
         areAllChecksPassing: mockAreAllChecksPassing,
         getCheckRunsStatusForRepo: mockGetCheckRunsStatusForRepo,
         getCurrentPRHead: mockGetCurrentPRHead,

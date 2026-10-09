@@ -243,6 +243,41 @@ export async function syncTaskAssignees(taskId: string, options: TaskAssignmentO
     }
 }
 
+async function readTasksOnSubject(subject: TaskSubject): Promise<string[]> {
+    const rows: TaskSubjectSource[] = await db('tasks')
+        .select('task_id', 'repository', 'issue_number', 'pr_number', 'task_type')
+        .whereRaw('LOWER(repository) = ?', [`${subject.owner}/${subject.repo}`.toLowerCase()])
+        .andWhere(query => query.where('pr_number', subject.number).orWhere('issue_number', subject.number));
+    return rows
+        .filter(row => {
+            const resolved = resolveTaskSubject(row);
+            return resolved?.number === subject.number && resolved.kind === subject.kind;
+        })
+        .map(row => String(row.task_id));
+}
+
+/**
+ * Reads the live assignees of a GitHub issue or pull request and, as a side
+ * effect, replaces the stored set of every task working on it. The GitHub read
+ * fails loud (callers that gate on assignment must not guess); the projection
+ * refresh fails soft, since the live answer is already in hand.
+ */
+export async function syncSubjectAssignees(subject: TaskSubject, options: TaskAssignmentOptions = {}): Promise<AttributedUser[]> {
+    const now = options.now?.() ?? new Date();
+    const github = options.github ?? await defaultClient();
+    const observed = await fetchAssignees(github, subject);
+    try {
+        const taskIds = await readTasksOnSubject(subject);
+        if (taskIds.length > 0) {
+            await rememberGitHubUserProfiles(observed, now);
+            for (const taskId of taskIds) await replaceStoredAssignees(taskId, observed, now);
+        }
+    } catch (error) {
+        logger.warn({ error: (error as Error).message, repository: `${subject.owner}/${subject.repo}`, number: subject.number }, 'Failed to refresh stored task assignees after a live read');
+    }
+    return sortUsers(observed.map(assignee => ({ id: assignee.id, login: assignee.login, displayName: null, avatarUrl: assignee.avatar_url ?? null })));
+}
+
 function githubWriteError(error: unknown, subject: TaskSubject): TaskAssignmentError {
     const status = (error as { status?: unknown } | null)?.status;
     return new TaskAssignmentError(

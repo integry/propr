@@ -5,6 +5,7 @@ import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type Unproc
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
 import { extractLlmFromLabels, resolveModelAlias } from '@propr/core';
 import { hasValidTriggerLabel } from '@propr/core';
+import { createFollowupGateEvaluator, refuseGatedComment, type FollowupGateEvaluator } from '@propr/core';
 import { getCheckRunsStatusForRepo, getCurrentPRHead, triggerUltrafixCheckRunHook } from '@propr/core';
 import type { Redis } from 'ioredis';
 import { hasUltrafixResumeCandidate } from '../jobs/ultrafixResumeClaim.js';
@@ -251,6 +252,35 @@ async function prHasProcessingLabel(pr: PullRequest): Promise<boolean> {
     return hasValidTriggerLabel(pr.labels || []);
 }
 
+/**
+ * The follow-up assignment gate for one pull request, shared by every comment
+ * on it: the setting and the live assignees are read at most once per poll,
+ * and each refused author is reported once.
+ */
+function createPollingGate(pr: PullRequest, commentContext: CommentContext, redisClient: Redis) {
+    const { owner, repo, correlationId } = commentContext;
+    const pullRequest = { repoOwner: owner, repoName: repo, pullRequestNumber: pr.number };
+    let evaluator: Promise<FollowupGateEvaluator> | null = null;
+    const refused = new Set<string>();
+
+    return async function mayFollowUp(comment: PRComment): Promise<boolean> {
+        evaluator ??= createFollowupGateEvaluator(pullRequest);
+        const authorLogin = comment.user.login;
+        // Bot comments never reach here (the author filter drops them), so
+        // polling has no system-authored comments to exempt.
+        const decision = await (await evaluator).decide({ authorId: comment.user.id, authorLogin, systemAuthored: false });
+        if (decision.allowed) return true;
+        if (!refused.has(authorLogin.toLowerCase())) {
+            refused.add(authorLogin.toLowerCase());
+            await refuseGatedComment(
+                { ...pullRequest, authorLogin, commentId: comment.id, decision },
+                { redisClient, correlatedLogger: logger.withCorrelation(correlationId) },
+            );
+        }
+        return false;
+    };
+}
+
 async function collectUnprocessedComments(
     commentsByTime: PRComment[],
     pr: PullRequest,
@@ -267,6 +297,7 @@ async function collectUnprocessedComments(
 
     const hasProcessingLabel = await prHasProcessingLabel(pr);
     let selectedLlm: string | null = extractModelFromPRLabels(pr, MODEL_LABEL_PATTERN, correlationId);
+    const mayFollowUp = createPollingGate(pr, commentContext, redisClient);
 
     for (const comment of commentsByTime) {
         const commentAuthor = comment.user.login;
@@ -307,6 +338,8 @@ async function collectUnprocessedComments(
             }, 'PR comment already processed by bot, skipping');
             continue;
         }
+
+        if (!await mayFollowUp(comment)) continue;
 
         const llm = extractModelFromComment(comment.body || '', PR_FOLLOWUP_TRIGGER_KEYWORDS);
         if (llm) selectedLlm = llm;
