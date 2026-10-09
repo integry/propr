@@ -17,6 +17,13 @@ export const SETTLED_DAY_FILL = '#CBD5E1';
 /** The buckets are UTC days, so "today" has to be read in UTC too. */
 export const utcToday = (): string => new Date().toISOString().slice(0, 10);
 
+/** The hour still accumulating, keyed as the API keys hour buckets: the ISO instant at its top. */
+export const utcThisHour = (): string => {
+  const hour = new Date();
+  hour.setUTCMinutes(0, 0, 0);
+  return hour.toISOString();
+};
+
 /** The marker colour for a day, or null for a settled day that carries none. */
 export const dailyPointFill = (date: string, today: string): string | null =>
   date === today ? CURRENT_DAY_FILL : null;

@@ -288,6 +288,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`GET /api/stats/dashboard`** reports its daily series as `dailyTasks`
+  (tasks created per UTC day, the series the Analytics activity chart plots)
+  and no longer reports `dailyCompleted` (completions per day). The bundled
+  dashboard reads `dailyTasks`, and still draws `dailyCompleted` from an older
+  server; a script that read `dailyCompleted` should read `dailyTasks`.
 - **Repository to-dos**: launching a task from a to-do (**Run task**, MCP
   `create_task` with `todoIds`, or a submission retry) now marks the to-do
   completed once its GitHub issue exists and records that issue

@@ -218,9 +218,12 @@ function mergeOpenCodeUsageByMax(target: TokenUsage, usage: NormalizedOpenCodeUs
     setTokenUsageField(target, 'cache_read_input_tokens', Math.max(target.cache_read_input_tokens ?? 0, usage.cache_read_input_tokens ?? 0));
 }
 
+/** The counted fields of a usage; the completeness marker is not a count. */
+type TokenCountKey = Exclude<keyof TokenUsage, 'cache_usage_incomplete'>;
+
 function isCumulativeOpenCodeUsageSnapshot(current: TokenUsage, previous?: TokenUsage): boolean {
     if (!previous || !hasOpenCodeTokenUsage(previous)) return false;
-    const fields: Array<keyof TokenUsage> = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'];
+    const fields: TokenCountKey[] = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'];
     let hasIncrease = false;
     for (const field of fields) {
         const currentValue = current[field] ?? 0;
@@ -238,7 +241,7 @@ function addOpenCodeUsage(target: TokenUsage, usage: TokenUsage): void {
     setTokenUsageField(target, 'cache_read_input_tokens', (target.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0));
 }
 
-function setTokenUsageField(target: TokenUsage, key: keyof TokenUsage, value: number): void {
+function setTokenUsageField(target: TokenUsage, key: TokenCountKey, value: number): void {
     if (value > 0) {
         target[key] = value;
     } else {

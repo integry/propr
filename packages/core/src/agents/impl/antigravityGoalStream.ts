@@ -41,13 +41,21 @@ interface StreamEnvelope {
  * the cost of that step's model call, so the step sum is this invocation's cost.
  */
 export function sumAntigravityStepUsage(stepUsage: Iterable<StreamUsage>): TokenUsage {
-    const total = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, reasoning_output_tokens: 0 };
+    const total: TokenUsage = { input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 };
+    let cacheIncomplete = false;
     for (const usage of stepUsage) {
-        total.input_tokens += usage.input_tokens ?? 0;
-        total.output_tokens += usage.output_tokens ?? 0;
-        total.cache_read_input_tokens += usage.cache_read_tokens ?? 0;
-        total.reasoning_output_tokens += usage.thinking_tokens ?? 0;
+        total.input_tokens! += usage.input_tokens ?? 0;
+        total.output_tokens! += usage.output_tokens ?? 0;
+        // A step that reports no cache count leaves the breakdown unknown rather than adding a zero,
+        // and if that step carried a prompt the whole invocation's breakdown is incomplete.
+        if (usage.cache_read_tokens !== undefined) total.cache_read_input_tokens = (total.cache_read_input_tokens ?? 0) + usage.cache_read_tokens;
+        else if ((usage.input_tokens ?? 0) > 0) cacheIncomplete = true;
+        total.reasoning_output_tokens! += usage.thinking_tokens ?? 0;
     }
+    // The cached tokens the other steps counted keep their discount: the subtotal stays separate
+    // from input_tokens and is marked incomplete, so pricing bills it as cached while the hit rate
+    // never reads it as a measurement of the whole prompt.
+    if (cacheIncomplete && total.cache_read_input_tokens !== undefined) total.cache_usage_incomplete = true;
     return total;
 }
 

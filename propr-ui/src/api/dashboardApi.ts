@@ -137,6 +137,8 @@ export interface DashboardOutcomesResponse {
 export type DashboardStatsPeriod = '7d' | '30d';
 
 export interface DashboardStatsTotals {
+  /** Tasks created in the period: the Analytics page's "Total tasks" for the same period. */
+  tasks?: number | null;
   completed: number | null;
   /** Percentage over finished work only; null when nothing finished. */
   successRate: number | null;
@@ -147,7 +149,11 @@ export interface DashboardStatsTotals {
 export interface DashboardStatsResponse extends DashboardStatsTotals {
   period: DashboardStatsPeriod;
   repository: RepositoryFilter;
-  dailyCompleted: Array<{ date: string; count: number }>;
+  failed?: number | null;
+  /** Tasks created per UTC day, the series the Analytics activity chart plots. */
+  dailyTasks?: Array<{ date: string; count: number }>;
+  /** Daily completions from servers that predate the shared aggregation. */
+  dailyCompleted?: Array<{ date: string; count: number }>;
   previous: DashboardStatsTotals;
 }
 

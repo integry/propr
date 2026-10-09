@@ -10,14 +10,14 @@ The dashboard reads its own endpoints, each of which accepts `repository=all` or
 - `GET /api/dashboard/attention` — blockers and pending decisions, oldest first, derived from task and plan-issue state and never from notification read or dismissal state
 - `GET /api/dashboard/active` — running work with its lifecycle phase and latest reported progress line, plus a queue summary with the reason work is waiting when the backend knows one
 - `GET /api/dashboard/outcomes` — recent terminal results, including merges and closes recorded after the run finished
-- `GET /api/stats/dashboard?period=7d|30d` — completed, success rate, recorded spend and daily completions, with a previous-period comparison
+- `GET /api/stats/dashboard?period=7d|30d` — tasks, success rate, recorded spend and daily task counts, with a previous-period comparison. It reads the same aggregation over the same window as the Analytics page for that period, so the dashboard's Historical stats and `/analytics?period=7d` always agree. Goal tasks are left out of both, as the Completed feed and the task pages leave them out: a goal orchestrates the tasks that deliver its work rather than delivering any itself. Day periods (`7d`, `30d`, `90d`, `1y`) are whole UTC days ending today — `7d` is today and the six days before it, seven daily bars — while `24h` is a rolling 24 hours. The `previous` comparison covers the same number of whole days ending the moment the current period starts, counted by task creation like the current figures, so a current period whose last day is still in progress is compared against a complete one and its figures can trail the previous period's until the day ends. The previous period ends exactly where the current one starts: a task created at the current period's first instant belongs to the current period only. The daily series is `dailyTasks`; the `dailyCompleted` series (completions per day) that earlier releases reported is gone
 
 The analytics page (`/analytics`) and the rest of the UI continue to read the aggregate endpoints:
 
 - `GET /api/queue/stats` — waiting, active, completed, failed, and delayed job counts from the BullMQ queue
 - `GET /api/stats/tasks` — daily task counts (last 30 days), status distribution, and average processing time from the SQLite task history
 - `GET /api/stats/repositories` — per-repository totals, completed, failed, and in-progress counts with success rates
-- `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens (with the input and output split), total cost, and task counts per model; each `model_usage` entry also carries `mean_final_score` and `n_scored` from [review scores](#review-scores)
+- `GET /api/stats/overview` — completed and planned tasks, average PR iterations, total follow-ups, total tokens (with the input and output split and, as `usage.cache`, the prompt cache hit rate and estimated savings), total cost, and runs and tasks per model; each `model_usage` entry also carries `mean_final_score` and `n_scored` from [review scores](#review-scores). The older `usage.models` map is a different figure under a similar name — distinct tasks with at least one execution per model, not runs — kept for clients that predate `model_usage`, which the Models table labels Tasks when it has to fall back to it. It also reports run volume (`runs`), delivery (`delivery`) and autonomy (`autonomy`) — see [Delivery metrics](#delivery-metrics). The delivery, autonomy and review-quality aggregations read PR and task history, so the server reuses them between the page's refreshes: for up to ten seconds for a day period, and for up to a minute for `period=all` (or no period), which reads every PR's history
 - `GET /api/stats/review-scores` — review quality per implementer model (see [Review scores](#review-scores))
 - `GET /api/status` — daemon heartbeat, active worker count, Redis connectivity, GitHub App configuration, per-agent health, and indexing state
 
@@ -25,10 +25,27 @@ The dashboard refreshes these on task updates over the WebSocket connection, so 
 
 ![Dashboard showing current activity, attention items and completed work](/img/screenshots/0.9.0/dashboard.png)
 
+### Delivery metrics
+
+The Analytics page reports task volume (the deliverables) and run volume (the compute) separately, in a delivery band under the totals:
+
+| Figure | How it is computed |
+|---|---|
+| Runs per task | Agent executions started in the period (the Models table's runs, summed, its Unknown model row included) ÷ tasks created in the period (the totals band's Total tasks): the iteration multiplier. Tasks that recorded no run still count, so tasks × runs per task equals the runs shown |
+| First-time pass | Of pull requests opened by tasks in the period and merged, those that needed no fix before the merge: one implementation task for the issue (however many runs it recorded; a goal task naming the issue is not one), no follow-up fix task on the PR — an Ultrafix fix step included, scored or not; a review is not a fix, and neither is a merge-conflict resolution, which replays the same change onto a moved base — and no Ultrafix cycle after the first. Tasks created and cycles scored after the recorded merge are left out, so later work on the issue never changes a merged PR's verdict |
+| Time to merge | Mean (and median) wall-clock time from the issue's first implementation task to the merge |
+| Runs per merged PR | Mean agent executions across a merged PR's implementation attempts (every task on its issue, an attempt that opened no PR included) and follow-up tasks, started at or before the merge |
+| Autonomy | Of tasks created in the period that finished, those that never failed (a failure counts even when a retry later completed the task) and never entered an attention state; the rest required an operator. Cancelled work is left out, and so are goal tasks, as the totals band leaves them out, so the population is never larger than Total tasks |
+| Cache hit rate | Prompt tokens served from the prompt cache ÷ all prompt tokens, over runs that reported a cache breakdown. The denominator is the `input_tokens` each run recorded, which already holds the whole prompt — uncached input, cache writes and cache reads — beside the separate cache counts, so a cached token is counted once. Savings price the cached reads at each model's official prompt price less its cache-read price; models without an official price are left out |
+
+A figure with nothing behind it is shown as "—", never as zero.
+
+The Activity chart plots the same two volumes day by day on one scale: each day has a pair of bars of equal width side by side, its runs in light slate and its tasks in dark slate (teal for today's tasks). A runs bar that towers over its tasks bar is an agent iterating on the same work; one level with it is work landing in a run or two. The pane heading carries the legend with each series' total for the period, and hovering a day shows its runs, tasks and runs per task in a card centred over that day, with a caret pointing at its taller bar. `GET /api/stats/tasks` reports a `runs` count beside each day's task `count`. For all time, the days start at the earliest task or run, so a planning run made before the first task is still drawn.
+
 ### Breakdowns the product provides
 
 - **Per repository** — the Repository Breakdown panel on `/analytics` (and `GET /api/stats/repositories`) splits totals, completed, failed, in-progress, and success rate per repository.
-- **Per model** — the Top Models panel on `/analytics` counts tasks per model; the aggregated metrics API adds requests, success rate, cost, turns, and execution time per model.
+- **Per model** — the Models panel on `/analytics` counts runs (agent executions) per model, not tasks: one task usually takes several runs, often on different models, so a task is never credited to every model that touched it. Runs that recorded no model share one **Unknown model** row (`model: null` in `model_usage`), listed last, so the panel's runs always sum to the delivery band's total and the Activity chart. The aggregated metrics API adds requests, success rate, cost, turns, and execution time per model.
 - **Per call** — the LLM Log page filters by execution type, model, status, and work type, and records the agent alias for every call.
 
 Three overview numbers approximate outcome quality: success rate (completed tasks over total), average PR iterations (tasks per issue), and total follow-ups. Rising iterations and follow-ups mean humans are spending more effort steering each PR.
@@ -117,17 +134,19 @@ The pull request is the unit. Each per-model entry reports:
 | Field | How it is computed | Denominator `n` |
 |---|---|---|
 | `prs_scored` | Pull requests with at least one score in the period | — |
-| `first_score.mean`, `first_score.median` | The earliest score of each PR | PRs scored |
+| `first_score.mean`, `first_score.median` | The earliest score in each PR's whole history, including scores before the period; for a merged PR, its earliest at or before the merge. The same starting point `score_delta` runs from, so the final score less the delta is always this figure | PRs with an initial score (a merged PR with no score at or before its merge is unknown and excluded, as it is from the final score) |
 | `final_score.mean` | The last score recorded at or before the merge, including scores before the period; for a PR that was not merged, its latest score | PRs with a final score (a merged PR with no score at or before its merge is unknown and excluded) |
 | `cycles_to_goal.mean` | The Ultrafix cycle of the first review job that reached the goal (`goal_reached`); a clean reviewer does not pass a cycle another reviewer blocked | PRs that reached the goal; `attempted` counts PRs with an Ultrafix goal |
 | `merge_rate.value` | Merged ÷ (merged + closed). Open PRs have no outcome yet | PRs merged or closed |
 | `cost_per_merged_pr.usd` | Mean recorded cost per merged PR (see below) | Merged PRs with recorded cost |
+| `score_delta.mean` | Mean of each PR's final score minus its initial score (`first_score`): whether follow-up work improved the code. Both ends come from the PR's whole score history, not only the period, and a merged PR's from its scores at or before the merge, so the change always runs forward in time | PRs with a final score |
+| `runs_to_merge.mean` | Mean agent executions across a merged PR's implementation attempts and follow-up tasks, started at or before the merge, attached as the delivery band's Runs per merged PR attaches them: an earlier attempt at the same issue that opened no PR counts, a goal task does not | Merged PRs with recorded runs |
 
-Every figure carries its own `n`. A figure with nothing behind it — no merged PRs, no recorded cost, no Ultrafix goal — is `null`, never `0`. PRs whose implementer is unknown are grouped under `implementer_model: null`.
+Every figure carries its own `n`. A figure with nothing behind it — no merged PRs, no recorded cost, no Ultrafix goal — is `null`, never `0`. PRs whose implementer is unknown are grouped under `implementer_model: null`, which the Analytics page labels **Manual / Untracked**: the PR was written by hand, or by an agent run ProPR did not record.
 
-**Cost per merged PR** sums `llm_executions.cost_usd` over every task attached to the pull request: the implementation task and every task that acted on the PR afterwards (follow-ups, `/fix`, Ultrafix fixes and reviews, merge-conflict resolution). The cost is the PR's whole recorded spend, not only the spend inside the period. A merged PR none of whose executions recorded a cost is left out of the mean and of `n`, rather than counted as free.
+**Cost per merged PR** sums `llm_executions.cost_usd` over every task attached to the pull request: its implementation attempts (the task that opened it and any earlier attempt at the same issue) and every task that acted on the PR afterwards (follow-ups, `/fix`, Ultrafix fixes and reviews, merge-conflict resolution). The cost is the PR's whole recorded spend, not only the spend inside the period. A merged PR none of whose executions recorded a cost is left out of the mean and of `n`, rather than counted as free.
 
-The Analytics page shows the summary as **Review quality by model**, using the page's `?period=` timeframe. Task details on a PR show its score history as a small sparkline and list. From the CLI, `propr stats review-scores [--period 30d] [--repository owner/repo] [--json]` prints the same summary, and the MCP `get_pull_request` tool includes the PR's `scoreHistory`.
+The Analytics page shows the summary as **Agent efficacy by model** — evaluated PRs, initial score, final score, score delta, average runs to merge and merge rate — using the page's `?period=` timeframe. Each cell shows one figure; the PRs behind it are in the cell's tooltip. Task details on a PR show its score history as a small sparkline and list. From the CLI, `propr stats review-scores [--period 30d] [--repository owner/repo] [--json]` prints the same summary, and the MCP `get_pull_request` tool includes the PR's `scoreHistory`.
 
 ## Cost Tracking
 

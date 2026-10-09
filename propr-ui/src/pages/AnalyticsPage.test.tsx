@@ -113,7 +113,7 @@ describe('AnalyticsPage', () => {
     const secondary = screen.getByTestId('analytics-secondary-pane');
     expect(within(primary).getByRole('heading', { name: /Activity · Last 30 days/ })).toBeInTheDocument();
     expect(within(primary).getByRole('heading', { name: /Repository performance/ })).toBeInTheDocument();
-    expect(within(primary).getByRole('heading', { name: /Review quality by model/ })).toBeInTheDocument();
+    expect(within(primary).getByRole('heading', { name: /Agent efficacy by model/ })).toBeInTheDocument();
     expect(within(secondary).getByRole('heading', { name: 'Models' })).toBeInTheDocument();
     expect(within(secondary).getByRole('heading', { name: 'Task status' })).toBeInTheDocument();
     expect(within(secondary).getByRole('heading', { name: 'Token consumption' })).toBeInTheDocument();
@@ -301,7 +301,92 @@ describe('AnalyticsPage', () => {
     expect(screen.queryByText('one-day')).not.toBeInTheDocument();
     expect(screen.getByText('seven-days')).toBeInTheDocument();
   });
-  it('shows review quality by implementer model with each figure\'s denominator and unknowns as a dash', async () => {
+  it('separates run volume from task volume and reports delivery, caching and autonomy', async () => {
+    vi.mocked(getTaskStats).mockResolvedValue(taskStats);
+    vi.mocked(getRepositoryStats).mockResolvedValue({ repositories: [] });
+    vi.mocked(getStatsOverview).mockResolvedValue({
+      ...overview,
+      usage: {
+        ...overview.usage,
+        // A run of 2k uncached, 8k cache-write and 150k cache-read tokens, as the
+        // server reports it: 160k prompt tokens, of which 150k came from the cache.
+        cache: { input_tokens: 160_000, cache_read_tokens: 150_000, hit_rate: 0.9375, saved_usd: 0.57 },
+      },
+      model_usage: [
+        { model: 'claude-opus-5-5', runs: 552, tasks: 100, tokens: 3_100_000, cost_usd: 9.4 },
+        { model: 'gpt-5.6', runs: 389, tasks: 90, tokens: 1_100_000, cost_usd: 3.02 },
+        // Runs that recorded no model are still runs.
+        { model: null, runs: 12, tasks: 4, tokens: 0, cost_usd: 0 },
+      ],
+      runs: { total: 953, tasks: 392, per_task: 2.43 },
+      delivery: {
+        prs_opened: 50, prs_merged: 42, prs_closed: 3,
+        first_time_pass: { rate: 0.7143, passed: 30, n: 42 },
+        time_to_merge_minutes: { mean: 14 + 20 / 60, median: 11.5, n: 42 },
+        runs_per_merged_pr: { mean: 2.4, n: 42 },
+      },
+      autonomy: { rate: 0.88, autonomous: 88, operator: 12, n: 100 },
+    });
+
+    renderPage();
+
+    // A model is credited with the runs it executed, never with whole tasks.
+    const models = await screen.findByTestId('model-breakdown-table');
+    expect(within(models).getByRole('columnheader', { name: 'Runs' })).toBeInTheDocument();
+    expect(within(models).queryByRole('columnheader', { name: 'Tasks' })).not.toBeInTheDocument();
+    expect(within(models).getAllByTestId('model-run-count').map(cell => cell.textContent)).toEqual(['552', '389', '12']);
+    // The unknown-model row keeps the column summing to the band's total, and opens no log.
+    const unknown = within(models).getByTestId('model-unknown-row');
+    expect(unknown).toHaveTextContent('Unknown model');
+    expect(within(unknown).queryByRole('link')).not.toBeInTheDocument();
+
+    // The band is named through a group around its list, never on the bare list.
+    const deliveryGroup = screen.getByRole('group', { name: 'Delivery' });
+    const delivery = within(deliveryGroup).getByTestId('analytics-delivery-strip');
+    expect(delivery).not.toHaveAttribute('aria-label');
+    expect(within(delivery).getByTestId('metric-runs-per-task')).toHaveTextContent('2.4×');
+    expect(within(delivery).getByTestId('metric-runs-per-task-detail')).toHaveTextContent('953 runs · 392 tasks');
+    expect(within(delivery).getByTestId('metric-first-time-pass')).toHaveTextContent('71%');
+    expect(within(delivery).getByTestId('metric-first-time-pass-detail')).toHaveTextContent('30 of 42 merged PRs');
+    expect(within(delivery).getByTestId('metric-time-to-merge')).toHaveTextContent('14m 20s');
+    expect(within(delivery).getByTestId('metric-time-to-merge-detail')).toHaveTextContent('median 11m 30s');
+    expect(within(delivery).getByTestId('metric-autonomy')).toHaveTextContent('88%');
+    expect(within(delivery).getByTestId('metric-autonomy-detail')).toHaveTextContent('12% required operator');
+
+    const tokens = screen.getByTestId('token-consumption');
+    // 150k of 160k, not 150k of the three counts added together.
+    expect(within(tokens).getByTestId('token-row-cache-hit-rate')).toHaveTextContent('Cache hit rate93.8%');
+    expect(within(tokens).getByTestId('token-row-cache-savings')).toHaveTextContent('Saved by caching~$0.57');
+  });
+
+  it('reads unknown delivery figures as a dash, never as zero', async () => {
+    vi.mocked(getTaskStats).mockResolvedValue(taskStats);
+    vi.mocked(getRepositoryStats).mockResolvedValue({ repositories: [] });
+    vi.mocked(getStatsOverview).mockResolvedValue({
+      ...overview,
+      runs: { total: 0, tasks: 0, per_task: null },
+      delivery: {
+        prs_opened: 0, prs_merged: 0, prs_closed: 0,
+        first_time_pass: { rate: null, passed: 0, n: 0 },
+        time_to_merge_minutes: { mean: null, median: null, n: 0 },
+        runs_per_merged_pr: { mean: null, n: 0 },
+      },
+      autonomy: { rate: null, autonomous: 0, operator: 0, n: 0 },
+    });
+
+    renderPage();
+
+    const delivery = await screen.findByTestId('analytics-delivery-strip');
+    for (const id of ['metric-runs-per-task', 'metric-first-time-pass', 'metric-time-to-merge', 'metric-autonomy']) {
+      await waitFor(() => expect(within(delivery).getByTestId(id)).toHaveTextContent('—'));
+      // An unknown figure carries no detail line: never "—" over "0 runs · 0 tasks".
+      expect(within(delivery).queryByTestId(`${id}-detail`)).not.toBeInTheDocument();
+    }
+    // A server that reports no cache breakdown shows no cache rows at all.
+    expect(screen.queryByTestId('token-row-cache-hit-rate')).not.toBeInTheDocument();
+  });
+
+  it('shows the agent efficacy matrix without denominators in the cells', async () => {
     vi.mocked(getTaskStats).mockResolvedValue(taskStats);
     vi.mocked(getRepositoryStats).mockResolvedValue({ repositories: [] });
     vi.mocked(getReviewScoreSummary).mockResolvedValue({
@@ -312,12 +397,21 @@ describe('AnalyticsPage', () => {
           first_score: { mean: 5.33, median: 5, n: 3 }, final_score: { mean: 8.25, n: 3 },
           cycles_to_goal: { mean: 2, n: 1, attempted: 2 }, merge_rate: { value: 0.5, merged: 1, n: 2 },
           cost_per_merged_pr: { usd: 3, n: 1 },
+          score_delta: { mean: 2.64, n: 3 }, runs_to_merge: { mean: 2.4, n: 1 },
+        },
+        {
+          implementer_model: 'gpt-5.6', implementer_agent: 'codex', prs_scored: 1,
+          first_score: { mean: 8, median: 8, n: 1 }, final_score: { mean: 6, n: 1 },
+          cycles_to_goal: { mean: null, n: 0, attempted: 0 }, merge_rate: { value: null, merged: 0, n: 0 },
+          cost_per_merged_pr: { usd: null, n: 0 },
+          score_delta: { mean: -2, n: 1 }, runs_to_merge: { mean: null, n: 0 },
         },
         {
           implementer_model: null, implementer_agent: null, prs_scored: 1,
           first_score: { mean: 3, median: 3, n: 1 }, final_score: { mean: 3, n: 1 },
           cycles_to_goal: { mean: null, n: 0, attempted: 0 }, merge_rate: { value: null, merged: 0, n: 0 },
           cost_per_merged_pr: { usd: null, n: 0 },
+          score_delta: { mean: 0, n: 1 },
         },
       ],
     });
@@ -325,15 +419,27 @@ describe('AnalyticsPage', () => {
     renderPage();
 
     const table = await screen.findByTestId('review-quality-table');
+    expect(within(table).getAllByRole('columnheader').map(header => header.textContent)).toEqual([
+      'Model', 'Evaluated PRs', 'Initial score', 'Final score', 'Score delta', 'Avg runs to merge', 'Merge rate',
+    ]);
     const rows = within(table).getAllByTestId('review-quality-row');
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows[0]).toHaveTextContent('Claude Opus 5.5');
-    expect(rows[0]).toHaveTextContent('5.3 (5.0)');
-    expect(within(rows[0]).getByTestId('review-quality-final')).toHaveTextContent('8.3n=3');
-    expect(rows[0]).toHaveTextContent('50%');
-    expect(rows[0]).toHaveTextContent('$3.00');
-    expect(rows[1]).toHaveTextContent('Unknown model');
-    expect(within(rows[1]).getAllByText('—')).toHaveLength(3);
+    // One figure per cell: no bracketed median, no `n=` beneath it.
+    expect(rows[0].textContent).toBe('Claude Opus 5.535.38.3+2.6 ▲2.450%');
+    expect(table.textContent).not.toMatch(/n=/);
+    // The denominator is still one hover away.
+    expect(within(rows[0]).getByTestId('review-quality-final')).toHaveAttribute('title', 'Mean over 3 PRs');
+    expect(within(rows[0]).getByTestId('review-quality-delta')).toHaveClass('text-right');
+    // A model that made the code worse reads as a red drop.
+    expect(within(rows[1]).getByTestId('review-quality-delta')).toHaveTextContent('−2.0 ▼');
+    expect(within(rows[1]).getByTestId('review-quality-delta').firstElementChild).toHaveClass('text-red-600');
+    expect(rows[2]).toHaveTextContent('Manual / Untracked');
+    // No tracked agent can be credited with the untracked row's change, so its
+    // delta is unknown rather than a measured 0.0; runs it never reported are unknown too.
+    expect(within(rows[2]).getByTestId('review-quality-delta')).toHaveTextContent('—');
+    expect(within(rows[2]).getAllByText('—')).toHaveLength(3);
+    expect(screen.getByTestId('review-quality-scope')).toHaveTextContent('Covers the 4 PRs with a review score in this period');
     expect(getReviewScoreSummary).toHaveBeenCalledWith('30d');
   });
 });

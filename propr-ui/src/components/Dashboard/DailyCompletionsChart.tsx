@@ -57,7 +57,11 @@ const renderDot = (today: string) => (props: unknown) => {
   );
 };
 
-export const DailyCompletionsChart: React.FC<{ data: DailyCompletion[] }> = ({ data }) => {
+export const DailyCompletionsChart: React.FC<{
+  data: DailyCompletion[];
+  /** What each day counts, as the tooltip reads it: `Oct 7: 180 tasks`. */
+  unit?: string;
+}> = ({ data, unit = 'completed' }) => {
   if (data.length === 0) return null;
 
   const today = utcToday();
@@ -106,7 +110,7 @@ export const DailyCompletionsChart: React.FC<{ data: DailyCompletion[] }> = ({ d
               content={({ active, payload, label }) =>
                 active && payload && payload.length ? (
                   <div style={{ ...tooltipStyle, padding: '6px 10px', fontSize: '12px' }}>
-                    {label}: {payload[0].value} completed
+                    {label}: {payload[0].value} {unit}
                   </div>
                 ) : null
               }

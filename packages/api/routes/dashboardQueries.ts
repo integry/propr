@@ -5,7 +5,8 @@
  * (running, queued, blocked), outcome events (recent history) and aggregated
  * execution data (stats). Each source has its own module —
  * `dashboardWorkQueries.ts`, `dashboardOutcomeQueries.ts` and
- * `dashboardStatsQueries.ts` — and all three read task rows through the
+ * `analyticsAggregates.ts`, which the stats share with the Analytics page —
+ * and the first two read task rows through the
  * lifecycle states, column list and row mapping defined here, so
  * `/api/dashboard/summary`, `/api/dashboard/active`, `/api/dashboard/attention`
  * and the task pages cannot drift apart.

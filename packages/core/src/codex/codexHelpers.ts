@@ -59,6 +59,8 @@ export interface CodexOutput {
         input_tokens?: number;
         output_tokens?: number;
         cache_read_input_tokens?: number;
+        /** Set when `cache_read_input_tokens` covers only some prompts: kept for pricing, withheld from hit rates. */
+        cache_usage_incomplete?: boolean;
         /** Informational subset of output_tokens; never bill separately. */
         reasoning_output_tokens?: number;
     };
@@ -138,6 +140,19 @@ interface ParseState {
         cache_read_input_tokens: number;
         reasoning_output_tokens: number;
     };
+    /**
+     * Whether any usage event carried `cached_input_tokens` at all. Codex
+     * omits the field on some builds; an omitted count is unknown, not a
+     * measured zero, and the metrics store keeps that distinction.
+     */
+    cacheReported: boolean;
+    /**
+     * Whether some prompt-bearing usage event omitted `cached_input_tokens`.
+     * The cache portion of that prompt is unknown, so the run's breakdown is
+     * incomplete: the cached tokens the other events counted keep their
+     * discount, but the count is not a measurement of the whole prompt.
+     */
+    cacheIncomplete: boolean;
 }
 
 function handleItemCompleted(event: CodexEvent, state: ParseState): void {
@@ -194,6 +209,8 @@ function addCodexTokenUsage(usage: CodexEvent['usage'] | undefined, state: Parse
     // cached_input_tokens subset. Store the two portions separately so cached
     // input is neither double-counted nor billed at the full input rate.
     const totalInputTokens = Math.max(0, usage.input_tokens ?? 0);
+    if (typeof usage.cached_input_tokens === 'number') state.cacheReported = true;
+    else if (totalInputTokens > 0) state.cacheIncomplete = true;
     const reportedCachedTokens = Math.max(0, usage.cached_input_tokens ?? 0);
     const cachedInputTokens = totalInputTokens > 0
         ? Math.min(totalInputTokens, reportedCachedTokens)
@@ -302,7 +319,9 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
             output_tokens: 0,
             cache_read_input_tokens: 0,
             reasoning_output_tokens: 0
-        }
+        },
+        cacheReported: false,
+        cacheIncomplete: false
     };
     const conversationLog: CodexEvent[] = [];
 
@@ -321,12 +340,19 @@ export function parseCodexStreamOutput(stdout: string): CodexOutput {
     }
 
     const hasTokenUsage = Object.values(state.tokenUsage).some(value => value > 0);
+    // The cache count is present exactly when some Codex usage event reported
+    // one, so a reported zero stays a measured zero and an omitted count stays
+    // unknown. A count that covers only some prompts is still the known cached
+    // subtotal, which pricing needs to apply its discount, so it stays separate
+    // from input_tokens and is marked incomplete instead: the metrics store
+    // keeps it out of the hit rate without charging it at the full input rate.
     const tokenUsage = hasTokenUsage ? {
         input_tokens: state.tokenUsage.input_tokens,
         output_tokens: state.tokenUsage.output_tokens,
-        ...(state.tokenUsage.cache_read_input_tokens > 0 && {
+        ...(state.cacheReported && {
             cache_read_input_tokens: state.tokenUsage.cache_read_input_tokens
         }),
+        ...(state.cacheReported && state.cacheIncomplete && { cache_usage_incomplete: true }),
         ...(state.tokenUsage.reasoning_output_tokens > 0 && {
             reasoning_output_tokens: state.tokenUsage.reasoning_output_tokens
         })

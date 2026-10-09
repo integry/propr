@@ -2,6 +2,7 @@ import { startDashboardReadService, type DashboardReadService } from './services
 import { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
 import { dashboardNarrativeModel } from './routes/dashboardNarrativeModel.js';
 import { getConfig } from '@propr/core';
+import { officialCachePrice } from './routes/analyticsPricing.js';
 import { createTaskSubmissionRoutes, taskSubmissionUpload } from './routes/taskSubmissionRoutes.js';
 import { GOAL_TASK_GUARD_MOUNTS } from './openapi/directRoutes.js';
 import { createRepositoryMediaRoutes } from './routes/repositoryMediaRoutes.js';
@@ -34,6 +35,7 @@ import {
   createAgentVersionRoutes,
   createStatsRoutes,
   createReviewScoreRoutes,
+  createAnalyticsCache,
   createDashboardRoutes,
   createSummaryBrowserRoutes,
   createRepoChatRoutes,
@@ -371,8 +373,10 @@ function setupRoutes(): void {
   const relevanceRoutes = createRelevanceRoutes();
   const agentRoutes = createAgentRoutes();
   const agentLoginRoutes = createAgentLoginRoutes();
-  const statsRoutes = createStatsRoutes({ db });
-  const reviewScoreRoutes = createReviewScoreRoutes({ db });
+  // The all-time delivery and review-quality aggregations read every PR's history; both routes share one short-lived copy.
+  const analyticsCache = createAnalyticsCache();
+  const statsRoutes = createStatsRoutes({ db, cachePrice: officialCachePrice, analyticsCache });
+  const reviewScoreRoutes = createReviewScoreRoutes({ db, analyticsCache });
   const dashboardRoutes = createDashboardRoutes({ db, redisClient, taskQueue, completedRows: dashboardReads?.load, narrativeModel: dashboardNarrativeModel, isSummaryEnabled: async () => (await getConfig('dashboard_summary_enabled', true)) !== false });
   const summaryBrowserRoutes = createSummaryBrowserRoutes();
   const repoChatRoutes = createRepoChatRoutes();
