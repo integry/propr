@@ -28,6 +28,8 @@ export interface TaskSubmission {
   dispatch_claim: string | null;
   retry_event_id: string | null;
   dispatch_complete: boolean;
+  /** Set together with completing the payload's to-dos, so replays never reapply it. */
+  todos_linked: boolean;
   error: string | null;
 }
 export interface SubmissionPayload {

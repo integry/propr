@@ -23,6 +23,9 @@ export interface RepoTodoRecord {
   order_index: number;
   is_completed: boolean;
   linked_draft_id: string | null;
+  linked_issue_repository: string | null;
+  linked_issue_number: number | null;
+  linked_task_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -42,6 +45,10 @@ export interface RepoTodo {
   orderIndex: number;
   isCompleted: boolean;
   linkedDraftId: string | null;
+  /** Repository (owner/repo) of the GitHub issue opened when a task was launched from this to-do. */
+  linkedIssueRepository: string | null;
+  linkedIssueNumber: number | null;
+  linkedTaskId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -74,6 +81,15 @@ export interface UpdateTodoParams {
   orderIndex?: number;
   isCompleted?: boolean;
   linkedDraftId?: string | null;
+}
+
+export interface CompleteTodosForIssueParams {
+  todoIds: string[];
+  userId: string;
+  /** owner/repo the issue was opened in; only to-dos in this repository are completed. */
+  repository: string;
+  issueNumber: number;
+  taskId?: string | null;
 }
 
 export interface BatchReorderItem {

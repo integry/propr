@@ -6,7 +6,6 @@ export interface Settings {
   planner_generation_model: string;
   default_agent_alias: string;
   usage_tips_enabled?: boolean;
-  usage_tips_dismissal_cooldown_days?: number;
   auto_resolve_merge_conflicts: boolean;
   dashboard_summary_enabled?: boolean;
   model_reasoning_level: string;

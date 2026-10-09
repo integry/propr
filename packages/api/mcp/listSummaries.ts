@@ -254,6 +254,11 @@ export function summarizeTodo(row: JsonObject): JsonObject {
       title: compactText(row.linked_plan_name, TITLE_LIMIT),
       status: row.linked_plan_status ?? null,
     } : null,
+    linked_issue: row.linked_issue_number ? {
+      repository: row.linked_issue_repository ?? null,
+      number: row.linked_issue_number,
+      task_id: row.linked_task_id ?? null,
+    } : null,
     order_index: row.order_index,
     created_at: row.created_at,
     updated_at: row.updated_at,
