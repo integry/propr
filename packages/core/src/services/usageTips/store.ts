@@ -20,7 +20,7 @@ function validateSelection(selection: UsageTipSelection): UsageTipSelection {
 export class UsageTipDismissalConflict extends Error {}
 export function createUsageTipsStore(database: Knex, now = Date.now) {
   const settings = async () => {
-    const rows = await database('system_configs').whereIn('key', ['usage_tips_enabled', 'usage_tips_dismissal_cooldown_days']).select('key', 'value');
+    const rows = await database('system_configs').where({ key: 'usage_tips_enabled' }).select('key', 'value');
     return parseUsageTipsSettings(Object.fromEntries(rows.map(row => {
       try { return [row.key, JSON.parse(row.value)]; } catch { return [row.key, null]; }
     })));
@@ -43,7 +43,7 @@ export function createUsageTipsStore(database: Knex, now = Date.now) {
       const ids = selection.candidates.map(c => c.id);
       const dismissals: UsageTipDismissal[] = ids.length ? await database('usage_tip_dismissals')
         .where({ user_id: userId }).whereIn('tip_id', ids).select('tip_id', 'dismissed_at', 'dismissal_count') : [];
-      return { enabled: true, tips: resolveUsageTips(selection.candidates, dismissals, config.cooldownDays, now()) };
+      return { enabled: true, tips: resolveUsageTips(selection.candidates, dismissals, now()) };
     },
     async persist(selection: UsageTipSelection, previousEpoch: number | null): Promise<boolean> {
       selection = validateSelection(selection);
