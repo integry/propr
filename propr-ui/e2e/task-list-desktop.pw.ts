@@ -11,7 +11,7 @@ for (const platform of [undefined, 'macos', 'linux'] as const) {
       await expect(table).toBeVisible();
       // The column schema is the same at every width and in every row state.
       const headers = table.getByRole('columnheader');
-      const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'];
+      const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Assignees', 'Duration', 'Updated', 'Score'];
       await expect(headers).toHaveText(columns);
       for (const header of await headers.all()) await expect(header).toBeVisible();
 
@@ -383,7 +383,7 @@ test('1200px a task\'s run chip opens its earlier runs as a timeline in the ledg
   const table = page.getByRole('table', { name: 'Tasks' });
   await expect(table).toBeVisible();
   const headers = table.getByRole('columnheader');
-  const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'];
+  const columns = ['Task / PR', 'Repo', 'Status', 'Agent', 'Assignees', 'Duration', 'Updated', 'Score'];
   // Below the split breakpoint a click leaves the list, so the chip opens the runs in place,
   // never navigates, and a mouse click leaves no focus frame behind.
   const rollup = table.getByRole('button', { name: '7 runs' });

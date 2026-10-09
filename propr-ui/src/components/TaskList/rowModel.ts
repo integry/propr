@@ -20,10 +20,11 @@ import { trustedPreviewMedia } from '@propr/shared';
 import { splitWorkTitle } from '../Dashboard/workTitle';
 import { ellipsizeHardCutTitle } from './displayTitle';
 import { getDisplayStatus } from './utils.tsx';
+import type { AttributedUser } from '@propr/shared';
 import type { Task, TaskGroup } from './types';
 
 /** The ledger's columns. Fixed: expanding a row or resizing the list never changes them. */
-export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'] as const;
+export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Assignees', 'Duration', 'Updated', 'Score'] as const;
 
 /** Expanded runs span TASK / PR through STATUS, keeping each run summary beside its timestamp. */
 export const TASK_RUNS_COLUMN_SPAN = 3;
@@ -71,6 +72,11 @@ export interface TaskRowView {
    */
   outcome: string | null;
   previewCount: number;
+  /**
+   * Who the task is assigned to. Assignment belongs to the issue or pull
+   * request every run shares, so the newest run's copy is the current one.
+   */
+  assignees: AttributedUser[];
   earlierRuns: TaskRunView[];
 }
 
@@ -218,6 +224,7 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     detail: newest.delta,
     outcome: newest.delta ? null : runOutcome(task),
     previewCount: previewCount(task),
+    assignees: task.assignees ?? [],
     earlierRuns: earlier.map(run => {
       const { type, delta } = runDelta(run, title);
       return {

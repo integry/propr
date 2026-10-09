@@ -9,6 +9,7 @@ import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
 import { getModelDisplayName } from '../../utils/modelDisplay';
 import { RunTrack } from './RunTrack';
 import { ScoreBadge } from './ScoreBadge';
+import { AssigneeStack } from '../AssigneeList';
 import {
   buildTaskRuns, describeRun, pluralize, RUN_TRACK_LIMIT, rowContainsTask, rowScore, runScore, SELECTED_ROW_CLASSES, TASK_RUNS_COLUMN_SPAN, taskPath,
   type TaskRowView, type TaskRunView,
@@ -133,6 +134,17 @@ export const TaskTitleLink: React.FC<{
 export const TaskRepository: React.FC<{ row: TaskRowView }> = ({ row }) => (
   <span data-testid="task-repository" title={row.repository} className="block truncate font-mono text-xs text-slate-600 transition-colors hover:text-slate-900">
     {row.repositoryName}
+  </span>
+);
+
+/**
+ * The ledger's ASSIGNEES cell: overlapping avatars, capped with a `+N`, so the
+ * cell stays one avatar tall however many people the task is assigned to; an
+ * unassigned task shows the em dash.
+ */
+export const TaskAssignees: React.FC<{ row: TaskRowView }> = ({ row }) => (
+  <span data-testid="task-assignees" className="flex min-w-0 items-center">
+    <AssigneeStack assignees={row.assignees} variant="compact" />
   </span>
 );
 
@@ -284,7 +296,7 @@ interface TaskQueueRowProps {
   selectsInPlace?: boolean;
 }
 
-/** One ledger row: TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED · SCORE. */
+/** One ledger row: TASK / PR · REPO · STATUS · AGENT · ASSIGNEES · DURATION · UPDATED · SCORE. */
 export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expanded, onRowClick, onToggle, selectedTaskId, selectsInPlace = false }) => {
   const { task } = row;
   const runsId = `task-runs-${row.key.replace(/[^A-Za-z0-9_-]/g, '-')}`;
@@ -308,6 +320,7 @@ export const TaskQueueRow: React.FC<TaskQueueRowProps> = ({ row, prNumber, expan
         <div role="cell" className="min-w-0"><TaskRepository row={row} /></div>
         <div role="cell" className="min-w-0">{getStatusPill(getDisplayStatus(task))}</div>
         <div role="cell" className="min-w-0"><TaskAgent task={task} /></div>
+        <div role="cell" className="min-w-0"><TaskAssignees row={row} /></div>
         <div role="cell" className="whitespace-nowrap text-right font-mono text-xs tabular-nums text-slate-700">{taskDuration(task)}</div>
         <div role="cell" className="whitespace-nowrap text-right text-xs tabular-nums text-slate-500">
           <time dateTime={task.createdAt} title={new Date(task.createdAt).toLocaleString()}>{formatRelativeTime(task.createdAt)}</time>

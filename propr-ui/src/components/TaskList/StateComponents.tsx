@@ -48,6 +48,9 @@ interface TaskTableContentProps {
 
 const columnHeader = 'text-[10px] font-bold uppercase tracking-wider text-slate-500';
 
+/** The times and the score after ASSIGNEES are right-aligned, as their cells are. */
+const RIGHT_ALIGNED_FROM = TASK_QUEUE_COLUMNS.indexOf('Assignees');
+
 /**
  * Renders the task ledger: a flat table where the list is wide enough for its fixed
  * metadata columns plus a readable title, and one card per group anywhere narrower.
@@ -89,7 +92,7 @@ export const TaskTableContent: React.FC<TaskTableContentProps> = ({
         <div role="rowgroup" className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50">
           <div role="row" className="task-queue-grid pl-8 pr-6 py-2">
             {TASK_QUEUE_COLUMNS.map((column, index) => (
-              <span key={column} role="columnheader" className={`${index > 3 ? 'text-right ' : ''}${columnHeader}`}>{column}</span>
+              <span key={column} role="columnheader" className={`${index > RIGHT_ALIGNED_FROM ? 'text-right ' : ''}${columnHeader}`}>{column}</span>
             ))}
           </div>
         </div>
