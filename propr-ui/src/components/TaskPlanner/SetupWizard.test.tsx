@@ -65,6 +65,7 @@ vi.mock('../../api/proprApi', () => ({
   createDraft: vi.fn(),
   updateDraft: vi.fn(),
   getRepoBranches: vi.fn(),
+  getInstanceCatalog: vi.fn(() => new Promise(() => {})), // the default model never resolves; the preview supplies the window
 }));
 vi.mock('../../hooks/usePlannerSettings', () => ({
   getPlannerSettings: () => ({

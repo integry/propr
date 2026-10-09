@@ -16,6 +16,8 @@ interface PreviewState {
 interface SetupWizardRightPaneProps {
   contextLevel: number;
   onContextLevelChange: (level: number) => void;
+  // Context window of the planner model; falls back to the preview's when omitted
+  modelMaxTokens?: number;
   smartSelection: SmartFileInfo[] | undefined;
   isPreviewLoading: boolean;
   // Context repositories props
@@ -51,6 +53,7 @@ function getEmptyStateMessage(isNewMode?: boolean, hasData?: boolean): string {
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   contextLevel,
   onContextLevelChange,
+  modelMaxTokens,
   smartSelection,
   isPreviewLoading,
   contextRepositories,
@@ -87,7 +90,7 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
           value={contextLevel}
           onChange={onContextLevelChange}
           hideCostLabels={hideCostsAndTokens}
-          modelMaxTokens={preview.data?.stats.modelMaxContextTokens}
+          modelMaxTokens={modelMaxTokens ?? preview.data?.stats.modelMaxContextTokens}
         />
       </div>
 
