@@ -26,6 +26,8 @@ let epicPrExists = true;
 // Number of epic PR creations that fail before GitHub recovers.
 let failingEpicCreations = 0;
 let createdEpicPRs = 0;
+// Parameters of every epic PR creation request.
+const epicPRCreations: Array<Record<string, unknown>> = [];
 // Runs while the handler fetches issue details for the epic PR body.
 let onIssueFetch: () => void = () => {};
 
@@ -73,12 +75,13 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
 } });
 await mock.module('../packages/core/src/services/epicPRService.js', { namedExports: {
     ...actualEpicPRService,
-    createEpicPRWithDraftFallback: async () => {
+    createEpicPRWithDraftFallback: async (_octokit: unknown, parameters: Record<string, unknown>) => {
         if (failingEpicCreations > 0) {
             failingEpicCreations--;
             throw new Error('GitHub unavailable');
         }
         createdEpicPRs++;
+        epicPRCreations.push(parameters);
         return { data: { number: 501, html_url: 'https://github.com/integry/propr/pull/501' } };
     },
 } });
@@ -118,11 +121,19 @@ await mock.module('../packages/core/src/webhook/checkRunHelpers.js', {
 const progressRequests: Array<Record<string, unknown>> = [];
 let failingProgressUpdates = 0;
 let completionNotices = 0;
+// Holds the next progress update open, as if its GitHub requests were in flight.
+let holdNextProgressUpdate: { until: Promise<void>; onHeld: () => void } | null = null;
 await mock.module('../packages/core/src/webhook/epicMergeProgress.js', { namedExports: {
     updateEpicMergeProgress: async (request: Record<string, unknown>) => {
         if (failingProgressUpdates > 0) {
             failingProgressUpdates--;
             throw new Error('GitHub comment request failed');
+        }
+        const hold = holdNextProgressUpdate;
+        holdNextProgressUpdate = null;
+        if (hold) {
+            hold.onHeld();
+            await hold.until;
         }
         progressRequests.push(request);
         if (completionNotices === 0) completionNotices++;
@@ -139,9 +150,11 @@ beforeEach(() => {
     epicPrExists = true;
     failingEpicCreations = 0;
     createdEpicPRs = 0;
+    epicPRCreations.length = 0;
     onIssueFetch = () => {};
     failingProgressUpdates = 0;
     completionNotices = 0;
+    holdNextProgressUpdate = null;
     progressRequests.length = 0;
     redis = fakeRedis();
 });
@@ -304,5 +317,73 @@ test('keeps the obligation while the epic PR can be neither found nor created', 
     assert.equal(await retryPendingEpicMergeProgress(), 1);
     assert.equal(createdEpicPRs, 1);
     assert.equal(completionNotices, 1);
+    assert.equal(redis.hash.size, 0);
+});
+
+test('creates the epic PR on the first child merge and tracks progress on it', async () => {
+    epicPrExists = false;
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    assert.equal(createdEpicPRs, 1);
+    assert.equal(epicPRCreations[0].title, '[Epic] Big Plan');
+    assert.equal(epicPRCreations[0].head, EPIC_BRANCH);
+    assert.equal(epicPRCreations[0].base, 'main');
+
+    // The new epic PR's number and the plan's membership reach the progress update.
+    assert.equal(progressRequests.length, 1);
+    assert.equal(progressRequests[0].epicPrNumber, 501);
+    assert.equal(progressRequests[0].epicBranch, EPIC_BRANCH);
+    assert.equal(progressRequests[0].mergedChildPrNumber, 201);
+    assert.equal(progressRequests[0].planName, 'Big Plan');
+    const planIssues = progressRequests[0].planIssues as PlanIssueRow[];
+    assert.deepEqual(planIssues.map(issue => issue.issue_number), [100, 101, 102]);
+    assert.equal(completionNotices, 1);
+    assert.equal(redis.hash.size, 0);
+});
+
+test('creates the epic PR without a plan and still tracks progress on it', async () => {
+    epicPrExists = false;
+    planIssueRows = [];
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    assert.equal(createdEpicPRs, 1);
+    assert.equal(epicPRCreations[0].title, `[Epic] ${EPIC_BRANCH}`);
+    assert.equal(progressRequests.length, 1);
+    assert.equal(progressRequests[0].epicPrNumber, 501);
+    assert.equal(progressRequests[0].planName, undefined);
+    assert.equal(progressRequests[0].planIssues, undefined);
+    assert.equal(redis.hash.size, 0);
+});
+
+test('overlapping child merge deliveries run one update at a time and the sweep delivers the deferred one', async () => {
+    // Child #201 and child #202 merge back to back; the second delivery
+    // arrives while the first one's progress update is still in flight.
+    let releaseFirst!: () => void;
+    let onHeld!: () => void;
+    const held = new Promise<void>(resolve => { onHeld = resolve; });
+    holdNextProgressUpdate = { until: new Promise<void>(resolve => { releaseFirst = resolve; }), onHeld };
+    const secondPayload = { ...payload, pull_request: { ...payload.pull_request, number: 202 } } as unknown as PullRequestEvent;
+
+    const first = handleEpicPRCreationOnMerge(payload, 'first', logger.withCorrelation('first'));
+    await held;
+    await handleEpicPRCreationOnMerge(secondPayload, 'second', logger.withCorrelation('second'));
+
+    // The second delivery deferred instead of updating alongside the first.
+    assert.equal(progressRequests.length, 0);
+    assert.equal(redis.hash.size, 1);
+    const [retry] = [...redis.hash.values()].map(value => JSON.parse(value));
+    assert.equal(retry.mergedChildPrNumber, 202);
+    assert.equal(retry.epicPrNumber, 500);
+
+    releaseFirst();
+    await first;
+    assert.equal(progressRequests.length, 1);
+    assert.equal(progressRequests[0].mergedChildPrNumber, 201);
+    // The first delivery's success does not release the obligation recorded after it started.
+    assert.equal(redis.hash.size, 1);
+
+    elapseRetryBackoff();
+    assert.equal(await retryPendingEpicMergeProgress(), 1);
+    assert.equal(progressRequests.length, 2);
+    assert.equal(progressRequests[1].mergedChildPrNumber, 202);
+    assert.equal(progressRequests[1].epicPrNumber, 500);
     assert.equal(redis.hash.size, 0);
 });

@@ -86,16 +86,19 @@ describe('runEpicProgressUpdate', () => {
 /** One epic PR's bot comments, with a comment-list read that can be held open. */
 function fakeEpicOctokit() {
     const comments: Array<{ id: number; body: string; user: { login: string } }> = [];
-    let holdNextCommentRead: { until: Promise<void>; onHeld: () => void } | null = null;
+    const commentReadHolds: Array<{ until: Promise<void>; onHeld: () => void }> = [];
+    let commentReads = 0;
     return {
         comments,
-        /** Holds the next comment read open after its snapshot is taken. */
-        holdCommentRead(until: Promise<void>, onHeld: () => void) { holdNextCommentRead = { until, onHeld }; },
+        /** Number of comment-list reads so far. */
+        get commentReads() { return commentReads; },
+        /** Holds the next comment read open after its snapshot is taken; queued holds apply to later reads in order. */
+        holdCommentRead(until: Promise<void>, onHeld: () => void) { commentReadHolds.push({ until, onHeld }); },
         async paginate(route: string) {
             if (route === 'GET /repos/{owner}/{repo}/pulls') return [{ number: 203, state: 'closed', merged_at: '2026-10-09T00:00:00Z' }];
+            commentReads++;
             const snapshot = comments.map(comment => ({ ...comment }));
-            const hold = holdNextCommentRead;
-            holdNextCommentRead = null;
+            const hold = commentReadHolds.shift();
             if (hold) {
                 hold.onHeld();
                 await hold.until;
@@ -141,6 +144,78 @@ describe('runEpicProgressUpdate lease ownership', () => {
         assert.equal(octokit.comments.filter(c => c.body.includes(EPIC_COMPLETE_MARKER)).length, 1);
         // The aborted update keeps its obligation for the sweep.
         assert.equal(JSON.parse(redis.hash.get(field)!).attempts, 1);
+    });
+
+    test('two overlapping updates paused after an empty comment lookup post one tracking comment', async () => {
+        // Both updates read the comment list before either has posted, so each
+        // sees no tracking comment. The lease, re-checked before every write,
+        // is what keeps the stale one from creating a duplicate.
+        const redis = fakeRedis();
+        const octokit = fakeEpicOctokit();
+        const hold = () => {
+            let release!: () => void;
+            let onHeld!: () => void;
+            const held = new Promise<void>(resolve => { onHeld = resolve; });
+            octokit.holdCommentRead(new Promise<void>(resolve => { release = resolve; }), onHeld);
+            return { held, release };
+        };
+        const staleRead = hold();
+        const freshRead = hold();
+        const deliver = (now: number) => runEpicProgressUpdate(target, {
+            redis: redis as never, log, now: () => now,
+            update: lease => updateEpicMergeProgress({ ...target, epicPrNumber: 500 }, 'test', { getOctokit: async () => octokit, assertOwned: lease.assertOwned })
+                .then(() => true),
+        });
+
+        const stale = deliver(1_000);
+        await staleRead.held;
+        // The lease expires while the stale read is outstanding; a second delivery takes over and reads too.
+        redis.keys.clear();
+        const fresh = deliver(2_000);
+        await freshRead.held;
+        assert.equal(octokit.commentReads, 2);
+        assert.deepEqual(octokit.comments, []);
+
+        // The stale update resumes first, while the fresh one still holds the lease.
+        staleRead.release();
+        assert.equal(await stale, 'retry_scheduled');
+        assert.deepEqual(octokit.comments, []);
+        freshRead.release();
+        assert.equal(await fresh, 'updated');
+
+        assert.equal(octokit.comments.filter(c => c.body.includes(EPIC_PROGRESS_MARKER)).length, 1);
+        assert.equal(octokit.comments.filter(c => c.body.includes(EPIC_COMPLETE_MARKER)).length, 1);
+        assert.equal(JSON.parse(redis.hash.get(field)!).attempts, 1);
+    });
+
+    test('a delivery overlapping a held lease defers before reading or posting any comment', async () => {
+        const redis = fakeRedis();
+        const octokit = fakeEpicOctokit();
+        let release!: () => void;
+        let onHeld!: () => void;
+        const held = new Promise<void>(resolve => { onHeld = resolve; });
+        octokit.holdCommentRead(new Promise<void>(resolve => { release = resolve; }), onHeld);
+        const deliver = (now: number) => runEpicProgressUpdate(target, {
+            redis: redis as never, log, now: () => now,
+            update: lease => updateEpicMergeProgress({ ...target, epicPrNumber: 500 }, 'test', { getOctokit: async () => octokit, assertOwned: lease.assertOwned })
+                .then(() => true),
+        });
+
+        const first = deliver(1_000);
+        await held;
+        // The lease is still held, so the overlapping delivery never reaches GitHub.
+        const second = await deliver(1_500);
+        assert.equal(second, 'retry_scheduled');
+        assert.equal(octokit.commentReads, 1);
+        assert.deepEqual(octokit.comments, []);
+
+        release();
+        assert.equal(await first, 'updated');
+        assert.equal(octokit.comments.filter(c => c.body.includes(EPIC_PROGRESS_MARKER)).length, 1);
+        assert.equal(octokit.comments.filter(c => c.body.includes(EPIC_COMPLETE_MARKER)).length, 1);
+        // The deferred delivery's obligation was recorded after the first one started, so it survives for the sweep.
+        assert.equal(JSON.parse(redis.hash.get(field)!).attempts, 1);
+        assert.equal(redis.keys.size, 0);
     });
 
     test('assertOwned extends a held lease and rejects once it is taken over', async () => {

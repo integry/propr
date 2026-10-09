@@ -7,7 +7,9 @@ import logger from '../utils/logger.js';
  * or created, plan unreadable, GitHub request failed, another update held the
  * epic, or the lease could not be acquired). The last child merge has no
  * successor to refresh the tracking comment, so the obligation is kept here
- * and retried by the daemon sweep until an update succeeds.
+ * and retried by the daemon sweep until an update succeeds or the obligation
+ * is older than {@link EPIC_PROGRESS_RETRY_MAX_AGE_MS}, after which the sweep
+ * drops it and logs the terminal failure as an error.
  */
 export const EPIC_PROGRESS_RETRY_KEY = 'epic:merge-progress-retry';
 const EPIC_PROGRESS_LOCK_PREFIX = 'epic:merge-progress-lock:';
@@ -15,7 +17,10 @@ const EPIC_PROGRESS_LOCK_TTL_MS = 2 * 60 * 1000;
 const EPIC_PROGRESS_LOCK_RENEW_INTERVAL_MS = EPIC_PROGRESS_LOCK_TTL_MS / 4;
 const RETRY_BASE_DELAY_MS = 60 * 1000;
 const RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
-/** A failure lasting this long is no longer transient; the obligation is dropped. */
+/**
+ * A failure lasting this long (measured from the first failed attempt) is no
+ * longer transient; the sweep drops the obligation and logs an error.
+ */
 export const EPIC_PROGRESS_RETRY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 const COMPARE_AND_DELETE_FIELD = `
@@ -231,7 +236,12 @@ export interface EpicProgressRetrySweepOptions {
     log?: ReturnType<typeof logger.withCorrelation>;
 }
 
-/** Retries every due epic progress obligation; returns how many were updated. */
+/**
+ * Retries every due epic progress obligation; returns how many were updated.
+ * An obligation whose first failure is older than
+ * {@link EPIC_PROGRESS_RETRY_MAX_AGE_MS} (or that can no longer be parsed) is
+ * dropped with an error log instead of being retried.
+ */
 export async function sweepEpicProgressRetries(
     { redis, retry, now = Date.now, log = logger.withCorrelation('epic-merge-progress') }: EpicProgressRetrySweepOptions,
 ): Promise<number> {
