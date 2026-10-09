@@ -27,6 +27,6 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "e2e", "playwright.config.ts"],
+  "include": ["src", "e2e", "playwright.config.ts", "playwright.site-captures.config.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

@@ -1,4 +1,4 @@
-import { area } from '../lib/world';
+import { area, type ApiRequest } from '../lib/world';
 import { REPOS, minutesAgo } from './base';
 
 /** Running work, newest first, as the API lists it. */
@@ -51,7 +51,7 @@ const tasks = [
 
 export const search = area('search', {
   'GET /api/planner/drafts': { drafts: plans, total: plans.length, page: 1, limit: 5, hasMore: false },
-  'GET /api/tasks': request => request.query.get('search') ? { tasks, total: tasks.length } : undefined,
+  'GET /api/tasks': (request: ApiRequest) => request.query.get('search') ? { tasks, total: tasks.length } : undefined,
 });
 
 /** To-do categories for the toolbar's Quick add to-do popover. */

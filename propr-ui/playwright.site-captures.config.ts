@@ -23,7 +23,7 @@ export default defineConfig({
     colorScheme: 'light',
     locale: 'en-US',
     timezoneId: 'UTC',
-    reducedMotion: 'reduce',
+    contextOptions: { reducedMotion: 'reduce' },
     launchOptions: process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {},
   },
   webServer: {
