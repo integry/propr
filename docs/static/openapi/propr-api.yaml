@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 255
-    documented: 38
+    total: 258
+    documented: 41
     undocumented: 217
 servers:
   - url: "{origin}"
@@ -5788,6 +5788,198 @@ paths:
       x-propr-query-type: DeleteTaskQuery
       x-propr-auth: member
       x-legacy-error: true
+  /api/task/{taskId}/assignable-users:
+    get:
+      operationId: listTaskAssignableUsers
+      summary: List users that can be assigned to a task
+      description: |-
+        The assignable users of the task's repository, at most 300, sorted by login. Cached for 60 seconds per repository.
+
+        When the task, session or correlation id belongs to a goal, only the goal owner can use this route (others get `404`), and only for reads: other methods answer `409` and the goal controls must be used instead.
+      tags:
+        - Tasks
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          description: Task (run) identifier, as returned in `TaskSummary.id`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The assignable users.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssignableUsers"
+        "400":
+          description: The task id is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "404":
+          description: Task not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "409":
+          description: The task has no GitHub issue or pull request to assign.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "502":
+          description: GitHub could not be reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-legacy-error: true
+  /api/task/{taskId}/assignees:
+    get:
+      operationId: getTaskAssignees
+      summary: Get the assignees of a task
+      description: |-
+        Reads the assignees of the task's GitHub issue or pull request from GitHub and stores them. With `refresh=false` the stored set is returned without calling GitHub. When GitHub cannot be read the stored set is returned with `synced: false`.
+
+        When the task, session or correlation id belongs to a goal, only the goal owner can use this route (others get `404`), and only for reads: other methods answer `409` and the goal controls must be used instead.
+      tags:
+        - Tasks
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          description: Task (run) identifier, as returned in `TaskSummary.id`.
+          schema:
+            type: string
+        - name: refresh
+          in: query
+          required: false
+          description: "`false` serves the stored set without calling GitHub."
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+      responses:
+        "200":
+          description: The task's assignees.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskAssignees"
+        "400":
+          description: The task id is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "404":
+          description: Task not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "409":
+          description: The task has no GitHub issue or pull request to assign.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: TaskAssigneesQuery
+      x-propr-auth: member
+      x-legacy-error: true
+    put:
+      operationId: setTaskAssignees
+      summary: Change the assignees of a task
+      description: |-
+        Assigns the task's GitHub issue or pull request on GitHub and returns the set GitHub confirmed. Requires write access to the repository on GitHub.
+
+        When the task, session or correlation id belongs to a goal, only the goal owner can use this route (others get `404`), and only for reads: other methods answer `409` and the goal controls must be used instead.
+      tags:
+        - Tasks
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          description: Task (run) identifier, as returned in `TaskSummary.id`.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskAssigneesUpdate"
+      responses:
+        "200":
+          description: The assignment GitHub confirmed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskAssigneesResult"
+        "400":
+          description: The body is malformed or names an unknown GitHub login.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          description: You lack write access to the repository on GitHub.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "404":
+          description: Task not found, or the repository is not accessible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "409":
+          description: The task has no GitHub issue or pull request to assign.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "422":
+          description: GitHub rejected the assignment, or did not assign some requested users (listed in `rejected`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "502":
+          description: GitHub could not be reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-legacy-error: true
   /api/task/{taskId}/cancel:
     post:
       operationId: cancelTask
@@ -6741,6 +6933,21 @@ paths:
       x-legacy-error: true
 components:
   schemas:
+    AssignableUsers:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttributedUser"
+        truncated:
+          type: boolean
+          description: True when the repository has more assignable users than were listed.
+      required:
+        - users
+        - truncated
+      additionalProperties: false
+      description: Users that can be assigned to issues and pull requests of a repository.
     AttributedUser:
       type: object
       properties:
@@ -7165,6 +7372,64 @@ components:
       required:
         - unreadCount
       additionalProperties: false
+    TaskAssignees:
+      type: object
+      properties:
+        subject:
+          $ref: "#/components/schemas/TaskSubject"
+        assignees:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttributedUser"
+        synced:
+          type: boolean
+          description: True when `assignees` was just read from GitHub; false when it is the stored set.
+      required:
+        - subject
+        - assignees
+        - synced
+      additionalProperties: false
+      description: The assignees of a task's GitHub issue or pull request.
+    TaskAssigneesResult:
+      type: object
+      properties:
+        subject:
+          $ref: "#/components/schemas/TaskSubject"
+        assignees:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttributedUser"
+          description: The assignees GitHub confirmed.
+        rejected:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttributedUser"
+          description: Requested users GitHub did not assign; empty on success.
+      required:
+        - subject
+        - assignees
+        - rejected
+      additionalProperties: false
+      description: The assignment GitHub confirmed after a change.
+    TaskAssigneesUpdate:
+      type: object
+      properties:
+        logins:
+          maxItems: 10
+          type: array
+          items:
+            type: string
+          description: GitHub logins to assign. With `replace`, an empty list clears the assignment.
+        mode:
+          description: "`replace` (default) makes `logins` the whole set; `add` keeps current assignees."
+          type: string
+          enum:
+            - add
+            - replace
+      required:
+        - logins
+      additionalProperties: false
+      description: A change to a task's assignees.
     TaskEvent:
       type: object
       properties:
@@ -7288,6 +7553,28 @@ components:
         - limit
       additionalProperties: false
       description: A page of task runs.
+    TaskSubject:
+      type: object
+      properties:
+        owner:
+          type: string
+        repo:
+          type: string
+        number:
+          type: integer
+          description: Issue or pull request number.
+        kind:
+          type: string
+          enum:
+            - issue
+            - pull_request
+      required:
+        - owner
+        - repo
+        - number
+        - kind
+      additionalProperties: false
+      description: The GitHub issue or pull request a task is assigned through.
     TaskSubmission:
       type: object
       properties:

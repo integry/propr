@@ -30,6 +30,9 @@ export type TaskAssignmentFilter =
   | { mode: 'unassigned' }
   | { mode: 'users'; logins: string[] };
 
+/** The most users GitHub lets one issue or pull request be assigned to. */
+export const MAX_TASK_ASSIGNEES = 10;
+
 /** The most logins one assignee filter may name. */
 export const MAX_TASK_ASSIGNMENT_FILTER_LOGINS = 20;
 
