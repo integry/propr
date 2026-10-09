@@ -50,6 +50,7 @@ import {
 import { stopTaskExecution, type StopTaskExecutionResult } from './dockerRoutes.js';
 import { goalAttachmentUpload } from './plannerRoutes.js';
 import { publicGoalAttachments, removeTemporaryGoalUploads } from '../services/goalAttachmentService.js';
+import { attachCreator, projectCreator, rememberCreator } from '../services/creatorProjection.js';
 
 /**
  * REST surface for Agents: definitions, their input files and their runs.
@@ -191,6 +192,11 @@ export function publicAgentDefinition(definition: StoredAgentDefinition) {
   return { ...definition, attachments: publicGoalAttachments(definition.attachments) };
 }
 
+/** The public projection with its creator resolved from the profile cache. */
+async function attributedAgentDefinition(definition: StoredAgentDefinition) {
+  return { ...publicAgentDefinition(definition), createdBy: await projectCreator(definition.ownerId) };
+}
+
 export function publicAgentRun(run: StoredAgentRun, { includeReport }: { includeReport: boolean }) {
   const snapshot = run.definitionSnapshot ? publicAgentDefinition(run.definitionSnapshot) : null;
   if (includeReport) return { ...run, definitionSnapshot: snapshot };
@@ -321,7 +327,9 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
   const list = handler('Failed to list agent definitions', async (req, res) => {
     const owner = requireOwner(req);
     const page = await listAgentDefinitions(owner, parsePage(req.query), storeDeps);
-    res.json({ ...page, definitions: page.definitions.map(publicAgentDefinition) });
+    // One profile read for the page: the creator of every definition is resolved together.
+    const definitions = await attachCreator(page.definitions.map(publicAgentDefinition), 'ownerId');
+    res.json({ ...page, definitions });
   });
 
   const contract = handler('Failed to load the agent definition contract', async (req, res) => {
@@ -360,12 +368,14 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
     if (!await verifyRepositories(req, res, candidate.repositories)) return;
 
     const definition = await createAgentDefinition(input, storeDeps);
-    res.status(201).json({ definition: publicAgentDefinition(definition) });
+    // Warm the profile cache so the new automation's creator renders with an avatar.
+    await rememberCreator(req.user);
+    res.status(201).json({ definition: await attributedAgentDefinition(definition) });
   });
 
   const get = handler('Failed to load agent definition', async (req, res) => {
     const definition = await requireDefinition(req, requireOwner(req));
-    res.json({ definition: publicAgentDefinition(definition) });
+    res.json({ definition: await attributedAgentDefinition(definition) });
   });
 
   const update = handler('Failed to update agent definition', async (req, res) => {
@@ -391,7 +401,7 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
       expectedRevision: expectedRevision as number | undefined,
     });
     if (!definition) throw new RouteError(404, 'Agent definition not found');
-    res.json({ definition: publicAgentDefinition(definition) });
+    res.json({ definition: await attributedAgentDefinition(definition) });
   });
 
   const remove = handler('Failed to delete agent definition', async (req, res) => {
@@ -438,7 +448,7 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
       const updated = changed.definition;
       const added = new Set(processed.map(attachment => attachment.id));
       res.status(201).json({
-        definition: publicAgentDefinition(updated),
+        definition: await attributedAgentDefinition(updated),
         attachments: publicGoalAttachments(updated.attachments.filter(attachment => added.has(attachment.id))),
       });
     } catch (error) {
@@ -463,7 +473,7 @@ export function createAgentDefinitionRoutes(deps: AgentDefinitionRoutesDeps) {
     if (!changed || !attachment) throw new RouteError(404, 'Agent definition not found');
     // The file goes only once no stored list references it.
     await removeAttachmentFiles(definitionId, [attachment]);
-    res.json({ definition: publicAgentDefinition(changed.definition) });
+    res.json({ definition: await attributedAgentDefinition(changed.definition) });
   });
 
   /** The trigger primitive over HTTP: run now, GitHub Actions, webhook relays and external cron. */
