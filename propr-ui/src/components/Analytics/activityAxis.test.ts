@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { planActivityAxis } from './activityAxis';
+import { formatActivityDate, planActivityAxis } from './activityAxis';
 
 /** `count` consecutive UTC day keys ending on `last`. */
 const days = (count: number, last = '2026-09-23'): string[] => Array.from({ length: count }, (_, index) =>
   new Date(Date.parse(`${last}T00:00:00Z`) - (count - 1 - index) * 86_400_000).toISOString().slice(0, 10));
+
+/** `count` consecutive UTC hour keys ending at `last`, as the API keys hour buckets. */
+const hours = (count: number, last = '2026-09-23T12:00:00.000Z'): string[] => Array.from({ length: count }, (_, index) =>
+  new Date(Date.parse(last) - (count - 1 - index) * 3_600_000).toISOString());
 
 describe('planActivityAxis', () => {
   it('labels every day of a week with its weekday over its day, naming the month where it changes', () => {
@@ -46,6 +50,35 @@ describe('planActivityAxis', () => {
     expect(labels.get('2025-10-01')).toEqual({ primary: 'Oct', secondary: '2025' });
     expect(labels.get('2025-11-01')).toEqual({ primary: 'Nov' });
     expect(labels.get('2026-01-01')).toEqual({ primary: 'Jan', secondary: '2026' });
+  });
+
+  it('labels every hour of a day with its clock time, dating the first and where the day turns', () => {
+    const day = hours(24);
+    const labels = planActivityAxis(day, 40);
+    expect([...labels.keys()]).toEqual(day);
+    expect(labels.get('2026-09-22T13:00:00.000Z')).toEqual({ primary: '13:00', secondary: 'Sep 22' });
+    expect(labels.get('2026-09-22T14:00:00.000Z')).toEqual({ primary: '14:00' });
+    expect(labels.get('2026-09-23T00:00:00.000Z')).toEqual({ primary: '00:00', secondary: 'Sep 23' });
+    expect(labels.get('2026-09-23T12:00:00.000Z')).toEqual({ primary: '12:00' });
+  });
+
+  it('steps the hours at an even stride counted back from this hour when every hour does not fit', () => {
+    const day = hours(24);
+    // Every third hour, ending on this one, where a clock time needs three slots.
+    const stepped = [...planActivityAxis(day, 12).keys()];
+    expect(stepped).toHaveLength(8);
+    expect(stepped.slice(-2)).toEqual(['2026-09-23T09:00:00.000Z', '2026-09-23T12:00:00.000Z']);
+    // The date follows the first label, which need not be the first hour.
+    expect(planActivityAxis(day, 12).get('2026-09-22T15:00:00.000Z')).toEqual({ primary: '15:00', secondary: 'Sep 22' });
+    // Every sixth, then every twelfth; past that nothing fits.
+    expect([...planActivityAxis(day, 6).keys()]).toHaveLength(4);
+    expect([...planActivityAxis(day, 3).keys()]).toEqual(['2026-09-23T00:00:00.000Z', '2026-09-23T12:00:00.000Z']);
+    expect(planActivityAxis(day, 2).size).toBe(0);
+  });
+
+  it('names a day bucket by its date and an hour bucket by its date and UTC clock time', () => {
+    expect(formatActivityDate('2026-09-23')).toBe('Sep 23');
+    expect(formatActivityDate('2026-09-23T09:00:00.000Z')).toBe('Sep 23, 09:00 UTC');
   });
 
   it('labels nothing before the chart has a width', () => {

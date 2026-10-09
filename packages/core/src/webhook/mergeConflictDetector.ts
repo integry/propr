@@ -24,6 +24,8 @@ export interface HandleMergeCommandOptions {
     repoName: string;
     prNumber: number;
     userId?: string;
+    /** The `/merge` comment, recorded on the task so an MCP receipt can follow it. */
+    commentId?: number;
     redisClient: unknown;
     correlationId: string;
 }
@@ -37,7 +39,7 @@ export interface HandleMergeCommandOptions {
 export async function handleMergeCommand(
     options: HandleMergeCommandOptions
 ): Promise<ConflictDetectionResult | null> {
-    const { owner, repoName, prNumber, userId, correlationId } = options;
+    const { owner, repoName, prNumber, userId, commentId, correlationId } = options;
     const log = logger.withCorrelation(correlationId);
     const repository = `${owner}/${repoName}`;
 
@@ -70,6 +72,7 @@ export async function handleMergeCommand(
         headSha: pr.head.sha,
         baseSha: pr.base.sha,
         triggerSource: 'comment',
+        ...(commentId === undefined ? {} : { commandCommentId: commentId }),
         correlationId: jobCorrelationId,
         systemGenerated: true,
     };

@@ -920,9 +920,25 @@ could have moved into). Only applied records are posted in the
 `/fix` command; `findingIds` and `suggestionIds` report exactly those.
 `comparison` is `same_head`, `compared`, or `unavailable` when the changes since
 the review could not be read (for example after a force-push), in which case
-every record is posted. The call fails with `STALE_FINDINGS` only when no
-selected record still applies, with the skipped records in `details`. To refuse
-a moved head outright, pass `expectedHead`: a mismatch is still `STALE_HEAD`.
+every record is posted. A moved head alone never refuses the call, so an MCP
+caller can fix whatever a hand-typed `/fix` comment could. The call is refused
+only where the selection genuinely cannot be carried out, each with its own
+code at the `precondition` stage:
+
+- `NOT_A_REVIEW` (422): `reviewCommentId` is not a parseable ProPR review.
+- `FINDINGS_UNAVAILABLE` (409): a selected identifier cannot be located in the
+  review. `details.unavailable` lists each one with its `kind` and a `reason`:
+  `not_in_review` (a typo, or the wrong review), `consumed` (an earlier `/fix`
+  already addressed it) or `expired` (the review is older than the seven days
+  `/fix` reads back). `details.offeredFindingIds` and
+  `details.offeredSuggestionIds` list what the review still offers.
+- `FINDINGS_CODE_REMOVED` (409): every selected record was skipped as
+  `code_removed`, so no `/fix` is left to post. `details` carries
+  `reviewedHead`, `currentHead` and the skipped records.
+
+To refuse a moved head outright, pass `expectedHead`: a mismatch is still
+`STALE_HEAD`. `expectedHead` pins the pull request head, not the review's, so a
+current `expectedHead` with a review of an older head is re-anchored as above.
 Retries must preserve whether `expectedHead` was omitted or supplied; changing
 that argument while reusing an idempotency key returns `IDEMPOTENCY_CONFLICT`.
 
@@ -985,8 +1001,9 @@ Account-level limits, such as a model the provider account cannot run, show up
 as that model's failed review rather than as a rejection at call time.
 
 The state-changing `merge_pull_request`, `update_pull_request_branch`,
-`start_ultrafix`, `stop_ultrafix`, `set_pull_request_model` and
-`revert_pull_request_commit` tools still require `expectedHead`. The pin
+`resolve_merge_conflicts`, `start_ultrafix`, `stop_ultrafix`,
+`set_pull_request_model` and `revert_pull_request_commit` tools still require
+`expectedHead`. The pin
 prevents them from acting on unseen code; for `start_ultrafix` and
 `stop_ultrafix`, a moved head may contain a fix the loop should still see.
 
@@ -1036,6 +1053,30 @@ The receipt reports the resolved `goal` and `maxCycles`, the posted
 `circuitBreaker: "requested"`. Follow it with `get_operation`; its lifecycle and
 progress are the same as `run_ultrafix`, and `stop_ultrafix` marks it as
 stopping.
+
+`update_pull_request_branch` only covers a branch that merges cleanly: it calls
+GitHub's update-branch endpoint, which GitHub rejects with `GITHUB_REJECTED`
+("merge conflict") when the branch conflicts with its base. For that case use
+`resolve_merge_conflicts`, the MCP equivalent of typing `/merge` on the pull
+request. It takes `repository`, `pullRequest`, required `expectedHead` and
+`idempotencyKey`; a moved head fails with `STALE_HEAD` before anything is
+posted. The tool posts the same `/merge` command a hand-typed comment does, so
+the normal intake merges the base branch into the PR branch and lets an agent
+resolve the conflicts. Like `/merge`, it only runs on pull requests that carry
+a ProPR processing label; without one the call fails with
+`PULL_REQUEST_NOT_MANAGED` and nothing is posted. It is listed under execute
+scope and never merges the pull request itself.
+
+```json
+{ "repository": "acme/web", "pullRequest": 42,
+  "expectedHead": "6f1c0a1d1e2f3a4b5c6d7e8f90a1b2c3d4e5f607",
+  "idempotencyKey": "pr-42-resolve-conflicts-1" }
+```
+
+The receipt reports the posted `commentId`, `resolvedHead` and `baseBranch`.
+Follow it with `get_operation`: it is `running` once the merge task picks up
+the comment, then `completed` or `failed` with that task, and `unknown` with
+`COMMAND_NOT_PICKED_UP` if no worker picks it up.
 
 **5. Follow a one-off task.** After `create_task`, keep both the returned
 `operationId` and `submissionId`. The submission view explains the handoff from

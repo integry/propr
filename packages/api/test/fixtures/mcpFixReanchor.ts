@@ -54,6 +54,15 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     ]);
     assert.deepEqual(moved.result.skipped, []);
 
+    // Pinning the PR head pins the PR, not the review: a current expectedHead with
+    // a review of an older head still proceeds, as a hand-typed /fix would.
+    const pinnedCurrent = await mutate('fix_review_findings', { ...pull, expectedHead: head, reviewCommentId, findingIds: ['F20'] });
+    assert.equal(pinnedCurrent.state, 'posted', JSON.stringify(pinnedCurrent));
+    assert.equal(comments.at(-1)!.body.split('\n')[0], '/fix F20');
+    assert.equal(pinnedCurrent.result.headSource, 'caller');
+    assert.equal(pinnedCurrent.result.reviewedHead, reviewedHead);
+    assert.equal(pinnedCurrent.result.reanchored, true);
+
     // Head moved and the code F21 cites was deleted: F20 is posted, F21 is reported.
     comparisons.set(`${reviewedHead}...${head}`, [{ filename: 'src/lease.ts', status: 'removed' }]);
     const partial = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F20', 'F21'] });
@@ -67,7 +76,8 @@ export async function verifyFixReanchor({ t, call, mutate, comments, comparisons
     const before = posted();
     const gone = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F21'] });
     assert.equal(gone.state, 'failed');
-    assert.equal(gone.result.error.code, 'STALE_FINDINGS');
+    assert.equal(gone.result.error.code, 'FINDINGS_CODE_REMOVED');
+    assert.equal(gone.result.error.stage, 'precondition');
     assert.equal(gone.result.error.details.reviewedHead, reviewedHead);
     assert.equal(gone.result.error.details.currentHead, head);
     assert.deepEqual(gone.result.error.details.skipped.map((record: Args) => record.id), ['F21']);

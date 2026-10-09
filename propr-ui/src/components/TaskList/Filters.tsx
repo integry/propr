@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import { Link } from 'react-router-dom';
 import { RepositorySelector, type RepoOption } from '../RepositorySelector';
 import { useDecoratedRepoOptions } from '../../hooks/useDecoratedRepoOptions';
@@ -29,30 +29,13 @@ const normalizeFilterValue = (filter: string): string => {
   }
 };
 
-/**
- * Every repository on this instance shares an owner, so the trigger shows
- * `propr` rather than `integry/propr`; the full name stays in the row tooltip
- * and the search. A name two owners share keeps its owner.
- */
-const withShortNames = (repos: RepoOption[]): RepoOption[] => {
-  const shortName = (name: string) => name.split('/')[1] ?? name;
-  const seen = new Map<string, number>();
-  for (const repo of repos) seen.set(shortName(repo.name), (seen.get(shortName(repo.name)) ?? 0) + 1);
-  return repos.map(repo => (
-    repo.displayName || !repo.name.includes('/') || seen.get(shortName(repo.name))! > 1
-      ? repo
-      : { ...repo, displayName: shortName(repo.name) }
-  ));
-};
-
 const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | 'availableRepos' | 'reposLoading'>> = ({
   repoFilter,
   setRepoFilter,
   availableRepos,
   reposLoading
 }) => {
-  const decorated = useDecoratedRepoOptions(availableRepos);
-  const repos = useMemo(() => withShortNames(decorated), [decorated]);
+  const repos = useDecoratedRepoOptions(availableRepos);
   return (
   <RepositorySelector
     repos={repos}
@@ -60,8 +43,9 @@ const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | '
     onRepoChange={setRepoFilter}
     isLoading={reposLoading}
     variant="default"
+    labelLayout="stacked"
     hideCountOnMobile
-    className="flex-1 min-w-0 sm:flex-initial sm:max-w-[13rem]"
+    className="flex-1 min-w-0 sm:flex-initial sm:w-[320px]"
   />
   );
 };
@@ -101,14 +85,14 @@ export const Filters: React.FC<FiltersProps> = ({
       <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
         {!hideFilters && (
           <>
-            {/* Takes the room the filters leave, so it stays usable in a list pane beside an open task. */}
+            {/* Takes the room the filters leave, and keeps enough of it that the repository picker gives way first in a list pane beside an open task. */}
             {!isMobile && (
               <ListSearchInput
                 value={searchQuery}
                 onChange={setSearchQuery}
                 onClear={() => setSearchQuery('')}
                 label="Search tasks"
-                className="hidden sm:block min-w-[8rem] flex-1 max-w-xs"
+                className="hidden sm:block min-w-[13rem] flex-1 max-w-xs"
               />
             )}
             <div className="flex items-center gap-2 min-w-0 max-sm:flex-1">

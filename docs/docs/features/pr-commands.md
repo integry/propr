@@ -312,6 +312,8 @@ ProPR posts a status comment on the PR when the merge starts and updates it with
 
 Use `/merge` before final review when the base branch has moved or the PR has conflicts.
 
+MCP clients can post the same command with the `resolve_merge_conflicts` tool, which pins the PR head (`expectedHead`) and returns a receipt that follows the merge task. The `update_pull_request_branch` MCP tool only performs GitHub's clean branch update and is refused when the branch has conflicts.
+
 ### `/ultrafix`
 
 Post:
@@ -367,9 +369,9 @@ Before each cycle, ProPR checks readiness:
 - The PR must be inactive — no other queued or running job and no pending batched comments — so the loop does not race other work on the PR.
 - The configured `pause` delay is applied between cycles.
 
-When blocking CI defers a review, ProPR posts one comment on the PR naming the checks that hold the next Ultrafix step back (failed or not finished). It is posted once per deferral — per head commit — not on every re-check, and no extra comment is posted when CI turns green and the loop continues. MCP `start_ultrafix` / `run_ultrafix` receipts report the same deferral reason and blocking checks as the `waiting_for_ci` phase instead of a pickup failure.
+When blocking CI defers a review, ProPR posts one comment on the PR naming the checks that hold the next Ultrafix step back (failed or not finished). It is posted once per deferral — per head commit — not on every re-check. The waiting comment does not stay behind: when CI turns green and the next `/review` runs, that review takes over the comment, which becomes its "Starting AI Code Review" and then "AI Code Review Complete" comment, so no second comment is posted. If the comment was deleted or cannot be edited, the review posts its own comment as usual. MCP `start_ultrafix` / `run_ultrafix` receipts report the same deferral reason and blocking checks as the `waiting_for_ci` phase instead of a pickup failure.
 
-The wait is bounded. If the review stays deferred for longer than the CI wait timeout — the `ultrafix_ci_wait_timeout_ms` instance setting (default 2 hours, settable through MCP `update_execution_settings`, `propr setting update ultrafix_ci_wait_timeout_ms <ms>`, or the `ULTRAFIX_CI_WAIT_TIMEOUT_MS` environment variable) — the loop stops with the usual "Ultrafix stopped before reaching its goal" comment and the reason "CI did not settle". Fix or re-run the blocking checks, then re-arm the loop with `/ultrafix`.
+The wait is bounded. If the review stays deferred for longer than the CI wait timeout — the `ultrafix_ci_wait_timeout_ms` instance setting (default 2 hours, settable through MCP `update_execution_settings`, `propr setting update ultrafix_ci_wait_timeout_ms <ms>`, or the `ULTRAFIX_CI_WAIT_TIMEOUT_MS` environment variable) — the loop stops with the usual "Ultrafix stopped before reaching its goal" comment and the reason "CI did not settle". That stop comment replaces the waiting comment in place rather than being posted beside it. Fix or re-run the blocking checks, then re-arm the loop with `/ultrafix`.
 
 #### Recovery From CI Failures
 

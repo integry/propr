@@ -9,6 +9,7 @@ import type { ChildProcess } from 'node:child_process';
 import {
     antigravityGoalConversationLog,
     runAntigravityGoalProtocol,
+    sumAntigravitySegmentUsage,
     type StartAntigravitySegment,
 } from '../packages/core/src/agents/impl/antigravityNativeGoal.ts';
 import {
@@ -397,8 +398,83 @@ describe('Antigravity goal accounting and capability', () => {
     test('step usage, not the conversation-cumulative result usage, measures one invocation', () => {
         assert.deepEqual(sumAntigravityStepUsage([
             { input_tokens: 100, output_tokens: 5, thinking_tokens: 2, cache_read_tokens: 40 },
-            { input_tokens: 50, output_tokens: 3 },
+            { input_tokens: 50, output_tokens: 3, cache_read_tokens: 0 },
         ]), { input_tokens: 150, output_tokens: 8, cache_read_input_tokens: 40, reasoning_output_tokens: 2 });
+    });
+
+    test('a cache count no step reported stays absent, while a reported zero is a measured zero', () => {
+        assert.deepEqual(sumAntigravityStepUsage([
+            { input_tokens: 100, output_tokens: 5 },
+            { input_tokens: 50, output_tokens: 3 },
+        ]), { input_tokens: 150, output_tokens: 8, reasoning_output_tokens: 0 });
+        assert.deepEqual(sumAntigravityStepUsage([
+            { input_tokens: 100, output_tokens: 5, cache_read_tokens: 0 },
+            { input_tokens: 50, output_tokens: 3, cache_read_tokens: 0 },
+        ]), { input_tokens: 150, output_tokens: 8, cache_read_input_tokens: 0, reasoning_output_tokens: 0 });
+    });
+
+    test('a cache count covering only some prompt-bearing steps is marked incomplete rather than reported as the whole', () => {
+        assert.deepEqual(sumAntigravityStepUsage([
+            { input_tokens: 100, output_tokens: 5, cache_read_tokens: 0 },
+            { input_tokens: 900, output_tokens: 3 },
+        ]), { input_tokens: 1000, output_tokens: 8, cache_read_input_tokens: 0, reasoning_output_tokens: 0, cache_usage_incomplete: true });
+        // The cached tokens the first step counted keep their discount: the subtotal stays
+        // separate from input_tokens, and only the hit-rate measurement is withheld.
+        assert.deepEqual(sumAntigravityStepUsage([
+            { input_tokens: 100, output_tokens: 5, cache_read_tokens: 60 },
+            { input_tokens: 900, output_tokens: 3 },
+        ]), { input_tokens: 1000, output_tokens: 8, cache_read_input_tokens: 60, reasoning_output_tokens: 0, cache_usage_incomplete: true });
+        // A step with no prompt has nothing to break down and does not spoil the measurement.
+        assert.deepEqual(sumAntigravityStepUsage([
+            { input_tokens: 100, output_tokens: 5, cache_read_tokens: 60 },
+            { output_tokens: 3 },
+        ]), { input_tokens: 100, output_tokens: 8, cache_read_input_tokens: 60, reasoning_output_tokens: 0 });
+    });
+
+    test('a goal keeps a cache count only when every prompt-bearing segment measured one', () => {
+        const segment = (tokenUsage: Record<string, number>) => ({ tokenUsage });
+        assert.deepEqual(sumAntigravitySegmentUsage([
+            segment({ input_tokens: 100, output_tokens: 5, cache_read_input_tokens: 40 }),
+            segment({ input_tokens: 50, output_tokens: 3, cache_read_input_tokens: 0 }),
+        ]), { input_tokens: 150, output_tokens: 8, reasoning_output_tokens: 0, cache_read_input_tokens: 40 });
+        assert.deepEqual(sumAntigravitySegmentUsage([
+            segment({ input_tokens: 100, output_tokens: 5, cache_read_input_tokens: 0 }),
+            segment({ input_tokens: 900, output_tokens: 3 }),
+        ]), { input_tokens: 1000, output_tokens: 8, reasoning_output_tokens: 0, cache_read_input_tokens: 0, cache_usage_incomplete: true });
+        assert.deepEqual(sumAntigravitySegmentUsage([
+            segment({ input_tokens: 900, output_tokens: 3 }),
+            segment({ input_tokens: 100, output_tokens: 5, cache_read_input_tokens: 0 }),
+        ]), { input_tokens: 1000, output_tokens: 8, reasoning_output_tokens: 0, cache_read_input_tokens: 0, cache_usage_incomplete: true });
+        assert.deepEqual(sumAntigravitySegmentUsage([
+            segment({ input_tokens: 100, output_tokens: 5 }),
+            segment({ input_tokens: 50, output_tokens: 3 }),
+        ]), { input_tokens: 150, output_tokens: 8, reasoning_output_tokens: 0 });
+    });
+
+    test('a goal with a partial cache breakdown keeps the cached subtotal for pricing and marks it incomplete', () => {
+        const segment = (tokenUsage: Record<string, number | boolean>) => ({ tokenUsage });
+        // Whichever segment omitted the count, the 60 cached tokens are known to be cached and
+        // keep the cache-read price; only the hit-rate measurement is withheld.
+        assert.deepEqual(sumAntigravitySegmentUsage([
+            segment({ input_tokens: 40, output_tokens: 5, cache_read_input_tokens: 60 }),
+            segment({ input_tokens: 900, output_tokens: 3 }),
+        ]), { input_tokens: 940, output_tokens: 8, reasoning_output_tokens: 0, cache_read_input_tokens: 60, cache_usage_incomplete: true });
+        assert.deepEqual(sumAntigravitySegmentUsage([
+            segment({ input_tokens: 900, output_tokens: 3 }),
+            segment({ input_tokens: 40, output_tokens: 5, cache_read_input_tokens: 60 }),
+        ]), { input_tokens: 940, output_tokens: 8, reasoning_output_tokens: 0, cache_read_input_tokens: 60, cache_usage_incomplete: true });
+        // A measured segment after the breakdown is already incomplete adds its count the same way.
+        assert.deepEqual(sumAntigravitySegmentUsage([
+            segment({ input_tokens: 40, output_tokens: 5, cache_read_input_tokens: 60 }),
+            segment({ input_tokens: 900, output_tokens: 3 }),
+            segment({ input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 30 }),
+        ]), { input_tokens: 950, output_tokens: 9, reasoning_output_tokens: 0, cache_read_input_tokens: 90, cache_usage_incomplete: true });
+        // A segment whose own steps left its breakdown incomplete keeps the whole goal incomplete,
+        // even when every other segment measured its prompt.
+        assert.deepEqual(sumAntigravitySegmentUsage([
+            segment({ input_tokens: 940, output_tokens: 5, cache_read_input_tokens: 60, cache_usage_incomplete: true }),
+            segment({ input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 30 }),
+        ]), { input_tokens: 950, output_tokens: 6, reasoning_output_tokens: 0, cache_read_input_tokens: 90, cache_usage_incomplete: true });
     });
 
     test('a recorded goal stream splits into its invocations at each init envelope', () => {
@@ -542,7 +618,8 @@ describe('Antigravity goal stream adapter', () => {
         assert.deepEqual(stream.textsAfter(0), ['Adding subtract.']);
         assert.deepEqual(stream.result, { status: 'error', response: '' });
         assert.equal(stream.errorText, 'error: interrupted');
-        assert.deepEqual(stream.tokenUsage, { input_tokens: 40, output_tokens: 2, cache_read_input_tokens: 0, reasoning_output_tokens: 0 });
+        // No step reported a cache count, so none is synthesized.
+        assert.deepEqual(stream.tokenUsage, { input_tokens: 40, output_tokens: 2, reasoning_output_tokens: 0 });
         assert.equal(stream.exited, true);
         assert.equal(recorded.length, 5);
     });

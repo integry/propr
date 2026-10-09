@@ -59,8 +59,8 @@ async function fixture(page: Page, discovery = false, savedCandidates?: UsageTip
       '/api/dashboard/attention': { repository: 'all', items: [], counts: { blocked: 0, decisions: 0, total: 0 } },
       '/api/dashboard/active': { repository: 'all', running: [], queued: [], queue: { queuedCount: 0, reason: null }, counts: { running: 0, queued: 0 } },
       '/api/dashboard/outcomes': { repository: 'all', limit: 50, items: [] },
-      '/api/stats/dashboard': { period: '7d', repository: 'all', completed: 34, successRate: 87.5, recordedSpend: 12.42,
-        dailyCompleted: [{ date: '2026-09-26', count: 12 }, { date: '2026-09-27', count: 22 }], previous: { completed: 29, successRate: 80, recordedSpend: 10 } },
+      '/api/stats/dashboard': { period: '7d', repository: 'all', tasks: 40, completed: 34, failed: 5, successRate: 87.2, recordedSpend: 12.42,
+        dailyTasks: [{ date: '2026-09-26', count: 12 }, { date: '2026-09-27', count: 22 }], previous: { tasks: 33, completed: 29, successRate: 80, recordedSpend: 10 } },
     };
     return url in responses ? route.fulfill({ json: responses[url] }) : route.fulfill({ status: 503, json: { error: 'Fixture unavailable' } });
   });

@@ -451,7 +451,7 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
     await t.test('every new tool declares its scope, strict schema and write posture', async () => {
       assert.equal(tool('list_pull_requests').readOnly, true);
       assert.equal(tool('list_pull_requests').scope, 'read');
-      for (const name of ['comment_on_pull_request', 'set_pull_request_model', 'start_ultrafix', 'stop_ultrafix']) assert.equal(tool(name).scope, 'execute');
+      for (const name of ['comment_on_pull_request', 'set_pull_request_model', 'start_ultrafix', 'stop_ultrafix', 'resolve_merge_conflicts']) assert.equal(tool(name).scope, 'execute');
       for (const name of ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request']) {
         const appendOnly = tool(name);
         assert.notEqual(appendOnly.readOnly, true);
@@ -459,13 +459,13 @@ test('the MCP pull request surface lists, correlates, comments, routes models an
         assert.equal(appendOnly.schema.shape.expectedHead.isOptional(), true, `${name} must list expectedHead as optional`);
         assert.ok(appendOnly.description.includes('expectedHead is optional; when omitted the current head at call time is used and returned as resolvedHead.'));
       }
-      for (const name of ['merge_pull_request', 'update_pull_request_branch', 'start_ultrafix', 'stop_ultrafix']) {
+      for (const name of ['merge_pull_request', 'update_pull_request_branch', 'resolve_merge_conflicts', 'start_ultrafix', 'stop_ultrafix']) {
         const guarded = tool(name);
         assert.equal(guarded.schema.shape.expectedHead.isOptional(), false, `${name} must require expectedHead`);
         assert.ok(guarded.description.includes('expectedHead is required'));
         assert.equal(guarded.schema.safeParse({ repository: 'acme/repo', pullRequest: 42, idempotencyKey: 'missing-head-key' }).success, false);
       }
-      for (const name of ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request', 'set_pull_request_model', 'start_ultrafix', 'stop_ultrafix']) {
+      for (const name of ['review_pull_request', 'fix_review_findings', 'run_ultrafix', 'comment_on_pull_request', 'set_pull_request_model', 'start_ultrafix', 'stop_ultrafix', 'resolve_merge_conflicts']) {
         assert.notEqual(tool(name).readOnly, true);
         await assert.rejects(call(name, { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40), idempotencyKey: 'strict-extra-key', unexpected: true }));
       }

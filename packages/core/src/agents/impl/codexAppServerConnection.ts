@@ -41,9 +41,11 @@ function extractTokenUsage(params: Record<string, unknown>): TokenUsage | undefi
     const total = asRecord(usage.total ?? usage);
     const input = Number(total.inputTokens ?? total.input_tokens ?? 0);
     const output = Number(total.outputTokens ?? total.output_tokens ?? 0);
-    const cached = Number(total.cachedInputTokens ?? total.cache_read_input_tokens ?? 0);
+    // An absent cache count is unknown, not a measured zero; only a reported one is passed on.
+    const reportedCached = total.cachedInputTokens ?? total.cache_read_input_tokens;
+    const cached = Number(reportedCached ?? 0);
     if (!input && !output && !cached) return undefined;
-    return { input_tokens: input, output_tokens: output, cache_read_input_tokens: cached };
+    return { input_tokens: input, output_tokens: output, ...(reportedCached !== undefined && reportedCached !== null && { cache_read_input_tokens: cached }) };
 }
 
 export class AppServerConnection {

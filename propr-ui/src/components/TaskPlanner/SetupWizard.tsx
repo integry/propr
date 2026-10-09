@@ -17,6 +17,7 @@ import { CostPreview } from './CostPreview';
 import { SmartFileSelection } from './SmartFileSelection';
 import { GenerateButtonContent, ModelSelector } from './SetupWizardComponents';
 import { getEstimatedIssueText } from './setupWizardUtils';
+import { useSelectedModelMaxTokens } from './useSelectedModelMaxTokens';
 import type { RepoSelection } from '../RepositorySelector';
 import {
   PlannerConfig,
@@ -112,9 +113,11 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
   const isMobile = useIsMobile(768);
   const showPreviewProgress = shouldShowPreviewProgress(isGenerating, isMobile);
   const smartSelection = contextRefresh.preview.data?.smartSelection;
+  // The selected model's window is known before the preview returns, and stays right while a model change refreshes it.
+  const modelMaxTokens = useSelectedModelMaxTokens(config.generationModel, contextRefresh.preview.data?.stats.modelMaxContextTokens);
   // On a phone the context pane's controls become rows of the one settings group under the prompt.
   const mobileSettingsRows = isMobile ? [
-    <ContextLevelSlider key="scope" compact value={config.contextLevel} onChange={setContextLevel} modelMaxTokens={contextRefresh.preview.data?.stats.modelMaxContextTokens} />,
+    <ContextLevelSlider key="scope" compact value={config.contextLevel} onChange={setContextLevel} modelMaxTokens={modelMaxTokens} />,
     <ContextRepositoriesSection key="repos" compact repositories={config.contextRepositories} availableRepos={availableRepos} onAdd={handleAddContextRepo} onRemove={handleRemoveContextRepo} />,
     // The cost states draw their own top rule for the desktop pane; the group's divider replaces it here.
     <div key="cost" data-testid="setup-cost-row" className="text-xs [&>div:first-child]:border-t-0 [&>div:first-child]:pt-0">
@@ -192,6 +195,7 @@ const SetupWizardContent: React.FC<SetupWizardContentProps> = (props) => {
         {!isMobile && <SetupWizardRightPane
           contextLevel={config.contextLevel}
           onContextLevelChange={setContextLevel}
+          modelMaxTokens={modelMaxTokens}
           smartSelection={smartSelection}
           isPreviewLoading={contextRefresh.preview.isLoading}
           contextRepositories={config.contextRepositories}

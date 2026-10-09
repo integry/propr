@@ -7,8 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **MCP `resolve_merge_conflicts`**: the MCP equivalent of typing `/merge` on a
+  pull request. It posts the same `/merge` command, whose intake merges the base
+  branch into the PR branch and resolves conflicts with an agent. It requires
+  `expectedHead` (a moved head fails with `STALE_HEAD`) and an `idempotencyKey`,
+  refuses a PR without a ProPR processing label with `PULL_REQUEST_NOT_MANAGED`,
+  and returns a durable receipt that `get_operation` follows to the merge task.
+  `update_pull_request_branch` is unchanged and still covers the clean case
+  GitHub can update itself.
+
 ### Changed
 
+- **Ultrafix CI wait comment**: the "Ultrafix is waiting for CI before the next
+  `/review`" comment is now edited in place with the wait's outcome instead of
+  staying on the PR next to it. The review that runs once blocking checks pass
+  turns it into its "AI Code Review Complete" comment, and a CI wait timeout
+  turns it into the "CI did not settle" stop comment.
+
+- **`GET /api/stats/dashboard`** reports its daily series as `dailyTasks`
+  (tasks created per UTC day, the series the Analytics activity chart plots)
+  and no longer reports `dailyCompleted` (completions per day). The bundled
+  dashboard reads `dailyTasks`, and still draws `dailyCompleted` from an older
+  server; a script that read `dailyCompleted` should read `dailyTasks`.
 - **Repository to-dos**: launching a task from a to-do (**Run task**, MCP
   `create_task` with `todoIds`, or a submission retry) now marks the to-do
   completed once its GitHub issue exists and records that issue

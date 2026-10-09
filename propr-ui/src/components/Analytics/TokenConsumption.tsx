@@ -10,6 +10,12 @@
  *
  * A server that predates the split reports only the total, so the split reads
  * as unknown rather than as an invented 0 / 100.
+ *
+ * Nearly all of the volume is prompt, so prompt caching is the biggest lever
+ * on spend: the pane reports how much of the prompt the cache served and what
+ * that saved against the full prompt price. Neither row appears when no run
+ * reported a cache breakdown — that is not a 0% hit rate — and savings read
+ * as unknown when no model behind the reads has a known price.
  */
 
 import React from 'react';
@@ -61,7 +67,8 @@ const TokenConsumption: React.FC<TokenConsumptionProps> = ({ overview, loading, 
   const hasSplit = input !== undefined && output !== undefined && input + output > 0;
   const perMillion = usage.total_cost_usd / (total / 1_000_000);
 
-  const rows: Array<{ key: string; label: string; fill?: string; value: string; share?: string }> = [
+  const cache = usage.cache;
+  const rows: Array<{ key: string; label: string; fill?: string; value: string; share?: string; hint?: string }> = [
     {
       key: 'input',
       label: 'Input · prompt',
@@ -77,6 +84,20 @@ const TokenConsumption: React.FC<TokenConsumptionProps> = ({ overview, loading, 
       share: hasSplit ? percent(output, input + output) : undefined,
     },
     { key: 'per-million', label: 'Spend per 1M tokens', value: formatUsd(perMillion) },
+    ...(cache ? [
+      {
+        key: 'cache-hit-rate',
+        label: 'Cache hit rate',
+        value: percent(cache.cache_read_tokens, cache.input_tokens),
+        hint: `${formatCompactNumber(cache.cache_read_tokens)} of ${formatCompactNumber(cache.input_tokens)} prompt tokens served from the prompt cache`,
+      },
+      {
+        key: 'cache-savings',
+        label: 'Saved by caching',
+        value: cache.saved_usd === null ? UNKNOWN : `~${formatUsd(cache.saved_usd)}`,
+        hint: 'Cached reads at the full prompt price, less what they cost; models without a known price are left out',
+      },
+    ] : []),
   ];
 
   return (
@@ -98,7 +119,7 @@ const TokenConsumption: React.FC<TokenConsumptionProps> = ({ overview, loading, 
       <dl>
         {rows.map(row => (
           <div key={row.key} className={`${ROW} border-b border-slate-100 last:border-b-0`} data-testid={`token-row-${row.key}`}>
-            <dt className="flex min-w-0 items-center gap-1.5 text-slate-600">
+            <dt className="flex min-w-0 items-center gap-1.5 text-slate-600" title={row.hint}>
               {row.fill && <span className="h-2 w-2 flex-none rounded-sm" style={{ backgroundColor: row.fill }} aria-hidden="true" />}
               <span className="truncate">{row.label}</span>
             </dt>
