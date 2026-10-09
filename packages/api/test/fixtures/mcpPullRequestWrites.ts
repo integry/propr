@@ -325,6 +325,39 @@ export async function verifyPullRequestWrites(
     await saveUltrafixRatingGoal(8);
   });
 
+  await t.test('resolve_merge_conflicts posts /merge at a pinned head on a labelled pull request', async () => {
+    const pull = { repository: 'acme/repo', pullRequest: 42, expectedHead: 'a'.repeat(40) };
+    const posted = () => comments.filter(comment => comment.repository === 'acme/repo' && comment.pullRequest === 42 && comment.body.startsWith('/merge')).length;
+    const before = posted();
+    const stale = await mutate('resolve_merge_conflicts', { ...pull, expectedHead: 'f'.repeat(40) });
+    assert.equal(stale.result.error.code, 'STALE_HEAD');
+    assert.equal(stale.result.error.stage, 'precondition');
+    // /merge intake ignores pull requests without a processing label, so the tool refuses up front.
+    const unmanaged = await mutate('resolve_merge_conflicts', pull);
+    assert.equal(unmanaged.result.error.code, 'PULL_REQUEST_NOT_MANAGED');
+    assert.equal(unmanaged.result.error.stage, 'precondition');
+    assert.equal(posted(), before, 'a refused merge must post nothing');
+
+    const labels = findPullRequest('acme/repo', 42).labels;
+    labels.push('AI');
+    try {
+      const started = await mutate('resolve_merge_conflicts', pull);
+      assert.equal(started.state, 'posted');
+      assert.equal(started.lifecycle.state, 'accepted');
+      assert.equal(started.result.resolvedHead, 'a'.repeat(40));
+      assert.equal(started.result.headSource, 'caller');
+      assert.equal(started.result.state, 'posted');
+      const body = comments.at(-1)!.body;
+      assert.match(body, /^\/merge\n\n<!-- propr-mcp:[^;]+; head:a{40} -->$/);
+      assert.equal(started.result.commentId, comments.at(-1)!.id);
+      assert.equal(posted(), before + 1);
+      // The comment-driven path does the merge; the clean update-branch endpoint is never called.
+      assert.ok(!restCalls.some(item => item.route === 'PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch'));
+    } finally {
+      labels.splice(labels.indexOf('AI'), 1);
+    }
+  });
+
   await t.test('a truncated label list leaves the ultrafix breaker undetermined', async () => {
     const listed = await call('list_pull_requests', { repository: 'acme/other' });
     const crowded = listed.pullRequests.find((pull: Args) => pull.number === 6);
@@ -468,7 +501,13 @@ export async function verifyPullRequestWrites(
     // An identifier the review does not offer is named, never dropped.
     const unknown = await mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['F99'], suggestionIds: ['S9'] });
     assert.equal(unknown.state, 'failed');
-    assert.equal(unknown.result.error.code, 'STALE_FINDINGS');
+    assert.equal(unknown.result.error.code, 'FINDINGS_UNAVAILABLE');
+    assert.equal(unknown.result.error.stage, 'precondition');
+    assert.deepEqual(unknown.result.error.details.unavailable, [
+      { id: 'F99', kind: 'finding', reason: 'not_in_review' },
+      { id: 'S9', kind: 'suggestion', reason: 'not_in_review' },
+    ]);
+    assert.deepEqual(unknown.result.error.details.offeredFindingIds, ['F20', 'F21']);
     assert.ok(unknown.result.error.message.includes('F99'), unknown.result.error.message);
     assert.ok(unknown.result.error.message.includes('S9'), unknown.result.error.message);
     assert.ok(unknown.result.error.message.includes('F20, F21'), unknown.result.error.message);
@@ -477,8 +516,18 @@ export async function verifyPullRequestWrites(
     // A suggestion an earlier run already implemented is no longer selectable.
     redis.consume(`${reviewCommentId}:S:S31`);
     const consumed = await mutate('fix_review_findings', { ...pull, reviewCommentId, suggestionIds: ['S31'] });
-    assert.equal(consumed.result.error.code, 'STALE_FINDINGS');
+    assert.equal(consumed.result.error.code, 'FINDINGS_UNAVAILABLE');
+    assert.deepEqual(consumed.result.error.details.unavailable, [{ id: 'S31', kind: 'suggestion', reason: 'consumed' }]);
     assert.ok(consumed.result.error.message.includes('S31'), consumed.result.error.message);
+
+    // A review older than the window /fix reads back offers nothing, and says why.
+    const expiredCommentId = 962;
+    comments.push({ id: expiredCommentId, repository: 'acme/repo', pullRequest: 42, author: 'propr-dev[bot]',
+      createdAt: new Date(Date.now() - 8 * 24 * 3600 * 1000).toISOString(), body: fixtureReviewBody(head) });
+    const expired = await mutate('fix_review_findings', { ...pull, reviewCommentId: expiredCommentId, findingIds: ['F20'] });
+    assert.equal(expired.result.error.code, 'FINDINGS_UNAVAILABLE');
+    assert.deepEqual(expired.result.error.details.unavailable, [{ id: 'F20', kind: 'finding', reason: 'expired' }]);
+    assert.ok(expired.result.error.message.includes('seven days'), expired.result.error.message);
 
     // A namespace mismatch is refused by the schema before anything is posted.
     await assert.rejects(mutate('fix_review_findings', { ...pull, reviewCommentId, findingIds: ['S32'] }));
@@ -492,7 +541,8 @@ export async function verifyPullRequestWrites(
     const pinnedOlder = await mutate('fix_review_findings', { ...pull, expectedHead: 'b'.repeat(40), reviewCommentId: staleCommentId, findingIds: ['F20'] });
     assert.equal(pinnedOlder.result.error.code, 'STALE_HEAD');
     const notAReview = await mutate('fix_review_findings', { ...pull, reviewCommentId: plainCommentId, findingIds: ['F20'] });
-    assert.equal(notAReview.result.error.code, 'STALE_FINDINGS');
+    assert.equal(notAReview.result.error.code, 'NOT_A_REVIEW');
+    assert.equal(notAReview.result.error.details.reviewCommentId, plainCommentId);
 
     assert.equal(posted(), before, 'no rejected selection may reach GitHub');
   });

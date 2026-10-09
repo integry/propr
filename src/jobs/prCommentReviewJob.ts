@@ -325,7 +325,8 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         : '';
     const modelList = assignments.map(a => `\`${getModelName(a.model)}\``).join(', ');
     const startedEvidence = buildWorkEvidenceMarker('started', realComments.map(comment => comment.id));
-    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${startedEvidence ? `\n${startedEvidence}` : ''}` });
+    // An Ultrafix review that waited for CI takes over the waiting comment, which later becomes "Review Complete".
+    state.startingWorkComment = await (await import('./ultrafixCiWaitNotice.js')).postReviewStartingComment({ octokit: state.octokit, redis: redisClient, owner: repoOwner, repo: repoName, pr: pullRequestNumber, adoptWaitNotice: Boolean(job.data.ultrafixMeta), correlatedLogger, body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${startedEvidence ? `\n${startedEvidence}` : ''}` });
 
     const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
     const titleContext = buildPrTaskTitleContext({ workflow, pullRequestNumber, prTitle: prData!.data.title, instructionText: job.data.commandInstructions, recentComments: allComments, prDescription: prData!.data.body, excludeCommentIds: state.unprocessedComments.map(comment => comment.id) });

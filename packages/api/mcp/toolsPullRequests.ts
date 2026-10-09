@@ -12,6 +12,7 @@ import {
   formatReviewFeedbackSelection,
   reviewFeedbackSelectionSize,
 } from '@propr/shared';
+import { hasValidTriggerLabel } from '@propr/core';
 import { McpError } from './config.js';
 import { beforeSideEffects } from './errorEnvelope.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
@@ -148,7 +149,9 @@ async function withModelLabelLease<T>(redis: RedisClientType, repository: string
  * A review of an older head is re-anchored onto `head`, as a hand-typed `/fix`
  * is: records whose cited code was deleted since the review, with no surviving
  * file gaining lines it could have moved into, are reported as skipped, and the rest are posted. Only when nothing still applies is the call
- * refused, because then there is no `/fix` left to post.
+ * refused (FINDINGS_CODE_REMOVED), because then there is no `/fix` left to post.
+ * A moved head alone is never a reason to refuse; callers who want that pass
+ * `expectedHead`, which is checked before this runs.
  */
 async function resolveFixSelection(
   deps: ToolDeps, principal: Parameters<McpTool['run']>[0]['principal'], args: Args, head: string,
@@ -163,21 +166,30 @@ async function resolveFixSelection(
   const comment = await readDiscussionComment(principal, { repository: args.repository, commentId: args.reviewCommentId, pullRequest: args.pullRequest });
   const projected = await projectDiscussionComment(deps, comment, { repository: args.repository, pullRequest: args.pullRequest, head, bodyOffset: 0 });
   const review = projected.review as ProjectedFixReview | undefined;
-  if (!review) throw new McpError('STALE_FINDINGS', 'That comment is not a parseable ProPR review, so it offers no findings or suggestions to select.', 409);
-  // Reported per identifier and per namespace. One generic message left a
-  // caller unable to tell a typo from an already-consumed item, which is
-  // the silent-drop behaviour this tool must not have.
+  if (!review) throw new McpError('NOT_A_REVIEW', 'That comment is not a parseable ProPR review, so it offers no findings or suggestions to select. Pass the commentId of a ProPR review from get_pull_request_discussion.', 422, {
+    stage: 'precondition', details: { reviewCommentId: args.reviewCommentId },
+  });
+  // Reported per identifier and per namespace, with the reason each one cannot
+  // be located. One generic message left a caller unable to tell a typo from an
+  // already-consumed item, which is the silent-drop behaviour this tool must not have.
   const offeredFindings = review.selectableFindingIds;
   const offeredSuggestions = review.selectableSuggestionIds;
-  const unknownFindings = canonical.findingIds.filter(id => !offeredFindings.includes(id));
-  const unknownSuggestions = canonical.suggestionIds.filter(id => !offeredSuggestions.includes(id));
-  if (unknownFindings.length || unknownSuggestions.length) {
-    throw new McpError('STALE_FINDINGS', [
-      unknownFindings.length ? `Findings not available in that review: ${unknownFindings.join(', ')}.` : '',
-      unknownSuggestions.length ? `Suggestions not available in that review: ${unknownSuggestions.join(', ')}.` : '',
+  const unavailable = [
+    ...canonical.findingIds.filter(id => !offeredFindings.includes(id))
+      .map(id => ({ id, kind: 'finding' as const, reason: unavailableReason(review.actionableFindings.find(item => item.id === id)) })),
+    ...canonical.suggestionIds.filter(id => !offeredSuggestions.includes(id))
+      .map(id => ({ id, kind: 'suggestion' as const, reason: unavailableReason(review.suggestions.find(item => item.id === id)) })),
+  ];
+  if (unavailable.length) {
+    const named = (reason: UnavailableReason) => unavailable.filter(item => item.reason === reason).map(item => item.id).join(', ');
+    throw new McpError('FINDINGS_UNAVAILABLE', [
+      named('not_in_review') ? `Not in that review: ${named('not_in_review')}.` : '',
+      named('consumed') ? `Already addressed by an earlier /fix run: ${named('consumed')}.` : '',
+      named('expired') ? `The review is older than the seven days /fix reads back, so it offers nothing to select: ${named('expired')}.` : '',
       `It currently offers findings ${offeredFindings.join(', ') || '(none)'} and suggestions ${offeredSuggestions.join(', ') || '(none)'}.`,
-      'They may have been addressed already, or the review is older than the seven days /fix reads back.',
-    ].filter(Boolean).join(' '), 409);
+    ].filter(Boolean).join(' '), 409, {
+      stage: 'precondition', details: { unavailable, offeredFindingIds: offeredFindings, offeredSuggestionIds: offeredSuggestions },
+    });
   }
   const records: FixRecord[] = [
     ...canonical.findingIds.map(id => {
@@ -194,7 +206,7 @@ async function resolveFixSelection(
   ];
   const report = await reanchorFixRecords(principal, { repository: args.repository, reviewedHead: review.reviewedHead, head }, records);
   if (report.applied.length === 0) {
-    throw new McpError('STALE_FINDINGS', `None of the selected records still apply at head ${head}: the code they cite was removed after the review of ${review.reviewedHead}. Review the current head for fresh findings.`, 409, {
+    throw new McpError('FINDINGS_CODE_REMOVED', `None of the selected records can be located at head ${head}: every file they cite was deleted after the review of ${review.reviewedHead}, and no surviving file gained lines the code could have moved into. Review the current head for fresh findings.`, 409, {
       stage: 'precondition', details: { reviewedHead: review.reviewedHead, currentHead: head, skipped: report.skipped },
     });
   }
@@ -205,8 +217,16 @@ interface ProjectedFixReview {
   reviewedHead: string | null;
   selectableFindingIds: string[];
   selectableSuggestionIds: string[];
-  actionableFindings: Array<{ id: string; title: string; violatedRequirement: string; evidence: string; introducedByPRExplanation: string; minimumCorrection: string }>;
-  suggestions: Array<{ id: string; title: string; description: string }>;
+  actionableFindings: Array<{ id: string; title: string; violatedRequirement: string; evidence: string; introducedByPRExplanation: string; minimumCorrection: string; consumed: boolean }>;
+  suggestions: Array<{ id: string; title: string; description: string; consumed: boolean }>;
+}
+
+type UnavailableReason = 'not_in_review' | 'consumed' | 'expired';
+
+/** Why a review record is not selectable. The review's head is never a reason: /fix re-anchors it. */
+function unavailableReason(record: { consumed: boolean } | undefined): UnavailableReason {
+  if (!record) return 'not_in_review';
+  return record.consumed ? 'consumed' : 'expired';
 }
 
 export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
@@ -266,7 +286,8 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
           + ' Unknown or mismatched identifiers are rejected rather than dropped.'
           + ' Like a hand-typed /fix, a review of an older head is not refused: the fix is re-anchored onto the current head (returned as resolvedHead, with reviewedHead and reanchored=true).'
           + ' Records whose cited files were all deleted since the review, when no surviving file gained lines the code could have moved into, are reported in skipped with reason code_removed and left out of the posted command; the rest are posted and listed in applied, with touchedPaths naming cited files that changed since the review.'
-          + ' comparison=unavailable means the changes since the review could not be read, so every record was posted. The call is refused with STALE_FINDINGS only when no selected record still applies; pass expectedHead to refuse a moved head outright.'
+          + ' comparison=unavailable means the changes since the review could not be read, so every record was posted. '
+          + ' A moved head alone never refuses the call. The specific refusals are: NOT_A_REVIEW when reviewCommentId is not a ProPR review; FINDINGS_UNAVAILABLE when a selected identifier cannot be located in it, with details.unavailable giving each id a reason of not_in_review, consumed (an earlier /fix already addressed it) or expired (the review is older than the seven days /fix reads back); and FINDINGS_CODE_REMOVED when every selected record was skipped as code_removed, with the skipped records in details. Pass expectedHead to refuse a moved head outright with STALE_HEAD.'
         : '')
       + (command === 'review'
         ? ` Omit model to review with the model the pull request is routed to. Supply model as one alias, or as a list of up to ${MAX_REVIEW_MODELS} aliases to fan out one independent review per model, the same as posting one /review <model> comment per model.`
@@ -416,13 +437,28 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead,
         resolvedHead: pr.head.sha, headSource: 'caller', state: 'posted', goal, maxCycles, wasActive, circuitBreaker: 'requested' } };
     } });
-  tools.push({ name: 'update_pull_request_branch', description: 'Update the PR branch from its base, matching /merge semantics. expectedHead is required to avoid updating code you have not seen. Does not merge the pull request.', scope: 'execute', schema: z.object(mutation).strict(), run: async ({ principal, args }) => {
+  tools.push({ name: 'update_pull_request_branch', description: 'Update the PR branch from its base through GitHub\'s update-branch endpoint, for a branch that merges cleanly. expectedHead is required to avoid updating code you have not seen. GitHub rejects it (GITHUB_REJECTED) when the branch conflicts with its base; use resolve_merge_conflicts then. Does not merge the pull request.', scope: 'execute', schema: z.object(mutation).strict(), run: async ({ principal, args }) => {
     const { owner, repo, pr } = await pull(principal, args);
     assertPullRequestOpen(pr, 'update the branch for');
     assertPullRequestHead(pr, args.expectedHead);
     const response = await principal.github.request('PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch', { owner, repo, pull_number: args.pullRequest, expected_head_sha: args.expectedHead });
     return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, expectedHead: args.expectedHead, url: response.data.url, message: response.data.message } };
   } });
+  tools.push({ name: 'resolve_merge_conflicts', description: 'Merge the base branch into an open PR branch and let an agent resolve any conflicts, by posting the same /merge command a hand-typed comment does; its normal intake starts the merge task. Use it when update_pull_request_branch is rejected for a merge conflict. expectedHead is required because the merge should start from the code you have seen; a moved head is rejected with STALE_HEAD. The pull request must carry a ProPR processing label, which /merge requires; otherwise it is rejected with PULL_REQUEST_NOT_MANAGED and nothing is posted. Returns a durable receipt that follows the merge task through get_operation. Does not merge the pull request.', scope: 'execute',
+    schema: z.object(mutation).strict(), run: async ({ principal, args, operationId }) => {
+      const { owner, repo, pr } = await pull(principal, args);
+      assertPullRequestOpen(pr, 'resolve merge conflicts on');
+      assertPullRequestHead(pr, args.expectedHead);
+      // The /merge intake silently ignores pull requests without a trigger label, which
+      // would otherwise surface only as a pickup timeout on the receipt.
+      if (!await beforeSideEffects(() => hasValidTriggerLabel(pr.labels))) {
+        throw new McpError('PULL_REQUEST_NOT_MANAGED', 'The /merge command only runs on pull requests that carry a ProPR processing label (for example the AI or propr label). Add one, then retry.', 409, { stage: 'precondition', details: { labels: labelNames(pr.labels) } });
+      }
+      const body = `/merge\n\n<!-- propr-mcp:${operationId}; head:${pr.head.sha} -->`;
+      const { data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body });
+      return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead,
+        resolvedHead: pr.head.sha, headSource: 'caller', baseBranch: pr.base.ref, state: 'posted' } };
+    } });
   tools.push({ name: 'get_pull_request_revert_preview', description: 'Preview reverting an exact commit belonging to a pull request using the existing backend.', scope: 'read', readOnly: true,
     schema: z.object({ ...shape, commit: z.string().regex(/^[0-9a-f]{40}$/) }).strict(), run: async ({ principal, args }) => {
       const { owner, repo } = await pull(principal, args);

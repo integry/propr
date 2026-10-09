@@ -610,6 +610,15 @@ describe('mergeConflictDetector - handleMergeCommand', () => {
         const [, data] = mockQueueAdd.mock.calls[0].arguments as [string, Record<string, unknown>];
         assert.equal(data.triggerSource, 'comment');
         assert.equal(data.userId, '7');
+        assert.equal('commandCommentId' in data, false);
+    });
+
+    test('records the /merge comment so its task can be traced back to it', async () => {
+        routeGitHub({ 42: [{ mergeable: false, mergeableState: 'dirty' }] });
+        const result = await handleMergeCommand({ owner: 'test-owner', repoName: 'test-repo', prNumber: 42, commentId: 9001, redisClient: createMockRedis(), correlationId: 'cid' });
+        assert.equal(result?.outcome, 'queued');
+        const [, data] = mockQueueAdd.mock.calls[0].arguments as [string, Record<string, unknown>];
+        assert.equal(data.commandCommentId, 9001);
     });
 
     test('a human PR is refused with not_propr_pull_request', async () => {

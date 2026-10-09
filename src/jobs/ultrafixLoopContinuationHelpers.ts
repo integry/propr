@@ -38,6 +38,7 @@ export {
     maybeEnableAutoMerge,
     postPrComment,
     removeUltrafixLabel,
+    updatePrComment,
     type UltrafixLabelState,
 } from './ultrafixLoopGithub.js';
 

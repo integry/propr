@@ -18,7 +18,7 @@ interface UltrafixReviewExecutionGateDeps {
     saveDeferredContinuation: (redis: Redis, deferred: UltrafixDeferredContinuation) => Promise<unknown>;
     /** Posts the one-per-deferral CI notice and enforces the CI wait timeout. */
     handleCiDeferral?: (input: UltrafixCiDeferralInput) => Promise<UltrafixCiDeferralResult>;
-    /** Forgets a finished CI wait once the review may run. */
+    /** Forgets a finished CI wait once the review may run, handing its notice to that review. */
     clearCiWait?: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
 }
 
@@ -29,7 +29,7 @@ const defaultDeps: UltrafixReviewExecutionGateDeps = {
     getCheckRunsStatus: (owner, repo, ref) => getCheckRunsStatusForRepo(owner, repo, ref),
     saveDeferredContinuation,
     handleCiDeferral: async input => (await import('./ultrafixCiWait.js')).handleUltrafixCiDeferralSafely(input),
-    clearCiWait: async (...args) => (await import('./ultrafixCiWait.js')).clearUltrafixCiWait(...args),
+    clearCiWait: async (...args) => (await import('./ultrafixCiWait.js')).settleUltrafixCiWait(...args),
 };
 
 export interface UltrafixReviewDeferral {

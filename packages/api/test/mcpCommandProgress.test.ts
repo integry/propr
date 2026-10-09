@@ -454,6 +454,48 @@ test('an unpicked PR command becomes unknown after the pickup deadline with a re
   assert.equal(((recovered.lifecycle as { artifacts: Record<string, unknown> }).artifacts).taskId, 'late-review');
 });
 
+test('a /merge receipt follows the merge task that recorded its comment', async t => {
+  const db = await fixture(t);
+  const principal = {
+    user: { id: 'alice' }, grant: { id: 'grant-a' },
+    github: { request: async () => ({ data: { head: { sha: 'a'.repeat(40) } } }) },
+  } as unknown as McpPrincipal;
+  const operations = new McpOperations(db);
+  const receipt = await operations.run(principal, {
+    tool: 'resolve_merge_conflicts', repository: 'acme/repo', args: { idempotencyKey: 'merge-conflicts' },
+  }, async () => ({ status: 202, data: { state: 'posted', repository: 'acme/repo', pullRequest: 42, commentId: 601 } }));
+  const deps = { db, redisClient: {} as never, taskQueue: {} as never, runtimeBuildQueue: {} as never,
+    policy: {} as never } as ToolDeps;
+  const poll = async () => {
+    const row = (await db<Operation>('mcp_operations').where({ id: receipt.operationId }).first())!;
+    const projected = operations.project(row);
+    await trackExecution(deps, row, principal, projected);
+    await syncLifecycle(operations, row, projected);
+    return operations.project(await operations.get(principal, String(receipt.operationId)));
+  };
+  await db('tasks').insert([
+    // An automatic conflict resolution on the same PR carries no command comment.
+    { task_id: 'merge-conflict-auto', repository: 'acme/repo', issue_number: 42, pr_number: 42, task_type: 'merge_conflict',
+      created_at: new Date(), initial_job_data: JSON.stringify({ number: 42, type: 'merge_conflict', pullRequestNumber: 42 }) },
+    { task_id: 'merge-conflict-other', repository: 'acme/repo', issue_number: 42, pr_number: 42, task_type: 'merge_conflict',
+      created_at: new Date(), initial_job_data: JSON.stringify({ number: 42, type: 'merge_conflict', pullRequestNumber: 42, commandCommentId: 600 }) },
+  ]);
+  assert.equal(((await poll()).lifecycle as { state: string }).state, 'accepted');
+
+  await db('tasks').insert({ task_id: 'merge-conflict-601', repository: 'acme/repo', issue_number: 42, pr_number: 42, task_type: 'merge_conflict',
+    created_at: new Date(), initial_job_data: JSON.stringify({ number: 42, type: 'merge_conflict', pullRequestNumber: 42, commandCommentId: 601 }) });
+  await db('task_history').insert({ task_id: 'merge-conflict-601', state: 'processing', timestamp: new Date(), metadata: '{}' });
+  const running = await poll();
+  assert.equal((running.lifecycle as { state: string }).state, 'running');
+  assert.equal(((running.lifecycle as { artifacts: Record<string, unknown> }).artifacts).taskId, 'merge-conflict-601');
+  assert.match(summarizeLifecycle('resolve_merge_conflicts', running.lifecycle as Record<string, unknown>), /^Merge conflict resolution was picked up/);
+
+  await db('task_history').insert({ task_id: 'merge-conflict-601', state: 'completed', timestamp: new Date(), metadata: '{}' });
+  const finished = await poll();
+  assert.equal(finished.state, 'completed');
+  assert.equal((finished.lifecycle as { state: string }).state, 'completed');
+});
+
 test('a multi-model review follows each model comment and completes when every review has finished', async t => {
   const db = await fixture(t);
   const principal = {
