@@ -5,19 +5,29 @@ import type { PullRequestEvent } from '@octokit/webhooks-types';
 const actualConnection = await import('../packages/core/src/db/connection.js');
 const actualGithubAuth = await import('../packages/core/src/auth/githubAuth.js');
 const actualCheckRunHelpers = await import('../packages/core/src/webhook/checkRunHelpers.js');
+const actualEpicPRService = await import('../packages/core/src/services/epicPRService.js');
 const { EPIC_PROGRESS_RETRY_KEY } = await import('../packages/core/src/webhook/epicMergeProgressRetry.js');
 after(actualConnection.closeConnection);
 
 const EPIC_BRANCH = '100-epic-big-plan-abc';
-const planIssueRows = [
+type PlanIssueRow = { issue_number: number; draft_id: string; pr_number: number | null; status: string };
+const initialPlanIssueRows = (): PlanIssueRow[] => [
     { issue_number: 100, draft_id: 'draft-1', pr_number: 201, status: 'under_review' },
     { issue_number: 101, draft_id: 'draft-1', pr_number: null, status: 'pending' },
     { issue_number: 102, draft_id: 'draft-1', pr_number: null, status: 'pending' },
 ];
+let planIssueRows = initialPlanIssueRows();
 // Number of plan-issue list reads that fail before the database recovers.
 let failingPlanListReads = 0;
 // Number of epic PR lookups that fail before GitHub recovers.
 let failingEpicLookups = 0;
+// Whether the epic branch has an open epic PR (#500) to find.
+let epicPrExists = true;
+// Number of epic PR creations that fail before GitHub recovers.
+let failingEpicCreations = 0;
+let createdEpicPRs = 0;
+// Runs while the handler fetches issue details for the epic PR body.
+let onIssueFetch: () => void = () => {};
 
 function fakeQuery(table: string) {
     let filter: Record<string, unknown> = {};
@@ -50,12 +60,27 @@ await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: {
                 failingEpicLookups--;
                 throw new Error('GitHub unavailable');
             }
-            return { data: [{ number: 500, body: '' }] };
+            return { data: epicPrExists ? [{ number: 500, body: '' }] : [] };
         }
-        if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') return { data: { title: 'Issue' } };
+        if (route === 'GET /repos/{owner}/{repo}') return { data: { default_branch: 'main' } };
+        if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
+            onIssueFetch();
+            return { data: { title: 'Issue' } };
+        }
         if (route === 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}') return { data: {} };
         throw new Error(`Unexpected request ${route}`);
     } }),
+} });
+await mock.module('../packages/core/src/services/epicPRService.js', { namedExports: {
+    ...actualEpicPRService,
+    createEpicPRWithDraftFallback: async () => {
+        if (failingEpicCreations > 0) {
+            failingEpicCreations--;
+            throw new Error('GitHub unavailable');
+        }
+        createdEpicPRs++;
+        return { data: { number: 501, html_url: 'https://github.com/integry/propr/pull/501' } };
+    },
 } });
 
 /** In-memory Redis covering the retry hash, the lease, and their compare-and-delete/extend scripts. */
@@ -108,8 +133,13 @@ const { handleEpicPRCreationOnMerge, retryPendingEpicMergeProgress } = await imp
 const logger = (await import('../packages/core/src/utils/logger.js')).default;
 
 beforeEach(() => {
+    planIssueRows = initialPlanIssueRows();
     failingPlanListReads = 0;
     failingEpicLookups = 0;
+    epicPrExists = true;
+    failingEpicCreations = 0;
+    createdEpicPRs = 0;
+    onIssueFetch = () => {};
     failingProgressUpdates = 0;
     completionNotices = 0;
     progressRequests.length = 0;
@@ -227,4 +257,52 @@ test('keeps the obligation when the epic PR lookup fails again during a retry', 
     elapseRetryBackoff();
     assert.equal(await retryPendingEpicMergeProgress(), 1);
     assert.equal(completionNotices, 1);
+});
+
+test('counts a child PR linked while the epic PR body was being updated', async () => {
+    // Child B's PR is linked and merged while this handler waits on GitHub,
+    // after it read the plan for the epic PR body but before it took the lease.
+    onIssueFetch = () => { planIssueRows[1] = { ...planIssueRows[1], pr_number: 202, status: 'merged' }; };
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    assert.equal(progressRequests.length, 1);
+    const planIssues = progressRequests[0].planIssues as PlanIssueRow[];
+    assert.deepEqual(planIssues.map(issue => [issue.issue_number, issue.pr_number]), [[100, 201], [101, 202], [102, null]]);
+});
+
+test('creates the epic PR during a retry after its creation failed on the final merge', async () => {
+    epicPrExists = false;
+    failingEpicCreations = 1;
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    assert.equal(progressRequests.length, 0);
+    assert.equal(createdEpicPRs, 0);
+    const [retry] = [...redis.hash.values()].map(value => JSON.parse(value));
+    assert.equal(retry.epicPrNumber, null);
+
+    // GitHub recovers; there is still no epic PR, so the sweep creates it and confirms completion.
+    elapseRetryBackoff();
+    assert.equal(await retryPendingEpicMergeProgress(), 1);
+    assert.equal(createdEpicPRs, 1);
+    assert.equal(progressRequests.length, 1);
+    assert.equal(progressRequests[0].epicPrNumber, 501);
+    assert.equal(completionNotices, 1);
+    assert.equal(redis.hash.size, 0);
+});
+
+test('keeps the obligation while the epic PR can be neither found nor created', async () => {
+    epicPrExists = false;
+    failingEpicCreations = 2;
+    await handleEpicPRCreationOnMerge(payload, 'test', logger.withCorrelation('test'));
+    elapseRetryBackoff();
+    assert.equal(await retryPendingEpicMergeProgress(), 0);
+    assert.equal(progressRequests.length, 0);
+    assert.equal(completionNotices, 0);
+    const retry = JSON.parse([...redis.hash.values()][0]);
+    assert.equal(retry.epicPrNumber, null);
+    assert.equal(retry.attempts, 2);
+
+    elapseRetryBackoff();
+    assert.equal(await retryPendingEpicMergeProgress(), 1);
+    assert.equal(createdEpicPRs, 1);
+    assert.equal(completionNotices, 1);
+    assert.equal(redis.hash.size, 0);
 });

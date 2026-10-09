@@ -3,10 +3,11 @@ import type { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 
 /**
- * Epic merge progress updates that could not be completed (epic PR lookup or
- * plan unreadable, GitHub request failed, or another update held the epic). The last child
- * merge has no successor to refresh the tracking comment, so the obligation is
- * kept here and retried by the daemon sweep until an update succeeds.
+ * Epic merge progress updates that could not be completed (epic PR not found
+ * or created, plan unreadable, GitHub request failed, another update held the
+ * epic, or the lease could not be acquired). The last child merge has no
+ * successor to refresh the tracking comment, so the obligation is kept here
+ * and retried by the daemon sweep until an update succeeds.
  */
 export const EPIC_PROGRESS_RETRY_KEY = 'epic:merge-progress-retry';
 const EPIC_PROGRESS_LOCK_PREFIX = 'epic:merge-progress-lock:';
@@ -55,7 +56,7 @@ export interface EpicProgressRetry extends EpicProgressTarget {
     nextAttemptAt: number;
 }
 
-/** 'skipped': another update held the epic and no retry could be recorded. */
+/** 'skipped': the lease was busy or unavailable and no retry could be recorded. */
 export type EpicProgressUpdateOutcome = 'updated' | 'retry_scheduled' | 'skipped';
 
 /** Thrown by {@link EpicProgressLease.assertOwned} once another update may hold the epic. */
@@ -132,7 +133,9 @@ export async function recordEpicProgressRetry(redis: EpicProgressRetryRedis, tar
  * aborts the update and keeps the obligation. A pending obligation is
  * released only if it is still the one observed before the update started;
  * one recorded meanwhile describes a later failure and is kept. Any failure,
- * including a busy lease, leaves an obligation for the retry sweep.
+ * including a busy lease or a lease that could not be acquired because Redis
+ * failed, leaves an obligation for the retry sweep; the update never runs
+ * without the lease.
  */
 export async function runEpicProgressUpdate(
     target: EpicProgressTarget,
@@ -141,32 +144,42 @@ export async function runEpicProgressUpdate(
     const field = epicProgressRetryField(target.owner, target.repo, target.epicBranch);
     const lockKey = `${EPIC_PROGRESS_LOCK_PREFIX}${field}`;
     const token = randomUUID();
+    /**
+     * Records a retry for an update that must not run now. 'skipped' means
+     * the retry could not be recorded either, so the obligation is lost until
+     * the next child merge refreshes the epic.
+     */
+    const defer = async (failureMessage: string): Promise<EpicProgressUpdateOutcome> => {
+        try {
+            await recordEpicProgressRetry(redis, target, now());
+            log.info({ ...target }, 'Epic progress update deferred, scheduled a retry');
+            return 'retry_scheduled';
+        } catch (error) {
+            log.error({ ...target, error: (error as Error).message }, failureMessage);
+            return 'skipped';
+        }
+    };
+
     let pending: string | null = null;
-    let acquired: boolean | null = null;
+    let acquired = false;
     try {
         pending = await redis.hget(EPIC_PROGRESS_RETRY_KEY, field);
         acquired = await redis.set(lockKey, token, 'PX', EPIC_PROGRESS_LOCK_TTL_MS, 'NX') === 'OK';
     } catch (error) {
-        // Without Redis neither the lease nor a retry is available; update unguarded.
-        log.warn({ ...target, error: (error as Error).message }, 'Epic progress retry state unavailable');
+        // Without the lease, nothing stops a concurrent delivery from posting
+        // the same comments; defer to a retry rather than write unguarded.
+        log.warn({ ...target, error: (error as Error).message }, 'Epic progress lease unavailable, deferring the update');
+        return await defer('Epic progress lease unavailable and its retry could not be recorded');
     }
 
-    if (acquired === false) {
+    if (!acquired) {
         // Another update owns the epic; never fall through into an unguarded update.
-        try {
-            await recordEpicProgressRetry(redis, target, now());
-            log.info({ ...target }, 'Epic progress update already running, scheduled a retry');
-            return 'retry_scheduled';
-        } catch (error) {
-            log.error({ ...target, error: (error as Error).message }, 'Epic progress update already running and its retry could not be recorded');
-            return 'skipped';
-        }
+        return await defer('Epic progress update already running and its retry could not be recorded');
     }
 
-    const locked = acquired === true;
     let lost = false;
     const extend = async (): Promise<void> => {
-        if (!locked || lost) return;
+        if (lost) return;
         if (Number(await redis.eval(COMPARE_AND_EXTEND_KEY, 1, lockKey, token, String(EPIC_PROGRESS_LOCK_TTL_MS))) !== 1) lost = true;
     };
     const lease: EpicProgressLease = {
@@ -175,12 +188,10 @@ export async function runEpicProgressUpdate(
             if (lost) throw new EpicProgressLeaseLostError();
         },
     };
-    const heartbeat = locked
-        ? setInterval(() => {
-            extend().catch(error => log.warn({ ...target, error: (error as Error).message }, 'Failed to renew Epic PR merge progress lease'));
-        }, EPIC_PROGRESS_LOCK_RENEW_INTERVAL_MS)
-        : undefined;
-    heartbeat?.unref?.();
+    const heartbeat = setInterval(() => {
+        extend().catch(error => log.warn({ ...target, error: (error as Error).message }, 'Failed to renew Epic PR merge progress lease'));
+    }, EPIC_PROGRESS_LOCK_RENEW_INTERVAL_MS);
+    heartbeat.unref?.();
 
     try {
         let completed = false;
@@ -203,13 +214,11 @@ export async function runEpicProgressUpdate(
         }
         return completed ? 'updated' : 'retry_scheduled';
     } finally {
-        if (heartbeat) clearInterval(heartbeat);
-        if (locked) {
-            try {
-                await redis.eval(COMPARE_AND_DELETE_KEY, 1, lockKey, token);
-            } catch (error) {
-                log.warn({ ...target, error: (error as Error).message }, 'Failed to release Epic PR merge progress lease');
-            }
+        clearInterval(heartbeat);
+        try {
+            await redis.eval(COMPARE_AND_DELETE_KEY, 1, lockKey, token);
+        } catch (error) {
+            log.warn({ ...target, error: (error as Error).message }, 'Failed to release Epic PR merge progress lease');
         }
     }
 }

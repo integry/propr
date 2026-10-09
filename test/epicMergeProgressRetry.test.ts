@@ -180,6 +180,32 @@ describe('runEpicProgressUpdate lease ownership', () => {
         }
     });
 
+    test('defers to a retry instead of writing unguarded when the lease cannot be acquired', async () => {
+        const redis = fakeRedis();
+        redis.set = async () => { throw new Error('redis unavailable'); };
+        let updates = 0;
+        const outcome = await runEpicProgressUpdate(target, {
+            redis: redis as never, log, now: () => 1_000, update: async () => { updates++; return true; },
+        });
+        assert.equal(outcome, 'retry_scheduled');
+        assert.equal(updates, 0);
+        assert.equal(JSON.parse(redis.hash.get(field)!).attempts, 1);
+    });
+
+    test('overlapping deliveries without Redis post no comments instead of duplicates', async () => {
+        const redis = fakeRedis();
+        redis.hget = async () => { throw new Error('redis unavailable'); };
+        redis.hset = async () => { throw new Error('redis unavailable'); };
+        const octokit = fakeEpicOctokit();
+        const deliver = () => runEpicProgressUpdate(target, {
+            redis: redis as never, log,
+            update: lease => updateEpicMergeProgress({ ...target, epicPrNumber: 500 }, 'test', { getOctokit: async () => octokit, assertOwned: lease.assertOwned })
+                .then(() => true),
+        });
+        assert.deepEqual(await Promise.all([deliver(), deliver()]), ['skipped', 'skipped']);
+        assert.deepEqual(octokit.comments, []);
+    });
+
     test('never runs the update when the lease is busy and the retry cannot be recorded', async () => {
         const redis = fakeRedis();
         redis.keys.set(`epic:merge-progress-lock:${field}`, 'other-owner');
