@@ -7,6 +7,7 @@ interface SettingFields {
   auto_followup_score_threshold?: unknown;
   auto_resolve_merge_conflicts?: unknown;
   dashboard_summary_enabled?: unknown;
+  followup_requires_assignment?: unknown;
   model_reasoning_level?: unknown;
   pr_review_model?: unknown;
   ultrafix_escalation_enabled?: unknown;
@@ -34,6 +35,7 @@ export type SettingSaveName =
   | 'auto_followup_score_threshold'
   | 'auto_resolve_merge_conflicts'
   | 'dashboard_summary_enabled'
+  | 'followup_requires_assignment'
   | 'model_reasoning_level'
   | 'pr_review_model'
   | 'ultrafix_escalation_enabled'
@@ -120,16 +122,12 @@ export async function extractSettingSaves(fields: SettingFields): Promise<Settin
     saves.push({ name: 'auto_followup_score_threshold' });
   }
 
-  if (fields.auto_resolve_merge_conflicts !== undefined) {
-    if (typeof fields.auto_resolve_merge_conflicts !== 'boolean') return { error: 'auto_resolve_merge_conflicts must be a boolean', saves: [], normalized };
-    normalized.auto_resolve_merge_conflicts = fields.auto_resolve_merge_conflicts;
-    saves.push({ name: 'auto_resolve_merge_conflicts' });
-  }
-
-  if (fields.dashboard_summary_enabled !== undefined) {
-    if (typeof fields.dashboard_summary_enabled !== 'boolean') return { error: 'dashboard_summary_enabled must be a boolean', saves: [], normalized };
-    normalized.dashboard_summary_enabled = fields.dashboard_summary_enabled;
-    saves.push({ name: 'dashboard_summary_enabled' });
+  for (const name of ['auto_resolve_merge_conflicts', 'dashboard_summary_enabled', 'followup_requires_assignment'] as const) {
+    const value = fields[name];
+    if (value === undefined) continue;
+    if (typeof value !== 'boolean') return { error: `${name} must be a boolean`, saves: [], normalized };
+    normalized[name] = value;
+    saves.push({ name });
   }
 
   if (fields.model_reasoning_level !== undefined) {

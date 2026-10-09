@@ -62,6 +62,10 @@ export const SETTINGS_CATALOG: SettingEntry[] = [
     ...execution('automation.auto_resolve_merge_conflicts', 'Automatic merge-conflict resolution (default for repositories)', 'Settings → Automation → General configuration', ['auto_resolve_merge_conflicts', 'merge conflicts default']),
     description: 'Instance default for repositories without an override; a repository autoResolveMergeConflicts override takes precedence.',
   },
+  {
+    ...execution('automation.followup_requires_assignment', 'Follow-ups only from assigned users', 'Settings → Automation → General configuration', ['followup_requires_assignment', 'assignment', 'assignee', 'follow-up']),
+    description: 'When on, only users assigned to a task may start follow-up work on it by commenting. Has no effect on a task nobody is assigned to.',
+  },
   execution('models.dashboard_summary_enabled', 'Dashboard AI summaries', 'Settings → Models → Model selection', ['dashboard_summary_enabled']),
   execution('models.model_reasoning_level', 'Model reasoning level', 'Settings → Models → Model selection', ['model_reasoning_level']),
   execution('review.model', 'Pull request review model', 'Settings → Models → PR review', ['pr_review_model']),

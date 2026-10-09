@@ -24,6 +24,7 @@ interface SettingsApiData {
   usage_tips_enabled?: boolean;
   usage_tips_dismissal_cooldown_days?: number;
   auto_resolve_merge_conflicts?: boolean;
+  followup_requires_assignment?: boolean;
   dashboard_summary_enabled?: boolean;
   model_reasoning_level?: string;
   pr_review_model?: string;
@@ -114,6 +115,7 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     planner_generation_model: settingsData.planner_generation_model || '',
     default_agent_alias: resolveDefaultAgentAlias(settingsData.default_agent_alias, enabledAgents),
     auto_resolve_merge_conflicts: settingsData.auto_resolve_merge_conflicts ?? false,
+    followup_requires_assignment: settingsData.followup_requires_assignment === true,
     usage_tips_enabled: parseUsageTipsSettings({ ...settingsData }).enabled,
     usage_tips_dismissal_cooldown_days: parseUsageTipsSettings({ ...settingsData }).cooldownDays,
     dashboard_summary_enabled: settingsData.dashboard_summary_enabled ?? true,

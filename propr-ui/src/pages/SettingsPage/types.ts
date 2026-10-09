@@ -8,6 +8,7 @@ export interface Settings {
   usage_tips_enabled?: boolean;
   usage_tips_dismissal_cooldown_days?: number;
   auto_resolve_merge_conflicts: boolean;
+  followup_requires_assignment: boolean;
   dashboard_summary_enabled?: boolean;
   model_reasoning_level: string;
   pr_review_model: string;

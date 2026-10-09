@@ -8,6 +8,7 @@ interface GeneralSettings {
   worker_concurrency: string;
   max_provider_replacements: number;
   auto_resolve_merge_conflicts: boolean;
+  followup_requires_assignment: boolean;
   ultrafix_escalation_enabled: boolean;
   ultrafix_escalation_models: string[];
   ultrafix_escalation_patience: number;
@@ -84,6 +85,16 @@ const GeneralSettingsSection: React.FC<GeneralSettingsSectionProps> = ({
           label="Auto-Resolve Merge Conflicts (default for repositories)"
           helperText="Default for repositories that do not set their own value in Repositories → Automation. When on, ProPR merges the base branch into its conflicted pull requests and asks an agent to resolve the conflicts. A repository set to Always or Never overrides this default."
           checked={settings.auto_resolve_merge_conflicts}
+          onChange={onSettingChange}
+          onBlur={onBlur}
+        />
+
+        <SettingsCheckboxField
+          id="followup_requires_assignment"
+          name="followup_requires_assignment"
+          label="Follow-ups Only From Assigned Users"
+          helperText="When on, a comment starts follow-up work on a task only if its author is assigned to that task; comments from other allowed users are not processed as follow-ups. Has no effect on a task nobody is assigned to: any allowed user can still start follow-ups there."
+          checked={settings.followup_requires_assignment}
           onChange={onSettingChange}
           onBlur={onBlur}
         />

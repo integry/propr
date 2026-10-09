@@ -217,6 +217,8 @@ export interface SystemSettings {
   usage_tips_enabled?: boolean;
   usage_tips_dismissal_cooldown_days?: number;
   auto_resolve_merge_conflicts?: boolean;
+  /** Only users assigned to a task may start follow-up work on it. */
+  followup_requires_assignment?: boolean;
   model_reasoning_level?: string;
   pr_review_model?: string;
   pr_review_prompt?: string;

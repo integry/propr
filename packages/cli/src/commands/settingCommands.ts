@@ -58,6 +58,7 @@ function getSettingDescription(key: SettingKey): string {
     planner_generation_model: "Model for planner generation",
     auto_resolve_merge_conflicts: "Automatically resolve merge conflicts",
     dashboard_summary_enabled: "Enable AI-generated dashboard activity summaries",
+    followup_requires_assignment: "Only users assigned to a task may start follow-ups on it (no effect on unassigned tasks)",
     model_reasoning_level: "Reasoning level for GPT and Claude agents (empty = agent default)",
     pr_review_model: "Model for full PR reviews",
     pr_review_prompt: "Override for the PR review prompt guidance (empty = built-in default)",
