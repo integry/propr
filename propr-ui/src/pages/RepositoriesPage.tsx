@@ -27,9 +27,10 @@ const RepositoriesPage: React.FC = () => {
     filteredRepos, hiddenCount, handleStopIndexing, handleReindexRepo, handleAddRepo,
     handleRemoveRepo, handleToggleRepo, handleToggleStar, handleToggleHidden,
     handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows, handleUpdateNonBlockingChecks,
-    handleToggleNotifications, handleUpdateAutoResolveMergeConflicts, handleUpdateVisualPreview,
+    handleToggleNotifications, handleUpdateAutoResolveMergeConflicts, handleToggleAutoAssign, handleUpdateAutoAssignTarget, handleToggleAutoAssignReview, handleUpdateVisualPreview,
     handleToggleShowHidden, handleRetry
   } = useRepositoryManagement();
+  const autoAssignHandlers = { onToggle: handleToggleAutoAssign, onUpdateTarget: handleUpdateAutoAssignTarget, onToggleReview: handleToggleAutoAssignReview };
 
   const [newRepo, setNewRepo] = useState<string>('');
   const [newAlias, setNewAlias] = useState<string>('');
@@ -110,6 +111,7 @@ const RepositoriesPage: React.FC = () => {
       onUpdateNonBlockingChecks={handleUpdateNonBlockingChecks}
       onToggleNotifications={handleToggleNotifications}
       onUpdateAutoResolveMergeConflicts={handleUpdateAutoResolveMergeConflicts}
+      autoAssignHandlers={autoAssignHandlers}
       onUpdateVisualPreview={handleUpdateVisualPreview}
       isReadOnly={isReadOnly}
     />

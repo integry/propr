@@ -22,8 +22,13 @@ import {
   buildRepositoriesForDisplay,
   defaultVisualPreview,
   getRepositoryConfigKey,
+  parseAutoAssignDefaultAssignee,
   parseVisualPreview,
   parseWorkflowSelection,
+  resolveRepositoryAutoAssign,
+  toggleRepositoryAutoAssign,
+  toggleRepositoryAutoAssignReview,
+  updateRepositoryAutoAssignTarget,
   updateRepositoryCancelCiWorkflows,
   updateRepositoryNonBlockingChecks,
   resolveRepositoryNotificationsEnabled,
@@ -78,6 +83,9 @@ export interface UseRepositoryManagementResult {
   handleUpdateNonBlockingChecks: (repoId: string, checks: string[]) => void;
   handleToggleNotifications: (repoId: string) => void;
   handleUpdateAutoResolveMergeConflicts: (repoId: string, value: boolean | null) => void;
+  handleToggleAutoAssign: (repoId: string) => void;
+  handleUpdateAutoAssignTarget: (repoId: string, login: string | null) => void;
+  handleToggleAutoAssignReview: (repoId: string) => void;
   handleUpdateVisualPreview: (repoId: string, settings: VisualPreviewSettings) => void;
   handleToggleStar: (repoId: string) => Promise<void>;
   handleToggleHidden: (repoId: string) => Promise<void>;
@@ -126,7 +134,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
         .map((repo: unknown): Repo | null => {
           if (typeof repo === 'string') {
             const userPref = prefs[repo] || {};
-            return { id: generateId(), name: repo, enabled: true, autoFollowupOnFailedCi: false, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [], nonBlockingChecks: [], notificationsEnabled: true, visualPreview: defaultVisualPreview(), starred: userPref.starred, hidden: userPref.hidden };
+            return { id: generateId(), name: repo, enabled: true, autoFollowupOnFailedCi: false, cancelCiDuringFollowup: false, cancelCiDuringFollowupWorkflows: [], nonBlockingChecks: [], notificationsEnabled: true, autoAssignPullRequests: false, autoAssignDefaultAssignee: null, autoAssignRequestReview: false, visualPreview: defaultVisualPreview(), starred: userPref.starred, hidden: userPref.hidden };
           } else if (repo && typeof repo === 'object') {
             const repoObj = repo as Record<string, unknown>;
             const name = (repoObj.name as string) || (repoObj.full_name as string);
@@ -139,13 +147,17 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
             const notificationsEnabled = repoObj.notificationsEnabled !== false;
             // Absent means the repository inherits the instance default.
             const autoResolveMergeConflicts = typeof repoObj.autoResolveMergeConflicts === 'boolean' ? repoObj.autoResolveMergeConflicts : null;
+            // Absent means off and the issue author, the product defaults.
+            const autoAssignPullRequests = repoObj.autoAssignPullRequests === true;
+            const autoAssignDefaultAssignee = parseAutoAssignDefaultAssignee(repoObj.autoAssignDefaultAssignee) ?? null;
+            const autoAssignRequestReview = repoObj.autoAssignRequestReview === true;
             const visualPreview = parseVisualPreview(repoObj.visualPreview);
             const id = (repoObj.id as string) || generateId();
             const alias = repoObj.alias as string | undefined;
             const baseBranch = repoObj.baseBranch as string | undefined;
             const userPref = name ? (prefs[name] || {}) : {};
             if (name) {
-              return { id, name, enabled, autoFollowupOnFailedCi, cancelCiDuringFollowup, cancelCiDuringFollowupWorkflows, nonBlockingChecks, notificationsEnabled, autoResolveMergeConflicts, visualPreview, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
+              return { id, name, enabled, autoFollowupOnFailedCi, cancelCiDuringFollowup, cancelCiDuringFollowupWorkflows, nonBlockingChecks, notificationsEnabled, autoResolveMergeConflicts, autoAssignPullRequests, autoAssignDefaultAssignee, autoAssignRequestReview, visualPreview, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
             }
           }
           return null;
@@ -350,6 +362,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
         instructions: newVisualPreview.instructions?.trim() || existingVisualPreview.instructions
       })
       : existingVisualPreview;
+    const autoAssign = resolveRepositoryAutoAssign(repos, repositoryKey);
     const newEntry: Repo = {
       id: generateId(),
       name: newRepo,
@@ -367,6 +380,10 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       )?.nonBlockingChecks ?? [],
       // Not in the Add Repository modal: new repositories default on; new branches inherit.
       notificationsEnabled: resolveRepositoryNotificationsEnabled(repos, repositoryKey),
+      // Not in the Add Repository modal: new repositories default off; new branches inherit.
+      autoAssignPullRequests: autoAssign.enabled,
+      autoAssignDefaultAssignee: autoAssign.defaultAssignee,
+      autoAssignRequestReview: autoAssign.requestReview,
       visualPreview,
       alias: newAlias.trim() || undefined,
       baseBranch: newBaseBranch.trim() || undefined
@@ -455,6 +472,30 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     performAutoSave(newRepos);
   };
 
+  const handleToggleAutoAssign = (repoId: string) => {
+    if (!canManageRepositories) return;
+    const newRepos = toggleRepositoryAutoAssign(repos, repoId);
+    if (newRepos === repos) return;
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
+  const handleUpdateAutoAssignTarget = (repoId: string, login: string | null) => {
+    if (!canManageRepositories) return;
+    const newRepos = updateRepositoryAutoAssignTarget(repos, repoId, login);
+    if (newRepos === repos) return;
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
+  const handleToggleAutoAssignReview = (repoId: string) => {
+    if (!canManageRepositories) return;
+    const newRepos = toggleRepositoryAutoAssignReview(repos, repoId);
+    if (newRepos === repos) return;
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
   const handleUpdateVisualPreview = (repoId: string, settings: VisualPreviewSettings) => {
     if (!canManageRepositories) return;
     const newRepos = updateRepositoryVisualPreview(repos, repoId, settings);
@@ -503,7 +544,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   return {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
     filteredRepos, hiddenCount, loadRepos, handleStopIndexing, handleReindexRepo, handleAddRepo,
-    handleRemoveRepo, handleToggleRepo, handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows, handleUpdateNonBlockingChecks, handleToggleNotifications, handleUpdateAutoResolveMergeConflicts, handleUpdateVisualPreview, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
+    handleRemoveRepo, handleToggleRepo, handleToggleAutoCiFollowup, handleToggleCancelCiDuringFollowup, handleUpdateCancelCiWorkflows, handleUpdateNonBlockingChecks, handleToggleNotifications, handleUpdateAutoResolveMergeConflicts, handleToggleAutoAssign, handleUpdateAutoAssignTarget, handleToggleAutoAssignReview, handleUpdateVisualPreview, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
     handleRetry, setError
   };
 }
