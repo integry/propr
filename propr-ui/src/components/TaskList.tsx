@@ -24,7 +24,9 @@ import {
 import { useDebouncedCallback } from './TaskList/hooks';
 import { isDialogOpen, isTypingTarget } from './TaskList/keyboardOwnership';
 import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
-import type { TaskUpdatePayload } from '@propr/shared';
+import { formatTaskAssignmentFilter, type TaskUpdatePayload } from '@propr/shared';
+import { useCurrentUser } from '../contexts/AuthContext';
+import type { AssigneeOption } from './TaskList/Filters';
 
 const createRepoOptions = (repositories: Array<{ repository: string; total: number }>): RepoOption[] => {
   const totalCount = repositories.reduce((sum, repo) => sum + repo.total, 0);
@@ -46,6 +48,31 @@ const createRepoOptions = (repositories: Array<{ repository: string; total: numb
 
   return [allOption, ...repoOptions];
 };
+
+/**
+ * A person's `?assignee=` value. A login the URL would drop as a default (a
+ * user named `1`) keeps an `@` prefix, which the API strips, so it survives.
+ */
+const assigneeOption = (login: string): AssigneeOption => {
+  const value = formatTaskAssignmentFilter({ mode: 'users', logins: [login] });
+  return { value: isDefaultParamValue(value) ? `@${value}` : value, login };
+};
+
+/**
+ * The people the assignee filter offers: everyone assigned on the page plus
+ * the signed-in user, sorted by login. Without a signed-in user the filter
+ * offers only `All assignees` and `Unassigned`.
+ */
+function deriveAssigneeOptions(tasks: Task[], currentLogin: string | null): AssigneeOption[] {
+  if (!currentLogin) return [];
+  const logins = new Map<string, string>([[currentLogin.toLowerCase(), currentLogin]]);
+  for (const task of tasks) {
+    for (const user of task.assignees ?? []) {
+      if (!logins.has(user.login.toLowerCase())) logins.set(user.login.toLowerCase(), user.login);
+    }
+  }
+  return [...logins.values()].sort((a, b) => a.localeCompare(b)).map(assigneeOption);
+}
 
 type TaskScopeState =
   | { kind: 'loading' }
@@ -110,6 +137,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { onTaskUpdate, isConnected } = useSocket();
+  const currentUser = useCurrentUser();
 
   // Determine whether to use URL-based state (only when filters are shown - Tasks page)
   const useUrlState = !hideFilters;
@@ -118,17 +146,20 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   const urlFilter = searchParams.get('status') || 'all';
   const urlRepoFilter = searchParams.get('repository') || 'all';
   const urlSearchParam = searchParams.get('search') || '';
+  const urlAssigneeFilter = searchParams.get('assignee') || 'all';
   // Note: URL uses 1-based page, internal state uses 0-based
   const urlPage = Math.max(0, parseInt(searchParams.get('page') || '1', 10) - 1);
 
   // Local state (used when hideFilters is true, e.g., Dashboard)
   const [localFilter, setLocalFilter] = useState<string>('all');
   const [localRepoFilter, setLocalRepoFilter] = useState<string>('all');
+  const [localAssigneeFilter, setLocalAssigneeFilter] = useState<string>('all');
   const [localCurrentPage, setLocalCurrentPage] = useState<number>(0);
 
   // Get the effective filter values based on whether we use URL or local state
   const filter = selectValue(useUrlState, urlFilter, localFilter);
   const repoFilter = selectValue(useUrlState, urlRepoFilter, localRepoFilter);
+  const assigneeFilter = selectValue(useUrlState, urlAssigneeFilter, localAssigneeFilter);
   const currentPage = selectValue(useUrlState, urlPage, localCurrentPage);
 
   // Search state - local input for typing, debounced for API/URL
@@ -152,8 +183,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
   const tasksPerPage = limit;
   const queryScope = useMemo(
-    () => JSON.stringify([filter, repoFilter, currentPage, debouncedSearch, tasksPerPage]),
-    [currentPage, debouncedSearch, filter, repoFilter, tasksPerPage]
+    () => JSON.stringify([filter, repoFilter, assigneeFilter, currentPage, debouncedSearch, tasksPerPage]),
+    [assigneeFilter, currentPage, debouncedSearch, filter, repoFilter, tasksPerPage]
   );
 
   // Helper to update URL params (only used when useUrlState is true)
@@ -184,6 +215,13 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     useUrlState,
     (value) => updateSearchParams({ repository: value, page: '1' }),
     setLocalRepoFilter,
+    () => setLocalCurrentPage(0)
+  ), [useUrlState, updateSearchParams]);
+
+  const setAssigneeFilter = useMemo(() => createFilterSetter(
+    useUrlState,
+    (value) => updateSearchParams({ assignee: value, page: '1' }),
+    setLocalAssigneeFilter,
     () => setLocalCurrentPage(0)
   ), [useUrlState, updateSearchParams]);
 
@@ -244,6 +282,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
       // the rows on screen and a task's runs never split across two pages.
       const data = await getTasks({
         status: filter, limit: tasksPerPage, offset, repository: repoFilter, search: debouncedSearch, groupBy: 'task',
+        // `all` stays out of the query, so a server that predates assignment still answers.
+        assignee: assigneeFilter === 'all' ? undefined : assigneeFilter,
       });
       if (requestId !== tasksRequestId.current) return;
       setTasks(data.tasks || []);
@@ -255,7 +295,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
       setError({ scope: queryScope, message: (err as Error).message });
       console.error('Error fetching tasks:', err);
     }
-  }, [filter, tasksPerPage, currentPage, repoFilter, debouncedSearch, queryScope]);
+  }, [filter, tasksPerPage, currentPage, repoFilter, assigneeFilter, debouncedSearch, queryScope]);
 
   // Refresh repository stats only on initial mount when filters are visible.
   useEffect(() => {
@@ -305,6 +345,8 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
   }, [isConnected, onTaskUpdate, scheduleLiveRefresh]);
 
   const groupedTasks = useMemo(() => groupTasksForDisplay(tasks), [tasks]);
+  const currentLogin = currentUser?.login || null;
+  const assigneeOptions = useMemo(() => deriveAssigneeOptions(tasks, currentLogin), [tasks, currentLogin]);
 
   useEffect(() => {
     onGroupsChange?.(groupedTasks);
@@ -333,6 +375,10 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     reposLoading,
     searchQuery,
     setSearchQuery,
+    assigneeFilter,
+    setAssigneeFilter,
+    assigneeOptions,
+    canFilterToMe: Boolean(currentLogin),
   };
 
   // Anchored Header - compact on mobile. It leads both Tasks page returns

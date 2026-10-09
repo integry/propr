@@ -20,10 +20,11 @@ import { trustedPreviewMedia } from '@propr/shared';
 import { splitWorkTitle } from '../Dashboard/workTitle';
 import { ellipsizeHardCutTitle } from './displayTitle';
 import { getDisplayStatus } from './utils.tsx';
+import type { AttributedUser } from '@propr/shared';
 import type { Task, TaskGroup } from './types';
 
 /** The ledger's columns. Fixed: expanding a row or resizing the list never changes them. */
-export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score'] as const;
+export const TASK_QUEUE_COLUMNS = ['Task / PR', 'Repo', 'Status', 'Agent', 'Assignees', 'Duration', 'Updated', 'Score'] as const;
 
 /** Expanded runs span TASK / PR through STATUS, keeping each run summary beside its timestamp. */
 export const TASK_RUNS_COLUMN_SPAN = 3;
@@ -71,6 +72,13 @@ export interface TaskRowView {
    */
   outcome: string | null;
   previewCount: number;
+  /**
+   * Who the task is assigned to: everyone assigned on any run of the group,
+   * newest run first and each user once. A group can join a linked issue and
+   * pull request, which carry their own assignees, and the assignee filter
+   * selects the group when any of its runs matches, so the row shows them all.
+   */
+  assignees: AttributedUser[];
   earlierRuns: TaskRunView[];
 }
 
@@ -203,6 +211,17 @@ export function runOutcome(task: Task): string {
   }
 }
 
+/** Every assignee across the runs, newest run first, each user once by id. */
+function groupAssignees(tasks: Task[]): AttributedUser[] {
+  const byId = new Map<string, AttributedUser>();
+  for (const task of tasks) {
+    for (const user of task.assignees ?? []) {
+      if (!byId.has(user.id)) byId.set(user.id, user);
+    }
+  }
+  return [...byId.values()];
+}
+
 export function buildTaskRow(group: TaskGroup): TaskRowView {
   const [task, ...earlier] = group.tasks;
   const { title, fullTitle } = entityTitle(group.tasks);
@@ -218,6 +237,7 @@ export function buildTaskRow(group: TaskGroup): TaskRowView {
     detail: newest.delta,
     outcome: newest.delta ? null : runOutcome(task),
     previewCount: previewCount(task),
+    assignees: groupAssignees(group.tasks),
     earlierRuns: earlier.map(run => {
       const { type, delta } = runDelta(run, title);
       return {

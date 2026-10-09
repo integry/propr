@@ -1,15 +1,18 @@
 /* The task ledger: one grid row per task group, with real column headers.
-   TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED · SCORE
+   TASK / PR · REPO · STATUS · AGENT · ASSIGNEES · DURATION · UPDATED · SCORE
 
-   The schema is locked: every width that shows the table shows all seven
+   The schema is locked: every width that shows the table shows all eight
    columns, so nothing is added or dropped as the window or a pane resizes.
    REPO (10rem) and AGENT (190px) are fixed at every width and never shrink.
    REPO shows the repository name without its owner (the repo filter already
    scopes the list), so a 20-character name fits whole; AGENT's 190px holds a
-   long model identifier beside its provider logo. The title column takes only what is left
+   long model identifier beside its provider logo. ASSIGNEES (4.5rem) holds
+   its header and a stack of three overlapping avatars with a `+N` marker,
+   so zero, one or five assignees never change its width. The title column takes only what is left
    (`minmax(0, 1fr)`), so a long or unbroken title wraps inside its own cell
    and never takes width from the columns beside it. Only STATUS and the
-   gutters tighten on a laptop-width list (~1280px windows).
+   gutters tighten on a laptop-width list (~1280px windows), and SCORE
+   narrows to its bracketed badge there to leave the title its width.
 
    A list too narrow to hold those fixed columns and a readable title (a
    phone, or a narrow pane in the desktop app) shows the stacked cards
@@ -33,21 +36,21 @@
 
 .task-queue-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.25rem 4.5rem 5rem;
+  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.5rem 4.25rem 4.5rem 5rem;
   column-gap: .75rem;
   align-items: center;
 }
 
 @container task-ledger (max-width: 1100px) {
   .task-queue-grid {
-    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.25rem 4.5rem 5rem;
+    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.5rem 4.25rem 4.5rem 3rem;
     column-gap: .5rem;
   }
 }
 
 /* A task row's metadata lines up with the first line of its title, so a title
-   that wraps (or a rollup line under it) never leaves REPO, STATUS, AGENT and
-   the times floating in the middle of a taller row. Each metadata cell is a
+   that wraps (or a rollup line under it) never leaves REPO, STATUS, AGENT,
+   ASSIGNEES and the times floating in the middle of a taller row. Each metadata cell is a
    box one title line tall (25px: the lead chip on the title's baseline), centred in that box. */
 .task-queue-row { align-items: start; }
 .task-queue-row > [role="cell"]:not(:first-child) {
@@ -119,3 +122,18 @@
 
 /* Only keyboard focus tints the row, so a clicked row does not stay lit. */
 .task-queue [role="row"]:has(:focus-visible) { background: #f0fdfa; }
+
+/* The Tasks toolbar gives its width to search. Where it is too narrow to hold
+   the assignee filter at full width as well (the list pane beside an open
+   task), the filter collapses to an icon the size of a button: the native
+   select still opens the full list, its text is hidden, and the icon turns
+   teal while a filter other than All assignees applies. */
+.task-filters { container: task-filters / inline-size; }
+.task-assignee-filter-icon { display: none; }
+@container task-filters (max-width: 49rem) {
+  .task-assignee-filter { flex: none; width: 2.5rem; }
+  .task-assignee-filter select { width: 100%; padding-left: 0; padding-right: 0; color: transparent; background-image: none; appearance: none; }
+  .task-assignee-filter select option, .task-assignee-filter select optgroup { color: #374151; }
+  .task-assignee-filter-icon { display: block; }
+}
+
