@@ -266,11 +266,12 @@ describe('githubUserProfileService', () => {
 });
 
 describe('parseTaskAssignmentFilter', () => {
-    test('accepts all and me keywords', () => {
+    test('accepts all, me and unassigned keywords', () => {
         for (const value of [undefined, null, '', '  ', 'all', 'ALL']) {
             assert.deepEqual(parseTaskAssignmentFilter(value), { ok: true, filter: { mode: 'all' } });
         }
         assert.deepEqual(parseTaskAssignmentFilter(' Me '), { ok: true, filter: { mode: 'me' } });
+        assert.deepEqual(parseTaskAssignmentFilter('Unassigned'), { ok: true, filter: { mode: 'unassigned' } });
     });
 
     test('trims and de-duplicates logins case-insensitively', () => {
@@ -282,7 +283,7 @@ describe('parseTaskAssignmentFilter', () => {
     });
 
     test('round-trips explicit users named like keywords', () => {
-        for (const value of ['@all', '@me', '@ALL', '@Me', 'all ,', 'ME,']) {
+        for (const value of ['@all', '@me', '@ALL', '@Me', 'all ,', 'ME,', '@unassigned', 'unassigned,']) {
             const parsed = parseTaskAssignmentFilter(value);
             assert.ok(parsed.ok && parsed.filter.mode === 'users', value);
             const formatted = formatTaskAssignmentFilter(parsed.filter);
@@ -292,6 +293,8 @@ describe('parseTaskAssignmentFilter', () => {
         assert.equal(formatTaskAssignmentFilter({ mode: 'users', logins: ['all', 'me'] }), 'all,me');
         assert.equal(formatTaskAssignmentFilter({ mode: 'all' }), 'all');
         assert.equal(formatTaskAssignmentFilter({ mode: 'me' }), 'me');
+        assert.equal(formatTaskAssignmentFilter({ mode: 'unassigned' }), 'unassigned');
+        assert.equal(formatTaskAssignmentFilter({ mode: 'users', logins: ['Unassigned'] }), '@Unassigned');
     });
 
     test('rejects invalid logins, non-strings and over-long lists', () => {

@@ -6127,6 +6127,21 @@ paths:
           description: "With `groupBy=task`: only the task this run belongs to."
           schema:
             type: string
+        - name: assignee
+          in: query
+          required: false
+          description: "`all` (default), `me` (the signed-in user), `unassigned`, or comma-separated GitHub logins."
+          schema:
+            type: string
+        - name: syncAssignees
+          in: query
+          required: false
+          description: "With `task`: refresh that run's assignees from GitHub first."
+          schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
       responses:
         "200":
           description: A page of task runs.
@@ -6726,6 +6741,29 @@ paths:
       x-legacy-error: true
 components:
   schemas:
+    AttributedUser:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Stable GitHub numeric user id.
+        login:
+          type: string
+        displayName:
+          type:
+            - string
+            - "null"
+        avatarUrl:
+          type:
+            - string
+            - "null"
+      required:
+        - id
+        - login
+        - displayName
+        - avatarUrl
+      additionalProperties: false
+      description: A GitHub user work is assigned or attributed to.
     AuthenticatedUser:
       type: object
       properties:
@@ -7436,6 +7474,11 @@ components:
           type:
             - number
             - "null"
+        assignees:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttributedUser"
+          description: Assignees of the GitHub issue or pull request, as last synced; empty when nobody is assigned.
       required:
         - id
         - issueId
@@ -7459,6 +7502,7 @@ components:
         - llmProvider
         - planIssueStatus
         - score
+        - assignees
       additionalProperties: {}
       description: One task run as listed by `GET /api/tasks`.
   responses:
