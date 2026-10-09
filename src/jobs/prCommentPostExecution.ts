@@ -41,6 +41,7 @@ import type { PullRequestPublication, PublicationSalvage } from './prPublication
 import { recordPushSalvageEvent } from './pushSalvageTimeline.js';
 import { savePublicationCheckpoint } from './prContinuation.js';
 import { buildWorkNotificationRecap } from './notificationRecap.js';
+import { autoAssignFollowUpPullRequest } from './prCommentAutoAssignment.js';
 
 interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
@@ -96,6 +97,8 @@ interface PostExecutionParams {
     prProcessingLockToken: string;
     /** The run's effective preview settings, already restricted by its workflow snapshot. */
     visualPreviewSettings?: VisualPreviewSettings;
+    /** The source issue the pull request closes, for auto-assignment. */
+    linkedIssueNumber?: number | null;
 }
 
 interface UndoContextParams {
@@ -355,6 +358,13 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
                 prProcessingLockToken,
             });
         }
+
+        // Before the terminal update, which would refuse the timeline entry.
+        await autoAssignFollowUpPullRequest({
+            octokit: state.octokit, repoOwner, repoName, pullRequestNumber, continuation: context.publication.continuation,
+            commandMode: job.data.commandMode, commit: commitResult, linkedIssueNumber: params.linkedIssueNumber,
+            taskId, stateManager, redis: redisClient, logger: correlatedLogger,
+        });
 
         const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
 

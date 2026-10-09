@@ -295,6 +295,8 @@ const modules: Record<string, Record<string, unknown>> = {
     prCommentCollisionRecovery: { createPRCommentTaskStateIfMissing: async ({ taskId }: { taskId: string }) => { if (!taskStates.has(taskId)) taskStates.set(taskId, 'processing'); }, evaluatePRCommentPreExecutionRecovery: async () => ({}), handlePRCommentLockContention: async () => ({ status: 'deferred' }) },
     prCompletionComment: { buildCompletionComment: async (commit: unknown, comments: unknown, options: unknown, result: unknown) => JSON.stringify({ commit, comments, options, result }) },
     reviewCommentGatherer: { markReviewFindingsProcessed: noOp },
+    // Follow-up assignment is covered by test/prAutoAssignmentFollowup.test.ts.
+    prCommentAutoAssignment: { autoAssignFollowUpPullRequest: noOp },
 };
 for (const [name, namedExports] of Object.entries(modules)) {
     await mock.module(`../src/jobs/${name}.js`, { namedExports });

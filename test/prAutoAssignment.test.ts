@@ -160,7 +160,7 @@ describe('autoAssignImplementationPullRequest', () => {
 
     test('assigns the pull request to the source issue author', async () => {
         const outcome = await run();
-        assert.deepEqual(outcome, { status: 'assigned', reason: 'assigned alice', assignee: 'alice' });
+        assert.deepEqual(outcome, { status: 'assigned', reason: 'assigned alice', assignee: 'alice', opportunity: 'implementation_done' });
         assert.deepEqual(github.assignees, ['alice']);
         const [taskId, logins, options] = setTaskAssignees.mock.calls[0].arguments;
         assert.equal(taskId, 'task-1');

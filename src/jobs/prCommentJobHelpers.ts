@@ -9,6 +9,7 @@ import { filterCommentByAuthor } from '@propr/core';
 import type { UnprocessedComment, CommentJobData } from '@propr/core';
 import { isReasoningLevelLabel, parseReasoningLevelFromLabels } from '@propr/shared';
 import type { ReasoningLevel, ReasoningLevelLabel } from '@propr/shared';
+import { parseLinkedIssueNumbers } from '../github/linkedIssueReferences.js';
 
 interface ValidationComment {
     id: number;
@@ -231,11 +232,8 @@ export async function fetchLinkedIssueContext(
     } catch (graphqlError) {
         correlatedLogger.warn({ pullRequestNumber, error: (graphqlError as Error).message }, 'GraphQL query for linked issues failed, falling back to regex');
         // Fallback to regex parsing
-        const linkedIssueMatches = Array.from(prData.data.body?.matchAll(/(?:closes|fixes|resolves|addresses)\s+#(\d+)/gi) ?? []);
-        if (linkedIssueMatches.length > 0) {
-            linkedIssueNumbers = linkedIssueMatches
-                .map(match => parseInt(match[1], 10))
-                .filter((issueNumber, index, all) => Number.isFinite(issueNumber) && all.indexOf(issueNumber) === index);
+        linkedIssueNumbers = parseLinkedIssueNumbers(prData.data.body);
+        if (linkedIssueNumbers.length > 0) {
             correlatedLogger.info({ pullRequestNumber, linkedIssueNumbers }, 'Found linked issues via regex fallback');
         }
     }

@@ -59,9 +59,11 @@ const stateManager = {
     },
 };
 let pullRequestState: { state?: string; merged?: boolean; base?: { ref: string } } = {};
+const githubRoutes: string[] = [];
 const octokit = {
     auth: async () => ({ token: 'fixture-token' }),
     request: async (route: string, params: Record<string, unknown>) => {
+        githubRoutes.push(route);
         if (route.startsWith('POST')) {
             events.push(`comment:${params.issue_number}`);
             return { data: { id: 123, html_url: 'https://github.com/upstream/project/issues/42#issuecomment-123' } };
@@ -218,6 +220,12 @@ const modules: Record<string, Record<string, unknown>> = {
 for (const [name, namedExports] of Object.entries(modules)) {
     await mock.module(`../src/jobs/${name}.js`, { namedExports });
 }
+// Any assignment attempt, wherever it came from, is recorded here.
+const autoAssignmentCalls: unknown[] = [];
+await mock.module('../src/github/prAutoAssignment.js', { namedExports: {
+    autoAssignImplementationPullRequest: async (options: unknown) => { autoAssignmentCalls.push(options); return { status: 'assigned', reason: 'test' }; },
+    recordAutoAssignmentEvent: noOp,
+} });
 const { processPullRequestCommentJob } = await import('../src/jobs/processPullRequestCommentJob.js');
 const job = (commandMode = 'default', pullRequestNumber = 42) => ({
     id: 'task-1', updateData: async (data: { comments: unknown[] }) => { events.push('persist-comments'); if (persistError) throw persistError; assert.ok(data.comments.length); },
@@ -230,6 +238,7 @@ beforeEach(() => {
     events = []; continuation = undefined; preparationError = undefined; handledStartingComment = undefined;
     handledTaskIds = []; onPrepare = undefined; onTaskStateRead = undefined; pullRequestState = {};
     realReentryHelpers = false; pendingCommentLists.clear(); combinedComments.length = 0;
+    githubRoutes.length = 0; autoAssignmentCalls.length = 0;
 });
 
 for (const [pullRequest, reason] of [[{ state: 'closed', merged: true }, 'pull_request_merged'], [{ state: 'closed', merged: false }, 'cancelled_pr_closed']] as const) {
@@ -541,4 +550,16 @@ test('legacy abort-only PR jobs return the canonical user cancellation reason', 
     const { formatTaskTerminalReason } = await import('@propr/shared');
     assert.equal(completedJobTransition(result).metadata.terminalReason, 'cancelled_by_user');
     assert.notEqual(formatTaskTerminalReason(result.reason as 'cancelled_by_user'), 'The task ended.');
+});
+
+// Assignment follows work completing, never work starting: the starting-work
+// comment and the switch to processing reach the agent without assigning.
+test('resumed follow-up work performs no assignment and no review request before it completes', async () => {
+    agentResult = { claudeResult: { success: true }, agentType: 'agent' };
+    await assert.rejects(processPullRequestCommentJob(job() as never), /post-execution stopped by test/);
+    assert.ok(events.includes('comment:42'), 'the starting-work comment was posted');
+    assert.ok(events.includes('state:task-1:processing'));
+    assert.ok(events.includes('agent'));
+    assert.deepEqual(autoAssignmentCalls, []);
+    assert.deepEqual(githubRoutes.filter(route => /\/assignees$|\/requested_reviewers$/.test(route)), []);
 });
