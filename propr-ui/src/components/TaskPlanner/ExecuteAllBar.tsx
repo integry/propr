@@ -42,6 +42,12 @@ function describeBatch(taskLabel: string, hasRunningIssues: boolean, useEpic: bo
 
 const pluralTasks = (count: number) => `${count} ${count === 1 ? 'task' : 'tasks'}`;
 
+/** "Remaining" only reads right once part of the plan has run; a fresh plan starts the whole batch. */
+function getBatchButtonLabel(hasStarted: boolean, useEpic: boolean): string {
+  if (hasStarted) return 'Queue Remaining';
+  return useEpic ? 'Start Epic PR' : 'Start All';
+}
+
 export const ExecuteAllBar: React.FC<ExecuteAllBarProps> = ({
   remainingCount,
   queuedCount = 0,
@@ -83,6 +89,7 @@ export const ExecuteAllBar: React.FC<ExecuteAllBarProps> = ({
   const disabled = executing || readOnly || locked || blockedReason !== null || (!hasRunningIssues && !canExecute);
   const taskLabel = pluralTasks(remainingCount);
   const summary = describeBatch(taskLabel, hasRunningIssues, useEpic);
+  const hasStarted = hasRunningIssues || remainingCount < taskCount;
 
   return (
     // On a phone the matrix runs past the fold, so the batch action pins to the bottom of the scroll area.
@@ -98,7 +105,7 @@ export const ExecuteAllBar: React.FC<ExecuteAllBarProps> = ({
         className="inline-flex w-full flex-shrink-0 items-center justify-center gap-2 rounded-md bg-primary-600 px-4 py-2.5 text-sm sm:w-auto sm:py-2 font-medium text-white shadow-sm transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:bg-slate-300"
       >
         {executing ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-        Queue Remaining ({taskLabel})
+        {getBatchButtonLabel(hasStarted, useEpic)} ({taskLabel})
       </button>
     </div>
   );

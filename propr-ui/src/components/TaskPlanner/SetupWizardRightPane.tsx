@@ -1,4 +1,5 @@
 import React from 'react';
+import { Activity } from 'lucide-react';
 import { SmartFileSelection as SmartFileInfo, ContextRepository, GenerationTrace, PreviewResult } from '../../api/proprApi';
 import { ContextLevelSlider } from './ContextLevelSlider';
 import { SmartFileSelection } from './SmartFileSelection';
@@ -50,6 +51,34 @@ function getEmptyStateMessage(isNewMode?: boolean, hasData?: boolean): string {
   return 'Files will be selected after context analysis';
 }
 
+const FileSelectionArea: React.FC<{
+  smartSelection: SmartFileInfo[] | undefined;
+  isDiscoveringContext: boolean;
+  isPreviewLoading: boolean;
+  emptyStateMessage: string;
+  onExcludeFile?: (filePath: string) => void;
+}> = ({ smartSelection, isDiscoveringContext, isPreviewLoading, emptyStateMessage, onExcludeFile }) => {
+  if (smartSelection?.length) {
+    return <SmartFileSelection smartSelection={smartSelection} onExcludeFile={onExcludeFile} />;
+  }
+  if (isDiscoveringContext) {
+    return (
+      <div className="p-3 md:p-5" data-testid="context-discovery-status">
+        <p className="flex items-center gap-2 text-sm text-gray-500">
+          <Activity size={14} className="flex-shrink-0 animate-pulse text-indigo-400" />
+          Context discovery in progress...
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="p-3 md:p-5 space-y-4">
+      <p className="text-sm text-gray-400 italic">{emptyStateMessage}</p>
+      {isPreviewLoading && <FileSelectionSkeleton />}
+    </div>
+  );
+};
+
 export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   contextLevel,
   onContextLevelChange,
@@ -78,6 +107,9 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
   const showCostPreview = !hideCostsAndTokens || (preview.isLoading && showPreviewProgress) || !!preview.error;
   const showBottomSection = showContextRepositories || showCostPreview;
   const hasSmartSelection = !!smartSelection?.length;
+  // While the Generation Progress panel below is running, empty file skeletons above it read as an
+  // unrendered UI, so the file area collapses to a status line until the selected files arrive.
+  const isDiscoveringContext = isPreviewLoading && !!showPreviewProgress && showCostPreview && !hasSmartSelection;
 
   return (
     <div
@@ -96,19 +128,13 @@ export const SetupWizardRightPane: React.FC<SetupWizardRightPaneProps> = ({
 
       {/* Smart file selection - scrollable area, hidden on mobile when empty to save space */}
       <div className={`flex-1 overflow-auto flex flex-col min-h-0 ${hasSmartSelection ? '' : 'hidden md:flex'}`}>
-        {hasSmartSelection ? (
-          <SmartFileSelection
-            smartSelection={smartSelection ?? []}
-            onExcludeFile={onExcludeFile}
-          />
-        ) : (
-          <div className="p-3 md:p-5 space-y-4">
-            <p className="text-sm text-gray-400 italic">
-              {getEmptyStateMessage(isNewMode, !!preview.data)}
-            </p>
-            {isPreviewLoading && <FileSelectionSkeleton />}
-          </div>
-        )}
+        <FileSelectionArea
+          smartSelection={smartSelection}
+          isDiscoveringContext={isDiscoveringContext}
+          isPreviewLoading={isPreviewLoading}
+          emptyStateMessage={getEmptyStateMessage(isNewMode, !!preview.data)}
+          onExcludeFile={onExcludeFile}
+        />
       </div>
 
       {/* Bottom section - Context repositories and Cost preview */}

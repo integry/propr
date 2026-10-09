@@ -37,6 +37,7 @@ import {
   type UpdateIssueRequestBody,
   validateUpdateIssueRequest
 } from './planIssueRouteUtils.js';
+import { withRecordedPullRequestActivity } from './planIssuePullRequestActivity.js';
 import { enqueueAutoMergeImplementation, enqueueEpicImplementation, EpicQueueRequestError, syncQueuedEpicIssueSelectors } from './planIssueEpicQueue.js';
 import type { OwnershipResult } from './plannerHelpers/index.js';
 export interface PlanIssueDeps {
@@ -318,10 +319,9 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
           if (validStatuses.includes(status as PlanIssueStatus)) options.status = status as PlanIssueStatus;
         }
         const result = await getPlanIssuesByDraftPaginated(req.params.id, options);
-        res.json({ ...result, issues: result.issues.map((issue) => resolveIssueForResponse(issue)) });
+        res.json({ ...result, issues: (await withRecordedPullRequestActivity(db, result.issues)).map((issue) => resolveIssueForResponse(issue)) });
       } else {
-        const issues = await getPlanIssuesByDraft(req.params.id);
-        res.json(issues.map((issue) => resolveIssueForResponse(issue)));
+        res.json((await withRecordedPullRequestActivity(db, await getPlanIssuesByDraft(req.params.id))).map((issue) => resolveIssueForResponse(issue)));
       }
     } catch (error) {
       console.error('Get issues error:', error);
