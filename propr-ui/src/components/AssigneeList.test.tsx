@@ -12,7 +12,14 @@ vi.mock('../api/apiClient', () => ({
   ...apiClientMocks,
 }));
 
-import { getAssignableUsers, getTaskAssignees, setTaskAssignees, TaskAssigneesRejectedError } from '../api/taskAssignment';
+import {
+  getAssignableUsers,
+  getTaskAssignees,
+  isNoAssignmentSubjectError,
+  setTaskAssignees,
+  TaskAssigneesRejectedError,
+  TaskAssignmentRequestError,
+} from '../api/taskAssignment';
 import {
   ASSIGNEE_STACK_LIMIT,
   AssigneeChip,
@@ -238,15 +245,16 @@ describe('task assignment client', () => {
       });
     });
 
-    it('keeps an ordinary error when GitHub rejected the whole request', async () => {
+    it('keeps a request error when GitHub rejected the whole request', async () => {
       respond(422, { error: 'Validation Failed', code: 'GITHUB_REJECTED', message: 'Validation Failed' });
 
       const error = await setTaskAssignees(taskId, ['hubot']).catch((caught: unknown) => caught);
       expect(error).not.toBeInstanceOf(TaskAssigneesRejectedError);
-      expect(error).toEqual(new Error('Validation Failed'));
+      expect(error).toBeInstanceOf(TaskAssignmentRequestError);
+      expect(error).toMatchObject({ message: 'Validation Failed', status: 422, code: 'GITHUB_REJECTED' });
     });
 
-    it('keeps an ordinary error for other failures', async () => {
+    it('keeps a request error with its status and code for other failures', async () => {
       respond(403, {
         error: 'Write access required',
         code: 'REPOSITORY_WRITE_ACCESS_REQUIRED',
@@ -258,7 +266,20 @@ describe('task assignment client', () => {
 
       const error = await setTaskAssignees(taskId, ['hubot']).catch((caught: unknown) => caught);
       expect(error).not.toBeInstanceOf(TaskAssigneesRejectedError);
-      expect(error).toEqual(new Error('Write access required'));
+      expect(error).toBeInstanceOf(TaskAssignmentRequestError);
+      expect(error).toMatchObject({ message: 'Write access required', status: 403, code: 'REPOSITORY_WRITE_ACCESS_REQUIRED' });
     });
+  });
+
+  it('recognises a task with nothing to assign from its 409', async () => {
+    apiClientMocks.apiFetch.mockResolvedValueOnce(new Response(
+      JSON.stringify({ error: 'No subject', code: 'NO_GITHUB_SUBJECT', message: 'No subject' }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } },
+    ));
+    apiClientMocks.handleApiResponse.mockRejectedValueOnce(new Error('No subject'));
+
+    const error = await getTaskAssignees(taskId).catch((caught: unknown) => caught);
+    expect(isNoAssignmentSubjectError(error)).toBe(true);
+    expect(isNoAssignmentSubjectError(new TaskAssignmentRequestError('Gone', 404, 'TASK_NOT_FOUND'))).toBe(false);
   });
 });
