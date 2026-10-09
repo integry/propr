@@ -111,6 +111,29 @@ describe('computeEpicMergeProgress', () => {
         assert.strictEqual(isEpicMergeComplete(progress), true);
     });
 
+    test('counts child PRs outside the plan alongside planned issues', () => {
+        const progress = computeEpicMergeProgress([
+            { number: 201, merged: true, abandoned: false },
+            { number: 202, merged: false, abandoned: false },
+        ], 201, [planIssue(100, PlanIssueStatus.MERGED, 201)]);
+        assert.deepStrictEqual(progress, { merged: 1, total: 2, excluded: 0, mergedPullRequests: [201] });
+        assert.strictEqual(isEpicMergeComplete(progress), false);
+    });
+
+    test('counts a planned issue once when its PR is also a listed child', () => {
+        const progress = computeEpicMergeProgress([
+            { number: 201, merged: true, abandoned: false },
+            { number: 202, merged: false, abandoned: false },
+            { number: 203, merged: false, abandoned: true },
+        ], 201, [
+            planIssue(100, PlanIssueStatus.MERGED, 201),
+            planIssue(101, PlanIssueStatus.UNDER_REVIEW, 202),
+            planIssue(102, PlanIssueStatus.PROCESSING, 203),
+        ]);
+        // #203 was abandoned, but its planned issue is still open work.
+        assert.deepStrictEqual({ merged: progress.merged, total: progress.total }, { merged: 1, total: 3 });
+    });
+
     test('falls back to child PRs without plan details, ignoring abandoned ones', () => {
         const progress = computeEpicMergeProgress([
             { number: 201, merged: true, abandoned: false },
@@ -181,6 +204,21 @@ describe('updateEpicMergeProgress', () => {
         assert.strictEqual(second.trackingComment, 'unchanged');
         assert.strictEqual(second.completionPosted, false);
         assert.strictEqual(octokit.comments.length, 2);
+    });
+
+    test('does not confirm completion while a child PR outside the plan is open', async () => {
+        const octokit = createOctokit([
+            { number: 201, state: 'closed', merged_at: '2026-10-09T00:00:00Z' },
+            { number: 202, state: 'open', merged_at: null },
+        ]);
+        const result = await updateEpicMergeProgress(
+            { ...baseRequest, planIssues: [planIssue(100, PlanIssueStatus.MERGED, 201)] },
+            'test',
+            { getOctokit: async () => octokit },
+        );
+        assert.strictEqual(result.completionPosted, false);
+        assert.match(octokit.comments[0].body, /1 of 2 PRs merged/);
+        assert.ok(!octokit.comments.some(c => c.body.includes(EPIC_COMPLETE_MARKER)));
     });
 
     test('ignores marker comments not authored by the bot', async () => {

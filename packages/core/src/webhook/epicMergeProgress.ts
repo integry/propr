@@ -29,7 +29,7 @@ export interface EpicMergeProgressRequest {
     /** The child PR whose merge triggered this update. */
     mergedChildPrNumber: number;
     planName?: string;
-    /** Plan issues of the epic; when absent, progress is derived from child PRs alone. */
+    /** Plan issues of the epic; planned work without a child PR yet counts as unmerged. */
     planIssues?: PlanIssue[];
 }
 
@@ -49,37 +49,42 @@ export interface EpicMergeProgressResult {
 }
 
 /**
- * Counts merged children of an epic. Plan issues define the expected total
- * when available; otherwise every non-abandoned child PR targeting the epic
- * branch counts. The triggering PR is always merged, even if GitHub's list
- * has not caught up with the merge yet.
+ * Counts merged children of an epic. Every non-abandoned child PR targeting
+ * the epic branch counts once; plan issues add a placeholder for planned work
+ * that has no such PR yet, so the total covers both unstarted plan issues and
+ * child PRs outside the plan. The triggering PR is always merged, even if
+ * GitHub's list has not caught up with the merge yet.
  */
 export function computeEpicMergeProgress(
     childPullRequests: EpicChildPullRequest[],
     mergedChildPrNumber: number,
-    planIssues?: PlanIssue[],
+    planIssues: PlanIssue[] = [],
 ): EpicMergeProgress {
     const mergedNumbers = new Set(childPullRequests.filter(pr => pr.merged).map(pr => pr.number));
     mergedNumbers.add(mergedChildPrNumber);
+    const childNumbers = new Set(childPullRequests.filter(pr => !pr.abandoned).map(pr => pr.number));
+    childNumbers.add(mergedChildPrNumber);
 
-    if (planIssues && planIssues.length > 0) {
-        const isMerged = (issue: PlanIssue) => issue.status === PlanIssueStatus.MERGED
-            || (issue.pr_number != null && mergedNumbers.has(issue.pr_number));
-        const counted = planIssues.filter(issue => isMerged(issue) || issue.status !== PlanIssueStatus.CLOSED);
-        return {
-            merged: counted.filter(isMerged).length,
-            total: counted.length,
-            excluded: planIssues.length - counted.length,
-            mergedPullRequests: [...mergedNumbers].sort((a, b) => a - b),
-        };
+    let merged = [...childNumbers].filter(number => mergedNumbers.has(number)).length;
+    let total = childNumbers.size;
+    let excluded = 0;
+    const placeholderPrNumbers = new Set<number>();
+    for (const issue of planIssues) {
+        if (issue.pr_number != null && (childNumbers.has(issue.pr_number) || placeholderPrNumbers.has(issue.pr_number))) continue;
+        const issueMerged = issue.status === PlanIssueStatus.MERGED;
+        if (!issueMerged && issue.status === PlanIssueStatus.CLOSED) {
+            excluded++;
+            continue;
+        }
+        if (issue.pr_number != null) placeholderPrNumbers.add(issue.pr_number);
+        total++;
+        if (issueMerged) merged++;
     }
 
-    const countedNumbers = new Set(childPullRequests.filter(pr => !pr.abandoned).map(pr => pr.number));
-    countedNumbers.add(mergedChildPrNumber);
     return {
-        merged: mergedNumbers.size,
-        total: countedNumbers.size,
-        excluded: 0,
+        merged,
+        total,
+        excluded,
         mergedPullRequests: [...mergedNumbers].sort((a, b) => a - b),
     };
 }
