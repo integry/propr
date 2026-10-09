@@ -99,8 +99,9 @@ const redisKeys = new Map<string, string>();
 const redisTtls = new Map<string, number>();
 const redis = {
     failing: false,
+    failingReads: false,
     async get(key: string) {
-        if (this.failing) throw new Error('Redis unavailable');
+        if (this.failing || this.failingReads) throw new Error('Redis unavailable');
         return redisKeys.get(key) ?? null;
     },
     async set(key: string, value: string, _mode: 'EX', seconds: number, condition?: 'NX') {
@@ -141,6 +142,7 @@ beforeEach(() => {
         noAccess: new Set<string>(), failAssign: false, failReview: false, calls: [],
     });
     redis.failing = false;
+    redis.failingReads = false;
     redisKeys.clear();
     redisTtls.clear();
     logs.length = 0;
@@ -379,6 +381,22 @@ describe('autoAssignImplementationPullRequest', () => {
         redis.failing = true;
         const outcome = await run();
         assert.equal(outcome.status, 'assigned');
+    });
+
+    test('a failed completion read continues under the lease and releases it, so the next attempt is not held off', async () => {
+        const leaseKey = autoAssignmentLeaseKey('integry', 'propr', 34, 'abc123');
+        const completedKey = autoAssignmentClaimKey('integry', 'propr', 34, 'abc123');
+        redis.failingReads = true;
+        const outcome = await run();
+        assert.equal(outcome.status, 'assigned');
+        assert.ok(!redisKeys.has(leaseKey));
+        assert.ok(redisKeys.has(completedKey));
+
+        // Reads recover: the next attempt for the same head is a no-op, not `in progress`.
+        redis.failingReads = false;
+        const again = await run();
+        assert.equal(again.status, 'already_assigned');
+        assert.match(again.reason, /already handled/);
     });
 });
 

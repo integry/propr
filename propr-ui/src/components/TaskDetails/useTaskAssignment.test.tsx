@@ -94,6 +94,18 @@ describe('useTaskAssignment saves', () => {
   });
 });
 
+describe('useTaskAssignment identity', () => {
+  it('returns the same object across renders until its state changes', async () => {
+    const { result, rerender } = renderHook(() => useTaskAssignment('task-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const settled = result.current;
+    rerender();
+    expect(result.current).toBe(settled);
+    await act(async () => { await result.current.save(['hubot']); });
+    expect(result.current).not.toBe(settled);
+  });
+});
+
 describe('AssignmentControl while saving', () => {
   const Harness = () => {
     const assignment = useTaskAssignment('task-1');

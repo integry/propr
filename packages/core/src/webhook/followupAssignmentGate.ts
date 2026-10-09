@@ -77,6 +77,12 @@ export function getSystemBotUsernames(): Set<string> {
     );
 }
 
+/** Whether a login is one of ProPR's own, compared as GitHub does, without case. */
+function isSystemBotLogin(login: string): boolean {
+    const lower = login.toLowerCase();
+    return [...getSystemBotUsernames()].some(username => username.toLowerCase() === lower);
+}
+
 /**
  * Whether a comment is one of ProPR's own system follow-ups — a CI-failure
  * follow-up (authenticated by its marker) or a system `/ultrafix` — posted by
@@ -171,7 +177,9 @@ export interface RefuseGatedCommentOptions {
  * comment. The notice is deduplicated in Redis per (pull request, author), so
  * a long conversation produces one explanation rather than one per comment.
  * A refusal caused by a failed assignee read is not the author's doing and
- * posts nothing. Never throws.
+ * posts nothing, and neither does one of ProPR's own logins (whitelisted, its
+ * comments reach the gate), which would only address the notice to itself.
+ * Never throws.
  */
 export async function refuseGatedComment(
     input: FollowupGatePullRequest & { authorLogin: string; commentId?: number; decision: FollowupGateDecision },
@@ -188,6 +196,7 @@ export async function refuseGatedComment(
     }, 'Follow-up comment refused by the assignment gate');
 
     if (decision.reason !== 'author_not_assigned') return;
+    if (isSystemBotLogin(authorLogin)) return;
 
     const key = followupAssignmentNoticeKey(input, authorLogin);
     try {

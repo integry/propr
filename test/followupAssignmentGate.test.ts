@@ -387,6 +387,18 @@ describe('refuseGatedComment', () => {
         assert.equal(redisClient._store.size, 0);
     });
 
+    test('posts no notice to one of ProPR\'s own logins, whatever its case', async () => {
+        const redisClient = createMockRedis();
+        const options = { redisClient: redisClient as never, github: mockOctokit };
+        await gate.refuseGatedComment({ ...pullRequest, authorLogin: BOT_LOGIN, decision: denied }, options);
+        await gate.refuseGatedComment({ ...pullRequest, authorLogin: BOT_LOGIN.toUpperCase(), decision: denied }, options);
+        assert.equal(github.posted.length, 0);
+        assert.equal(redisClient._store.size, 0);
+        // Still logged as a refusal.
+        const refusals = mockLogger.info.mock.calls.filter(call => call.arguments[1] === 'Follow-up comment refused by the assignment gate');
+        assert.ok(refusals.some(call => (call.arguments[0] as { author?: string }).author === BOT_LOGIN));
+    });
+
     test('a failed post releases the claim so the next refusal explains', async () => {
         const redisClient = createMockRedis();
         const options = { redisClient: redisClient as never, github: mockOctokit };
@@ -527,6 +539,45 @@ describe('pollForPullRequestComments with the assignment gate', () => {
         assert.equal(github.posted.length, 1);
     });
 
+    test('a refused comment is dropped for good, as on the webhook path', async () => {
+        gateEnabled = true;
+        github.assignees.set(PR, [ALICE]);
+        const redisClient = createMockRedis();
+        const fromBob = comments.filter(comment => comment.user === BOB);
+        assert.deepEqual(await poll(redisClient, fromBob), []);
+        assert.equal(assigneeReads(), 1);
+        assert.ok(redisClient._store.has(`pr-comment-refused:${OWNER}:${REPO}:${PR}:2`));
+        assert.ok(redisClient._store.has(`pr-comment-refused:${OWNER}:${REPO}:${PR}:3`));
+        assert.equal(redisClient._store.has(trackingKey(2)), false);
+
+        // Later polls skip the refused comments without asking GitHub again.
+        assert.deepEqual(await poll(redisClient, fromBob), []);
+        assert.equal(assigneeReads(), 1);
+
+        // Assigning B afterwards does not queue the comments refused earlier...
+        github.assignees.set(PR, [ALICE, BOB]);
+        assert.deepEqual(await poll(redisClient, fromBob), []);
+        // ...and neither does switching the gate off.
+        gateEnabled = false;
+        assert.deepEqual(await poll(redisClient, fromBob), []);
+
+        // B's next comment is a new one, and goes through.
+        gateEnabled = true;
+        assert.deepEqual(await poll(redisClient, [...fromBob, { id: 4, body: 'now assigned', user: BOB, created_at: '2026-10-09T10:03:00Z' }]), [4]);
+    });
+
+    test('a refusal that cannot be recorded is asked about again on the next poll', async () => {
+        gateEnabled = true;
+        github.assignees.set(PR, [ALICE]);
+        const redisClient = createMockRedis();
+        const fromBob = comments.filter(comment => comment.user === BOB);
+        redisClient.setex.mock.mockImplementation(async () => { throw new Error('Redis unavailable'); });
+        assert.deepEqual(await poll(redisClient, fromBob), []);
+        redisClient.setex.mock.restore();
+        github.assignees.set(PR, [ALICE, BOB]);
+        assert.deepEqual(await poll(redisClient, fromBob), [2, 3]);
+    });
+
     test('a failed live read queues nothing', async () => {
         gateEnabled = true;
         github.failRead = true;
@@ -561,6 +612,12 @@ describe('pollForPullRequestComments with the assignment gate', () => {
                 assert.equal(mockLoggerInstance.info.mock.calls.some(call => call.arguments[1] === 'Follow-up comment refused by the assignment gate'), false);
             });
         }
+
+        test('a plain comment from ProPR\'s whitelisted bot is refused without a notice addressed to itself', async () => {
+            const queued = await poll(createMockRedis(), [{ id: 12, body: 'ProPR status update', user: BOT, created_at: '2026-10-09T10:00:00Z' }]);
+            assert.deepEqual(queued, []);
+            assert.equal(github.posted.length, 0);
+        });
 
         test('the system marker from a person is not an exemption', async () => {
             const queued = await poll(createMockRedis(), [{ id: 11, body: ciFollowup, user: BOB, created_at: '2026-10-09T10:00:00Z' }]);

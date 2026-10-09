@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Search, Filter, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
 import { DraftListItem } from '../api/proprApi';
 import { getDraftDisplayName } from '../components/TaskPlanner/planDisplayName';
-import { CreatorMarker, useDistinctCreators } from '../components/CreatorMarker';
+import { CreatorMarker } from '../components/CreatorMarker';
 import {
   getEffectiveStatus,
   renderStatusStrip,
@@ -91,8 +91,6 @@ interface PlansListItemProps {
   onAbort: (id: string, e: React.MouseEvent) => void;
   /** Show "owner/repo" because the listed plans span more than one owner. */
   showRepositoryOwner?: boolean;
-  /** Show who created the plan because the listed plans have more than one creator. */
-  showCreator?: boolean;
 }
 
 export const PlansListItem: React.FC<PlansListItemProps> = ({
@@ -100,8 +98,7 @@ export const PlansListItem: React.FC<PlansListItemProps> = ({
   abortingId,
   onDelete,
   onAbort,
-  showRepositoryOwner = false,
-  showCreator = false
+  showRepositoryOwner = false
 }) => {
   const effectiveStatus = getEffectiveStatus(draft.status, draft.issue_summary);
   const repoName = getRepositoryShortName(draft.repository, showRepositoryOwner);
@@ -129,7 +126,7 @@ export const PlansListItem: React.FC<PlansListItemProps> = ({
           {/* Bottom line: Unified Status Strip, then the creator on desktop */}
           <div className="flex flex-wrap items-center text-xs gap-1">
             {renderStatusStrip(draft.issue_summary, effectiveStatus)}
-            {showCreator && draft.created_by && (
+            {draft.created_by && (
               <span className="hidden sm:inline-flex min-w-0 items-center gap-2.5 ml-1.5">
                 <span aria-hidden="true" className="text-slate-300">•</span>
                 <CreatorMarker creator={draft.created_by} />
@@ -240,8 +237,6 @@ interface PlansListProps {
   onAbort: (id: string, e: React.MouseEvent) => void;
 }
 
-const draftCreator = (draft: DraftListItem) => draft.created_by;
-
 export const PlansList: React.FC<PlansListProps> = ({
   drafts,
   repositories = [],
@@ -250,7 +245,6 @@ export const PlansList: React.FC<PlansListProps> = ({
   onAbort
 }) => {
   const showRepositoryOwner = hasMultipleRepositoryOwners([...repositories, ...drafts.map(draft => draft.repository)]);
-  const { show: showCreator } = useDistinctCreators(drafts, draftCreator);
   return (
     <div className="flex flex-col h-full bg-white w-full overflow-hidden">
       <div className="flex-1 overflow-y-auto w-full">
@@ -262,7 +256,6 @@ export const PlansList: React.FC<PlansListProps> = ({
             onDelete={onDelete}
             onAbort={onAbort}
             showRepositoryOwner={showRepositoryOwner}
-            showCreator={showCreator}
           />
         ))}
       </div>

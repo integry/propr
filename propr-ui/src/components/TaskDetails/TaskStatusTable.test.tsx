@@ -181,6 +181,20 @@ describe('TaskStatusTable replacement events', () => {
     ]} />);
     expect(screen.getByText('Replacement skipped: the replacement cap was reached')).toBeInTheDocument();
   });
+
+  // Any item carrying `metadata.event` is its own step, so a replacement event recorded during a
+  // pipeline phase no longer merges into the step before it, while plain updates still do.
+  it('keeps a replacement event recorded in a pipeline phase as its own step', () => {
+    render(<TaskStatusTable history={[
+      { state: 'PROCESSING', timestamp: at(0) },
+      { state: 'PROCESSING', timestamp: at(1) },
+      { state: 'PROCESSING', timestamp: at(2), reason: 'Replacement attempt 2 dispatched', metadata: { event: 'replacement.dispatched', attemptNumber: 2, replacementTaskId: 'attempt-2' } },
+      { state: 'PROCESSING', timestamp: at(3), reason: 'Replacement skipped: the replacement cap was reached', metadata: { event: 'replacement.skipped' } },
+    ]} />);
+    expect(screen.getAllByText('Analyzing Request')).toHaveLength(1);
+    expect(screen.getByText('Replacement Attempt 2 Started')).toBeInTheDocument();
+    expect(screen.getByText('Replacement skipped: the replacement cap was reached')).toBeInTheDocument();
+  });
 });
 
 describe('pull request auto-assignment events', () => {

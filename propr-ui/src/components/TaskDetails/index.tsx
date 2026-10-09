@@ -236,7 +236,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   const liveRun = useLiveRunStop(inspection?.head, Boolean(inspection?.headActive));
   // One read serves the desktop header and the mobile summary; the compact bar never shows it.
   const assignment = useTaskAssignment(taskId);
-  const assignedStripProps = { ...contextStripProps, assignment };
+  const assignedStripProps = useMemo(() => ({ ...contextStripProps, assignment }), [contextStripProps, assignment]);
 
   const handleFollowupSubmit = useCallback(async (body: string) => {
     if (!taskId) {

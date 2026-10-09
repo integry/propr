@@ -326,7 +326,8 @@ const coalescePipelineHistory = (history: HistoryItem[]): HistoryItem[] => {
   for (const item of history) {
     const previous = steps[steps.length - 1];
     const state = item.state?.toUpperCase();
-    // Metadata events (an auto-assignment, a replacement) are their own steps.
+    // Metadata events (an auto-assignment, a replacement, a spend cap) are their own steps, never
+    // merged into the same-state step before them, so each keeps its own label and time.
     if (previous && ['PENDING', 'PROCESSING', 'POST_PROCESSING'].includes(state ?? '') &&
       previous.state?.toUpperCase() === state && !item.metadata?.event && !previous.metadata?.event &&
       previous.metadata?.ultrafixCycle === item.metadata?.ultrafixCycle) {

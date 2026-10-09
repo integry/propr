@@ -106,7 +106,7 @@ Assignment is tied to work **completing**, never to work starting:
 
 **Resumed work triggers nothing.** ProPR switches the label back to `<trigger>-processing` and posts its "starting work" comment when a follow-up begins, and neither assigns anyone nor requests a review. A `/review` run and a follow-up that pushed no commit do not change the pull request, so they trigger nothing either.
 
-Each commit is one opportunity. A completed attempt is remembered per repository, pull request and head commit, so a retry or redelivery for the same commit does nothing, while the next follow-up commit is a new opportunity. An attempt that a crashed worker left unfinished is retried after 10 minutes.
+Each commit is one opportunity. A completed attempt is remembered per repository, pull request and head commit, so a retry or redelivery for the same commit does nothing, while the next follow-up commit is a new opportunity. An attempt that a crashed worker left unfinished holds off other attempts for that commit for 10 minutes. Nothing retries it on a schedule: a later completion for the same commit after that, such as a redelivery or a final validation, tries again, and otherwise the next follow-up commit does.
 
 ### Who is assigned
 

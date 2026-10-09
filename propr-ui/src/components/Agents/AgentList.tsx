@@ -6,7 +6,7 @@ import type { AgentDefinitionRecord } from '../../api/agentDefinitionsApi';
 import { ListSearchInput } from '../ListSearchInput';
 import { ListSkeleton } from '../ui/Skeleton';
 import { CodeChip } from '../ui/CodeChip';
-import { CreatorMarker, useDistinctCreators } from '../CreatorMarker';
+import { CreatorMarker } from '../CreatorMarker';
 import {
   AUTONOMY_BADGE_CLASSES,
   AUTONOMY_LABELS,
@@ -40,8 +40,8 @@ const matches = (definition: AgentDefinitionRecord, query: string, agents: reado
   return query.toLowerCase().split(/\s+/).every(term => haystack.includes(term));
 };
 
-const AgentRow: React.FC<{ definition: AgentDefinitionRecord; lastRunState?: AgentRunState; selected: boolean; now: number; agents: readonly InstanceCatalogAgent[]; showCreator: boolean }> = ({
-  definition, lastRunState, selected, now, agents, showCreator,
+const AgentRow: React.FC<{ definition: AgentDefinitionRecord; lastRunState?: AgentRunState; selected: boolean; now: number; agents: readonly InstanceCatalogAgent[] }> = ({
+  definition, lastRunState, selected, now, agents,
 }) => {
   const extraRepos = definition.repositories.length - MAX_REPO_CHIPS;
   return (
@@ -71,7 +71,7 @@ const AgentRow: React.FC<{ definition: AgentDefinitionRecord; lastRunState?: Age
           {extraRepos > 0 && <span>+{extraRepos}</span>}
           <CodeChip>{runnerLabel(definition, agents)}</CodeChip>
           <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" aria-hidden="true" />{scheduleSummary(definition, now)}</span>
-          {showCreator && <CreatorMarker creator={definition.createdBy} />}
+          <CreatorMarker creator={definition.createdBy} />
         </div>
       </Link>
     </li>
@@ -84,7 +84,6 @@ const NO_AGENTS: readonly InstanceCatalogAgent[] = [];
 export const AgentList: React.FC<AgentListProps> = ({ definitions, lastRunStates, error, selectedId, readOnly = false, now = Date.now(), agents = NO_AGENTS }) => {
   const [query, setQuery] = useState('');
   const visible = useMemo(() => definitions?.filter(definition => matches(definition, query.trim(), agents)) ?? [], [agents, definitions, query]);
-  const { show: showCreator } = useDistinctCreators(visible);
 
   const newAgent = (
     <Link
@@ -133,7 +132,6 @@ export const AgentList: React.FC<AgentListProps> = ({ definitions, lastRunStates
                 selected={definition.id === selectedId}
                 now={now}
                 agents={agents}
-                showCreator={showCreator}
               />
             ))}
           </ul>

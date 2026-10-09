@@ -194,7 +194,9 @@ const AssignmentEditor: React.FC<EditorProps> = ({ id, assignment, onClose }) =>
       </div>
       {(assignable.truncated || atLimit) && (
         <p className="border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
-          {atLimit ? `GitHub allows at most ${MAX_TASK_ASSIGNEES} assignees.` : 'Not every assignable user is listed; filter to find someone.'}
+          {atLimit
+            ? `GitHub allows at most ${MAX_TASK_ASSIGNEES} assignees.`
+            : `Only the first ${assignable.users?.length ?? 0} assignable users are listed, and the filter searches only these. Assign anyone else on GitHub.`}
         </p>
       )}
       <div className="flex items-center gap-1.5 border-t border-slate-100 p-2">

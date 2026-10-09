@@ -234,6 +234,32 @@ test('MCP goal and task depth lists across the grant, reads live detail and reco
     assert.deepEqual(activeTaskPage.tasks.map((task: Json) => task.task_id), ['plain-active', 'goal-task-running']);
     assert.equal(activeTaskPage.nextOffset, 2);
 
+    // The assignee filter reads the stored projection, as the task list API and CLI do.
+    const stamp = '2026-09-01 12:00:00';
+    await db('github_user_profiles').insert([
+      { github_user_id: ownerId, login: 'tester', created_at: stamp, updated_at: stamp },
+      { github_user_id: '456', login: 'octocat', created_at: stamp, updated_at: stamp },
+      { github_user_id: '789', login: 'hubot', created_at: stamp, updated_at: stamp },
+    ]);
+    await db('task_assignees').insert([
+      { task_id: 'plain-active', github_user_id: ownerId, synced_at: stamp, created_at: stamp },
+      { task_id: 'goal-child-failed', github_user_id: '456', synced_at: stamp, created_at: stamp },
+      { task_id: 'plain-other-repo', github_user_id: '789', synced_at: stamp, created_at: stamp },
+      { task_id: 'private-goal-task', github_user_id: ownerId, synced_at: stamp, created_at: stamp },
+    ]);
+    const assigned = async (assignee: string, extra: Record<string, unknown> = {}) =>
+      (await call('list_tasks', { assignee, ...extra })).tasks.map((task: Json) => task.task_id);
+    // `me` is the principal; another user's private goal task stays hidden even when assigned.
+    assert.deepEqual(await assigned('me'), ['plain-active']);
+    assert.deepEqual(await assigned('@OctoCat'), ['goal-child-failed']);
+    assert.deepEqual(await assigned('octocat,hubot'), ['plain-other-repo', 'goal-child-failed']);
+    assert.deepEqual(await assigned('octocat,hubot', { repository }), ['goal-child-failed']);
+    assert.deepEqual(await assigned('nobody-cached'), []);
+    assert.deepEqual(await assigned('all'), taskIds);
+    assert.deepEqual(await assigned('unassigned', { state: 'active' }),
+      ['goal-task-running', 'goal-task-completed', 'goal-task-failed', 'goal-task-paused']);
+    await assert.rejects(call('list_tasks', { assignee: 'not a login' }), /invalid GitHub login/);
+
     // Goal detail answers "what is happening and what has already been done" in one call.
     const goal = await call('get_goal', { repository, goalId: runningGoalId });
     assert.equal(goal.goal.id, runningGoalId);

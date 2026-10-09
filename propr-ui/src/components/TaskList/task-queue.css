@@ -128,7 +128,7 @@
    list pane beside an open task), both collapse to icons the size of a
    button, so neither is squeezed into a sliver that reads as a second border
    around the other. The repository picker keeps its repository icon and its
-   label for screen readers; the assignee select still opens the full list,
+   label for screen readers; the assignee filter still opens the full list,
    its text is hidden, and its icon turns teal while a filter other than All
    assignees applies. Search and the gaps tighten too, so the row still fits
    inside the pane. A phone hides search, so the repository picker keeps its
@@ -148,7 +148,7 @@
 @container task-filters (max-width: 49rem) {
   .task-filter-controls { column-gap: .5rem; }
   .task-assignee-filter { flex: none; width: 2.5rem; }
-  .task-assignee-filter select { width: 100%; padding-left: 0; padding-right: 0; color: transparent; background-image: none; appearance: none; }
-  .task-assignee-filter select option, .task-assignee-filter select optgroup { color: #374151; }
+  .task-assignee-filter > button { justify-content: center; padding-left: 0; padding-right: 0; }
+  .task-assignee-filter-label, .task-assignee-filter-chevron { display: none; }
   .task-assignee-filter-icon { display: block; }
 }

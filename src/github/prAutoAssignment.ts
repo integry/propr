@@ -11,8 +11,9 @@
  * idempotent: a short lease marks an attempt in progress, and a completion
  * marker, written only after the assignment, its stored projection and any
  * review request succeed, makes a retry of the same state a no-op. A worker
- * that dies mid-attempt leaves only the lease, so a retry after it expires
- * tries again; a new head after follow-up is a new opportunity. Every failure
+ * that dies mid-attempt leaves only the lease; nothing schedules a retry, but
+ * a later completion for the same head after the lease expires tries again,
+ * and a new head after follow-up is a new opportunity. Every failure
  * is logged and reported in the outcome; nothing here throws, because a
  * failed assignment must not fail a successful implementation.
  */
@@ -212,17 +213,22 @@ type Claim = { state: 'acquired' | 'unavailable' } | { state: 'completed' } | { 
 async function claim(options: AutoAssignPullRequestOptions, completedKey: string, leaseKey: string): Promise<Claim> {
     try {
         if (await options.redis.set(leaseKey, new Date().toISOString(), 'EX', LEASE_TTL_SECONDS, 'NX') !== 'OK') return { state: 'in_progress' };
-        if (await options.redis.get(completedKey)) {
-            await release(options, leaseKey);
-            return { state: 'completed' };
-        }
-        return { state: 'acquired' };
     } catch (error) {
         // The writes below are safe to repeat (additive assignment, deduplicated
         // review request), so an unreachable Redis only loses the fast path.
         options.logger.warn({ key: completedKey, error: (error as Error).message }, 'Could not claim pull request auto-assignment; continuing without the idempotency key');
         return { state: 'unavailable' };
     }
+    // The lease is held from here, so every path returns it to the caller to release.
+    try {
+        if (await options.redis.get(completedKey)) {
+            await release(options, leaseKey);
+            return { state: 'completed' };
+        }
+    } catch (error) {
+        options.logger.warn({ key: completedKey, error: (error as Error).message }, 'Could not read pull request auto-assignment completion; continuing under the lease');
+    }
+    return { state: 'acquired' };
 }
 
 async function markCompleted(options: AutoAssignPullRequestOptions, key: string): Promise<void> {

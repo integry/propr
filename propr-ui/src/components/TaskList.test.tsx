@@ -44,14 +44,14 @@ vi.mock('../contexts/useSocket', () => ({
 }));
 
 vi.mock('./TaskList/Filters', () => ({
-  Filters: ({ availableRepos, reposLoading, filter, setFilter, assigneeFilter, setAssigneeFilter, assigneeOptions, canFilterToMe }: {
+  Filters: ({ availableRepos, reposLoading, filter, setFilter, assigneeFilter, setAssigneeFilter, assigneePeople, canFilterToMe }: {
     availableRepos: Array<{ name: string; count?: number }>;
     reposLoading: boolean;
     filter: string;
     setFilter: (value: string) => void;
     assigneeFilter: string;
     setAssigneeFilter: (value: string) => void;
-    assigneeOptions: Array<{ value: string; login: string }>;
+    assigneePeople: string[];
     canFilterToMe: boolean;
   }) => (
     <div data-testid="filters">
@@ -65,7 +65,7 @@ vi.mock('./TaskList/Filters', () => ({
         <option value="waiting">Waiting</option>
       </select>
       <span data-testid="assignee-filter-value">{assigneeFilter}</span>
-      <span data-testid="assignee-options">{`${canFilterToMe ? 'me|' : ''}${assigneeOptions.map(option => option.value).join('|')}`}</span>
+      <span data-testid="assignee-options">{`${canFilterToMe ? 'me|' : ''}${assigneePeople.join('|')}`}</span>
       <button type="button" onClick={() => setAssigneeFilter('octocat')}>Filter to octocat</button>
       <button type="button" onClick={() => setAssigneeFilter('all')}>All assignees</button>
     </div>
@@ -334,12 +334,24 @@ describe('TaskList', () => {
       await waitFor(() => expect(screen.getByTestId('location-search')).toBeEmptyDOMElement());
     });
 
-    it('lists the signed-in user and the page\'s assignees, keeping a keyword login distinct', async () => {
+    it('lists the signed-in user and the page\'s assignees', async () => {
       mockGetTasks.mockResolvedValue(assigneeResponse());
       mockGetRepositoryStats.mockResolvedValue({ repositories: [] });
       renderAt('/tasks');
       expect(await screen.findByText('task table')).toBeInTheDocument();
-      expect(screen.getByTestId('assignee-options')).toHaveTextContent('me|@all|Me-User|octocat');
+      expect(screen.getByTestId('assignee-options')).toHaveTextContent('me|all|Me-User|octocat');
+    });
+
+    it('keeps listing people from earlier pages once the filter narrows the list', async () => {
+      mockGetTasks.mockResolvedValueOnce(assigneeResponse()).mockResolvedValue({
+        tasks: [{ id: 'task-2', repository: 'integry/propr', status: 'processing', createdAt: '2026-09-14T00:00:00Z', assignees: [{ id: '4', login: 'hubot', displayName: null, avatarUrl: null }] }],
+        total: 1,
+      } as unknown as Awaited<ReturnType<typeof getTasks>>);
+      mockGetRepositoryStats.mockResolvedValue({ repositories: [] });
+      renderAt('/tasks');
+      expect(await screen.findByText('task table')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Filter to octocat' }));
+      await waitFor(() => expect(screen.getByTestId('assignee-options')).toHaveTextContent('me|all|hubot|Me-User|octocat'));
     });
 
     it('offers no people and no "me" without a signed-in user', async () => {

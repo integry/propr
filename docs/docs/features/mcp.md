@@ -24,7 +24,7 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Tasks joined to their pull request's head, review, checks and ultrafix state | `get_work_overview` |
 | Finished work in a recent window | `get_recent_activity` (up to seven days) |
 | Goal progress and corrections | `get_goal`, `wait_goal`, `list_goal_inputs`, `list_goal_attention` |
-| Tasks or goals by lifecycle | `list_tasks`, `list_goals` with `state` and optional `repository` |
+| Tasks or goals by lifecycle | `list_tasks`, `list_goals` with `state` and optional `repository`; `list_tasks` also takes `assignee` (`me`, `unassigned` or logins) |
 | Plans by status | `list_plans` with `status`: `active`, an exact persisted status, or `all` (default) |
 | Ideas for what to work on next (the **Improve** tab) | `generate_repository_improvements`, then `get_operation` for `result.suggestions` |
 | Start a bounded change | `create_task`, then `get_operation` or `get_task_submission` |

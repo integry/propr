@@ -15,7 +15,7 @@ const filterProps = {
   setSearchQuery: vi.fn(),
   assigneeFilter: 'all',
   setAssigneeFilter: vi.fn(),
-  assigneeOptions: [],
+  assigneePeople: [],
   canFilterToMe: false,
 };
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AttributedUser } from '@propr/shared';
 import {
   getAssignableUsers,
@@ -180,7 +180,8 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
     }
   }, [taskId, assignable.users, addToast]);
 
-  return {
+  // One object per state, so the header props built from it can be memoized.
+  return useMemo(() => ({
     taskId,
     assignees,
     subject,
@@ -192,5 +193,5 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
     save,
     assignable,
     loadAssignableUsers,
-  };
+  }), [taskId, assignees, subject, loading, error, unavailable, editable, saving, save, assignable, loadAssignableUsers]);
 }

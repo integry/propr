@@ -67,20 +67,21 @@ export const selectsNothing = (selection: AssigneeSelection | null): boolean =>
   selection?.kind === 'users' && selection.userIds.length === 0;
 
 /**
- * The `task_assignees` rows of run `t` that a selection looks for: any
- * assignee for `unassigned` (which then asks that none exist), else the
- * selected users. An existence check keeps the predicate on the primary key.
+ * The `task_assignees` rows of the outer run (`t` unless `taskColumn` names
+ * another) that a selection looks for: any assignee for `unassigned` (which
+ * then asks that none exist), else the selected users. An existence check
+ * keeps the predicate on the primary key.
  */
-export function assigneeRows(db: Knex, selection: AssigneeSelection): Knex.QueryBuilder {
-  const rows = db('task_assignees as ta').select(db.raw('1')).whereRaw('ta.task_id = t.task_id');
+export function assigneeRows(db: Knex, selection: AssigneeSelection, taskColumn = 't.task_id'): Knex.QueryBuilder {
+  const rows = db('task_assignees as ta').select(db.raw('1')).where('ta.task_id', db.ref(taskColumn));
   if (selection.kind === 'users') rows.whereIn('ta.github_user_id', [...selection.userIds]);
   return rows;
 }
 
 /** Narrows a run query to the runs a selection lists. */
-export function applyAssigneeSelection(db: Knex, query: Knex.QueryBuilder, selection: AssigneeSelection): void {
-  if (selection.kind === 'unassigned') query.whereNotExists(assigneeRows(db, selection));
-  else query.whereExists(assigneeRows(db, selection));
+export function applyAssigneeSelection(db: Knex, query: Knex.QueryBuilder, selection: AssigneeSelection, taskColumn?: string): void {
+  if (selection.kind === 'unassigned') query.whereNotExists(assigneeRows(db, selection, taskColumn));
+  else query.whereExists(assigneeRows(db, selection, taskColumn));
 }
 
 const byLogin = (a: AttributedUser, b: AttributedUser): number =>

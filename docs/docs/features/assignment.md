@@ -34,9 +34,11 @@ The **Assignee** filter, next to the status and repository filters, narrows the 
 | All assignees | `all` (or omitted) | Every task |
 | Assigned to me | `me` | Tasks assigned to you. Offered only when you are signed in |
 | Unassigned | `unassigned` | Tasks with nobody assigned |
-| A person, under **People** | Their login, for example `octocat` | Tasks assigned to that person |
+| One or more people, under **People** | Their logins, comma-separated, for example `octocat,hubot` | Tasks assigned to any of them |
 
-The filter is kept in the page URL, so a link such as `/tasks?assignee=me` opens your own queue. The API also accepts a comma-separated list of logins (`?assignee=octocat,hubot`) and an optional leading `@`. A login that is spelled like a keyword (a user called `me`) is written as `@me`. `me` is resolved from your session on the server, so changing the URL cannot show another user's queue under "me". The filter runs before paging, so the page count and total always match what is shown.
+**People** lists you and everyone assigned to a task you have seen in the list since opening the page. Tick as many as you need: each one adds to the filter rather than replacing it. To filter by someone who is not listed, type their GitHub login into **Find or add a GitHub login** and press Enter. A filter can name up to 20 people.
+
+The filter is kept in the page URL, so a link such as `/tasks?assignee=me` opens your own queue. Logins may carry an optional leading `@`. A login that is spelled like a keyword (a user called `me`) is written as `@me`. `me` is resolved from your session on the server, so changing the URL cannot show another user's queue under "me". The filter runs before paging, so the page count and total always match what is shown.
 
 The list shows the assignment ProPR last saw. ProPR refreshes it whenever it assigns someone, whenever a task's detail page is opened and whenever the assignment gate reads it. A change made only on GitHub appears on the list after one of those.
 
@@ -48,13 +50,13 @@ To change it, select **Assign** (or the edit button next to the current assignee
 
 Anyone signed in to ProPR can see assignment. **Changing it requires write access to the repository on GitHub**, which is the same bar GitHub uses for assignment. Without it, the page keeps the read-only display, tells you why once, and stops offering the editor for that task. For a goal task or another task that cannot be assigned, the control is not shown at all.
 
-Assignment can be read and changed through the API (`GET` and `PUT /api/task/{taskId}/assignees`) and filtered from the CLI with [`propr task list --assignee`](./propr-cli.md#tasks).
+Assignment can be read and changed through the API (`GET` and `PUT /api/task/{taskId}/assignees`) and filtered from the CLI with [`propr task list --assignee`](./propr-cli.md#tasks) and from MCP with `list_tasks` (`assignee`), which take the same values as the URL.
 
 ## Creator attribution
 
 Goals, plans, automations and to-dos show who created them. The creator appears as a small avatar and `@login` on each row's metadata line on the Goals, Plans, Automations and To-Dos lists, and in the goal detail header.
 
-On a list, the creator is shown only when the visible items have more than one creator. On a single-developer instance, or a filtered list where everything has the same creator, repeating one name on every row is noise, so it is hidden. Items with no known creator, such as those created before attribution existed, show nothing and do not count as another creator.
+Every item whose creator is known shows it, including on lists where every item has the same creator. These lists are scoped to the signed-in user, so that is the usual case. Items with no known creator, such as those created before attribution existed, show nothing.
 
 The creator is who created the item in ProPR. It is not an assignment and does not affect who may act on the item.
 
@@ -68,7 +70,8 @@ On a team, anyone the [GitHub user whitelist](./pr-commands.md#who-can-trigger-c
 - **ProPR's own system comments are never gated.** Automatic failed-CI follow-ups and the system `/ultrafix` comments that drive a loop are recognised as ProPR's and always proceed.
 - **It fails closed.** If ProPR cannot read the assignees from GitHub, the comment is refused and logged, and no explanation is posted, because the author did nothing wrong.
 - **A refused author receives one explanatory comment** on the pull request, mentioning them, that says only assignees can start follow-up work and asks them to get assigned and comment again. It is posted at most once per author per pull request in 7 days, so a long conversation does not fill up with notices. Their later comments are still refused, but silently.
-- A refused comment is not queued, claimed or billed. Once the author is assigned, their next comment works normally.
+- ProPR's own logins are never sent that comment. If its login is in the whitelist, an ordinary comment it posts can reach the gate and be refused, which is logged without a notice addressed to itself.
+- A refused comment is not queued, claimed or billed, and it is dropped for good: assigning the author or switching the gate off later does not start work from it. With webhook delivery the comment is never seen again, and with polling intake ProPR remembers refused comments for 30 days so later polls skip them. Once the author is assigned, their next comment works normally.
 
 Refusals are logged at `info` as `Follow-up comment refused by the assignment gate` with the repository, pull request, comment, author and reason:
 

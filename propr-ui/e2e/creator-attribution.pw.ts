@@ -3,7 +3,8 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
 // Who created each plan, goal, automation and to-do: shown on each row's existing metadata line
-// when more than one person's items are visible, and hidden when they all share one creator.
+// whenever the creator is known. These lists are owner-scoped, so on a normal instance every row
+// shares one creator, and the marker still shows there.
 
 const now = Date.parse('2026-10-09T12:00:00.000Z');
 const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
@@ -14,7 +15,9 @@ type Creator = typeof octocat | typeof hubot | null;
 
 /** The creators of the three rows on every surface; the last one has no cached profile. */
 const MIXED: Creator[] = [octocat, hubot, null];
+/** What an owner-scoped list returns: one creator throughout. */
 const SINGLE: Creator[] = [octocat, octocat, null];
+const UNKNOWN: Creator[] = [null, null, null];
 
 const longTitle = 'Teach the repository indexer to resume an interrupted crawl without rescanning every tree';
 
@@ -181,7 +184,7 @@ for (const surface of surfaces) {
   test.describe(surface.name, () => {
     test('shows each known creator as avatar plus login without growing a row', async ({ page }) => {
       await page.setViewportSize({ width: 1440, height: 900 });
-      await stub(page, SINGLE);
+      await stub(page, UNKNOWN);
       await surface.open(page);
       const before = await heights(surface.rows(page));
       await expect(page.getByTestId('creator-marker')).toHaveCount(0);
@@ -205,12 +208,16 @@ for (const surface of surfaces) {
       await capture(page, `creator-${surface.name}-desktop`);
     });
 
-    test('hides the creator when every visible item shares one', async ({ page }) => {
+    test('shows the creator on an owner-scoped list where every item shares one', async ({ page }) => {
       await page.setViewportSize({ width: 1440, height: 900 });
       await stub(page, SINGLE);
       await surface.open(page);
-      await expect(surface.rows(page)).toHaveCount(3);
-      await expect(page.getByTestId('creator-marker')).toHaveCount(0);
+      const rows = surface.rows(page);
+      await expect(rows).toHaveCount(3);
+      await expect(rows.nth(0).getByRole('group', { name: 'Created by @octocat' })).toBeVisible();
+      await expect(rows.nth(1).getByRole('group', { name: 'Created by @octocat' })).toBeVisible();
+      await expect(rows.nth(2).getByTestId('creator-marker')).toHaveCount(0);
+      await capture(page, `creator-${surface.name}-single-owner-desktop`);
     });
 
     for (const width of [320, 390, 1024, 1920]) {
@@ -228,26 +235,19 @@ for (const surface of surfaces) {
   });
 }
 
-test('to-dos hide the creator once the only category with a second creator is collapsed', async ({ page }) => {
+test('to-dos keep their creators when another category is collapsed', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await stub(page, [octocat, octocat, hubot], ['Alpha', 'Alpha', 'Beta']);
   await surfaces[3].open(page);
   await expect(page.getByText('To-do number 3')).toBeVisible();
   await expect(page.getByRole('group', { name: 'Created by @hubot' })).toBeVisible();
   await expect(page.getByRole('group', { name: 'Created by @octocat' })).toHaveCount(2);
-  await capture(page, 'creator-to-dos-categories-expanded');
 
   // The header's first <button> is the expand toggle; the drag handle before it is a div with role="button".
   const beta = page.locator('div.group', { has: page.locator('> span', { hasText: /^Beta$/ }) });
   await beta.locator('> button').first().click();
   await expect(page.getByText('To-do number 3')).toHaveCount(0);
-  // Only octocat's to-dos are on screen now, so no row carries a marker.
-  await expect(page.getByText('To-do number 2')).toBeVisible();
-  await expect(page.getByTestId('creator-marker')).toHaveCount(0);
-  await capture(page, 'creator-to-dos-category-collapsed');
-
-  await beta.locator('> button').first().click();
-  await expect(page.getByRole('group', { name: 'Created by @hubot' })).toBeVisible();
+  // Only octocat's to-dos are on screen now, and they still carry the marker.
   await expect(page.getByRole('group', { name: 'Created by @octocat' })).toHaveCount(2);
 });
 
@@ -265,7 +265,7 @@ test('the plans row stays one line on desktop with the creator in the status str
 
 test('the goals queue keeps its column widths and its truncated second line', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
-  await stub(page, SINGLE);
+  await stub(page, UNKNOWN);
   await surfaces[1].open(page);
   const columns = () => page.getByTestId('goal-queue-columns').locator('> span').evaluateAll(nodes => nodes.map(node => Math.round(node.getBoundingClientRect().width)));
   const before = await columns();

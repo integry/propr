@@ -24,9 +24,8 @@ import {
 import { useDebouncedCallback } from './TaskList/hooks';
 import { isDialogOpen, isTypingTarget } from './TaskList/keyboardOwnership';
 import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
-import { formatTaskAssignmentFilter, type TaskUpdatePayload } from '@propr/shared';
+import type { TaskUpdatePayload } from '@propr/shared';
 import { useCurrentUser } from '../contexts/AuthContext';
-import type { AssigneeOption } from './TaskList/Filters';
 
 const createRepoOptions = (repositories: Array<{ repository: string; total: number }>): RepoOption[] => {
   const totalCount = repositories.reduce((sum, repo) => sum + repo.total, 0);
@@ -50,28 +49,36 @@ const createRepoOptions = (repositories: Array<{ repository: string; total: numb
 };
 
 /**
- * A person's `?assignee=` value. A login the URL would drop as a default (a
- * user named `1`) keeps an `@` prefix, which the API strips, so it survives.
+ * Adds the logins assigned on a page to those already seen, keyed
+ * case-insensitively. Returns `known` itself when the page adds nobody, so
+ * the state does not change.
  */
-const assigneeOption = (login: string): AssigneeOption => {
-  const value = formatTaskAssignmentFilter({ mode: 'users', logins: [login] });
-  return { value: isDefaultParamValue(value) ? `@${value}` : value, login };
-};
-
-/**
- * The people the assignee filter offers: everyone assigned on the page plus
- * the signed-in user, sorted by login. Without a signed-in user the filter
- * offers only `All assignees` and `Unassigned`.
- */
-function deriveAssigneeOptions(tasks: Task[], currentLogin: string | null): AssigneeOption[] {
-  if (!currentLogin) return [];
-  const logins = new Map<string, string>([[currentLogin.toLowerCase(), currentLogin]]);
+function mergeAssigneeLogins(known: string[], tasks: Task[]): string[] {
+  const keys = new Set(known.map(login => login.toLowerCase()));
+  const added: string[] = [];
   for (const task of tasks) {
     for (const user of task.assignees ?? []) {
-      if (!logins.has(user.login.toLowerCase())) logins.set(user.login.toLowerCase(), user.login);
+      if (keys.has(user.login.toLowerCase())) continue;
+      keys.add(user.login.toLowerCase());
+      added.push(user.login);
     }
   }
-  return [...logins.values()].sort((a, b) => a.localeCompare(b)).map(assigneeOption);
+  return added.length ? [...known, ...added] : known;
+}
+
+/**
+ * The people the assignee filter lists before anything is typed: everyone
+ * assigned on any page seen so far plus the signed-in user, sorted by login.
+ * Anyone else can be typed in. Without a signed-in user the filter offers
+ * only `All assignees` and `Unassigned`.
+ */
+function deriveAssigneePeople(seen: string[], currentLogin: string | null): string[] {
+  if (!currentLogin) return [];
+  const logins = new Map<string, string>([[currentLogin.toLowerCase(), currentLogin]]);
+  for (const login of seen) {
+    if (!logins.has(login.toLowerCase())) logins.set(login.toLowerCase(), login);
+  }
+  return [...logins.values()].sort((a, b) => a.localeCompare(b));
 }
 
 type TaskScopeState =
@@ -346,7 +353,10 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
 
   const groupedTasks = useMemo(() => groupTasksForDisplay(tasks), [tasks]);
   const currentLogin = currentUser?.login || null;
-  const assigneeOptions = useMemo(() => deriveAssigneeOptions(tasks, currentLogin), [tasks, currentLogin]);
+  // Kept across pages and filters, so narrowing to one person still lists the others to add.
+  const [seenAssignees, setSeenAssignees] = useState<string[]>([]);
+  useEffect(() => { setSeenAssignees(known => mergeAssigneeLogins(known, tasks)); }, [tasks]);
+  const assigneePeople = useMemo(() => deriveAssigneePeople(seenAssignees, currentLogin), [seenAssignees, currentLogin]);
 
   useEffect(() => {
     onGroupsChange?.(groupedTasks);
@@ -377,7 +387,7 @@ const TaskList: React.FC<TaskListProps> = ({ limit, showViewAll = false, hideFil
     setSearchQuery,
     assigneeFilter,
     setAssigneeFilter,
-    assigneeOptions,
+    assigneePeople,
     canFilterToMe: Boolean(currentLogin),
   };
 

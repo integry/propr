@@ -18,6 +18,8 @@ interface FixtureOptions {
   goal?: boolean;
   /** How a save answers: applied, refused for lack of write access, or GitHub being down. */
   save?: 'ok' | 'forbidden' | 'unavailable';
+  /** The assignable-users read reports that GitHub listed more users than it returned. */
+  truncated?: boolean;
 }
 
 async function fixture(page: Page, options: FixtureOptions = {}) {
@@ -50,7 +52,7 @@ async function fixture(page: Page, options: FixtureOptions = {}) {
     }
     if (path === `/api/task/${taskId}/assignable-users`) {
       state.assignableRequests += 1;
-      return route.fulfill({ json: { users: assignable, truncated: false } });
+      return route.fulfill({ json: { users: assignable, truncated: options.truncated ?? false } });
     }
     const responses: Record<string, unknown> = {
       '/api/auth/demo-mode': { demoMode: false },
@@ -265,4 +267,40 @@ test('shows the assignment in the expanded mobile summary and leaves the compact
   await expect(bar).toHaveText('#2911:Show and edit task assignment on the task detail page');
   await expect(bar.getByTestId('task-assignment')).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
+});
+
+test('1440px renders exactly one visible assignment control, with one edit button', async ({ page }) => {
+  await fixture(page, { assignees: [octocat] });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`/tasks/${taskId}`);
+
+  const details = page.getByTestId('task-details');
+  const visible = details.getByTestId('task-assignment').filter({ visible: true });
+  await expect(visible).toHaveCount(1);
+  await expect(details.getByRole('button', { name: 'Edit assignees' }).filter({ visible: true })).toHaveCount(1);
+  await expect(details.getByRole('button', { name: 'Assign users' }).filter({ visible: true })).toHaveCount(0);
+  // Inside the Git cluster too: one control, one edit button.
+  await expect(gitContext(page).getByTestId('task-assignment')).toHaveCount(1);
+  await expect(gitContext(page).getByRole('button', { name: /^(Edit assignees|Assign users)$/ })).toHaveCount(1);
+});
+
+test('1440px an unassigned task offers one visible Assign button', async ({ page }) => {
+  await fixture(page, { assignees: [] });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`/tasks/${taskId}`);
+
+  const details = page.getByTestId('task-details');
+  await expect(details.getByTestId('task-assignment').filter({ visible: true })).toHaveCount(1);
+  await expect(details.getByRole('button', { name: 'Assign users' }).filter({ visible: true })).toHaveCount(1);
+  await expect(gitContext(page).getByRole('button', { name: 'Assign users' })).toHaveCount(1);
+});
+
+test('explains a truncated candidate list and points to GitHub for anyone else', async ({ page }) => {
+  await fixture(page, { assignees: [octocat], truncated: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`/tasks/${taskId}`);
+
+  await gitContext(page).getByRole('button', { name: 'Edit assignees' }).click();
+  const editor = page.getByRole('dialog', { name: 'Assign users' });
+  await expect(editor.getByText('Only the first 3 assignable users are listed, and the filter searches only these. Assign anyone else on GitHub.')).toBeVisible();
 });

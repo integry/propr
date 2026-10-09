@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { ago, capture, fixture, tag, tasks } from './task-list-desktop.fixture';
 
 const user = (login: string, id: number) => ({ id: String(id), login, displayName: null, avatarUrl: null });
@@ -28,16 +28,23 @@ async function assigneeFixture(page: Page, { signedInUser = true, extraTasks = [
     const url = new URL(route.request().url());
     requests.push(url);
     const assignee = url.searchParams.get('assignee');
-    if (assignee && !/^(?:me|unassigned|@?[A-Za-z0-9-]+)$/.test(assignee)) {
+    if (assignee && !/^(?:me|unassigned|@?[A-Za-z0-9-]+(?:,@?[A-Za-z0-9-]+)*)$/.test(assignee)) {
       return route.fulfill({ status: 400, json: { error: `assignee contains an invalid GitHub login: ${assignee}` } });
     }
-    const login = assignee === 'me' ? me.login : assignee?.replace(/^@/, '');
+    const logins = assignee === 'me' ? [me.login] : assignee?.split(',').map(login => login.replace(/^@/, '')) ?? [];
     const matching = pageTasks.filter(task => !assignee ? true
       : assignee === 'unassigned' ? task.assignees.length === 0
-        : task.assignees.some(person => person.login === login));
+        : task.assignees.some(person => logins.includes(person.login)));
     return route.fulfill({ json: { tasks: matching, total: assignee ? matching.length : 1842, totalRuns: 14769 } });
   });
   return requests;
+}
+
+const assigneeTrigger = (scope: Page | Locator) => scope.getByRole('button', { name: /^Assignee:/ });
+
+async function openAssigneeFilter(page: Page) {
+  await assigneeTrigger(page).click();
+  return page.getByRole('dialog', { name: 'Filter by assignee' });
 }
 
 const pageFits = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
@@ -125,13 +132,30 @@ test('the assignee filter narrows the list, lives in the URL and resets to page 
   await page.goto('/tasks?page=2');
   const table = page.getByRole('table', { name: 'Tasks' });
   await expect(table).toBeVisible();
-  const filter = page.getByRole('combobox', { name: 'Assignee' });
-  await expect(filter).toHaveValue('all');
-  // Everyone, me, nobody, then the people on the page and the signed-in user.
-  await expect(filter.locator('option')).toHaveText(['All assignees', 'Assigned to me', 'Unassigned', '@defunkt', '@hubot', '@mojombo', '@mona', '@octocat', '@pjhyett', '@wycats']);
+  await expect(assigneeTrigger(page)).toHaveAccessibleName('Assignee: All assignees');
+  let dialog = await openAssigneeFilter(page);
+  // Everyone, me, nobody, then the people seen and the signed-in user.
+  await expect(dialog.getByRole('radio')).toHaveCount(3);
+  await expect(dialog.getByTestId('task-assignee-filter-person')).toHaveText(['@defunkt', '@hubot', '@mojombo', '@mona', '@octocat', '@pjhyett', '@wycats']);
   const rows = table.getByTestId('task-row');
 
-  await filter.selectOption('me');
+  // People combine: ticking a second one adds them rather than replacing the first.
+  await dialog.getByRole('checkbox', { name: '@hubot' }).click();
+  await expect(page).toHaveURL(/\/tasks\?assignee=hubot$/);
+  await expect(rows).toHaveCount(2);
+  expect(requests.at(-1)!.searchParams.get('offset')).toBe('0');
+  await expect(rows.filter({ hasText: 'Stop work when an issue' })).toHaveCount(0);
+  await dialog.getByRole('checkbox', { name: '@octocat' }).click();
+  await expect(page).toHaveURL(/\/tasks\?assignee=hubot%2Coctocat$/);
+  await expect(rows).toHaveCount(3);
+  await expect(rows.filter({ hasText: 'Stop work when an issue' })).toHaveCount(1);
+  await expect.poll(() => requests.at(-1)!.searchParams.get('assignee')).toBe('hubot,octocat');
+  await capture(page, 'tasks-assignee-filter-multi-1440');
+  await page.keyboard.press('Escape');
+  await expect(assigneeTrigger(page)).toHaveAccessibleName('Assignee: @hubot +1');
+
+  dialog = await openAssigneeFilter(page);
+  await dialog.getByRole('radio', { name: 'Assigned to me' }).click();
   await expect(page).toHaveURL(/\/tasks\?assignee=me$/);
   await expect(rows).toHaveCount(1);
   await expect(rows).toContainText('Stop work when an issue or PR withdraws intent');
@@ -141,25 +165,40 @@ test('the assignee filter narrows the list, lives in the URL and resets to page 
 
   // Reloading restores the selection.
   await page.reload();
-  await expect(page.getByRole('combobox', { name: 'Assignee' })).toHaveValue('me');
+  await expect(assigneeTrigger(page)).toHaveAccessibleName('Assignee: Assigned to me');
   await expect(rows).toHaveCount(1);
 
-  await page.getByRole('combobox', { name: 'Assignee' }).selectOption('unassigned');
+  dialog = await openAssigneeFilter(page);
+  await dialog.getByRole('radio', { name: 'Unassigned' }).click();
   await expect(page).toHaveURL(/\/tasks\?assignee=unassigned$/);
   await expect(rows).toHaveCount(7);
   await expect(table.getByTestId('assignee-stack-avatar')).toHaveCount(0);
 
-  await page.getByRole('combobox', { name: 'Assignee' }).selectOption('all');
-  await expect(rows).toHaveCount(10);
-  await page.getByRole('combobox', { name: 'Assignee' }).selectOption('hubot');
-  await expect(page).toHaveURL(/\/tasks\?assignee=hubot$/);
-  await expect(rows).toHaveCount(2);
-  await expect(rows.filter({ hasText: 'Stop work when an issue' })).toHaveCount(0);
-
   // All assignees removes the parameter.
-  await page.getByRole('combobox', { name: 'Assignee' }).selectOption('all');
+  dialog = await openAssigneeFilter(page);
+  await dialog.getByRole('radio', { name: 'All assignees' }).click();
   await expect(page).toHaveURL(/\/tasks$/);
   expect(requests.at(-1)!.searchParams.has('assignee')).toBe(false);
+});
+
+test('a login on no page seen yet can be typed into the assignee filter', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const requests = await assigneeFixture(page);
+  await page.goto('/tasks?assignee=hubot');
+  await expect(page.getByRole('table', { name: 'Tasks' }).getByTestId('task-row')).toHaveCount(2);
+  const dialog = await openAssigneeFilter(page);
+  const field = dialog.getByRole('searchbox', { name: 'Find or add a GitHub login' });
+  await field.fill('monalisa');
+  await expect(dialog.getByTestId('task-assignee-filter-person')).toHaveCount(0);
+  await field.press('Enter');
+  await expect(page).toHaveURL(/\/tasks\?assignee=hubot%2Cmonalisa$/);
+  await expect.poll(() => requests.at(-1)!.searchParams.get('assignee')).toBe('hubot,monalisa');
+  await expect(dialog.getByRole('checkbox', { name: '@monalisa' })).toBeChecked();
+
+  await field.fill('not a login');
+  await field.press('Enter');
+  await expect(dialog.getByRole('alert')).toHaveText('@not a login is not a valid GitHub login.');
+  await expect(page).toHaveURL(/\/tasks\?assignee=hubot%2Cmonalisa$/);
 });
 
 test('an unknown ?assignee= surfaces the API error instead of a blank page', async ({ page }) => {
@@ -167,7 +206,7 @@ test('an unknown ?assignee= surfaces the API error instead of a blank page', asy
   await assigneeFixture(page);
   await page.goto('/tasks?assignee=not%20a%20login');
   await expect(page.getByText('assignee contains an invalid GitHub login: not a login')).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Assignee' })).toBeVisible();
+  await expect(assigneeTrigger(page)).toBeVisible();
 });
 
 test('without a signed-in user the filter offers only All and Unassigned', async ({ page }) => {
@@ -175,7 +214,10 @@ test('without a signed-in user the filter offers only All and Unassigned', async
   await assigneeFixture(page, { signedInUser: false });
   await page.goto('/tasks');
   await expect(page.getByRole('table', { name: 'Tasks' })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Assignee' }).locator('option')).toHaveText(['All assignees', 'Unassigned']);
+  const dialog = await openAssigneeFilter(page);
+  await expect(dialog.getByRole('radio')).toHaveCount(2);
+  await expect(dialog.getByRole('radio', { name: 'Assigned to me' })).toHaveCount(0);
+  await expect(dialog.getByTestId('task-assignee-filter-person')).toHaveCount(0);
 });
 
 test('390px the card shows assignees on its meta line and the filter shares the search row', async ({ page }) => {
@@ -199,7 +241,7 @@ test('390px the card shows assignees on its meta line and the filter shares the 
 
   // The filter sits beside search, not as a fourth control on the title line.
   const search = page.getByRole('textbox', { name: 'Search tasks' });
-  const filter = page.getByRole('combobox', { name: 'Assignee' });
+  const filter = assigneeTrigger(page);
   const [searchBox, filterBox, statusBox] = await Promise.all([search, filter, page.getByRole('combobox', { name: 'Task status' })].map(locator => locator.boundingBox()));
   expect(Math.abs(filterBox!.y + filterBox!.height / 2 - (searchBox!.y + searchBox!.height / 2))).toBeLessThan(4);
   expect(filterBox!.y).toBeGreaterThan(statusBox!.y + statusBox!.height);
@@ -207,7 +249,13 @@ test('390px the card shows assignees on its meta line and the filter shares the 
   expect(await pageFits(page)).toBe(true);
   await capture(page, 'tasks-assignees-390');
 
-  await filter.selectOption('me');
+  const dialog = await openAssigneeFilter(page);
+  // The popover stays on screen beside the filter at the right edge.
+  const popover = await dialog.boundingBox();
+  expect(popover!.x).toBeGreaterThanOrEqual(0);
+  expect(popover!.x + popover!.width).toBeLessThanOrEqual(390);
+  await capture(page, 'tasks-assignee-filter-390');
+  await dialog.getByRole('radio', { name: 'Assigned to me' }).click();
   await expect(page).toHaveURL(/assignee=me/);
   await expect(cards).toHaveCount(1);
   expect(await pageFits(page)).toBe(true);
@@ -218,13 +266,13 @@ for (const width of [768, 1440, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     await assigneeFixture(page);
     await page.goto('/tasks');
-    await expect(page.getByRole('combobox', { name: 'Assignee' })).toBeVisible();
+    await expect(assigneeTrigger(page)).toBeVisible();
     expect(await pageFits(page)).toBe(true);
     if (width < 1440) return;
     await page.goto('/tasks?task=pr-2664-run-0');
     await expect(page.getByTestId('task-split-details')).toBeVisible();
     const list = page.getByTestId('task-split-list');
-    await expect(list.getByRole('combobox', { name: 'Assignee' })).toBeVisible();
+    await expect(assigneeTrigger(list)).toBeVisible();
     const fits = await list.evaluate(node => {
       const pane = node.getBoundingClientRect();
       return [...node.querySelectorAll('select, input, button, h1')].every(control => {
