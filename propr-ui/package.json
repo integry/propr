@@ -12,6 +12,7 @@
     "posttest": "npm run test:docker-context",
     "test:docker-context": "node --test scripts/docker-context-inputs.test.mjs",
     "test:browser": "playwright test --config playwright.config.ts",
+    "site-captures": "playwright test --config playwright.site-captures.config.ts",
     "measure:startup": "playwright test --config playwright.config.ts e2e/startup-critical-path.pw.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

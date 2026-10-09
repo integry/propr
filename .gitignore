@@ -31,6 +31,7 @@ src/**/*.d.ts
 
 # Transient visual preview evidence (published separately, never committed)
 .propr/previews/
+.propr/site-captures/
 
 # E2E test reports (generated per run)
 test/reports/
