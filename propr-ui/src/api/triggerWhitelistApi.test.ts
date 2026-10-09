@@ -17,8 +17,9 @@ describe('triggerWhitelistApi', () => {
     mockUpdateSettings.mockResolvedValue({ success: true });
   });
 
-  it('matches GitHub logins case-insensitively', () => {
-    expect(isLoginInWhitelist(['Developer'], 'developer')).toBe(true);
+  it('matches logins exactly, as comment-trigger enforcement does', () => {
+    expect(isLoginInWhitelist(['developer'], 'developer')).toBe(true);
+    expect(isLoginInWhitelist(['Developer'], 'developer')).toBe(false);
     expect(isLoginInWhitelist(['owner'], 'developer')).toBe(false);
   });
 
@@ -34,18 +35,28 @@ describe('triggerWhitelistApi', () => {
   });
 
   it('does not write when the login is already listed', async () => {
-    mockGetSettings.mockResolvedValue({ github_user_whitelist: ['owner', 'Developer'] } as never);
+    mockGetSettings.mockResolvedValue({ github_user_whitelist: ['owner', 'developer'] } as never);
 
-    await expect(addToTriggerWhitelist('developer')).resolves.toEqual(['owner', 'Developer']);
+    await expect(addToTriggerWhitelist('developer')).resolves.toEqual(['owner', 'developer']);
     expect(mockUpdateSettings).not.toHaveBeenCalled();
   });
 
-  it('removes a login without touching other entries', async () => {
-    mockGetSettings.mockResolvedValue({ github_user_whitelist: ['owner', 'Developer', 'bot[bot]'] } as never);
+  it('appends the login when only a case-distinct entry is listed, preserving that entry', async () => {
+    mockGetSettings.mockResolvedValue({ github_user_whitelist: ['owner', 'Developer'] } as never);
 
-    await expect(removeFromTriggerWhitelist('developer')).resolves.toEqual(['owner', 'bot[bot]']);
+    await expect(addToTriggerWhitelist('developer')).resolves.toEqual(['owner', 'Developer', 'developer']);
     expect(mockUpdateSettings).toHaveBeenCalledWith(
-      { github_user_whitelist: ['owner', 'bot[bot]'] },
+      { github_user_whitelist: ['owner', 'Developer', 'developer'] },
+      expect.objectContaining({})
+    );
+  });
+
+  it('removes only the exact login, keeping case-distinct and other entries', async () => {
+    mockGetSettings.mockResolvedValue({ github_user_whitelist: ['owner', 'Developer', 'developer', 'bot[bot]'] } as never);
+
+    await expect(removeFromTriggerWhitelist('developer')).resolves.toEqual(['owner', 'Developer', 'bot[bot]']);
+    expect(mockUpdateSettings).toHaveBeenCalledWith(
+      { github_user_whitelist: ['owner', 'Developer', 'bot[bot]'] },
       expect.objectContaining({})
     );
   });

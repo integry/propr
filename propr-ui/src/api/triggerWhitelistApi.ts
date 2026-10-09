@@ -26,10 +26,12 @@ async function whitelistRevision(whitelist: string[]): Promise<string> {
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-/** GitHub logins are case-insensitive, matching trigger enforcement. */
+/**
+ * Comment-trigger enforcement (`filterCommentByAuthor`) compares entries exactly, so a case-distinct
+ * entry such as `Developer` does not let `developer` trigger ProPR. Membership here matches that.
+ */
 export function isLoginInWhitelist(whitelist: string[], login: string): boolean {
-  const lower = login.toLowerCase();
-  return whitelist.some(entry => entry.toLowerCase() === lower);
+  return whitelist.includes(login);
 }
 
 export const getTriggerWhitelist = async (): Promise<string[]> =>
@@ -53,8 +55,8 @@ export const addToTriggerWhitelist = async (login: string): Promise<string[]> =>
 
 export const removeFromTriggerWhitelist = async (login: string): Promise<string[]> => {
   const current = await getTriggerWhitelist();
-  const lower = login.toLowerCase();
-  const next = current.filter(entry => entry.toLowerCase() !== lower);
+  // Case-distinct entries are separate whitelist entries, matching the MCP tool's exact removal.
+  const next = current.filter(entry => entry !== login);
   if (next.length === current.length) return current;
   if (next.length === 0) {
     throw new Error('Removing the final trigger whitelist entry would open trigger access to every GitHub user. Edit the whitelist in Settings instead.');

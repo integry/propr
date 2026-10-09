@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AccessManagementPage from './AccessManagementPage';
 import { AuthProvider } from '../contexts/AuthContext';
 import {
@@ -236,8 +236,18 @@ describe('AccessManagementPage', () => {
     expect(mockAddToWhitelist).not.toHaveBeenCalled();
   });
 
-  it('does not offer a whitelist addition when the user is already listed or the whitelist is open', async () => {
+  it('offers an addition when only a case-distinct entry is listed, since triggers match exactly', async () => {
     mockGetWhitelist.mockResolvedValue(['owner', 'Developer']);
+    mockAddToWhitelist.mockResolvedValue(['owner', 'Developer', 'developer']);
+    await addDeveloper();
+
+    expect(await screen.findByText(/@developer is not on the trigger whitelist/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add to trigger whitelist' }));
+    await waitFor(() => expect(mockAddToWhitelist).toHaveBeenCalledWith('developer'));
+  });
+
+  it('does not offer a whitelist addition when the user is already listed', async () => {
+    mockGetWhitelist.mockResolvedValue(['owner', 'developer']);
     await addDeveloper();
     await waitFor(() => expect(mockGetWhitelist).toHaveBeenCalledTimes(2));
     expect(screen.queryByRole('button', { name: 'Add to trigger whitelist' })).not.toBeInTheDocument();
@@ -267,6 +277,27 @@ describe('AccessManagementPage', () => {
     await removeDeveloper();
     await waitFor(() => expect(mockGetWhitelist).toHaveBeenCalledTimes(2));
     expect(screen.queryByRole('button', { name: 'Remove from trigger whitelist' })).not.toBeInTheDocument();
+  });
+
+  it('treats a case-distinct whitelist entry as not listed for status and removal', async () => {
+    mockGetWhitelist.mockResolvedValue(['owner', 'Developer']);
+    await removeDeveloper();
+    await waitFor(() => expect(mockGetWhitelist).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('button', { name: 'Remove from trigger whitelist' })).not.toBeInTheDocument();
+  });
+
+  it('marks only exactly listed users as on the trigger whitelist', async () => {
+    mockGetMembers.mockResolvedValue({ bootstrapAdmins: [], members: [developer] });
+    mockGetWhitelist.mockResolvedValue(['owner', 'Developer']);
+    renderPage();
+    expect(await screen.findByText('@developer')).toBeInTheDocument();
+    await waitFor(() => expect(mockGetWhitelist).toHaveBeenCalled());
+    expect(screen.queryByText(/on trigger whitelist/)).not.toBeInTheDocument();
+
+    mockGetWhitelist.mockResolvedValue(['owner', 'developer']);
+    cleanup();
+    renderPage();
+    expect(await screen.findByText(/on trigger whitelist/)).toBeInTheDocument();
   });
 
   it('surfaces trigger whitelist update failures', async () => {
