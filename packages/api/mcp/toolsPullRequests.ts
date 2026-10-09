@@ -28,7 +28,6 @@ import {
 } from './pullRequestPreconditions.js';
 import { type FixReanchorReport, type FixRecord, appliedSelection, reanchorFixRecords } from './fixReanchor.js';
 import { MAX_REVIEW_MODELS, postModelReviews, resolveReviewModels, reviewModelSchema } from './reviewModels.js';
-import { withModelLabelLease } from './modelLabelLease.js';
 import { ULTRAFIX_COMMAND_TOOLS, resolveUltrafixGoal, resolveUltrafixMaxCycles, ultrafixGoalSchema } from './ultrafix.js';
 
 /** Slash commands must go through the dedicated tools so scope and head preconditions are checked. */
