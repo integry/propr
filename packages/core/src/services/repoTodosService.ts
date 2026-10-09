@@ -53,7 +53,7 @@ export async function updateCategory(categoryId: string, userId: string, updates
     if (updates.name !== undefined) updateData.name = updates.name;
     if (updates.orderIndex !== undefined) updateData.order_index = updates.orderIndex;
     await db<RepoTodoCategoryRecord>('repo_todo_categories').where('category_id', categoryId).andWhere('user_id', userId).update(updateData);
-    const record = await db<RepoTodoCategoryRecord>('repo_todo_categories').where('category_id', categoryId).first();
+    const record = await db<RepoTodoCategoryRecord>('repo_todo_categories').where('category_id', categoryId).andWhere('user_id', userId).first();
     if (!record) return null;
     logger.debug({ categoryId, updates }, 'Category updated');
     return toCategoryDomain(record);
@@ -144,7 +144,7 @@ export async function updateTodo(todoId: string, userId: string, updates: Update
     if (updates.isCompleted !== undefined) updateData.is_completed = updates.isCompleted;
     if (updates.linkedDraftId !== undefined) updateData.linked_draft_id = updates.linkedDraftId;
     await db<RepoTodoRecord>('repo_todos').where('todo_id', todoId).andWhere('user_id', userId).update(updateData);
-    const record = await db<RepoTodoRecord>('repo_todos').where('todo_id', todoId).first();
+    const record = await db<RepoTodoRecord>('repo_todos').where('todo_id', todoId).andWhere('user_id', userId).first();
     if (!record) return null;
     logger.debug({ todoId, updates }, 'Todo updated');
     return toTodoDomain(record);

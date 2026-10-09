@@ -272,6 +272,29 @@ describe('creator projection', () => {
       assert.equal(categories.body.categories[0].createdBy.login, 'listmaker');
     });
 
+    test('updating another owner\'s to-do or category returns 404, never the caller as creator', async () => {
+      const routes = createRepoTodoRoutes();
+      const owner = { id: '808', login: 'owner', username: 'owner', avatarUrl: 'https://avatars.example/u/808', accessToken: 'token' };
+      const todo = await call(routes.createTodo, request(owner, { body: { repository: 'acme/repo', content: 'Mine' } }));
+      const category = await call(routes.createCategory, request(owner, { body: { repository: 'acme/repo', name: 'Mine' } }));
+
+      const foreignTodo = await call(routes.updateTodo, request(knownUser, { params: { todoId: todo.body.todoId }, body: { content: 'Taken' } }));
+      assert.equal(foreignTodo.status, 404);
+      assert.equal(foreignTodo.body.createdBy, undefined);
+      const foreignCategory = await call(routes.updateCategory, request(knownUser, { params: { categoryId: category.body.categoryId }, body: { name: 'Taken' } }));
+      assert.equal(foreignCategory.status, 404);
+      assert.equal(foreignCategory.body.createdBy, undefined);
+
+      const ownTodo = await call(routes.updateTodo, request(owner, { params: { todoId: todo.body.todoId }, body: { content: 'Still mine' } }));
+      assert.equal(ownTodo.status, 200);
+      assert.equal(ownTodo.body.content, 'Still mine');
+      assert.equal(ownTodo.body.createdBy.login, 'owner');
+      const ownCategory = await call(routes.updateCategory, request(owner, { params: { categoryId: category.body.categoryId }, body: { name: 'Still mine' } }));
+      assert.equal(ownCategory.status, 200);
+      assert.equal(ownCategory.body.name, 'Still mine');
+      assert.equal(ownCategory.body.createdBy.login, 'owner');
+    });
+
     test('a list of 50 to-dos issues one profile query', async () => {
       await db('repo_todos').insert(Array.from({ length: 50 }, (_, index) => ({
         todo_id: randomUUID(), user_id: KNOWN.id, repository: 'acme/repo', category_id: null, content: `todo ${index}`,
