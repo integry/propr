@@ -5,7 +5,7 @@ import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type Unproc
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
 import { extractLlmFromLabels, resolveModelAlias } from '@propr/core';
 import { hasValidTriggerLabel } from '@propr/core';
-import { createFollowupGateEvaluator, refuseGatedComment, type FollowupGateEvaluator } from '@propr/core';
+import { createFollowupGateEvaluator, getSystemBotUsernames, isSystemFollowupComment, refuseGatedComment, type FollowupGateEvaluator } from '@propr/core';
 import { getCheckRunsStatusForRepo, getCurrentPRHead, triggerUltrafixCheckRunHook } from '@propr/core';
 import type { Redis } from 'ioredis';
 import { hasUltrafixResumeCandidate } from '../jobs/ultrafixResumeClaim.js';
@@ -262,13 +262,15 @@ function createPollingGate(pr: PullRequest, commentContext: CommentContext, redi
     const pullRequest = { repoOwner: owner, repoName: repo, pullRequestNumber: pr.number };
     let evaluator: Promise<FollowupGateEvaluator> | null = null;
     const refused = new Set<string>();
+    const systemBotUsernames = getSystemBotUsernames();
 
     return async function mayFollowUp(comment: PRComment): Promise<boolean> {
         evaluator ??= createFollowupGateEvaluator(pullRequest);
         const authorLogin = comment.user.login;
-        // Bot comments never reach here (the author filter drops them), so
-        // polling has no system-authored comments to exempt.
-        const decision = await (await evaluator).decide({ authorId: comment.user.id, authorLogin, systemAuthored: false });
+        // ProPR's own comments can reach here (e.g. when its login is in
+        // GITHUB_USER_WHITELIST), so classify them exactly as the webhook does.
+        const systemAuthored = isSystemFollowupComment(authorLogin, comment.body, systemBotUsernames);
+        const decision = await (await evaluator).decide({ authorId: comment.user.id, authorLogin, systemAuthored });
         if (decision.allowed) return true;
         if (!refused.has(authorLogin.toLowerCase())) {
             refused.add(authorLogin.toLowerCase());

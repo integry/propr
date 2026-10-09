@@ -120,8 +120,13 @@ await mock.module('../packages/core/src/config/configManager.js', {
     },
 });
 
+const actualCommentFilters = await import('../packages/core/src/utils/commentFilters.js');
 const BOT_LOGINS = new Set([BOT_LOGIN]);
-const mockFilterCommentByAuthor = mock.fn((author: string) => ({ shouldFilter: BOT_LOGINS.has(author) }));
+// Set to exercise the real author filter (whitelist, bot exclusions).
+let useRealAuthorFilter = false;
+const mockFilterCommentByAuthor = mock.fn((author: string, ...rest: Array<string | null>) => (useRealAuthorFilter
+    ? actualCommentFilters.filterCommentByAuthor(author, ...rest)
+    : { shouldFilter: BOT_LOGINS.has(author) }));
 const mockCheckCommentTrigger = mock.fn(() => ({ isTriggered: true }));
 await mock.module('../packages/core/src/utils/commentFilters.js', {
     namedExports: {
@@ -189,6 +194,8 @@ await mock.module('@propr/core', {
         getCurrentPRHead: async () => null,
         triggerUltrafixCheckRunHook: async () => undefined,
         createFollowupGateEvaluator: gate.createFollowupGateEvaluator,
+        getSystemBotUsernames: gate.getSystemBotUsernames,
+        isSystemFollowupComment: gate.isSystemFollowupComment,
         refuseGatedComment: gate.refuseGatedComment,
     },
 });
@@ -473,16 +480,16 @@ describe('pollForPullRequestComments with the assignment gate', () => {
         { id: 2, body: 'from bob', user: BOB, created_at: '2026-10-09T10:01:00Z' },
         { id: 3, body: 'bob again', user: BOB, created_at: '2026-10-09T10:02:00Z' },
     ];
-    const pollingOctokit = {
+    const pollingOctokit = (prComments: Array<{ id: number; body: string; user: GitHubUser; created_at: string }>) => ({
         paginate: async <T>(endpoint: string): Promise<T[]> => {
             if (endpoint === 'GET /repos/{owner}/{repo}/pulls') return [openPr] as T[];
-            if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments') return comments as T[];
+            if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments') return prComments as T[];
             return [];
         },
-    };
+    });
 
-    async function poll(redisClient: MockRedis): Promise<number[]> {
-        await pollForPullRequestComments(pollingOctokit, `${OWNER}/${REPO}`, 'poll', {
+    async function poll(redisClient: MockRedis, prComments = comments): Promise<number[]> {
+        await pollForPullRequestComments(pollingOctokit(prComments), `${OWNER}/${REPO}`, 'poll', {
             redisClient: redisClient as never,
             GITHUB_BOT_USERNAME: BOT_LOGIN,
             PR_FOLLOWUP_TRIGGER_KEYWORDS: [],
@@ -525,5 +532,41 @@ describe('pollForPullRequestComments with the assignment gate', () => {
         github.failRead = true;
         assert.deepEqual(await poll(createMockRedis()), []);
         assert.equal(github.posted.length, 0);
+    });
+    describe('with ProPR\'s bot whitelisted and the real author filter', () => {
+        const BOT: GitHubUser = { id: 999, login: BOT_LOGIN };
+        const ciFollowup = `${buildCiFailureFollowupMarker('b'.repeat(64))}\nCI failed, please fix.`;
+        let savedWhitelist: string | undefined;
+
+        beforeEach(() => {
+            savedWhitelist = process.env.GITHUB_USER_WHITELIST;
+            process.env.GITHUB_USER_WHITELIST = `alice,bob,${BOT_LOGIN}`;
+            useRealAuthorFilter = true;
+            gateEnabled = true;
+            github.assignees.set(PR, [ALICE]);
+        });
+
+        after(() => {
+            useRealAuthorFilter = false;
+            if (savedWhitelist === undefined) delete process.env.GITHUB_USER_WHITELIST;
+            else process.env.GITHUB_USER_WHITELIST = savedWhitelist;
+        });
+
+        for (const [name, body] of [['CI-failure follow-up', ciFollowup], ['/ultrafix', '/ultrafix']]) {
+            test(`a system ${name} on a pull request assigned to A is queued, not refused`, async () => {
+                const redisClient = createMockRedis();
+                const queued = await poll(redisClient, [{ id: 10, body, user: BOT, created_at: '2026-10-09T10:00:00Z' }]);
+                assert.deepEqual(queued, [10]);
+                assert.equal(github.posted.length, 0);
+                assert.equal(mockLoggerInstance.info.mock.calls.some(call => call.arguments[1] === 'Follow-up comment refused by the assignment gate'), false);
+            });
+        }
+
+        test('the system marker from a person is not an exemption', async () => {
+            const queued = await poll(createMockRedis(), [{ id: 11, body: ciFollowup, user: BOB, created_at: '2026-10-09T10:00:00Z' }]);
+            assert.deepEqual(queued, []);
+            assert.equal(github.posted.length, 1);
+            assert.match(github.posted[0].body, /^@bob /);
+        });
     });
 });

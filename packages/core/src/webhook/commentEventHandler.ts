@@ -20,11 +20,10 @@ import type { CommandMeta, UltrafixCommandMeta } from './slashCommandParser.js';
 import { safeUpdateLabels } from '../utils/github/labelOperations.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
-import { getBotUsername } from '../daemon/configLoader.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFailureFollowup.js';
-import { commentAuthorMayFollowUp, refuseGatedComment } from './followupAssignmentGate.js';
+import { commentAuthorMayFollowUp, getSystemBotUsernames, refuseGatedComment } from './followupAssignmentGate.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -747,10 +746,7 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
 
     const commentAuthor = rawComment.user.login;
     const parsedCommand = parseSlashCommand(rawComment.body);
-    const configuredBotUsernames = new Set(
-        [getBotUsername(), process.env.GITHUB_BOT_USERNAME, 'propr-dev[bot]']
-            .filter((value): value is string => typeof value === 'string' && value.length > 0)
-    );
+    const configuredBotUsernames = getSystemBotUsernames();
     const isSystemUltrafixComment = parsedCommand?.command === 'ultrafix'
         && (
             configuredBotUsernames.has(commentAuthor)

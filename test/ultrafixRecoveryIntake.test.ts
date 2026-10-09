@@ -142,6 +142,8 @@ await mock.module('@propr/core', {
         hasValidTriggerLabel: () => false,
         createFollowupGateEvaluator: async () => ({ decide: async () => ({ allowed: true, reason: 'gate_disabled' }) }),
         refuseGatedComment: async () => undefined,
+        getSystemBotUsernames: () => new Set<string>(),
+        isSystemFollowupComment: () => false,
         areAllChecksPassing: mockAreAllChecksPassing,
         getCheckRunsStatusForRepo: mockGetCheckRunsStatusForRepo,
         getCurrentPRHead: mockGetCurrentPRHead,

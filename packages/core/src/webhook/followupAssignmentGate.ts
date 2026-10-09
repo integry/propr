@@ -21,6 +21,9 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { syncSubjectAssignees, type TaskAssignmentClient } from '../services/taskAssignmentService.js';
 import { withRetry } from '../utils/retryHandler.js';
 import logger from '../utils/logger.js';
+import { getBotUsername } from '../daemon/configLoader.js';
+import { parseSlashCommand } from './slashCommandParser.js';
+import { isCiFailureFollowupComment } from './ciFailureFollowup.js';
 
 export type FollowupGateReason =
     | 'gate_disabled'
@@ -65,6 +68,29 @@ export interface FollowupGateEvaluator {
 
 /** How long a refused author is not told again on the same pull request. */
 export const FOLLOWUP_ASSIGNMENT_NOTICE_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+/** The logins ProPR itself comments as. */
+export function getSystemBotUsernames(): Set<string> {
+    return new Set(
+        [getBotUsername(), process.env.GITHUB_BOT_USERNAME, 'propr-dev[bot]']
+            .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    );
+}
+
+/**
+ * Whether a comment is one of ProPR's own system follow-ups — a CI-failure
+ * follow-up (authenticated by its marker) or a system `/ultrafix` — posted by
+ * one of ProPR's logins. Both intake paths use this to exempt such comments
+ * from the assignment gate.
+ */
+export function isSystemFollowupComment(
+    commentAuthor: string,
+    body: string | null | undefined,
+    botUsernames: Set<string> = getSystemBotUsernames(),
+): boolean {
+    if (!botUsernames.has(commentAuthor)) return false;
+    return isCiFailureFollowupComment(body) || parseSlashCommand(body)?.command === 'ultrafix';
+}
 
 const DISABLED: FollowupGateDecision = Object.freeze({ allowed: true, reason: 'gate_disabled' });
 
