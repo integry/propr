@@ -313,6 +313,8 @@ ProPR posts a status comment on the PR when the merge starts and updates it with
 
 Use `/merge` before final review when the base branch has moved or the PR has conflicts.
 
+MCP clients can post the same command with the `resolve_merge_conflicts` tool, which pins the PR head (`expectedHead`) and returns a receipt that follows the merge task. The `update_pull_request_branch` MCP tool only performs GitHub's clean branch update and is refused when the branch has conflicts.
+
 ### `/ultrafix`
 
 Post:

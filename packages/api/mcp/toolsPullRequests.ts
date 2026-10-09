@@ -12,6 +12,7 @@ import {
   formatReviewFeedbackSelection,
   reviewFeedbackSelectionSize,
 } from '@propr/shared';
+import { hasValidTriggerLabel } from '@propr/core';
 import { McpError } from './config.js';
 import { beforeSideEffects } from './errorEnvelope.js';
 import { createTaskRoutes } from '../routes/taskRoutes.js';
@@ -416,13 +417,28 @@ export function addPullRequestTools(tools: McpTool[], deps: ToolDeps): void {
       return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead,
         resolvedHead: pr.head.sha, headSource: 'caller', state: 'posted', goal, maxCycles, wasActive, circuitBreaker: 'requested' } };
     } });
-  tools.push({ name: 'update_pull_request_branch', description: 'Update the PR branch from its base, matching /merge semantics. expectedHead is required to avoid updating code you have not seen. Does not merge the pull request.', scope: 'execute', schema: z.object(mutation).strict(), run: async ({ principal, args }) => {
+  tools.push({ name: 'update_pull_request_branch', description: 'Update the PR branch from its base through GitHub\'s update-branch endpoint, for a branch that merges cleanly. expectedHead is required to avoid updating code you have not seen. GitHub rejects it (GITHUB_REJECTED) when the branch conflicts with its base; use resolve_merge_conflicts then. Does not merge the pull request.', scope: 'execute', schema: z.object(mutation).strict(), run: async ({ principal, args }) => {
     const { owner, repo, pr } = await pull(principal, args);
     assertPullRequestOpen(pr, 'update the branch for');
     assertPullRequestHead(pr, args.expectedHead);
     const response = await principal.github.request('PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch', { owner, repo, pull_number: args.pullRequest, expected_head_sha: args.expectedHead });
     return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, expectedHead: args.expectedHead, url: response.data.url, message: response.data.message } };
   } });
+  tools.push({ name: 'resolve_merge_conflicts', description: 'Merge the base branch into an open PR branch and let an agent resolve any conflicts, by posting the same /merge command a hand-typed comment does; its normal intake starts the merge task. Use it when update_pull_request_branch is rejected for a merge conflict. expectedHead is required because the merge should start from the code you have seen; a moved head is rejected with STALE_HEAD. The pull request must carry a ProPR processing label, which /merge requires; otherwise it is rejected with PULL_REQUEST_NOT_MANAGED and nothing is posted. Returns a durable receipt that follows the merge task through get_operation. Does not merge the pull request.', scope: 'execute',
+    schema: z.object(mutation).strict(), run: async ({ principal, args, operationId }) => {
+      const { owner, repo, pr } = await pull(principal, args);
+      assertPullRequestOpen(pr, 'resolve merge conflicts on');
+      assertPullRequestHead(pr, args.expectedHead);
+      // The /merge intake silently ignores pull requests without a trigger label, which
+      // would otherwise surface only as a pickup timeout on the receipt.
+      if (!await beforeSideEffects(() => hasValidTriggerLabel(pr.labels))) {
+        throw new McpError('PULL_REQUEST_NOT_MANAGED', 'The /merge command only runs on pull requests that carry a ProPR processing label (for example the AI or propr label). Add one, then retry.', 409, { stage: 'precondition', details: { labels: labelNames(pr.labels) } });
+      }
+      const body = `/merge\n\n<!-- propr-mcp:${operationId}; head:${pr.head.sha} -->`;
+      const { data } = await principal.github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: args.pullRequest, body });
+      return { status: 202, data: { repository: args.repository, pullRequest: args.pullRequest, commentId: data.id, url: data.html_url, expectedHead: args.expectedHead,
+        resolvedHead: pr.head.sha, headSource: 'caller', baseBranch: pr.base.ref, state: 'posted' } };
+    } });
   tools.push({ name: 'get_pull_request_revert_preview', description: 'Preview reverting an exact commit belonging to a pull request using the existing backend.', scope: 'read', readOnly: true,
     schema: z.object({ ...shape, commit: z.string().regex(/^[0-9a-f]{40}$/) }).strict(), run: async ({ principal, args }) => {
       const { owner, repo } = await pull(principal, args);
