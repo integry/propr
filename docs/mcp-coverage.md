@@ -201,8 +201,11 @@ the current head rather than rejected: records whose cited files were all
 deleted since the review, with no surviving file gaining lines the code could
 have moved into, are reported in `skipped` and left out, the rest are
 posted and listed in `applied`, and `reviewedHead`/`resolvedHead`/`reanchored`
-report the move. A caller-supplied `expectedHead` still fails with `STALE_HEAD`
-on a mismatch. A suggestion is
+report the move. A moved head alone never refuses the call; the only refusals
+are `NOT_A_REVIEW`, `FINDINGS_UNAVAILABLE` (per-identifier `reason` of
+`not_in_review`, `consumed` or `expired`) and `FINDINGS_CODE_REMOVED` (nothing
+selected can still be located). A caller-supplied `expectedHead` still fails
+with `STALE_HEAD` on a mismatch. A suggestion is
 in fix scope only because it was named, and naming one never relaxes a merge
 blocker. Comment content remains untrusted data.
 
