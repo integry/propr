@@ -21,10 +21,12 @@ interface PlanOverflowMenuProps {
    * from the bottom edge as an action sheet, matching the phone's "Jump to task" sheet.
    */
   variant?: 'popover' | 'sheet';
+  /** Overrides the "…" trigger styling, e.g. to match a bordered toolbar. */
+  triggerClassName?: string;
 }
 
 /** Destructive plan actions live behind "…" so they are never one stray click away. */
-export const PlanOverflowMenu: React.FC<PlanOverflowMenuProps> = ({ isDeleting, deleteDisabled, deleteTitle, onDelete, items = [], variant = 'popover' }) => {
+export const PlanOverflowMenu: React.FC<PlanOverflowMenuProps> = ({ isDeleting, deleteDisabled, deleteTitle, onDelete, items = [], variant = 'popover', triggerClassName = 'p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-200 rounded-md transition-colors' }) => {
   const [isOpen, setIsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -71,7 +73,7 @@ export const PlanOverflowMenu: React.FC<PlanOverflowMenuProps> = ({ isDeleting, 
         aria-haspopup={variant === 'sheet' ? 'dialog' : 'menu'}
         aria-expanded={isOpen}
         title="More plan actions"
-        className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-200 rounded-md transition-colors"
+        className={triggerClassName}
       >
         {isDeleting ? <Loader2 size={16} className="animate-spin" /> : <MoreHorizontal size={16} />}
       </button>

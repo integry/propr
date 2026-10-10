@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { act } from 'react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { TaskCardList } from './TaskCardList';
@@ -49,6 +49,25 @@ describe('TaskCardList adaptive navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: /Step Title 2/ }));
     expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
     expect(vi.mocked(Element.prototype.scrollTo).mock.contexts).toEqual([list]);
+  });
+
+  it('keeps the clicked step heading below the top of the pane with its scroll margin', () => {
+    renderList(5);
+    const list = document.querySelector('[data-task-list]') as HTMLElement;
+    const cards = Array.from(list.querySelectorAll('[data-task-index]')) as HTMLElement[];
+    expect(cards[3]).toHaveClass('scroll-mt-6');
+    list.getBoundingClientRect = () => ({ top: 100, height: 500 }) as DOMRect;
+    list.scrollTop = 200;
+    cards.forEach((card, index) => {
+      // jsdom has no Tailwind stylesheet, so mirror scroll-mt-6 inline.
+      card.style.scrollMarginTop = '24px';
+      card.getBoundingClientRect = () => ({ top: 100 + index * 600 - 200 }) as DOMRect;
+    });
+
+    vi.mocked(Element.prototype.scrollTo).mockClear();
+    const outline = screen.getByRole('navigation', { name: 'Plan outline' });
+    fireEvent.click(within(outline).getByRole('button', { name: /Step title 4/i }));
+    expect(Element.prototype.scrollTo).toHaveBeenCalledWith({ top: 1800 - 24, behavior: 'smooth' });
   });
 
   it('follows the scroll position like a table of contents (scroll-spy)', () => {

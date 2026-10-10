@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ExternalLink, GitPullRequest, MessageSquare, Play, Loader2, Eye, ChevronDown, StickyNote } from 'lucide-react';
+import { ExternalLink, GitPullRequest, MessageSquare, Gauge, Play, Loader2, Eye, ChevronDown, StickyNote } from 'lucide-react';
 import { PlanIssue, PlanIssueStatus, STATUS_CONFIG, AgentModelPair } from '../../api/planIssuesApi';
 import { AgentOverrideChip, type AgentOverrideChipProps } from './AgentOverrideChip';
 import { getAttachmentUrl } from '../../api/proprApi';
@@ -181,6 +181,26 @@ export const FollowupCount: React.FC<FollowupCountProps> = ({ count }) => (
   <span className="flex items-center gap-1 text-gray-500">
     <MessageSquare size={12} />
     {count} follow-up{count !== 1 ? 's' : ''}
+  </span>
+);
+
+export interface ReviewScoreTraceProps { scores: number[]; }
+/** The PR's review scores in order, e.g. `6 → 6 → 9`, the latest emphasised. */
+export const ReviewScoreTrace: React.FC<ReviewScoreTraceProps> = ({ scores }) => (
+  <span
+    className="flex items-center gap-1 text-gray-500"
+    title={`Review scores, oldest first: ${scores.join(', ')} out of 10`}
+    data-testid="review-score-trace"
+  >
+    <Gauge size={12} />
+    <span className="tabular-nums">
+      {scores.map((score, index) => (
+        <React.Fragment key={index}>
+          {index > 0 && <span aria-hidden="true" className="px-0.5 text-slate-400">→</span>}
+          <span className={index === scores.length - 1 ? 'font-semibold text-slate-700' : undefined}>{score}</span>
+        </React.Fragment>
+      ))}
+    </span>
   </span>
 );
 
@@ -373,16 +393,18 @@ const MultiAgentInfo: React.FC<{ selectedModels: AgentModelPair[] }> = ({ select
   </span>
 );
 
-/** Secondary row facts (PR link, follow-ups). Agent and action live in RowActions' fixed columns. */
+/** Secondary row facts (PR link, follow-ups, review scores). Agent and action live in RowActions' fixed columns. */
 export interface IssueMetadataProps { issue: PlanIssue; }
 export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue }) => {
   const prUrl = issue.pr_number ? `https://github.com/${issue.repository}/pull/${issue.pr_number}` : null;
-  if (!prUrl && issue.followup_count <= 0) return null;
+  const reviewScores = issue.review_scores ?? [];
+  if (!prUrl && issue.followup_count <= 0 && reviewScores.length === 0) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs sm:gap-3">
       {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
       {issue.followup_count > 0 && <span className="hidden sm:block"><FollowupCount count={issue.followup_count} /></span>}
+      {reviewScores.length > 0 && <span className="hidden sm:block"><ReviewScoreTrace scores={reviewScores} /></span>}
     </div>
   );
 };

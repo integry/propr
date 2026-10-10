@@ -3,7 +3,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import type { PlanIssue } from '../../api/planIssuesApi';
-import { RowActions, UltrafixSettingsControls } from './PlanIssueRowComponents';
+import { IssueMetadata, RowActions, UltrafixSettingsControls } from './PlanIssueRowComponents';
 import { AgentOverrideChip } from './AgentOverrideChip';
 import { isOverriddenFromDefault } from './planIssueDefaultSelection';
 
@@ -142,5 +142,22 @@ describe('RowActions', () => {
     expect(columns).toEqual(['agent-column', 'action-column']);
     expect(within(screen.getByTestId('agent-column')).getByTestId(chipTestId)).toHaveTextContent('Opus 5.5');
     expect(screen.getByTestId('action-column')).toHaveTextContent(action);
+  });
+});
+
+describe('IssueMetadata', () => {
+  const withPr = { ...issue, status: 'merged', pr_number: 2904 } as PlanIssue;
+
+  it('shows the follow-up count and the review score trace, oldest first', () => {
+    render(<IssueMetadata issue={{ ...withPr, followup_count: 3, review_scores: [6, 6, 9] }} />);
+    expect(screen.getByText('3 follow-ups')).toBeInTheDocument();
+    const trace = screen.getByTestId('review-score-trace');
+    expect(trace).toHaveTextContent('6→6→9');
+    expect(trace).toHaveAttribute('title', 'Review scores, oldest first: 6, 6, 9 out of 10');
+  });
+
+  it('leaves the trace out when the PR has no review scores', () => {
+    render(<IssueMetadata issue={withPr} />);
+    expect(screen.queryByTestId('review-score-trace')).not.toBeInTheDocument();
   });
 });

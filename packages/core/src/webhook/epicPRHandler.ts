@@ -1,9 +1,15 @@
-import logger from '../utils/logger.js';
+import logger, { generateCorrelationId } from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { isEpicBranch, EPIC_BRANCH_PATTERN } from '../services/taskExecutionService.js';
 import { createEpicPRWithDraftFallback } from '../services/epicPRService.js';
+import { updateEpicMergeProgress } from './epicMergeProgress.js';
+import {
+    recordEpicProgressRetry, runEpicProgressUpdate, sweepEpicProgressRetries,
+    type EpicProgressLease, type EpicProgressRetryRedis, type EpicProgressTarget,
+} from './epicMergeProgressRetry.js';
+import { getUltrafixStateRedis } from './checkRunHelpers.js';
 import { db } from '../db/connection.js';
-import { getPlanIssuesByDraft, type PlanIssue } from '../config/planIssueManager.js';
+import type { PlanIssue } from '../config/planIssueManager.js';
 import type { PullRequestEvent } from '@octokit/webhooks-types';
 
 interface PlanDetails {
@@ -30,6 +36,19 @@ function extractFirstIssueId(epicBranchName: string): number | null {
 }
 
 /**
+ * Outcome of a plan lookup. `absent` is confirmed: the epic has no plan.
+ * `unavailable` means the plan could not be read, so the expected epic
+ * membership is unknown.
+ */
+type PlanLookup =
+    | { status: 'found'; details: PlanDetails }
+    | { status: 'absent' }
+    | { status: 'unavailable' };
+
+const PLAN_LOOKUP_ATTEMPTS = 3;
+const PLAN_LOOKUP_RETRY_DELAY_MS = 500;
+
+/**
  * Get plan details from database using the epic branch name.
  * Extracts the first issue ID from the branch name and finds the associated plan.
  */
@@ -37,11 +56,11 @@ async function getPlanDetailsFromBranch(
     epicBranchName: string,
     repository: string,
     log: ReturnType<typeof logger.withCorrelation>
-): Promise<PlanDetails | null> {
+): Promise<PlanLookup> {
     const firstIssueId = extractFirstIssueId(epicBranchName);
     if (!firstIssueId) {
         log.debug({ epicBranchName }, 'Could not extract issue ID from epic branch name');
-        return null;
+        return { status: 'absent' };
     }
 
     try {
@@ -52,7 +71,7 @@ async function getPlanDetailsFromBranch(
 
         if (!planIssue) {
             log.debug({ firstIssueId, repository }, 'No plan issue found for this issue');
-            return null;
+            return { status: 'absent' };
         }
 
         // Get the plan name from task_drafts
@@ -63,21 +82,49 @@ async function getPlanDetailsFromBranch(
 
         if (!draft) {
             log.debug({ draftId: planIssue.draft_id }, 'No draft found for plan issue');
-            return null;
+            return { status: 'absent' };
         }
 
-        // Get all issues in this plan
-        const issues = await getPlanIssuesByDraft(draft.draft_id);
+        // Get all issues in this plan. Queried directly rather than through
+        // getPlanIssuesByDraft, which turns read failures into an empty list.
+        const issues: PlanIssue[] = await db('plan_issues')
+            .where({ draft_id: draft.draft_id })
+            .orderBy('created_at', 'asc');
+        if (issues.length === 0) {
+            // The plan issue found above belongs to this draft, so an empty
+            // list cannot be a confirmed absence.
+            log.warn({ draftId: draft.draft_id, epicBranchName }, 'Plan issues missing for an existing plan');
+            return { status: 'unavailable' };
+        }
 
         return {
-            planName: draft.name || 'Untitled Plan',
-            draftId: draft.draft_id,
-            issues
+            status: 'found',
+            details: {
+                planName: draft.name || 'Untitled Plan',
+                draftId: draft.draft_id,
+                issues
+            }
         };
     } catch (error) {
         log.warn({ error: (error as Error).message, epicBranchName }, 'Failed to get plan details from database');
-        return null;
+        return { status: 'unavailable' };
     }
+}
+
+/**
+ * Looks up plan details, retrying briefly when the plan could not be read.
+ */
+async function loadPlanDetails(
+    epicBranchName: string,
+    repository: string,
+    log: ReturnType<typeof logger.withCorrelation>
+): Promise<PlanLookup> {
+    let lookup = await getPlanDetailsFromBranch(epicBranchName, repository, log);
+    for (let attempt = 2; attempt <= PLAN_LOOKUP_ATTEMPTS && lookup.status === 'unavailable'; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, PLAN_LOOKUP_RETRY_DELAY_MS * (attempt - 1)));
+        lookup = await getPlanDetailsFromBranch(epicBranchName, repository, log);
+    }
+    return lookup;
 }
 
 /**
@@ -150,10 +197,11 @@ ${fixesLine}
  * Ensures Epic PR exists when a child PR is merged to an epic branch.
  * When the epic branch was first created, there were no commits so the PR couldn't be created.
  * Now that a child PR has merged, we can create the Epic PR with proper details.
+ * Afterwards the Epic PR's merge progress comment is refreshed.
  */
 export async function handleEpicPRCreationOnMerge(
     payload: PullRequestEvent,
-    _correlationId: string,
+    correlationId: string,
     correlatedLogger: ReturnType<typeof logger.withCorrelation>
 ): Promise<void> {
     // Only process closed PRs that were merged
@@ -178,89 +226,9 @@ export async function handleEpicPRCreationOnMerge(
         repo
     }, 'Child PR merged to epic branch, ensuring Epic PR exists');
 
+    let epicPrNumber: number | null = null;
     try {
-        const octokit = await getAuthenticatedOctokit();
-
-        // Check if Epic PR already exists
-        const existingPRs = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
-            owner,
-            repo,
-            head: `${owner}:${baseBranch}`,
-            state: 'open'
-        });
-
-        if (existingPRs.data.length > 0) {
-            // Epic PR exists - update it to include any new issues
-            const existingPR = existingPRs.data[0];
-            correlatedLogger.debug({
-                prNumber: existingPR.number,
-                baseBranch
-            }, 'Epic PR already exists, updating body');
-
-            // Get plan details and update the PR body
-            const planDetails = await getPlanDetailsFromBranch(baseBranch, repository, correlatedLogger);
-            if (planDetails) {
-                const issueNumbers = planDetails.issues.map(i => i.issue_number);
-                const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
-                const newBody = buildEpicPRBody(planDetails.planName, issueDetails);
-
-                await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
-                    owner,
-                    repo,
-                    pull_number: existingPR.number,
-                    body: newBody
-                });
-
-                correlatedLogger.info({
-                    prNumber: existingPR.number,
-                    issueCount: issueDetails.length
-                }, 'Updated Epic PR body with latest issues');
-            }
-            return;
-        }
-
-        // Get the default branch to use as base
-        const repoResponse = await octokit.request('GET /repos/{owner}/{repo}', {
-            owner,
-            repo
-        });
-        const defaultBranch = repoResponse.data.default_branch;
-
-        // Get plan details for the Epic PR
-        const planDetails = await getPlanDetailsFromBranch(baseBranch, repository, correlatedLogger);
-
-        let title: string;
-        let body: string;
-
-        if (planDetails) {
-            const issueNumbers = planDetails.issues.map(i => i.issue_number);
-            const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
-
-            title = `[Epic] ${planDetails.planName}`;
-            body = buildEpicPRBody(planDetails.planName, issueDetails);
-        } else {
-            // Fallback if plan details not found
-            title = `[Epic] ${baseBranch}`;
-            body = `## Epic PR\n\nThis PR aggregates all changes from child PRs merged to the \`${baseBranch}\` branch.\n\n---\n*Created automatically by ProPR*`;
-        }
-
-        // Create the Epic PR
-        const prResponse = await createEpicPRWithDraftFallback(octokit, {
-            owner,
-            repo,
-            title,
-            head: baseBranch,
-            base: defaultBranch,
-            body
-        });
-
-        correlatedLogger.info({
-            prNumber: prResponse.data.number,
-            prUrl: prResponse.data.html_url,
-            baseBranch,
-            planName: planDetails?.planName
-        }, 'Epic PR created after child PR merge');
-
+        epicPrNumber = await ensureEpicPR({ owner, repo, repository, baseBranch }, correlatedLogger);
     } catch (error) {
         const err = error as Error & { status?: number };
         correlatedLogger.warn({
@@ -270,6 +238,221 @@ export async function handleEpicPRCreationOnMerge(
             repo
         }, 'Failed to create Epic PR after child merge');
     }
+
+    const target: EpicProgressTarget = { owner, repo, epicBranch: baseBranch, epicPrNumber, mergedChildPrNumber: payload.pull_request.number };
+    if (epicPrNumber === null) {
+        // The epic PR could not be located or created; keep the obligation so
+        // the retry sweep finds or creates the epic PR and refreshes its progress.
+        try {
+            await recordEpicProgressRetry(getUltrafixStateRedis(), target);
+        } catch (error) {
+            correlatedLogger.error({ ...target, error: (error as Error).message }, 'Failed to record Epic PR merge progress retry');
+        }
+        return;
+    }
+
+    await runEpicProgressUpdate(target, {
+        redis: getUltrafixStateRedis(),
+        update: lease => applyEpicMergeProgress(target, { lease, correlationId, correlatedLogger }),
+        log: correlatedLogger,
+    });
+}
+
+interface EpicBranchContext {
+    owner: string;
+    repo: string;
+    repository: string;
+    baseBranch: string;
+}
+
+type Octokit = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+
+/** Looks up the open Epic PR of an epic branch; null when there is none. */
+async function findOpenEpicPRNumber(octokit: Octokit, owner: string, repo: string, epicBranch: string): Promise<number | null> {
+    const response = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
+        owner,
+        repo,
+        head: `${owner}:${epicBranch}`,
+        state: 'open'
+    });
+    return response.data[0]?.number ?? null;
+}
+
+/**
+ * Finds the open Epic PR of an epic branch, refreshing its body with the
+ * plan's issues, or creates the Epic PR when there is none yet. Throws when
+ * the PR could neither be found nor created, so the caller keeps a retry
+ * obligation instead of treating a missing epic PR as done.
+ */
+async function ensureEpicPR(
+    context: EpicBranchContext,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<number> {
+    const { owner, repo, baseBranch } = context;
+    const octokit = await getAuthenticatedOctokit();
+    const existingPrNumber = await findOpenEpicPRNumber(octokit, owner, repo, baseBranch);
+    if (existingPrNumber === null) {
+        return await createEpicPR(octokit, context, correlatedLogger);
+    }
+
+    correlatedLogger.debug({ prNumber: existingPrNumber, baseBranch }, 'Epic PR already exists, updating body');
+    try {
+        await updateEpicPRBody(octokit, context, existingPrNumber, correlatedLogger);
+    } catch (error) {
+        // The epic PR is known, so its progress is still tracked.
+        correlatedLogger.warn({
+            error: (error as Error).message,
+            prNumber: existingPrNumber,
+            baseBranch,
+            owner,
+            repo
+        }, 'Failed to update Epic PR body after child merge');
+    }
+    return existingPrNumber;
+}
+
+/** Rewrites an existing Epic PR's body to include every issue of its plan. */
+async function updateEpicPRBody(
+    octokit: Octokit,
+    { owner, repo, repository, baseBranch }: EpicBranchContext,
+    epicPrNumber: number,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<void> {
+    const planLookup = await loadPlanDetails(baseBranch, repository, correlatedLogger);
+    if (planLookup.status !== 'found') return;
+
+    const planDetails = planLookup.details;
+    const issueNumbers = planDetails.issues.map(i => i.issue_number);
+    const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
+    const newBody = buildEpicPRBody(planDetails.planName, issueDetails);
+
+    await octokit.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner,
+        repo,
+        pull_number: epicPrNumber,
+        body: newBody
+    });
+
+    correlatedLogger.info({
+        prNumber: epicPrNumber,
+        issueCount: issueDetails.length
+    }, 'Updated Epic PR body with latest issues');
+}
+
+/**
+ * Refreshes the epic's merge progress comments. Returns false when the plan
+ * could not be read, so the caller keeps a retry obligation. A target whose
+ * epic PR was not located yet is found or created first; if that fails the
+ * error propagates and the obligation is kept.
+ *
+ * The plan is read here, under the lease, rather than reusing a snapshot
+ * taken before it: a snapshot captured while this update waited on GitHub
+ * can predate a child PR that was linked and merged meanwhile, and would
+ * overwrite that merge's correct progress with a stale count.
+ */
+async function applyEpicMergeProgress(
+    target: EpicProgressTarget,
+    { lease, correlationId, correlatedLogger }: {
+        lease: EpicProgressLease;
+        correlationId: string;
+        correlatedLogger: ReturnType<typeof logger.withCorrelation>;
+    }
+): Promise<boolean> {
+    const { owner, repo, epicBranch } = target;
+    const repository = `${owner}/${repo}`;
+    const epicPrNumber = target.epicPrNumber
+        ?? await ensureEpicPR({ owner, repo, repository, baseBranch: epicBranch }, correlatedLogger);
+    const planLookup = await loadPlanDetails(epicBranch, repository, correlatedLogger);
+    if (planLookup.status === 'unavailable') {
+        // Without the plan, unstarted planned work is invisible and progress
+        // could falsely read as complete. Leave the tracking comment as is
+        // until a retry can read the plan.
+        correlatedLogger.warn({ epicPrNumber, baseBranch: epicBranch }, 'Plan details unavailable, deferring Epic PR merge progress update');
+        return false;
+    }
+    const planDetails = planLookup.status === 'found' ? planLookup.details : null;
+    await updateEpicMergeProgress({
+        ...target,
+        epicPrNumber,
+        planName: planDetails?.planName,
+        planIssues: planDetails?.issues
+    }, correlationId, { assertOwned: lease.assertOwned });
+    return true;
+}
+
+/**
+ * Retries epic merge progress updates whose earlier attempt failed. Run
+ * periodically by the daemon, so the final child merge is confirmed without
+ * waiting for another merge or a webhook redelivery.
+ */
+export async function retryPendingEpicMergeProgress(
+    redis: EpicProgressRetryRedis = getUltrafixStateRedis(),
+    correlationId = generateCorrelationId()
+): Promise<number> {
+    const correlatedLogger = logger.withCorrelation(correlationId);
+    return await sweepEpicProgressRetries({
+        redis,
+        log: correlatedLogger,
+        retry: target => runEpicProgressUpdate(target, {
+            redis,
+            log: correlatedLogger,
+            update: lease => applyEpicMergeProgress(target, { lease, correlationId, correlatedLogger }),
+        }),
+    });
+}
+
+/**
+ * Creates the Epic PR for an epic branch that does not have one yet.
+ */
+async function createEpicPR(
+    octokit: Octokit,
+    { owner, repo, repository, baseBranch }: EpicBranchContext,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>
+): Promise<number> {
+    // Get the default branch to use as base
+    const repoResponse = await octokit.request('GET /repos/{owner}/{repo}', {
+        owner,
+        repo
+    });
+    const defaultBranch = repoResponse.data.default_branch;
+
+    // Get plan details for the Epic PR
+    const planLookup = await loadPlanDetails(baseBranch, repository, correlatedLogger);
+    const planDetails = planLookup.status === 'found' ? planLookup.details : null;
+
+    let title: string;
+    let body: string;
+
+    if (planDetails) {
+        const issueNumbers = planDetails.issues.map(i => i.issue_number);
+        const issueDetails = await fetchIssueDetails(owner, repo, issueNumbers, correlatedLogger);
+
+        title = `[Epic] ${planDetails.planName}`;
+        body = buildEpicPRBody(planDetails.planName, issueDetails);
+    } else {
+        // Fallback if plan details not found
+        title = `[Epic] ${baseBranch}`;
+        body = `## Epic PR\n\nThis PR aggregates all changes from child PRs merged to the \`${baseBranch}\` branch.\n\n---\n*Created automatically by ProPR*`;
+    }
+
+    // Create the Epic PR
+    const prResponse = await createEpicPRWithDraftFallback(octokit, {
+        owner,
+        repo,
+        title,
+        head: baseBranch,
+        base: defaultBranch,
+        body
+    });
+
+    correlatedLogger.info({
+        prNumber: prResponse.data.number,
+        prUrl: prResponse.data.html_url,
+        baseBranch,
+        planName: planDetails?.planName
+    }, 'Epic PR created after child PR merge');
+
+    return prResponse.data.number;
 }
 
 /**
