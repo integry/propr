@@ -140,7 +140,9 @@ export function useRepositoryLoader(shouldLoad: boolean, savedLastRepository: st
   return { repos, selectedRepo, selectedBaseBranch, setSelectedRepository, reposLoading, loadError };
 }
 
-export function useBranchesLoader(selectedRepo: string, selectedBaseBranch: string, setConfig: PlannerConfigSetter) { return useResolvedBaseBranch({ repository: selectedRepo, configuredBaseBranch: selectedBaseBranch, shouldResolve: true, initialLoading: false, setConfig }); }
+// New-mode resolver only: when disabled (edit mode) it must not touch config, since the draft's branch is owned by useRepoInfoLoader
+// and a late repository catalog load would otherwise clear it (#2932).
+export function useBranchesLoader(selectedRepo: string, selectedBaseBranch: string, setConfig: PlannerConfigSetter, enabled = true) { return useResolvedBaseBranch({ repository: selectedRepo, configuredBaseBranch: selectedBaseBranch, shouldResolve: enabled, initialLoading: false, clearOnSkip: false, setConfig }); }
 export function useRepoInfoLoader(isNewMode: boolean, draft: PlannerDraft | undefined, setConfig: PlannerConfigSetter) {
   return useResolvedBaseBranch({ repository: draft?.repository || '', configuredBaseBranch: getDraftConfigSnapshot(draft)?.baseBranch, shouldResolve: !isNewMode, initialLoading: !isNewMode, clearOnSkip: true, clearOnMissingRepository: false, setConfig });
 }
