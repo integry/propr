@@ -146,6 +146,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       const attributedDrafts = await attachCreator(drafts.slice(offset, offset + limit) as Array<Record<string, unknown> & { draft_id: string; user_id: string }>, 'user_id', 'created_by');
       // `user_id` is read only to resolve `created_by`; the list does not expose the raw id.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const paginatedDrafts = attributedDrafts.map(({ user_id: _userId, ...draft }) => draft);
       const draftIds = paginatedDrafts.map((d: { draft_id: string }) => d.draft_id);
       if (draftIds.length > 0) {
