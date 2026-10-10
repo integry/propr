@@ -9,10 +9,6 @@ import { listTasks } from "../../packages/cli/src/api/tasks.js";
 import { getTaskStatus, type TaskStatus } from "../../packages/cli/src/api/implement.js";
 import { listLlmLogs } from "../../packages/cli/src/api/logs.js";
 import {
-  createPlan,
-  getPlan,
-  generatePlan,
-  finalizePlan,
   listPlanIssues,
   type PlanIssue,
 } from "../../packages/cli/src/api/plans.js";
@@ -125,58 +121,11 @@ export interface AgentModelPair {
 // Plan helpers
 // ---------------------------------------------------------------------------
 
-export async function createAndGeneratePlan(
-  repo: string,
-  prompt: string,
-  client: ApiClient,
-  createdPlanIds: string[],
-): Promise<{ planId: string; issues: PlanIssue[] }> {
-  const plan = await createPlan(repo, prompt, {}, client);
-  createdPlanIds.push(plan.draft_id);
-
-  await generatePlan(plan.draft_id, {}, client);
-
-  const doneStatuses = new Set(["review", "executed", "approved", "merged", "pr_created", "failed"]);
-  let lastStatus = "draft";
-  let sawGenerating = false;
-
-  for (let i = 0; i < 120; i++) {
-    await sleep(5000);
-    const current = await getPlan(plan.draft_id, client);
-    if (current.status !== lastStatus) {
-      console.log(`    Plan ${plan.draft_id.substring(0, 8)}: ${lastStatus} -> ${current.status}`);
-      lastStatus = current.status;
-    }
-    if (current.status === "generating" || current.status === "refining") sawGenerating = true;
-    if (doneStatuses.has(current.status)) break;
-    if (current.status === "draft" && sawGenerating) break;
-  }
-
-  const currentPlan = await getPlan(plan.draft_id, client);
-  if (!sawGenerating || currentPlan.status === "failed") {
-    const reason = currentPlan.generation_trace?.error;
-    if (typeof reason === "string" && reason) {
-      console.log(`    Plan ${plan.draft_id.substring(0, 8)} failed: ${reason}`);
-    }
-    return { planId: plan.draft_id, issues: [] };
-  }
-  if (currentPlan.status !== "review") {
-    console.log(`    Plan ${plan.draft_id.substring(0, 8)} not ready to finalize: ${currentPlan.status}`);
-    return { planId: plan.draft_id, issues: [] };
-  }
-
-  await finalizePlan(plan.draft_id, client);
-  const finalizedPlan = await getPlan(plan.draft_id, client);
-  const expectedIssueCount = Array.isArray(finalizedPlan.plan_json) ? finalizedPlan.plan_json.length : 1;
-  const issues = await waitForPlanIssueCondition(
-    plan.draft_id,
-    client,
-    (currentIssues) => currentIssues.length >= Math.max(1, expectedIssueCount),
-    120_000,
-    3_000,
-  );
-  return { planId: plan.draft_id, issues };
-}
+export {
+  createAndGeneratePlan,
+  createPlanWithRetries,
+  isPlannerAuthenticationFailure,
+} from "./planGeneration.js";
 
 // ---------------------------------------------------------------------------
 // Task tracking helpers

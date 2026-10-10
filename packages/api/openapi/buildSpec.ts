@@ -24,7 +24,7 @@ const COMPONENT_PREFIX = '#/components/schemas/';
 const RESPONSE_PREFIX = '#/components/responses/';
 
 const TAGS: { name: string; description: string; prefixes: string[] }[] = [
-  { name: 'System', description: 'Health, compatibility and status.', prefixes: ['/health', '/api/compatibility', '/api/status'] },
+  { name: 'System', description: 'Health, compatibility and status.', prefixes: ['/health', '/api/compatibility', '/api/status', '/api/internal/hosted'] },
   { name: 'Authentication', description: 'Browser login and the signed-in user.', prefixes: ['/api/auth'] },
   { name: 'Tasks', description: 'Task runs, their events, output and follow-ups.', prefixes: ['/api/tasks', '/api/task/', '/api/execution', '/api/import-tasks', '/api/pull-requests'] },
   { name: 'Task submissions', description: 'Idempotent creation of new tasks from an instruction.', prefixes: ['/api/task-submissions'] },
@@ -50,6 +50,7 @@ const SECURITY: Record<RouteAuth, Record<string, string[]>[]> = {
   mcp: [{ mcpOAuth: ['read'] }],
   webhook: [{ webhookSignature: [] }],
   browserSession: [{ sessionCookie: [] }],
+  fleetSecret: [{ fleetSecret: [] }],
 };
 
 const INFO_DESCRIPTION = `The HTTP API the ProPR web UI, desktop app and CLI use. It is served by the dashboard API process under \`/api\`.
@@ -351,6 +352,12 @@ export function buildOpenApiDocument(routes: RegisteredRoute[] = listRegisteredR
           in: 'header',
           name: 'X-Hub-Signature-256',
           description: 'HMAC SHA-256 signature of the body with `GH_WEBHOOK_SECRET`.',
+        },
+        fleetSecret: {
+          type: 'apiKey',
+          in: 'header',
+          name: 'x-propr-fleet-secret',
+          description: 'The hosted Fleet control secret, `PROPR_FLEET_CONTROL_SECRET`. The routes that accept it are registered only when that secret is configured.',
         },
       },
     },

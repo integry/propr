@@ -19,6 +19,10 @@ export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   // Agent run containers authenticate with a request signed by SYSTEM_TASK_SECRET.
   { method: 'post', path: '/api/internal/agent-runs/:runId/mcp-grants', auth: 'public', source: 'server.ts' },
   { method: 'post', path: '/api/internal/agent-runs/:runId/mcp-grants/revoke', auth: 'public', source: 'server.ts' },
+  // Hosted Fleet control is only registered when PROPR_FLEET_CONTROL_SECRET is configured.
+  { method: 'get', path: '/api/internal/hosted/bootstrap', auth: 'fleetSecret', source: 'routes/hostedFleetRoutes.ts' },
+  { method: 'get', path: '/api/internal/hosted/status', auth: 'fleetSecret', source: 'routes/hostedFleetRoutes.ts' },
+  { method: 'get', path: '/api/internal/hosted/queue', auth: 'fleetSecret', source: 'routes/hostedFleetRoutes.ts' },
 
   { method: 'get', path: '/api/auth/github', auth: 'public', source: 'auth.ts' },
   { method: 'get', path: '/api/auth/github/callback', auth: 'public', source: 'auth.ts' },

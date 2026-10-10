@@ -29,9 +29,9 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 258
+    total: 261
     documented: 41
-    undocumented: 217
+    undocumented: 220
 servers:
   - url: "{origin}"
     description: Your ProPR API origin, for example the value of `API_PUBLIC_URL`.
@@ -3493,6 +3493,57 @@ paths:
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: public
+      x-undocumented: true
+      x-legacy-error: true
+  /api/internal/hosted/bootstrap:
+    get:
+      operationId: getApiInternalHostedBootstrap
+      summary: GET /api/internal/hosted/bootstrap
+      description: This route is registered but not documented yet.
+      tags:
+        - System
+      security:
+        - fleetSecret: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: fleetSecret
+      x-undocumented: true
+      x-legacy-error: true
+  /api/internal/hosted/queue:
+    get:
+      operationId: getApiInternalHostedQueue
+      summary: GET /api/internal/hosted/queue
+      description: This route is registered but not documented yet.
+      tags:
+        - System
+      security:
+        - fleetSecret: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: fleetSecret
+      x-undocumented: true
+      x-legacy-error: true
+  /api/internal/hosted/status:
+    get:
+      operationId: getApiInternalHostedStatus
+      summary: GET /api/internal/hosted/status
+      description: This route is registered but not documented yet.
+      tags:
+        - System
+      security:
+        - fleetSecret: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: fleetSecret
       x-undocumented: true
       x-legacy-error: true
   /api/llm-logs:
@@ -7860,3 +7911,8 @@ components:
       in: header
       name: X-Hub-Signature-256
       description: HMAC SHA-256 signature of the body with `GH_WEBHOOK_SECRET`.
+    fleetSecret:
+      type: apiKey
+      in: header
+      name: x-propr-fleet-secret
+      description: The hosted Fleet control secret, `PROPR_FLEET_CONTROL_SECRET`. The routes that accept it are registered only when that secret is configured.
