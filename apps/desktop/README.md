@@ -319,7 +319,11 @@ live E2E failed, a check was cancelled, skipped or missing. The bundle stays dow
 `failed` or `incomplete` and `releaseValidationCandidate` is `false`. Only `all-checks-passed` (every check `success`)
 is a release-validation candidate. `promotable` is always `false`. If any required platform fails, is cancelled or is
 missing, or any byte, digest or file set differs, nothing is uploaded and the job fails. The run summary then
-explains why the bundle was withheld. The per-target artifacts stay diagnostics only.
+explains why the bundle was withheld. The per-target artifacts stay diagnostics only. The withheld report checks
+this job's upload step, not just `failure()`, which is also true when an upstream nightly job failed. A failed
+live E2E run therefore never hides a bundle that was uploaded. If the upload succeeds but the summary step fails,
+the job fails and the summary links the uploaded artifact. It points to `nightly-manifest.json` for the status
+instead of saying the download is missing.
 
 The nightly packages are unsigned. Linux packages carry no signature. macOS apps have no Developer ID signature
 and are not notarized; the ARM64 app has only the local ad-hoc signature. There is no update feed or signed update

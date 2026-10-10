@@ -499,6 +499,28 @@ verified matrix and must not be used for release validation.
 `;
 };
 
+// The upload succeeded but the run summary step failed afterwards. The artifact
+// exists, so this must not claim it was withheld; it only points at the upload
+// and at the manifest inside it for the validation status.
+export const renderUnsummarizedSummary = ({ artifactName, artifactUrl, artifactDigest, sourceSha, run }) => {
+  const context = runContext(run);
+  const name = artifactName ? `\`${artifactName}\`` : 'The consolidated nightly bundle';
+  const download = artifactUrl ? `[${artifactName || 'nightly bundle'}](${artifactUrl})` : 'see the run\'s Artifacts list';
+  return `## Nightly desktop download
+
+**The download was uploaded, but its run summary could not be generated.** ${name} passed bundle verification
+and was uploaded before the summary step failed.
+
+- Download: ${download}
+- Artifact digest: ${artifactDigest ? `\`${artifactDigest}\`` : 'not reported'}
+- Source: \`${sourceSha}\`
+- Run: ${context.url}
+
+The validation status is not repeated here. Read \`${NIGHTLY_MANIFEST}\` inside the download for the packaging, nightly
+and release-validation status, and the summary step's log for why it failed.
+`;
+};
+
 const argument = name => {
   const index = process.argv.indexOf(name);
   return index === -1 ? undefined : process.argv[index + 1];
@@ -541,6 +563,14 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
         run: runFromEnvironment(env),
         reason: 'Re-verification of the native artifacts, checksums, or matrix, or the bundle upload, failed, so no verified download exists.',
       }));
+    } else if (command === 'unsummarized') {
+      await writeSummary(env, renderUnsummarizedSummary({
+        artifactName: env.NIGHTLY_ARTIFACT_NAME || undefined,
+        artifactUrl: env.NIGHTLY_ARTIFACT_URL || undefined,
+        artifactDigest: env.NIGHTLY_ARTIFACT_DIGEST || undefined,
+        sourceSha: env.GITHUB_SHA,
+        run: runFromEnvironment(env),
+      }));
     } else if (command === 'bundle') {
       const manifest = await createNightlyBundle({
         inputDirectory: resolve(argument('--input') || 'desktop-release-final'),
@@ -564,7 +594,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
         artifactDigest: env.NIGHTLY_ARTIFACT_DIGEST || undefined,
       }));
     } else {
-      throw new Error('Expected nightly-native-bundle.mjs gate, withheld, bundle, verify, or summary command');
+      throw new Error('Expected nightly-native-bundle.mjs gate, withheld, unsummarized, bundle, verify, or summary command');
     }
   } catch (error) {
     console.error(`::error::${error.message}`);

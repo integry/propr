@@ -302,14 +302,26 @@ jobs:
           compression-level: 0
 
       - name: Publish nightly download summary
+        id: summary
         env:
           NIGHTLY_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
           NIGHTLY_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
         run: node apps/desktop/scripts/nightly-native-bundle.mjs summary --directory propr-desktop-nightly
 
+      # failure() is also true when an upstream nightly job failed (for example
+      # live E2E on a packaging-only run), so each report also checks this job's
+      # own step outcomes before saying what happened to the download.
       - name: Report withheld nightly bundle
-        if: failure() && steps.gate.outcome == 'success'
+        if: failure() && steps.gate.outcome == 'success' && steps.upload.outcome != 'success'
         run: node apps/desktop/scripts/nightly-native-bundle.mjs withheld
+
+      - name: Report unsummarized nightly bundle
+        if: failure() && steps.upload.outcome == 'success' && steps.summary.outcome == 'failure'
+        env:
+          NIGHTLY_ARTIFACT_NAME: ${{ steps.bundle.outputs.artifact_name }}
+          NIGHTLY_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          NIGHTLY_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: node apps/desktop/scripts/nightly-native-bundle.mjs unsummarized
 
   # One "Nightly test health" issue tracks a red nightly on the default branch:
   # a failure opens it or comments on the open one, the next green run comments

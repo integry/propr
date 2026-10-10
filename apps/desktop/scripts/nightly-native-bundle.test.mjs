@@ -17,6 +17,7 @@ import {
   NIGHTLY_NOTES,
   readNightlyChecks,
   renderRunSummary,
+  renderUnsummarizedSummary,
   renderWithheldSummary,
   verifyNightlyBundle,
 } from './nightly-native-bundle.mjs';
@@ -412,6 +413,34 @@ describe('nightly run summary', () => {
     assert.match(await readFile(summaryPath, 'utf8'), /cancelled/);
     await execFile(process.execPath, [script, 'gate'], { env: { ...env, NEEDS_JSON: e2eFailed } });
   }));
+
+  test('reports an uploaded but unsummarized bundle as available, not withheld', () => withRoot(async root => {
+    const artifactName = 'propr-desktop-nightly-1.2.3-aaaaaaaaaaaa-run38016752734.2-packaging-only';
+    const artifactUrl = 'https://github.com/integry/propr/actions/runs/38016752734/artifacts/123';
+    const summary = renderUnsummarizedSummary({ artifactName, artifactUrl, artifactDigest: `sha256:${'d'.repeat(64)}`, sourceSha, run });
+    assert.match(summary, /was uploaded, but its run summary could not be generated/);
+    assert.ok(summary.includes(`[${artifactName}](${artifactUrl})`));
+    assert.match(summary, new RegExp(`Read \`${NIGHTLY_MANIFEST}\` inside the download`));
+    assert.doesNotMatch(summary, /withheld|No consolidated download|no verified download/i);
+
+    const summaryPath = join(root, 'summary.md');
+    await execFile(process.execPath, [script, 'unsummarized'], {
+      env: {
+        ...process.env,
+        NIGHTLY_ARTIFACT_NAME: artifactName,
+        NIGHTLY_ARTIFACT_URL: artifactUrl,
+        GITHUB_STEP_SUMMARY: summaryPath,
+        GITHUB_SHA: sourceSha,
+        GITHUB_REPOSITORY: run.repository,
+        GITHUB_RUN_ID: run.id,
+        GITHUB_RUN_ATTEMPT: run.attempt,
+        GITHUB_SERVER_URL: run.serverUrl,
+      },
+    });
+    const written = await readFile(summaryPath, 'utf8');
+    assert.ok(written.includes(`[${artifactName}](${artifactUrl})`));
+    assert.doesNotMatch(written, /withheld|No consolidated download/i);
+  }));
 });
 
 describe('nightly download workflow wiring', () => {
@@ -448,6 +477,7 @@ describe('nightly download workflow wiring', () => {
       'Upload consolidated nightly native bundle',
       'Publish nightly download summary',
       'Report withheld nightly bundle',
+      'Report unsummarized nightly bundle',
     ]);
     assert.ok(order.every(index => index > 0), JSON.stringify(order));
     assert.deepEqual([...order].sort((left, right) => left - right), order);
@@ -462,7 +492,54 @@ describe('nightly download workflow wiring', () => {
     assert.match(download, /name: \$\{\{ steps\.bundle\.outputs\.artifact_name \}\}\n\s+path: propr-desktop-nightly\n\s+if-no-files-found: error\n/);
     assert.match(download, /NIGHTLY_ARTIFACT_URL: \$\{\{ steps\.upload\.outputs\.artifact-url \}\}/);
     assert.match(download, /NIGHTLY_ARTIFACT_DIGEST: \$\{\{ steps\.upload\.outputs\.artifact-digest \}\}/);
-    assert.match(download, /- name: Report withheld nightly bundle\n\s+if: failure\(\) && steps\.gate\.outcome == 'success'\n/);
+  });
+
+  // Evaluates the two report conditions with GitHub's semantics: failure() is
+  // true after a failed earlier step in this job or a failed ancestor job, and a
+  // step skipped after a failure has outcome 'skipped'.
+  test('reports a withheld bundle only when the upload did not succeed, even after upstream failures', () => {
+    const condition = name => {
+      const match = download.match(new RegExp(`- name: ${name}\\n\\s+if: ([^\\n]+)\\n`));
+      assert.ok(match, name);
+      return match[1];
+    };
+    const evaluate = (expression, { ancestorFailed, outcomes }) => expression.split(' && ').every(term => {
+      if (term === 'failure()') return ancestorFailed || Object.values(outcomes).includes('failure');
+      const step = term.match(/^steps\.(\w+)\.outcome (==|!=) '(\w+)'$/);
+      assert.ok(step, `unsupported term: ${term}`);
+      const [, id, operator, value] = step;
+      assert.ok(id in outcomes, `unknown step: ${id}`);
+      return (outcomes[id] === value) === (operator === '==');
+    });
+    const withheld = condition('Report withheld nightly bundle');
+    const unsummarized = condition('Report unsummarized nightly bundle');
+    assert.match(download, /- name: Publish nightly download summary\n\s+id: summary\n/);
+    // The local steps that the conditions read; a failed step skips every later one.
+    const order = ['gate', 'finalize', 'bundle', 'upload', 'summary'];
+    const failingAt = step => Object.fromEntries(order.map((id, index) => {
+      const at = order.indexOf(step);
+      return [id, step === undefined || index < at ? 'success' : index === at ? 'failure' : 'skipped'];
+    }));
+    const scenarios = [
+      // [failing local step, upstream failed, withheld runs, unsummarized runs]
+      [undefined, true, false, false],
+      [undefined, false, false, false],
+      ['gate', true, false, false],
+      ['finalize', true, true, false],
+      ['finalize', false, true, false],
+      ['bundle', true, true, false],
+      ['upload', true, true, false],
+      ['upload', false, true, false],
+      ['summary', true, false, true],
+      ['summary', false, false, true],
+    ];
+    for (const [step, ancestorFailed, expectWithheld, expectUnsummarized] of scenarios) {
+      const state = { ancestorFailed, outcomes: failingAt(step) };
+      const label = `${step ?? 'none'} failed locally, upstream ${ancestorFailed ? 'failed' : 'passed'}`;
+      assert.equal(evaluate(withheld, state), expectWithheld, `withheld: ${label}`);
+      assert.equal(evaluate(unsummarized, state), expectUnsummarized, `unsummarized: ${label}`);
+    }
+    assert.match(download, /- name: Report unsummarized nightly bundle\n[^]*?NIGHTLY_ARTIFACT_NAME: \$\{\{ steps\.bundle\.outputs\.artifact_name \}\}\n[^]*?nightly-native-bundle\.mjs unsummarized\n/);
   });
 
   test('pins every action to a SHA already reviewed in the nightly or desktop workflows', () => {
