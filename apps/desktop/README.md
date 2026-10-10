@@ -325,7 +325,9 @@ The nightly packages are unsigned. Linux packages carry no signature. macOS apps
 and are not notarized; the ARM64 app has only the local ad-hoc signature. There is no update feed or signed update
 metadata. Nightly packaging also passes no runtime manifest, so the Linux packages embed the checked-in launcher
 pins (`docker/launcher/manifest.json`, version-tagged `propr/app`, `propr/ui` and `propr/agent`). The manifest
-reports this as `runtime.linux.binding: unbound`. Those images are not built from the nightly's source, so a
+reports this as `runtime.linux.binding: unbound`. A packaged `desktopRuntime` binding only counts as
+`source-aligned` after it passes the canonical `validateDesktopRuntimeManifest` checks for this source revision.
+Conflicting or malformed bound metadata is reported as `invalid`, with the reason in `bindingError`. Those images are not built from the nightly's source, so a
 nightly install is not a current-source end-to-end runtime. For an exact-source Linux runtime, follow the Linux
 preview channel below. Live E2E runs against a separately deployed backend whose source this run does not attest,
 and it covers only the configured model-pair subset, not every provider.

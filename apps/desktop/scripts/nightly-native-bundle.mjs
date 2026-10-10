@@ -17,6 +17,7 @@ import {
   MACOS_LINUX_RELEASE_PROFILE,
   resolveReleaseProfile,
 } from './release-profiles.mjs';
+import { validateDesktopRuntimeManifest } from './desktop-runtime-manifest.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -204,12 +205,22 @@ export const describeRuntimeBinding = ({ manifests, sourceSha }) => {
   const runtime = parsed.desktopRuntime;
   const runtimeSource = typeof runtime?.sourceRevision === 'string' ? runtime.sourceRevision : null;
   const pinned = [images.app, images.ui].every(image => DIGEST_PINNED.test(image));
-  const binding = !runtime
+  // A bound manifest must pass the same validator the release and preview
+  // workflows use (image repositories, full-SHA tags, digests, git_sha and the
+  // managed-agent binding) before any source claim is made. Conflicting bound
+  // metadata is reported as invalid, never as current source.
+  let bindingError = null;
+  if (runtime !== undefined) {
+    try { validateDesktopRuntimeManifest(parsed, { distribution: 'published' }); }
+    catch (error) { bindingError = error instanceof Error ? error.message : String(error); }
+  }
+  const binding = runtime === undefined
     ? 'unbound'
-    : runtimeSource === sourceSha && pinned ? 'source-aligned' : 'other-source';
+    : bindingError ? 'invalid' : runtimeSource === sourceSha ? 'source-aligned' : 'other-source';
   return {
     binding,
     currentSource: binding === 'source-aligned',
+    bindingError,
     manifestSha256: sha256(contents[0]),
     launcherSourceRevision: typeof parsed.git_sha === 'string' ? parsed.git_sha : null,
     runtimeSourceRevision: runtimeSource,

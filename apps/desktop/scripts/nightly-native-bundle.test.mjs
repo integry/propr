@@ -290,18 +290,76 @@ describe('nightly native bundle provenance', () => {
 });
 
 describe('runtime binding', () => {
-  test('reports unbound launcher pins and recognises only an exact digest-pinned source binding', () => {
+  test('reports unbound launcher pins and recognises only a validated digest-pinned source binding', () => {
     assert.equal(describeRuntimeBinding({ manifests: [{ contents: launcherManifest }], sourceSha }).binding, 'unbound');
     const bound = sha => JSON.stringify({
       git_sha: sha,
       images: { app: `propr/app:${sha}@sha256:${'1'.repeat(64)}`, ui: `propr/ui:${sha}@sha256:${'2'.repeat(64)}` },
-      desktopRuntime: { schemaVersion: 1, distribution: 'published', sourceRevision: sha },
+      desktopRuntime: {
+        schemaVersion: 1, distribution: 'published', sourceRevision: sha,
+        apiCompatibility: '2026-01-01', desktopAuthenticationProtocol: 2,
+      },
     });
     const aligned = describeRuntimeBinding({ manifests: [{ contents: bound(sourceSha) }], sourceSha });
     assert.equal(aligned.binding, 'source-aligned');
     assert.equal(aligned.currentSource, true);
     assert.equal(describeRuntimeBinding({ manifests: [{ contents: bound('b'.repeat(40)) }], sourceSha }).binding, 'other-source');
+    const local = JSON.parse(bound(sourceSha));
+    local.desktopRuntime.distribution = 'local';
+    local.images = { app: `propr-desktop-local/app:${sourceSha}`, ui: `propr-desktop-local/ui:${sourceSha}` };
+    const localBinding = describeRuntimeBinding({ manifests: [{ contents: JSON.stringify(local) }], sourceSha });
+    assert.equal(localBinding.binding, 'invalid');
+    assert.equal(localBinding.currentSource, false);
     assert.throws(() => describeRuntimeBinding({ manifests: [], sourceSha }), /one identical/);
+  });
+
+  test('never claims current source for bound metadata the canonical runtime validator rejects', () => {
+    const other = 'b'.repeat(40);
+    const agentImage = sha => `propr/agent:${sha}@sha256:${'3'.repeat(64)}`;
+    const manifest = (overrides = {}) => {
+      const value = JSON.parse(JSON.stringify({
+        git_sha: sourceSha,
+        images: { app: `propr/app:${sourceSha}@sha256:${'1'.repeat(64)}`, ui: `propr/ui:${sourceSha}@sha256:${'2'.repeat(64)}` },
+        desktopRuntime: {
+          schemaVersion: 1, distribution: 'published', sourceRevision: sourceSha,
+          apiCompatibility: '2026-01-01', desktopAuthenticationProtocol: 2,
+        },
+      }));
+      return JSON.stringify(overrides(value) ?? value);
+    };
+    const describe = contents => describeRuntimeBinding({ manifests: [{ contents }], sourceSha });
+    const withAgent = (value, image, platforms = ['linux/amd64']) => {
+      value.images.agent = image;
+      value.desktopRuntime.managedAgent = { image, platforms };
+      return value;
+    };
+    assert.equal(describe(manifest(value => withAgent(value, agentImage(sourceSha)))).binding, 'source-aligned');
+
+    const rejected = {
+      'git_sha and both image tags from another revision': value => {
+        value.git_sha = other;
+        value.images.app = `propr/app:${other}@sha256:${'1'.repeat(64)}`;
+        value.images.ui = `propr/ui:${other}@sha256:${'2'.repeat(64)}`;
+      },
+      'git_sha from another revision': value => { value.git_sha = other; },
+      'app image tag from another revision': value => { value.images.app = `propr/app:${other}@sha256:${'1'.repeat(64)}`; },
+      'UI image from another repository': value => { value.images.ui = `propr/app:${sourceSha}@sha256:${'2'.repeat(64)}`; },
+      'missing API compatibility': value => { delete value.desktopRuntime.apiCompatibility; },
+      'local distribution': value => { value.desktopRuntime.distribution = 'local'; },
+      'managed agent from another revision': value => withAgent(value, agentImage(other)),
+      'managed agent not digest-pinned': value => withAgent(value, `propr/agent:${sourceSha}`),
+      'managed agent with widened platforms': value => withAgent(value, agentImage(sourceSha), ['linux/amd64', 'linux/arm64']),
+      'managed agent not mirrored in images': value => {
+        withAgent(value, agentImage(sourceSha));
+        value.images.agent = agentImage(other);
+      },
+    };
+    for (const [name, override] of Object.entries(rejected)) {
+      const result = describe(manifest(override));
+      assert.equal(result.binding, 'invalid', name);
+      assert.equal(result.currentSource, false, name);
+      assert.match(result.bindingError, /Desktop runtime/, name);
+    }
   });
 });
 
