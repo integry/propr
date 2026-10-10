@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Epic merge progress**: when a child PR merges into an epic branch, ProPR
+  updates a single "x of y PRs merged" tracking comment on the epic PR in
+  place, and posts a one-time *Epic fully merged* confirmation comment once
+  the final child PR has merged.
 - **MCP `resolve_merge_conflicts`**: the MCP equivalent of typing `/merge` on a
   pull request. It posts the same `/merge` command, whose intake merges the base
   branch into the PR branch and resolves conflicts with an agent. It requires

@@ -50,6 +50,7 @@ import { sweepDraftContext } from './daemon/draftContextSweep.js';
 import { sweepPushRescues } from './daemon/rescueRefSweep.js';
 import { scheduleAgentRunSweeps } from './agentRunScheduler.js';
 import { scheduleUltrafixResumeSweep } from './daemon/ultrafixResumeSweep.js';
+import { scheduleEpicMergeProgressRetrySweep } from './daemon/epicMergeProgressRetrySweep.js';
 import {
     clearUltrafixStateIfCurrent,
     hasUltrafixAutomaticWork,
@@ -240,6 +241,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     // Retry obligations and deferred reviews are swept here too, so a daemon
     // without the API server and with polling off does not wait for a webhook.
     const ultrafixResumeSweepInterval = scheduleUltrafixResumeSweep(redisClient);
+    const epicMergeProgressRetryInterval = scheduleEpicMergeProgressRetrySweep();
 
     const repos = getRepos();
     await reconcileTaskIntentsSafely(redisClient, repos);
@@ -458,6 +460,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(draftContextSweepInterval);
         clearInterval(pushRescueSweepInterval);
         clearInterval(ultrafixResumeSweepInterval);
+        clearInterval(epicMergeProgressRetryInterval);
         clearInterval(mergeConflictSweepInterval);
         await stopAgentRunSweeps();
         // Stop the routing service first so it can drain in-flight deliveries and
