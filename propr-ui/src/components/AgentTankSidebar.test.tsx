@@ -131,6 +131,7 @@ const antigravityResponse = (): AgentTankUsageResponse => ({
           { model: 'Gemini · Weekly Limit Remaining', percentUsed: 12.2, resetsIn: '136h 1m' },
           { model: 'Gemini · Five Hour Limit Remaining', percentUsed: 0.3, resetsIn: '4h 37m' },
           { model: 'Claude and GPT · Weekly Limit Remaining', percentUsed: 0 },
+          { model: 'Claude and GPT · Five Hour Limit Remaining', percentUsed: 4.1 },
         ],
       },
     },
@@ -142,35 +143,43 @@ describe('AgentTankSidebar Antigravity rows', () => {
     mockGetAgentTankUsage.mockResolvedValue(antigravityResponse());
   });
 
-  it('drops the trailing "Remaining" from the model labels', async () => {
+  it('groups the quota windows under their pool so every row reads in full', async () => {
     await renderSidebar();
 
     fireEvent.click(providerRow('Antigravity'));
 
-    expect(screen.getByText('Gemini · Weekly Limit')).toBeInTheDocument();
-    expect(screen.getByText('Gemini · Five Hour Limit')).toBeInTheDocument();
-    expect(screen.getByText('Claude and GPT · Weekly Limit')).toBeInTheDocument();
+    expect(screen.getByText('Gemini')).toBeInTheDocument();
+    expect(screen.getByText('Claude and GPT')).toBeInTheDocument();
+    expect(screen.getAllByText('Weekly')).toHaveLength(2);
+    expect(screen.getAllByText('5h')).toHaveLength(2);
     expect(screen.queryByText(/Remaining/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Limit/)).not.toBeInTheDocument();
+
+    // Each pool header precedes its own windows.
+    const labels = screen.getAllByText(/^(Gemini|Claude and GPT|Weekly|5h)$/).map(el => el.textContent);
+    expect(labels).toEqual(['Gemini', 'Weekly', '5h', 'Claude and GPT', 'Weekly', '5h']);
   });
 
-  it('reports when each quota resets, the way the other providers do', async () => {
+  it('keeps the full window name and reset countdown in the tooltip', async () => {
     await renderSidebar();
 
     fireEvent.click(providerRow('Antigravity'));
 
-    expect(screen.getByText('Gemini · Weekly Limit'))
+    expect(screen.getAllByText('Weekly')[0])
       .toHaveAttribute('title', 'Gemini · Weekly Limit · Resets in 136h 1m');
-    expect(screen.getByText('Gemini · Five Hour Limit'))
+    expect(screen.getAllByText('5h')[0])
       .toHaveAttribute('title', 'Gemini · Five Hour Limit · Resets in 4h 37m');
   });
 
-  it('keeps the model name alone when Agent Tank reports no reset window', async () => {
+  it('keeps the full window name alone when Agent Tank reports no reset window', async () => {
     await renderSidebar();
 
     fireEvent.click(providerRow('Antigravity'));
 
-    expect(screen.getByText('Claude and GPT · Weekly Limit'))
+    expect(screen.getAllByText('Weekly')[1])
       .toHaveAttribute('title', 'Claude and GPT · Weekly Limit');
+    expect(screen.getAllByText('5h')[1])
+      .toHaveAttribute('title', 'Claude and GPT · Five Hour Limit');
   });
 });
 
