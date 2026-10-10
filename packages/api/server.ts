@@ -55,7 +55,8 @@ import {
   createDesktopAuthRoutes,
   createActiveWorkRoutes,
   attachmentUpload,
-  goalAttachmentUpload
+  goalAttachmentUpload,
+  registerHostedFleetRoutes
 } from './routes/index.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
@@ -321,6 +322,7 @@ function setupRoutes(): void {
       ) => notificationBackground!.projectSystemSnapshot(snapshot, additionalAdministratorIds),
     }),
   });
+  const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   readSystemStatus = async () => {
     const snapshot = await statusRoutes.getStatusSnapshot();
     // Health notifications must keep advancing when connected clients consume
@@ -337,6 +339,16 @@ function setupRoutes(): void {
   // They return only compatibility/capability metadata or pairing state gated by
   // a high-entropy secret; all operational routes below remain authenticated.
   app.get('/api/compatibility', createDiscoveryRequestRateLimiter(), statusRoutes.getCompatibility);
+  // Machine-to-machine bootstrap verification has its own narrow service
+  // credential and deliberately does not depend on a customer's OAuth session.
+  // Register before registerDesktopApiBoundary installs the shared API guard;
+  // registration is a no-op unless Fleet control was enabled at startup. The
+  // general /api request limiter is mounted at module load, before setupRoutes
+  // runs, so these handlers are rate-limited like every other /api route.
+  registerHostedFleetRoutes(app, {
+    operationalStatus: statusRoutes.readStatusSnapshot,
+    queueStatus: queueRoutes.collectQueueStats
+  });
   // MCP authenticates its own bearer tokens before the shared API guard.
   mountMcp(app, { db, taskQueue, redisClient, runtimeBuildQueue });
   // Worker-only: run-scoped MCP grants for agent containers, authenticated by
@@ -365,7 +377,6 @@ function setupRoutes(): void {
   const fileChangesRoutes = createFileChangesRoutes({ db });
   const taskAssignmentRoutes = createTaskAssignmentRoutes({ db });
   const configRoutes = createConfigRoutes({ redisClient });
-  const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   const executionRoutes = createExecutionRoutes({ redisClient, db });
   const dockerRoutes = createDockerRoutes({ redisClient });
   const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db });
