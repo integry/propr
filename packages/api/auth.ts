@@ -37,6 +37,7 @@ import {
 } from './authorization.js';
 import { captureVisualPreviewCredentialFromAdminLogin } from './services/visualPreviewOAuth.js';
 import { githubUserGrantService } from './githubUserGrantService.js';
+import { rememberCreator } from './services/creatorProjection.js';
 import './authTypes.js';
 import { timeApiStage } from './apiPerformanceTiming.js';
 
@@ -181,6 +182,9 @@ async function completeAuthenticatedSessionWithPreviewCredential(req: Request, r
             console.warn('Could not capture GitHub user grant during login:', (error as Error).message);
         }
     }
+    // The GitHub profile is in hand once per session: cache it so whatever this
+    // user creates renders with their avatar without a GitHub lookup.
+    if (req.user) await rememberCreator(req.user);
     completeAuthenticatedSession(req, res);
 }
 

@@ -49,6 +49,14 @@ export interface RepoToMonitor {
     // Without .propr/pr-template.md, append the repository's GitHub pull request
     // template to ProPR's summary and run block. Defaults to true; undefined reads as enabled.
     githubPrTemplateFallback?: boolean;
+    // Automatic pull request assignment, repository-wide across branch entries.
+    // Defaults to false; undefined (legacy configurations) reads as disabled.
+    autoAssignPullRequests?: boolean;
+    // GitHub login assigned instead of the issue author. null or undefined
+    // means the issue author is assigned.
+    autoAssignDefaultAssignee?: string | null;
+    // Also request a GitHub review from the assigned user. Defaults to false.
+    autoAssignRequestReview?: boolean;
     alias?: string;          // Optional display name
     baseBranch?: string;     // Optional specific branch to monitor
     defaultBranch?: string;  // Optional repository default branch for demo metadata
@@ -497,3 +505,9 @@ export {
     loadInstanceNetworkPolicy,
     saveAgentNetworkSetting,
 } from './configManagerAgentNetwork.js';
+
+export {
+    FOLLOWUP_REQUIRES_ASSIGNMENT_CONFIG_KEY,
+    loadFollowupRequiresAssignment,
+    saveFollowupRequiresAssignment,
+} from './configManagerAssignment.js';

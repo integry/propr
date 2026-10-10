@@ -10,6 +10,7 @@ export const SPECIALIZED_SETTING_NAMES = [
   'auto_followup_score_threshold',
   'auto_resolve_merge_conflicts',
   'dashboard_summary_enabled',
+  'followup_requires_assignment',
   'model_reasoning_level',
   'pr_review_model',
   'ultrafix_escalation_enabled',

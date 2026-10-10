@@ -30,6 +30,7 @@ import type {
   createStatsRoutes,
   createStatusRoutes,
   createSummaryBrowserRoutes,
+  createTaskAssignmentRoutes,
   createTaskHistoryRoutes,
   createTaskRoutes,
   createUserRepoPreferencesRoutes,
@@ -90,6 +91,7 @@ interface OperationalRouteDeps {
   statsRoutes: ReturnType<typeof createStatsRoutes>;
   statusRoutes: ReturnType<typeof createStatusRoutes>;
   summaryBrowserRoutes: ReturnType<typeof createSummaryBrowserRoutes>;
+  taskAssignmentRoutes: ReturnType<typeof createTaskAssignmentRoutes>;
   taskHistoryRoutes: ReturnType<typeof createTaskHistoryRoutes>;
   taskRoutes: ReturnType<typeof createTaskRoutes>;
   taskSubmissionRoutes: ReturnType<typeof createTaskSubmissionRoutes>;
@@ -219,6 +221,7 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     statsRoutes,
     statusRoutes,
     summaryBrowserRoutes,
+    taskAssignmentRoutes,
     taskHistoryRoutes,
     taskRoutes,
     taskSubmissionRoutes,
@@ -275,6 +278,9 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory],
     ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
     ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges],
+    ['get', '/api/task/:taskId/assignees', taskAssignmentRoutes.getAssignees],
+    ['put', '/api/task/:taskId/assignees', taskAssignmentRoutes.putAssignees],
+    ['get', '/api/task/:taskId/assignable-users', taskAssignmentRoutes.getAssignableUsers],
     ['get', '/api/queue/stats', queueRoutes.getQueueStats],
     ['get', '/api/activity', queueRoutes.getActivity],
     ['get', '/api/metrics', queueRoutes.getMetrics],

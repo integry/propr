@@ -42,17 +42,31 @@ describe('task ledger rows', () => {
     render(<Fixture />);
     const table = screen.getByRole('table', { name: 'Tasks' });
     expect(within(table).getAllByRole('columnheader').map(header => header.textContent))
-      .toEqual(['Task / PR', 'Repo', 'Status', 'Agent', 'Duration', 'Updated', 'Score']);
+      .toEqual(['Task / PR', 'Repo', 'Status', 'Agent', 'Assignees', 'Duration', 'Updated', 'Score']);
   });
 
-  it('keeps all seven columns when earlier runs are expanded, and spans runs over TASK / PR to STATUS', () => {
+  it('keeps all eight columns when earlier runs are expanded, and spans runs over TASK / PR to STATUS', () => {
     render(<Fixture />);
     const table = screen.getByRole('table', { name: 'Tasks' });
     fireEvent.click(within(table).getByRole('button', { name: '6 runs' }));
-    expect(within(table).getAllByRole('columnheader')).toHaveLength(7);
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(8);
     const runsCell = within(table).getByRole('list', { name: 'Earlier runs' }).closest('[role="cell"]')!;
     expect(runsCell).toHaveAttribute('aria-colspan', '3');
     expect(runsCell.parentElement!.children).toHaveLength(1);
+  });
+
+  it('shows the assignees of every run as a stack in the row and on the card, and a dash when unassigned', () => {
+    const user = (login: string) => ({ id: login, login, displayName: null, avatarUrl: null });
+    const assigned: TaskGroup = { ...group, tasks: group.tasks.map((task, index) => ({ ...task, assignees: index ? [user('hubot')] : [user('octocat')] })) };
+    const unassigned: TaskGroup = { ...group, key: 'integry/propr-pr-1', prNumber: 1, tasks: [{ ...group.tasks[0], id: 'other', prNumber: 1 }] };
+    render(<Fixture groups={[assigned, unassigned]} />);
+    const table = screen.getByRole('table', { name: 'Tasks' });
+    const [first, second] = within(table).getAllByTestId('task-assignees');
+    expect(within(first).getAllByRole('listitem').map(item => item.getAttribute('aria-label'))).toEqual(['Assigned to @octocat', 'Assigned to @hubot']);
+    expect(within(second).getByTestId('assignee-unassigned')).toBeInTheDocument();
+    const cards = screen.getAllByTestId('task-card');
+    expect(within(within(cards[0]).getByTestId('task-card-meta')).getAllByTestId('assignee-chip')).toHaveLength(2);
+    expect(within(cards[1]).queryByTestId('task-card-assignees')).toBeNull();
   });
 
   it('renders one flat row per group with a sanitized title and a single PR chip', () => {

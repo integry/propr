@@ -13,9 +13,7 @@ const previewTrace = {
     { name: 'context', status: 'in_progress' },
   ],
 };
-const generationTrace = {
-  steps: [...previewTrace.steps, { name: 'llm', status: 'pending' }],
-};
+const generationTrace = { steps: [...previewTrace.steps, { name: 'llm', status: 'pending' }] };
 let lastLeftPaneProps: Record<string, unknown> | undefined;
 let mockGenerationPollingState: {
   isGenerating: boolean;
@@ -45,11 +43,7 @@ const setGeneratingState = (trace = generationTrace) => {
   mockGenerationPollingState = { isGenerating: true, generationTrace: trace, generationError: null };
 };
 const setViewportWidth = (width: number) => {
-  Object.defineProperty(window, 'innerWidth', {
-    configurable: true,
-    writable: true,
-    value: width,
-  });
+  Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: width });
   window.dispatchEvent(new Event('resize'));
 };
 vi.mock('react-router-dom', async () => {

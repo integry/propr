@@ -92,7 +92,7 @@ const AdminSettingsPage: React.FC = () => {
       const parsed = Number(raw);
       if (!Number.isSafeInteger(parsed)) return;
       value = parsed;
-    } else if (settingName === 'ultrafix_escalation_enabled' || settingName === 'auto_resolve_merge_conflicts' || settingName === 'usage_tips_enabled') {
+    } else if (settingName === 'ultrafix_escalation_enabled' || settingName === 'auto_resolve_merge_conflicts' || settingName === 'followup_requires_assignment' || settingName === 'usage_tips_enabled') {
       value = (event.target as HTMLInputElement).checked;
     } else {
       value = event.target.value;
@@ -161,7 +161,7 @@ const AdminSettingsPage: React.FC = () => {
     {
       id: 'general-configuration',
       category: 'automation',
-      searchText: 'general configuration processing worker concurrency provider failure replacements retry resolve merge conflicts spend cap cost budget max cost usd ultrafix escalation patience reasoning levels models rating goal maximum cycles pause seconds',
+      searchText: 'general configuration processing worker concurrency provider failure replacements retry resolve merge conflicts follow-up followup comments assignment assignee assigned users spend cap cost budget max cost usd ultrafix escalation patience reasoning levels models rating goal maximum cycles pause seconds',
       content: (
         <GeneralSettingsSection
           modelAgents={catalogAgents?.length ? catalogAgents : agents}
@@ -169,7 +169,7 @@ const AdminSettingsPage: React.FC = () => {
           settings={{
             worker_concurrency: settings.worker_concurrency,
             max_provider_replacements: settings.max_provider_replacements,
-            auto_resolve_merge_conflicts: settings.auto_resolve_merge_conflicts,
+            auto_resolve_merge_conflicts: settings.auto_resolve_merge_conflicts, followup_requires_assignment: settings.followup_requires_assignment,
             ultrafix_escalation_enabled: settings.ultrafix_escalation_enabled,
             ultrafix_escalation_models: settings.ultrafix_escalation_models,
             ultrafix_escalation_patience: settings.ultrafix_escalation_patience,

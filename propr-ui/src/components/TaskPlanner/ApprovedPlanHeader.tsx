@@ -1,53 +1,9 @@
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { ExternalLink, Github, GitMerge, FileQuestion, GitBranch, X, Loader2, Edit3, Pause, Play } from 'lucide-react';
+import React from 'react';
+import { ExternalLink, Github, GitMerge, GitBranch, Loader2, Edit3, Pause, Play } from 'lucide-react';
 import { StudioPhaseSwitcher } from './StudioStepper';
 import { StudioScopePill } from './StudioScopePill';
-import { PlanOverflowMenu, type PlanMenuItem } from './PlanEditorComponents';
+import { OriginalPromptPopover, PlanOverflowMenu, type PlanMenuItem } from './PlanEditorComponents';
 import { useIsMobile } from '../../hooks/useIsMobile';
-
-const OriginalPromptPopover: React.FC<{ prompt: string }> = ({ prompt }) => {
-  const [isOpen, setIsOpen] = useState(false);
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors"
-        style={{ color: 'rgb(29, 138, 138)' }}
-        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'rgba(29, 138, 138, 0.1)'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
-        title="View original prompt"
-      >
-        <FileQuestion size={14} />
-        <span className="hidden sm:inline font-medium">Prompt</span>
-      </button>
-      <AnimatePresence>
-        {isOpen && (
-          <>
-            <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
-            <motion.div
-              initial={{ opacity: 0, y: -10, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -10, scale: 0.95 }}
-              transition={{ duration: 0.15 }}
-              className="absolute top-full left-0 mt-2 z-50 w-80 max-w-[calc(100vw-2rem)] bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
-            >
-              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Original Prompt</span>
-                <button onClick={() => setIsOpen(false)} className="p-1 hover:bg-gray-200 rounded transition-colors">
-                  <X size={14} className="text-gray-400" />
-                </button>
-              </div>
-              <div className="p-3 max-h-60 overflow-y-auto">
-                <p className="text-sm text-gray-700 whitespace-pre-wrap">{prompt}</p>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-};
 
 interface PlanHeaderActionsProps {
   draftStatus: string;
@@ -80,26 +36,31 @@ const PlanStatusBadges: React.FC<{ draftStatus: string; isPaused: boolean; iconO
 
 const isPauseResumeAvailable = (draftStatus: string) => draftStatus === 'executed' || draftStatus === 'pr_created';
 
-const HEADER_GHOST_BUTTON_CLASS = 'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-200 hover:text-slate-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+/**
+ * One 32px bordered frame for every header control (Prompt, Pause, Revise, GitHub, "…"), so the run
+ * controls carry the same weight as the external link and teal stays reserved for the active step.
+ */
+const HEADER_TOOLBAR_BUTTON_CLASS = 'flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+const HEADER_ICON_BUTTON_CLASS = 'flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900 transition-colors';
 
-/** Desktop: Pause/Revise as quiet ghost buttons, a compact GitHub link, and Delete behind "…" so the title keeps its room. */
+/** Desktop: Pause, Revise and the GitHub link as equal toolbar buttons, with Delete behind "…" so the title keeps its room. */
 const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl, onPauseResume, onRevise, onDelete, isReadOnly = false, isCreatingIssues = false }) => {
   const showPauseResume = isPauseResumeAvailable(draftStatus);
   return (
-    <div className="ml-auto flex flex-shrink-0 items-center justify-end gap-1">
+    <div className="ml-auto flex flex-shrink-0 items-center justify-end gap-2">
       {showPauseResume && (
         <button
           onClick={onPauseResume}
           disabled={isPauseLoading || isReadOnly}
-          className={HEADER_GHOST_BUTTON_CLASS}
+          className={HEADER_TOOLBAR_BUTTON_CLASS}
           title={isReadOnly ? 'Demo mode is read-only' : isPaused ? 'Resume plan execution' : 'Pause plan execution'}
         >
           {isPauseLoading ? (
-            <Loader2 size={15} className="animate-spin" />
+            <Loader2 size={14} className="animate-spin" />
           ) : isPaused ? (
-            <Play size={15} />
+            <Play size={14} />
           ) : (
-            <Pause size={15} />
+            <Pause size={14} />
           )}
           <span>{isPaused ? 'Resume' : 'Pause'}</span>
         </button>
@@ -107,10 +68,10 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPa
       <button
         onClick={onRevise}
         disabled={isRevising || isReadOnly || isCreatingIssues}
-        className={HEADER_GHOST_BUTTON_CLASS}
+        className={HEADER_TOOLBAR_BUTTON_CLASS}
         title={isReadOnly ? 'Demo mode is read-only' : isCreatingIssues ? 'Revise is unavailable while issues are being created on GitHub' : 'Revise Plan'}
       >
-        {isRevising ? <Loader2 size={15} className="animate-spin" /> : <Edit3 size={15} />}
+        {isRevising ? <Loader2 size={14} className="animate-spin" /> : <Edit3 size={14} />}
         <span>Revise</span>
       </button>
       {repoUrl && (
@@ -120,9 +81,9 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPa
           rel="noopener noreferrer"
           aria-label="View issues on GitHub"
           title="View issues on GitHub"
-          className="ml-1 flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors"
+          className={HEADER_TOOLBAR_BUTTON_CLASS}
         >
-          <Github size={15} />
+          <Github size={14} />
           <span>GitHub</span>
           <ExternalLink size={12} className="text-slate-400" />
         </a>
@@ -132,6 +93,7 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPa
         deleteDisabled={isDeleting || isReadOnly}
         deleteTitle={isReadOnly ? 'Demo mode is read-only' : 'Delete Plan'}
         onDelete={onDelete}
+        triggerClassName={HEADER_ICON_BUTTON_CLASS}
       />
     </div>
   );
@@ -169,7 +131,7 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
     <PlanStatusBadges draftStatus={draftStatus} isPaused={isPaused} />
     {/* Clusters are separated by the row's flex gap alone; no drawn or typed dividers between them. */}
     {initialPrompt && (
-      <div className="hidden lg:block"><OriginalPromptPopover prompt={initialPrompt} /></div>
+      <div className="hidden lg:block"><OriginalPromptPopover prompt={initialPrompt} buttonClassName={HEADER_TOOLBAR_BUTTON_CLASS} /></div>
     )}
     <StudioPhaseSwitcher />
   </div>

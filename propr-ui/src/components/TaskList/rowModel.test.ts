@@ -130,6 +130,29 @@ describe('buildTaskRow', () => {
     expect(row.repositoryName).toBe('desktop-workspaces');
   });
 
+  it('keeps an assigned issue\'s assignees when a newer run of its linked PR has none', () => {
+    const octocat = { id: '2', login: 'octocat', displayName: null, avatarUrl: null };
+    const row = buildTaskRow(group([
+      { title: 'Fix PR #2664: Stop work', prNumber: 2664, assignees: [] },
+      { title: 'New Issue: Stop work', issueNumber: 2659, assignees: [octocat] },
+    ]));
+    expect(row.assignees).toEqual([octocat]);
+  });
+
+  it('joins different assignees of the linked issue and PR, newest run first, each user once', () => {
+    const user = (id: string, login: string) => ({ id, login, displayName: null, avatarUrl: null });
+    const row = buildTaskRow(group([
+      { prNumber: 2664, assignees: [user('3', 'hubot')] },
+      { prNumber: 2664, assignees: [user('3', 'hubot')] },
+      { issueNumber: 2659, assignees: [user('2', 'octocat'), user('3', 'hubot-renamed')] },
+    ]));
+    expect(row.assignees.map(assignee => assignee.login)).toEqual(['hubot', 'octocat']);
+  });
+
+  it('is unassigned only when no run has an assignee', () => {
+    expect(buildTaskRow(group([{ assignees: [] }, {}])).assignees).toEqual([]);
+  });
+
   it('counts only trusted previews', () => {
     const row = buildTaskRow(group([{ title: 'Fix PR #1: A', previewMedia: [image(1), image(2), { type: 'image', url: 'javascript:alert(1)', title: 'x' }] as Task['previewMedia'] }]));
     expect(row.previewCount).toBe(2);

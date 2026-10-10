@@ -181,4 +181,54 @@ describe('TaskStatusTable replacement events', () => {
     ]} />);
     expect(screen.getByText('Replacement skipped: the replacement cap was reached')).toBeInTheDocument();
   });
+
+  // Any item carrying `metadata.event` is its own step, so a replacement event recorded during a
+  // pipeline phase no longer merges into the step before it, while plain updates still do.
+  it('keeps a replacement event recorded in a pipeline phase as its own step', () => {
+    render(<TaskStatusTable history={[
+      { state: 'PROCESSING', timestamp: at(0) },
+      { state: 'PROCESSING', timestamp: at(1) },
+      { state: 'PROCESSING', timestamp: at(2), reason: 'Replacement attempt 2 dispatched', metadata: { event: 'replacement.dispatched', attemptNumber: 2, replacementTaskId: 'attempt-2' } },
+      { state: 'PROCESSING', timestamp: at(3), reason: 'Replacement skipped: the replacement cap was reached', metadata: { event: 'replacement.skipped' } },
+    ]} />);
+    expect(screen.getAllByText('Analyzing Request')).toHaveLength(1);
+    expect(screen.getByText('Replacement Attempt 2 Started')).toBeInTheDocument();
+    expect(screen.getByText('Replacement skipped: the replacement cap was reached')).toBeInTheDocument();
+  });
+});
+
+describe('pull request auto-assignment events', () => {
+  it('shows the assignment as its own step after the pull request is created', () => {
+    render(<TaskStatusTable history={[
+      { state: 'POST_PROCESSING', timestamp: at(1) },
+      {
+        state: 'POST_PROCESSING', timestamp: at(5), reason: 'Assigned pull request to alice and requested their review',
+        metadata: { event: 'pull_request.auto_assignment', description: 'Assigned pull request to alice and requested their review' },
+      },
+      { state: 'COMPLETED', timestamp: at(6) },
+    ]} />);
+    expect(screen.getByText('Creating Pull Request')).toBeInTheDocument();
+    expect(screen.getByText('Assigned pull request to alice and requested their review')).toBeInTheDocument();
+  });
+
+  // Every event the worker records in a pipeline phase carries its own label, so keeping events
+  // out of the merge never yields a second, generically labelled step for that phase.
+  it('labels spend cap and network events recorded in a pipeline phase instead of repeating the phase', () => {
+    render(<TaskStatusTable history={[
+      { state: 'PROCESSING', timestamp: at(1) },
+      {
+        state: 'PROCESSING', timestamp: at(2), reason: 'Spend cap reached',
+        metadata: { event: 'budget.exceeded', budget: { capUsd: 5, spentUsd: 5.12, percent: 102, source: 'workflow' } },
+      },
+      { state: 'POST_PROCESSING', timestamp: at(3) },
+      {
+        state: 'POST_PROCESSING', timestamp: at(4), reason: 'Restricted network',
+        metadata: { event: 'network.egress', networkEgress: { mode: 'open', source: 'workflow', deniedConnections: 0, deniedHosts: [] } },
+      },
+    ]} />);
+    expect(screen.getAllByText('Analyzing Request')).toHaveLength(1);
+    expect(screen.getByText('Spend Cap Reached')).toBeInTheDocument();
+    expect(screen.getAllByText('Creating Pull Request')).toHaveLength(1);
+    expect(screen.getByText('Open Network')).toBeInTheDocument();
+  });
 });

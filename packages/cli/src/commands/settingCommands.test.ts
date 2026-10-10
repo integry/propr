@@ -19,6 +19,7 @@ const SETTINGS: SystemSettings = {
   auto_followup_score_threshold: 7,
   auto_resolve_merge_conflicts: true,
   dashboard_summary_enabled: true,
+  followup_requires_assignment: false,
   model_reasoning_level: "",
   pr_review_model: "",
   pr_review_prompt: "",

@@ -4,10 +4,11 @@ import { handleError } from '@propr/core';
 import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '@propr/core';
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
 import { extractLlmFromLabels, resolveModelAlias } from '@propr/core';
-import { hasValidTriggerLabel } from '@propr/core';
+import { hasValidTriggerLabel, wasRefused } from '@propr/core';
 import { getCheckRunsStatusForRepo, getCurrentPRHead, triggerUltrafixCheckRunHook } from '@propr/core';
 import type { Redis } from 'ioredis';
 import { hasUltrafixResumeCandidate } from '../jobs/ultrafixResumeClaim.js';
+import { createPollingGate } from './prCommentGate.js';
 
 type Octokit = {
     paginate: <T>(endpoint: string, options: Record<string, unknown>) => Promise<T[]>;
@@ -267,6 +268,7 @@ async function collectUnprocessedComments(
 
     const hasProcessingLabel = await prHasProcessingLabel(pr);
     let selectedLlm: string | null = extractModelFromPRLabels(pr, MODEL_LABEL_PATTERN, correlationId);
+    const mayFollowUp = createPollingGate(pr.number, commentContext, redisClient);
 
     for (const comment of commentsByTime) {
         const commentAuthor = comment.user.login;
@@ -278,7 +280,15 @@ async function collectUnprocessedComments(
         if (!hasProcessingLabel && !triggerResult.isTriggered) continue;
 
         const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${pr.number}:${comment.id}`;
-        const alreadyQueued = await redisClient.get(commentTrackingKey);
+        const [alreadyQueued, alreadyRefused] = await Promise.all([
+            redisClient.get(commentTrackingKey),
+            wasRefused(redisClient, { owner, repo, prNumber: pr.number, commentId: comment.id }),
+        ]);
+
+        if (alreadyRefused) {
+            correlatedLogger.debug({ pullRequestNumber: pr.number, commentId: comment.id, commentAuthor }, 'PR comment already refused by the assignment gate, skipping');
+            continue;
+        }
 
         if (alreadyQueued) {
             correlatedLogger.debug({
@@ -307,6 +317,8 @@ async function collectUnprocessedComments(
             }, 'PR comment already processed by bot, skipping');
             continue;
         }
+
+        if (!await mayFollowUp(comment)) continue;
 
         const llm = extractModelFromComment(comment.body || '', PR_FOLLOWUP_TRIGGER_KEYWORDS);
         if (llm) selectedLlm = llm;

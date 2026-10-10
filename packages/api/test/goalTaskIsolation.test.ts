@@ -38,6 +38,12 @@ test('generic task lists exclude native goal backing tasks', async () => {
     await database.schema.createTable('llm_executions', table => {
       table.increments('execution_id'); table.string('task_id'); table.text('analysis_report');
     });
+    await database.schema.createTable('task_assignees', table => {
+      table.string('task_id'); table.string('github_user_id');
+    });
+    await database.schema.createTable('github_user_profiles', table => {
+      table.string('github_user_id'); table.string('login'); table.string('display_name'); table.text('avatar_url');
+    });
     const now = new Date().toISOString();
     await database('tasks').insert([
       { task_id: 'ordinary-task', repository: 'acme/widget', task_type: 'issue', created_at: now },
@@ -58,13 +64,14 @@ test('generic task lists exclude native goal backing tasks', async () => {
     });
     assert.equal(result.total, 2);
     assert.deepEqual(new Set((result.tasks as Array<{ id: string }>).map(task => task.id)), new Set(['ordinary-task', 'legacy-task']));
-    assert.equal(taskListSql.length, 6);
+    assert.equal(taskListSql.length, 7);
     assert.match(taskListSql[0], /count\(\*\)/i);
     assert.doesNotMatch(taskListSql[0], /processing_start_timestamp|completion_timestamp|critique_score/i);
     assert.doesNotMatch(taskListSql[1], /processing_start_timestamp|completion_timestamp|critique_score/i);
     assert.match(taskListSql[2], /processing_start_timestamp/i);
     assert.ok(taskListSql.every(sql => !/analysis_report/i.test(sql)));
     assert.match(taskListSql[4], /metadata. like/i);
+    assert.match(taskListSql[6], /from `task_assignees`/i);
   } finally {
     await database.destroy();
   }

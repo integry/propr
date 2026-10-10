@@ -2,6 +2,7 @@ import React from 'react';
 import { getStatusPill, getDisplayStatus, formatRelativeTime, formatDuration } from './utils.tsx';
 import { PreviewCountBadge, RunCountChip, TaskAgent, TaskPrimaryChip, TaskTitleLink } from './TaskRows';
 import { WorkTypeBadge } from '../Dashboard/sectionPrimitives';
+import { AssigneeList } from '../AssigneeList';
 import type { Task } from './types';
 import { rowContainsTask, SELECTED_ROW_CLASSES, type TaskRowView } from './rowModel';
 
@@ -30,7 +31,7 @@ const taskDuration = (task: Task) => formatDuration(task.processedAt || task.cre
  *
  *   [PR #2664] [🖼 2]  propr  ● Implementing           1 min ago (1m 00s)
  *   Stop work when an issue or PR withdraws intent
- *   [+4] ●─■─■─⟳  GPT-6 Astra  ⚡ ULTRAFIX  Ultrafix cycle 3 (linting)
+ *   [+4] ●─■─■─⟳  GPT-6 Astra  ⚡ ULTRAFIX  ◉ @octocat  Ultrafix cycle 3 (linting)
  *
  * Attachments ride beside the entity chip, where they always land in the same
  * place, and the age and run time share one cluster on the right. A phone
@@ -38,6 +39,10 @@ const taskDuration = (task: Task) => formatDuration(task.processedAt || task.cre
  *
  * The repository name keeps its first ten characters however tight the line
  * gets, so a short name such as `propr` is never cut to `pr…`.
+ *
+ * The assignees follow the type: avatars alone on a phone, with their logins
+ * anywhere wider. An unassigned task shows nothing there, since the card has
+ * no column for a dash to hold.
  *
  * The third line's summary is the one part that gives way. A phone drops it,
  * and anywhere else it shows only with room for a readable stretch of it
@@ -89,6 +94,11 @@ export const MobileTaskCard: React.FC<MobileTaskCardProps> = ({ row, prNumber, o
             {row.earlierRuns.length > 0 && <RunCountChip row={row} />}
             {hasAgent && <span className="flex min-w-0 max-w-[40%] flex-none"><TaskAgent task={task} /></span>}
             {row.type && <span className="flex-none"><WorkTypeBadge type={row.type} /></span>}
+            {row.assignees.length > 0 && (
+              <span data-testid="task-card-assignees" className="flex flex-none items-center">
+                <AssigneeList assignees={row.assignees} variant="compact" className="flex-nowrap" />
+              </span>
+            )}
             {summary && <span data-testid="task-card-summary" className="min-w-[7rem] flex-1 truncate max-sm:hidden" title={summary}>{summary}</span>}
           </div>
         </div>

@@ -10,7 +10,7 @@ import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes, validateDefaultAgentSetting } from './configRoutesAgents.js';
 import { createSyntheticAgentConfigRoutes } from './configRoutesSyntheticAgents.js';
-import { agentNetworkSettingsResponse, agentWatchdogSettingsResponse, reviewContextBudgetSettingsResponse, saveSettingsWithRollback } from './configRoutesSettings.js';
+import { agentNetworkSettingsResponse, agentWatchdogSettingsResponse, followupRequiresAssignmentResponse, reviewContextBudgetSettingsResponse, saveSettingsWithRollback } from './configRoutesSettings.js';
 import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
@@ -264,6 +264,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         auto_resolve_merge_conflicts: autoResolveMergeConflicts,
         usage_tips_enabled: parseUsageTipsSettings({ usage_tips_enabled: await configStore.getConfig('usage_tips_enabled', true) }).enabled,
         dashboard_summary_enabled: (await configStore.getConfig('dashboard_summary_enabled', true)) !== false,
+        followup_requires_assignment: await followupRequiresAssignmentResponse(configStore),
         model_reasoning_level: modelReasoningLevel,
         pr_review_model: prReviewModel,
         ...await configStore.loadUltrafixEscalationSettings().then(escalation => ({

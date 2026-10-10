@@ -13,6 +13,10 @@ const filterProps = {
   reposLoading: false,
   searchQuery: '',
   setSearchQuery: vi.fn(),
+  assigneeFilter: 'all',
+  setAssigneeFilter: vi.fn(),
+  assigneePeople: [],
+  canFilterToMe: false,
 };
 
 const renderFilters = (filter: string) => render(
@@ -54,6 +58,6 @@ describe('lifecycle status presentation', () => {
     ['all', 'all'],
   ])('binds the status dropdown to %s as the %s option', (filter, expected) => {
     renderFilters(filter);
-    expect(screen.getByRole('combobox')).toHaveValue(expected);
+    expect(screen.getByRole('combobox', { name: 'Task status' })).toHaveValue(expected);
   });
 });

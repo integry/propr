@@ -85,7 +85,7 @@ export interface HistoryItemMetadata {
   repositoryWorkflowRetryAt?: string;
   terminalReason?: string;
   /** Timeline event that repeats the current state, e.g. `budget.exceeded` or `replacement.dispatched`. */
-  event?: 'budget.exceeded' | 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted' | string;
+  event?: 'budget.exceeded' | 'replacement.dispatched' | 'replacement.skipped' | 'replacement.exhausted' | 'pull_request.auto_assignment' | string;
   budget?: { capUsd: number; spentUsd: number; priorSpentUsd?: number; percent?: number; source?: 'override' | 'workflow' | 'instance_default' };
   /** `network.egress`: one run's network mode and every host its egress proxy denied. */
   networkEgress?: NetworkEgressSummary;

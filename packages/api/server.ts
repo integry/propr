@@ -27,6 +27,7 @@ import {
   createStatusRoutes, createTaskRoutes,
   createTaskHistoryRoutes, createLiveDetailsRoutes,
   createFileChangesRoutes, createConfigRoutes,
+  createTaskAssignmentRoutes,
   createQueueRoutes, createExecutionRoutes,
   createDockerRoutes, createGitHubRoutes,
   createLLMMetricsRoutes, createLlmLogsRoutes,
@@ -362,6 +363,7 @@ function setupRoutes(): void {
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
   const fileChangesRoutes = createFileChangesRoutes({ db });
+  const taskAssignmentRoutes = createTaskAssignmentRoutes({ db });
   const configRoutes = createConfigRoutes({ redisClient });
   const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   const executionRoutes = createExecutionRoutes({ redisClient, db });
@@ -431,6 +433,7 @@ function setupRoutes(): void {
     statsRoutes,
     statusRoutes,
     summaryBrowserRoutes,
+    taskAssignmentRoutes,
     taskHistoryRoutes,
     taskRoutes,
     taskSubmissionRoutes,

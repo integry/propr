@@ -65,6 +65,35 @@ export async function verifyGitHubRepositoryAccess(
   await createOctokit(accessToken).request('GET /repos/{owner}/{repo}', { owner, repo });
 }
 
+/** The caller can read the repository but GitHub grants them no write access to it. */
+export class GitHubRepositoryWriteAccessError extends Error {
+  constructor(repository: string) {
+    super(`You need write access to ${repository} on GitHub to change this.`);
+    this.name = 'GitHubRepositoryWriteAccessError';
+  }
+}
+
+/**
+ * Verify the user can push to the repository, the bar GitHub itself sets for
+ * changing issue and pull request metadata such as assignees. Read failures
+ * surface exactly as from `verifyGitHubRepositoryAccess` (and are handled by
+ * `handleGitHubRepositoryAccessError`); a readable repository without write
+ * permission throws `GitHubRepositoryWriteAccessError`.
+ */
+export async function verifyGitHubRepositoryWriteAccess(
+  repository: string,
+  accessToken: string,
+  createOctokit: (token: string) => Octokit = token => new Octokit({ auth: token }),
+): Promise<void> {
+  const [owner, repo, extra] = repository.split('/');
+  if (!owner || !repo || extra) throw new Error('Invalid repository format');
+  const { data } = await createOctokit(accessToken).request('GET /repos/{owner}/{repo}', { owner, repo });
+  const permissions = (data as { permissions?: { admin?: boolean; maintain?: boolean; push?: boolean } } | undefined)?.permissions;
+  if (!permissions?.push && !permissions?.maintain && !permissions?.admin) {
+    throw new GitHubRepositoryWriteAccessError(repository);
+  }
+}
+
 export function sendGitHubMetadataAuthorizationError(
   error: GitHubMetadataAuthorizationError,
   res: Response,

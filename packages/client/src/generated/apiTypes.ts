@@ -7,6 +7,22 @@
  */
 /* eslint-disable */
 
+/** Users that can be assigned to issues and pull requests of a repository. */
+export interface AssignableUsers {
+  users: AttributedUser[];
+  /** True when the repository has more assignable users than were listed. */
+  truncated: boolean;
+}
+
+/** A GitHub user work is assigned or attributed to. */
+export interface AttributedUser {
+  /** Stable GitHub numeric user id. */
+  id: string;
+  login: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+}
+
 /** The signed-in GitHub user and their instance role. */
 export interface AuthenticatedUser {
   id: string;
@@ -179,6 +195,31 @@ export interface NotificationUnreadCount {
   unreadCount: number;
 }
 
+/** The assignees of a task's GitHub issue or pull request. */
+export interface TaskAssignees {
+  subject: TaskSubject;
+  assignees: AttributedUser[];
+  /** True when `assignees` was just read from GitHub; false when it is the stored set. */
+  synced: boolean;
+}
+
+/** The assignment GitHub confirmed after a change. */
+export interface TaskAssigneesResult {
+  subject: TaskSubject;
+  /** The assignees GitHub confirmed. */
+  assignees: AttributedUser[];
+  /** Requested users GitHub did not assign; empty on success. */
+  rejected: AttributedUser[];
+}
+
+/** A change to a task's assignees. */
+export interface TaskAssigneesUpdate {
+  /** GitHub logins to assign. With `replace`, an empty list clears the assignment. */
+  logins: string[];
+  /** `replace` (default) makes `logins` the whole set; `add` keeps current assignees. */
+  mode?: "add" | "replace";
+}
+
 /** One entry of a task's lifecycle history. */
 export interface TaskEvent {
   /** Lifecycle state entered at this point. */
@@ -237,6 +278,15 @@ export interface TaskPage {
   limit: number;
   /** With `groupBy=task`: matching runs across all tasks. */
   totalRuns?: number;
+}
+
+/** The GitHub issue or pull request a task is assigned through. */
+export interface TaskSubject {
+  owner: string;
+  repo: string;
+  /** Issue or pull request number. */
+  number: number;
+  kind: "issue" | "pull_request";
 }
 
 /** Progress of a task submission. `queued` means the run was enqueued. */
@@ -301,6 +351,8 @@ export interface TaskSummary {
   planIssueStatus: string | null;
   /** Final review score of the run, when it was reviewed. */
   score: number | null;
+  /** Assignees of the GitHub issue or pull request, as last synced; empty when nobody is assigned. */
+  assignees: AttributedUser[];
   [key: string]: unknown;
 }
 
@@ -308,6 +360,12 @@ export interface TaskSummary {
 export interface DeleteTaskQuery {
   /** Delete even when the task is still active. */
   force?: "true" | "false";
+}
+
+/** Query parameters of `getTaskAssignees`. */
+export interface TaskAssigneesQuery {
+  /** `false` serves the stored set without calling GitHub. */
+  refresh?: "true" | "false";
 }
 
 /** Query parameters of `listTasks`. */
@@ -327,4 +385,8 @@ export interface ListTasksQuery {
   groupBy?: "task";
   /** With `groupBy=task`: only the task this run belongs to. */
   task?: string;
+  /** `all` (default), `me` (the signed-in user), `unassigned`, or comma-separated GitHub logins. */
+  assignee?: string;
+  /** With `task`: refresh that run's assignees from GitHub first. */
+  syncAssignees?: "true" | "false";
 }

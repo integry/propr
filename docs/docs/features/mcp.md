@@ -24,7 +24,7 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Tasks joined to their pull request's head, review, checks and ultrafix state | `get_work_overview` |
 | Finished work in a recent window | `get_recent_activity` (up to seven days) |
 | Goal progress and corrections | `get_goal`, `wait_goal`, `list_goal_inputs`, `list_goal_attention` |
-| Tasks or goals by lifecycle | `list_tasks`, `list_goals` with `state` and optional `repository` |
+| Tasks or goals by lifecycle | `list_tasks`, `list_goals` with `state` and optional `repository`; `list_tasks` also takes `assignee` (`me`, `unassigned` or logins) |
 | Plans by status | `list_plans` with `status`: `active`, an exact persisted status, or `all` (default) |
 | Ideas for what to work on next (the **Improve** tab) | `generate_repository_improvements`, then `get_operation` for `result.suggestions` |
 | Start a bounded change | `create_task`, then `get_operation` or `get_task_submission` |
@@ -37,8 +37,21 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | PR inventory and review fixes | `list_pull_requests`, `fix_review_findings` with `findingIds` and/or `suggestionIds` |
 | Visual previews published for a task or PR (images; videos are metadata only) | `list_visual_previews`, `get_visual_preview` |
 | Screenshots embedded in a PR/issue comment or description (images; videos are metadata only) | `get_pull_request_discussion` `attachments`, then `get_comment_attachment` |
+| Turn on the [assignment gate](./assignment.md#the-assignment-gate) | `update_execution_settings` with `followup_requires_assignment: true` (default `false`); `get_execution_settings` reads it |
+| [Automatic pull request assignment](./pr-followup.md#automatic-pull-request-assignment) for a repository | `update_repository_configuration` with `autoAssignPullRequests`, `autoAssignDefaultAssignee` and `autoAssignRequestReview`; `get_repository_configuration` reads them |
 | Product docs and where a setting lives | `search_docs`, `get_doc`, `find_setting` |
 | Find and read code in a granted repository without cloning it | `search_repository_files` (`mode: "semantic"` ranks paths from the index; `mode: "literal"` greps exact text with line previews), then `read_repository_file` in bounded line ranges |
+
+The assignment fields are all off by default and need `instance.manage_settings`:
+
+| Tool | Field | Type | Default | Effect |
+| --- | --- | --- | --- | --- |
+| `update_execution_settings` | `followup_requires_assignment` | boolean | `false` | Only people assigned to a pull request may start follow-up work on it by commenting. Unassigned pull requests are unaffected. |
+| `update_repository_configuration` | `autoAssignPullRequests` | boolean | `false` | Assign ProPR pull requests when work on them completes. Applies to every branch entry of the repository. |
+| `update_repository_configuration` | `autoAssignDefaultAssignee` | GitHub login or `null` | `null` | Who to assign. `null` clears it, so the source issue author is assigned and bot authors are skipped. |
+| `update_repository_configuration` | `autoAssignRequestReview` | boolean | `false` | Also request a GitHub review from the assignee. |
+
+Omitted fields keep their stored values.
 
 `search_repository_files` returns paths only. Its default semantic mode uses
 the repository index and reports `freshness`. If the branch has not been

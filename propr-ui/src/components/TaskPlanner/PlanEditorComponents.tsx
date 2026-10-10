@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FileQuestion, Info, X, Undo2, Redo2, ArrowLeft, GitBranch, AlertCircle, History, MessageSquare } from 'lucide-react';
+import { Terminal, Info, X, Undo2, Redo2, ArrowLeft, GitBranch, AlertCircle, History, MessageSquare } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GranularityEnforcementMetadata } from '../../api/proprApi';
 import { StudioPhaseSwitcher } from './StudioStepper';
@@ -16,7 +16,7 @@ interface OriginalPromptPopoverProps {
   labelClassName?: string;
 }
 
-const PROMPT_BUTTON_CLASS = 'flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors text-teal-700 hover:bg-teal-50';
+const PROMPT_BUTTON_CLASS = 'flex items-center gap-1.5 text-sm px-2.5 py-1.5 rounded-full transition-colors text-slate-600 hover:bg-slate-100 hover:text-slate-900';
 
 export const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ prompt, buttonClassName = PROMPT_BUTTON_CLASS, labelClassName = 'hidden sm:inline' }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -29,7 +29,7 @@ export const OriginalPromptPopover: React.FC<OriginalPromptPopoverProps> = ({ pr
         title="View original prompt"
         aria-label="Prompt"
       >
-        <FileQuestion size={14} />
+        <Terminal size={14} />
         <span className={`${labelClassName} font-medium`}>Prompt</span>
       </button>
       <AnimatePresence>

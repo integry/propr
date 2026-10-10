@@ -148,6 +148,7 @@ export { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevalua
 export { recoverCiFailureFollowups } from './webhook/ciFailureRecovery.js';
 export * from './webhook/ciFailureFollowup.js';
 export * from './webhook/closedPullRequestCi.js';
+export { retryPendingEpicMergeProgress } from './webhook/epicPRHandler.js';
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
@@ -158,6 +159,7 @@ export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, Conn
 // directly from ./intake/routingWebSocketProtocol.js.
 export { handleCommentDeleted, handleCommentEdited, processCommentEvent, setUltrafixDeps } from './webhook/commentEventHandler.js';
 export type { CommentPayload, CommentEventConfig, CommentEventType, UltrafixDeps } from './webhook/commentEventHandler.js';
+export * from './webhook/followupAssignmentGate.js';
 export { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './webhook/commentEventHelpers.js';
 export { parseSlashCommand, buildCommandMeta } from './webhook/slashCommandParser.js';
 export type { ParsedSlashCommand, SlashCommandName, CommandMeta, ReviewCommandMeta, FixCommandMeta, MergeCommandMeta, UltrafixCommandMeta } from './webhook/slashCommandParser.js';
@@ -376,6 +378,8 @@ export {
     isMonitoredRepository, isAutoCiFollowupEnabledForRepository, isCancelCiDuringFollowupEnabledForRepository,
     getCancelCiDuringFollowupWorkflowsForRepository,
     getNonBlockingChecksForRepository,
+    resolveRepositoryAutoAssignment,
+    type RepositoryAutoAssignment,
     resolveMonitoredRepositories,
     getAiPrimaryTag,
     getPrimaryProcessingLabels,
@@ -609,3 +613,18 @@ export * from './services/agents/agentRunCostGate.js';
 export * from './services/agents/agentRunDeferredRetry.js';
 export * from './services/taskPlanning/epicQueueHumanMerge.js';
 export * from './services/reviewScoreStore.js';
+
+// GitHub user profile cache: maps stored GitHub numeric user ids to the login
+// and avatar an assignee is rendered with.
+export * from './services/githubUserProfileService.js';
+// Task assignment, mapped onto GitHub issue and pull request assignment.
+export * from './services/taskAssignmentService.js';
+export {
+    TASK_ASSIGNMENT_FILTERS,
+    MAX_TASK_ASSIGNMENT_FILTER_LOGINS,
+    parseTaskAssignmentFilter,
+    formatTaskAssignmentFilter,
+    type TaskAssignmentFilter,
+    type TaskAssignmentFilterMode,
+    type TaskAssignmentFilterParseResult,
+} from '@propr/shared';

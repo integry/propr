@@ -161,7 +161,7 @@ describe('PlanIssuesManager batch queue', () => {
   test('sizes the epic batch from the created issues, not plan_json', () => {
     state.issues = [issue(1, 'pending'), issue(2, 'pending')];
     renderManager({ useEpic: true, taskCount: 0 });
-    expect(screen.getByRole('button', { name: 'Queue Remaining (2 tasks)' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Start Epic PR (2 tasks)' })).toBeEnabled();
     expect(screen.queryByText(/Implement/)).not.toBeInTheDocument();
   });
 
@@ -194,7 +194,7 @@ describe('PlanIssuesManager batch queue', () => {
   ])('locks the idle epic batch during %s', (_label, flags) => {
     state.issues = [issue(1, 'pending'), issue(2, 'pending'), issue(3, 'pending')];
     renderManager({ useEpic: true, ...flags });
-    const button = screen.getByRole('button', { name: 'Queue Remaining (3 tasks)' });
+    const button = screen.getByRole('button', { name: 'Start Epic PR (3 tasks)' });
     expect(button).toBeDisabled();
     fireEvent.click(button);
     expect(state.handleImplementIssue).not.toHaveBeenCalled();

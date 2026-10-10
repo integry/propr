@@ -3,6 +3,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical, Check, Trash2, Edit3, Sparkles } from 'lucide-react';
 import { RepoTodo } from '../../../api/repoTodosApi';
+import { CreatorMarker } from '../../CreatorMarker';
 import TodoIssueLink from './TodoIssueLink';
 
 export interface SortableTodoItemProps {
@@ -14,6 +15,13 @@ export interface SortableTodoItemProps {
   onEdit: (todoId: string, content: string) => void;
   disabled?: boolean;
 }
+
+/** Avatar only, in the row's own line box, so the item stays one dense row; nothing at all when the creator is unknown. */
+const TodoCreator: React.FC<{ todo: RepoTodo }> = ({ todo }) => (todo.createdBy ? (
+  <span className="flex-shrink-0 flex mt-[3px]">
+    <CreatorMarker creator={todo.createdBy} avatarOnly />
+  </span>
+) : null);
 
 /** Links from a to-do to the plan or issue it was turned into. */
 const TodoLinkChips: React.FC<{ todo: RepoTodo }> = ({ todo }) => {
@@ -160,6 +168,8 @@ const SortableTodoItem: React.FC<SortableTodoItemProps> = ({
         )}
         <TodoLinkChips todo={todo} />
       </div>
+
+      <TodoCreator todo={todo} />
 
       {/* Completion button */}
       <button

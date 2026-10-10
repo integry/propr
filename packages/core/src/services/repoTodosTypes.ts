@@ -2,6 +2,8 @@
  * Type definitions for repository to-dos and categories.
  */
 
+import type { AttributedUser } from '@propr/shared';
+
 export interface RepoTodoCategoryRecord {
   id: number;
   category_id: string;
@@ -36,6 +38,8 @@ export interface RepoTodoCategory {
   orderIndex: number;
   createdAt: string;
   updatedAt: string;
+  /** Who created the category; projected by the API, absent from core reads. */
+  createdBy?: AttributedUser | null;
 }
 
 export interface RepoTodo {
@@ -51,6 +55,8 @@ export interface RepoTodo {
   linkedTaskId: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Who created the to-do; projected by the API, absent from core reads. */
+  createdBy?: AttributedUser | null;
 }
 
 export interface CreateCategoryParams {

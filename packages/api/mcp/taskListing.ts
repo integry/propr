@@ -1,6 +1,7 @@
 import type { Knex } from 'knex';
 import { summarizeTask } from './listSummaries.js';
 import { TERMINAL_TASK_STATES } from './goalTaskDetail.js';
+import { applyAssigneeSelection, type AssigneeSelection } from '../routes/taskAssignees.js';
 
 type TaskSummary = Record<string, unknown>;
 
@@ -16,6 +17,8 @@ export interface TaskSummaryQuery {
   since?: Date | number | string;
   /** `created` preserves list_tasks; `activity` powers the work overview. */
   order?: 'created' | 'activity';
+  /** Only tasks this assignee selection lists, read from the stored projection as the task list API does. */
+  assignee?: AssigneeSelection | null;
 }
 
 const TASK_COLUMNS = ['task_id', 'repository', 'issue_number', 'task_type', 'created_at'] as const;
@@ -99,6 +102,7 @@ export async function queryTaskSummaries(db: Knex, options: TaskSummaryQuery): P
   const query = db('tasks').whereIn('tasks.repository', options.repositories);
   applyTaskVisibility(db, query, options.principalUserId);
   applyStateFilter(db, query, options.state, options.since);
+  if (options.assignee) applyAssigneeSelection(db, query, options.assignee, 'tasks.task_id');
 
   const selected = query.select(...TASK_COLUMNS, 'model_name', 'pr_number', 'initial_job_data');
   // list_tasks historically pages before relation lookups and orders by creation.

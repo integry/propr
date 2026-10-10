@@ -3,7 +3,8 @@ import { buildRepositoriesForDisplay, defaultVisualPreview, updateRepositoryNonB
 
 const repo = (id: string, name: string, nonBlockingChecks: string[], baseBranch?: string): ManagedRepo => ({
   id, name, enabled: true, baseBranch, autoFollowupOnFailedCi: false, cancelCiDuringFollowup: false,
-  cancelCiDuringFollowupWorkflows: [], nonBlockingChecks, notificationsEnabled: true, visualPreview: defaultVisualPreview(),
+  cancelCiDuringFollowupWorkflows: [], nonBlockingChecks, notificationsEnabled: true, autoAssignPullRequests: false, autoAssignDefaultAssignee: null, autoAssignRequestReview: false,
+  visualPreview: defaultVisualPreview(),
 });
 
 describe('repository non-blocking checks', () => {

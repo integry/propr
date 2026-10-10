@@ -116,6 +116,8 @@ for the operator walkthrough and the log's filters.
 
 **Access** (`/admin/members`) is available to administrators. It creates durable `admin` and `member` role assignments using stable GitHub user IDs, shows environment administrators configured through `PROPR_ADMIN_USERS`, surfaces recent role-audit events, and prevents removal or demotion of the last durable administrator. On a new installation, sign in as a configured environment administrator and use **Store my administrator role** before removing that username from `PROPR_ADMIN_USERS`.
 
+Instance roles and the GitHub trigger whitelist (`github_user_whitelist`, edited under **Settings**) are separate: an assigned instance role lets someone use the web UI and MCP, while the whitelist controls who can start ProPR from GitHub issues and comments. After you add a user on the Access page, it offers to add them to the trigger whitelist when they are not already on it; after you remove a user, it offers to remove them from it as well. Either offer can be dismissed with **Not now**. No offer is made while the whitelist is empty (every non-bot GitHub user can trigger) or when the removal would leave it empty, because either change would silently flip the whitelist between open and restricted. Users already on the whitelist are marked *on trigger whitelist* in the role list.
+
 Role assignments do not edit the GitHub trigger whitelist. Configure allowed login and trigger actors separately under **Settings**.
 
 ## Live Updates And Shortcuts

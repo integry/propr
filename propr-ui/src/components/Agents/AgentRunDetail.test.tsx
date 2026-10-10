@@ -252,7 +252,7 @@ describe('AgentRunDetail', () => {
     act(() => deliver!({ eventType: 'task:update', taskId: 'task-report', state: 'completed', timestamp: '' } as TaskUpdatePayload));
     await waitFor(() => expect(screen.getByTestId('agent-run-state')).toHaveTextContent('Completed'));
     expect(server.reads()).toHaveLength(2);
-    // Terminal: the subscription is released.
-    expect(deliver).toBeNull();
+    // Terminal: the subscription is released once React flushes the effect cleanup.
+    await waitFor(() => expect(deliver).toBeNull());
   });
 });

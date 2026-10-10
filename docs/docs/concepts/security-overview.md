@@ -71,6 +71,8 @@ The API enforces permissions independently of the Web UI. Full settings, reposit
 
 Durable role assignments use the stable numeric GitHub user ID, so a GitHub username change does not transfer that access to another account. A new installation has no implicit administrator: configure at least one username in `PROPR_ADMIN_USERS`, sign in as that user, then use **Web UI → Access** to store the bootstrap role against its numeric GitHub ID and manage other assignments. Outside demo mode, the API refuses to start when neither a bootstrap entry nor a durable administrator exists.
 
+An assigned instance role does not change the GitHub trigger whitelist, and removing a role does not revoke the user's ability to trigger ProPR from GitHub. **Web UI → Access** offers the matching whitelist change after each add or remove so the two lists stay aligned; declining leaves the whitelist untouched.
+
 `PROPR_ADMIN_USERS` remains authoritative while configured and can be retained as a break-glass path. It is an independent override rather than a property of a durable assignment, so a user may have both an environment override and a separately editable durable role. It is intentionally username-based, so it does not have the stable-ID guarantee: GitHub usernames can be renamed and eventually reassigned. Remove bootstrap entries after storing durable access, or audit the list whenever an administrator renames or deletes an account. Bootstrap entries are not counted by last-durable-administrator protection because they can be changed outside the database. The role audit retains the most recent 10,000 changes.
 
 Durable authorization is deliberately read from the database on every authenticated API request. This adds one indexed lookup for non-bootstrap users, but makes a demotion or removal effective on that user's next request without a cache-expiry window.
@@ -83,7 +85,7 @@ Access control is layered, and all of it is enforced by **your** stack — ProPR
 
 1. **User whitelist** — restricts who can log in to the dashboard and CLI *and* whose GitHub activity (issue labels, comments) starts tasks. Non-whitelisted triggers are rejected; on the relay path the delivery is acknowledged as `ignored: user_not_allowed`, visible in the Connect delivery history.
 2. **Blacklist and bot filtering** — explicitly blocked users and bot accounts never trigger work.
-3. **Command gating** — PR slash commands run only for allowed authors, and admins choose whether any eligible comment starts a follow-up or an explicit trigger is required.
+3. **Command gating** — PR slash commands run only for allowed authors, and admins choose whether any eligible comment starts a follow-up or an explicit trigger is required. The optional [assignment gate](../features/assignment.md#the-assignment-gate) (off by default) further limits follow-ups on an assigned pull request to its assignees.
 4. **Identity gate (hardened deployments)** — the [VPS hardening guide](../tutorials/setup-vps-hardening.md) layers an SSO gate (Cloudflare Zero Trust) in front of the UI, before ProPR's own auth.
 
 Configuration lives in the Web UI settings and `.env` — see [GitHub Authentication](../operations/github-auth.md) and the [Configuration Reference](../operations/configuration-reference.md).
