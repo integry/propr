@@ -383,6 +383,25 @@ describe('task assignment routes', () => {
       assert.equal((await call('getAssignableUsers', 'issue-7')).status, 200);
     });
 
+    test('reports a GitHub failure as GITHUB_UNAVAILABLE and a storage failure as INTERNAL_ERROR', async () => {
+      const github = fakeGitHub({});
+      const inner = github.client.request.bind(github.client);
+      github.client.request = async () => { throw Object.assign(new Error('Bad Gateway'), { status: 502 }); };
+      const unavailable = await setup(github).call('getAssignableUsers', 'issue-7');
+      assert.equal(unavailable.status, 502);
+      assert.equal(unavailable.body.code, 'GITHUB_UNAVAILABLE');
+
+      github.client.request = inner;
+      await db.schema.renameTable('tasks', 'tasks_hidden');
+      try {
+        const internal = await setup(github).call('getAssignableUsers', 'issue-7');
+        assert.equal(internal.status, 500);
+        assert.equal(internal.body.code, 'INTERNAL_ERROR');
+      } finally {
+        await db.schema.renameTable('tasks_hidden', 'tasks');
+      }
+    });
+
     test('answers 404 for an unknown task and 409 for a task with nothing to assign', async () => {
       const { call } = setup(fakeGitHub({}));
       assert.equal((await call('getAssignableUsers', 'missing-task')).status, 404);

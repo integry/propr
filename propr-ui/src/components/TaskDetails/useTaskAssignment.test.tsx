@@ -158,4 +158,25 @@ describe('AssignmentControl while saving', () => {
     await act(async () => { pending.reject(outage()); });
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
   });
+
+  it('offers a retry after a failed read and shows the assignment once it succeeds', async () => {
+    api.getTaskAssignees.mockRejectedValueOnce(outage());
+    render(<Harness />);
+
+    expect(await screen.findByText("Couldn't load assignment")).toBeInTheDocument();
+    expect(screen.queryByTestId('task-assignment')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(await screen.findByRole('listitem', { name: 'Assigned to @octocat' })).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load assignment")).toBeNull();
+    expect(api.getTaskAssignees).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders nothing for a task with no issue or pull request to assign', async () => {
+    api.getTaskAssignees.mockRejectedValueOnce(new TaskAssignmentRequestError('Nothing to assign', 409, 'NO_GITHUB_SUBJECT'));
+    const { container } = render(<Harness />);
+    await waitFor(() => expect(api.getTaskAssignees).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(container).toBeEmptyDOMElement();
+  });
 });

@@ -144,7 +144,9 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       if (searchWords.length > 0) { const exactPhrase = search!.trim().toLowerCase(); const scoredDrafts = scoreDrafts(drafts, searchWords, exactPhrase); sortDraftsByScore(scoredDrafts); drafts = removeSearchScore(scoredDrafts); }
 
-      const paginatedDrafts = await attachCreator(drafts.slice(offset, offset + limit) as Array<Record<string, unknown> & { draft_id: string; user_id: string }>, 'user_id', 'created_by');
+      const attributedDrafts = await attachCreator(drafts.slice(offset, offset + limit) as Array<Record<string, unknown> & { draft_id: string; user_id: string }>, 'user_id', 'created_by');
+      // `user_id` is read only to resolve `created_by`; the list does not expose the raw id.
+      const paginatedDrafts = attributedDrafts.map(({ user_id: _userId, ...draft }) => draft);
       const draftIds = paginatedDrafts.map((d: { draft_id: string }) => d.draft_id);
       if (draftIds.length > 0) {
         const issues = await timeApiStage('sql.drafts.issue-status', () =>

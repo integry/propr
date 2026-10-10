@@ -461,6 +461,16 @@ describe('processCommentEvent with the assignment gate', () => {
         });
     }
 
+    test('a redelivered, already-handled slash command is deduplicated before the gate reads GitHub', async () => {
+        gateEnabled = true;
+        github.assignees.set(PR, [ALICE]);
+        const redisClient = createMockRedis();
+        const event = prCommentEvent('/review', ALICE);
+        redisClient._store.set(trackingKey(event.comment.id), String(Date.now()));
+        assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'c11', createConfig(redisClient)), { status: 'ignored', reason: 'duplicate_delivery' });
+        assert.equal(assigneeReads(), 0);
+    });
+
     test('the CI-failure follow-up comment is processed regardless of assignment', async () => {
         gateEnabled = true;
         github.assignees.set(PR, [ALICE]);
@@ -471,15 +481,28 @@ describe('processCommentEvent with the assignment gate', () => {
         assert.equal(assigneeReads(), 0);
     });
 
-    test('a failed live read refuses the comment and logs it', async () => {
+    test('a failed live read fails the delivery so it can be redelivered, and logs it', async () => {
         gateEnabled = true;
         github.failRead = true;
-        const disposition = await processCommentEvent(prCommentEvent('please fix', ALICE), 'issue_comment', 'c8', createConfig());
-        assert.deepEqual(disposition, { status: 'ignored', reason: 'assignment_unavailable' });
+        await assert.rejects(processCommentEvent(prCommentEvent('please fix', ALICE), 'issue_comment', 'c8', createConfig()), /Could not read the assignees/);
         assert.equal(mockQueueAdd.mock.callCount(), 0);
         assert.equal(github.posted.length, 0);
         const refusal = mockLoggerInstance.info.mock.calls.find(call => call.arguments[1] === 'Follow-up comment refused by the assignment gate');
         assert.equal((refusal?.arguments[0] as { reason?: string })?.reason, 'assignment_unavailable');
+    });
+
+    test('a slash command whose live read fails is not claimed, so its redelivery reaches the gate again', async () => {
+        gateEnabled = true;
+        github.assignees.set(PR, [ALICE]);
+        github.failRead = true;
+        const redisClient = createMockRedis();
+        const event = prCommentEvent('/review', BOB);
+        await assert.rejects(processCommentEvent(event, 'issue_comment', 'c9', createConfig(redisClient)), /Could not read the assignees/);
+        assert.equal(redisClient._store.has(trackingKey(event.comment.id)), false);
+
+        github.failRead = false;
+        assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'c10', createConfig(redisClient)), { status: 'ignored', reason: 'author_not_assigned' });
+        assert.equal(redisClient._store.has(trackingKey(event.comment.id)), false);
     });
 });
 
@@ -578,11 +601,17 @@ describe('pollForPullRequestComments with the assignment gate', () => {
         assert.deepEqual(await poll(redisClient, fromBob), [2, 3]);
     });
 
-    test('a failed live read queues nothing', async () => {
+    test('a failed live read queues nothing and is asked about again on the next poll', async () => {
         gateEnabled = true;
+        github.assignees.set(PR, [ALICE]);
         github.failRead = true;
-        assert.deepEqual(await poll(createMockRedis()), []);
+        const redisClient = createMockRedis();
+        assert.deepEqual(await poll(redisClient), []);
         assert.equal(github.posted.length, 0);
+        assert.deepEqual([...redisClient._store.keys()].filter(key => key.startsWith('pr-comment-refused:')), []);
+
+        github.failRead = false;
+        assert.deepEqual(await poll(redisClient), [1]);
     });
     describe('with ProPR\'s bot whitelisted and the real author filter', () => {
         const BOT: GitHubUser = { id: 999, login: BOT_LOGIN };

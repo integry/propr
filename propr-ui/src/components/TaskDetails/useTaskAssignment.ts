@@ -35,6 +35,8 @@ export interface TaskAssignment {
   loading: boolean;
   /** The first read failed for a reason other than there being nothing to assign. */
   error: string | null;
+  /** Reads the assignment again after a failed read. */
+  reload: () => void;
   /** The task has no issue or pull request (a goal task), so it has no assignment at all. */
   unavailable: boolean;
   /** False once a save was refused for lack of write access; the editor is not offered again. */
@@ -67,6 +69,8 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
   const [editable, setEditable] = useState(true);
   const [saving, setSaving] = useState(false);
   const [assignable, setAssignable] = useState<AssignableUsersState>(INITIAL_ASSIGNABLE);
+  // Bumped by `reload` to read the assignment again.
+  const [readAttempt, setReadAttempt] = useState(0);
   // Answers for a task that is no longer on screen are dropped.
   const currentTaskId = useRef(taskId);
   currentTaskId.current = taskId;
@@ -116,7 +120,9 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [taskId]);
+  }, [taskId, readAttempt]);
+
+  const reload = useCallback(() => setReadAttempt(attempt => attempt + 1), []);
 
   const loadAssignableUsers = useCallback(() => {
     if (!taskId || assignableRequested.current) return;
@@ -187,11 +193,12 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
     subject,
     loading,
     error,
+    reload,
     unavailable,
     editable,
     saving,
     save,
     assignable,
     loadAssignableUsers,
-  }), [taskId, assignees, subject, loading, error, unavailable, editable, saving, save, assignable, loadAssignableUsers]);
+  }), [taskId, assignees, subject, loading, error, reload, unavailable, editable, saving, save, assignable, loadAssignableUsers]);
 }

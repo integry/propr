@@ -36,8 +36,9 @@ export const MAX_TASK_ASSIGNEES = 10;
 /** The most logins one assignee filter may name. */
 export const MAX_TASK_ASSIGNMENT_FILTER_LOGINS = 20;
 
-// GitHub logins are 1-39 alphanumerics or single hyphens; app bots carry a `[bot]` suffix.
-const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/;
+// GitHub logins are 1-39 alphanumerics or single hyphens, never leading or
+// trailing ones; app bots carry a `[bot]` suffix.
+const GITHUB_LOGIN_PATTERN = /^(?=[A-Za-z0-9-]{1,39}(?:\[bot\])?$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:\[bot\])?$/;
 
 export type TaskAssignmentFilterParseResult =
   | { ok: true; filter: TaskAssignmentFilter }

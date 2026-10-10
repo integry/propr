@@ -47,8 +47,9 @@ export async function wasRefused(redisClient: Redis, comment: RefusedComment): P
 /**
  * The follow-up assignment gate for one pull request, shared by every comment
  * on it: the setting and the live assignees are read at most once per poll,
- * and each refused author is reported once. A refused comment is remembered,
- * so later polls skip it rather than ask the gate again.
+ * and each refused author is reported once. A comment refused because its
+ * author is not assigned is remembered, so later polls skip it rather than ask
+ * the gate again; one refused because the assignees could not be read is not.
  */
 export function createPollingGate(prNumber: number, commentContext: GateContext, redisClient: Redis) {
     const { owner, repo, correlationId } = commentContext;
@@ -65,6 +66,9 @@ export function createPollingGate(prNumber: number, commentContext: GateContext,
         const systemAuthored = isSystemFollowupComment(authorLogin, comment.body, systemBotUsernames);
         const decision = await (await evaluator).decide({ authorId: comment.user.id, authorLogin, systemAuthored });
         if (decision.allowed) return true;
+        // An unreadable assignment is ProPR's outage, not a verdict on the
+        // author: leave the comment unremembered so the next poll asks again.
+        if (decision.reason !== 'author_not_assigned') return false;
         try {
             await rememberRefusedComment(redisClient, { owner, repo, prNumber, commentId: comment.id });
         } catch (error) {

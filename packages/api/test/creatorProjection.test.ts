@@ -175,6 +175,7 @@ describe('creator projection', () => {
       assert.equal(listed.status, 200);
       assert.deepEqual(listed.body.drafts.map((draft: { draft_id: string }) => draft.draft_id), [knownDraft]);
       assert.deepEqual(listed.body.drafts[0].created_by, KNOWN);
+      assert.equal('user_id' in listed.body.drafts[0], false);
 
       const detail = await call(routes.getDraft, request(knownUser, { params: { id: knownDraft } }));
       assert.deepEqual(detail.body.created_by, KNOWN);

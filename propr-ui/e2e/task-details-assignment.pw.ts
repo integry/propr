@@ -20,12 +20,15 @@ interface FixtureOptions {
   save?: 'ok' | 'forbidden' | 'unavailable';
   /** The assignable-users read reports that GitHub listed more users than it returned. */
   truncated?: boolean;
+  /** How many assignee reads answer 502 before they succeed. */
+  failedReads?: number;
 }
 
 async function fixture(page: Page, options: FixtureOptions = {}) {
   const state = {
     assignees: options.assignees ?? [octocat],
     assignableRequests: 0,
+    reads: 0,
     puts: [] as Array<{ logins: string[]; mode: string }>,
   };
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
@@ -47,6 +50,10 @@ async function fixture(page: Page, options: FixtureOptions = {}) {
         }
         state.assignees = body.logins.map(login => assignable.find(candidate => candidate.login === login)!);
         return route.fulfill({ json: { subject, assignees: state.assignees, rejected: [] } });
+      }
+      state.reads += 1;
+      if (state.reads <= (options.failedReads ?? 0)) {
+        return route.fulfill({ status: 502, json: { error: 'GitHub could not be reached', code: 'GITHUB_UNAVAILABLE', message: 'GitHub could not be reached' } });
       }
       return route.fulfill({ json: { subject, assignees: state.assignees, synced: true } });
     }
@@ -304,3 +311,25 @@ test('explains a truncated candidate list and points to GitHub for anyone else',
   const editor = page.getByRole('dialog', { name: 'Assign users' });
   await expect(editor.getByText('Only the first 3 assignable users are listed, and the filter searches only these. Assign anyone else on GitHub.')).toBeVisible();
 });
+
+for (const [width, height] of [[1440, 900], [390, 844]] as const) {
+  test(`${width}px offers a retry when the assignment cannot be read, and shows it once a retry succeeds`, async ({ page }) => {
+    const state = await fixture(page, { assignees: [octocat, hubot], failedReads: 1 });
+    await page.setViewportSize({ width, height });
+    await page.goto(`/tasks/${taskId}`);
+
+    const details = page.getByTestId('task-details');
+    const failed = details.getByTestId('task-assignment-error').filter({ visible: true });
+    await expect(failed).toHaveCount(1);
+    await expect(failed).toContainText("Couldn't load assignment");
+    await expect(details.getByTestId('task-assignment').filter({ visible: true })).toHaveCount(0);
+    await expectNoHorizontalOverflow(page);
+    await capture(page, `task-assignment-read-failed-${width}`);
+
+    await failed.getByRole('button', { name: 'Retry' }).click();
+    const assignment = details.getByTestId('task-assignment').filter({ visible: true });
+    await expect(assignment.getByRole('listitem', { name: 'Assigned to @octocat' })).toBeVisible();
+    await expect(details.getByTestId('task-assignment-error')).toHaveCount(0);
+    expect(state.reads).toBe(2);
+  });
+}

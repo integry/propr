@@ -12,7 +12,7 @@
  * `TaskAssignmentError`, so the HTTP layer can report what went wrong.
  */
 
-import type { AttributedUser } from '@propr/shared';
+import { MAX_TASK_ASSIGNEES, type AttributedUser } from '@propr/shared';
 import { db } from '../db/connection.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import logger from '../utils/logger.js';
@@ -339,7 +339,8 @@ function normalizeRequestedLogins(logins: string[]): Map<string, string> {
  * so ProPR never shows an assignment GitHub did not accept; GitHub silently
  * ignores users without repository access, and those are reported in
  * `rejected`. In `add` mode assignees added elsewhere (the GitHub UI) are
- * always kept; `replace` unassigns only current assignees not requested.
+ * always kept; `replace` unassigns only current assignees not requested,
+ * before adding when adding first would pass GitHub's assignee cap.
  *
  * Throws `TaskAssignmentError` when the task or its subject is missing, a
  * login is empty or does not resolve (before anything is written), or GitHub
@@ -374,8 +375,18 @@ export async function setTaskAssignees(taskId: string, logins: string[], options
             const additions = toAdd.filter(user => !currentIds.has(user.id));
             const removals = current.filter(assignee => !requested.has(assignee.id));
             confirmed = current;
-            if (additions.length > 0) confirmed = await writeAssignees(github, subject, 'POST', additions.map(user => user.login));
-            if (removals.length > 0) confirmed = await writeAssignees(github, subject, 'DELETE', removals.map(assignee => assignee.login));
+            const add = async () => { if (additions.length > 0) confirmed = await writeAssignees(github, subject, 'POST', additions.map(user => user.login)); };
+            const remove = async () => { if (removals.length > 0) confirmed = await writeAssignees(github, subject, 'DELETE', removals.map(assignee => assignee.login)); };
+            // Adding first keeps the requested users assigned if the removal
+            // fails, but GitHub silently drops additions past its assignee cap,
+            // so a swap at capacity has to make room first.
+            if (current.length + additions.length > MAX_TASK_ASSIGNEES) {
+                await remove();
+                await add();
+            } else {
+                await add();
+                await remove();
+            }
         } else {
             confirmed = toAdd.length > 0
                 ? await writeAssignees(github, subject, 'POST', toAdd.map(user => user.login))

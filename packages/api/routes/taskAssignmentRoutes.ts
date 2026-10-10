@@ -97,6 +97,14 @@ export function parseAssigneesBody(body: unknown): AssigneesBodyResult {
   return { ok: true, logins: parsed, mode: mode as TaskAssignmentMode };
 }
 
+/** A failure of the GitHub listing itself, as opposed to ProPR's own storage. */
+class AssignableUsersReadError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'AssignableUsersReadError';
+  }
+}
+
 function parseUser(entry: unknown): { id: string; login: string; avatar_url: string | null } | null {
   const record = entry as Record<string, unknown> | null;
   const id = typeof record?.id === 'number' && Number.isSafeInteger(record.id) && record.id > 0 ? String(record.id) : null;
@@ -138,14 +146,24 @@ export function createTaskAssignmentRoutes(deps: TaskAssignmentRoutesDeps) {
   }
 
   async function fetchAssignableUsers(subject: TaskSubject): Promise<AssignableUsers> {
-    const client = await github();
+    let client: TaskAssignmentClient;
+    try {
+      client = await github();
+    } catch (error) {
+      throw new AssignableUsersReadError(error);
+    }
     const listed: Array<{ id: string; login: string; avatar_url: string | null }> = [];
     // Reading on past the cap until a short page or one user more than fits
     // establishes `truncated`; a full page at exactly the cap proves nothing.
     for (let page = 1; listed.length <= MAX_ASSIGNABLE_USERS; page++) {
-      const response = await client.request('GET /repos/{owner}/{repo}/assignees', {
-        owner: subject.owner, repo: subject.repo, per_page: ASSIGNABLE_USERS_PAGE_SIZE, page,
-      });
+      let response: Awaited<ReturnType<typeof client.request>>;
+      try {
+        response = await client.request('GET /repos/{owner}/{repo}/assignees', {
+          owner: subject.owner, repo: subject.repo, per_page: ASSIGNABLE_USERS_PAGE_SIZE, page,
+        });
+      } catch (error) {
+        throw new AssignableUsersReadError(error);
+      }
       const entries = Array.isArray(response.data) ? response.data : [];
       for (const entry of entries) {
         const user = parseUser(entry);
@@ -251,7 +269,11 @@ export function createTaskAssignmentRoutes(deps: TaskAssignmentRoutesDeps) {
       res.json(await cachedAssignableUsers(lookup.subject));
     } catch (error) {
       console.error('Error in GET /api/task/:taskId/assignable-users:', error);
-      sendError(res, 502, 'GITHUB_UNAVAILABLE', 'Failed to read the assignable users of the repository from GitHub');
+      if (error instanceof AssignableUsersReadError) {
+        sendError(res, 502, 'GITHUB_UNAVAILABLE', 'Failed to read the assignable users of the repository from GitHub');
+        return;
+      }
+      sendError(res, 500, 'INTERNAL_ERROR', 'Failed to list the assignable users of the repository');
     }
   }
 

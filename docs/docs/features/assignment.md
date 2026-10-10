@@ -68,17 +68,17 @@ On a team, anyone the [GitHub user whitelist](./pr-commands.md#who-can-trigger-c
 - The gate checks the pull request's live assignees on GitHub when a comment would start work: a natural follow-up comment that passes the label and keyword rules, or a slash command such as `/fix`, `/review` or `/ultrafix`. Ordinary discussion that would not start work is never checked.
 - It runs after the whitelist, blacklist and bot checks. It only narrows who may act and never admits a comment those checks rejected.
 - **ProPR's own system comments are never gated.** Automatic failed-CI follow-ups and the system `/ultrafix` comments that drive a loop are recognised as ProPR's and always proceed.
-- **It fails closed.** If ProPR cannot read the assignees from GitHub, the comment is refused and logged, and no explanation is posted, because the author did nothing wrong.
+- **It fails closed.** If ProPR cannot read the assignees from GitHub, the comment is not acted on and the refusal is logged, and no explanation is posted, because the author did nothing wrong. The comment is not dropped: a webhook delivery is reported as failed so ProPR Connect can redeliver it, and polling intake asks the gate about it again on the next poll.
 - **A refused author receives one explanatory comment** on the pull request, mentioning them, that says only assignees can start follow-up work and asks them to get assigned and comment again. It is posted at most once per author per pull request in 7 days, so a long conversation does not fill up with notices. Their later comments are still refused, but silently.
 - ProPR's own logins are never sent that comment. If its login is in the whitelist, an ordinary comment it posts can reach the gate and be refused, which is logged without a notice addressed to itself.
-- A refused comment is not queued, claimed or billed, and it is dropped for good: assigning the author or switching the gate off later does not start work from it. With webhook delivery the comment is never seen again, and with polling intake ProPR remembers refused comments for 30 days so later polls skip them. Once the author is assigned, their next comment works normally.
+- A comment refused because its author is not assigned is not queued, claimed or billed, and it is dropped for good: assigning the author or switching the gate off later does not start work from it. With webhook delivery the comment is never seen again, and with polling intake ProPR remembers those refused comments for 30 days so later polls skip them. Once the author is assigned, their next comment works normally.
 
 Refusals are logged at `info` as `Follow-up comment refused by the assignment gate` with the repository, pull request, comment, author and reason:
 
 | Reason | Meaning |
 |---|---|
 | `author_not_assigned` | The pull request has assignees and the author is not one of them. The author is told once. |
-| `assignment_unavailable` | The assignees could not be read from GitHub, so the gate stayed closed. No comment is posted. |
+| `assignment_unavailable` | The assignees could not be read from GitHub, so the gate stayed closed. No comment is posted, and the comment is retried: by redelivery with ProPR Connect, or on the next poll with polling intake. |
 
 ## Configuration
 

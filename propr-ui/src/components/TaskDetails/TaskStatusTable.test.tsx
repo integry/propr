@@ -210,4 +210,25 @@ describe('pull request auto-assignment events', () => {
     expect(screen.getByText('Creating Pull Request')).toBeInTheDocument();
     expect(screen.getByText('Assigned pull request to alice and requested their review')).toBeInTheDocument();
   });
+
+  // Every event the worker records in a pipeline phase carries its own label, so keeping events
+  // out of the merge never yields a second, generically labelled step for that phase.
+  it('labels spend cap and network events recorded in a pipeline phase instead of repeating the phase', () => {
+    render(<TaskStatusTable history={[
+      { state: 'PROCESSING', timestamp: at(1) },
+      {
+        state: 'PROCESSING', timestamp: at(2), reason: 'Spend cap reached',
+        metadata: { event: 'budget.exceeded', budget: { capUsd: 5, spentUsd: 5.12, percent: 102, source: 'workflow' } },
+      },
+      { state: 'POST_PROCESSING', timestamp: at(3) },
+      {
+        state: 'POST_PROCESSING', timestamp: at(4), reason: 'Restricted network',
+        metadata: { event: 'network.egress', networkEgress: { mode: 'open', source: 'workflow', deniedConnections: 0, deniedHosts: [] } },
+      },
+    ]} />);
+    expect(screen.getAllByText('Analyzing Request')).toHaveLength(1);
+    expect(screen.getByText('Spend Cap Reached')).toBeInTheDocument();
+    expect(screen.getAllByText('Creating Pull Request')).toHaveLength(1);
+    expect(screen.getByText('Open Network')).toBeInTheDocument();
+  });
 });

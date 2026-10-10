@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import knex from 'knex';
+import { MAX_TASK_ASSIGNEES } from '@propr/shared';
 import { down, up } from '../packages/core/src/db/migrations/20261012010000_create_task_assignees.js';
 
 const root = await mkdtemp(path.join(tmpdir(), 'task-assignees-'));
@@ -20,6 +21,7 @@ const {
     refreshTaskAssignees,
     setTaskAssignees,
     loadTaskAssignees,
+    syncSubjectAssignees,
     taskIdsAssignedTo,
     isUserAssignedToTask,
 } = await import('../packages/core/src/services/taskAssignmentService.js');
@@ -33,6 +35,7 @@ const USERS: Record<string, { login: string; name: string | null }> = {
     '2': { login: 'hubot', name: null },
     '3': { login: 'outsider', name: 'No Access' },
     '4': { login: 'human', name: 'Added In UI' },
+    ...Object.fromEntries(Array.from({ length: 8 }, (_, index) => [String(index + 5), { login: `member-${index + 5}`, name: null }])),
 };
 
 function user(id: string) {
@@ -63,7 +66,8 @@ function fakeGitHub(assigned: Record<number, string[]>, options: { fail?: boolea
             const ids = (parameters.assignees as string[]).map(idOf).filter((id): id is string => Boolean(id));
             if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/assignees') {
                 const current = new Set(assigned[number] ?? []);
-                for (const id of ids) if (!options.noAccess?.includes(id)) current.add(id);
+                // GitHub silently ignores additions past its assignee cap.
+                for (const id of ids) if (!options.noAccess?.includes(id) && current.size < MAX_TASK_ASSIGNEES) current.add(id);
                 assigned[number] = [...current];
                 return { data: issue(number) };
             }
@@ -226,6 +230,20 @@ describe('taskAssignmentService', () => {
         assert.deepEqual(await storedIds('issue-7'), ['1', '2']);
     });
 
+    test('setTaskAssignees in replace mode reaches the requested set when the task is at the assignee cap', async () => {
+        await insertTask({ task_id: 'issue-7', issue_number: 7 });
+        const full = Array.from({ length: MAX_TASK_ASSIGNEES }, (_, index) => String(index + 1));
+        const github = fakeGitHub({ 7: [...full] });
+        const requested = [...full.slice(1), '11'];
+
+        const result = await setTaskAssignees('issue-7', requested.map(id => USERS[id].login), { mode: 'replace', github: github.client, now: () => T0 });
+        assert.deepEqual(result.rejected, []);
+        assert.deepEqual([...github.assigned[7]].sort(), [...requested].sort());
+        assert.deepEqual(await storedIds('issue-7'), [...requested].sort());
+        const writes = github.calls.filter(call => !call.route.startsWith('GET'));
+        assert.deepEqual(writes.map(call => [call.route.split(' ')[0], call.parameters.assignees]), [['DELETE', ['octocat']], ['POST', ['member-11']]]);
+    });
+
     test('setTaskAssignees persists what GitHub confirmed, not the request', async () => {
         await insertTask({ task_id: 'issue-7', issue_number: 7 });
         const github = fakeGitHub({ 7: [] }, { noAccess: ['3'] });
@@ -292,6 +310,30 @@ describe('taskAssignmentService', () => {
             setTaskAssignees('missing', ['octocat'], { mode: 'add', github: fakeGitHub({}).client }),
             (error: unknown) => error instanceof TaskAssignmentError && error.code === 'TASK_NOT_FOUND',
         );
+    });
+
+    test('the list projection catches up with a GitHub-side change on the next live read of the subject', async () => {
+        const pr88 = { owner: 'acme', repo: 'widgets', number: 88, kind: 'pull_request' } as const;
+        await insertTask({ task_id: 'issue-7', issue_number: 7, pr_number: 88 });
+        const github = fakeGitHub({ 88: ['1'] });
+        await syncTaskAssignees('issue-7', { github: github.client, now: () => T0 });
+
+        // Reassigned in GitHub's UI, then a follow-up run starts on the same PR.
+        github.assigned[88] = ['2'];
+        await insertTask({ task_id: 'pr-comment-8', issue_number: 88 });
+
+        // List reads never call GitHub, so they serve the last observed state.
+        const callsBefore = github.calls.length;
+        assert.deepEqual([...await taskIdsAssignedTo('1')], ['issue-7']);
+        assert.deepEqual([...await taskIdsAssignedTo('2')], []);
+        assert.equal((await loadTaskAssignees(['pr-comment-8'])).has('pr-comment-8'), false);
+        assert.equal(github.calls.length, callsBefore);
+
+        // A live read of the PR (the follow-up gate's) refreshes every task on it.
+        await syncSubjectAssignees(pr88, { github: github.client, now: () => T1 });
+        assert.deepEqual([...await taskIdsAssignedTo('1')], []);
+        assert.deepEqual([...await taskIdsAssignedTo('2')].sort(), ['issue-7', 'pr-comment-8']);
+        assert.deepEqual([...await taskIdsAssignedTo('2', { repository: 'acme/widgets' })].sort(), ['issue-7', 'pr-comment-8']);
     });
 
     test('loadTaskAssignees batch-reads in one query and omits unassigned tasks', async () => {

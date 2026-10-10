@@ -232,10 +232,10 @@ const AssignmentEditor: React.FC<EditorProps> = ({ id, assignment, onClose }) =>
 /**
  * Who the task's issue or pull request is assigned to, beside the other Git
  * facts, with an editor for viewers who may change it. A task with nothing
- * to assign (a goal task) renders nothing at all.
+ * to assign (a goal task) renders nothing at all; a failed read offers a retry.
  */
 const AssignmentControl: React.FC<{ assignment: TaskAssignment }> = ({ assignment }) => {
-  const { assignees, loading, error, unavailable, editable, saving } = assignment;
+  const { assignees, loading, error, reload, unavailable, editable, saving } = assignment;
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -255,7 +255,23 @@ const AssignmentControl: React.FC<{ assignment: TaskAssignment }> = ({ assignmen
   }, [editable]);
 
   // Nothing until the first read answers, so a goal task never flashes an empty state.
-  if (loading || unavailable || error) return null;
+  if (loading || unavailable) return null;
+
+  if (error) {
+    return (
+      <div role="group" aria-label="Assignment" data-testid="task-assignment-error" className="inline-flex min-w-0 items-center gap-1.5 text-xs text-slate-500">
+        <span aria-hidden="true" className="mr-0.5 hidden h-3 w-px flex-none bg-slate-200 sm:inline-block" />
+        <span className="truncate" title={error}>Couldn't load assignment</span>
+        <button
+          type="button"
+          onClick={reload}
+          className="rounded px-1 py-0.5 font-medium text-slate-600 underline-offset-2 hover:bg-slate-100 hover:text-slate-900 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   const close = (restoreFocus: boolean) => {
     setOpen(false);

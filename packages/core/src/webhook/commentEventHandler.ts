@@ -658,7 +658,9 @@ interface FollowupGateCheck {
 /**
  * The follow-up assignment gate. Returns the refusal disposition, or null when
  * the comment may proceed. A refusal is an acknowledged delivery: nothing is
- * claimed in Redis, queued or billed.
+ * claimed in Redis, queued or billed. When the assignees could not be read the
+ * gate throws instead, like any other GitHub failure during intake, so the
+ * delivery is left unacknowledged and ProPR Connect can redeliver it.
  */
 async function checkFollowupAssignmentGate(check: FollowupGateCheck): Promise<DeliveryDisposition | null> {
     const { comment, commentAuthor, systemAuthored, repoContext: { owner, repo, prNumber }, redisClient, correlatedLogger } = check;
@@ -675,6 +677,9 @@ async function checkFollowupAssignmentGate(check: FollowupGateCheck): Promise<De
         { repoOwner: owner, repoName: repo, pullRequestNumber: prNumber, authorLogin: commentAuthor, commentId: comment.id, decision },
         { redisClient, correlatedLogger },
     );
+    if (decision.reason === 'assignment_unavailable') {
+        throw new Error(`Could not read the assignees of ${owner}/${repo}#${prNumber} for the follow-up assignment gate`);
+    }
     return { status: 'ignored', reason: decision.reason };
 }
 
@@ -697,28 +702,11 @@ async function processSlashCommandComment(opts: SlashCommentOptions): Promise<De
     const { owner, repo, prNumber } = gateCheck.repoContext;
     const repoFullName = `${owner}/${repo}`;
 
-    // Gate before claiming, so a refused command leaves no processed marker behind.
-    const refusal = await checkFollowupAssignmentGate(gateCheck);
-    if (refusal) return refusal;
-
-    // /merge dispatches automated checkout/commit/push work, so it is only honoured on
-    // PRs that were opted into ProPR via a valid trigger label. Reject before claiming
-    // the comment or a billing seat so nothing is allocated for unlabelled PRs.
-    let prefetchedPRData: PRBranchAndLabels | undefined;
-    if (parsedCommand.command === 'merge') {
-        prefetchedPRData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
-        if (!await hasValidTriggerLabel(prefetchedPRData.prLabels)) {
-            correlatedLogger.info(
-                { repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, prLabels: prefetchedPRData.prLabels.map(l => l.name) },
-                '/merge command ignored: PR has no valid trigger label (AI, propr, or configured primary processing label)',
-            );
-            return { status: 'ignored', reason: 'no_trigger_label' };
-        }
-    }
-
     // Deduplicate redelivered webhooks and synthetic+webhook races. This must be
     // atomic: system-created commands can be processed locally before GitHub
     // delivers the real issue_comment.created webhook for the same comment.
+    // Claiming first also keeps a redelivery of a handled command from paying
+    // for the assignment gate's GitHub read again.
     const slashCommentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
     const claimed = await claimCommentForProcessing(redisClient, slashCommentTrackingKey);
     if (!claimed) {
@@ -726,6 +714,29 @@ async function processSlashCommandComment(opts: SlashCommentOptions): Promise<De
         return { status: 'ignored', reason: 'duplicate_delivery' };
     }
     try {
+        // A refused command releases its claim, so it leaves no processed marker behind.
+        const refusal = await checkFollowupAssignmentGate(gateCheck);
+        if (refusal) {
+            await redisClient.del(slashCommentTrackingKey);
+            return refusal;
+        }
+
+        // /merge dispatches automated checkout/commit/push work, so it is only honoured on
+        // PRs that were opted into ProPR via a valid trigger label. Reject before
+        // dispatching or claiming a billing seat so nothing is allocated for unlabelled PRs.
+        let prefetchedPRData: PRBranchAndLabels | undefined;
+        if (parsedCommand.command === 'merge') {
+            prefetchedPRData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
+            if (!await hasValidTriggerLabel(prefetchedPRData.prLabels)) {
+                correlatedLogger.info(
+                    { repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, prLabels: prefetchedPRData.prLabels.map(l => l.name) },
+                    '/merge command ignored: PR has no valid trigger label (AI, propr, or configured primary processing label)',
+                );
+                await redisClient.del(slashCommentTrackingKey);
+                return { status: 'ignored', reason: 'no_trigger_label' };
+            }
+        }
+
         await handleSlashCommand({ parsedCommand, comment, commentAuthor, eventContext: { eventType, prNumber, owner, repo }, payload, config, correlationId, correlatedLogger, prefetchedPRData });
     } catch (error) {
         await redisClient.del(slashCommentTrackingKey);

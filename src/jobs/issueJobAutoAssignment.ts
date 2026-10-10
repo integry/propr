@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import type { IssueJobData, WorkerStateManager } from '@propr/core';
+import { db, type IssueJobData, type WorkerStateManager } from '@propr/core';
 import { autoAssignImplementationPullRequest, recordAutoAssignmentEvent } from '../github/prAutoAssignment.js';
 import { redisClient } from './issueJob/config.js';
 
@@ -14,6 +14,20 @@ export interface CompletedPullRequestAssignmentContext {
 }
 
 /**
+ * Points the task at its pull request before the pull request is assigned.
+ * Task completion records it too, but only later; until then a detail-page
+ * read would resolve the source issue and store its assignees over the pull
+ * request's. Fails soft: completion records it again.
+ */
+async function recordTaskPullRequest(taskId: string, prNumber: number, correlatedLogger: Logger): Promise<void> {
+    try {
+        await db('tasks').where({ task_id: taskId }).update({ pr_number: prNumber });
+    } catch (error) {
+        correlatedLogger.warn({ taskId, prNumber, error: (error as Error).message }, 'Failed to record the task\'s pull request before auto-assignment');
+    }
+}
+
+/**
  * Assigns an implementation's pull request per the repository's
  * auto-assignment policy once it carries the done label, and records the
  * decision on the task timeline. Called wherever publication succeeds:
@@ -24,6 +38,7 @@ export async function autoAssignCompletedPullRequest(context: CompletedPullReque
     const prNumber = published?.pr?.number;
     if (!prNumber) return;
     const { octokit, issueRef, correlatedLogger, taskId, stateManager } = context;
+    if (taskId) await recordTaskPullRequest(taskId, prNumber, correlatedLogger);
     try {
         const outcome = await autoAssignImplementationPullRequest({
             owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, prNumber, taskId,
