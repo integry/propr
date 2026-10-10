@@ -175,8 +175,13 @@ export interface RefusedComment {
     commentId: number;
 }
 
+/**
+ * GitHub repository names are case-insensitive, and the webhook payload and a
+ * configured polling repository may spell the same repository differently, so
+ * the key uses one canonical (lowercase) spelling for both intake paths.
+ */
 export function refusedCommentKey({ owner, repo, prNumber, commentId }: RefusedComment): string {
-    return `pr-comment-refused:${owner}:${repo}:${prNumber}:${commentId}`;
+    return `pr-comment-refused:${owner.toLowerCase()}:${repo.toLowerCase()}:${prNumber}:${commentId}`;
 }
 
 /** Records a definitive refusal. Throws when it cannot be stored. */

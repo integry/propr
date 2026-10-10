@@ -654,8 +654,8 @@ describe('pollForPullRequestComments with the assignment gate', () => {
         },
     });
 
-    async function poll(redisClient: MockRedis, prComments = comments): Promise<number[]> {
-        await pollForPullRequestComments(pollingOctokit(prComments), `${OWNER}/${REPO}`, 'poll', {
+    async function poll(redisClient: MockRedis, prComments = comments, repository = `${OWNER}/${REPO}`): Promise<number[]> {
+        await pollForPullRequestComments(pollingOctokit(prComments), repository, 'poll', {
             redisClient: redisClient as never,
             GITHUB_BOT_USERNAME: BOT_LOGIN,
             PR_FOLLOWUP_TRIGGER_KEYWORDS: [],
@@ -764,6 +764,56 @@ describe('pollForPullRequestComments with the assignment gate', () => {
             assert.equal(redisClient._store.has(trackingKey(event.comment.id)), false);
         });
     }
+
+    describe('when the configured repository is spelled in a different case than the webhook payload', () => {
+        const upperRepository = `${OWNER.toUpperCase()}/${REPO.toUpperCase()}`;
+
+        test('a comment refused on the webhook is not queued by a poll of the upper-case repository once its author is assigned', async () => {
+            gateEnabled = true;
+            github.assignees.set(PR, [ALICE]);
+            const redisClient = createMockRedis();
+            const event = prCommentEvent('please fix', BOB);
+            assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'x3', createConfig(redisClient)), { status: 'ignored', reason: 'author_not_assigned' });
+            assert.ok(redisClient._store.has(refusedKey(event.comment.id)));
+
+            github.assignees.set(PR, [ALICE, BOB]);
+            const sameComment = { id: event.comment.id, body: 'please fix', user: BOB, created_at: '2026-10-09T10:01:00Z' };
+            assert.deepEqual(await poll(redisClient, [sameComment], upperRepository), []);
+            assert.equal(mockQueueAdd.mock.callCount(), 0);
+
+            // A new comment from the now-assigned author still goes through.
+            assert.deepEqual(await poll(redisClient, [sameComment, { id: 6, body: 'now assigned', user: BOB, created_at: '2026-10-09T10:02:00Z' }], upperRepository), [6]);
+        });
+
+        for (const body of ['please fix', '/fix']) {
+            test(`a "${body}" refused by a poll of the upper-case repository is not started by a webhook delivery of the same comment`, async () => {
+                gateEnabled = true;
+                github.assignees.set(PR, [ALICE]);
+                const redisClient = createMockRedis();
+                const event = prCommentEvent(body, BOB);
+                assert.deepEqual(await poll(redisClient, [{ id: event.comment.id, body, user: BOB, created_at: '2026-10-09T10:01:00Z' }], upperRepository), []);
+                // One canonical record, whichever spelling refused it.
+                assert.deepEqual([...redisClient._store.keys()].filter(key => key.startsWith('pr-comment-refused:')), [refusedKey(event.comment.id)]);
+
+                github.assignees.set(PR, [ALICE, BOB]);
+                assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'x4', createConfig(redisClient)), { status: 'ignored', reason: 'author_not_assigned' });
+                assert.equal(mockQueueAdd.mock.callCount(), 0);
+                assert.equal(redisClient._store.has(trackingKey(event.comment.id)), false);
+            });
+        }
+
+        test('a failed live read through the upper-case repository records no refusal and proceeds after the outage', async () => {
+            gateEnabled = true;
+            github.assignees.set(PR, [ALICE]);
+            github.failRead = true;
+            const redisClient = createMockRedis();
+            assert.deepEqual(await poll(redisClient, comments, upperRepository), []);
+            assert.deepEqual([...redisClient._store.keys()].filter(key => key.startsWith('pr-comment-refused:')), []);
+
+            github.failRead = false;
+            assert.deepEqual(await poll(redisClient, comments, upperRepository), [1]);
+        });
+    });
 
     test('a failed live read queues nothing and is asked about again on the next poll', async () => {
         gateEnabled = true;
