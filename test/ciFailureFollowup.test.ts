@@ -11,6 +11,7 @@ import {
     stripCiFailureFollowupMarker,
     type CiFailureFollowupRequest,
 } from '../packages/core/src/webhook/ciFailureFollowup.js';
+import { loadProprCancelledRuns } from '../packages/core/src/webhook/ciCancellationProvenance.js';
 
 after(async () => {
     await closeConnection();
@@ -156,4 +157,193 @@ describe('automatic failed-CI follow-up', () => {
         });
         assert.strictEqual(extractStatusFailure({ ...payload, state: 'pending' }), null);
     });
+});
+
+/**
+ * Run 38090559848 at 8413598: ProPR cancelled the Full Test Suite while a
+ * follow-up implemented, and the `always()` aggregate then failed closed on the
+ * cancelled shards. Job 114326002000 is that aggregate.
+ */
+describe('cancellation-induced aggregate failure', () => {
+    const RUN_ID = 38090559848;
+    const AGGREGATE_JOB_ID = 114326002000;
+
+    function aggregateRequest(): CiFailureFollowupRequest {
+        return {
+            owner: 'integry',
+            repo: 'propr',
+            prNumber: 2953,
+            evidence: {
+                kind: 'check_run',
+                name: 'Run Full Test Suite',
+                state: 'failure',
+                sha: '8413598e20599fa42d316ef826627bd8769edc47',
+                url: `https://github.com/integry/propr/actions/runs/${RUN_ID}/job/${AGGREGATE_JOB_ID}`,
+                source: 'check-run:Run Full Test Suite',
+                fallbackExcerpt: "Shard coverage verification finished with result 'failure'.",
+                checkRunId: AGGREGATE_JOB_ID,
+                annotationsCount: 0,
+            },
+        };
+    }
+
+    interface Job { id: number; name: string; conclusion: string; completed_at: string }
+
+    function cancelledRunJobs(overrides: Partial<Record<string, Partial<Job>>> = {}): Job[] {
+        const jobs: Job[] = [
+            { id: 1, name: 'Classify changed surfaces', conclusion: 'success', completed_at: '2026-10-10T20:00:30Z' },
+            { id: 2, name: 'Validate Docs Site', conclusion: 'success', completed_at: '2026-10-10T20:04:00Z' },
+            { id: 3, name: 'Full Test Suite Shard 1/4', conclusion: 'cancelled', completed_at: '2026-10-10T20:06:00Z' },
+            { id: 4, name: 'Full Test Suite Shard 2/4', conclusion: 'cancelled', completed_at: '2026-10-10T20:06:01Z' },
+            { id: 5, name: 'Full Test Suite Native Electron (hosted)', conclusion: 'cancelled', completed_at: '2026-10-10T20:06:02Z' },
+            { id: AGGREGATE_JOB_ID, name: 'Run Full Test Suite', conclusion: 'failure', completed_at: '2026-10-10T20:07:00Z' },
+            { id: 7, name: 'Report Full Test Failure', conclusion: 'skipped', completed_at: '2026-10-10T20:07:05Z' },
+        ];
+        return jobs.map(job => ({ ...job, ...overrides[job.name] }));
+    }
+
+    function actionsOctokit(options: { jobs: Job[]; runAttempt?: number; attemptConclusion?: string; failJobLookup?: boolean }) {
+        const postedBodies: string[] = [];
+        const runAttempt = options.runAttempt ?? 1;
+        const aggregate = options.jobs.find(job => job.id === AGGREGATE_JOB_ID)!;
+        const octokit = {
+            paginate: mock.fn(async () => []),
+            request: mock.fn(async (route: string, parameters: Record<string, unknown>) => {
+                if (route.startsWith('POST ')) {
+                    postedBodies.push(String(parameters.body));
+                    return { data: {} };
+                }
+                if (route === 'GET /repos/{owner}/{repo}/actions/jobs/{job_id}') {
+                    if (options.failJobLookup) throw new Error('HTTP 502');
+                    return { data: { id: AGGREGATE_JOB_ID, run_id: RUN_ID, run_attempt: runAttempt, conclusion: 'failure', completed_at: aggregate.completed_at } };
+                }
+                if (route === 'GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}') {
+                    // The aggregate finishes while the run still evaluates its report job.
+                    const conclusion = options.attemptConclusion ?? null;
+                    return { data: { id: RUN_ID, run_attempt: parameters.attempt_number, status: conclusion ? 'completed' : 'in_progress', conclusion } };
+                }
+                if (route === 'GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs') {
+                    return { data: { total_count: options.jobs.length, jobs: options.jobs } };
+                }
+                throw new Error(`unexpected route ${route}`);
+            }),
+        };
+        return { octokit, postedBodies };
+    }
+
+    async function follow(
+        octokit: ReturnType<typeof actionsOctokit>['octokit'],
+        cancelledRuns: Array<{ id: number; observedAttempt?: number; attempt?: number; restarted?: boolean }>,
+    ) {
+        const redis = createRedis();
+        const result = await postCiFailureFollowup(aggregateRequest(), 'cancellation-test', {
+            isEnabled: mock.fn(async () => true),
+            getOctokit: mock.fn(async () => octokit),
+            redisClient: redis as never,
+            loadProprCancelledRuns: mock.fn(async () => cancelledRuns),
+        });
+        return { result, redis };
+    }
+
+    test('does not start a follow-up when ProPR suspended the run and the aggregate failed on cancelled shards', async () => {
+        const { octokit, postedBodies } = actionsOctokit({ jobs: cancelledRunJobs() });
+
+        const { result, redis } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1, restarted: false }]);
+
+        assert.deepStrictEqual(result, { posted: false, reason: 'cancellation_induced' });
+        assert.strictEqual(postedBodies.length, 0);
+        // No dedupe claim: a genuine failure on a restored attempt of this head must still be reported.
+        assert.strictEqual(redis.set.mock.callCount(), 0);
+    });
+
+    test('does not start a follow-up for a late event of an attempt cancelled outside ProPR', async () => {
+        const { octokit, postedBodies } = actionsOctokit({ jobs: cancelledRunJobs(), attemptConclusion: 'cancelled' });
+
+        const { result } = await follow(octokit, []);
+
+        assert.deepStrictEqual(result, { posted: false, reason: 'cancellation_induced' });
+        assert.strictEqual(postedBodies.length, 0);
+    });
+
+    test('still posts when a shard genuinely failed in the cancelled run', async () => {
+        const { octokit, postedBodies } = actionsOctokit({
+            jobs: cancelledRunJobs({ 'Full Test Suite Shard 2/4': { conclusion: 'failure', completed_at: '2026-10-10T20:05:00Z' } }),
+        });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
+
+        assert.strictEqual(result.reason, 'posted');
+        assert.strictEqual(postedBodies.length, 1);
+    });
+
+    test('still posts a timed-out sibling job next to the cancellation', async () => {
+        const { octokit } = actionsOctokit({
+            jobs: cancelledRunJobs({ 'Validate Docs Site': { conclusion: 'timed_out' } }),
+        });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+
+    test('still posts a job that failed before the cancellation landed', async () => {
+        const { octokit } = actionsOctokit({
+            jobs: cancelledRunJobs({ 'Run Full Test Suite': { completed_at: '2026-10-10T20:05:00Z' } }),
+        });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+
+    test('still posts when nothing deliberately cancelled the attempt', async () => {
+        // A shard stopped by its own timeout also reads `cancelled`, but the attempt
+        // is not cancelled and ProPR recorded no cancellation.
+        const { octokit } = actionsOctokit({ jobs: cancelledRunJobs(), attemptConclusion: 'failure' });
+
+        const { result } = await follow(octokit, [{ id: 999, observedAttempt: 1 }]);
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+
+    test('judges the attempt ProPR reran to restore validation on its own', async () => {
+        const { octokit } = actionsOctokit({ jobs: cancelledRunJobs(), runAttempt: 2, attemptConclusion: 'failure' });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1, attempt: 1, restarted: true }]);
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+
+    test('posts when the cancellation provenance cannot be read', async () => {
+        const { octokit } = actionsOctokit({ jobs: cancelledRunJobs(), failJobLookup: true });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+});
+
+test('the webhook reads the runs the worker recorded for its follow-up suspension', async () => {
+    const knex = (await import('knex')).default;
+    const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+    try {
+        await (await import('../packages/core/src/db/migrations/20260923010000_add_pr_ci_suspensions.js')).up(database);
+        await (await import('../packages/core/src/db/migrations/20260924010000_add_ci_suspension_incarnation.js')).up(database);
+        const { reserveSuspension, saveCancelledRuns } = await import('../src/jobs/followupCiSuspensionStore.js');
+        const reserved = await reserveSuspension({
+            target: { owner: 'Integry', repo: 'ProPR', pullRequestNumber: 2953 },
+            headSha: '8413598e20599fa42d316ef826627bd8769edc47',
+            taskId: 'pr-comments-batch-integry-propr-2953',
+        }, { database });
+        assert.ok(reserved);
+        await saveCancelledRuns({ database }, reserved.record, [{ id: 38090559848, observedAttempt: 1, restarted: false }]);
+
+        assert.deepStrictEqual(
+            await loadProprCancelledRuns('integry/propr', 2953, database),
+            [{ id: 38090559848, observedAttempt: 1, restarted: false }],
+        );
+        assert.deepStrictEqual(await loadProprCancelledRuns('integry/propr', 2954, database), []);
+    } finally {
+        await database.destroy();
+    }
 });
