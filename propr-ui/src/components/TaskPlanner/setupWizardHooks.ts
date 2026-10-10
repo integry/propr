@@ -64,7 +64,7 @@ async function loadRepositories(savedLastRepository: string | undefined, savedLa
     : enabledRepos[0];
   return { repos: enabledRepos, selectedRepo: selectedRepoEntry?.name || '', selectedBaseBranch: selectedRepoEntry?.baseBranch || '' };
 }
-async function loadIndexedRepositories(repoToExclude: string): Promise<IndexedRepository[]> {
+export async function loadIndexedRepositories(repoToExclude: string): Promise<IndexedRepository[]> {
   const data = await getRepositoriesIndexingStatus();
   return (data.repositories || []).filter((r: RepositoryIndexingStatus) => (r.indexing_status === 'completed' || r.indexing_status === 'indexing') && r.full_name !== repoToExclude).map((r: RepositoryIndexingStatus) => ({ full_name: r.full_name, branch: r.branch, indexing_status: r.indexing_status }));
 }

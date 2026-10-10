@@ -2,7 +2,7 @@ import RepoMediaPanel from './RepoMediaPanel';
 import React, { useState, useCallback, useEffect } from 'react';
 import { MessageSquareText, Sparkles, Book, ListTodo, Settings, Images } from 'lucide-react';
 import RepoChatPanel, { ChatResponse, Message } from './RepoChatPanel';
-import RepoImprovementsPanel, { ImprovementCategory, SuggestionItem, GenerateSuggestionsResult } from './RepoImprovementsPanel';
+import RepoImprovementsPanel, { ImprovementCategory, ReferenceRepo, SuggestionItem, GenerateSuggestionsResult } from './RepoImprovementsPanel';
 import RepoBrowsePanel from './RepoBrowsePanel';
 import RepoTodosPanel from './RepoTodosPanel';
 import {
@@ -17,6 +17,7 @@ import {
 import { getInstanceCatalog } from '../../api/proprApi';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import { generateRepoImprovements } from '../../api/repoImprovementsApi';
+import { loadIndexedRepositories } from '../TaskPlanner/setupWizardHooks';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 
 type ActionTab = 'chat' | 'improve' | 'browse' | 'todos' | 'settings' | 'media';
@@ -55,6 +56,12 @@ export interface RepoActionContainerProps {
   settingsContent?: React.ReactNode;
 }
 
+/** Indexed repositories are listed per branch; reference context is built per repository. */
+function toReferenceRepos(repos: { full_name: string }[]): ReferenceRepo[] {
+  const names = [...new Set(repos.map(repo => repo.full_name))].sort((a, b) => a.localeCompare(b));
+  return names.map(name => ({ id: name, name }));
+}
+
 function availableTab(requestedTab: ActionTab, mediaEnabled: boolean): ActionTab {
   return requestedTab === 'media' && !mediaEnabled ? 'settings' : requestedTab;
 }
@@ -67,6 +74,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [agents, setAgents] = useState<InstanceCatalogAgent[]>([]);
+  const [referenceRepos, setReferenceRepos] = useState<ReferenceRepo[]>([]);
   const { isDemoMode } = useDemoMode();
 
   useEffect(() => {
@@ -107,6 +115,17 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
     loadMessages();
     setSuggestions([]);
   }, [selectedRepoId, selectedRepoName]);
+
+  // Load indexed repositories (excluding the current one) as reference options
+  useEffect(() => {
+    setReferenceRepos([]);
+    if (!selectedRepoName) return;
+    let cancelled = false;
+    loadIndexedRepositories(selectedRepoName)
+      .then(repos => { if (!cancelled) setReferenceRepos(toReferenceRepos(repos)); })
+      .catch(error => console.error('Failed to load indexed repositories:', error));
+    return () => { cancelled = true; };
+  }, [selectedRepoName]);
 
   // Build chat history for API from messages
   const chatHistory: ChatMessage[] = chatMessages.map((msg) => ({
@@ -313,6 +332,7 @@ const RepoActionContainer: React.FC<RepoActionContainerProps> = ({ selectedRepo,
             suggestions={suggestions}
             onToggleSuggestion={handleToggleSuggestion}
             agents={agents}
+            availableRepos={referenceRepos}
             onGenerateSuggestions={async (params: {
               categories: ImprovementCategory[];
               customPrompt: string;
