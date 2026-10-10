@@ -74,10 +74,50 @@ describe('useTaskAssignment saves', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     await act(async () => { await expect(result.current.save(['hubot'])).resolves.toBe(true); });
+    api.getTaskAssignees.mockResolvedValueOnce({ subject, assignees: [hubot], synced: true });
     await act(async () => { await expect(result.current.save(['monalisa'])).resolves.toBe(false); });
 
     expect(api.setTaskAssignees).toHaveBeenCalledTimes(2);
     expect(logins(result.current.assignees)).toEqual(['hubot']);
+  });
+
+  it('shows what GitHub has after a failed save, since a replace may have partly landed', async () => {
+    api.setTaskAssignees.mockRejectedValueOnce(new TaskAssignmentRequestError('GitHub rejected the assignment', 422, 'GITHUB_REJECTED'));
+    const { result } = renderHook(() => useTaskAssignment('task-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    // The addition landed and the removal of octocat failed.
+    api.getTaskAssignees.mockResolvedValueOnce({ subject, assignees: [hubot, octocat], synced: true });
+
+    await act(async () => { await expect(result.current.save(['hubot'])).resolves.toBe(false); });
+
+    await waitFor(() => expect(logins(result.current.assignees)).toEqual(['hubot', 'octocat']));
+    expect(api.getTaskAssignees).toHaveBeenCalledTimes(2);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('keeps the restored assignees when the read after a failed save also fails', async () => {
+    api.setTaskAssignees.mockRejectedValueOnce(outage());
+    const { result } = renderHook(() => useTaskAssignment('task-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    api.getTaskAssignees.mockRejectedValueOnce(outage());
+
+    await act(async () => { await expect(result.current.save(['hubot'])).resolves.toBe(false); });
+
+    await waitFor(() => expect(api.getTaskAssignees).toHaveBeenCalledTimes(2));
+    expect(logins(result.current.assignees)).toEqual(['octocat']);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('does not read again after a save refused for lack of write access', async () => {
+    api.setTaskAssignees.mockRejectedValueOnce(new TaskAssignmentRequestError('Forbidden', 403, 'FORBIDDEN'));
+    const { result } = renderHook(() => useTaskAssignment('task-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => { await expect(result.current.save(['hubot'])).resolves.toBe(false); });
+
+    expect(result.current.editable).toBe(false);
+    expect(api.getTaskAssignees).toHaveBeenCalledTimes(1);
   });
 
   it('takes saves again after switching task while one was in flight', async () => {

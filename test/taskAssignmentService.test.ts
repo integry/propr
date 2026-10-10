@@ -47,7 +47,7 @@ function user(id: string) {
  * ids per issue number; users in `noAccess` are silently ignored on assign, as
  * GitHub does for users without repository access.
  */
-function fakeGitHub(assigned: Record<number, string[]>, options: { fail?: boolean; failWrites?: boolean; noAccess?: string[] } = {}) {
+function fakeGitHub(assigned: Record<number, string[]>, options: { fail?: boolean; failWrites?: boolean; failMethod?: 'POST' | 'DELETE'; noAccess?: string[] } = {}) {
     const calls: Array<{ route: string; parameters: Record<string, unknown> }> = [];
     const issue = (number: number) => ({ number, assignees: (assigned[number] ?? []).map(id => ({ id: Number(id), login: USERS[id].login, avatar_url: `https://avatars.example/u/${id}` })) });
     const idOf = (login: unknown) => Object.keys(USERS).find(id => USERS[id].login.toLowerCase() === String(login).toLowerCase());
@@ -63,6 +63,7 @@ function fakeGitHub(assigned: Record<number, string[]>, options: { fail?: boolea
             const number = Number(parameters.issue_number);
             if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') return { data: issue(number) };
             if (options.failWrites) throw Object.assign(new Error('Forbidden'), { status: 403 });
+            if (options.failMethod && route.startsWith(`${options.failMethod} `)) throw Object.assign(new Error('Validation Failed'), { status: 422 });
             const ids = (parameters.assignees as string[]).map(idOf).filter((id): id is string => Boolean(id));
             if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/assignees') {
                 const current = new Set(assigned[number] ?? []);
@@ -310,6 +311,66 @@ describe('taskAssignmentService', () => {
             setTaskAssignees('missing', ['octocat'], { mode: 'add', github: fakeGitHub({}).client }),
             (error: unknown) => error instanceof TaskAssignmentError && error.code === 'TASK_NOT_FOUND',
         );
+    });
+
+    test('a replace whose removal fails after its addition landed stores the set GitHub confirmed for the addition', async () => {
+        await insertTask({ task_id: 'issue-7', issue_number: 7 });
+        await syncTaskAssignees('issue-7', { github: fakeGitHub({ 7: ['1', '4'] }).client, now: () => T0 });
+        const github = fakeGitHub({ 7: ['1', '4'] }, { failMethod: 'DELETE' });
+
+        await assert.rejects(
+            setTaskAssignees('issue-7', ['octocat', 'hubot'], { mode: 'replace', github: github.client, now: () => T1 }),
+            (error: unknown) => error instanceof TaskAssignmentError && error.code === 'GITHUB_WRITE_FAILED' && error.status === 422,
+        );
+        assert.deepEqual([...github.assigned[7]].sort(), ['1', '2', '4']);
+        // Not the requested set: `human` is still assigned on GitHub.
+        assert.deepEqual(await storedIds('issue-7'), ['1', '2', '4']);
+    });
+
+    test('a replace at the assignee cap whose addition fails after its removal landed stores the set GitHub confirmed for the removal', async () => {
+        await insertTask({ task_id: 'issue-7', issue_number: 7 });
+        const full = Array.from({ length: MAX_TASK_ASSIGNEES }, (_, index) => String(index + 1));
+        await syncTaskAssignees('issue-7', { github: fakeGitHub({ 7: [...full] }).client, now: () => T0 });
+        const github = fakeGitHub({ 7: [...full] }, { failMethod: 'POST' });
+
+        await assert.rejects(
+            setTaskAssignees('issue-7', [...full.slice(1), '11'].map(id => USERS[id].login), { mode: 'replace', github: github.client, now: () => T1 }),
+            (error: unknown) => error instanceof TaskAssignmentError && error.code === 'GITHUB_WRITE_FAILED' && error.status === 422,
+        );
+        assert.deepEqual([...github.assigned[7]].sort(), [...full.slice(1)].sort());
+        assert.deepEqual(await storedIds('issue-7'), [...full.slice(1)].sort());
+    });
+
+    test('a replace whose only write fails leaves the stored set untouched', async () => {
+        await insertTask({ task_id: 'issue-7', issue_number: 7 });
+        await syncTaskAssignees('issue-7', { github: fakeGitHub({ 7: ['1'] }).client, now: () => T0 });
+        // The first write fails, and the stored set must not move even if
+        // GitHub changed meanwhile: nothing this call wrote was confirmed.
+        const github = fakeGitHub({ 7: ['1', '4'] }, { failMethod: 'POST' });
+
+        await assert.rejects(
+            setTaskAssignees('issue-7', ['octocat', 'hubot'], { mode: 'replace', github: github.client, now: () => T1 }),
+            (error: unknown) => error instanceof TaskAssignmentError && error.code === 'GITHUB_WRITE_FAILED' && error.status === 422,
+        );
+        assert.equal(github.calls.some(call => call.route.startsWith('DELETE')), false);
+        assert.deepEqual(await storedIds('issue-7'), ['1']);
+    });
+
+    test('a partially applied replace still reports the GitHub failure when the projection cannot be stored', async () => {
+        await insertTask({ task_id: 'issue-7', issue_number: 7 });
+        await syncTaskAssignees('issue-7', { github: fakeGitHub({ 7: ['1', '4'] }).client, now: () => T0 });
+        const github = fakeGitHub({ 7: ['1', '4'] }, { failMethod: 'DELETE' });
+        await db.raw("CREATE TRIGGER task_assignees_unwritable BEFORE INSERT ON task_assignees BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END");
+        try {
+            await assert.rejects(
+                setTaskAssignees('issue-7', ['octocat', 'hubot'], { mode: 'replace', github: github.client, now: () => T1 }),
+                (error: unknown) => error instanceof TaskAssignmentError && error.code === 'GITHUB_WRITE_FAILED' && error.status === 422,
+            );
+        } finally {
+            await db.raw('DROP TRIGGER task_assignees_unwritable');
+        }
+        // The transaction rolled back, so the previous set is intact rather than half-written.
+        assert.deepEqual(await storedIds('issue-7'), ['1', '4']);
     });
 
     test('the list projection catches up with a GitHub-side change on the next live read of the subject', async () => {

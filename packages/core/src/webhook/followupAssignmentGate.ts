@@ -194,8 +194,9 @@ export async function wasRefused(redisClient: Redis, comment: RefusedComment): P
     return Boolean(await redisClient.get(refusedCommentKey(comment)));
 }
 
+/** Canonical (lowercase) like `refusedCommentKey`, so both intake paths share one notice. */
 export function followupAssignmentNoticeKey(pullRequest: FollowupGatePullRequest, authorLogin: string): string {
-    return `followup-assignment-notice:${pullRequest.repoOwner}:${pullRequest.repoName}:${pullRequest.pullRequestNumber}:${authorLogin.toLowerCase()}`;
+    return `followup-assignment-notice:${pullRequest.repoOwner.toLowerCase()}:${pullRequest.repoName.toLowerCase()}:${pullRequest.pullRequestNumber}:${authorLogin.toLowerCase()}`;
 }
 
 export function buildFollowupAssignmentNotice(authorLogin: string): string {

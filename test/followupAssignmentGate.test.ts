@@ -802,6 +802,42 @@ describe('pollForPullRequestComments with the assignment gate', () => {
             });
         }
 
+        const noticeKeys = (redisClient: MockRedis) => [...redisClient._store.keys()].filter(key => key.startsWith('followup-assignment-notice:'));
+
+        test('two refused comments from one author, on the webhook then a poll of the upper-case repository, explain once', async () => {
+            gateEnabled = true;
+            github.assignees.set(PR, [ALICE]);
+            const redisClient = createMockRedis();
+            const event = prCommentEvent('please fix', BOB);
+            assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'n1', createConfig(redisClient)), { status: 'ignored', reason: 'author_not_assigned' });
+            assert.equal(github.posted.length, 1);
+
+            const another = { id: event.comment.id + 1000, body: 'please fix this too', user: BOB, created_at: '2026-10-09T10:05:00Z' };
+            assert.deepEqual(await poll(redisClient, [another], upperRepository), []);
+            assert.ok(redisClient._store.has(refusedKey(another.id)));
+            assert.equal(github.posted.length, 1);
+            assert.deepEqual(noticeKeys(redisClient), [`followup-assignment-notice:${OWNER.toLowerCase()}:${REPO.toLowerCase()}:${PR}:${BOB.login.toLowerCase()}`]);
+        });
+
+        test('two refused comments from one author, on a poll of the upper-case repository then the webhook, explain once', async () => {
+            gateEnabled = true;
+            github.assignees.set(PR, [ALICE]);
+            const redisClient = createMockRedis();
+            const event = prCommentEvent('/fix', BOB);
+            const polled = { id: event.comment.id + 1000, body: 'please fix', user: BOB, created_at: '2026-10-09T10:05:00Z' };
+            assert.deepEqual(await poll(redisClient, [polled], upperRepository), []);
+            assert.equal(github.posted.length, 1);
+
+            assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'n2', createConfig(redisClient)), { status: 'ignored', reason: 'author_not_assigned' });
+            assert.ok(redisClient._store.has(refusedKey(event.comment.id)));
+            assert.equal(github.posted.length, 1);
+            assert.equal(noticeKeys(redisClient).length, 1);
+
+            // The shared notice does not hold back the now-assigned author's next comment.
+            github.assignees.set(PR, [ALICE, BOB]);
+            assert.deepEqual(await poll(redisClient, [polled, { id: polled.id + 1, body: 'now assigned', user: BOB, created_at: '2026-10-09T10:06:00Z' }], upperRepository), [polled.id + 1]);
+        });
+
         test('a failed live read through the upper-case repository records no refusal and proceeds after the outage', async () => {
             gateEnabled = true;
             github.assignees.set(PR, [ALICE]);

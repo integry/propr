@@ -344,7 +344,9 @@ function normalizeRequestedLogins(logins: string[]): Map<string, string> {
  *
  * Throws `TaskAssignmentError` when the task or its subject is missing, a
  * login is empty or does not resolve (before anything is written), or GitHub
- * fails. An empty `logins` array in `replace` mode clears every assignee.
+ * fails. When a `replace` fails after one of its two writes succeeded, the
+ * set GitHub confirmed for that write is stored before the error is thrown.
+ * An empty `logins` array in `replace` mode clears every assignee.
  */
 export async function setTaskAssignees(taskId: string, logins: string[], options: SetTaskAssigneesOptions): Promise<SetTaskAssigneesResult> {
     const now = options.now?.() ?? new Date();
@@ -366,7 +368,10 @@ export async function setTaskAssignees(taskId: string, logins: string[], options
         throw new TaskAssignmentError('UNKNOWN_LOGIN', `Unknown GitHub login${unknown.length === 1 ? '' : 's'}: ${unknown.join(', ')}`, { logins: unknown });
     }
 
-    let confirmed: GitHubAssignee[];
+    let confirmed: GitHubAssignee[] = [];
+    // Whether a GitHub write already landed, so a later failure must not leave
+    // the projection on the pre-write set.
+    let wrote = false;
     try {
         const toAdd = [...requested.values()];
         if (options.mode === 'replace') {
@@ -375,8 +380,8 @@ export async function setTaskAssignees(taskId: string, logins: string[], options
             const additions = toAdd.filter(user => !currentIds.has(user.id));
             const removals = current.filter(assignee => !requested.has(assignee.id));
             confirmed = current;
-            const add = async () => { if (additions.length > 0) confirmed = await writeAssignees(github, subject, 'POST', additions.map(user => user.login)); };
-            const remove = async () => { if (removals.length > 0) confirmed = await writeAssignees(github, subject, 'DELETE', removals.map(assignee => assignee.login)); };
+            const add = async () => { if (additions.length > 0) { confirmed = await writeAssignees(github, subject, 'POST', additions.map(user => user.login)); wrote = true; } };
+            const remove = async () => { if (removals.length > 0) { confirmed = await writeAssignees(github, subject, 'DELETE', removals.map(assignee => assignee.login)); wrote = true; } };
             // Adding first keeps the requested users assigned if the removal
             // fails, but GitHub silently drops additions past its assignee cap,
             // so a swap at capacity has to make room first.
@@ -393,6 +398,16 @@ export async function setTaskAssignees(taskId: string, logins: string[], options
                 : await fetchAssignees(github, subject);
         }
     } catch (error) {
+        // A replace whose first write landed stores the last set GitHub
+        // confirmed before reporting the failure; storing it is best effort,
+        // so the GitHub failure is what the caller sees either way.
+        if (wrote) {
+            try {
+                await persistObserved(taskId, confirmed, now);
+            } catch (persistError) {
+                logger.warn({ error: (persistError as Error).message, taskId }, 'Failed to store the partially applied task assignment');
+            }
+        }
         throw githubWriteError(error, subject);
     }
 

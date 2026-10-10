@@ -57,7 +57,8 @@ const INITIAL_ASSIGNABLE: AssignableUsersState = { users: null, truncated: false
 /**
  * The task's assignment on its issue or pull request: read on mount, written
  * through GitHub with an optimistic update that rolls back and toasts on
- * failure, as the page reports a failed stop or delete.
+ * failure, as the page reports a failed stop or delete, then reads GitHub
+ * again in case part of the change landed.
  */
 export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
   const { addToast } = useToast();
@@ -176,6 +177,15 @@ export function useTaskAssignment(taskId: string | undefined): TaskAssignment {
       } else {
         console.error('Error updating task assignees:', err);
         addToast({ type: 'error', message: `Failed to update assignees: ${errorMessage(err)}` });
+        // A replace is two GitHub writes and the first may have landed, so
+        // the set restored above may be stale: read what GitHub has now.
+        getTaskAssignees(taskId)
+          .then(response => {
+            if (!isCurrent() || !Array.isArray(response?.assignees)) return;
+            confirmedAssignees.current = response.assignees;
+            setAssignees(response.assignees);
+          })
+          .catch(() => { /* The restored set stays until the next read. */ });
       }
       return false;
     } finally {

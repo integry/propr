@@ -53,6 +53,20 @@ test('MCP repository configuration sets, reads and clears automatic pull request
     assert.equal(cleared.state, 'completed', JSON.stringify(cleared));
     assert.deepEqual(configured(await call('get_repository_configuration', { repository: 'acme/one' })), [true, null, false]);
 
+    // The default assignee accepts what the shared GitHub login validator does, at its boundaries.
+    const longestLogin = `a${'-b'.repeat(19)}`;
+    const longestBot = `${'c'.repeat(39)}[bot]`;
+    for (const [input, storedLogin] of [[longestBot, longestBot], [`@${longestLogin}`, longestLogin], [`@${'d'.repeat(39)}[bot]`, `${'d'.repeat(39)}[bot]`], ['x', 'x']] as const) {
+      const accepted = await call('update_repository_configuration', { repository: 'acme/one', autoAssignDefaultAssignee: input });
+      assert.equal(accepted.state, 'completed', `${input}: ${JSON.stringify(accepted)}`);
+      assert.deepEqual((await stored('acme/one')).map(entry => entry[1]), [storedLogin, storedLogin], input);
+    }
+    for (const input of ['', '@', 'e'.repeat(40), `${'e'.repeat(40)}[bot]`, '-leading', 'trailing-', 'double--hyphen', 'has space', '@@octocat', 'octocat[bot]x', 'bot]']) {
+      await assert.rejects(call('update_repository_configuration', { repository: 'acme/one', autoAssignDefaultAssignee: input }), undefined, JSON.stringify(input));
+      assert.deepEqual((await stored('acme/one')).map(entry => entry[1]), ['x', 'x'], `${JSON.stringify(input)} must not change the stored login`);
+    }
+    assert.equal((await call('update_repository_configuration', { repository: 'acme/one', autoAssignDefaultAssignee: null })).state, 'completed');
+
     const disabled = await call('update_repository_configuration', { repository: 'acme/one', autoAssignPullRequests: false });
     assert.equal(disabled.state, 'completed', JSON.stringify(disabled));
     assert.deepEqual(await stored('acme/one'), [[false, null, false], [false, null, false]]);
