@@ -66,8 +66,7 @@ const CONFIG_BOOTSTRAP = [
     'umask 077',
     'mkdir -p "$(dirname "$1")"',
     `printf %s "$${CONFIG_ENV_VAR}" > "$1"`,
-    'node /home/node/agent-tank-runtime.mjs "$1"',
-    'exec agent-tank --once --json --config "$1"',
+    'exec node /home/node/agent-tank-runtime.mjs "$1" --run',
 ].join('; ');
 
 /**
@@ -311,7 +310,11 @@ export function parseBundledAgentTankOutput(stdout: string): Record<string, Agen
 async function resolveAgentImage(): Promise<string> {
     try {
         const { AgentRegistry } = await import('../agents/AgentRegistry.js');
-        const configured = AgentRegistry.getInstance().getAllAgents()[0]?.config.dockerImage;
+        const registry = AgentRegistry.getInstance();
+        // Sidebar polling can run before the API has initialized its registry.
+        // Wait for the configured runtime instead of probing an unrelated tag.
+        await registry.ensureInitialized();
+        const configured = registry.getAllAgents().find(agent => agent.config.dockerImage)?.config.dockerImage;
         if (configured) return configured;
     } catch (error) {
         logger.debug({ error: (error as Error).message },
@@ -383,7 +386,7 @@ async function runBundledAgentTank(): Promise<BundledRunResult | undefined> {
             const aliases = Object.fromEntries(entries.map(entry => [entry.provider, entry.alias]));
 
             const result = await executeDockerCommand('docker', [
-                'run', '--rm',
+                'run', '--rm', '--user', '0:0', '--entrypoint', '/bin/sh',
                 // No inbound/outbound needs beyond the provider APIs the CLIs call;
                 // we do not add --network none because `/usage` for some providers
                 // hits the provider API.
@@ -395,7 +398,7 @@ async function runBundledAgentTank(): Promise<BundledRunResult | undefined> {
                 // `sh -c <script> <$0> <$1>`: the config path is passed as an
                 // argument rather than interpolated, so the script itself stays a
                 // fixed string.
-                'sh', '-c', CONFIG_BOOTSTRAP, 'propr-agent-tank', CONTAINER_CONFIG_FILE,
+                '-c', CONFIG_BOOTSTRAP, 'propr-agent-tank', CONTAINER_CONFIG_FILE,
                 // A usage probe runs around agent calls, possibly inside a capped
                 // run, but spends nothing: a run stopped at its cap still reads usage.
             ], {

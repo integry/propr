@@ -1,0 +1,238 @@
+diff --git a/src/agents/agy.js b/src/agents/agy.js
+index a3f0b23..eeb66f9 100644
+--- a/src/agents/agy.js
++++ b/src/agents/agy.js
+@@ -1,3 +1,6 @@
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
+ const { BaseAgent } = require('./base.js');
+ const { calculatePace } = require('../pace-evaluator.js');
+ const { CYCLE_DURATIONS } = require('../usage-formatters.js');
+@@ -18,6 +21,7 @@ class AgyAgent extends BaseAgent {
+     super('agy', 'agy', ['--dangerously-skip-permissions']);
+     this.configPath = options.configPath || null;
+     this._aboutSent = false;
++    this._configHome = null;
+   }
+ 
+   getTimeout() {
+@@ -32,10 +36,28 @@ class AgyAgent extends BaseAgent {
+       TERM: 'xterm-256color',
+       COLORTERM: 'truecolor',
+     };
+-    if (this.configPath) env.GEMINI_CLI_HOME = this.configPath;
++    if (this.configPath) {
++      // Native Antigravity 1.x ignores GEMINI_CLI_HOME and reads HOME/.gemini.
++      // A private HOME supports arbitrary config directories without silently
++      // falling back to the default account. Keep the legacy variable as well.
++      if (!this._configHome) {
++        this._configHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tank-agy-'));
++        fs.symlinkSync(path.resolve(this.configPath), path.join(this._configHome, '.gemini'), 'dir');
++      }
++      env.HOME = this._configHome;
++      env.GEMINI_CLI_HOME = this.configPath;
++    }
+     return env;
+   }
+ 
++  killProcess() {
++    super.killProcess();
++    if (this._configHome) {
++      fs.rmSync(this._configHome, { recursive: true, force: true });
++      this._configHome = null;
++    }
++  }
++
+   _hasReadyPrompt(output) {
+     const clean = this.stripAnsi(output);
+     return /Antigravity CLI[\s\S]*\n>\s*(?:\n|$)/i.test(clean)
+diff --git a/src/agents/api-response-parser.js b/src/agents/api-response-parser.js
+index d009d59..7debfd7 100644
+--- a/src/agents/api-response-parser.js
++++ b/src/agents/api-response-parser.js
+@@ -180,7 +180,7 @@ function parseFlatPercentageFields(apiResponse, usage, now) {
+  * @returns {Object} Normalized response
+  */
+ function normalizeOAuthResponse(raw) {
+-  if (!raw.five_hour && !raw.seven_day) return raw; // already normalized or unknown
++  if (!raw.five_hour && !raw.seven_day && !raw.seven_day_fable && !Array.isArray(raw.limits)) return raw; // already normalized or unknown
+   const norm = {};
+   if (raw.five_hour) {
+     norm.sessionLimit = {
+@@ -200,6 +200,18 @@ function normalizeOAuthResponse(raw) {
+       resetsAt: raw.seven_day_fable.resets_at,
+     };
+   }
++  // Current OAuth responses expose model allowances in a typed limits array.
++  // `is_active` indicates which limit is binding, not whether it should appear.
++  for (const limit of Array.isArray(raw.limits) ? raw.limits : []) {
++    if (!limit || !Number.isFinite(limit.percent)) continue;
++    let field;
++    if (limit.kind === 'session') field = 'sessionLimit';
++    if (limit.kind === 'weekly_all') field = 'weeklyAllModels';
++    if (limit.kind === 'weekly_scoped' && /^Fable$/i.test(limit.scope?.model?.display_name || '')) {
++      field = 'weeklyFable';
++    }
++    if (field) norm[field] = { percentUsed: Math.round(limit.percent), resetsAt: limit.resets_at };
++  }
+   if (raw.extra_usage?.is_enabled) {
+     norm.extraUsage = {
+       percentUsed: Math.round(raw.extra_usage.utilization),
+diff --git a/src/agents/claude.js b/src/agents/claude.js
+index a2a1850..47cf6e6 100644
+--- a/src/agents/claude.js
++++ b/src/agents/claude.js
+@@ -4,11 +4,12 @@ const { BaseAgent } = require('./base.js');
+ const logger = require('../logger.js');
+ const { pingKeepalive } = require('./keepalive-helper.js');
+ const { parseApiResponse } = require('./api-response-parser.js');
++const { readRecentFableAllowance } = require('./claude-usage-cache.js');
+ const { parsePtyOutput, FABLE_SECTION_START } = require('./pty-output-parser.js');
+ 
+ // Matches the Fable allowance header alone, before its "N% used" row has rendered.
+ const FABLE_SECTION_HEADER = new RegExp(FABLE_SECTION_START, 'i');
+-const USAGE_SETTLE_TIMEOUT_MS = 2500;
++const USAGE_SETTLE_TIMEOUT_MS = 10000;
+ const USAGE_SETTLE_POLL_MS = 50;
+ // A healthy Claude /usage dialog starts returning its core rows almost
+ // immediately. Persistent PTYs occasionally swallow the slash command and emit
+@@ -29,6 +30,7 @@ class ClaudeAgent extends BaseAgent {
+     super('claude', 'claude');
+     this.configPath = options.configPath || null;
+     this._statusSent = false;
++    this._trustHandledShells = new WeakSet();
+     this.useApi = options.useApi || false;
+     this._apiResponse = null; // Stores the API response when using direct API
+     // PTY default: 600s (10 minutes), API mode: 60s (1 minute)
+@@ -176,6 +178,7 @@ class ClaudeAgent extends BaseAgent {
+    * Falls back to PTY if API fails
+    */
+   async runCommand() {
++    this._cachedPtyFable = null;
+     if (this.useApi) {
+       logger.agent(this.name, 'Attempting direct API fetch...');
+       const apiResponse = await this._runWithApi();
+@@ -189,7 +192,12 @@ class ClaudeAgent extends BaseAgent {
+     }
+ 
+     // Fall back to PTY command execution
+-    return super.runCommand();
++    const output = await super.runCommand();
++    const parsed = parsePtyOutput(this.stripAnsi(output));
++    if (parsed.session && parsed.weeklyAll && !parsed.weeklyFable) {
++      this._cachedPtyFable = readRecentFableAllowance(this.configPath);
++    }
++    return output;
+   }
+ 
+   getTimeout() { return 30000; }
+@@ -202,11 +210,36 @@ class ClaudeAgent extends BaseAgent {
+ 
+   isReadyForCommands(output) {
+     const clean = this.stripAnsi(output);
++    const trustMenu = clean.search(/yes,?\s*i\s*trust\s*this\s*folder/i);
++    if (trustMenu >= 0 && !/\?\s*for\s*shortcuts/i.test(clean.slice(trustMenu))) return false;
+     return clean.includes('? for shortcuts') || clean.includes('❯') ||
+            clean.includes('> ') || clean.includes('Try "');
+   }
+ 
+   handleTrustPrompt(shell, output) {
++    const clean = this.stripAnsi(output);
++    // Newer CLIs render spaces as cursor movements and default to No.
++    if (/yes,?\s*i\s*trust\s*this\s*folder/i.test(clean)) {
++      if (this._trustHandledShells.has(shell)) return false;
++      this._trustHandledShells.add(shell);
++      let active = true;
++      const exit = shell.onExit?.(() => { active = false; });
++      const write = value => {
++        if (active && !this.isStopping()) {
++          try { shell.write(value); } catch { /* Process exited during setup. */ }
++        }
++      };
++      // The terminal capability handshake redraws and resets the selection.
++      // Wait for it before selecting Yes, then allow that selection to render.
++      setTimeout(() => {
++        if (!/❯\s*Yes,?\s*I\s*trust/i.test(clean)) write('\x1b[B');
++      }, 750);
++      setTimeout(() => {
++        write('\r');
++        exit?.dispose();
++      }, 1000);
++      return true;
++    }
+     const patterns = ['Do you trust', 'trust the files', 'trust this folder', 'Trust this workspace', 'allow access'];
+     if (!patterns.some(p => output.toLowerCase().includes(p.toLowerCase()))) return false;
+     logger.agent(this.name, 'Detected trust prompt, auto-accepting...');
+@@ -355,7 +388,10 @@ class ClaudeAgent extends BaseAgent {
+     }
+ 
+     // Delegate to PTY output parser module
+-    return parsePtyOutput(clean);
++    const usage = parsePtyOutput(clean);
++    if (!usage.weeklyFable && this._cachedPtyFable) usage.weeklyFable = this._cachedPtyFable;
++    this._cachedPtyFable = null;
++    return usage;
+   }
+ 
+   // Fetch metadata by sending /status command once on first refresh
+diff --git a/src/index.js b/src/index.js
+index 5e44b95..2374982 100644
+--- a/src/index.js
++++ b/src/index.js
+@@ -424,16 +424,19 @@ class AgentTank {
+   }
+ 
+   _getRefreshCooldownRemainingMs(name, now = Date.now()) {
+-    if (this.refreshCooldown <= 0) {
+-      return 0;
+-    }
++    // Activity events and HTTP refreshes share this gate with timer polling.
++    // Otherwise frequent file activity bypasses provider-specific intervals
++    // and causes usage endpoints to rate-limit optional allowance data.
++    const agent = this.agents.get(name);
++    const cooldown = Math.max(this.refreshCooldown, agent?.refreshInterval ?? agent?.minRefreshInterval ?? 0);
++    if (cooldown <= 0) return 0;
+ 
+     const lastStartedAt = this._agentRefreshStartedAt.get(name);
+     if (!lastStartedAt) {
+       return 0;
+     }
+ 
+-    return Math.max(0, (this.refreshCooldown * 1000) - (now - lastStartedAt));
++    return Math.max(0, (cooldown * 1000) - (now - lastStartedAt));
+   }
+ 
+   async _refreshAgentWithCooldown(name) {
+diff --git a/src/agents/claude-usage-cache.js b/src/agents/claude-usage-cache.js
+new file mode 100644
+index 0000000..5be2e0e
+--- /dev/null
++++ b/src/agents/claude-usage-cache.js
+@@ -0,0 +1,26 @@
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { parseApiResponse } = require('./api-response-parser');
++
++// Claude can render its primary quotas before the model allowance arrives.
++// Its own structured response cache can fill that row without another request.
++// Accept only the current account and the CLI's short-lived (one minute) data.
++function readRecentFableAllowance(configPath, now = Date.now()) {
++  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return null;
++  const directory = configPath || process.env.CLAUDE_CONFIG_DIR;
++  const file = directory ? path.join(directory, '.claude.json') : path.join(os.homedir(), '.claude.json');
++  try {
++    const profile = JSON.parse(fs.readFileSync(file, 'utf8'));
++    const cache = profile.cachedUsageUtilization;
++    if (!cache || !Number.isFinite(cache.fetchedAtMs)) return null;
++    const age = now - cache.fetchedAtMs;
++    if (age < 0 || age > 60000 || !cache.accountUuid || cache.accountUuid !== profile.oauthAccount?.accountUuid) return null;
++    const allowance = parseApiResponse(cache.utilization).weeklyFable;
++    return allowance ? { ...allowance, sampledAt: new Date(cache.fetchedAtMs).toISOString() } : null;
++  } catch {
++    return null;
++  }
++}
++
++module.exports = { readRecentFableAllowance };

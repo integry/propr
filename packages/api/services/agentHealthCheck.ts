@@ -62,6 +62,7 @@ export function createAgentHealthCheck(dependencies: {
           timeoutMs: 30_000,
           executionType: 'agent-health-check',
           suppressLlmLog: true,
+          skipUsageTracking: true,
         });
         if (!result.success || !result.response?.trim()) {
           return { agentId, model, status: 'error', errorCode: healthErrorCode(result.error), error: redactSecrets(result.error || 'Agent returned no response.').slice(0, 2000) };

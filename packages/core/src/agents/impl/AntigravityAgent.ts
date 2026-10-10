@@ -387,7 +387,8 @@ export class AntigravityAgent implements Agent {
                 'antigravity',
                 async () => executeDockerCommand('docker', dockerArgs, { timeout: effectiveTimeoutMs, stdinData: fullPrompt, taskId, model: effectiveModel }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS,
-                this.config.alias
+                this.config.alias,
+                options?.skipUsageTracking
             );
             const executionTimeMs = Date.now() - startTime;
             const { summary, tokenUsage, sessionId, modelUsed, reportedModel, terminalStatus, protocolError, hasStreamEnvelopes } = parseAntigravityJsonl(result.stdout);

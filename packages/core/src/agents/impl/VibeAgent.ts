@@ -232,7 +232,10 @@ export class VibeAgent implements Agent {
                     timeout: timeoutMs ?? parseInt(process.env.VIBE_ANALYSIS_TIMEOUT_MS || '1800000', 10),
                     taskId,
                     model: effectiveModel
-                })
+                }),
+                undefined,
+                this.config.alias,
+                options?.skipUsageTracking
             );
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = parseVibeOutput(result.stdout);

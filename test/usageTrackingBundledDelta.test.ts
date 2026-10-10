@@ -180,3 +180,12 @@ test('post-call provenance is checked again after execution yields', async () =>
     }), undefined, 'claude-primary');
     assert.equal(usageMetrics, null);
 });
+
+
+test('health probes return the execution result without collecting usage', async () => {
+    cachedSnapshot = { claude: snapshot(42, 31, '2026-09-27T12:00:00.000Z') };
+    const result = await executeWithUsageTracking('claude', () => shortCall('auth failed'), 2000, 'claude', true);
+    assert.deepEqual(result, { result: 'auth failed', usageMetrics: null });
+    assert.equal(refreshes, 0);
+    assert.equal(scheduledRefreshes, 0);
+});

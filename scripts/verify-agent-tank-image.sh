@@ -66,7 +66,7 @@ esac
 # packages/core/src/services/agentTankBundledRunner.ts: this script is only
 # evidence about production if it runs the command production runs.
 # test/agentTankImageVerification.test.ts asserts the two stay in sync.
-BUNDLED_BOOTSTRAP='set -e; umask 077; mkdir -p "$(dirname "$1")"; printf %s "$PROPR_AGENT_TANK_CONFIG" > "$1"; node /home/node/agent-tank-runtime.mjs "$1"; exec agent-tank --once --json --config "$1"'
+BUNDLED_BOOTSTRAP='set -e; umask 077; mkdir -p "$(dirname "$1")"; printf %s "$PROPR_AGENT_TANK_CONFIG" > "$1"; exec node /home/node/agent-tank-runtime.mjs "$1" --run'
 # Same contract, different binary: clone the pinned ref, build it in the image,
 # and exec that build. The clone is quiet and npm's chatter goes to stderr so
 # stdout stays the pure JSON document the production parser reads. node-pty
@@ -272,10 +272,16 @@ if [ "$runtime" = "source" ]; then
     -e "AGENT_TANK_VERSION=$AGENT_TANK_VERSION"
   )
 fi
+if [ "$runtime" = "bundled" ]; then
+  run_args+=(--user 0:0 --entrypoint /bin/sh)
+  command_args=(-c)
+else
+  command_args=(sh -c)
+fi
 run_args+=(
   "${mount_args[@]}"
   "$AGENT_TAG"
-  sh -c "$bootstrap" propr-agent-tank "$CONTAINER_CONFIG_FILE"
+  "${command_args[@]}" "$bootstrap" propr-agent-tank "$CONTAINER_CONFIG_FILE"
 )
 
 status_output=""

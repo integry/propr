@@ -154,6 +154,8 @@ RUN case "${VIBE_CLI_VERSION}" in \
 
 
 FROM agent-base AS agent-tank-cli
+# Local upstream fixes until the next Agent Tank release includes them.
+COPY patches/agent-tank-0.9.11.patch /tmp/agent-tank.patch
 # Pinned here, not in CI: this literal is part of the Dockerfile content that
 # feeds the agent bundle content hash, so bumping it produces a new image tag.
 # An env-only override in CI would NOT change the tag and would silently ship a
@@ -165,6 +167,9 @@ USER root
 RUN npm install -g "agent-tank@${AGENT_TANK_CLI_VERSION}" \
     && npm cache clean --force \
     && rm -rf /root/.npm \
+    && cd /usr/local/lib/node_modules/agent-tank \
+    && git apply /tmp/agent-tank.patch \
+    && rm /tmp/agent-tank.patch \
     && agent-tank --version
 
 

@@ -30,7 +30,8 @@ test('provider writes stay private while only authentication is copied from read
   const config = JSON.parse(readFileSync(file, 'utf8'));
   assert.equal(config.claudeApi, true);
   assert.equal(config.dockerAccess, false);
-  assert.deepEqual(config.agents[2], agents[2]);
+  assert.notEqual(config.agents[2].configPath, agents[2].configPath);
+  assert.deepEqual(readdirSync(config.agents[2].configPath), []);
   assert.equal(statSync(runtime).mode & 0o777, 0o700);
   assert.equal(statSync(file).mode & 0o777, 0o600);
   for (const [index, filename] of ['.credentials.json', 'auth.json'].entries()) {
@@ -64,4 +65,38 @@ test('failed preparation cleans private copies and does not disclose configurati
   assert.equal(result.stderr.trim(), 'Unable to prepare isolated Agent Tank runtime');
   assert.equal(result.stdout, '');
   assert.deepEqual(readdirSync(root), ['config.json']);
+}));
+
+ test('Antigravity copies saved onboarding and auth without copying plugins or host settings', () => fixture(root => {
+  const source = join(root, 'agy');
+  mkdirSync(join(source, 'antigravity-cli/cache'), { recursive: true });
+  const files = ['antigravity-cli/antigravity-oauth-token', 'antigravity-cli/cache/onboarding.json'];
+  for (const name of files) writeFileSync(join(source, name), name, { mode: 0o600 });
+  writeFileSync(join(source, 'antigravity-cli/settings.json'), '{"mcpServers":{"host":{}}}');
+  const file = join(root, 'config.json');
+  writeFileSync(file, JSON.stringify({ agents: [{ provider: 'agy', configPath: source }] }));
+  prepareAgentTankRuntime(file);
+  const home = JSON.parse(readFileSync(file, 'utf8')).agents[0].configPath;
+  for (const name of files) {
+    assert.equal(readFileSync(join(home, name), 'utf8'), name);
+    writeFileSync(join(home, name), 'private update');
+    assert.equal(readFileSync(join(source, name), 'utf8'), name);
+  }
+  assert.equal(existsSync(join(home, 'antigravity-cli/settings.json')), false);
+}));
+
+test('Claude keeps account onboarding but excludes project commands and MCP settings', () => fixture(root => {
+  const source = join(root, 'claude');
+  mkdirSync(source);
+  const profile = { hasCompletedOnboarding: true, lastOnboardingVersion: '2.1.295', oauthAccount: { accountUuid: 'test' }, userID: 'test', projects: { '/tmp': { mcpServers: {} } }, hooks: { SessionStart: 'do-not-run' } };
+  writeFileSync(join(source, '.claude.json'), JSON.stringify(profile));
+  const file = join(root, 'config.json');
+  writeFileSync(file, JSON.stringify({ agents: [{ provider: 'claude', configPath: source }] }));
+  prepareAgentTankRuntime(file);
+  const home = JSON.parse(readFileSync(file, 'utf8')).agents[0].configPath;
+  const copied = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+  assert.deepEqual(Object.keys(copied).sort(), ['hasCompletedOnboarding', 'lastOnboardingVersion', 'oauthAccount', 'userID'].sort());
+  assert.equal(copied.hasCompletedOnboarding, true);
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).claudeApi, true);
+  assert.deepEqual(JSON.parse(readFileSync(join(source, '.claude.json'), 'utf8')), profile);
 }));

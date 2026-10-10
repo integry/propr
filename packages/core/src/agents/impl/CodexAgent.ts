@@ -258,7 +258,8 @@ export class CodexAgent implements Agent {
                     model: effectiveModel === 'unknown' ? undefined : effectiveModel
                 }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS,
-                this.config.alias
+                this.config.alias,
+                options?.skipUsageTracking
             );
 
             const executionTimeMs = Date.now() - startTime;

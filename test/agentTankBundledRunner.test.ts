@@ -88,6 +88,7 @@ fs.mkdirSync(codexHome);
 fs.mkdirSync(secondaryClaudeHome);
 
 let configuredAgents: AgentConfig[] = [];
+let registryInitialized = false;
 
 await mock.module('../packages/core/src/config/configManager.js', {
     namedExports: {
@@ -101,7 +102,12 @@ await mock.module('../packages/core/src/config/configManager.js', {
 await mock.module('../packages/core/src/agents/AgentRegistry.js', {
     namedExports: {
         AgentRegistry: {
-            getInstance: () => ({ getAllAgents: () => [{ config: { dockerImage: 'propr/agent:test' } }] }),
+            getInstance: () => ({
+                ensureInitialized: async () => { registryInitialized = true; },
+                getAllAgents: () => registryInitialized
+                    ? [{ config: { dockerImage: '' } }, { config: { dockerImage: 'propr/agent:test' } }]
+                    : [],
+            }),
         },
     },
 });
@@ -201,15 +207,17 @@ test('a failed run returns undefined and leaves the previous snapshot intact', a
     assert.ok(cached?.claude);
 });
 
-test('credential directories are mounted read-only at the agent runtime container paths', async () => {
+test('credential directories are mounted read-only at the initialized agent runtime paths', async () => {
+    registryInitialized = false;
     await refreshBundledStatuses();
+    assert.equal(registryInitialized, true);
 
     const args = dockerRuns[0];
     assert.ok(args.includes(mountSpec(claudeHome, '/home/node/.claude')));
     assert.ok(args.includes(mountSpec(codexHome, '/home/node/.codex')));
     assert.ok(args.includes('propr/agent:test'));
     const command = containerCommand(args);
-    assert.match(command[2], /exec agent-tank --once --json --config "\$1"/);
+    assert.match(command[1], /exec node \/home\/node\/agent-tank-runtime.mjs "\$1" --run/);
     assert.deepEqual(command.slice(-2), ['propr-agent-tank', CONTAINER_CONFIG_FILE]);
 });
 
@@ -277,8 +285,9 @@ test('the run carries the generated config and the container writes it itself', 
 
     const args = dockerRuns[0];
     const command = containerCommand(args);
-    assert.equal(command[0], 'sh');
-    assert.equal(command[1], '-c');
+    assert.equal(args[args.indexOf('--user') + 1], '0:0');
+    assert.equal(args[args.indexOf('--entrypoint') + 1], '/bin/sh');
+    assert.equal(command[0], '-c');
 
     // Actually run the bootstrap the way the container would: it must reproduce
     // the generated config byte for byte at the container config path, with no
@@ -287,10 +296,9 @@ test('the run carries the generated config and the container writes it itself', 
     const expected = configEnvValue(args);
     // `agent-tank` only exists in the agent image, so the final exec is swapped
     // for a no-op; everything before it is the part under test.
-    assert.ok(command[2].includes('node /home/node/agent-tank-runtime.mjs "$1"'));
-    const bootstrap = command[2].replace('node /home/node/agent-tank-runtime.mjs "$1";', '')
-        .replace('exec agent-tank', 'exec true');
-    execFileSync('sh', ['-c', bootstrap, command[3], target], {
+    assert.ok(command[1].includes('exec node /home/node/agent-tank-runtime.mjs "$1" --run'));
+    const bootstrap = command[1].replace('exec node /home/node/agent-tank-runtime.mjs', 'exec true');
+    execFileSync('sh', ['-c', bootstrap, command[2], target], {
         env: { ...process.env, PROPR_AGENT_TANK_CONFIG: expected },
     });
     assert.equal(fs.readFileSync(target, 'utf8'), expected);

@@ -49,6 +49,7 @@ test('shares concurrent probes and passes a bounded lightweight analysis without
       assert.match(prompt, /only OK/);
       assert.equal(options?.model, 'gpt-6-luna');
       assert.equal(options?.timeoutMs, 30_000);
+      assert.equal(options?.skipUsageTracking, true);
       assert.equal(options?.readOnlyWorkspacePath, undefined);
       assert.equal(options?.allowReadOnlyCommands, undefined);
       return new Promise(resolve => { finish = resolve; });

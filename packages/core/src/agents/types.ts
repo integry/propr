@@ -273,6 +273,8 @@ export interface AnalyzeOptions {
     useConfiguredReasoningLevel?: boolean;
     /** Skip the low-level agent LLM log when a caller persists a higher-level authoritative log. */
     suppressLlmLog?: boolean;
+    /** Skip quota collection for latency-sensitive probes. */
+    skipUsageTracking?: boolean;
     /**
      * Optional repository workspace exposed to the analysis agent as a read-only
      * bind mount. Omitted analyses continue to use their isolated empty

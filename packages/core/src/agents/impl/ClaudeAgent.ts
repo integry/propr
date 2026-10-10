@@ -291,7 +291,8 @@ export class ClaudeAgent implements Agent {
                     timeout: timeoutMs ?? 1800000, stdinData: analysisPrompt, taskId, model: effectiveModel
                 }),
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS,
-                this.config.alias
+                this.config.alias,
+                options?.skipUsageTracking
             );
 
             const executionTimeMs = Date.now() - startTime;

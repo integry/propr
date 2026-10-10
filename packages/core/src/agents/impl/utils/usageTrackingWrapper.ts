@@ -335,6 +335,7 @@ function startStatusSnapshot(
  * @param executeFn - An async function that performs the LLM call and returns its result.
  * @param timeoutMs - Optional timeout for each HTTP request; bundled mode uses AGENT_TANK_BUNDLED_TIMEOUT_MS.
  * @param alias - Executing account alias; bundled probes require matching cached provenance.
+ * @param skipUsageTracking - Execute without quota probes, for latency-sensitive health checks.
  * @returns The execution result and usage metrics (metrics are null if tracking was skipped).
  */
 export async function executeWithUsageTracking<T>(
@@ -342,7 +343,10 @@ export async function executeWithUsageTracking<T>(
     executeFn: () => Promise<T>,
     timeoutMs?: number,
     alias: string = agent,
+    skipUsageTracking = false,
 ): Promise<UsageTrackingResult<T>> {
+    if (skipUsageTracking) return { result: await executeFn(), usageMetrics: null };
+
     if (!(await isAgentTankEnabled())) {
         logger.debug({ agent }, 'Agent Tank disabled — skipping usage tracking');
         const result = await executeFn();

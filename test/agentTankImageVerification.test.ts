@@ -210,7 +210,7 @@ function runVerification(options: VerificationOptions = {}): VerificationRun {
 function agentTankRun(runs: string[][]): string[] {
     const run = runs.find(args => {
         const script = args[args.indexOf('-c') + 1] ?? '';
-        return script.includes('--once --json --config');
+        return script.includes('--once --json --config') || script.includes('agent-tank-runtime.mjs "$1" --run');
     });
     assert.ok(run, 'the script never ran Agent Tank');
     return run;
@@ -308,12 +308,12 @@ test('the run mounts credentials read-only and bypasses every provider entrypoin
     // a per-provider entrypoint (and its credential ownership repair) over a
     // read-only mount.
     assert.ok(args.includes('PROPR_AGENT_TYPE=agent-tank'));
-    assert.equal(args.some(arg => arg === '--entrypoint'), false);
+    assert.equal(args[args.indexOf('--entrypoint') + 1], '/bin/sh');
+    assert.equal(args[args.indexOf('--user') + 1], '0:0');
     assert.equal(args.some(arg => arg.includes('-entrypoint.sh')), false);
 
     const command = containerCommand(args);
-    assert.equal(command[0], 'sh');
-    assert.equal(command[1], '-c');
+    assert.equal(command[0], '-c');
     assert.deepEqual(command.slice(-2), ['propr-agent-tank', CONTAINER_CONFIG_FILE]);
     assert.deepEqual(generatedConfig(args), {
         agents: [
