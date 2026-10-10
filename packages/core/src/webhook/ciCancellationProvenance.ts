@@ -25,7 +25,13 @@ import { db } from '../db/connection.js';
  *    cancellation still reaches the agent;
  *  - the failing job finished no earlier than the first job the cancellation
  *    stopped, so a job that failed on its own before the cancellation landed
- *    keeps its follow-up.
+ *    keeps its follow-up;
+ *  - the check's own failure annotations show it failed *because* of the
+ *    cancellation: at least one reports a needed job as `cancelled`, and every
+ *    other one is the runner's exit-code notice or a recognized consequence
+ *    of cancelled shards. Timing and provenance only correlate; a job that
+ *    keeps running under `always()` and fails its own assertion after the
+ *    cancellation is still reported.
  * Anything unreadable or ambiguous is not proof, and the follow-up is posted.
  * The check run itself keeps its failing conclusion, so required merge gates
  * are untouched.
@@ -38,6 +44,20 @@ const GENUINE_FAILURE_CONCLUSIONS = new Set(['action_required', 'failure', 'star
 /** The only target conclusion a deliberate cancellation can explain: an aggregate failing closed. */
 const ELIGIBLE_TARGET_CONCLUSION = 'failure';
 const JOBS_PAGE_SIZE = 100;
+const ANNOTATIONS_PAGE_SIZE = 100;
+/** More annotation pages than GitHub keeps for one job is not a cancelled aggregate. */
+const MAX_ANNOTATION_PAGES = 5;
+/** The aggregate's `::error::` for a needed job the cancellation stopped. */
+const CANCELLED_DEPENDENCY_RE = /^.+ finished with result 'cancelled'\.$/u;
+/** The runner's notice for the failing step; it says nothing about why. */
+const STEP_EXIT_RE = /^Process completed with exit code \d+\.$/u;
+/**
+ * Failures the aggregate reports only as a consequence of cancelled shards:
+ * cancelled shards upload no summaries, so their coverage cannot verify.
+ */
+const CANCELLATION_CONSEQUENCES = new Set([
+    "Shard coverage verification finished with result 'failure'.",
+]);
 
 /** The subset of the worker's `CancelledRun` that identifies the attempt ProPR cancelled. */
 export interface ProprCancelledRun {
@@ -151,6 +171,7 @@ export async function findCancellationProvenance(
     if (cancellationTimes.length === 0) return null;
     const failedAt = Date.parse(job.completed_at);
     if (!Number.isFinite(failedAt) || failedAt < Math.min(...cancellationTimes)) return null;
+    if (!await failedOnCancelledDependencies(octokit, target, jobId)) return null;
 
     return { cancelledBy, runId, runAttempt };
 }
@@ -172,6 +193,36 @@ async function resolveCancellationSource(
     });
     const attempt = asRecord(data);
     return attempt?.status === 'completed' && attempt.conclusion === 'cancelled' ? 'workflow_cancelled' : null;
+}
+
+/**
+ * Whether the check's failure annotations attribute its failure to cancelled
+ * needed jobs and to nothing else. Missing, truncated or unrecognized
+ * failures are not proof.
+ */
+async function failedOnCancelledDependencies(
+    octokit: CancellationProvenanceOctokit,
+    target: CancellationProvenanceTarget,
+    checkRunId: number,
+): Promise<boolean> {
+    const failures: string[] = [];
+    for (let page = 1; ; page += 1) {
+        if (page > MAX_ANNOTATION_PAGES) return false;
+        const { data } = await octokit.request('GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations', {
+            owner: target.owner, repo: target.repo, check_run_id: checkRunId, per_page: ANNOTATIONS_PAGE_SIZE, page,
+        });
+        if (!Array.isArray(data)) return false;
+        for (const annotation of data) {
+            const record = asRecord(annotation);
+            if (record?.annotation_level !== 'failure') continue;
+            failures.push(typeof record.message === 'string' ? record.message.trim() : '');
+        }
+        if (data.length < ANNOTATIONS_PAGE_SIZE) break;
+    }
+    return failures.some(message => CANCELLED_DEPENDENCY_RE.test(message))
+        && failures.every(message => CANCELLED_DEPENDENCY_RE.test(message)
+            || STEP_EXIT_RE.test(message)
+            || CANCELLATION_CONSEQUENCES.has(message));
 }
 
 function isEligibleTargetConclusion(conclusion: string | null | undefined): boolean {

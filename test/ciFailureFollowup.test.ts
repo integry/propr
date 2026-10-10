@@ -202,8 +202,22 @@ describe('cancellation-induced aggregate failure', () => {
         return jobs.map(job => ({ ...job, ...overrides[job.name] }));
     }
 
+    /** The failure annotations GitHub recorded for job 114326002000. */
+    const AGGREGATE_ANNOTATIONS = [
+        { annotation_level: 'warning', message: 'Node.js 20 is deprecated.' },
+        { annotation_level: 'failure', message: 'Process completed with exit code 1.' },
+        { annotation_level: 'failure', message: "Shard coverage verification finished with result 'failure'." },
+        { annotation_level: 'failure', message: "Hosted native Electron units finished with result 'cancelled'." },
+        { annotation_level: 'failure', message: "Docs site validation finished with result 'cancelled'." },
+        { annotation_level: 'failure', message: "Full test suite shards finished with result 'cancelled'." },
+        { annotation_level: 'failure', message: 'Process completed with exit code 1.' },
+    ];
+
     function actionsOctokit(options: {
         jobs: Job[];
+        /** The target check run's annotations; the actual aggregate's by default. */
+        annotations?: Array<{ annotation_level: string; message: string }>;
+        failAnnotations?: boolean;
         runAttempt?: number;
         attemptConclusion?: string;
         failJobLookup?: boolean;
@@ -231,6 +245,11 @@ describe('cancellation-induced aggregate failure', () => {
                 }
                 if (route === 'GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs') {
                     return { data: { total_count: options.jobs.length, jobs: options.jobs } };
+                }
+                if (route === 'GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations') {
+                    if (options.failAnnotations) throw new Error('HTTP 502');
+                    assert.strictEqual(parameters.check_run_id, AGGREGATE_JOB_ID);
+                    return { data: parameters.page === 1 ? options.annotations ?? AGGREGATE_ANNOTATIONS : [] };
                 }
                 throw new Error(`unexpected route ${route}`);
             }),
@@ -298,6 +317,57 @@ describe('cancellation-induced aggregate failure', () => {
         const { octokit } = actionsOctokit({
             jobs: cancelledRunJobs({ 'Run Full Test Suite': { completed_at: '2026-10-10T20:05:00Z' } }),
         });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+
+    test('still posts a job that kept running past the cancellation and failed its own assertion', async () => {
+        // A job under `always()` fails on its own after a needed job was
+        // cancelled; correlation in time is not causation.
+        const { octokit, postedBodies } = actionsOctokit({
+            jobs: cancelledRunJobs(),
+            annotations: [
+                { annotation_level: 'failure', message: 'AssertionError: expected the migration to apply cleanly' },
+                { annotation_level: 'failure', message: 'Process completed with exit code 1.' },
+            ],
+        });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
+
+        assert.strictEqual(result.reason, 'posted');
+        assert.strictEqual(postedBodies.length, 1);
+    });
+
+    test('still posts an aggregate whose own failure accompanies its cancelled dependencies', async () => {
+        const { octokit } = actionsOctokit({
+            jobs: cancelledRunJobs(),
+            annotations: [
+                ...AGGREGATE_ANNOTATIONS,
+                { annotation_level: 'failure', message: 'Unexpected skipped shard 3/4.' },
+            ],
+        });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+
+    test('still posts a target whose only failure is its exit code', async () => {
+        const { octokit } = actionsOctokit({
+            jobs: cancelledRunJobs(),
+            attemptConclusion: 'cancelled',
+            annotations: [{ annotation_level: 'failure', message: 'Process completed with exit code 1.' }],
+        });
+
+        const { result } = await follow(octokit, []);
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+
+    test('posts when the failed check annotations cannot be read', async () => {
+        const { octokit } = actionsOctokit({ jobs: cancelledRunJobs(), failAnnotations: true });
 
         const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
 
