@@ -83,14 +83,20 @@ const Y_AXIS_WIDTH = 28;
 /** The space above the plot, and the date axis beneath it. */
 const PLOT_TOP = 12;
 const X_AXIS_HEIGHT = 28;
-/** How far the tooltip's caret stands off the top of the bar it points at. */
+/** How far the tooltip's card stands off the caret's tip: the caret's half-diagonal. */
 const CARET_SIZE = 6;
+/**
+ * The air between the caret's tip and the top of the bar it points at. With
+ * none the tip sits exactly on the bar, and an engine that rounds the card or
+ * the turned caret a fraction of a pixel differently (WebKit) dips it into the bar.
+ */
+const CARET_GAP = 1;
 /**
  * How tall the hover card stands over its bar, caret included: two 16px lines,
  * 4px of padding either side and the border. The ceiling leaves this much room
  * above the tallest bar, less the space already above the plot.
  */
-const CARD_CLEARANCE = 2 * 16 + 2 * 4 + 2 + CARET_SIZE;
+const CARD_CLEARANCE = 2 * 16 + 2 * 4 + 2 + CARET_SIZE + CARET_GAP;
 /** The least headroom over the busiest day, as a share of it. */
 const MIN_HEADROOM = 0.15;
 /**
@@ -165,7 +171,7 @@ const AnchoredTooltip: React.FC<{ x: number; y: number; minX: number; maxX: numb
     if (box.current) setBox({ width: box.current.offsetWidth, height: box.current.offsetHeight });
   }, [children]);
   const left = Math.max(minX, Math.min(x - width / 2, maxX - width));
-  const top = Math.max(0, y - CARET_SIZE - height);
+  const top = Math.max(0, y - CARET_GAP - CARET_SIZE - height);
   return (
     <div
       ref={box}
