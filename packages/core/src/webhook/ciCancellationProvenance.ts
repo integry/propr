@@ -13,6 +13,10 @@ import { db } from '../db/connection.js';
  * new follow-up cancels the next head's validation, whose gate fails again.
  *
  * The check is only judged cancellation-induced when all of this holds:
+ *  - the check itself plainly failed: its reported conclusion, the fetched
+ *    job and the attempt's job listing all read `failure`. A target that
+ *    timed out, could not start or awaits action is a genuine outcome of its
+ *    own, even when its evidence and the fetched job disagree;
  *  - the cancellation is provenanced: ProPR's durable suspension record owns
  *    this run attempt, or GitHub reports the attempt itself as `cancelled`
  *    (an operator or another deliberate cancellation);
@@ -31,6 +35,8 @@ import { db } from '../db/connection.js';
 const PR_CI_SUSPENSIONS_TABLE = 'pr_ci_suspensions';
 const ACTIONS_RUN_URL_RE = /\/actions\/runs\/(\d+)(?:\/job\/(\d+))?/u;
 const GENUINE_FAILURE_CONCLUSIONS = new Set(['action_required', 'failure', 'startup_failure', 'timed_out']);
+/** The only target conclusion a deliberate cancellation can explain: an aggregate failing closed. */
+const ELIGIBLE_TARGET_CONCLUSION = 'failure';
 const JOBS_PAGE_SIZE = 100;
 
 /** The subset of the worker's `CancelledRun` that identifies the attempt ProPR cancelled. */
@@ -51,6 +57,8 @@ export interface CancellationProvenanceTarget {
     prNumber: number;
     checkRunId?: number;
     url: string;
+    /** The conclusion the failure evidence reported for this check run. */
+    conclusion: string;
 }
 
 export interface CancellationProvenance {
@@ -107,6 +115,7 @@ export async function findCancellationProvenance(
     target: CancellationProvenanceTarget,
     loadCancelledRuns: LoadProprCancelledRuns = loadProprCancelledRuns,
 ): Promise<CancellationProvenance | null> {
+    if (!isEligibleTargetConclusion(target.conclusion)) return null;
     const urlMatch = ACTIONS_RUN_URL_RE.exec(target.url);
     if (!urlMatch) return null;
     // An Actions job's check run id is its job id.
@@ -118,6 +127,7 @@ export async function findCancellationProvenance(
     const runId = typeof job?.run_id === 'number' ? job.run_id : Number(urlMatch[1]);
     const runAttempt = typeof job?.run_attempt === 'number' ? job.run_attempt : undefined;
     if (!job || !job.completed_at || runAttempt === undefined) return null;
+    if (!isEligibleTargetConclusion(job.conclusion)) return null;
 
     const cancelledBy = await resolveCancellationSource(octokit, target, runId, runAttempt, loadCancelledRuns);
     if (!cancelledBy) return null;
@@ -130,6 +140,8 @@ export async function findCancellationProvenance(
     // Jobs that could not be seen may hold the genuine failure.
     if (typeof listing?.total_count !== 'number' || listing.total_count > jobs.length) return null;
 
+    const listed = jobs.find(entry => entry.id === jobId);
+    if (!listed || !isEligibleTargetConclusion(listed.conclusion)) return null;
     const siblings = jobs.filter(sibling => sibling.id !== jobId);
     if (siblings.some(sibling => GENUINE_FAILURE_CONCLUSIONS.has((sibling.conclusion ?? '').toLowerCase()))) return null;
     const cancellationTimes = siblings
@@ -160,6 +172,10 @@ async function resolveCancellationSource(
     });
     const attempt = asRecord(data);
     return attempt?.status === 'completed' && attempt.conclusion === 'cancelled' ? 'workflow_cancelled' : null;
+}
+
+function isEligibleTargetConclusion(conclusion: string | null | undefined): boolean {
+    return (conclusion ?? '').toLowerCase() === ELIGIBLE_TARGET_CONCLUSION;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

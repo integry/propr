@@ -276,6 +276,7 @@ async function isCancellationInduced(
             prNumber: request.prNumber,
             checkRunId: request.evidence.checkRunId,
             url: request.evidence.url,
+            conclusion: request.evidence.state,
         }, dependencies.loadProprCancelledRuns);
         if (!provenance) return false;
         log.info({ ...failureLogContext(request), ...provenance }, 'Failed check run was caused by a deliberate workflow cancellation; no follow-up');

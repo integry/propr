@@ -85,6 +85,7 @@ While Ultrafix is waiting for CI, its periodic check also recovers failed-CI fol
 
 A cancelled check is not a failure, and neither is a check that failed only because its workflow run was deliberately cancelled. For example, an aggregate gate that runs under `always()` and fails closed when its shards were cancelled. Without this rule, [cancelling obsolete checks during follow-up](#cancelling-obsolete-checks-during-follow-up) would start a new follow-up from the gate's failure, which would then cancel the next commit's checks. ProPR skips the comment only when all of the following hold:
 
+- The check itself concluded `failure`. A check that timed out, failed to start or is waiting for approval is always reported, even if the cancellation evidence points elsewhere.
 - The run attempt was cancelled by ProPR's own recorded suspension, or GitHub reports that attempt as cancelled.
 - No other job of that attempt failed or timed out.
 - The check failed after the cancellation stopped its sibling jobs.

@@ -168,7 +168,7 @@ describe('cancellation-induced aggregate failure', () => {
     const RUN_ID = 38090559848;
     const AGGREGATE_JOB_ID = 114326002000;
 
-    function aggregateRequest(): CiFailureFollowupRequest {
+    function aggregateRequest(state = 'failure'): CiFailureFollowupRequest {
         return {
             owner: 'integry',
             repo: 'propr',
@@ -176,7 +176,7 @@ describe('cancellation-induced aggregate failure', () => {
             evidence: {
                 kind: 'check_run',
                 name: 'Run Full Test Suite',
-                state: 'failure',
+                state,
                 sha: '8413598e20599fa42d316ef826627bd8769edc47',
                 url: `https://github.com/integry/propr/actions/runs/${RUN_ID}/job/${AGGREGATE_JOB_ID}`,
                 source: 'check-run:Run Full Test Suite',
@@ -202,7 +202,14 @@ describe('cancellation-induced aggregate failure', () => {
         return jobs.map(job => ({ ...job, ...overrides[job.name] }));
     }
 
-    function actionsOctokit(options: { jobs: Job[]; runAttempt?: number; attemptConclusion?: string; failJobLookup?: boolean }) {
+    function actionsOctokit(options: {
+        jobs: Job[];
+        runAttempt?: number;
+        attemptConclusion?: string;
+        failJobLookup?: boolean;
+        /** The fetched job's conclusion when it disagrees with the attempt's job listing. */
+        jobLookupConclusion?: string;
+    }) {
         const postedBodies: string[] = [];
         const runAttempt = options.runAttempt ?? 1;
         const aggregate = options.jobs.find(job => job.id === AGGREGATE_JOB_ID)!;
@@ -215,7 +222,7 @@ describe('cancellation-induced aggregate failure', () => {
                 }
                 if (route === 'GET /repos/{owner}/{repo}/actions/jobs/{job_id}') {
                     if (options.failJobLookup) throw new Error('HTTP 502');
-                    return { data: { id: AGGREGATE_JOB_ID, run_id: RUN_ID, run_attempt: runAttempt, conclusion: 'failure', completed_at: aggregate.completed_at } };
+                    return { data: { id: AGGREGATE_JOB_ID, run_id: RUN_ID, run_attempt: runAttempt, conclusion: options.jobLookupConclusion ?? aggregate.conclusion, completed_at: aggregate.completed_at } };
                 }
                 if (route === 'GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}') {
                     // The aggregate finishes while the run still evaluates its report job.
@@ -234,9 +241,10 @@ describe('cancellation-induced aggregate failure', () => {
     async function follow(
         octokit: ReturnType<typeof actionsOctokit>['octokit'],
         cancelledRuns: Array<{ id: number; observedAttempt?: number; attempt?: number; restarted?: boolean }>,
+        reportedState = 'failure',
     ) {
         const redis = createRedis();
-        const result = await postCiFailureFollowup(aggregateRequest(), 'cancellation-test', {
+        const result = await postCiFailureFollowup(aggregateRequest(reportedState), 'cancellation-test', {
             isEnabled: mock.fn(async () => true),
             getOctokit: mock.fn(async () => octokit),
             redisClient: redis as never,
@@ -310,6 +318,48 @@ describe('cancellation-induced aggregate failure', () => {
         const { octokit } = actionsOctokit({ jobs: cancelledRunJobs(), runAttempt: 2, attemptConclusion: 'failure' });
 
         const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1, attempt: 1, restarted: true }]);
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+
+    for (const conclusion of ['timed_out', 'startup_failure', 'action_required']) {
+        test(`still posts a ${conclusion} target despite the cancellation evidence`, async () => {
+            const { octokit, postedBodies } = actionsOctokit({
+                jobs: cancelledRunJobs({ 'Run Full Test Suite': { conclusion } }),
+                attemptConclusion: 'cancelled',
+            });
+
+            const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }], conclusion);
+
+            assert.strictEqual(result.reason, 'posted');
+            assert.strictEqual(postedBodies.length, 1);
+        });
+    }
+
+    test('still posts a target reported failed whose fetched job timed out', async () => {
+        const { octokit } = actionsOctokit({ jobs: cancelledRunJobs(), attemptConclusion: 'cancelled', jobLookupConclusion: 'timed_out' });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+
+    test('still posts a target reported timed out whose fetched job reads failure', async () => {
+        const { octokit } = actionsOctokit({ jobs: cancelledRunJobs(), attemptConclusion: 'cancelled' });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }], 'timed_out');
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+
+    test('still posts a failed target the attempt job listing records as timed out', async () => {
+        const { octokit } = actionsOctokit({
+            jobs: cancelledRunJobs({ 'Run Full Test Suite': { conclusion: 'timed_out' } }),
+            attemptConclusion: 'cancelled',
+            jobLookupConclusion: 'failure',
+        });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
 
         assert.strictEqual(result.reason, 'posted');
     });
