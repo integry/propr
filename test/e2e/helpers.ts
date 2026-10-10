@@ -125,6 +125,16 @@ export interface AgentModelPair {
 // Plan helpers
 // ---------------------------------------------------------------------------
 
+// The planner reports a provider credential rejection (for example an expired
+// Claude OAuth session) with this fixed summary. Another generation attempt
+// cannot succeed until the account is signed back in, so retrying only burns
+// the suite timeout and hides the cause behind "produced 0 issue(s)".
+const PLANNER_AUTHENTICATION_FAILURE = "Plan generation could not authenticate with a required service.";
+
+export function isPlannerAuthenticationFailure(reason: unknown): boolean {
+  return typeof reason === "string" && reason.trim() === PLANNER_AUTHENTICATION_FAILURE;
+}
+
 export async function createAndGeneratePlan(
   repo: string,
   prompt: string,
@@ -157,6 +167,11 @@ export async function createAndGeneratePlan(
     const reason = currentPlan.generation_trace?.error;
     if (typeof reason === "string" && reason) {
       console.log(`    Plan ${plan.draft_id.substring(0, 8)} failed: ${reason}`);
+      if (isPlannerAuthenticationFailure(reason)) {
+        throw new Error(
+          `Plan ${plan.draft_id.substring(0, 8)} failed: ${reason} Reauthenticate the planner's provider account on the E2E server; retrying cannot succeed until then.`,
+        );
+      }
     }
     return { planId: plan.draft_id, issues: [] };
   }

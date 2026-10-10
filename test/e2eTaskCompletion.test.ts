@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import { isProviderAuthenticationFailure } from "./e2e/providerAuthentication.js";
 import {
   assertModelTasksSucceeded,
+  isPlannerAuthenticationFailure,
   newModelResult,
   type ModelTestResult,
 } from "./e2e/helpers.js";
@@ -146,5 +147,18 @@ describe("E2E model task completion", () => {
       ]),
       /codex\/gpt-6-astra: cancelled/,
     );
+  });
+
+  test("stops plan retries only on the planner's authentication failure summary", () => {
+    assert.equal(isPlannerAuthenticationFailure("Plan generation could not authenticate with a required service."), true);
+    for (const reason of [
+      undefined,
+      "",
+      "Plan generation failed. Detailed diagnostics are available in server logs.",
+      "Plan generation timed out.",
+      "The plan generation service is rate limited. Please try again later.",
+    ]) {
+      assert.equal(isPlannerAuthenticationFailure(reason), false);
+    }
   });
 });

@@ -19,7 +19,7 @@ const RESTRICTED_PLANNER_FAILURE = 'Plan generation failed. Detailed diagnostics
 const SAFE_PLANNER_FAILURE_CLASSES: Array<{ pattern: RegExp; summary: string }> = [
   { pattern: /\b(timeout|timed out|deadline)\b/i, summary: 'Plan generation timed out.' },
   { pattern: /\b(rate limit|quota|too many requests)\b/i, summary: 'The plan generation service is rate limited. Please try again later.' },
-  { pattern: /\b(auth(?:entication|orization)?|unauthorized|forbidden|credential)\b/i, summary: 'Plan generation could not authenticate with a required service.' },
+  { pattern: /\b(?:o?auth(?:enticat(?:e|ed|ion)|orization)?|unauthori[sz]ed|forbidden|credentials?|session expired)\b/i, summary: 'Plan generation could not authenticate with a required service.' },
   { pattern: /\b(cancelled|canceled|aborted)\b/i, summary: 'Plan generation was cancelled.' },
 ];
 

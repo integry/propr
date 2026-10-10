@@ -16,7 +16,7 @@ const {
 } = await import('../../core/src/claude/docker/dockerExecutor.js');
 const { closeConnection } = await import('@propr/core');
 const { persistGenerationCompletion } = await import('../../core/src/services/taskPlanningService.js');
-const { runBackgroundGeneration } = await import('../routes/plannerHelpers/utils.js');
+const { getSafePlannerFailureMessage, runBackgroundGeneration } = await import('../routes/plannerHelpers/utils.js');
 const { createRefineHandler } = await import('../routes/plannerHelpers/handlers/generationHandlers.js');
 const { runBackgroundRefinement } = await import('../routes/plannerHelpers/refineBackground.js');
 type AbortRedisFactory = import('../../core/src/claude/docker/dockerExecutor.js').AbortRedisFactory;
@@ -202,6 +202,22 @@ describe('planner background abort reconciliation', () => {
     assert.equal(failure.error, 'Plan generation failed. Detailed diagnostics are available in server logs.');
     assert.equal(JSON.stringify(failure).includes(rawError), false);
     assert.equal(JSON.stringify(publishedTrace).includes(rawError), false);
+  });
+
+  test('classifies expired provider OAuth sessions as an authentication failure', () => {
+    const authFailure = 'Plan generation could not authenticate with a required service.';
+    for (const detail of [
+      'Failed to authenticate: OAuth session expired and could not be refreshed',
+      'OAuth token revoked',
+      'Request unauthorized by provider',
+      'Missing credentials for provider',
+    ]) {
+      assert.equal(getSafePlannerFailureMessage(new Error(detail)), authFailure, detail);
+    }
+    assert.equal(
+      getSafePlannerFailureMessage(new Error('provider failed at /srv/private/repo')),
+      'Plan generation failed. Detailed diagnostics are available in server logs.',
+    );
   });
 
   test('retries a failure CAS miss while the same generation run remains active', async t => {
