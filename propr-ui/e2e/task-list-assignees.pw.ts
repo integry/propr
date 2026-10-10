@@ -178,7 +178,8 @@ test('the assignee filter narrows the list, lives in the URL and resets to page 
   dialog = await openAssigneeFilter(page);
   await dialog.getByRole('radio', { name: 'All assignees' }).click();
   await expect(page).toHaveURL(/\/tasks$/);
-  expect(requests.at(-1)!.searchParams.has('assignee')).toBe(false);
+  // The URL changes before the refetch is sent, so wait for the request rather than reading it once.
+  await expect.poll(() => requests.at(-1)!.searchParams.has('assignee')).toBe(false);
 });
 
 test('a login on no page seen yet can be typed into the assignee filter', async ({ page }) => {
