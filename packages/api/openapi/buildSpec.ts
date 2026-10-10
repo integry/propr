@@ -24,7 +24,7 @@ const COMPONENT_PREFIX = '#/components/schemas/';
 const RESPONSE_PREFIX = '#/components/responses/';
 
 const TAGS: { name: string; description: string; prefixes: string[] }[] = [
-  { name: 'System', description: 'Health, compatibility and status.', prefixes: ['/health', '/api/compatibility', '/api/status'] },
+  { name: 'System', description: 'Health, compatibility and status.', prefixes: ['/health', '/api/compatibility', '/api/status', '/api/internal/hosted'] },
   { name: 'Authentication', description: 'Browser login and the signed-in user.', prefixes: ['/api/auth'] },
   { name: 'Tasks', description: 'Task runs, their events, output and follow-ups.', prefixes: ['/api/tasks', '/api/task/', '/api/execution', '/api/import-tasks', '/api/pull-requests'] },
   { name: 'Task submissions', description: 'Idempotent creation of new tasks from an instruction.', prefixes: ['/api/task-submissions'] },
