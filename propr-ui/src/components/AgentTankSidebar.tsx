@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { getAgentTankUsage, refreshAgentTank, AgentTankUsageResponse, AgentUsageData } from '../api/revertApi';
 import { ProviderLogo } from './ui/ProviderLogo';
 import { getModelDisplayName } from '../utils/modelDisplay';
+import { stripRemainingSuffix } from '../utils/usageMetricLabels';
 import { SIDEBAR_ICON_STROKE_WIDTH, SIDEBAR_ICON_STROKE_CLASS } from './icons/sidebarIconStroke';
 import { useLiveResource } from '../hooks/useLiveResource';
 
@@ -48,13 +49,6 @@ const PROVIDER_ORDER = ['claude', 'gemini', 'codex', 'antigravity'];
 function getProviderRank(name: string): number {
   const idx = PROVIDER_ORDER.indexOf(name.toLowerCase());
   return idx === -1 ? PROVIDER_ORDER.length : idx;
-}
-
-// Agent Tank reports Antigravity quotas as "<group> · <window> Limit Remaining".
-// Every row in the widget already reads as remaining capacity, so the trailing
-// word is noise that pushes the informative part out of the truncated label.
-function stripRemainingSuffix(name: string): string {
-  return name.replace(/\s+Remaining$/i, '').trim();
 }
 
 // Map Antigravity thinking-level suffixes to compact bold badges.
