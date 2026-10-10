@@ -81,7 +81,7 @@ async function listAllLlmLogs(options: Omit<ListLlmLogsOptions, "page" | "limit"
 }
 
 function createSuitePlan(label: string, prompt: string, signal: AbortSignal, minIssues = 1) {
-  return planWork.track(createPlanWithRetries(REPO!, label, prompt, client, createdPlanIds, { signal, minIssues }));
+  return planWork.track(createPlanWithRetries(REPO!, label, prompt, client, createdPlanIds, { signal, minIssues, tracker: planWork }));
 }
 
 // ---------------------------------------------------------------------------
@@ -94,8 +94,9 @@ describe("ProPR CLI E2E", {
   before(() => { client = createTestClient(); });
 
   after(async () => {
-    // A timed-out test is only signalled; let its plan work stop before the
-    // plans it created are deleted, so none is created after cleanup.
+    // A timed-out test is only signalled; let its plan work and every request
+    // it sent settle before the plans it created are deleted, so a plan whose
+    // creation answered after the cancellation is still recorded and deleted.
     if (!(await planWork.settle(PLAN_SUITE_CLEANUP_MS))) {
       console.log(`  [cleanup] ${planWork.size} plan operation(s) still running after ${PLAN_SUITE_CLEANUP_MS}ms`);
     }
@@ -489,7 +490,7 @@ describe("ProPR CLI E2E", {
         }
         console.log(`    Plan ${i + 1}/${maxAttempts}...`);
         const { issues } = await planWork.track(createAndGeneratePlan(
-          REPO!, prompts[i % prompts.length], client, createdPlanIds, { signal: t.signal, deadline },
+          REPO!, prompts[i % prompts.length], client, createdPlanIds, { signal: t.signal, deadline, tracker: planWork },
         ));
         collected.push(...issues);
         console.log(`    +${issues.length} issues (total: ${collected.length}/${needed})`);

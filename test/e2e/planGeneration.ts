@@ -76,12 +76,22 @@ export function planDeadline(
 // Dependencies (injectable for deterministic tests)
 // ---------------------------------------------------------------------------
 
+/**
+ * Forwarded to every API request: the signal aborts the in-flight request and
+ * its retries when the test is cancelled or the deadline passes, and the
+ * timeout never lets one attempt run past the deadline.
+ */
+export interface PlanRequest {
+  signal: AbortSignal;
+  timeout: number;
+}
+
 export interface PlanApi {
-  createPlan(repo: string, prompt: string, client: ApiClient): Promise<{ draft_id: string }>;
-  generatePlan(draftId: string, client: ApiClient): Promise<unknown>;
-  getPlan(draftId: string, client: ApiClient): Promise<Pick<Plan, "status" | "plan_json" | "generation_trace">>;
-  finalizePlan(draftId: string, client: ApiClient): Promise<unknown>;
-  listPlanIssues(draftId: string, client: ApiClient): Promise<PlanIssue[]>;
+  createPlan(repo: string, prompt: string, client: ApiClient, request: PlanRequest): Promise<{ draft_id: string }>;
+  generatePlan(draftId: string, client: ApiClient, request: PlanRequest): Promise<unknown>;
+  getPlan(draftId: string, client: ApiClient, request: PlanRequest): Promise<Pick<Plan, "status" | "plan_json" | "generation_trace">>;
+  finalizePlan(draftId: string, client: ApiClient, request: PlanRequest): Promise<unknown>;
+  listPlanIssues(draftId: string, client: ApiClient, request: PlanRequest): Promise<PlanIssue[]>;
 }
 
 export interface PlanGenerationOptions {
@@ -89,18 +99,26 @@ export interface PlanGenerationOptions {
   signal?: AbortSignal;
   /** Absolute epoch-ms deadline for the whole operation. */
   deadline?: number;
+  /**
+   * Receives every API request, including one the helper stopped waiting for
+   * after cancellation, so cleanup can wait until no request is in flight.
+   */
+  tracker?: PlanWorkTracker;
   api?: PlanApi;
   now?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   log?: (message: string) => void;
 }
 
+// The CLI client's default per-attempt timeout; the deadline may shorten it.
+export const PLAN_REQUEST_TIMEOUT_MS = 30_000;
+
 const liveApi: PlanApi = {
-  createPlan: (repo, prompt, client) => createPlan(repo, prompt, {}, client),
-  generatePlan: (draftId, client) => generatePlan(draftId, {}, client),
-  getPlan: (draftId, client) => getPlan(draftId, client),
-  finalizePlan: (draftId, client) => finalizePlan(draftId, client),
-  listPlanIssues: (draftId, client) => listPlanIssues(draftId, client),
+  createPlan: (repo, prompt, client, request) => createPlan(repo, prompt, {}, client, request),
+  generatePlan: (draftId, client, request) => generatePlan(draftId, {}, client, request),
+  getPlan: (draftId, client, request) => getPlan(draftId, client, request),
+  finalizePlan: (draftId, client, request) => finalizePlan(draftId, client, request),
+  listPlanIssues: (draftId, client, request) => listPlanIssues(draftId, client, request),
 };
 
 /** Sleep that rejects as soon as the signal aborts. */
@@ -121,6 +139,16 @@ export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> 
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("This operation was aborted", "AbortError");
+}
+
+/** Settles like `work`, or rejects as soon as the signal aborts. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    void work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 export class PlanDeadlineError extends Error {
@@ -155,25 +183,79 @@ export async function createAndGeneratePlan(
   createdPlanIds: string[],
   options: PlanGenerationOptions = {},
 ): Promise<{ planId: string; issues: PlanIssue[] }> {
-  const api = options.api ?? liveApi;
   const now = options.now ?? Date.now;
-  const sleep = options.sleep ?? abortableSleep;
-  const log = options.log ?? console.log;
-  const { signal } = options;
   const deadline = options.deadline ?? planDeadline(PLAN_GENERATION_TIMEOUT_MS + PLAN_ISSUES_TIMEOUT_MS, E2E_JOB_DEADLINE, now());
 
-  signal?.throwIfAborted();
+  options.signal?.throwIfAborted();
   if (now() >= deadline) {
     throw new PlanDeadlineError("Plan creation was not started: its E2E deadline has already passed.");
   }
 
-  const plan = await api.createPlan(repo, prompt, client);
-  // Recorded before anything else can throw, so the suite cleanup deletes it.
-  createdPlanIds.push(plan.draft_id);
-  const label = plan.draft_id.substring(0, 8);
+  // One signal for the whole operation: aborted by the test's signal or when
+  // the deadline passes, and forwarded to every request and sleep.
+  const operation = new AbortController();
+  const { signal } = options;
+  const forwardAbort = () => operation.abort(abortReason(signal!));
+  signal?.addEventListener("abort", forwardAbort, { once: true });
+  const deadlineTimer = setTimeout(
+    () => operation.abort(new PlanDeadlineError("Plan creation exceeded its E2E deadline.")),
+    Math.min(Math.max(0, deadline - now()), 2 ** 31 - 1),
+  );
+  deadlineTimer.unref?.();
+  try {
+    return await runPlanAttempt(repo, prompt, client, createdPlanIds, { ...options, now, deadline }, operation.signal);
+  } finally {
+    clearTimeout(deadlineTimer);
+    signal?.removeEventListener("abort", forwardAbort);
+  }
+}
 
-  signal?.throwIfAborted();
-  await api.generatePlan(plan.draft_id, client);
+async function runPlanAttempt(
+  repo: string,
+  prompt: string,
+  client: ApiClient,
+  createdPlanIds: string[],
+  options: PlanGenerationOptions & { now: () => number; deadline: number },
+  signal: AbortSignal,
+): Promise<{ planId: string; issues: PlanIssue[] }> {
+  const api = options.api ?? liveApi;
+  const sleep = options.sleep ?? abortableSleep;
+  const log = options.log ?? console.log;
+  const { now, deadline, tracker } = options;
+  let label = "(not yet created)";
+
+  /** Fails once the operation is cancelled or its deadline has passed. */
+  const checkpoint = (step: string) => {
+    signal.throwIfAborted();
+    if (now() >= deadline) {
+      throw new PlanDeadlineError(`Plan ${label} reached its E2E deadline ${step}.`);
+    }
+  };
+
+  /**
+   * Runs one request bounded by the operation: never started after
+   * cancellation or the deadline, abandoned as soon as either happens, and
+   * its result discarded when it arrives after the deadline.
+   */
+  const call = async <T>(step: string, request: (options: PlanRequest) => Promise<T>): Promise<T> => {
+    checkpoint(`before ${step}`);
+    const work = request({ signal, timeout: Math.max(1, Math.min(PLAN_REQUEST_TIMEOUT_MS, deadline - now())) });
+    tracker?.track(work);
+    const result = await untilAborted(work, signal);
+    checkpoint(`while waiting for ${step}`);
+    return result;
+  };
+
+  // Recorded when the server answers, even if the helper stopped waiting, so
+  // the suite cleanup deletes a plan created during a cancellation race.
+  const plan = await call("plan creation", (request) =>
+    api.createPlan(repo, prompt, client, request).then((created) => {
+      createdPlanIds.push(created.draft_id);
+      return created;
+    }));
+  label = plan.draft_id.substring(0, 8);
+
+  await call("generation start", (request) => api.generatePlan(plan.draft_id, client, request));
 
   const doneStatuses = new Set(["review", "executed", "approved", "merged", "pr_created", "failed"]);
   // Generation may use the whole budget except the issue wait after finalization.
@@ -184,8 +266,7 @@ export async function createAndGeneratePlan(
 
   while (now() < generationDeadline) {
     await sleep(Math.min(PLAN_POLL_INTERVAL_MS, Math.max(0, generationDeadline - now())), signal);
-    signal?.throwIfAborted();
-    const current = await api.getPlan(plan.draft_id, client);
+    const current = await call("plan status", (request) => api.getPlan(plan.draft_id, client, request));
     if (current.status !== lastStatus) {
       log(`    Plan ${label}: ${lastStatus} -> ${current.status}`);
       lastStatus = current.status;
@@ -197,8 +278,7 @@ export async function createAndGeneratePlan(
     }
   }
 
-  signal?.throwIfAborted();
-  const currentPlan = await api.getPlan(plan.draft_id, client);
+  const currentPlan = await call("plan status", (request) => api.getPlan(plan.draft_id, client, request));
   if (!settled && !doneStatuses.has(currentPlan.status)) {
     throw new PlanDeadlineError(
       `Plan ${label} was still ${currentPlan.status} when its generation deadline expired; it did not reach review.`,
@@ -221,17 +301,14 @@ export async function createAndGeneratePlan(
     return { planId: plan.draft_id, issues: [] };
   }
 
-  signal?.throwIfAborted();
-  await api.finalizePlan(plan.draft_id, client);
-  signal?.throwIfAborted();
-  const finalizedPlan = await api.getPlan(plan.draft_id, client);
+  await call("finalization", (request) => api.finalizePlan(plan.draft_id, client, request));
+  const finalizedPlan = await call("finalized plan", (request) => api.getPlan(plan.draft_id, client, request));
   const expectedIssueCount = Math.max(1, Array.isArray(finalizedPlan.plan_json) ? finalizedPlan.plan_json.length : 1);
 
   const issuesDeadline = Math.min(now() + PLAN_ISSUES_TIMEOUT_MS, deadline);
   let issues: PlanIssue[] = [];
   for (;;) {
-    signal?.throwIfAborted();
-    issues = await api.listPlanIssues(plan.draft_id, client);
+    issues = await call("plan issues", (request) => api.listPlanIssues(plan.draft_id, client, request));
     if (issues.length >= expectedIssueCount) return { planId: plan.draft_id, issues };
     if (now() >= issuesDeadline) break;
     await sleep(Math.min(PLAN_ISSUES_POLL_INTERVAL_MS, Math.max(0, issuesDeadline - now())), signal);
