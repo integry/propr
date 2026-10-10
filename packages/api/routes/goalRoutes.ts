@@ -41,7 +41,8 @@ import {
 } from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { stopTaskExecution, type StopTaskExecutionResult } from './dockerRoutes.js';
-import { serializeGoal, type GoalProjectionRow as GoalRow } from '../services/goalProjection.js';
+import { rememberCreator } from '../services/creatorProjection.js';
+import { loadGoalCreators, serializeGoal, type GoalProjectionRow as GoalRow } from '../services/goalProjection.js';
 import {
   GOAL_LIST_STATES,
   applyGoalLifecycleFilter,
@@ -387,8 +388,9 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       else query.orderBy('updated_at', 'desc');
       return query.offset(offset).limit(limit);
     });
+    const creators = await loadGoalCreators(rows);
     const goals = await timeApiStage('goals.projection', () =>
-      Promise.all(rows.map(row => serializeGoal(deps.db, deps.redisClient, row, { includeInputs: false })))
+      Promise.all(rows.map(row => serializeGoal(deps.db, deps.redisClient, row, { includeInputs: false, creators })))
     );
     const media = await (deps.previewReader ?? previewMediaReader).project(rows.map(goalPreviewSource), 3);
     res.json({ goals: goals.map((goal, index) => ({ ...goal,
@@ -637,6 +639,8 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         throw error;
       }
       const inserted = await deps.db('goals').where({ goal_id: goalId }).first() as GoalRow;
+      // Warm the profile cache so the new goal's creator renders with an avatar.
+      await rememberCreator(req.user);
       // Announce the durable creation even if queueing needs recovery.
       await publishGoalActivity(inserted);
       const data: GoalJobData = {

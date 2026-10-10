@@ -6,6 +6,7 @@ import type { AgentDefinitionRecord } from '../../api/agentDefinitionsApi';
 import { ListSearchInput } from '../ListSearchInput';
 import { ListSkeleton } from '../ui/Skeleton';
 import { CodeChip } from '../ui/CodeChip';
+import { CreatorMarker } from '../CreatorMarker';
 import {
   AUTONOMY_BADGE_CLASSES,
   AUTONOMY_LABELS,
@@ -70,6 +71,7 @@ const AgentRow: React.FC<{ definition: AgentDefinitionRecord; lastRunState?: Age
           {extraRepos > 0 && <span>+{extraRepos}</span>}
           <CodeChip>{runnerLabel(definition, agents)}</CodeChip>
           <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" aria-hidden="true" />{scheduleSummary(definition, now)}</span>
+          <CreatorMarker creator={definition.createdBy} />
         </div>
       </Link>
     </li>

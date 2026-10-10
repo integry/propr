@@ -29,6 +29,7 @@ import { RepositorySelector, type RepoOption } from '../components/RepositorySel
 import { useDecoratedRepoOptions } from '../hooks/useDecoratedRepoOptions';
 import { ProviderLogo } from '../components/ui/ProviderLogo';
 import { RepositoryChip } from '../components/ui/RepositoryChip';
+import { CreatorMarker } from '../components/CreatorMarker';
 import { ListSkeleton } from '../components/ui/Skeleton';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -551,6 +552,15 @@ const queueGridColumns = 'lg:grid-cols-[minmax(0,2.45fr)_minmax(0,1.05fr)_minmax
 const queueSecondaryCell = 'min-w-0 lg:hidden xl:block xl:text-right';
 const queueCellLabel = 'mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400 lg:hidden';
 
+/** The creator inside the Goal cell's truncated second line; it keeps its width and the objective truncates instead. */
+function QueueCreator({ creator }: { creator: Goal['createdBy'] }) {
+  if (!creator) return null;
+  return <>
+    <span aria-hidden="true" className="flex-none text-slate-300">·</span>
+    <span className="flex flex-none"><CreatorMarker creator={creator} /></span>
+  </>;
+}
+
 function GoalQueueRow({ goal, goalAgents }: { goal: Goal; goalAgents: Array<{ type: string; alias: string }> }) {
   // Live progress, never a second copy of the status: a settled goal has no current activity.
   const unsettled = !goal.resultState;
@@ -575,6 +585,7 @@ function GoalQueueRow({ goal, goalAgents }: { goal: Goal; goalAgents: Array<{ ty
           <ProviderLogo provider={goal.agent.type} className="h-3.5 w-3.5 flex-none" />
           <span className="sr-only">{agentLabel}</span>
           <span className="flex-none" title={`${agentLabel} · ${modelName}`}>{modelName}</span>
+          <QueueCreator creator={goal.createdBy} />
           <span aria-hidden="true" className="flex-none text-slate-300">·</span>
           <span className="truncate" title={goal.objective}>{goal.objective}</span>
         </p>
@@ -942,6 +953,10 @@ function GoalDetails({ goalId }: { goalId: string }) {
             <span className="font-mono text-xs font-semibold leading-[1.375rem] text-slate-700" title="Elapsed time">{duration(goal.elapsedMs)}</span>
             <span aria-hidden="true" className="hidden text-slate-300 sm:inline">·</span>
             <RepositoryChip repository={goal.repository} />
+            {goal.createdBy && <>
+              <span aria-hidden="true" className="hidden text-slate-300 sm:inline">·</span>
+              <CreatorMarker creator={goal.createdBy} variant="default" baseline />
+            </>}
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             {goal.desiredState === 'running' && canMutate && <button disabled={busy} onClick={() => act(() => pauseGoal(goal.id))} className={`${buttonClass} border border-amber-300 text-amber-800 hover:bg-amber-50`}><CirclePause className="h-4 w-4" />Pause</button>}

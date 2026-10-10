@@ -1,15 +1,18 @@
 /* The task ledger: one grid row per task group, with real column headers.
-   TASK / PR · REPO · STATUS · AGENT · DURATION · UPDATED · SCORE
+   TASK / PR · REPO · STATUS · AGENT · ASSIGNEES · DURATION · UPDATED · SCORE
 
-   The schema is locked: every width that shows the table shows all seven
+   The schema is locked: every width that shows the table shows all eight
    columns, so nothing is added or dropped as the window or a pane resizes.
    REPO (10rem) and AGENT (190px) are fixed at every width and never shrink.
    REPO shows the repository name without its owner (the repo filter already
    scopes the list), so a 20-character name fits whole; AGENT's 190px holds a
-   long model identifier beside its provider logo. The title column takes only what is left
+   long model identifier beside its provider logo. ASSIGNEES (4.5rem) holds
+   its header and a stack of three overlapping avatars with a `+N` marker,
+   so zero, one or five assignees never change its width. The title column takes only what is left
    (`minmax(0, 1fr)`), so a long or unbroken title wraps inside its own cell
    and never takes width from the columns beside it. Only STATUS and the
-   gutters tighten on a laptop-width list (~1280px windows).
+   gutters tighten on a laptop-width list (~1280px windows), and SCORE
+   narrows to its bracketed badge there to leave the title its width.
 
    A list too narrow to hold those fixed columns and a readable title (a
    phone, or a narrow pane in the desktop app) shows the stacked cards
@@ -33,21 +36,21 @@
 
 .task-queue-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.25rem 4.5rem 5rem;
+  grid-template-columns: minmax(0, 1fr) 10rem 8rem 190px 4.5rem 4.25rem 4.5rem 5rem;
   column-gap: .75rem;
   align-items: center;
 }
 
 @container task-ledger (max-width: 1100px) {
   .task-queue-grid {
-    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.25rem 4.5rem 5rem;
+    grid-template-columns: minmax(0, 1fr) 10rem 7rem 190px 4.5rem 4.25rem 4.5rem 3rem;
     column-gap: .5rem;
   }
 }
 
 /* A task row's metadata lines up with the first line of its title, so a title
-   that wraps (or a rollup line under it) never leaves REPO, STATUS, AGENT and
-   the times floating in the middle of a taller row. Each metadata cell is a
+   that wraps (or a rollup line under it) never leaves REPO, STATUS, AGENT,
+   ASSIGNEES and the times floating in the middle of a taller row. Each metadata cell is a
    box one title line tall (25px: the lead chip on the title's baseline), centred in that box. */
 .task-queue-row { align-items: start; }
 .task-queue-row > [role="cell"]:not(:first-child) {
@@ -119,3 +122,33 @@
 
 /* Only keyboard focus tints the row, so a clicked row does not stay lit. */
 .task-queue [role="row"]:has(:focus-visible) { background: #f0fdfa; }
+
+/* The Tasks toolbar gives its width to search. Where it is too narrow to hold
+   the repository picker and the assignee filter at full width as well (the
+   list pane beside an open task), both collapse to icons the size of a
+   button, so neither is squeezed into a sliver that reads as a second border
+   around the other. The repository picker keeps its repository icon and its
+   label for screen readers; the assignee filter still opens the full list,
+   its text is hidden, and its icon turns teal while a filter other than All
+   assignees applies. Search and the gaps tighten too, so the row still fits
+   inside the pane. A phone hides search, so the repository picker keeps its
+   label there and only the assignee filter collapses. */
+.task-filters { container: task-filters / inline-size; }
+.task-assignee-filter-icon { display: none; }
+@media (min-width: 640px) {
+  @container task-filters (max-width: 49rem) {
+    .task-filter-controls .task-search { min-width: 9rem; }
+    .task-filter-controls [data-testid="task-status-filter"] select { width: 9rem; }
+    .task-filter-controls .task-repo-filter { flex: none; width: 2.5rem; }
+    .task-repo-filter > button { justify-content: center; padding-left: 0; padding-right: 0; }
+    .task-repo-filter > button > :nth-child(2) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .task-repo-filter > button > :nth-child(n+3) { display: none; }
+  }
+}
+@container task-filters (max-width: 49rem) {
+  .task-filter-controls { column-gap: .5rem; }
+  .task-assignee-filter { flex: none; width: 2.5rem; }
+  .task-assignee-filter > button { justify-content: center; padding-left: 0; padding-right: 0; }
+  .task-assignee-filter-label, .task-assignee-filter-chevron { display: none; }
+  .task-assignee-filter-icon { display: block; }
+}

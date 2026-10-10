@@ -1,10 +1,10 @@
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Queue } from 'bullmq';
-import { issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit, generateCorrelationId, logger } from '@propr/core';
+import { issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit, generateCorrelationId, logger, syncTaskAssignees } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { ACTIVE_TASK_LIFECYCLE_STATES } from '@propr/shared';
-import { getTasksFromDb } from './taskHelpers.js';
+import { ACTIVE_TASK_LIFECYCLE_STATES, parseTaskAssignmentFilter } from '@propr/shared';
+import { getTasksFromDb, type TaskQuery } from './taskHelpers.js';
 import { isPullRequestTask } from './pullRequestTaskIdentity.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
 import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, checkRevertPreviewAuthorization, lookupPr, buildRevertJobData, verifyCommitBelongsToPr, resolveRepoAndCheckAccess } from './revertHelpers.js';
@@ -34,18 +34,50 @@ export function resolveFollowupThread(task: TaskRecord, targetsPullRequest: bool
     : { number: task.issue_number, error: 'Task does not have valid GitHub issue information' };
 }
 
+function taskGroupingError(groupBy: string, task: string): string | null {
+  if (groupBy && groupBy !== 'task') return 'groupBy must be "task"';
+  if (task && groupBy !== 'task') return 'task requires groupBy "task"';
+  return null;
+}
+
+type AssignmentQuery = Pick<TaskQuery, 'assignee' | 'actingUserId' | 'syncAssignees'>;
+
+/**
+ * Reads the `assignee` and `syncAssignees` parameters of the task list. `me`
+ * is whoever the session authenticates, so a client cannot read another
+ * user's queue by editing the query string.
+ */
+function parseAssignmentQuery(req: Request, task: string): { ok: true; query: AssignmentQuery } | { ok: false; error: string } {
+  const sync = req.query.syncAssignees === 'true';
+  if (sync && !task) return { ok: false, error: 'syncAssignees requires task' };
+  const parsed = parseTaskAssignmentFilter(req.query.assignee);
+  if (!parsed.ok) return parsed;
+  const actingUserId = req.user?.id ? String(req.user.id) : null;
+  if (parsed.filter.mode === 'me' && !actingUserId) return { ok: false, error: 'assignee "me" requires an authenticated user' };
+  return {
+    ok: true,
+    query: {
+      assignee: parsed.filter,
+      actingUserId,
+      ...(sync ? { syncAssignees: (taskId: string) => syncTaskAssignees(taskId) } : {}),
+    },
+  };
+}
+
 export function createTaskRoutes(deps: TaskRoutesDeps) {
   const { db, taskQueue } = deps;
 
   async function getTasks(req: Request, res: Response): Promise<void> {
     try {
       const { status = 'all', repository = 'all', search = '', forReview = '', excludeMerged = '', groupBy = '', task = '' } = req.query as Record<string, string>;
-      if (groupBy && groupBy !== 'task') {
-        res.status(400).json({ error: 'groupBy must be "task"' });
+      const groupingError = taskGroupingError(groupBy, task);
+      if (groupingError) {
+        res.status(400).json({ error: groupingError });
         return;
       }
-      if (task && groupBy !== 'task') {
-        res.status(400).json({ error: 'task requires groupBy "task"' });
+      const assignment = parseAssignmentQuery(req, task);
+      if (!assignment.ok) {
+        res.status(400).json({ error: assignment.error });
         return;
       }
 
@@ -90,6 +122,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         excludeMerged: excludeMerged === 'true',
         groupByTask: groupBy === 'task',
         ...(task ? { containsTask: task } : {}),
+        ...assignment.query,
       });
       res.json(result);
     } catch (error) {
@@ -296,6 +329,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
           .delete();
         await trx('llm_executions').where({ task_id: taskId }).delete();
         await trx('task_history').where({ task_id: taskId }).delete();
+        await trx('task_assignees').where({ task_id: taskId }).delete();
         await trx('tasks').where({ task_id: taskId }).delete();
       });
 

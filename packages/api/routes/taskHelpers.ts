@@ -1,10 +1,12 @@
 import { latestCommentMetadata, previewMediaReader, taskPreviewSource } from '../services/previewMediaProjection.js';
 import { Knex } from 'knex';
+import type { AttributedUser, TaskAssignmentFilter } from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { QUEUED_TASK_STATES, RUNNING_TASK_STATES } from './dashboardQueries.js';
 import { recordedRunScore } from './runScore.js';
 import { loadAttentionTaskIds } from './dashboardWorkQueries.js';
 import { narrowToTaskPage, type TaskSelection } from './taskGrouping.js';
+import { applyAssigneeSelection, loadPageAssignees, resolveAssigneeSelection, selectsNothing, type AssigneeSelection } from './taskAssignees.js';
 
 export interface TaskQuery {
   db: Knex;
@@ -29,6 +31,15 @@ export interface TaskQuery {
    * runs, whatever the status and search filters would list.
    */
   containsTask?: string;
+  /** Lists only tasks assigned to these users, the acting user, or nobody. */
+  assignee?: TaskAssignmentFilter;
+  /** The authenticated user's GitHub id, which `assignee: me` resolves to. */
+  actingUserId?: string | null;
+  /**
+   * With `containsTask`: refreshes that run's assignees from GitHub before the
+   * page is read. The detail view's opt-in; the list itself never calls GitHub.
+   */
+  syncAssignees?: (taskId: string) => Promise<unknown>;
 }
 
 export interface TaskPage {
@@ -76,6 +87,7 @@ function resolveStatusStates(status: string): string[] | null {
 
 interface SelectionFilters {
   attentionTaskIds: string[] | null;
+  assignee: AssigneeSelection | null;
   /** The latest states the status filter asks for. */
   states: string[] | null;
   reviewStates: string[] | null;
@@ -85,6 +97,7 @@ interface SelectionFilters {
 /** Without grouping, each filter picks runs. */
 function applyRunSelection(db: Knex, query: Knex.QueryBuilder, filters: SelectionFilters): void {
   if (filters.attentionTaskIds) query.whereIn('t.task_id', filters.attentionTaskIds);
+  if (filters.assignee) applyAssigneeSelection(db, query, filters.assignee);
   if (filters.states) query.whereIn('h.state', filters.states);
   if (filters.search) {
     const searchTerm = `%${filters.search}%`;
@@ -102,21 +115,22 @@ function applyRunSelection(db: Knex, query: Knex.QueryBuilder, filters: Selectio
  * and the page carries every run of the tasks it lists, so selection runs
  * over whole tasks rather than filtering the runs the page returns.
  */
-function taskSelection({ attentionTaskIds, states, reviewStates, search }: SelectionFilters): TaskSelection {
+function taskSelection({ attentionTaskIds, assignee, states, reviewStates, search }: SelectionFilters): TaskSelection {
   return {
     ...(states || reviewStates ? {
       newestRunState: (state: string) => (!states || states.includes(state)) && (!reviewStates || reviewStates.includes(state)),
     } : {}),
     ...(attentionTaskIds ? { anyRunIn: new Set(attentionTaskIds) } : {}),
     ...(search ? { search } : {}),
+    ...(assignee ? { assignee } : {}),
   };
 }
 
 /** A task asked for by one of its runs is found whatever the list's filters are. */
-function listFilters(query: TaskQuery): Pick<TaskQuery, 'containsTask' | 'status' | 'search' | 'forReview'> {
-  const { groupByTask, containsTask, status, search, forReview } = query;
+function listFilters(query: TaskQuery): Pick<TaskQuery, 'containsTask' | 'status' | 'search' | 'forReview' | 'assignee'> {
+  const { groupByTask, containsTask, status, search, forReview, assignee } = query;
   if (groupByTask && containsTask) return { containsTask, status: 'all', search: '', forReview: false };
-  return { status, search, forReview };
+  return { status, search, forReview, assignee };
 }
 
 const taskContaining = (runId: string): TaskSelection => ({ anyRunIn: new Set([runId]) });
@@ -150,7 +164,7 @@ async function narrowToRunPage(
 
 export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
   const { db, repository, limit, offset, excludeMerged, groupByTask, now } = query;
-  const { containsTask, status, search, forReview } = listFilters(query);
+  const { containsTask, status, search, forReview, assignee: assigneeFilter } = listFilters(query);
   // Resolve one history row per task with an indexed lookup. The former global
   // ROW_NUMBER window materialized and sorted all task_history rows for every
   // count and page request. timestamp remains the sole ordering key so equal
@@ -191,6 +205,11 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
   }
 
   // Selection: which runs, or with grouping which tasks, the page lists.
+  const emptyPage = (): TaskPage => ({ tasks: [], total: 0, offset, limit, ...(groupByTask ? { totalRuns: 0 } : {}) });
+  // The assignee filter selects alongside status and repository, never the
+  // page afterwards, so `total` and the page agree with what is shown.
+  const assignee = await resolveAssigneeSelection(db, assigneeFilter, query.actingUserId);
+  if (selectsNothing(assignee)) return emptyPage();
   let attentionTaskIds: string[] | null = null;
   if (normalizeStatus(status) === ATTENTION_STATUS) {
     // Exactly the work the dashboard's attention count describes, including
@@ -198,10 +217,11 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
     // recorded no task link, and excluding failures under recovery.
     attentionTaskIds = await timeApiStage('sql.tasks.attention', () =>
       loadAttentionTaskIds(db, repository, { now }));
-    if (attentionTaskIds.length === 0) return { tasks: [], total: 0, offset, limit, ...(groupByTask ? { totalRuns: 0 } : {}) };
+    if (attentionTaskIds.length === 0) return emptyPage();
   }
   const filters: SelectionFilters = {
     attentionTaskIds,
+    assignee,
     states: attentionTaskIds || !status || status === 'all' ? null : resolveStatusStates(status) ?? [status],
     reviewStates: forReview ? ['completed', 'failed'] : null,
     search: search?.trim() || '',
@@ -224,9 +244,10 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
     .orderBy('t.created_at', 'desc'));
 
   if (pageTasks.length === 0) return { tasks: [], ...page };
+  await refreshAssignees(query.syncAssignees, containsTask);
 
   const taskIds = pageTasks.map((row: Record<string, unknown>) => String(row.task_id));
-  const { historyByTask, planStatusByTask, commentMetadataByTask, scoreByTask } = await timeApiStage(
+  const { historyByTask, planStatusByTask, commentMetadataByTask, scoreByTask, assigneesByTask } = await timeApiStage(
     'sql.tasks.enrichment',
     async () => enrichTaskPage(db, taskIds, Boolean(excludeMerged))
   );
@@ -241,9 +262,23 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
       plan_issue_status: planStatusByTask.get(String(row.task_id)) ?? null,
     }),
     score: scoreByTask.get(String(row.task_id)) ?? null,
+    assignees: assigneesByTask.get(String(row.task_id)) ?? [],
     ...(media[index].previews.length ? { previewMedia: media[index].previews } : {}),
   }));
   return { tasks, ...page };
+}
+
+/**
+ * Refreshes the one run the detail view asked for; a list page never calls
+ * GitHub. A failed refresh leaves the stored assignees in place.
+ */
+async function refreshAssignees(sync: TaskQuery['syncAssignees'], taskId: string | undefined): Promise<void> {
+  if (!sync || !taskId) return;
+  try {
+    await timeApiStage('github.tasks.assignees', () => sync(taskId));
+  } catch (error) {
+    console.warn(`Failed to refresh assignees of task ${taskId}:`, (error as Error).message);
+  }
 }
 
 interface TaskPageEnrichment {
@@ -252,6 +287,8 @@ interface TaskPageEnrichment {
   commentMetadataByTask: Map<string, unknown>;
   /** The score the task's latest run recorded when it completed (a review's `Score 6/10`). */
   scoreByTask: Map<string, number>;
+  /** Stored assignees from the local projection; tasks without any have no entry. */
+  assigneesByTask: Map<string, AttributedUser[]>;
 }
 
 /** States that open a run: a task followed up runs again under the same id. */
@@ -334,8 +371,9 @@ async function enrichTaskPage(db: Knex, taskIds: string[], excludeMerged: boolea
   }
 
   const scoreByTask = await loadRunScores(db, taskIds);
+  const assigneesByTask = await loadPageAssignees(db, taskIds);
 
-  return { historyByTask, planStatusByTask, commentMetadataByTask, scoreByTask };
+  return { historyByTask, planStatusByTask, commentMetadataByTask, scoreByTask, assigneesByTask };
 }
 
 function parseRepositoryParts(repository: unknown): { owner: string | null; name: string | null } {

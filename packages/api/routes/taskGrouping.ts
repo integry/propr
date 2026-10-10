@@ -1,5 +1,6 @@
 import { Knex } from 'knex';
 import { timeApiStage } from '../apiPerformanceTiming.js';
+import { assigneeRows, type AssigneeSelection } from './taskAssignees.js';
 
 export interface TaskIdentityRow {
   task_id: unknown;
@@ -13,6 +14,8 @@ export interface TaskIdentityRow {
   state?: unknown;
   /** 1 when the run matches the search text. */
   matches_search?: unknown;
+  /** 1 when the run has an assignee the assignee selection looks for. */
+  assigned?: unknown;
 }
 
 const positiveNumber = (value: unknown): number | null => {
@@ -59,8 +62,9 @@ export function groupRunsByTask<T extends TaskIdentityRow>(rows: T[]): T[][] {
 /**
  * Which tasks a grouped page lists. A task is one thing with one state, its
  * newest run's, so a state filter asks only that run; the runs behind it are
- * history, not the task's state. Search and the attention set pick a task
- * when any of its runs matches. Either way the page then returns every run of
+ * history, not the task's state. Search, the attention set and an assignee
+ * pick a task when any of its runs matches; `unassigned` picks a task none of
+ * whose runs has an assignee. Either way the page then returns every run of
  * the tasks it lists, never only the runs that matched.
  */
 export interface TaskSelection {
@@ -70,6 +74,8 @@ export interface TaskSelection {
   anyRunIn?: ReadonlySet<string>;
   /** Text any run of the task must match. */
   search?: string;
+  /** The assignees any run of the task must have, or with `unassigned`, that no run may have. */
+  assignee?: AssigneeSelection;
 }
 
 export interface TaskPageBounds {
@@ -115,15 +121,19 @@ export async function narrowToTaskPage(
       [term, term, term],
     ));
   }
+  if (selection.assignee) {
+    columns.push(db.raw('CASE WHEN EXISTS ? THEN 1 ELSE 0 END AS assigned', [assigneeRows(db, selection.assignee)]));
+  }
   const identities = await timeApiStage('sql.tasks.identities', () => identityQuery
     .select(...columns)
     .orderBy('t.created_at', 'desc')) as TaskIdentityRow[];
 
-  const { newestRunState, anyRunIn, search } = selection;
+  const { newestRunState, anyRunIn, search, assignee } = selection;
   const tasks = groupRunsByTask(identities).filter(runs =>
     (!newestRunState || newestRunState(String(runs[0].state ?? ''))) &&
     (!anyRunIn || runs.some(run => anyRunIn.has(String(run.task_id)))) &&
-    (!search || runs.some(run => Number(run.matches_search) === 1)));
+    (!search || runs.some(run => Number(run.matches_search) === 1)) &&
+    (!assignee || runs.some(run => Number(run.assigned) === 1) === (assignee.kind === 'users')));
   const pageRunIds = tasks.slice(offset, offset + limit).flat().map(run => String(run.task_id));
   if (pageRunIds.length > 0) pageQuery.whereIn('t.task_id', pageRunIds);
   return {

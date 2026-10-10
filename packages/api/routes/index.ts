@@ -3,6 +3,7 @@ export { createTaskRoutes } from './taskRoutes.js';
 export { createTaskHistoryRoutes } from './taskHistoryRoutes.js';
 export { createLiveDetailsRoutes } from './liveDetailsRoutes.js';
 export { createFileChangesRoutes } from './fileChangesRoutes.js';
+export { createTaskAssignmentRoutes } from './taskAssignmentRoutes.js';
 export { createConfigRoutes } from './configRoutes.js';
 export { createQueueRoutes } from './queueRoutes.js';
 export { createExecutionRoutes } from './executionRoutes.js';

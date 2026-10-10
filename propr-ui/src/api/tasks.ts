@@ -4,6 +4,7 @@
  * Client wrapper for the /api/tasks backend routes.
  * Provides methods to list, get, stop, and delete tasks.
  */
+import type { AttributedUser } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 // ============================================================================
@@ -86,6 +87,8 @@ export interface Task {
   llmProvider: string | null;
   /** Status of associated plan issue */
   planIssueStatus: PlanIssueStatus;
+  /** Users assigned to the task's issue or pull request; absent from servers that predate assignment */
+  assignees?: AttributedUser[];
 }
 
 /**
@@ -196,6 +199,8 @@ export interface ListTasksOptions {
   forReview?: boolean;
   /** Exclude tasks where plan_issue_status is 'merged' */
   excludeMerged?: boolean;
+  /** Filter by assignee: `all`, `me`, `unassigned` or comma-separated GitHub logins */
+  assignee?: string;
 }
 
 /**
@@ -274,6 +279,9 @@ export const listTasks = async (options: ListTasksOptions = {}): Promise<ListTas
   }
   if (options.excludeMerged) {
     params.set('excludeMerged', 'true');
+  }
+  if (options.assignee) {
+    params.set('assignee', options.assignee);
   }
 
   const response = await apiFetch(`${API_BASE_URL}/api/tasks?${params.toString()}`, {

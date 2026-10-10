@@ -85,7 +85,7 @@ Access control is layered, and all of it is enforced by **your** stack — ProPR
 
 1. **User whitelist** — restricts who can log in to the dashboard and CLI *and* whose GitHub activity (issue labels, comments) starts tasks. Non-whitelisted triggers are rejected; on the relay path the delivery is acknowledged as `ignored: user_not_allowed`, visible in the Connect delivery history.
 2. **Blacklist and bot filtering** — explicitly blocked users and bot accounts never trigger work.
-3. **Command gating** — PR slash commands run only for allowed authors, and admins choose whether any eligible comment starts a follow-up or an explicit trigger is required.
+3. **Command gating** — PR slash commands run only for allowed authors, and admins choose whether any eligible comment starts a follow-up or an explicit trigger is required. The optional [assignment gate](../features/assignment.md#the-assignment-gate) (off by default) further limits follow-ups on an assigned pull request to its assignees.
 4. **Identity gate (hardened deployments)** — the [VPS hardening guide](../tutorials/setup-vps-hardening.md) layers an SSO gate (Cloudflare Zero Trust) in front of the UI, before ProPR's own auth.
 
 Configuration lives in the Web UI settings and `.env` — see [GitHub Authentication](../operations/github-auth.md) and the [Configuration Reference](../operations/configuration-reference.md).

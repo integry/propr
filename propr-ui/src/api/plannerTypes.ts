@@ -1,4 +1,4 @@
-import type { DraftStatus, DraftUpdateGenerationTrace, StepStatus } from '@propr/shared';
+import type { AttributedUser, DraftStatus, DraftUpdateGenerationTrace, StepStatus } from '@propr/shared';
 
 export interface GenerationStepData {
   keywords?: string[];
@@ -45,6 +45,8 @@ export interface PlannerDraft {
   status: DraftStatus;
   attachments: PlannerAttachment[];
   created_at: string;
+  /** Who created the plan; null when their profile is not cached. */
+  created_by?: AttributedUser | null;
   generation_trace?: GenerationTrace;
   context_config?: DraftContextConfig | string;
 }
@@ -242,6 +244,8 @@ export interface DraftListItem {
   issue_summary?: IssueSummary | null;
   paused?: boolean;
   paused_at?: string | null;
+  /** Who created the plan; null when their profile is not cached. */
+  created_by?: AttributedUser | null;
 }
 
 export interface GetDraftsOptions {

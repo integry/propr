@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import TaskList from './TaskList';
 import { getTasks, getRepositoryStats } from '../api/proprApi';
 import type { TaskUpdatePayload } from '@propr/shared';
+import { AuthProvider } from '../contexts/AuthContext';
+import type { CurrentUser } from '../api/proprTypes';
 
 const mockGetTasks = vi.mocked(getTasks);
 const mockGetRepositoryStats = vi.mocked(getRepositoryStats);
@@ -42,11 +44,15 @@ vi.mock('../contexts/useSocket', () => ({
 }));
 
 vi.mock('./TaskList/Filters', () => ({
-  Filters: ({ availableRepos, reposLoading, filter, setFilter }: {
+  Filters: ({ availableRepos, reposLoading, filter, setFilter, assigneeFilter, setAssigneeFilter, assigneePeople, canFilterToMe }: {
     availableRepos: Array<{ name: string; count?: number }>;
     reposLoading: boolean;
     filter: string;
     setFilter: (value: string) => void;
+    assigneeFilter: string;
+    setAssigneeFilter: (value: string) => void;
+    assigneePeople: string[];
+    canFilterToMe: boolean;
   }) => (
     <div data-testid="filters">
       <span data-testid="repos-loading">{String(reposLoading)}</span>
@@ -58,9 +64,15 @@ vi.mock('./TaskList/Filters', () => ({
         <option value="failed">Failed</option>
         <option value="waiting">Waiting</option>
       </select>
+      <span data-testid="assignee-filter-value">{assigneeFilter}</span>
+      <span data-testid="assignee-options">{`${canFilterToMe ? 'me|' : ''}${assigneePeople.join('|')}`}</span>
+      <button type="button" onClick={() => setAssigneeFilter('octocat')}>Filter to octocat</button>
+      <button type="button" onClick={() => setAssigneeFilter('all')}>All assignees</button>
     </div>
   ),
 }));
+
+const LocationProbe = () => <span data-testid="location-search">{useLocation().search}</span>;
 
 vi.mock('./TaskList/Pagination', () => ({
   Pagination: () => null,
@@ -279,5 +291,94 @@ describe('TaskList', () => {
 
     await act(async () => { refreshRequest.resolve({ tasks: [], total: 0 }); });
     expect(await screen.findByText(/No tasks found/)).toBeInTheDocument();
+  });
+
+  describe('assignee filter', () => {
+    const user = { id: '1', login: 'Me-User', username: 'Me-User', displayName: 'Me', email: null, avatarUrl: null } as unknown as CurrentUser;
+    const assigneeResponse = () => ({
+      tasks: [{
+        id: 'task-1', repository: 'integry/propr', status: 'processing', createdAt: '2026-09-14T00:00:00Z',
+        assignees: [{ id: '2', login: 'octocat', displayName: null, avatarUrl: null }, { id: '3', login: 'all', displayName: null, avatarUrl: null }],
+      }],
+      total: 1,
+    } as unknown as Awaited<ReturnType<typeof getTasks>>);
+    const renderAt = (entry: string, currentUser: CurrentUser | null = user) => render(
+      <AuthProvider user={currentUser}>
+        <MemoryRouter initialEntries={[entry]}>
+          <Routes><Route path="/tasks" element={<><TaskList limit={10} /><LocationProbe /></>} /></Routes>
+        </MemoryRouter>
+      </AuthProvider>
+    );
+
+    it('restores ?assignee= from the URL and passes it to the API', async () => {
+      mockGetTasks.mockResolvedValue(assigneeResponse());
+      mockGetRepositoryStats.mockResolvedValue({ repositories: [] });
+      renderAt('/tasks?assignee=me');
+      expect(await screen.findByText('task table')).toBeInTheDocument();
+      expect(screen.getByTestId('assignee-filter-value')).toHaveTextContent('me');
+      expect(mockGetTasks).toHaveBeenLastCalledWith(expect.objectContaining({ assignee: 'me' }));
+    });
+
+    it('writes the selection to the URL, resets to page 1, and drops it for All assignees', async () => {
+      mockGetTasks.mockResolvedValue(assigneeResponse());
+      mockGetRepositoryStats.mockResolvedValue({ repositories: [] });
+      renderAt('/tasks?page=3');
+      expect(await screen.findByText('task table')).toBeInTheDocument();
+      expect(mockGetTasks).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 20, assignee: undefined }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Filter to octocat' }));
+      await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent('?assignee=octocat'));
+      await waitFor(() => expect(mockGetTasks).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0, assignee: 'octocat' })));
+
+      fireEvent.click(screen.getByRole('button', { name: 'All assignees' }));
+      await waitFor(() => expect(screen.getByTestId('location-search')).toBeEmptyDOMElement());
+    });
+
+    it('lists the signed-in user and the page\'s assignees', async () => {
+      mockGetTasks.mockResolvedValue(assigneeResponse());
+      mockGetRepositoryStats.mockResolvedValue({ repositories: [] });
+      renderAt('/tasks');
+      expect(await screen.findByText('task table')).toBeInTheDocument();
+      expect(screen.getByTestId('assignee-options')).toHaveTextContent('me|all|Me-User|octocat');
+    });
+
+    it('keeps listing people from earlier pages once the filter narrows the list', async () => {
+      mockGetTasks.mockResolvedValueOnce(assigneeResponse()).mockResolvedValue({
+        tasks: [{ id: 'task-2', repository: 'integry/propr', status: 'processing', createdAt: '2026-09-14T00:00:00Z', assignees: [{ id: '4', login: 'hubot', displayName: null, avatarUrl: null }] }],
+        total: 1,
+      } as unknown as Awaited<ReturnType<typeof getTasks>>);
+      mockGetRepositoryStats.mockResolvedValue({ repositories: [] });
+      renderAt('/tasks');
+      expect(await screen.findByText('task table')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Filter to octocat' }));
+      await waitFor(() => expect(screen.getByTestId('assignee-options')).toHaveTextContent('me|all|hubot|Me-User|octocat'));
+    });
+
+    it('offers no people and no "me" without a signed-in user', async () => {
+      mockGetTasks.mockResolvedValue(assigneeResponse());
+      mockGetRepositoryStats.mockResolvedValue({ repositories: [] });
+      renderAt('/tasks', null);
+      expect(await screen.findByText('task table')).toBeInTheDocument();
+      expect(screen.getByTestId('assignee-options')).toBeEmptyDOMElement();
+    });
+
+    it('discards a response for the previous assignee once the filter changes', async () => {
+      const stale = deferred<Awaited<ReturnType<typeof getTasks>>>();
+      mockGetTasks.mockReturnValueOnce(stale.promise).mockResolvedValue({ tasks: [], total: 0 } as unknown as Awaited<ReturnType<typeof getTasks>>);
+      mockGetRepositoryStats.mockResolvedValue({ repositories: [] });
+      renderAt('/tasks');
+      fireEvent.click(screen.getByRole('button', { name: 'Filter to octocat' }));
+      expect(await screen.findByText(/No tasks found/)).toBeInTheDocument();
+      await act(async () => { stale.resolve(assigneeResponse()); });
+      expect(screen.getByText(/No tasks found/)).toBeInTheDocument();
+      expect(screen.queryByText('task table')).not.toBeInTheDocument();
+    });
+
+    it('shows the API\'s rejection of an unknown assignee as the error state', async () => {
+      mockGetTasks.mockRejectedValue(new Error('assignee contains an invalid GitHub login: !!'));
+      mockGetRepositoryStats.mockResolvedValue({ repositories: [] });
+      renderAt('/tasks?assignee=!!');
+      expect(await screen.findByText('assignee contains an invalid GitHub login: !!')).toBeInTheDocument();
+    });
   });
 });

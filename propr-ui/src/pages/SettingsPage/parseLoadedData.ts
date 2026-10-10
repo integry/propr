@@ -23,6 +23,7 @@ interface SettingsApiData {
   github_user_whitelist?: string[];
   usage_tips_enabled?: boolean;
   auto_resolve_merge_conflicts?: boolean;
+  followup_requires_assignment?: boolean;
   dashboard_summary_enabled?: boolean;
   model_reasoning_level?: string;
   pr_review_model?: string;
@@ -113,6 +114,7 @@ function buildSettings(settingsData: SettingsApiData, enabledAgents: AgentConfig
     planner_generation_model: settingsData.planner_generation_model || '',
     default_agent_alias: resolveDefaultAgentAlias(settingsData.default_agent_alias, enabledAgents),
     auto_resolve_merge_conflicts: settingsData.auto_resolve_merge_conflicts ?? false,
+    followup_requires_assignment: settingsData.followup_requires_assignment === true,
     usage_tips_enabled: parseUsageTipsSettings({ ...settingsData }).enabled,
     dashboard_summary_enabled: settingsData.dashboard_summary_enabled ?? true,
     model_reasoning_level: settingsData.model_reasoning_level || '',

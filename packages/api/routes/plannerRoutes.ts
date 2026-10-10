@@ -46,6 +46,7 @@ export { buildUpdatedExecutionConfig, mergeExecutionContextConfig } from './plan
 import { linkTodosToDraft, pauseDraft, resumeDraft } from '@propr/core';
 import { isDemoMode } from '../demoMode.js';
 import { timeApiStage } from '../apiPerformanceTiming.js';
+import { attachCreator, projectCreator, rememberCreator } from '../services/creatorProjection.js';
 
 const uploadDir = path.join(process.cwd(), 'temp_uploads');
 fs.ensureDirSync(uploadDir);
@@ -138,12 +139,15 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       }
 
       let drafts = await timeApiStage('sql.drafts.list', () => query
-        .select('draft_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt', 'paused', 'paused_at')
+        .select('draft_id', 'user_id', 'name', 'repository', 'status', 'updated_at', 'created_at', 'initial_prompt', 'paused', 'paused_at')
         .orderBy('updated_at', 'desc'));
 
       if (searchWords.length > 0) { const exactPhrase = search!.trim().toLowerCase(); const scoredDrafts = scoreDrafts(drafts, searchWords, exactPhrase); sortDraftsByScore(scoredDrafts); drafts = removeSearchScore(scoredDrafts); }
 
-      const paginatedDrafts = drafts.slice(offset, offset + limit);
+      const attributedDrafts = await attachCreator(drafts.slice(offset, offset + limit) as Array<Record<string, unknown> & { draft_id: string; user_id: string }>, 'user_id', 'created_by');
+      // `user_id` is read only to resolve `created_by`; the list does not expose the raw id.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const paginatedDrafts = attributedDrafts.map(({ user_id: _userId, ...draft }) => draft);
       const draftIds = paginatedDrafts.map((d: { draft_id: string }) => d.draft_id);
       if (draftIds.length > 0) {
         const issues = await timeApiStage('sql.drafts.issue-status', () =>
@@ -187,6 +191,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       if (Array.isArray(todoIds) && todoIds.length > 0) await linkTodosToDraft(todoIds, draftId, req.user!.id);
 
+      await rememberCreator(req.user);
       const draft = await db!('task_drafts').where({ draft_id: draftId }).first();
       res.status(201).json(draft);
     } catch (error) {
@@ -212,6 +217,7 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
 
       const parsedDraft = parseDraftJsonFields(draft) as Record<string, unknown> & { task_title?: string };
       parsedDraft.task_title = draft.name;
+      parsedDraft.created_by = await projectCreator(draft.user_id);
 
       res.json(parsedDraft);
     } catch (error) {

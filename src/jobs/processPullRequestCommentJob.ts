@@ -325,7 +325,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         });
 
         const postResult = await handlePostExecution(
-            { state, job, taskId, stateManager, context: { ...context, publication }, unprocessedReviewComments: selectedReviewComments, llm, redisClient, prProcessingLockKey: lockKey, prProcessingLockToken: lockToken, visualPreviewSettings },
+            { state, job, taskId, stateManager, context: { ...context, publication }, unprocessedReviewComments: selectedReviewComments, llm, redisClient, prProcessingLockKey: lockKey, prProcessingLockToken: lockToken, visualPreviewSettings, linkedIssue: linkedIssueResult.linkedIssue },
             taskUrl,
         );
 

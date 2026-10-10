@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Search, Filter, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
 import { DraftListItem } from '../api/proprApi';
 import { getDraftDisplayName } from '../components/TaskPlanner/planDisplayName';
+import { CreatorMarker } from '../components/CreatorMarker';
 import {
   getEffectiveStatus,
   renderStatusStrip,
@@ -122,9 +123,15 @@ export const PlansListItem: React.FC<PlansListItemProps> = ({
           <div className="mb-1 truncate max-w-2xl text-sm font-medium text-gray-900" title={title}>
             {title}
           </div>
-          {/* Bottom line: Unified Status Strip */}
+          {/* Bottom line: Unified Status Strip, then the creator on desktop */}
           <div className="flex flex-wrap items-center text-xs gap-1">
             {renderStatusStrip(draft.issue_summary, effectiveStatus)}
+            {draft.created_by && (
+              <span className="hidden sm:inline-flex min-w-0 items-center gap-2.5 ml-1.5">
+                <span aria-hidden="true" className="text-slate-300">•</span>
+                <CreatorMarker creator={draft.created_by} />
+              </span>
+            )}
           </div>
         </Link>
       </div>

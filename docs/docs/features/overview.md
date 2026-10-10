@@ -42,6 +42,7 @@ ProPR keeps follow-up work where the review already happens: the pull request.
 
 - [PR automation and fine-tuning](./pr-followup.md): create pull requests automatically, then refine them through natural GitHub comments or slash-command workflows.
 - [Visual previews](./visual-previews.md): attach focused image or video evidence when an implementation changes something users can see.
+- [Task assignment](./assignment.md): see and change who a task is assigned to (GitHub stays the source of truth), filter the Tasks screen by assignee, limit follow-ups to assigned people, and assign pull requests automatically when work completes.
 - [PR slash commands](./pr-commands.md): the command reference for `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix`.
 - [Branch configuration](./branch-config.md): repository-specific branch defaults and resolution rules.
 

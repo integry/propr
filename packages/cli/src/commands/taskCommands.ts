@@ -6,6 +6,7 @@
  */
 
 import { Command } from "commander";
+import { formatTaskAssignmentFilter, parseTaskAssignmentFilter } from "@propr/shared";
 import {
   ACTIVE_TASK_LIFECYCLE_STATES,
   TASK_LIFECYCLE_STATES,
@@ -576,6 +577,7 @@ Examples:
     )
     .option("-l, --limit <limit>", "Maximum number of tasks to show", "50")
     .option("--search <term>", "Search tasks by term")
+    .option("--assignee <assignee>", "Filter by assignee: all, me, unassigned, or comma-separated GitHub logins")
     .option("-j, --json", "Output as JSON for programmatic use")
     .addHelpText("after", `
 Status Values:
@@ -592,6 +594,7 @@ Examples:
   $ propr task list -p myorg/myrepo           # Filter by project
   $ propr task list -s processing             # Filter by status
   $ propr task list --search "auth" -l 100    # Search with limit
+  $ propr task list --assignee me             # Tasks assigned to you
   $ propr task list --json                    # JSON output
 `)
     .action(
@@ -600,6 +603,7 @@ Examples:
         status: string;
         limit: string;
         search?: string;
+        assignee?: string;
         json?: boolean;
       }) => {
         try {
@@ -608,6 +612,7 @@ Examples:
             repository?: string;
             limit?: number;
             search?: string;
+            assignee?: string;
           } = {};
 
           const status = options.status.toLowerCase();
@@ -631,6 +636,14 @@ Examples:
             listOptions.search = options.search;
           }
 
+          if (options.assignee !== undefined) {
+            const parsed = parseTaskAssignmentFilter(options.assignee);
+            if (!parsed.ok) {
+              throw new Error(`Invalid --assignee: ${parsed.error}`);
+            }
+            listOptions.assignee = formatTaskAssignmentFilter(parsed.filter);
+          }
+
           const result = await listTasks(listOptions);
 
           if (printOutput(result, options.json ?? false)) {
@@ -647,6 +660,9 @@ Examples:
             }
             if (status !== "all") {
               console.log(`Status filter: ${status}`);
+            }
+            if (listOptions.assignee !== undefined) {
+              console.log(`Assignee filter: ${listOptions.assignee}`);
             }
             return;
           }

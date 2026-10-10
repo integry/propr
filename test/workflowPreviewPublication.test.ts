@@ -84,6 +84,8 @@ for (const [name, namedExports] of Object.entries({
     reviewFindingSelector: { selectedReviewFeedbackIds: () => ({ findingIds: [], suggestionIds: [] }) },
     ultrafixJobHelpers: { resolveUltrafixHistoryMeta: async () => ({}) },
     prContinuation: { savePublicationCheckpoint: noOp },
+    issueJobAutoAssignment: { autoAssignCompletedPullRequest: noOp },
+    prCommentAutoAssignment: { autoAssignFollowUpPullRequest: noOp },
     notificationRecap: { buildWorkNotificationRecap: () => '' },
 })) {
     await mock.module(`../src/jobs/${name}.js`, { namedExports });

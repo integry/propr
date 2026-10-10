@@ -160,6 +160,11 @@ export interface ListTasksOptions {
    * Search term for filtering tasks.
    */
   search?: string;
+
+  /**
+   * Assignee filter: `all`, `me`, `unassigned`, or comma-separated GitHub logins.
+   */
+  assignee?: string;
 }
 
 /**
@@ -219,6 +224,9 @@ export async function listTasks(
   }
   if (options.search !== undefined) {
     params.search = options.search;
+  }
+  if (options.assignee !== undefined) {
+    params.assignee = options.assignee;
   }
 
   const response = await apiClient.get<ListTasksResponse>("/api/tasks", {

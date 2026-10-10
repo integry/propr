@@ -4,6 +4,8 @@ import { RepositorySelector, type RepoOption } from '../RepositorySelector';
 import { useDecoratedRepoOptions } from '../../hooks/useDecoratedRepoOptions';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { ListSearchInput } from '../ListSearchInput';
+import { AssigneeFilter } from './AssigneeFilter';
+import './task-queue.css';
 
 interface FiltersProps {
   hideFilters?: boolean;
@@ -16,6 +18,13 @@ interface FiltersProps {
   reposLoading: boolean;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
+  /** `all`, `me`, `unassigned`, or comma-separated logins. */
+  assigneeFilter: string;
+  setAssigneeFilter: (assignee: string) => void;
+  /** Logins the filter lists before anything is typed; empty without a signed-in user. */
+  assigneePeople: string[];
+  /** Whether a user is signed in, so `Assigned to me` has someone to mean. */
+  canFilterToMe: boolean;
 }
 
 const normalizeFilterValue = (filter: string): string => {
@@ -45,10 +54,12 @@ const RepoFilter: React.FC<Pick<FiltersProps, 'repoFilter' | 'setRepoFilter' | '
     variant="default"
     labelLayout="stacked"
     hideCountOnMobile
-    className="flex-1 min-w-0 sm:flex-initial sm:w-[320px]"
+    className="task-repo-filter flex-1 min-w-0 sm:flex-initial sm:w-[320px]"
   />
   );
 };
+
+const SELECT_CLASSES = 'py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500';
 
 export const Filters: React.FC<FiltersProps> = ({
   hideFilters,
@@ -60,7 +71,11 @@ export const Filters: React.FC<FiltersProps> = ({
   availableRepos,
   reposLoading,
   searchQuery,
-  setSearchQuery
+  setSearchQuery,
+  assigneeFilter,
+  setAssigneeFilter,
+  assigneePeople,
+  canFilterToMe,
 }) => {
   const isMobile = useIsMobile();
 
@@ -75,14 +90,17 @@ export const Filters: React.FC<FiltersProps> = ({
   const selectedFilter = normalizeFilterValue(filter);
 
   const showRepoFilter = reposLoading || availableRepos.length > 1;
+  const assigneeProps = { assigneeFilter, setAssigneeFilter, people: assigneePeople, canFilterToMe };
 
   // A phone fits the title and both dropdowns on one line once the repository
   // picker drops its task count there (the open list still shows it). The
-  // picker takes whatever the title and status filter leave.
+  // picker takes whatever the title and status filter leave. The assignee
+  // filter joins them inline only where there is room; a phone puts it on
+  // the search row instead.
   const header = (
-    <div className="flex items-center justify-between gap-2 sm:gap-4">
+    <div className={`${hideFilters ? '' : 'task-filters '}flex items-center justify-between gap-2 sm:gap-4`}>
       {!hideFilters && <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Tasks</h1>}
-      <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
+      <div className="task-filter-controls flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
         {!hideFilters && (
           <>
             {/* Takes the room the filters leave, and keeps enough of it that the repository picker gives way first in a list pane beside an open task. */}
@@ -92,7 +110,7 @@ export const Filters: React.FC<FiltersProps> = ({
                 onChange={setSearchQuery}
                 onClear={() => setSearchQuery('')}
                 label="Search tasks"
-                className="hidden sm:block min-w-[13rem] flex-1 max-w-xs"
+                className="task-search hidden sm:block min-w-[13rem] flex-1 max-w-xs"
               />
             )}
             <div className="flex items-center gap-2 min-w-0 max-sm:flex-1">
@@ -101,7 +119,7 @@ export const Filters: React.FC<FiltersProps> = ({
                   value={selectedFilter}
                   onChange={(e) => setFilter(e.target.value)}
                   aria-label="Task status"
-                  className="w-[120px] sm:w-auto px-2 sm:px-3 py-2 border border-gray-300 rounded-md text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                  className={`w-[120px] sm:w-auto px-2 sm:px-3 ${SELECT_CLASSES}`}
                 >
                   <option value="all">All Tasks</option>
                   <option value="attention">Needs attention</option>
@@ -116,6 +134,9 @@ export const Filters: React.FC<FiltersProps> = ({
               {showRepoFilter && (
                 <RepoFilter repoFilter={repoFilter} setRepoFilter={setRepoFilter} availableRepos={availableRepos} reposLoading={reposLoading} />
               )}
+
+              {/* Gives way before the search does, so a list pane beside an open task still fits. */}
+              {!isMobile && <AssigneeFilter {...assigneeProps} className="min-w-0 max-w-[10rem] flex-initial" />}
             </div>
           </>
         )}
@@ -129,19 +150,23 @@ export const Filters: React.FC<FiltersProps> = ({
   );
 
   // A phone has no room for search beside the filters, so it takes its own
-  // full-width row under them.
+  // row under them, shared with the assignee filter rather than adding a
+  // fourth control to the line above.
   if (hideFilters || !isMobile) return header;
   return (
     <div className="flex flex-col gap-2">
       {header}
-      <ListSearchInput
-        value={searchQuery}
-        onChange={setSearchQuery}
-        onClear={() => setSearchQuery('')}
-        label="Search tasks"
-        className="sm:hidden"
-        touch
-      />
+      <div className="flex min-w-0 items-center gap-2 sm:hidden">
+        <ListSearchInput
+          value={searchQuery}
+          onChange={setSearchQuery}
+          onClear={() => setSearchQuery('')}
+          label="Search tasks"
+          className="min-w-0 flex-1"
+          touch
+        />
+        <AssigneeFilter {...assigneeProps} className="w-[9.5rem] flex-none" touch />
+      </div>
     </div>
   );
 };

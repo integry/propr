@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- one spec covers every repository settings control against the same API stub */
 import { expect, test, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -138,6 +139,93 @@ test('sets the repository-wide merge-conflict auto-resolve override against the 
 
   await autoResolve.selectOption('inherit');
   await expect.poll(() => api.writes.at(-1)?.map(repo => repo.autoResolveMergeConflicts)).toEqual([null, null]);
+});
+
+test('assigns finished pull requests with a shared, validated default assignee', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const api = await stubRepositoryApis(page, true, [
+    { id: 'propr-main', name: 'integry/propr', baseBranch: 'main', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+    { id: 'propr-release', name: 'integry/propr', baseBranch: 'release', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+    { id: 'sdk', name: 'integry/integration-sdk', enabled: true, visualPreview: { enabled: false, types: ['image'] } },
+  ]);
+  await page.goto('/repositories');
+  await page.getByRole('button', { name: 'Select integry/propr', exact: true }).nth(1).click();
+  const settings = page.getByRole('region', { name: 'Settings for integry/propr', exact: true });
+  const assign = settings.getByRole('checkbox', { name: 'Assign pull requests for integry/propr', exact: true });
+  const login = settings.getByRole('textbox', { name: 'Default assignee for integry/propr', exact: true });
+  const review = settings.getByRole('checkbox', { name: 'Request a review from the assignee for integry/propr', exact: true });
+  const autoAssignWrites = () => api.writes.at(-1)?.map(repo => [repo.id, repo.autoAssignPullRequests, repo.autoAssignDefaultAssignee, repo.autoAssignRequestReview]);
+
+  // Off for a repository that never configured it, with no inert configuration on show.
+  await expect(assign).not.toBeChecked();
+  await expect(login).toHaveCount(0);
+  await expect(review).toHaveCount(0);
+
+  await settings.getByText('Assign the pull request when ProPR finishes', { exact: true }).click();
+  await expect(assign).toBeChecked();
+  await expect.poll(autoAssignWrites).toEqual([
+    ['propr-main', true, null, false], ['propr-release', true, null, false], ['sdk', false, null, false],
+  ]);
+  await expect(login).toHaveValue('');
+  await expect(settings.getByText('Empty, so the author of the issue is assigned. Bot authors are skipped.', { exact: true })).toBeVisible();
+  // Let the toggle's confirmation expire so a later one could only come from a new save.
+  await expect(page.getByText('Saved', { exact: true }).filter({ visible: true })).toBeHidden({ timeout: 6000 });
+
+  // An invalid login is reported inline and never written.
+  const writesBeforeInvalid = api.writes.length;
+  await login.fill('not a login');
+  await login.blur();
+  await expect(login).toHaveAttribute('aria-invalid', 'true');
+  await expect(settings.getByRole('alert').filter({ hasText: 'Enter a GitHub login' })).toBeVisible();
+  await expect(page.getByText('Saved', { exact: true }).filter({ visible: true })).toBeHidden();
+  expect(api.writes).toHaveLength(writesBeforeInvalid);
+  await capturePreview(page, 'repository-auto-assign-invalid-login');
+
+  // Typing alone saves nothing; blur commits once, for every branch entry.
+  await login.fill('');
+  await login.pressSequentially('@octocat');
+  expect(api.writes).toHaveLength(writesBeforeInvalid);
+  await login.blur();
+  await expect.poll(autoAssignWrites).toEqual([
+    ['propr-main', true, 'octocat', false], ['propr-release', true, 'octocat', false], ['sdk', false, null, false],
+  ]);
+  expect(api.writes).toHaveLength(writesBeforeInvalid + 1);
+  await expect(settings.getByText('Pull requests are assigned to', { exact: false })).toContainText('@octocat');
+
+  await settings.getByText('Also request a review from the assignee', { exact: true }).click();
+  await expect(review).toBeChecked();
+  await expect(assign).toBeChecked();
+  await expect.poll(autoAssignWrites).toEqual([
+    ['propr-main', true, 'octocat', true], ['propr-release', true, 'octocat', true], ['sdk', false, null, false],
+  ]);
+  await settings.evaluate(element => element.scrollTo({ top: 0 }));
+  await login.scrollIntoViewIfNeeded();
+  await capturePreview(page, 'repository-auto-assign-enabled');
+
+  // The other branch entry shows the same shared state.
+  await page.getByRole('button', { name: 'Select integry/propr', exact: true }).first().click();
+  await expect(login).toHaveValue('octocat');
+  await expect(review).toBeChecked();
+
+  // Clearing the login and pressing Enter returns assignment to the issue author.
+  await login.fill('');
+  await login.press('Enter');
+  await expect.poll(autoAssignWrites).toEqual([
+    ['propr-main', true, null, true], ['propr-release', true, null, true], ['sdk', false, null, false],
+  ]);
+  await expect(settings.getByText('Empty, so the author of the issue is assigned. Bot authors are skipped.', { exact: true })).toBeVisible();
+  await login.fill('hubot');
+  await login.blur();
+  await expect.poll(() => api.writes.at(-1)?.map(repo => repo.autoAssignDefaultAssignee)).toEqual(['hubot', 'hubot', null]);
+
+  // Turning assignment off hides the details but keeps their stored values.
+  await settings.getByText('Assign the pull request when ProPR finishes', { exact: true }).click();
+  await expect(assign).not.toBeChecked();
+  await expect(login).toHaveCount(0);
+  await expect(review).toHaveCount(0);
+  await expect.poll(autoAssignWrites).toEqual([
+    ['propr-main', false, 'hubot', true], ['propr-release', false, 'hubot', true], ['sdk', false, null, false],
+  ]);
 });
 
 test('shows the whole repository-wide selection the worker may cancel', async ({ page }) => {
@@ -320,6 +408,20 @@ for (const width of [320, 390]) {
     await settings.getByText('Auto CI follow-up', { exact: true }).click();
     await expect.poll(() => api.writes.at(-1)?.[0].autoFollowupOnFailedCi).toBe(true);
     await expect(page.getByText('Saved', { exact: true }).filter({ visible: true })).toBeVisible();
+    await settings.getByText('Assign the pull request when ProPR finishes', { exact: true }).click();
+    const assignee = settings.getByRole('textbox', { name: 'Default assignee for integry/propr', exact: true });
+    await assignee.fill('octocat');
+    await assignee.blur();
+    await expect.poll(() => api.writes.at(-1)?.[0].autoAssignDefaultAssignee).toBe('octocat');
+    for (const control of [assignee, settings.getByRole('checkbox', { name: 'Request a review from the assignee for integry/propr', exact: true }).locator('..')]) {
+      const bounds = (await control.boundingBox())!;
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+    }
+    expect(await settings.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    if (width === 320) {
+      await settings.getByText('Assign the pull request when ProPR finishes', { exact: true }).evaluate(element => element.scrollIntoView({ block: 'start' }));
+      await capturePreview(page, 'repository-auto-assign-320');
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
     const box = (await settings.getByRole('textbox', { name: 'Visual preview instructions for integry/propr', exact: true }).boundingBox())!;
     expect(box.x + box.width).toBeLessThanOrEqual(width);
@@ -373,7 +475,8 @@ test('keeps repository and indexing changes unavailable to read-only users', asy
   await expect(page.getByRole('checkbox', { name: 'Hide repository', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Reindex repository', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Remove repository from ProPR', exact: true })).toBeDisabled();
-  await expect(page.getByRole('checkbox', { name: /Automatic CI follow-up|Visual previews/ })).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: /Automatic CI follow-up|Visual previews|Assign pull requests|Request a review/ })).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: /Default assignee/ })).toHaveCount(0);
   const notifications = page.getByRole('checkbox', { name: 'Notifications for integry/propr', exact: true });
   await expect(notifications).toBeDisabled();
   // Playwright treats a disabled control's label as disabled; force the click to prove it is inert.

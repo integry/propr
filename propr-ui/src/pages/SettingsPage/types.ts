@@ -7,6 +7,7 @@ export interface Settings {
   default_agent_alias: string;
   usage_tips_enabled?: boolean;
   auto_resolve_merge_conflicts: boolean;
+  followup_requires_assignment: boolean;
   dashboard_summary_enabled?: boolean;
   model_reasoning_level: string;
   pr_review_model: string;

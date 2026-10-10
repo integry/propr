@@ -5,6 +5,8 @@ import { formatRelativeTime } from './utils';
 import { getDisplayTitle } from './taskHeaderText';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import AttemptLineage from './AttemptLineage';
+import AssignmentControl from './AssignmentControl';
+import type { TaskAssignment } from './useTaskAssignment';
 
 // GitHub icon component
 const GitHubIcon: React.FC<{ size?: number; className?: string }> = ({ size = 14, className = '' }) => (
@@ -309,6 +311,25 @@ const TelemetryGroups: React.FC<{
   );
 };
 
+/** Where the task lives: repository, pull request, issue, commit, then who it is assigned to. */
+const GitGroup: React.FC<{
+  taskInfo: TaskInfo | null;
+  prInfo?: { url?: string; number?: number };
+  commitInfo?: { shortHash: string; url: string };
+  assignment?: TaskAssignment;
+  showRepo: boolean;
+}> = ({ taskInfo, prInfo, commitInfo, assignment, showRepo }) => (
+  <ContextGroup label="Git context">
+    {showRepo && taskInfo && <RepoLink taskInfo={taskInfo} />}
+    {prInfo?.url && <PRInfoChip prInfo={prInfo} />}
+    {Boolean(taskInfo?.number) && <IssuePRChip taskInfo={taskInfo!} />}
+    {taskInfo?.type === 'pr-comment' && Boolean(taskInfo.issueNumber) && <LinkedIssueChip taskInfo={taskInfo} />}
+    {commitInfo?.shortHash && commitInfo.url && <CommitInfoChip commitInfo={commitInfo} />}
+    {assignment?.taskId && <AssignmentControl assignment={assignment} />}
+    <AttemptLineage taskInfo={taskInfo} />
+  </ContextGroup>
+);
+
 /**
  * The collapsed mobile header's one line: the pull request, then the task's
  * title, truncated. Scrolled down a task, the title is what you lose track of;
@@ -373,6 +394,8 @@ interface ContextStripProps {
   part?: 'git' | 'telemetry';
   /** Telemetry only: what leads the line, e.g. which run it describes. */
   lead?: React.ReactNode;
+  /** Git only: the task's assignment; shown when it names the task it belongs to. */
+  assignment?: TaskAssignment;
 }
 
 const ContextStrip: React.FC<ContextStripProps> = ({
@@ -390,6 +413,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   mobileCompact,
   part,
   lead,
+  assignment,
 }) => {
   if (mobileCompact) return <CompactTitleLine taskInfo={taskInfo} prInfo={prInfo} />;
 
@@ -417,14 +441,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   return (
     <div className={`flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-sm text-gray-600${part === 'git' ? '' : ' flex-1'}`}>
       {showGit && (
-        <ContextGroup label="Git context">
-          {!mobileMetadataOnly && taskInfo && <RepoLink taskInfo={taskInfo} />}
-          {prInfo?.url && <PRInfoChip prInfo={prInfo} />}
-          {Boolean(taskInfo?.number) && <IssuePRChip taskInfo={taskInfo!} />}
-          {taskInfo?.type === 'pr-comment' && Boolean(taskInfo.issueNumber) && <LinkedIssueChip taskInfo={taskInfo} />}
-          {commitInfo?.shortHash && commitInfo.url && <CommitInfoChip commitInfo={commitInfo} />}
-          <AttemptLineage taskInfo={taskInfo} />
-        </ContextGroup>
+        <GitGroup taskInfo={taskInfo} prInfo={prInfo} commitInfo={commitInfo} assignment={assignment} showRepo={!mobileMetadataOnly} />
       )}
       {showTelemetry && (
         <TelemetryGroups

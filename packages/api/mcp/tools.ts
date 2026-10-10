@@ -5,7 +5,7 @@ import packageInfo from '../package.json' with { type: 'json' };
 import type { Knex } from 'knex';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
-import type { InstancePermission } from '@propr/shared';
+import { parseTaskAssignmentFilter, type InstancePermission } from '@propr/shared';
 import {
   DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES, GOAL_BASE_BRANCH_MAX_LENGTH, GOAL_LAUNCH_STRATEGIES, MAX_GOAL_CHECKPOINT_INTERVAL_MINUTES,
   MAX_GOAL_PARALLEL_TASKS, MIN_GOAL_CHECKPOINT_INTERVAL_MINUTES, MIN_GOAL_PARALLEL_TASKS, validateGoalCheckpointInterval,
@@ -48,6 +48,7 @@ import { getAgentActivity } from './agentActivity.js';
 import { GOAL_DETAIL_COLUMNS, goalInputPage, taskDetail, type GoalDetailRow } from './goalTaskDetail.js';
 import { goalAttentionSummary, listGoalsNeedingAttention } from '../services/goalAttention.js';
 import { queryTaskSummaries } from './taskListing.js';
+import { resolveAssigneeSelection, selectsNothing } from '../routes/taskAssignees.js';
 import { addVisualPreviewTools, type VisualPreviewToolServices } from './toolsPreviews.js';
 import { resolveUltrafixGoal, ultrafixGoalSchema } from './ultrafix.js';
 import { addImprovementTools, expireStaleImprovements, type RepoImprovementsToolServices } from './toolsImprovements.js';
@@ -237,10 +238,18 @@ export function createToolCatalog(deps: ToolDeps): McpTool[] {
 
   const taskTarget = { table: 'tasks', column: 'task_id', arg: 'taskId' };
   const taskColumns = ['task_id', 'repository', 'issue_number', 'task_type', 'created_at'];
-  tools.push({ name: 'list_tasks', description: 'List compact task summaries, execution timing and pull request context, excluding other users’ private goal tasks. Omit repository to list every repository in this grant; filter with state to see only what is still running.', scope: 'read', readOnly: true, schema: z.object({ ...listScopeShape, ...pageShape }).strict(), run: async ({ principal, args }) => {
+  tools.push({ name: 'list_tasks', description: 'List compact task summaries, execution timing and pull request context, excluding other users’ private goal tasks. Omit repository to list every repository in this grant; filter with state to see only what is still running, and with assignee to see whose work it is.', scope: 'read', readOnly: true, schema: z.object({
+    ...listScopeShape, ...pageShape,
+    assignee: z.string().max(1000).optional().describe('me (you), unassigned, or comma-separated GitHub logins (any of them). Omit, or all, for every task. Matches the Tasks screen and propr task list --assignee.'),
+  }).strict(), run: async ({ principal, args }) => {
+    const parsed = parseTaskAssignmentFilter(args.assignee);
+    if (!parsed.ok) throw new McpError('INVALID_INPUT', parsed.error);
+    // `me` is the authenticated principal, never a value the caller supplied.
+    const assignee = await resolveAssigneeSelection(db, parsed.filter, principal.user.id);
+    if (selectsNothing(assignee)) return ok({ tasks: [], nextOffset: null });
     const repositories = args.repository ? [args.repository] : await listScope(principal, args) ?? [];
     const taskSummaries = await queryTaskSummaries(db, { repositories, state: args.state, principalUserId: principal.user.id,
-      offset: args.offset, limit: args.limit });
+      offset: args.offset, limit: args.limit, assignee });
     return ok({ tasks: taskSummaries, nextOffset: taskSummaries.length === args.limit ? args.offset + args.limit : null });
   } });
   tools.push({ name: 'get_task', description: 'Read a task’s persisted state with its most recent events, newest narration, execution timing, changed-file counts and linked pull request. changesSummary is null when no file-change data is persisted; it never reports zero for unknown.', scope: 'read', readOnly: true, schema: z.object(taskShape).strict(), target: taskTarget, run: async ({ principal, args }) => ok({

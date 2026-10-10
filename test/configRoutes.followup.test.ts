@@ -42,6 +42,7 @@ describe('config route follow-up helpers', () => {
     let currentAutoFollowup = 4;
     let currentAutoResolveMergeConflicts = false;
     let currentDashboardSummaryEnabled = true;
+    let currentFollowupRequiresAssignment = false;
     let currentPrReviewModel = '';
     let currentUltrafixRatingGoal = 7;
     let currentUltrafixMaxCycles = 5;
@@ -57,6 +58,7 @@ describe('config route follow-up helpers', () => {
                 let stagedAutoFollowup = currentAutoFollowup;
                 let stagedAutoResolve = currentAutoResolveMergeConflicts;
                 let stagedDashboardSummary = currentDashboardSummaryEnabled;
+                let stagedFollowupRequiresAssignment = currentFollowupRequiresAssignment;
                 let stagedPrReviewModel = currentPrReviewModel;
                 let stagedUltrafixGoal = currentUltrafixRatingGoal;
                 let stagedUltrafixCycles = currentUltrafixMaxCycles;
@@ -74,6 +76,7 @@ describe('config route follow-up helpers', () => {
                                     else if (row.key === 'auto_followup_score_threshold') stagedAutoFollowup = value as number;
                                     else if (row.key === 'auto_resolve_merge_conflicts') stagedAutoResolve = value as boolean;
                                     else if (row.key === 'dashboard_summary_enabled') stagedDashboardSummary = value as boolean;
+                                    else if (row.key === 'followup_requires_assignment') stagedFollowupRequiresAssignment = value as boolean;
                                     else if (row.key === 'pr_review_model') stagedPrReviewModel = value as string;
                                     else if (row.key === 'ultrafix_rating_goal') stagedUltrafixGoal = value as number;
                                     else if (row.key === 'ultrafix_max_cycles') stagedUltrafixCycles = value as number;
@@ -89,6 +92,7 @@ describe('config route follow-up helpers', () => {
                             currentAutoFollowup = stagedAutoFollowup;
                             currentAutoResolveMergeConflicts = stagedAutoResolve;
                             currentDashboardSummaryEnabled = stagedDashboardSummary;
+                            currentFollowupRequiresAssignment = stagedFollowupRequiresAssignment;
                             currentPrReviewModel = stagedPrReviewModel;
                             currentUltrafixRatingGoal = stagedUltrafixGoal;
                             currentUltrafixMaxCycles = stagedUltrafixCycles;
@@ -118,6 +122,7 @@ describe('config route follow-up helpers', () => {
         currentAutoFollowup = 4;
         currentAutoResolveMergeConflicts = false;
         currentDashboardSummaryEnabled = true;
+        currentFollowupRequiresAssignment = false;
         currentPrReviewModel = '';
         currentUltrafixRatingGoal = 7;
         currentUltrafixMaxCycles = 5;
@@ -142,6 +147,62 @@ describe('config route follow-up helpers', () => {
         assert.strictEqual((await save(true)).status, 200);
         assert.strictEqual(currentDashboardSummaryEnabled, true);
         assert.strictEqual(currentSettings.keep, 'unchanged');
+    });
+
+    test('follow-up requires assignment setting persists atomically and rejects non-booleans', async () => {
+        const configStore = {
+            loadSettings: async () => currentSettings,
+            handleSettingsSaveSideEffects: () => {},
+        };
+        const save = (value: unknown) => saveSettingsWithRollback({
+            settings: { followup_requires_assignment: value }, configStore,
+            database: createTestDatabase(), publishConfigUpdate: async () => {},
+        });
+        assert.strictEqual((await save(true)).status, 200);
+        assert.strictEqual(currentFollowupRequiresAssignment, true);
+        for (const invalid of ['true', 1, null]) {
+            const result = await save(invalid);
+            assert.strictEqual(result.status, 400);
+            assert.deepStrictEqual(result.body, { error: 'followup_requires_assignment must be a boolean' });
+            assert.strictEqual(currentFollowupRequiresAssignment, true);
+        }
+        assert.strictEqual((await save(false)).status, 200);
+        assert.strictEqual(currentFollowupRequiresAssignment, false);
+        assert.strictEqual(currentSettings.followup_requires_assignment, undefined);
+        assert.strictEqual(currentSettings.keep, 'unchanged');
+    });
+
+    test('getSettings projects follow-up requires assignment as a boolean', async () => {
+        const project = async (stored: unknown) => {
+            const routes = createConfigRoutes({
+                redisClient: {} as never,
+                configStore: {
+                    loadSettings: async () => ({}),
+                    loadModelReasoningLevel: async () => '',
+                    loadAutoFollowupScoreThreshold: async () => 4,
+                    loadAutoResolveMergeConflicts: async () => false,
+                    getConfig: async <T,>(key: string, fallback: T) => (key === 'followup_requires_assignment' && stored !== undefined ? stored as T : fallback),
+                    loadPrReviewModel: async () => '',
+                    loadUltrafixRatingGoal: async () => 7,
+                    loadUltrafixMaxCycles: async () => 5,
+                    loadUltrafixPauseSeconds: async () => 60,
+                    loadDefaultMaxCostUsd: async () => 0,
+                    loadUltrafixEscalationSettings: async () => ({ enabled: false, models: [], patience: 3, maxReasoningLevels: 2 }),
+                },
+            });
+            const res = {
+                body: undefined as Record<string, unknown> | undefined,
+                json(payload: Record<string, unknown>) { this.body = payload; return this; },
+                status(_code: number) { return this; },
+            };
+            await routes.getSettings({} as never, res as never);
+            return res.body?.followup_requires_assignment;
+        };
+        assert.strictEqual(await project(undefined), false);
+        assert.strictEqual(await project(true), true);
+        assert.strictEqual(await project('"true"'), true);
+        assert.strictEqual(await project('garbage'), false);
+        assert.strictEqual(await project(null), false);
     });
 
     test('resolveConfigStore preserves the production namespace when no overrides are injected', () => {
@@ -1171,6 +1232,7 @@ describe('config route follow-up helpers', () => {
             auto_resolve_merge_conflicts: false,
             usage_tips_enabled: true,
             dashboard_summary_enabled: true,
+            followup_requires_assignment: false,
             model_reasoning_level: '',
             pr_review_model: '',
             ultrafix_rating_goal: 8,
@@ -1262,6 +1324,7 @@ describe('config route follow-up helpers', () => {
             auto_resolve_merge_conflicts: true,
             usage_tips_enabled: true,
             dashboard_summary_enabled: true,
+            followup_requires_assignment: false,
             model_reasoning_level: '',
             pr_review_model: 'review-model',
             ultrafix_rating_goal: 8,
@@ -1345,6 +1408,7 @@ describe('config route follow-up helpers', () => {
             auto_resolve_merge_conflicts: false,
             usage_tips_enabled: true,
             dashboard_summary_enabled: true,
+            followup_requires_assignment: false,
             model_reasoning_level: '',
             pr_review_model: '',
             ultrafix_rating_goal: 8,
@@ -3058,6 +3122,7 @@ describe('config route follow-up helpers', () => {
                 auto_resolve_merge_conflicts: false,
                 usage_tips_enabled: true,
                 dashboard_summary_enabled: true,
+                followup_requires_assignment: false,
                 model_reasoning_level: '',
                 pr_review_model: 'review-model',
                 ultrafix_rating_goal: 7,
