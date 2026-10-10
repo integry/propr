@@ -31,7 +31,13 @@ import { db } from '../db/connection.js';
  *    other one is the runner's exit-code notice or a recognized consequence
  *    of cancelled shards. Timing and provenance only correlate; a job that
  *    keeps running under `always()` and fails its own assertion after the
- *    cancellation is still reported.
+ *    cancellation is still reported;
+ *  - every step of the check that failed is the recognized gate that enforces
+ *    its needed jobs' results, or a recognized step that fails only because
+ *    cancelled shards uploaded nothing, and the gate itself failed. Exit-code
+ *    notices carry no step, so a plain shell step failing next to the gate is
+ *    caught by its step conclusion, and the notices may not outnumber the
+ *    recognized steps that ran.
  * Anything unreadable or ambiguous is not proof, and the follow-up is posted.
  * The check run itself keeps its failing conclusion, so required merge gates
  * are untouched.
@@ -58,6 +64,12 @@ const STEP_EXIT_RE = /^Process completed with exit code \d+\.$/u;
 const CANCELLATION_CONSEQUENCES = new Set([
     "Shard coverage verification finished with result 'failure'.",
 ]);
+/** The aggregate's step that fails on the needed jobs' results; mirrors pr-test-on-label.yml. */
+const DEPENDENCY_GATE_STEPS = new Set(['Enforce shard and docs results']);
+/** Steps whose failure cancelled shards alone explain: no summaries were uploaded to verify. */
+const CANCELLATION_CONSEQUENCE_STEPS = new Set(['Verify shards ran every discovered test exactly once']);
+/** Step conclusions that do not fail a job. */
+const PASSING_STEP_CONCLUSIONS = new Set(['neutral', 'skipped', 'success']);
 
 /** The subset of the worker's `CancelledRun` that identifies the attempt ProPR cancelled. */
 export interface ProprCancelledRun {
@@ -95,6 +107,12 @@ interface ActionsJob {
     run_attempt?: number;
     conclusion?: string | null;
     completed_at?: string | null;
+    steps?: unknown;
+}
+
+interface ActionsStep {
+    name?: unknown;
+    conclusion?: unknown;
 }
 
 /** The runs ProPR's active suspension of this pull request recorded as cancelled. */
@@ -171,7 +189,9 @@ export async function findCancellationProvenance(
     if (cancellationTimes.length === 0) return null;
     const failedAt = Date.parse(job.completed_at);
     if (!Number.isFinite(failedAt) || failedAt < Math.min(...cancellationTimes)) return null;
-    if (!await failedOnCancelledDependencies(octokit, target, jobId)) return null;
+    const gateSteps = gateStepsThatRan(job.steps);
+    if (gateSteps === null) return null;
+    if (!await failedOnCancelledDependencies(octokit, target, jobId, gateSteps)) return null;
 
     return { cancelledBy, runId, runAttempt };
 }
@@ -196,14 +216,39 @@ async function resolveCancellationSource(
 }
 
 /**
+ * How many recognized gate steps ran, when every failed step of the job is
+ * one of them and the dependency gate itself failed; otherwise null. Missing,
+ * unnamed or unconcluded steps cannot be attributed and are not proof.
+ */
+function gateStepsThatRan(steps: unknown): number | null {
+    if (!Array.isArray(steps) || steps.length === 0) return null;
+    let ran = 0;
+    let gateFailed = false;
+    for (const entry of steps) {
+        const step = asRecord(entry) as ActionsStep | null;
+        if (!step || typeof step.name !== 'string' || typeof step.conclusion !== 'string') return null;
+        const conclusion = step.conclusion.toLowerCase();
+        const gate = DEPENDENCY_GATE_STEPS.has(step.name);
+        const recognized = gate || CANCELLATION_CONSEQUENCE_STEPS.has(step.name);
+        if (recognized && conclusion !== 'skipped') ran += 1;
+        if (PASSING_STEP_CONCLUSIONS.has(conclusion)) continue;
+        if (!recognized) return null;
+        if (gate) gateFailed = true;
+    }
+    return gateFailed ? ran : null;
+}
+
+/**
  * Whether the check's failure annotations attribute its failure to cancelled
  * needed jobs and to nothing else. Missing, truncated or unrecognized
- * failures are not proof.
+ * failures are not proof, and neither are more exit-code notices than the
+ * recognized gate steps that ran could have produced.
  */
 async function failedOnCancelledDependencies(
     octokit: CancellationProvenanceOctokit,
     target: CancellationProvenanceTarget,
     checkRunId: number,
+    gateStepsRan: number,
 ): Promise<boolean> {
     const failures: string[] = [];
     for (let page = 1; ; page += 1) {
@@ -219,6 +264,7 @@ async function failedOnCancelledDependencies(
         }
         if (data.length < ANNOTATIONS_PAGE_SIZE) break;
     }
+    if (failures.filter(message => STEP_EXIT_RE.test(message)).length > gateStepsRan) return false;
     return failures.some(message => CANCELLED_DEPENDENCY_RE.test(message))
         && failures.every(message => CANCELLED_DEPENDENCY_RE.test(message)
             || STEP_EXIT_RE.test(message)

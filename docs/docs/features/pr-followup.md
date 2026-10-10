@@ -89,6 +89,10 @@ A cancelled check is not a failure, and neither is a check that failed only beca
 - The run attempt was cancelled by ProPR's own recorded suspension, or GitHub reports that attempt as cancelled.
 - No other job of that attempt failed or timed out.
 - The check failed after the cancellation stopped its sibling jobs.
+- The check's own failure annotations show it failed because of the cancellation: at least one reports a needed job as `cancelled`, and every other one is the runner's exit-code notice or a recognized consequence of cancelled shards, such as shard coverage verification failing.
+- Every step of the check that failed is the recognized gate that enforces its needed jobs' results (or the shard coverage verification that fails only because cancelled shards uploaded nothing), and the gate itself failed. Any other failed step — including a plain shell command whose only annotation is `Process completed with exit code 1.` — is reported.
+
+Timing and provenance alone are not enough: a job that runs under `always()` and fails its own step after the cancellation still produces a follow-up.
 
 If ProPR can't read that evidence, it posts the comment. The check keeps its failing conclusion, so required merge gates are unchanged, and a genuine failure on a later attempt of the same commit is still reported.
 

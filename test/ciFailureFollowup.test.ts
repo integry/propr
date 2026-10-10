@@ -213,6 +213,23 @@ describe('cancellation-induced aggregate failure', () => {
         { annotation_level: 'failure', message: 'Process completed with exit code 1.' },
     ];
 
+    interface Step { name: string; conclusion: string | null }
+
+    /** The aggregate's steps: coverage and the gate fail on the cancelled shards. */
+    function aggregateSteps(extra: Step[] = []): Step[] {
+        return [
+            { name: 'Set up job', conclusion: 'success' },
+            { name: 'Checkout repository', conclusion: 'success' },
+            { name: 'Set up Node.js', conclusion: 'success' },
+            { name: 'Download shard summaries', conclusion: 'success' },
+            { name: 'Verify shards ran every discovered test exactly once', conclusion: 'failure' },
+            ...extra,
+            { name: 'Enforce shard and docs results', conclusion: 'failure' },
+            { name: 'Post Checkout repository', conclusion: 'success' },
+            { name: 'Complete job', conclusion: 'success' },
+        ];
+    }
+
     function actionsOctokit(options: {
         jobs: Job[];
         /** The target check run's annotations; the actual aggregate's by default. */
@@ -223,6 +240,8 @@ describe('cancellation-induced aggregate failure', () => {
         failJobLookup?: boolean;
         /** The fetched job's conclusion when it disagrees with the attempt's job listing. */
         jobLookupConclusion?: string;
+        /** The fetched job's steps; the actual aggregate's by default. */
+        steps?: Step[];
     }) {
         const postedBodies: string[] = [];
         const runAttempt = options.runAttempt ?? 1;
@@ -236,7 +255,7 @@ describe('cancellation-induced aggregate failure', () => {
                 }
                 if (route === 'GET /repos/{owner}/{repo}/actions/jobs/{job_id}') {
                     if (options.failJobLookup) throw new Error('HTTP 502');
-                    return { data: { id: AGGREGATE_JOB_ID, run_id: RUN_ID, run_attempt: runAttempt, conclusion: options.jobLookupConclusion ?? aggregate.conclusion, completed_at: aggregate.completed_at } };
+                    return { data: { id: AGGREGATE_JOB_ID, run_id: RUN_ID, run_attempt: runAttempt, conclusion: options.jobLookupConclusion ?? aggregate.conclusion, completed_at: aggregate.completed_at, steps: options.steps ?? aggregateSteps() } };
                 }
                 if (route === 'GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}') {
                     // The aggregate finishes while the run still evaluates its report job.
@@ -353,6 +372,53 @@ describe('cancellation-induced aggregate failure', () => {
 
         assert.strictEqual(result.reason, 'posted');
     });
+
+    test('still posts an aggregate whose own shell step failed before its cancelled-dependency gate', async () => {
+        // A plain shell assertion reports nothing but its exit code; the gate
+        // that runs after it under `always()` then reports the cancelled shards.
+        const steps = aggregateSteps([{ name: 'Check release notes', conclusion: 'failure' }]);
+        const { octokit, postedBodies } = actionsOctokit({
+            jobs: cancelledRunJobs(),
+            steps,
+            annotations: [
+                { annotation_level: 'failure', message: 'Process completed with exit code 1.' },
+                { annotation_level: 'failure', message: "Full test suite shards finished with result 'cancelled'." },
+                { annotation_level: 'failure', message: 'Process completed with exit code 1.' },
+            ],
+        });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
+
+        assert.strictEqual(result.reason, 'posted');
+        assert.strictEqual(postedBodies.length, 1);
+    });
+
+    test('still posts an aggregate whose shell failure reports only an exit code past the recognized steps', async () => {
+        // The step listing attributes no failure elsewhere, but there are more
+        // exit-code notices than recognized steps that ran.
+        const { octokit } = actionsOctokit({
+            jobs: cancelledRunJobs(),
+            annotations: [...AGGREGATE_ANNOTATIONS, { annotation_level: 'failure', message: 'Process completed with exit code 2.' }],
+        });
+
+        const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
+
+        assert.strictEqual(result.reason, 'posted');
+    });
+
+    for (const [label, steps] of [
+        ['missing', []],
+        ['unconcluded', aggregateSteps([{ name: 'Check release notes', conclusion: null }])],
+        ['passing at the gate', aggregateSteps().map(step => step.name === 'Enforce shard and docs results' ? { ...step, conclusion: 'success' } : step)],
+    ] as Array<[string, Step[]]>) {
+        test(`still posts when the aggregate's failed steps are ${label}`, async () => {
+            const { octokit } = actionsOctokit({ jobs: cancelledRunJobs(), steps });
+
+            const { result } = await follow(octokit, [{ id: RUN_ID, observedAttempt: 1 }]);
+
+            assert.strictEqual(result.reason, 'posted');
+        });
+    }
 
     test('still posts a target whose only failure is its exit code', async () => {
         const { octokit } = actionsOctokit({
