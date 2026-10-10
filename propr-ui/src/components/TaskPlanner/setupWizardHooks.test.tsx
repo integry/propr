@@ -299,6 +299,31 @@ describe('setupWizardHooks branch resolution', () => {
     await waitFor(() => expect(result.current.config.baseBranch).toBe('develop'));
   });
 
+  it('keeps an existing draft baseBranch when the repository catalog resolves after mount in edit mode', async () => {
+    vi.useFakeTimers();
+    try {
+      const draft = makeDraft({ context_config: { baseBranch: 'main' } });
+      const { result, rerender } = renderHook(({ catalogRepo, catalogBaseBranch }) => {
+        const [config, setConfig] = useState<PlannerConfig>(baseConfig);
+        useBranchesLoader(catalogRepo, catalogBaseBranch, setConfig, false);
+        useRepoInfoLoader(false, draft, setConfig);
+        useDraftSettingsPersistence(draft.draft_id, config, draft);
+        return config;
+      }, { initialProps: { catalogRepo: '', catalogBaseBranch: '' } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(result.current.baseBranch).toBe('main');
+
+      rerender({ catalogRepo: 'integry/other', catalogBaseBranch: 'develop' });
+      await vi.advanceTimersByTimeAsync(1_100);
+
+      expect(result.current.baseBranch).toBe('main');
+      expect(mockGetRepoBranches).not.toHaveBeenCalled();
+      expect(mockUpdateDraft).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('resets loading and error state when repo info resolution becomes disabled', async () => {
     const pendingRequest = createDeferred<{ defaultBranch: string; branches: string[] }>();
     mockGetRepoBranches.mockReturnValueOnce(pendingRequest.promise);
