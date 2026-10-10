@@ -293,6 +293,63 @@ Desktop releases have their own `desktop-v<major>.<minor>.<patch>` tags. They do
 metadata, Linux packages, the deferred protected machine MSI, artifact names, and release manifest without changing the monorepo
 package versions.
 
+### Nightly native builds
+
+The Tier 3 nightly (`.github/workflows/test-nightly.yml`, 02:00 UTC and manual dispatch) already builds and tests the
+unsigned Linux x64/ARM64 and macOS x64/ARM64 packages through the reusable desktop workflow. Its **Nightly desktop
+download** job turns them into one GitHub Actions artifact, kept for 14 days:
+
+```text
+propr-desktop-nightly-<version>-<first-12-source-SHA>-run<run-id>.<attempt>-<packaging-only|all-checks-passed>
+```
+
+The job waits for every nightly job, downloads this run's `propr-desktop-validation-canonical-*` per-target artifacts,
+and re-runs the same `release-artifacts.mjs finalize` architecture, matrix and checksum verification as the
+reusable workflow. `nightly-native-bundle.mjs` then rechecks the exact ten-installer `macos-linux-v1` matrix against
+`SHA256SUMS`, reads the runtime launcher manifest packaged in both Linux ZIPs, and writes:
+
+- the ten installers and `SHA256SUMS`;
+- `nightly-manifest.json`: the full source SHA, run ID, attempt and URL, version, platform matrix, every filename,
+  size and SHA-256 with its architecture evidence, per-target signing state, Linux runtime binding, and the real
+  outcome of each nightly check;
+- `NIGHTLY.md`: install steps and limitations. The job summary links the artifact and repeats the status.
+
+Status is reported in two parts. The `packaging-only` suffix means packaging passed but something else did not:
+live E2E failed, a check was cancelled, skipped or missing. The bundle stays downloadable, but `status.nightly` is
+`failed` or `incomplete` and `releaseValidationCandidate` is `false`. Only `all-checks-passed` (every check `success`)
+is a release-validation candidate. `promotable` is always `false`. If any required platform fails, is cancelled or is
+missing, or any byte, digest or file set differs, nothing is uploaded and the job fails. The run summary then
+explains why the bundle was withheld. The per-target artifacts stay diagnostics only.
+
+The nightly packages are unsigned. Linux packages carry no signature. macOS apps have no Developer ID signature
+and are not notarized; the ARM64 app has only the local ad-hoc signature. There is no update feed or signed update
+metadata. Nightly packaging also passes no runtime manifest, so the Linux packages embed the checked-in launcher
+pins (`docker/launcher/manifest.json`, version-tagged `propr/app`, `propr/ui` and `propr/agent`). The manifest
+reports this as `runtime.linux.binding: unbound`. Those images are not built from the nightly's source, so a
+nightly install is not a current-source end-to-end runtime. For an exact-source Linux runtime, follow the Linux
+preview channel below. Live E2E runs against a separately deployed backend whose source this run does not attest,
+and it covers only the configured model-pair subset, not every provider.
+
+The job only stages an Actions artifact with `contents: read`. It does not create GitHub Releases, prereleases,
+tags, registry or npm publications, or feed updates. A separate nightly prerelease channel stays disabled until it is
+explicitly approved.
+
+To use a nightly in release validation:
+
+1. Pick an `all-checks-passed` artifact, or a `packaging-only` one only to diagnose packaging. Read its
+   `nightly-manifest.json` and confirm that `source.sha` is the commit you intend to release, and that it is reachable
+   from `main`.
+2. Check the download with `node apps/desktop/scripts/nightly-native-bundle.mjs verify --directory <extracted-dir>`
+   (or `sha256sum --check SHA256SUMS`), then install the matching package for manual QA.
+3. Evidence you can reuse for that exact SHA: the native packaging, architecture inspection, install, deep-link,
+   relaunch and removal lifecycle, packaged Connect discovery, native Electron units, the full test suite and live E2E
+   outcomes recorded in the manifest.
+4. Checks that must still run: the protected `desktop-v*` tag preflight, published runtime binding
+   (`PROPR_DESKTOP_RUNTIME_APP_IMAGE`/`PROPR_DESKTOP_RUNTIME_UI_IMAGE` digests from the same SHA), production
+   signing and notarization, signed install and acceptance, update-metadata signing, and publication. The tag
+   workflow rebuilds every installer from source. Unsigned nightly bytes are never signed in place or promoted into
+   production installers.
+
 ### Independent Linux preview channel
 
 The recommended first Linux delivery is the manual **Desktop Linux Preview Release** GitHub Actions workflow and GitHub
