@@ -116,6 +116,9 @@ export const fixHistory = [
   { state: 'COMPLETED', timestamp: ago(46), metadata: { model: 'gpt-6-astra' } },
 ];
 
+// The user GitHub has PR #2664 assigned to, with no avatar so the fixture makes no image request.
+export const prAssignee = { id: '1', login: 'octocat', displayName: 'The Octocat', avatarUrl: null };
+
 export async function fixture(page: Page, platform?: 'macos' | 'linux') {
   await page.clock.install({ time: now });
   if (platform) await page.addInitScript(platform => {
@@ -133,6 +136,8 @@ export async function fixture(page: Page, platform?: 'macos' | 'linux') {
   }, platform);
   await page.route('**/api/**', route => {
     const pathname = new URL(route.request().url()).pathname;
+    // Every run of PR #2664 reads the same GitHub assignment: the pull request's.
+    const prAssignment = { subject: { owner: 'integry', repo: 'propr', number: 2664, kind: 'pull_request' }, assignees: [prAssignee], synced: true };
     const responses: Record<string, unknown> = {
       '/api/auth/demo-mode': { demoMode: true },
       // Paged by task: 10 tasks (32 runs) of 1,842.
@@ -154,6 +159,7 @@ export async function fixture(page: Page, platform?: 'macos' | 'linux') {
         usageMetricRecords: [{ agent: 'codex', metricKey: 'weeklyAll', metricValue: 0.4 }],
       },
       [`/api/task/${selectedRun}/live-details`]: { events: detailsEvents, todos: [], currentTask: null },
+      [`/api/task/${selectedRun}/assignees`]: prAssignment,
       [`/api/task/${selectedRun}/file-changes`]: {
         taskId: selectedRun, lastUpdated: ago(0.5),
         files: [{ path: 'src/jobs/withdrawalLabels.ts', linesAdded: 12, linesRemoved: 4, status: 'modified', diff: '@@ -1,4 +1,12 @@\n-export const WITHDRAW = true;\n+export const WITHDRAW = isIntentLabel(label);' }],
@@ -167,6 +173,7 @@ export async function fixture(page: Page, platform?: 'macos' | 'linux') {
         usageMetricRecords: [{ agent: 'codex', metricKey: 'weeklyAll', metricValue: 0.1 }],
       },
       [`/api/task/${historicalRun}/live-details`]: { events: historicalEvents, todos: [], currentTask: null },
+      [`/api/task/${historicalRun}/assignees`]: prAssignment,
       [`/api/task/${fixRun}/history`]: {
         history: fixHistory,
         taskInfo: {
@@ -175,6 +182,7 @@ export async function fixture(page: Page, platform?: 'macos' | 'linux') {
         },
       },
       [`/api/task/${fixRun}/live-details`]: { events: [], todos: [], currentTask: null },
+      [`/api/task/${fixRun}/assignees`]: prAssignment,
       [`/api/task/${historicalRun}/file-changes`]: {
         taskId: historicalRun, lastUpdated: ago(36),
         files: [{ path: 'src/jobs/withdrawalHandlers.ts', linesAdded: 3, linesRemoved: 1, status: 'modified', diff: '@@ -14,1 +14,3 @@\n-if (label.includes(\'withdraw\'))\n+if (isWithdrawalLabel(label))' }],
