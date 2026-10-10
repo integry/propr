@@ -427,7 +427,12 @@ test('runs and tasks share one chart: each day pairs its runs and tasks side by 
   // The card hangs over Monday's column, but the pointer passes straight
   // through it: sweeping left across the card hovers Monday, not the card.
   await expect(tooltip).toHaveCSS('pointer-events', 'none');
-  await expect(tooltip).toHaveCSS('user-select', 'none');
+  // WebKit computes only the prefixed -webkit-user-select; read whichever
+  // property the engine actually resolves so selection is checked everywhere.
+  await expect.poll(() => tooltip.evaluate(element => {
+    const style = getComputedStyle(element);
+    return style.getPropertyValue('user-select') || style.getPropertyValue('-webkit-user-select');
+  })).toBe('none');
   const hanging = (await tooltip.boundingBox())!;
   const sweepY = hanging.y + hanging.height / 2;
   expect(hanging.x).toBeLessThan(pairCentre(4) + innerBoxes[4].width);
