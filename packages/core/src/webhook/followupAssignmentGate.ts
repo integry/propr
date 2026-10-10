@@ -157,6 +157,38 @@ export async function commentAuthorMayFollowUp(input: FollowupGateInput, options
     return evaluator.decide(author);
 }
 
+/**
+ * How long intake remembers a comment the assignment gate refused because its
+ * author was not assigned. Webhook and polling intake share this record, so a
+ * refused comment never starts work later, whether the same webhook is
+ * redelivered or polling reads it again, even once its author is assigned:
+ * the author is told to comment again, and a new comment is what counts.
+ * A refusal caused by an unreadable assignment is not recorded, so it stays
+ * retryable.
+ */
+export const REFUSED_COMMENT_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+export interface RefusedComment {
+    owner: string;
+    repo: string;
+    prNumber: number;
+    commentId: number;
+}
+
+export function refusedCommentKey({ owner, repo, prNumber, commentId }: RefusedComment): string {
+    return `pr-comment-refused:${owner}:${repo}:${prNumber}:${commentId}`;
+}
+
+/** Records a definitive refusal. Throws when it cannot be stored. */
+export async function rememberRefusedComment(redisClient: Redis, comment: RefusedComment): Promise<void> {
+    await redisClient.setex(refusedCommentKey(comment), REFUSED_COMMENT_TTL_SECONDS, Date.now().toString());
+}
+
+/** Whether a comment was definitively refused. Throws when the record cannot be read. */
+export async function wasRefused(redisClient: Redis, comment: RefusedComment): Promise<boolean> {
+    return Boolean(await redisClient.get(refusedCommentKey(comment)));
+}
+
 export function followupAssignmentNoticeKey(pullRequest: FollowupGatePullRequest, authorLogin: string): string {
     return `followup-assignment-notice:${pullRequest.repoOwner}:${pullRequest.repoName}:${pullRequest.pullRequestNumber}:${authorLogin.toLowerCase()}`;
 }

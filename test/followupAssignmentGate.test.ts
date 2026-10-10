@@ -158,9 +158,10 @@ await mock.module('../packages/core/src/agents/AgentRegistry.js', {
         getAgentRegistry: mock.fn(() => mockAgentRegistry),
     },
 });
+const mockHandleMergeCommand = mock.fn(async () => {});
 await mock.module('../packages/core/src/webhook/mergeConflictDetector.js', {
     namedExports: {
-        handleMergeCommand: mock.fn(async () => {}),
+        handleMergeCommand: mockHandleMergeCommand,
         handlePullRequestConflictDetection: mock.fn(async () => {}),
         handlePushConflictDetection: mock.fn(async () => {}),
     },
@@ -172,7 +173,20 @@ const { db, runMigrations, closeConnection } = await import('../packages/core/sr
 const { shutdownQueue, getIssueQueue } = await import('../packages/core/src/queue/taskQueue.js');
 const gate = await import('../packages/core/src/webhook/followupAssignmentGate.js');
 const { loadTaskAssignees } = await import('../packages/core/src/services/taskAssignmentService.js');
-const { processCommentEvent } = await import('../packages/core/src/webhook/commentEventHandler.js');
+const { processCommentEvent, setUltrafixDeps } = await import('../packages/core/src/webhook/commentEventHandler.js');
+// Enough of the ultrafix wiring for an accepted manual /fix or /review to dispatch.
+setUltrafixDeps({
+    loadUltrafixRatingGoal: async () => 7,
+    loadUltrafixMaxCycles: async () => 5,
+    loadUltrafixPauseSeconds: async () => 60,
+    loadPrReviewModel: async () => '',
+    startLoop: async () => ({ state: {}, initialAction: 'review' as const }),
+    clearStateIfCurrent: async () => true,
+    hasAutomaticWork: async () => false,
+    reserveAutomaticWork: async () => 1,
+    invalidateAutomaticWork: async () => ({ workEpoch: 1, hadAutomaticWork: false }),
+    getPendingReviewState: async () => ({ hasPendingReview: false }),
+});
 const { buildCiFailureFollowupMarker } = await import('../packages/core/src/webhook/ciFailureFollowup.js');
 
 // The polling module sees @propr/core through this mock, wired to the same
@@ -197,6 +211,8 @@ await mock.module('@propr/core', {
         getSystemBotUsernames: gate.getSystemBotUsernames,
         isSystemFollowupComment: gate.isSystemFollowupComment,
         refuseGatedComment: gate.refuseGatedComment,
+        rememberRefusedComment: gate.rememberRefusedComment,
+        wasRefused: gate.wasRefused,
     },
 });
 const { pollForPullRequestComments } = await import('../src/polling/prCommentPolling.js');
@@ -262,6 +278,10 @@ function trackingKey(commentId: number): string {
     return `pr-comment-processed:${OWNER}:${REPO}:${PR}:${commentId}`;
 }
 
+function refusedKey(commentId: number): string {
+    return `pr-comment-refused:${OWNER}:${REPO}:${PR}:${commentId}`;
+}
+
 const pullRequest = { repoOwner: OWNER, repoName: REPO, pullRequestNumber: PR };
 
 beforeEach(() => {
@@ -272,6 +292,7 @@ beforeEach(() => {
     github.posted = [];
     mockRequest.mock.resetCalls();
     mockQueueAdd.mock.resetCalls();
+    mockHandleMergeCommand.mock.resetCalls();
     mockLoggerInstance.info.mock.resetCalls();
     mockLoadFollowupRequiresAssignment.mock.resetCalls();
 });
@@ -504,6 +525,116 @@ describe('processCommentEvent with the assignment gate', () => {
         assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'c10', createConfig(redisClient)), { status: 'ignored', reason: 'author_not_assigned' });
         assert.equal(redisClient._store.has(trackingKey(event.comment.id)), false);
     });
+
+    describe('redelivery of a refused comment', () => {
+        const REFUSED = { status: 'ignored', reason: 'author_not_assigned' };
+
+        for (const body of ['please fix', '/fix', '/review', '/merge']) {
+            test(`a refused "${body}" stays refused when redelivered after its author is assigned`, async () => {
+                gateEnabled = true;
+                github.assignees.set(PR, [ALICE]);
+                const redisClient = createMockRedis();
+                const event = prCommentEvent(body, BOB);
+                assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'r1', createConfig(redisClient)), REFUSED);
+                assert.ok(redisClient._store.has(refusedKey(event.comment.id)));
+
+                github.assignees.set(PR, [ALICE, BOB]);
+                const readsBefore = assigneeReads();
+                assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'r2', createConfig(redisClient)), REFUSED);
+                // ...and switching the gate off does not release it either.
+                gateEnabled = false;
+                assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'r3', createConfig(redisClient)), REFUSED);
+                assert.equal(assigneeReads(), readsBefore);
+                assert.equal(mockQueueAdd.mock.callCount(), 0);
+                assert.equal(mockHandleMergeCommand.mock.callCount(), 0);
+                assert.equal(redisClient._store.has(trackingKey(event.comment.id)), false);
+                assert.equal(github.posted.length, 1);
+
+                // A new comment from the now-assigned author starts work.
+                gateEnabled = true;
+                const fresh = prCommentEvent(body, BOB);
+                const disposition = await processCommentEvent(fresh, 'issue_comment', 'r4', createConfig(redisClient));
+                assert.equal(disposition.status, 'accepted');
+                assert.equal(disposition.billing?.seatConsumed, true);
+                if (body === '/merge') assert.equal(mockHandleMergeCommand.mock.callCount(), 1);
+                else assert.equal(mockQueueAdd.mock.callCount(), 1);
+            });
+        }
+
+        test('a delivery accepted once is still deduplicated as before', async () => {
+            gateEnabled = true;
+            github.assignees.set(PR, [ALICE]);
+            const redisClient = createMockRedis();
+            const event = prCommentEvent('please fix', ALICE);
+            assert.equal((await processCommentEvent(event, 'issue_comment', 'r5', createConfig(redisClient))).status, 'accepted');
+            assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'r6', createConfig(redisClient)), { status: 'ignored', reason: 'duplicate_delivery' });
+            assert.equal(redisClient._store.has(refusedKey(event.comment.id)), false);
+            assert.equal(mockQueueAdd.mock.callCount(), 1);
+        });
+
+        test('a refused comment is not recorded when the author filter drops it first', async () => {
+            gateEnabled = true;
+            github.assignees.set(PR, [ALICE]);
+            const redisClient = createMockRedis();
+            const event = prCommentEvent('please fix', BOB);
+            mockFilterCommentByAuthor.mock.mockImplementationOnce(() => ({ shouldFilter: true }));
+            assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'r7', createConfig(redisClient)), { status: 'ignored', reason: 'filtered_author' });
+            assert.equal(redisClient._store.has(refusedKey(event.comment.id)), false);
+            assert.equal(assigneeReads(), 0);
+        });
+
+        for (const body of ['please fix', '/fix']) {
+            test(`a "${body}" whose refusal cannot be recorded fails the delivery, tells nobody, and is decided again on redelivery`, async () => {
+                gateEnabled = true;
+                github.assignees.set(PR, [ALICE]);
+                const redisClient = createMockRedis();
+                const event = prCommentEvent(body, BOB);
+                redisClient.setex.mock.mockImplementation(async () => { throw new Error('Redis unavailable'); });
+                await assert.rejects(processCommentEvent(event, 'issue_comment', 'r8', createConfig(redisClient)), /Redis unavailable/);
+                redisClient.setex.mock.restore();
+                assert.equal(github.posted.length, 0);
+                assert.equal(redisClient._store.has(refusedKey(event.comment.id)), false);
+                assert.equal(redisClient._store.has(trackingKey(event.comment.id)), false);
+                assert.equal(mockQueueAdd.mock.callCount(), 0);
+
+                // Storage is back and Bob is still unassigned: now the refusal is definitive.
+                assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'r9', createConfig(redisClient)), REFUSED);
+                assert.ok(redisClient._store.has(refusedKey(event.comment.id)));
+                assert.equal(github.posted.length, 1);
+                github.assignees.set(PR, [ALICE, BOB]);
+                assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'r10', createConfig(redisClient)), REFUSED);
+                assert.equal(mockQueueAdd.mock.callCount(), 0);
+            });
+        }
+
+        test('an unreadable refusal record fails the delivery instead of starting work', async () => {
+            gateEnabled = true;
+            github.assignees.set(PR, [ALICE, BOB]);
+            const redisClient = createMockRedis();
+            const event = prCommentEvent('please fix', BOB);
+            redisClient._store.set(refusedKey(event.comment.id), String(Date.now()));
+            redisClient.get.mock.mockImplementation(async () => { throw new Error('Redis unavailable'); });
+            await assert.rejects(processCommentEvent(event, 'issue_comment', 'r11', createConfig(redisClient)), /Redis unavailable/);
+            await assert.rejects(processCommentEvent(prCommentEvent('/fix', BOB), 'issue_comment', 'r12', createConfig(redisClient)), /Redis unavailable/);
+            redisClient.get.mock.restore();
+            assert.equal(mockQueueAdd.mock.callCount(), 0);
+        });
+
+        test('an unreadable assignment is not recorded, so the redelivery after the outage proceeds', async () => {
+            gateEnabled = true;
+            github.assignees.set(PR, [ALICE, BOB]);
+            github.failRead = true;
+            const redisClient = createMockRedis();
+            const event = prCommentEvent('/review', BOB);
+            await assert.rejects(processCommentEvent(event, 'issue_comment', 'r13', createConfig(redisClient)), /Could not read the assignees/);
+            assert.equal(redisClient._store.has(refusedKey(event.comment.id)), false);
+
+            github.failRead = false;
+            const disposition = await processCommentEvent(event, 'issue_comment', 'r14', createConfig(redisClient));
+            assert.equal(disposition.status, 'accepted');
+            assert.equal(mockQueueAdd.mock.callCount(), 1);
+        });
+    });
 });
 
 // ========== Polling intake ==========
@@ -597,9 +728,42 @@ describe('pollForPullRequestComments with the assignment gate', () => {
         redisClient.setex.mock.mockImplementation(async () => { throw new Error('Redis unavailable'); });
         assert.deepEqual(await poll(redisClient, fromBob), []);
         redisClient.setex.mock.restore();
+        // Not recorded, so not definitive: nobody was told it was refused.
+        assert.equal(github.posted.length, 0);
         github.assignees.set(PR, [ALICE, BOB]);
         assert.deepEqual(await poll(redisClient, fromBob), [2, 3]);
     });
+
+    test('a comment refused on the webhook is not queued by a later poll once its author is assigned', async () => {
+        gateEnabled = true;
+        github.assignees.set(PR, [ALICE]);
+        const redisClient = createMockRedis();
+        const event = prCommentEvent('please fix', BOB);
+        assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'x1', createConfig(redisClient)), { status: 'ignored', reason: 'author_not_assigned' });
+
+        github.assignees.set(PR, [ALICE, BOB]);
+        const readsBefore = assigneeReads();
+        const sameComment = { id: event.comment.id, body: 'please fix', user: BOB, created_at: '2026-10-09T10:01:00Z' };
+        assert.deepEqual(await poll(redisClient, [sameComment]), []);
+        assert.equal(assigneeReads(), readsBefore);
+        assert.deepEqual(await poll(redisClient, [sameComment, { id: 5, body: 'now assigned', user: BOB, created_at: '2026-10-09T10:02:00Z' }]), [5]);
+    });
+
+    for (const body of ['please fix', '/fix']) {
+        test(`a "${body}" refused by a poll is not started by a webhook delivery of the same comment`, async () => {
+            gateEnabled = true;
+            github.assignees.set(PR, [ALICE]);
+            const redisClient = createMockRedis();
+            const event = prCommentEvent(body, BOB);
+            assert.deepEqual(await poll(redisClient, [{ id: event.comment.id, body, user: BOB, created_at: '2026-10-09T10:01:00Z' }]), []);
+            assert.ok(redisClient._store.has(refusedKey(event.comment.id)));
+
+            github.assignees.set(PR, [ALICE, BOB]);
+            assert.deepEqual(await processCommentEvent(event, 'issue_comment', 'x2', createConfig(redisClient)), { status: 'ignored', reason: 'author_not_assigned' });
+            assert.equal(mockQueueAdd.mock.callCount(), 0);
+            assert.equal(redisClient._store.has(trackingKey(event.comment.id)), false);
+        });
+    }
 
     test('a failed live read queues nothing and is asked about again on the next poll', async () => {
         gateEnabled = true;

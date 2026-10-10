@@ -1,6 +1,6 @@
 import type { Redis } from 'ioredis';
 import { logger } from '@propr/core';
-import { createFollowupGateEvaluator, getSystemBotUsernames, isSystemFollowupComment, refuseGatedComment, type FollowupGateEvaluator } from '@propr/core';
+import { createFollowupGateEvaluator, getSystemBotUsernames, isSystemFollowupComment, refuseGatedComment, rememberRefusedComment, type FollowupGateEvaluator } from '@propr/core';
 
 /** The follow-up assignment gate as polling intake applies it, with the refused comments it remembers. */
 
@@ -17,39 +17,14 @@ interface GatedComment {
 }
 
 /**
- * How long polling remembers a comment the assignment gate refused. Polling
- * reads a pull request's whole comment history every time, and a refused
- * comment never gets the bot's `✓` reply that marks a handled one, so without
- * this it would be gated again on every poll and queued once its author was
- * assigned. Remembering it drops it, as a webhook delivery does.
- */
-export const REFUSED_COMMENT_TTL_SECONDS = 30 * 24 * 60 * 60;
-
-export interface RefusedComment {
-    owner: string;
-    repo: string;
-    prNumber: number;
-    commentId: number;
-}
-
-export function refusedCommentKey({ owner, repo, prNumber, commentId }: RefusedComment): string {
-    return `pr-comment-refused:${owner}:${repo}:${prNumber}:${commentId}`;
-}
-
-export async function rememberRefusedComment(redisClient: Redis, comment: RefusedComment): Promise<void> {
-    await redisClient.setex(refusedCommentKey(comment), REFUSED_COMMENT_TTL_SECONDS, Date.now().toString());
-}
-
-export async function wasRefused(redisClient: Redis, comment: RefusedComment): Promise<boolean> {
-    return Boolean(await redisClient.get(refusedCommentKey(comment)));
-}
-
-/**
  * The follow-up assignment gate for one pull request, shared by every comment
  * on it: the setting and the live assignees are read at most once per poll,
  * and each refused author is reported once. A comment refused because its
- * author is not assigned is remembered, so later polls skip it rather than ask
- * the gate again; one refused because the assignees could not be read is not.
+ * author is not assigned is remembered in the record webhook intake shares, so
+ * later polls and webhook redeliveries skip it rather than ask the gate again;
+ * one refused because the assignees could not be read is not. A refusal that
+ * cannot be recorded is not definitive: it posts no notice, and the next poll
+ * asks the gate again.
  */
 export function createPollingGate(prNumber: number, commentContext: GateContext, redisClient: Redis) {
     const { owner, repo, correlationId } = commentContext;
@@ -72,8 +47,10 @@ export function createPollingGate(prNumber: number, commentContext: GateContext,
         try {
             await rememberRefusedComment(redisClient, { owner, repo, prNumber, commentId: comment.id });
         } catch (error) {
-            // Not remembered: the next poll asks the gate about it again.
+            // Not remembered, so not definitive: tell nobody it was refused,
+            // and let the next poll ask the gate about it again.
             logger.withCorrelation(correlationId).warn({ pullRequestNumber: prNumber, commentId: comment.id, error: (error as Error).message }, 'Failed to record a refused PR comment');
+            return false;
         }
         if (!refused.has(authorLogin.toLowerCase())) {
             refused.add(authorLogin.toLowerCase());

@@ -4,11 +4,11 @@ import { handleError } from '@propr/core';
 import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '@propr/core';
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
 import { extractLlmFromLabels, resolveModelAlias } from '@propr/core';
-import { hasValidTriggerLabel } from '@propr/core';
+import { hasValidTriggerLabel, wasRefused } from '@propr/core';
 import { getCheckRunsStatusForRepo, getCurrentPRHead, triggerUltrafixCheckRunHook } from '@propr/core';
 import type { Redis } from 'ioredis';
 import { hasUltrafixResumeCandidate } from '../jobs/ultrafixResumeClaim.js';
-import { createPollingGate, wasRefused } from './prCommentGate.js';
+import { createPollingGate } from './prCommentGate.js';
 
 type Octokit = {
     paginate: <T>(endpoint: string, options: Record<string, unknown>) => Promise<T[]>;

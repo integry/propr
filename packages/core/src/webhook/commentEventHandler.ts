@@ -23,7 +23,7 @@ import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 import { isCiFailureFollowupComment, stripCiFailureFollowupMarker } from './ciFailureFollowup.js';
-import { commentAuthorMayFollowUp, getSystemBotUsernames, refuseGatedComment } from './followupAssignmentGate.js';
+import { commentAuthorMayFollowUp, getSystemBotUsernames, refuseGatedComment, rememberRefusedComment, wasRefused } from './followupAssignmentGate.js';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -658,9 +658,12 @@ interface FollowupGateCheck {
 /**
  * The follow-up assignment gate. Returns the refusal disposition, or null when
  * the comment may proceed. A refusal is an acknowledged delivery: nothing is
- * claimed in Redis, queued or billed. When the assignees could not be read the
- * gate throws instead, like any other GitHub failure during intake, so the
- * delivery is left unacknowledged and ProPR Connect can redeliver it.
+ * claimed in Redis, queued or billed, but the refusal itself is recorded in
+ * the record polling intake shares, so neither a redelivery nor a poll starts
+ * work from the comment once its author is assigned. When the assignees could
+ * not be read, or the refusal could not be recorded, the gate throws instead,
+ * like any other failure during intake, so the delivery is left
+ * unacknowledged and ProPR Connect can redeliver it.
  */
 async function checkFollowupAssignmentGate(check: FollowupGateCheck): Promise<DeliveryDisposition | null> {
     const { comment, commentAuthor, systemAuthored, repoContext: { owner, repo, prNumber }, redisClient, correlatedLogger } = check;
@@ -673,6 +676,11 @@ async function checkFollowupAssignmentGate(check: FollowupGateCheck): Promise<De
         systemAuthored,
     });
     if (decision.allowed) return null;
+    if (decision.reason === 'author_not_assigned') {
+        // Record before telling the author, so nobody is told a comment was
+        // not acted on unless that is durable.
+        await rememberRefusedComment(redisClient, { owner, repo, prNumber, commentId: comment.id });
+    }
     await refuseGatedComment(
         { repoOwner: owner, repoName: repo, pullRequestNumber: prNumber, authorLogin: commentAuthor, commentId: comment.id, decision },
         { redisClient, correlatedLogger },
@@ -714,7 +722,8 @@ async function processSlashCommandComment(opts: SlashCommentOptions): Promise<De
         return { status: 'ignored', reason: 'duplicate_delivery' };
     }
     try {
-        // A refused command releases its claim, so it leaves no processed marker behind.
+        // A refused command releases its claim, so it leaves no processed
+        // marker behind; its refusal record is what keeps it refused.
         const refusal = await checkFollowupAssignmentGate(gateCheck);
         if (refusal) {
             await redisClient.del(slashCommentTrackingKey);
@@ -792,6 +801,13 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
         redisClient,
         correlatedLogger,
     };
+
+    // A comment the gate already refused stays refused, whichever intake saw it.
+    // An unreadable record fails the delivery rather than risk starting work.
+    if (await wasRefused(redisClient, { owner, repo, prNumber, commentId: comment.id })) {
+        correlatedLogger.debug({ repository: repoFullName, pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, 'PR comment already refused by the assignment gate, skipping');
+        return { status: 'ignored', reason: 'author_not_assigned' };
+    }
 
     // Parse slash commands (/review, /fix, /merge, /switch, /use) before generic follow-up logic
     if (parsedCommand) {
