@@ -153,42 +153,15 @@ export async function findCancellationProvenance(
     target: CancellationProvenanceTarget,
     loadCancelledRuns: LoadProprCancelledRuns = loadProprCancelledRuns,
 ): Promise<CancellationProvenance | null> {
-    if (!isEligibleTargetConclusion(target.conclusion)) return null;
-    const urlMatch = ACTIONS_RUN_URL_RE.exec(target.url);
-    if (!urlMatch) return null;
-    // An Actions job's check run id is its job id.
-    const jobId = target.checkRunId ?? (urlMatch[2] ? Number(urlMatch[2]) : undefined);
-    if (jobId == null) return null;
-    const repoParams = { owner: target.owner, repo: target.repo };
+    const targetJob = await loadTargetJob(octokit, target);
+    if (!targetJob) return null;
+    const { job, jobId, runId, runAttempt } = targetJob;
 
-    const job = asRecord((await octokit.request('GET /repos/{owner}/{repo}/actions/jobs/{job_id}', { ...repoParams, job_id: jobId })).data) as ActionsJob | null;
-    const runId = typeof job?.run_id === 'number' ? job.run_id : Number(urlMatch[1]);
-    const runAttempt = typeof job?.run_attempt === 'number' ? job.run_attempt : undefined;
-    if (!job || !job.completed_at || runAttempt === undefined) return null;
-    if (!isEligibleTargetConclusion(job.conclusion)) return null;
-
-    const cancelledBy = await resolveCancellationSource(octokit, target, runId, runAttempt, loadCancelledRuns);
+    const cancelledBy = await resolveCancellationSource(octokit, target, { runId, runAttempt }, loadCancelledRuns);
     if (!cancelledBy) return null;
 
-    const { data } = await octokit.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs', {
-        ...repoParams, run_id: runId, attempt_number: runAttempt, per_page: JOBS_PAGE_SIZE,
-    });
-    const listing = asRecord(data);
-    const jobs = Array.isArray(listing?.jobs) ? listing.jobs.filter(asRecord) as ActionsJob[] : [];
-    // Jobs that could not be seen may hold the genuine failure.
-    if (typeof listing?.total_count !== 'number' || listing.total_count > jobs.length) return null;
-
-    const listed = jobs.find(entry => entry.id === jobId);
-    if (!listed || !isEligibleTargetConclusion(listed.conclusion)) return null;
-    const siblings = jobs.filter(sibling => sibling.id !== jobId);
-    if (siblings.some(sibling => GENUINE_FAILURE_CONCLUSIONS.has((sibling.conclusion ?? '').toLowerCase()))) return null;
-    const cancellationTimes = siblings
-        .filter(sibling => (sibling.conclusion ?? '').toLowerCase() === 'cancelled')
-        .map(sibling => Date.parse(sibling.completed_at ?? ''))
-        .filter(Number.isFinite);
-    if (cancellationTimes.length === 0) return null;
-    const failedAt = Date.parse(job.completed_at);
-    if (!Number.isFinite(failedAt) || failedAt < Math.min(...cancellationTimes)) return null;
+    const jobs = await listAttemptJobs(octokit, target, runId, runAttempt);
+    if (!jobs || !failedAfterSiblingCancellation(job, jobId, jobs)) return null;
     const gateSteps = gateStepsThatRan(job.steps);
     if (gateSteps === null) return null;
     if (!await failedOnCancelledDependencies(octokit, target, jobId, gateSteps)) return null;
@@ -196,11 +169,72 @@ export async function findCancellationProvenance(
     return { cancelledBy, runId, runAttempt };
 }
 
-async function resolveCancellationSource(
+interface TargetJob {
+    job: ActionsJob & { completed_at: string };
+    jobId: number;
+    runId: number;
+    runAttempt: number;
+}
+
+/** The target's own Actions job, when it is a completed, failed job of a known attempt. */
+async function loadTargetJob(
+    octokit: CancellationProvenanceOctokit,
+    target: CancellationProvenanceTarget,
+): Promise<TargetJob | null> {
+    if (!isEligibleTargetConclusion(target.conclusion)) return null;
+    const urlMatch = ACTIONS_RUN_URL_RE.exec(target.url);
+    if (!urlMatch) return null;
+    // An Actions job's check run id is its job id.
+    const jobId = target.checkRunId ?? (urlMatch[2] ? Number(urlMatch[2]) : undefined);
+    if (jobId == null) return null;
+
+    const job = asRecord((await octokit.request('GET /repos/{owner}/{repo}/actions/jobs/{job_id}', {
+        owner: target.owner, repo: target.repo, job_id: jobId,
+    })).data) as ActionsJob | null;
+    if (!job || !job.completed_at || typeof job.run_attempt !== 'number') return null;
+    if (!isEligibleTargetConclusion(job.conclusion)) return null;
+    const runId = typeof job.run_id === 'number' ? job.run_id : Number(urlMatch[1]);
+    return { job: job as TargetJob['job'], jobId, runId, runAttempt: job.run_attempt };
+}
+
+/** Every job of the attempt, or null when some could not be seen; those may hold the genuine failure. */
+async function listAttemptJobs(
     octokit: CancellationProvenanceOctokit,
     target: CancellationProvenanceTarget,
     runId: number,
     runAttempt: number,
+): Promise<ActionsJob[] | null> {
+    const { data } = await octokit.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs', {
+        owner: target.owner, repo: target.repo, run_id: runId, attempt_number: runAttempt, per_page: JOBS_PAGE_SIZE,
+    });
+    const listing = asRecord(data);
+    const jobs = Array.isArray(listing?.jobs) ? listing.jobs.filter(asRecord) as ActionsJob[] : [];
+    if (typeof listing?.total_count !== 'number' || listing.total_count > jobs.length) return null;
+    return jobs;
+}
+
+/**
+ * Whether the attempt's listing confirms the target failed, no sibling failed
+ * genuinely, and the target finished no earlier than a cancelled sibling.
+ */
+function failedAfterSiblingCancellation(job: TargetJob['job'], jobId: number, jobs: ActionsJob[]): boolean {
+    const listed = jobs.find(entry => entry.id === jobId);
+    if (!listed || !isEligibleTargetConclusion(listed.conclusion)) return false;
+    const siblings = jobs.filter(sibling => sibling.id !== jobId);
+    if (siblings.some(sibling => GENUINE_FAILURE_CONCLUSIONS.has((sibling.conclusion ?? '').toLowerCase()))) return false;
+    const cancellationTimes = siblings
+        .filter(sibling => (sibling.conclusion ?? '').toLowerCase() === 'cancelled')
+        .map(sibling => Date.parse(sibling.completed_at ?? ''))
+        .filter(Number.isFinite);
+    if (cancellationTimes.length === 0) return false;
+    const failedAt = Date.parse(job.completed_at);
+    return Number.isFinite(failedAt) && failedAt >= Math.min(...cancellationTimes);
+}
+
+async function resolveCancellationSource(
+    octokit: CancellationProvenanceOctokit,
+    target: CancellationProvenanceTarget,
+    { runId, runAttempt }: { runId: number; runAttempt: number },
     loadCancelledRuns: LoadProprCancelledRuns,
 ): Promise<CancellationProvenance['cancelledBy'] | null> {
     const recorded = await loadCancelledRuns(`${target.owner}/${target.repo}`, target.prNumber);
