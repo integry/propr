@@ -27,7 +27,7 @@ The pull request title and description follow ProPR's default layout. To add req
 
 You can skip ProPR-driven PR creation entirely and still use its review and fix tools. The pull request is an entry point on its own, so you can apply ProPR to PRs opened by a teammate, another agent, or yourself outside ProPR:
 
-- **Review or fix only**: comment `/review` on any eligible PR to get AI review feedback, then `/fix` to apply the suggestions you keep.
+- **Review or fix only**: comment `/review` on any eligible PR to get AI review feedback, then `/fix` to resolve its merge blockers, or `/fix F2 S1` to pick exactly the records you want.
 - **Take over an existing PR**: add a configured processing label (for example `AI` or `propr`) to the open PR. From then on, normal follow-up comments are picked up just like on a ProPR-created PR, and ProPR continues the work in place.
 
 Once ProPR is engaged, follow-up comments and slash commands behave the same way on a handed-over PR as on a ProPR-created one. Other details can still differ — a handed-over PR keeps its original branch name, may link no source issue, and carries no prior ProPR task history — but the command and follow-up behavior is identical.
@@ -52,11 +52,11 @@ Comment pickup is gated by processing labels, trigger keywords, author permissio
 
 When you want a quality pass on top of your own reading, the loop goes: ask, prune, apply.
 
-1. `/review` posts AI review feedback with severity findings and a score — the code is untouched.
-2. You edit the feedback: delete suggestions you disagree with, sharpen vague ones, keep what matters.
-3. `/fix` applies the `/review`'s pending suggestions in one implementation pass.
+1. `/review` posts a review with numbered merge blockers (`F1`, `F2`, …), optional suggestions (`S1`, `S2`, …) and a score — the code is untouched. The numbers continue across every review on the PR and are never reused.
+2. You decide what to apply: copy the review's `/fix F1 S1` line and drop the IDs you don't want, or edit the comment itself to sharpen or remove a record.
+3. `/fix` resolves every pending merge blocker in one implementation pass, `/fix all` adds every pending suggestion, and `/fix F1 S2` applies exactly the records you name. See [`/fix`](./pr-commands.md#fix).
 
-The split by feedback source keeps intent clear: plain user comments start follow-up work directly the moment you post them, and `/fix` handles the AI review suggestions from `/review`.
+The split by feedback source keeps intent clear: plain user comments start follow-up work directly the moment you post them, and `/fix` handles the records from `/review`.
 
 For more autonomous cleanup, `/ultrafix` alternates review and fix cycles until the review score reaches its goal, waiting for CI and PR inactivity between cycles; a visible PR label acts as its circuit breaker. If CI goes red after an automatic fix, the loop pauses rather than ending. Once a follow-up fix or your own push turns the required checks green, check-run and check-suite events, or the polling reconciliation, wake the loop and schedule its next review. The cycle limit, the goal, and the label are still respected at that point, and a per-PR lock with BullMQ job ID deduplication stops simultaneous check events from queuing duplicate cycles. See [Recovery From CI Failures](./pr-commands.md#recovery-from-ci-failures). When the base branch has moved, `/merge` brings the base branch into the PR branch and resolves conflicts with agent help — you merge the PR itself when you are satisfied.
 
