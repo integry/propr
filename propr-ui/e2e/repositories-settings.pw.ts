@@ -21,6 +21,7 @@ async function stubRepositoryApis(page: Page, canManage = true, initialRepos?: M
   const writes: MonitoredRepo[][] = [];
   let chatLoads = 0;
   const indexingWrites: { path: string; body: unknown }[] = [];
+  const improvementRequests: Record<string, unknown>[] = [];
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.route('https://raw.githubusercontent.com/**', route => route.fulfill({
     path: repositoryIconFixture,
@@ -68,6 +69,10 @@ async function stubRepositoryApis(page: Page, canManage = true, initialRepos?: M
         })) };
         break;
       case '/api/repos/chat/messages': chatLoads++; json = { messages: [] }; break;
+      case '/api/repos/improvements':
+        improvementRequests.push(route.request().postDataJSON());
+        json = { success: true, suggestions: [{ title: 'Adopt shared retry helper', description: 'Mirror the reference repository retry wrapper for outbound calls.' }] };
+        break;
       case '/api/notifications/unread-count': json = { unreadCount: 0 }; break;
       default:
         await route.fulfill({ status: 503, json: { error: 'Optional API unavailable in repository UI test' } });
@@ -75,7 +80,7 @@ async function stubRepositoryApis(page: Page, canManage = true, initialRepos?: M
     }
     await route.fulfill({ json });
   });
-  return { writes, indexingWrites, chatLoads: () => chatLoads };
+  return { writes, indexingWrites, improvementRequests, chatLoads: () => chatLoads };
 }
 
 test('shows and updates the follow-up CI cancellation option and its workflow selection', async ({ page }) => {
@@ -532,4 +537,28 @@ test('saves monitoring and confirms removal from Settings', async ({ page }) => 
   await expect.poll(() => api.writes.at(-1)?.map(repo => repo.name)).toEqual(['integry/integration-sdk', 'integry/documentation']);
   await expect(page.getByRole('button', { name: 'Select integry/propr', exact: true })).toHaveCount(0);
   await expect(page.getByRole('region', { name: /Settings for/ })).toHaveCount(0);
+});
+
+test('offers other indexed repositories as Improve references and sends the chosen one', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const api = await stubRepositoryApis(page);
+  await page.goto('/repositories');
+  await page.getByRole('button', { name: 'Select integry/propr', exact: true }).click();
+  await page.getByRole('button', { name: 'Improve', exact: true }).click();
+  await expect(page.getByText('Reference Repository (Optional)', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Select repository', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'integry/integration-sdk', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'integry/documentation', exact: true })).toBeVisible();
+  // The current repository is never offered as its own reference.
+  await expect(page.getByRole('button', { name: 'integry/propr', exact: true })).toHaveCount(0);
+  await capturePreview(page, 'improve-reference-repository-options');
+
+  await page.getByRole('button', { name: 'integry/integration-sdk', exact: true }).click();
+  await page.getByRole('button', { name: /Security/ }).click();
+  await capturePreview(page, 'improve-reference-repository-selected');
+  await page.getByRole('button', { name: /Generate Suggestions/ }).click();
+  await expect(page.getByText('Adopt shared retry helper', { exact: true })).toBeVisible();
+  expect(api.improvementRequests).toEqual([expect.objectContaining({
+    repository: 'integry/propr', categories: ['security'], referenceRepoId: 'integry/integration-sdk',
+  })]);
 });
