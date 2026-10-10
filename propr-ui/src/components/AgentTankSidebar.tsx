@@ -57,6 +57,28 @@ function stripRemainingSuffix(name: string): string {
   return name.replace(/\s+Remaining$/i, '').trim();
 }
 
+// Antigravity quota windows arrive as "<pool> · <window> Limit" (after the
+// "Remaining" suffix is stripped). At the sidebar's label width the pool name
+// alone fills the row, so "Claude and GPT · Weekly Limit" and "Claude and GPT ·
+// Five Hour Limit" both truncated to "Claude and …". The pool becomes a
+// sub-header over its windows instead, and each row names only its window —
+// as short as Claude's and Codex's "Session" / "Weekly". The full name stays in
+// the tooltip.
+const ANTIGRAVITY_WINDOW_LABELS: Record<string, string> = {
+  weekly: 'Weekly',
+  'five hour': '5h',
+};
+
+function parseAntigravityQuotaWindow(fullName: string): { group: string; label: string } | null {
+  const match = fullName.match(/^(.+?)\s*·\s*(.+?)\s+Limit$/i);
+  if (!match) return null;
+  const windowName = match[2].trim();
+  return {
+    group: match[1].trim(),
+    label: ANTIGRAVITY_WINDOW_LABELS[windowName.toLowerCase()] ?? windowName,
+  };
+}
+
 // Map Antigravity thinking-level suffixes to compact bold badges.
 const ANTIGRAVITY_LEVEL_BADGES: Record<string, string> = {
   medium: 'M',
@@ -115,6 +137,9 @@ interface UsageMetric {
   displayLabel?: React.ReactNode;
   // Optional explicit tooltip text (e.g. full Antigravity model name).
   title?: string;
+  // Optional pool the metric belongs to (e.g. Antigravity's "Claude and GPT"),
+  // rendered as a sub-header above its consecutive rows.
+  group?: string;
   percent: number;
   resetsIn?: string;
 }
@@ -161,6 +186,17 @@ function getAllMetrics(agent: AgentUsageData): UsageMetric[] {
         // Keep the full model name (incl. "Gemini" prefix and thinking level) for the tooltip,
         // but shorten the visible label.
         const fullName = stripRemainingSuffix(getModelDisplayName(model.model));
+        const quotaWindow = parseAntigravityQuotaWindow(fullName);
+        if (quotaWindow) {
+          metrics.push({
+            label: quotaWindow.label,
+            group: quotaWindow.group,
+            title: fullName,
+            percent: model.percentUsed,
+            resetsIn: model.resetsIn
+          });
+          continue;
+        }
         const { display, plain } = formatAntigravityModelLabel(fullName);
         metrics.push({
           label: plain,
@@ -267,6 +303,15 @@ export const AgentRow: React.FC<AgentRowProps> = ({ agent, expanded, onToggle })
   // parent yet lack the parent's affordance. Only error-only rows (which
   // render a status instead of data) are inert.
   const expandable = metrics.length > 0;
+  // Grouped metrics get a sub-header row each time their pool changes; their
+  // rows are indented one step under it.
+  const children: Array<{ group?: string; metric?: UsageMetric }> = [];
+  metrics.forEach((metric, idx) => {
+    if (metric.group && metric.group !== metrics[idx - 1]?.group) {
+      children.push({ group: metric.group });
+    }
+    children.push({ metric });
+  });
 
   if (!primaryMetric && !agent.error) return null;
 
@@ -336,15 +381,23 @@ export const AgentRow: React.FC<AgentRowProps> = ({ agent, expanded, onToggle })
           tree-view text-under-text alignment. */}
       {expanded && metrics.length > 0 && (
         <div className="ml-[7px] mt-0.5 min-w-0">
-          {metrics.map((metric, idx) => (
-            <div key={idx} className="relative min-w-0 pl-[33px]">
+          {children.map((child, idx) => (
+            <div key={idx} className={`relative min-w-0 ${child.metric?.group ? 'pl-[41px]' : 'pl-[33px]'}`}>
               <span
                 aria-hidden="true"
                 className={`absolute left-0 top-0 w-px bg-gray-200 ${
-                  idx === metrics.length - 1 ? 'h-1/2' : 'bottom-0'
+                  idx === children.length - 1 ? 'h-1/2' : 'bottom-0'
                 }`}
               />
-              <MetricRow metric={metric} compact />
+              {child.metric ? (
+                <MetricRow metric={child.metric} compact />
+              ) : (
+                <div className="flex h-5 min-w-0 items-center">
+                  <span className="min-w-0 truncate text-[10px] font-medium text-gray-600" title={child.group}>
+                    {child.group}
+                  </span>
+                </div>
+              )}
             </div>
           ))}
         </div>
