@@ -37,6 +37,9 @@ COPY packages/shared ./packages/shared
 COPY packages/local-setup ./packages/local-setup
 COPY packages/core ./packages/core
 COPY packages/api ./packages/api
+# Compile-time input only: scripts/check-client-contract.ts imports the client's
+# operation table. The client is not installed or shipped as a workspace here.
+COPY packages/client/src ./packages/client/src
 
 # Record the exact release and source revision alongside the Markdown that is
 # shipped. sidebars.ts is parsed as text and is never executed by this step.
