@@ -14,6 +14,12 @@ on:
   # reusable workflow; it is never dispatchable, so production releases can
   # only come from a protected desktop tag. No secrets are passed to calls.
   workflow_call:
+    # Read-only identity for callers such as the nightly download bundle,
+    # which re-verifies the unsigned matrix under this exact version.
+    outputs:
+      version:
+        description: Unsigned validation desktop package version
+        value: ${{ jobs.validation-version.outputs.version }}
 
 permissions:
   contents: read

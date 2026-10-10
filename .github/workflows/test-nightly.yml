@@ -229,13 +229,107 @@ jobs:
       contents: read
     uses: ./.github/workflows/desktop-connect-discovery-guard.yml
 
+  # One consolidated, verified download of the nightly native installers. It
+  # re-runs the same finalize verification over this run's per-target
+  # artifacts and uploads them with a provenance manifest and run summary. A
+  # failed, cancelled or missing platform withholds the bundle and fails this
+  # job; other check outcomes are recorded and block any readiness claim.
+  # Actions artifact only: no release, tag, registry, feed or signing.
+  desktop-nightly-download:
+    name: Nightly desktop download
+    needs: [e2e-tests, native-electron, desktop-package, desktop-connect]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      NEEDS_JSON: ${{ toJSON(needs) }}
+      DESKTOP_VERSION: ${{ needs.desktop-package.outputs.version }}
+      PROPR_E2E_MAX_MODEL_PAIRS: ${{ vars.PROPR_E2E_MAX_MODEL_PAIRS || '8' }}
+
+    steps:
+      - name: Checkout exact nightly source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Require native packaging success for the exact source
+        id: gate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          node apps/desktop/scripts/nightly-native-bundle.mjs gate
+          test "$DESKTOP_VERSION" = "$(node -p "require('./apps/desktop/package.json').version")"
+
+      - name: Install cross-format inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cpio p7zip-full rpm unzip
+
+      - name: Download all unsigned native artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: propr-desktop-validation-canonical-*-${{ github.run_id }}
+          path: desktop-release-fragments
+
+      - name: Re-verify architecture, matrix completeness, and checksums
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs finalize \
+            --version "$DESKTOP_VERSION" \
+            --profile macos-linux-v1 \
+            --input desktop-release-fragments \
+            --output desktop-release-final
+          (cd desktop-release-final && sha256sum --check SHA256SUMS)
+
+      - name: Assemble nightly bundle with provenance manifest
+        id: bundle
+        run: |
+          node apps/desktop/scripts/nightly-native-bundle.mjs bundle \
+            --version "$DESKTOP_VERSION" \
+            --input desktop-release-final \
+            --output propr-desktop-nightly
+          (cd propr-desktop-nightly && sha256sum --check SHA256SUMS)
+
+      - name: Upload consolidated nightly native bundle
+        id: upload
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ${{ steps.bundle.outputs.artifact_name }}
+          path: propr-desktop-nightly
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Publish nightly download summary
+        id: summary
+        env:
+          NIGHTLY_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          NIGHTLY_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: node apps/desktop/scripts/nightly-native-bundle.mjs summary --directory propr-desktop-nightly
+
+      # failure() is also true when an upstream nightly job failed (for example
+      # live E2E on a packaging-only run), so each report also checks this job's
+      # own step outcomes before saying what happened to the download.
+      - name: Report withheld nightly bundle
+        if: failure() && steps.gate.outcome == 'success' && steps.upload.outcome != 'success'
+        run: node apps/desktop/scripts/nightly-native-bundle.mjs withheld
+
+      - name: Report unsummarized nightly bundle
+        if: failure() && steps.upload.outcome == 'success' && steps.summary.outcome == 'failure'
+        env:
+          NIGHTLY_ARTIFACT_NAME: ${{ steps.bundle.outputs.artifact_name }}
+          NIGHTLY_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          NIGHTLY_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: node apps/desktop/scripts/nightly-native-bundle.mjs unsummarized
+
   # One "Nightly test health" issue tracks a red nightly on the default branch:
   # a failure opens it or comments on the open one, the next green run comments
   # and closes it. Skipped or cancelled jobs without a failure leave it alone.
   # See scripts/nightly-health-issue.mjs.
   nightly-health:
     name: Nightly test health
-    needs: [e2e-tests, native-electron, desktop-package, desktop-connect]
+    needs: [e2e-tests, native-electron, desktop-package, desktop-connect, desktop-nightly-download]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

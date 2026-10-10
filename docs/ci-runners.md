@@ -466,6 +466,17 @@ one pending run. This does not serialize other workflows; nightly retains the
 legacy pool while PR checks select only the rootless label. Nightly also
 receives the Redis ownership fix. This follow-up does not activate or change nightly runner access.
 
+### Nightly desktop download
+
+The hosted `desktop-nightly-download` job runs after every other nightly job
+unless the run was cancelled. It re-verifies this run's unsigned native
+desktop packages and uploads them as one Actions artifact, with
+`nightly-manifest.json` binding them to the source SHA, run and check outcomes.
+It needs only `contents: read`. If native packaging did not pass, it uploads
+nothing and fails. A live E2E failure is recorded as a blocker in the manifest
+and summary and does not hide the download. See "Nightly native builds" in
+`apps/desktop/README.md`.
+
 ### Nightly test health issue
 
 The final `nightly-health` job (`scripts/nightly-health-issue.mjs`) runs after

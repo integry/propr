@@ -324,7 +324,7 @@ describe("nightly health issue", () => {
   it("is wired into the nightly workflow as a final job with issue write access", () => {
     const workflow = readFileSync(new URL("../.github/workflows/test-nightly.yml", import.meta.url), "utf8");
     const job = workflow.slice(workflow.indexOf("\n  nightly-health:\n"));
-    assert.match(job, /needs: \[e2e-tests, native-electron, desktop-package, desktop-connect\]/);
+    assert.match(job, /needs: \[e2e-tests, native-electron, desktop-package, desktop-connect, desktop-nightly-download\]/);
     assert.match(job, /if: \$\{\{ !cancelled\(\) \}\}/);
     assert.match(job, /permissions:\n\s+contents: read\n\s+actions: read\n\s+issues: write\n/);
     assert.match(job, /NIGHTLY_SUITE_JOB_ID: e2e-tests\n/);
