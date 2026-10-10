@@ -230,14 +230,13 @@ Only address the critical findings.
 
 `/fix` applies a `/review`'s pending feedback: it collects the unprocessed AI review comments on the PR (identified by their `propr:ai-review` marker), narrows them to what you selected, applies them in one implementation pass, and then marks exactly those records processed. Unselected findings stay pending for a later `/fix`, and a suggestion is only ever included when you name it or request `/fix all`. Comments that reported an error (`error="true"`) are excluded. User-authored comments are ignored by `/fix`; ProPR processes those directly as natural follow-ups.
 
-The MCP `fix_review_findings` tool continues to accept explicit IDs only; it
+The MCP `fix_review_findings` tool accepts explicit IDs only; it
 supplies `selectableFindingIds` and `selectableSuggestionIds` for callers to
 select. Like `/fix`, it runs against the current head even when new commits
 landed after the review: it reports the selected records that still apply and
 skips, by name, any whose cited files were deleted since the review when no
 surviving file gained lines the code could have moved into. Passing
-`expectedHead` keeps the stricter behaviour and refuses a moved head. An MCP
-`all` option is a possible follow-up.
+`expectedHead` keeps the stricter behaviour and refuses a moved head.
 
 Two separate time windows govern which comments `/fix` touches:
 

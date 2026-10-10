@@ -61,7 +61,7 @@ Configure how the created issues run:
 - With two or more issues, enable the **multi-model comparison** toggle to run an issue with several models (one branch and PR per model), and use **Apply to All** to copy the selection to every issue.
 - PR options:
   - **Auto-merge if checks pass** — merge each PR automatically once CI is green.
-  - **Epic PR** (two or more issues) — combine the issues' results into a single epic pull request.
+  - **Epic PR** (two or more issues) — combine the issues' results into a single epic pull request. The issues run one after another in plan order through a durable queue: the next issue starts only after the previous one finishes.
   - **Run ultrafix after PR** — start a review-fix loop on each PR, with a goal score and maximum cycle count.
 
 Start execution, watch the task records in the Web UI, and review the created pull requests. For larger changes, run one planned issue first and review the result before launching the rest.

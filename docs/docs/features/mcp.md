@@ -28,6 +28,10 @@ Open **Connected apps** (`/mcp/apps`) to inspect grants and revoke access. The l
 | Plans by status | `list_plans` with `status`: `active`, an exact persisted status, or `all` (default) |
 | Ideas for what to work on next (the **Improve** tab) | `generate_repository_improvements`, then `get_operation` for `result.suggestions` |
 | Start a bounded change | `create_task`, then `get_operation` or `get_task_submission` |
+| Your recent task submissions and how far each got | `list_task_submissions` with optional `repository` and `stage` |
+| Start a goal | `get_goal_capabilities`, then `create_goal` |
+| Review a pull request, with one or several models | `review_pull_request` with optional `model` |
+| Publish or remove a plan | `publish_plan`, `delete_plan` |
 | Run a saved [agent](./agents.md) and read its report | `list_agent_definitions`, `trigger_agent_run`, then `get_operation` or `get_agent_run`; `approve_agent_run`/`reject_agent_run` for runs awaiting approval (preview runs, and auto runs the cost gate paused) |
 | Find what you started and whether it finished | `list_operations`, then `get_operation` |
 | PR inventory and review fixes | `list_pull_requests`, `fix_review_findings` with `findingIds` and/or `suggestionIds` |
@@ -62,6 +66,29 @@ to 1000) and 120000 bytes (or `maxBytes`) per call. A capped read sets
 `commit` they read; pass it back as `ref` to keep a multi-step lookup on one
 snapshot. Binary files, paths with `..`, and repositories outside the grant
 are rejected with `BINARY_FILE`, `INVALID_PATH` and `REPOSITORY_FORBIDDEN`.
+
+`create_goal` accepts `ultrafix: true` to have the agent run Ultrafix before
+delivery; it never merges or grants merge authority. `maxParallelTasks` (1–32)
+caps the goal's concurrent tasks and defaults to 1 over MCP. A
+`checkpointIntervalMinutes` value (5–120, default 15) is valid only for direct
+goals. `get_goal_capabilities` returns the same rules as `creation`.
+
+`review_pull_request` takes `model` as one alias or a list of up to eight; each
+model posts its own independent review, exactly like several `/review <model>`
+comments. Unknown or disabled aliases (`UNKNOWN_MODEL`) and aliases that resolve
+to the same model (`DUPLICATE_MODEL`) are rejected before anything is posted,
+and the pull request's model labels never change. `get_operation` tracks each
+review. `review_pull_request`, `fix_review_findings`, `run_ultrafix` and
+`comment_on_pull_request` accept an optional `expectedHead`: without it they act
+on the head at call time and report it as `resolvedHead`; with it a moved head
+fails with `STALE_HEAD`.
+
+`publish_plan` needs the plan's exact `expectedRevision`. If publication fails
+partway, call it again with `resume: true` to continue from the issues already
+created instead of creating them twice. `delete_plan` deletes a plan that is
+idle (draft, review, approved) or finished (failed, merged); plans that are
+generating, refining or executing published work return `PLAN_NOT_DELETABLE`.
+Its `expectedRevision` is optional, and a stale one returns `STALE_REVISION`.
 
 `implement_plan` with `useEpic: true` runs selected issues sequentially in plan
 publication order. It starts one issue and durably queues the rest, using one

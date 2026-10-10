@@ -2,6 +2,8 @@
 
 **Inbox** collects plan, task, review, pull-request, indexing and system events. Open an item to reach its relevant task, plan or goal. More items load as you browse; read/dismiss changes synchronize across tabs. Dismissing an item does not cancel the work behind it.
 
+Offline, Inbox keeps the notifications it already loaded and shows an offline banner; opening it with nothing loaded shows **Inbox unavailable offline**. It reloads on its own when the connection returns.
+
 ## Choose what reaches you
 
 Open **Settings → Notifications** to choose Inbox and Push categories, quiet hours and badge behavior. These are personal preferences. In **Repositories → Settings**, the **Notifications** toggle suppresses future events for that repository across its branch entries. Automation continues, existing Inbox items remain, and system-health events are unaffected.

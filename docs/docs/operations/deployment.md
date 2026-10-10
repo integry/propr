@@ -48,7 +48,7 @@ The launcher starts these images, pinned to the release version in its manifest:
 | Image | Role |
 |---|---|
 | `propr/launcher` | Orchestrator that spawns the stack |
-| `propr/app` | Server image; the start command selects the role (daemon, worker, analysis worker, indexing worker, API) |
+| `propr/app` | Server image; the start command selects the role (daemon, worker, indexing worker, API) |
 | `propr/ui` | Web UI static bundle |
 | `propr/docs` | Documentation site (started only with `DOCS_ENABLED=true`) |
 | `propr/agent` | Unified Claude, Codex, Antigravity, OpenCode, and Vibe execution container |

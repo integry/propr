@@ -59,5 +59,6 @@ Next: follow the [issue-to-PR walkthrough](../tutorials/end-to-end-workflow.md),
 
 - [Launch a task](./launching-work.md) directly from an instruction or repository to-do.
 - [Run a goal](./goals.md) and steer its native coding-agent session.
+- [Schedule an agent](./agents.md) that runs a saved prompt on demand or on a cron schedule and writes a report.
 - [Use Inbox and push](./inbox.md) to follow work across devices.
 - [Connect an MCP client](./mcp.md) with scoped repository consent.
