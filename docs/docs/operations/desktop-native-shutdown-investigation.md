@@ -146,7 +146,7 @@ For the updated PR source, repeat the locked install, typecheck, full desktop
 suite, native package/fuse inspection, complete unmodified four-launch smoke
 with capture and a separately declared ordinary run. Retain the existing
 source-bound packaged acceptance and native platform gates in
-[the desktop README](../../../apps/desktop/README.md#packaged-visual-and-accessibility-acceptance).
+[the desktop README](https://github.com/integry/propr/blob/e74a8f4ebc56c5cd704311f1a7573ccf2698c912/apps/desktop/README.md#packaged-visual-and-accessibility-acceptance).
 Bind all results to the exact rebuilt source revision, lockfile, package hashes,
 architecture and runtime versions; do not combine an old app with a new harness
 or carry forward f818 acceptance. Linux evidence does not qualify macOS.
