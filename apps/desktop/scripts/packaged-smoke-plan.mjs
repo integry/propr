@@ -1,3 +1,5 @@
+import { isAbsolute } from 'node:path';
+
 export const READY_EVENT = 'desktop.renderer.ready';
 export const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
 export const PROFILE_API_PROOF = 'desktop.renderer.profile_api.ready';
@@ -46,11 +48,16 @@ export const createPackagedSmokeLaunch = ({
   firstOrigin,
   secondOrigin,
   dbusSessionAddress,
+  nativeCrashDirectory = process.env.PROPR_DESKTOP_NATIVE_CRASH_DIRECTORY,
 }) => {
   if (!PACKAGED_SMOKE_LAUNCH_MODES.includes(mode)) {
     throw new Error(`Unknown packaged smoke launch mode: ${mode}`);
   }
   const transport = mode !== 'release-guard';
+  if (nativeCrashDirectory !== undefined && (platform !== 'linux'
+    || !isAbsolute(nativeCrashDirectory) || /[\0\r\n]/.test(nativeCrashDirectory))) {
+    throw new Error('Native crash capture requires an absolute Linux evidence directory');
+  }
   for (const name of TRANSPORT_SMOKE_ENVIRONMENT_NAMES) {
     if (Object.hasOwn(baseChildEnvironment, name)) {
       throw new Error(`Packaged smoke base environment unexpectedly contains ${name}`);
@@ -61,6 +68,7 @@ export const createPackagedSmokeLaunch = ({
     '--disable-gpu',
     '--propr-smoke-test',
     `--user-data-dir=${userDataPath}`,
+    ...(nativeCrashDirectory === undefined ? [] : [`--propr-native-crash-directory=${nativeCrashDirectory}`]),
     ...(platform === 'linux' ? ['--password-store=gnome-libsecret'] : []),
     ...(!transport ? [CONNECT_DEEP_LINK] : []),
   ];

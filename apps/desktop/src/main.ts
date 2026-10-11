@@ -92,6 +92,7 @@ import { checkForSignedUpdates } from './signed-updates';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createPackagedSmokeEvidenceSink } from './smoke-test-evidence';
 import { configureNativeSmokeLogsPath } from './smoke-log-path';
+import { configureNativeShutdownDiagnostics } from './native-shutdown-diagnostics';
 import {
   configureDesktopSessionSecurity,
   createPackagedConnectOwnershipReporter,
@@ -167,6 +168,7 @@ let packagedSmokeUserDataDirectory: string | null = null;
 let packagedAcceptanceUserDataDirectory: string | null = null;
 let packagedSmokeEvidence: ReturnType<typeof createPackagedSmokeEvidenceSink> = null;
 let nativeSmokePhase: NativeSmokePhase | undefined;
+let nativeShutdownDiagnostics: ReturnType<typeof configureNativeShutdownDiagnostics> = null;
 try {
   packagedAcceptanceUserDataDirectory = authorizePackagedAcceptanceTest({
     argv: process.argv,
@@ -212,6 +214,12 @@ try {
     }
     app.setPath('userData', packagedAcceptanceUserDataDirectory);
   }
+  nativeShutdownDiagnostics = configureNativeShutdownDiagnostics({
+    app,
+    crashReporter,
+    argv: process.argv,
+    authorizedSmokeDirectory: packagedSmokeUserDataDirectory,
+  });
 } catch {
   process.exit(1);
 }
@@ -1976,7 +1984,10 @@ if (!hasSingleInstanceLock) {
       getWindow: () => mainWindow,
       quit: () => app.quit(),
       onStarted: () => { shutdownStarted = true; },
-      log,
+      log: (level, event, fields) => {
+        if (event === 'desktop.app.shutdown_step') nativeShutdownDiagnostics?.recordPhase(fields?.step);
+        log(level, event, fields);
+      },
     }, transportSmoke?.shutdownMode === 'forced-timeout' ? { drainTimeoutMs: 250 } : undefined);
     app.on('before-quit', event => shutdown.beforeQuit(event));
 
@@ -2067,6 +2078,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
+  nativeShutdownDiagnostics?.recordPhase('will-quit');
   packagedSmokeEvidence?.close();
   packagedSmokeEvidence = null;
 });
