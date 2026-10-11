@@ -5,12 +5,7 @@ import type { DesktopGithubInstallationDecision, DesktopSetupSnapshot } from '..
 import { DesktopExperience } from './DesktopExperience';
 import { adaptersFor, localProfile } from './DesktopExperience.testSupport';
 import { LocalSetupWizard } from './LocalSetupWizard';
-import {
-  completed,
-  guidedAdapter,
-  idle,
-  openAndSubmitWizard,
-} from './LocalSetupWizard.integration.testSupport';
+import { completed, guidedAdapter, idle, openAndSubmitWizard } from './LocalSetupWizard.integration.testSupport';
 
 const apiMock = vi.hoisted(() => ({ setApiBaseUrl: vi.fn() }));
 const runtimeMock = vi.hoisted(() => ({ setDesktopApiBaseUrl: vi.fn() }));
@@ -62,9 +57,7 @@ describe('production local setup journey', () => {
     const resolveGithubInstallation = vi.fn(async () => ({
       ...choosing, githubIdentity: { ...choosing.githubIdentity!, status: 'enrolling' as const, selectedInstallationId: '200' },
     }));
-    render(<LocalSetupWizard adapter={guidedAdapter({
-      status: vi.fn(async () => choosing), resolveGithubInstallation,
-    })} onBack={vi.fn()} onComplete={vi.fn()} />);
+    render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => choosing), resolveGithubInstallation })} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     expect(await screen.findByText('@member-user')).toBeInTheDocument();
     expect(screen.getByText('Organization · Installation 100')).toBeInTheDocument();
@@ -97,9 +90,7 @@ describe('production local setup journey', () => {
     };
     const resolveGithubInstallation = vi.fn(async (decision: DesktopGithubInstallationDecision) => decision.action === 'reauthenticate'
       ? afterReauthentication : choosing);
-    render(<LocalSetupWizard adapter={guidedAdapter({
-      status: vi.fn(async () => choosing), resolveGithubInstallation,
-    })} onBack={vi.fn()} onComplete={vi.fn()} />);
+    render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => choosing), resolveGithubInstallation })} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     expect(await screen.findByRole('radio', { name: /shared-org/i })).toBeChecked();
     fireEvent.click(screen.getByRole('radio', { name: /shared-user/i }));
@@ -126,9 +117,7 @@ describe('production local setup journey', () => {
       },
     };
     const resolveGithubInstallation = vi.fn(async () => refreshed);
-    render(<LocalSetupWizard adapter={guidedAdapter({
-      status: vi.fn(async () => choosing), resolveGithubInstallation,
-    })} onBack={vi.fn()} onComplete={vi.fn()} />);
+    render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => choosing), resolveGithubInstallation })} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole('radio', { name: /member-user/i }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh installations' }));
@@ -273,8 +262,7 @@ describe('production local setup journey', () => {
 
   it('requires the dedicated recovery control before replacing an incompatible running stack', async () => {
     const incompatible: DesktopSetupSnapshot = {
-      ...idle,
-      phase: 'failed',
+      ...idle, phase: 'failed',
       state: {
         rootDir: '/redacted',
         steps: [{
@@ -299,8 +287,7 @@ describe('production local setup journey', () => {
     fireEvent.click(replace);
     expect(await screen.findByRole('heading', { name: 'ProPR is ready' })).toBeInTheDocument();
     expect(retry).toHaveBeenCalledWith({
-      sessionId: idle.sessionId,
-      recoveryAction: 'replace-running-stack',
+      sessionId: idle.sessionId, recoveryAction: 'replace-running-stack',
     });
   });
 
@@ -425,9 +412,7 @@ describe('production local setup journey', () => {
       ...requiresSecret, phase, error: phase === 'cancelled' ? 'Setup was cancelled safely.' : 'Webhook setup failed.',
       reconfigurationRequired: false,
     };
-    const retry = vi.fn()
-      .mockResolvedValueOnce(terminal)
-      .mockResolvedValueOnce(completed);
+    const retry = vi.fn().mockResolvedValueOnce(terminal).mockResolvedValueOnce(completed);
     const adapter = guidedAdapter({
       status: vi.fn(async () => requiresSecret), retry,
       acquireWebhookSecret: vi.fn(async () => ({ capability: 'webhook-secret-capability', label: 'Secret entered' as const })),
