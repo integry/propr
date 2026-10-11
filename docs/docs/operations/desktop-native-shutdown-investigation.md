@@ -1,9 +1,11 @@
 # Native Linux shutdown investigation (#2973)
 
 Status: **root cause unconfirmed; native fix and Ubuntu qualification remain open**.
-This change adds opt-in evidence capture, not a claimed SIGSEGV fix. No native
-stack, core, minidump, frozen executable, or access to the validation host was
-available in the implementation workspace.
+The PR adds opt-in evidence capture and now updates Electron for a known Linux
+environment race. This is not a confirmed fix for the original SIGSEGV. No
+original native stack, core, minidump, frozen executable, or access to gram is
+available in the implementation workspace. Keep #2973 open pending causal
+evidence and source-bound native qualification.
 
 ## Retained evidence
 
@@ -43,11 +45,12 @@ mutation queue. The shutdown coordinator bounds these drains, disposes session
 hooks and IPC, destroys the window, and calls `app.quit()`. The safeStorage
 encrypt/decrypt adapters are synchronous Electron calls. These observations do
 not rule out outstanding native Chromium work or a native library lifetime bug.
-No evidence supports changing this order, inserting sleeps, or upgrading a
-dependency as the fix yet.
+These observations alone did not justify changing this order or inserting sleeps.
+The later upstream environment-race evidence below supports a runtime update,
+but does not establish that race as the cause of the original shutdown crash.
 
-The implementation environment is Debian 12 x64, glibc
-2.36-9+deb12u14, Node 22.23.3. The checkout locks Electron 44.0.0, but its native
+The initial diagnostic implementation environment was Debian 12 x64, glibc
+2.36-9+deb12u14, Node 22.23.3. At that time the checkout locked Electron 44.0.0, but its native
 binary and a packaged app are absent. There is no display server, GDB, or
 coredumpctl in this workspace. Native reproduction and native crash capture
 were therefore **not run**, rather than run successfully without reproducing.
@@ -56,7 +59,7 @@ unchanged smoke launch contracts, and the real coordinator with normal quit,
 in-flight drain, reentrant quit during window destruction, and forced timeout.
 This is not a native-crash regression test or platform qualification.
 
-Validation on this workspace:
+Initial diagnostic validation on this workspace (before the runtime update):
 
 - `npm run typecheck --workspace @propr/desktop`: passed.
 - The two new `native-shutdown-diagnostics` test files: 6/6 passed.
@@ -71,6 +74,120 @@ Validation on this workspace:
   completed, passed 1/1. The original failures remain recorded; the combined
   run is not green. No timeout or pairing fixture was changed, and
   `activate-body` was not retried.
+
+## Runtime follow-up (2026-10-11)
+
+The gram operator reports Ubuntu 20.04.6 and glibc `2.31-0ubuntu9.18`.
+Subtracting the executable VMA and adding the ELF executable segment address,
+`0x7f666f8b0f4d - 0x7f666f88d000 + 0x22000 = 0x45f4d`, maps the original
+instruction to `getenv+0xad` (`cmp (%r12),%bp`) against the installed libc.
+Its build ID is `5792732f783158c66fb4f3756458ca24e46e827d`; the operator reports
+that its executable segment span matches the kernel report. This is conditional
+symbolization against the currently installed library, not the original core or
+caller stack and not causal proof.
+
+[Electron 44.3.0](https://github.com/electron/electron/releases/tag/v44.3.0)
+includes [44.x backport #53509](https://github.com/electron/electron/pull/53509)
+of [upstream #53491](https://github.com/electron/electron/pull/53491).
+The Linux executable interposes environment writers to keep published arrays
+alive on glibc before 2.41, preventing concurrent native `getenv` reads from
+accessing a freed array. On glibc 2.41+ it delegates to libc. This addresses a
+known race relevant to the new lead; it does **not** establish an original caller
+or fix macOS's libc environment race.
+
+The desktop minimum is now `^44.7.0`, locked to **44.7.0**, the latest stable
+44.x release at investigation time. This keeps the existing major and includes
+the fix plus subsequent maintenance updates. The
+[44.x support schedule](https://releases.electronjs.org/schedule) lists end of
+life as 2027-03-02. Only the Electron requirement and resolved package metadata
+change; existing transitive versions, sandbox/fuse configuration and private
+capture implementation are retained.
+
+Exact upstream runtime versions from the
+[Electron release index](https://releases.electronjs.org/releases.json):
+
+| Role | Electron | Chromium | Embedded Node |
+| --- | --- | --- | --- |
+| Previous lock | 44.0.0 | 152.0.7977.54 | 24.18.1 |
+| First patched 44.x | 44.3.0 | 152.0.7977.78 | 24.20.0 |
+| Updated lock | 44.7.0 | 152.0.7977.130 | 24.21.0 |
+
+These are release metadata, not measured versions of the original frozen app.
+Native acceptance must still record the rebuilt artifact's actual runtime
+versions. Build-time Node in this workspace remains 22.23.3.
+
+### Regression provenance and remaining acceptance
+
+Use the official [environ-write-race.js fixture](https://github.com/electron/electron/blob/61f55c4ce540416b3e43f75f6c0f125d22e5e908/spec/fixtures/api/environ-write-race.js),
+unchanged, from the 44.7.0 source commit
+`61f55c4ce540416b3e43f75f6c0f125d22e5e908`.
+Its SHA-256 is
+`81fd87d0ecfc16fe0b484bef8d56265406011a0908c1241d5c22d1c7ada3a976`.
+This exercises real native reads via a worker's `os.homedir()` while the main
+thread adds 2,000 environment variables. It is not a JS mock of the fix.
+The upstream backport's `spec/api-process-spec.ts` requires **all three**:
+stdout trimmed to exactly `done`, code 0, and signal null, after worker exit.
+Exit 0 alone is insufficient because a worker timeout also reaches `app.exit(0)`.
+
+On gram, run those same fixture bytes with the official 44.0.0 and 44.7.0 Linux
+binaries in the same qualified unprivileged session; verify the upstream binary
+checksums and record binary/fixture hashes and libc build ID. A downloaded copy
+inside this repository must use `.cjs` (identical contents) to avoid the root's
+ES-module package scope. Launch as `"$electron_binary" "$fixture_path"` without
+sandbox bypasses, `ELECTRON_RUN_AS_NODE`, or injected libraries. Predeclare the
+attempt count, retain every exit/signal/stdout/stderr and any external timeout,
+and apply the upstream assertion to each attempt. The operator's independent
+before/after run is pending; no result is inferred here.
+
+The operator reports 32 successful native launches of diagnostic source
+`f8181fc` (16 capture, 16 ordinary), without reproducing the original crash.
+Those qualify neither this runtime update nor the original root cause.
+For the updated PR source, repeat the locked install, typecheck, full desktop
+suite, native package/fuse inspection, complete unmodified four-launch smoke
+with capture and a separately declared ordinary run. Retain the existing
+source-bound packaged acceptance and native platform gates in
+[the desktop README](../../../apps/desktop/README.md#packaged-visual-and-accessibility-acceptance).
+Bind all results to the exact rebuilt source revision, lockfile, package hashes,
+architecture and runtime versions; do not combine an old app with a new harness
+or carry forward f818 acceptance. Linux evidence does not qualify macOS.
+Obtain fresh independent review of this runtime diff and its acceptance evidence
+before merge. No publishing or host-library/security changes are part of this
+follow-up. Finite passing runs, including the upstream fixture, cannot by
+themselves establish that the original shutdown SIGSEGV is fixed or close #2973.
+
+### Runtime-update workspace validation
+
+- `npm ci --ignore-scripts --no-audit --no-fund`: passed; Electron installed with
+  its explicit `node node_modules/electron/install.js` installer. Installed npm
+  package and distribution version file both report 44.7.0.
+- `npm run typecheck --workspace @propr/desktop`: passed.
+- `npm test --workspace @propr/desktop`: 1,080 tests, **1,042 passed, 38 skipped,
+  0 failed**, 0 cancelled. Skipped native/display and opt-in platform coverage
+  is not native qualification. The prior diagnostic-run failures above remain
+  historical evidence; no fixtures, timeout or retry policy were changed.
+- `npm run package --workspace @propr/desktop` and
+  `npm run smoke:inspect --workspace @propr/desktop`: passed for Linux x64;
+  executable/fuse inspection passed and the packaged version file is 44.7.0.
+  This local package is from base `f8181fc86375cb213b28cbcb61920c611432e510`
+  plus this runtime diff, not a qualified-host acceptance artifact. SHA-256:
+  lockfile `6595f11797cad0660146317e3f7fe7bfd0ebcd8cfb095ca53c5458fe670c6108`,
+  packaged executable `24f81f81475856a908ceeda392f0ac366730370ea71bef0fa9fa1de93faf04ac`,
+  `app.asar` `a1f11892bb6fe9c55d8d63f5f3052c93fb71afae998ce90fd478a390b1359154`.
+- Manifest/lock consistency check: only the desktop requirement and Electron
+  package metadata differ; no transitive package additions, removals or updates.
+  `readelf --dyn-syms --wide node_modules/electron/dist/electron` confirms defined
+  global `setenv`, `unsetenv`, `putenv` and `clearenv` exports in the new Linux
+  binary. This is structural confirmation, not execution of the regression.
+- One direct upstream fixture attempt, with no sandbox bypass: **blocked before
+  fixture execution**, signal SIGTRAP, empty stdout. Electron reported that this
+  container's SUID sandbox helper is not configured for native launch. This is
+  an environment failure, not a race-test pass or reproduction of the original
+  SIGSEGV. No permission/security changes or retry were made. The container also
+  lacks a display server. Native smoke and acceptance remain pending on qualified
+  hosts, which must repeat package/fuse inspection for their exact artifacts.
+- Fresh independent implementation review after the runtime update found no
+  actionable issues in dependency scope, upstream provenance, security settings
+  or evidence claims. Review of qualified-host acceptance remains pending.
 
 ## Capture on the qualified host
 
