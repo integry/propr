@@ -11,6 +11,4 @@ interface Window {
   __PROPR_PACKAGED_ACCEPTANCE__?: Readonly<{
     setZoomFactor(factor: 1 | 2): Promise<unknown>;
   }>;
-  /** @internal Fixed visual-fixture selector exposed only after acceptance attestation. */
-  __PROPR_PACKAGED_ACCEPTANCE_SCENARIO__?: 'default' | 'setup-error' | 'setup-complete';
 }

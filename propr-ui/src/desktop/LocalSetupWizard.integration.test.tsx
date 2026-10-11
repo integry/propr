@@ -1,3 +1,4 @@
+import { createPackagedAcceptanceSetup } from '../../../apps/desktop/src/acceptance-setup';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesktopGithubInstallationDecision, DesktopSetupSnapshot } from '../../../apps/desktop/src/shared/contract';
@@ -18,6 +19,33 @@ vi.mock('../config/runtimeConfig', () => ({ setDesktopApiBaseUrl: runtimeMock.se
 
 describe('production local setup journey', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('keeps the production wizard and secure connection action in acceptance mode', async () => {
+    window.__PROPR_PACKAGED_ACCEPTANCE__ = { setZoomFactor: vi.fn() };
+    const fixture = createPackagedAcceptanceSetup(true, 'setup-complete')!;
+    const adapters = adaptersFor([], null, async () => ({ status: 'authentication-required', message: 'Approve desktop access in your browser.' }));
+    adapters.localSetup = { supported: true, ...fixture.localSetup };
+    try {
+      const { container } = render(<DesktopExperience adapters={adapters}>Workspace</DesktopExperience>);
+      fireEvent.click(await screen.findByRole('button', { name: /Set up this computer/ }));
+      const connect = await screen.findByRole('button', { name: 'Connect securely' });
+      expect(container.querySelector('main.desktop-setup-wizard .desktop-setup-success')).not.toBeNull();
+      fireEvent.click(connect);
+      await screen.findByRole('button', { name: 'Sign in in browser' });
+      expect(adapters.connection.probe).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'http://127.0.0.2:41731' }));
+      expect(adapters.authentication.authenticate).not.toHaveBeenCalled();
+      expect(adapters.externalBrowser.open).not.toHaveBeenCalled();
+    } finally { delete window.__PROPR_PACKAGED_ACCEPTANCE__; }
+  });
+
+  it.each(['retry', 'replace', 'review'] as const)('uses the production %s recovery handler with acceptance snapshots', async action => {
+    const fixture = createPackagedAcceptanceSetup(true, 'setup-error')!;
+    render(<LocalSetupWizard adapter={{ supported: true, ...fixture.localSetup }} onBack={vi.fn()} onComplete={vi.fn()} />);
+    const label = { retry: 'Retry setup', replace: 'Restart with aligned runtime', review: 'Review saved choices' }[action];
+    fireEvent.click(await screen.findByRole('button', { name: label }));
+    await screen.findByRole('heading', { name: action === 'review' ? 'Connect GitHub' : 'Setting up ProPR' });
+    expect(fixture.evidence().calls).toEqual(action === 'review' ? [] : [action === 'retry' ? 'retry' : 'replace-running-stack']);
+  });
 
   it('shows the authenticated identity, installation types, and explicit recovery controls', async () => {
     const choosing: DesktopSetupSnapshot = {

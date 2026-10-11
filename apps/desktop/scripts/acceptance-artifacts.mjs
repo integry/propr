@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
+import { SETUP_ACTIONS, setupPhase } from './packaged-acceptance-setup.mjs';
 import { PACKAGED_ACCEPTANCE_TIME } from './packaged-acceptance-clock.mjs';
 
 export const FIXED_TIME = PACKAGED_ACCEPTANCE_TIME;
@@ -37,6 +38,12 @@ export const ACCEPTANCE_VARIANTS = Object.freeze({
   'reduced-motion': { viewport: { width: 1280, height: 820 }, deviceScaleFactor: 1, zoom: 1, reducedMotion: true },
 });
 
+// Narrow is a desktop window, not phone coverage. Browser phone suites stay separate.
+export const acceptanceVariantsFor = journey => ({
+  ...ACCEPTANCE_VARIANTS,
+  ...Object.fromEntries(Object.keys(SETUP_ACTIONS[journey] ?? {}).map(action => [`zoom-200-${action}`, ACCEPTANCE_VARIANTS['zoom-200']])),
+});
+
 export const FIXED_ACCEPTANCE_ORIGINS = Object.freeze({
   // Canonical loopback aliases keep the fixture private while exercising the
   // renderer's real remote-pairing path instead of its localhost setup lane.
@@ -67,7 +74,7 @@ export const DETERMINISTIC_INPUTS = Object.freeze({
 export const defaultAcceptanceOutputDirectory = () => join(WORKSPACE_ROOT, ACCEPTANCE_ARTIFACT_LEAF);
 export const screenshotName = (journey, variant) => `${journey}--${variant}.png`;
 export const expectedScreenshotNames = () => ACCEPTANCE_JOURNEYS.flatMap(journey =>
-  Object.keys(ACCEPTANCE_VARIANTS).map(variant => screenshotName(journey, variant)));
+  Object.keys(acceptanceVariantsFor(journey)).map(variant => screenshotName(journey, variant)));
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const canonicalRelative = (root, path) => relative(root, path).split(sep).join('/');
@@ -442,6 +449,33 @@ const expectedArtifactFiles = () => new Set([
   'manifest.json',
 ]);
 
+export const validateSetupEvidence = (evidence, journey, variant) => {
+  if (!SETUP_ACTIONS[journey]) {
+    if (evidence !== null) throw new Error('Unexpected setup evidence');
+    return;
+  }
+  assertExactKeys(evidence, ['presentation', 'fixture', 'phase', 'capture', 'action'], 'Production setup evidence');
+  const actionId = variant.startsWith('zoom-200-') ? variant.slice('zoom-200-'.length) : null;
+  if (evidence.presentation !== 'LocalSetupWizard' || evidence.fixture !== 'preload-setup-v1'
+    || evidence.phase !== setupPhase(journey) || evidence.capture !== (actionId ? 'keyboard-reached' : 'initial-viewport')) {
+    throw new Error('Production setup presentation or fixture state changed');
+  }
+  if (!actionId) {
+    if (evidence.action !== null) throw new Error('Initial viewport cannot claim action reachability');
+    return;
+  }
+  const expected = SETUP_ACTIONS[journey][actionId];
+  const action = evidence.action;
+  assertExactKeys(action, ['id', 'label', 'tabs', 'focused', 'visible', 'focusVisible', 'activated', 'outcome', 'bridgeCall'], 'Setup action evidence');
+  if (!expected || action.id !== actionId || action.label !== expected.label
+    || !Number.isInteger(action.tabs) || action.tabs < 1 || action.tabs > 40
+    || action.focused !== true || action.visible !== true || action.focusVisible !== true || action.activated !== true
+    || action.bridgeCall !== expected.call
+    || action.outcome !== (expected.heading ?? (actionId === 'back' ? 'instance-chooser' : 'authentication-required'))) {
+    throw new Error('Setup action keyboard activation evidence is incomplete');
+  }
+};
+
 const validateScreenshotEntry = (entry, expectedName) => {
   assertExactKeys(entry, [
     'name', 'journey', 'variant', 'width', 'height', 'physicalPngDimensions', 'reducedMotion',
@@ -451,11 +485,11 @@ const validateScreenshotEntry = (entry, expectedName) => {
     'requestedDeviceScaleFactor', 'rendererDevicePixelRatio', 'requestedZoomFactor',
     'appliedZoomFactor', 'zoomResetFactor', 'zoomMechanism',
     'locale', 'timezone', 'font', 'colorScheme', 'rendererTime', 'originPolicy', 'visibleData',
-    'animations', 'bytes', 'sha256', 'repeatabilitySha256',
+    'animations', 'bytes', 'sha256', 'repeatabilitySha256', 'setup',
   ], `Acceptance screenshot ${expectedName}`);
   const [journey, variantWithExtension] = expectedName.split('--');
   const variant = variantWithExtension.slice(0, -4);
-  const config = ACCEPTANCE_VARIANTS[variant];
+  const config = acceptanceVariantsFor(journey)[variant];
   if (entry.name !== expectedName || entry.journey !== journey || entry.variant !== variant
     || entry.width !== config.viewport.width * config.deviceScaleFactor
     || entry.height !== config.viewport.height * config.deviceScaleFactor
@@ -467,6 +501,7 @@ const validateScreenshotEntry = (entry, expectedName) => {
     || !isSha256(entry.sha256) || entry.repeatabilitySha256 !== entry.sha256) {
     throw new Error(`Acceptance screenshot metadata changed for ${expectedName}`);
   }
+  validateSetupEvidence(entry.setup, journey, variant);
   assertViewportMetricEvidence(entry, config, `Acceptance screenshot ${expectedName}`);
 };
 
@@ -475,7 +510,7 @@ const validateAccessibility = accessibility => {
     'schemaVersion', 'generatedAt', 'serious', 'critical', 'findings', 'checks', 'keyboardOrder',
     'visibleFocus', 'modalFocusTrap', 'modalFocusRestore', 'accessibleNames', 'liveAnnouncements',
   ], 'Acceptance accessibility report');
-  if (accessibility.schemaVersion !== 6 || accessibility.generatedAt !== FIXED_TIME
+  if (accessibility.schemaVersion !== 7 || accessibility.generatedAt !== FIXED_TIME
     || accessibility.serious !== 0 || accessibility.critical !== 0 || accessibility.findings?.length !== 0
     || accessibility.keyboardOrder !== true || accessibility.visibleFocus !== true
     || accessibility.modalFocusTrap !== true || accessibility.modalFocusRestore !== true
@@ -503,7 +538,7 @@ const validateAccessibility = accessibility => {
     ], `Acceptance accessibility check ${name}`);
     const [journey, variantWithExtension] = name.split('--');
     const variant = variantWithExtension.slice(0, -4);
-    const config = ACCEPTANCE_VARIANTS[variant];
+    const config = acceptanceVariantsFor(journey)[variant];
     if (check.name !== name || check.journey !== journey || check.variant !== variant
       || check.reducedMotion !== config.reducedMotion || check.locale !== DETERMINISTIC_INPUTS.locale
       || check.timezone !== DETERMINISTIC_INPUTS.timezone || check.rendererTime !== FIXED_TIME) {
@@ -519,7 +554,7 @@ const validateAccessibility = accessibility => {
 
 const validateSummary = summary => {
   assertExactKeys(summary, ['schemaVersion', 'generatedAt', 'status', 'journeys', 'screenshots', 'boundary', 'console', 'services', 'redaction'], 'Acceptance summary');
-  if (summary.schemaVersion !== 6 || summary.generatedAt !== FIXED_TIME || summary.status !== 'passed'
+  if (summary.schemaVersion !== 7 || summary.generatedAt !== FIXED_TIME || summary.status !== 'passed'
     || summary.journeys !== ACCEPTANCE_JOURNEYS.length || summary.screenshots !== expectedScreenshotNames().length
     || summary.redaction !== 'Full raw surfaces were scanned; published logs retain only source, level, byte count, and digest.') {
     throw new Error('Acceptance sanitized summary is invalid');
@@ -641,7 +676,7 @@ export const validateAcceptanceEvidence = (accessibility, manifest, summary, san
     'schemaVersion', 'generatedAt', 'platform', 'arch', 'executableBoundary', 'deterministicInputs',
     'nativePackageCoverage', 'screenshots', 'supporting',
   ], 'Acceptance manifest');
-  if (manifest.schemaVersion !== 6 || manifest.platform !== 'linux' || manifest.arch !== 'x64'
+  if (manifest.schemaVersion !== 7 || manifest.platform !== 'linux' || manifest.arch !== 'x64'
     || manifest.generatedAt !== FIXED_TIME || manifest.executableBoundary !== 'packaged-electron-main-preload-renderer'
     || manifest.screenshots?.length !== expectedScreenshotNames().length) {
     throw new Error('Acceptance manifest is incomplete or non-deterministic');
@@ -739,7 +774,7 @@ export const writeAcceptanceManifest = async (outputDirectory, screenshotMetadat
     supporting.push({ name, bytes: bytes.length, sha256: sha256(bytes) });
   }
   const manifest = {
-    schemaVersion: 6,
+    schemaVersion: 7,
     generatedAt: FIXED_TIME,
     platform: 'linux',
     arch: 'x64',

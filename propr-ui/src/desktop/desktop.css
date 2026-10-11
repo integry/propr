@@ -526,7 +526,7 @@ body:has(.desktop-platform-macos),
 .desktop-setup-summary > div { display: grid; grid-template-columns: 7rem 1fr; gap: .8rem; padding: .7rem .85rem; border-bottom: 1px solid #e6edec; font-size: .78rem; }
 .desktop-setup-summary > div:last-child { border-bottom: 0; }
 .desktop-setup-summary dt { color: #758382; } .desktop-setup-summary dd { overflow-wrap: anywhere; color: #273a39; font-weight: 600; }
-.desktop-setup-footer { display: flex; justify-content: flex-end; gap: .6rem; margin-top: 1.4rem; }
+.desktop-setup-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .6rem; margin-top: 1.4rem; }
 .desktop-setup-progress { height: .45rem; margin: 1.2rem 0; border-radius: 999px; overflow: hidden; background: #e4eceb; }
 .desktop-setup-progress > span { display: block; height: 100%; border-radius: inherit; background: #16827c; transition: width .25s ease; }
 .desktop-setup-step-list { display: grid; gap: .35rem; max-height: 22rem; overflow-y: auto; }

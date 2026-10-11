@@ -218,6 +218,22 @@ persisted profile/config data, screenshots and metadata, and every decompressed 
 origin and current-user request. Every other renderer console error or page error fails acceptance; the published report
 retains only bounded category counts while the complete raw surface remains subject to secret scanning.
 
+The four setup journeys render the production `LocalSetupWizard`, including its green success indicator and
+`Connect securely` action. Only `proprDesktop.localSetup` responses are replaced, in the preload after main-process
+acceptance attestation, with the credential-free `preload-setup-v1` fixture. It cannot provision services, select
+secrets, or start GitHub operations. Completion enters normal discovery against the owned loopback fixture and
+stops at browser sign-in; it does not pair externally. These presentation fixtures do **not** prove real setup
+cancellation/retry/relaunch: the separate opt-in Linux lifecycle acceptance above remains required.
+
+Artifact schema 7 requires 67 screenshots: the original 60 initial viewports plus seven native 200% action captures
+(Continue, Cancel safely, Back, Review saved choices, Restart with aligned runtime, Retry setup, Connect securely).
+The additional captures use ordinary Tab focus/scroll, require visible unobscured focus, and activate with Enter.
+Each screenshot identifies production presentation, fixture phase, and whether it is an initial viewport or a
+keyboard-reached action. Action evidence also requires the resulting UI and expected bridge operation. Every extra
+capture receives the same byte-identical repeatability, OCR, accessibility, dimensions, zoom, and artifact checks.
+The 880×620 narrow variant is a desktop window; browser phone tests provide separate phone coverage. Rebuild and
+run this evidence on the current candidate; earlier frozen screenshots cannot validate the production wizard.
+
 Linux x64 produces the canonical visual/accessibility runtime evidence. Linux arm64 and macOS x64/arm64 retain native
 package inspection and platform runtime smoke coverage; their acceptance classification is structural/runtime-only.
 Supplementary non-blocking Windows source/runtime validation is isolated from `macos-linux-v1` and is not release evidence.
