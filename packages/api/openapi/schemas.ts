@@ -312,3 +312,28 @@ export const TaskAssigneesQuery = querySet('TaskAssigneesQuery', z.object({
 export const DeleteTaskQuery = querySet('DeleteTaskQuery', z.object({
   force: z.enum(['true', 'false']).optional().describe('Delete even when the task is still active.'),
 }));
+
+const storageCategory = z.enum(['database_config', 'repository_caches', 'worktrees', 'salvage', 'logs_artifacts', 'provider_credentials', 'task_history']);
+const storageState = z.enum(['complete', 'partial', 'unknown', 'unsupported']);
+const storageProtection = z.enum(['busy', 'unknown_use', 'recent_use', 'unknown_ownership', 'unsafe_path', 'private_work', 'worktrees', 'local_history', 'salvage', 'remote_unavailable', 'unknown_git_state', 'changed', 'unsupported']);
+const storagePolicy = z.object({ enabled: z.boolean(), idleHours: z.number().int().min(1).max(8760) });
+export const InstanceStorageUsage = component('InstanceStorageUsage', z.object({
+  version: z.literal(1), instanceId: z.string(), observedAt: isoDateTime.nullable(), state: storageState,
+  scanning: z.boolean(), ownedBytes: z.number().nonnegative().nullable(),
+  categories: z.array(z.object({ category: storageCategory, bytes: z.number().nonnegative().nullable(), state: storageState })),
+  filesystems: z.array(z.object({ id: z.string(), totalBytes: z.number().nonnegative(), availableBytes: z.number().nonnegative() })),
+}));
+export const InstanceStoragePolicy = component('InstanceStoragePolicy', z.object({ version: z.literal(1), instanceId: z.string(), policy: storagePolicy }));
+export const InstanceStoragePolicyRequest = component('InstanceStoragePolicyRequest', storagePolicy.extend({ instanceId: z.string() }).strict());
+export const InstanceStoragePreviewRequest = component('InstanceStoragePreviewRequest', z.object({ instanceId: z.string(), categories: z.array(storageCategory).min(1).max(7), taskIds: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,255}$/)).max(10).optional() }).strict());
+export const InstanceStorageExecuteRequest = component('InstanceStorageExecuteRequest', z.object({ instanceId: z.string(), confirmation: z.uuid() }).strict());
+export const InstanceStoragePreview = component('InstanceStoragePreview', z.object({
+  version: z.literal(1), instanceId: z.string(), confirmation: z.uuid(), expiresAt: isoDateTime,
+  categories: z.array(storageCategory), impact: z.string(),
+  candidates: z.array(z.object({ id: z.string(), category: storageCategory, estimatedBytes: z.number().nonnegative().nullable(), protectedReasons: z.array(storageProtection) })),
+}));
+export const InstanceStorageResult = component('InstanceStorageResult', z.object({
+  version: z.literal(1), instanceId: z.string(), operationId: z.uuid(), state: z.enum(['completed', 'interrupted']),
+  deleted: z.array(z.string()), retained: z.array(z.object({ id: z.string(), reasons: z.array(storageProtection) })),
+}));
+export const InstanceStorageResultQuery = querySet('InstanceStorageResultQuery', z.object({ instanceId: z.string() }));

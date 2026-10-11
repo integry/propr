@@ -1,5 +1,17 @@
-import { test, mock } from 'node:test';
+import { test, mock, after } from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
+const lifecycleRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'queue-lifecycle-'));
+const previousClones = process.env.GIT_CLONES_BASE_PATH;
+process.env.GIT_CLONES_BASE_PATH = path.join(lifecycleRoot, 'clones');
+after(async () => {
+    if (previousClones === undefined) delete process.env.GIT_CLONES_BASE_PATH;
+    else process.env.GIT_CLONES_BASE_PATH = previousClones;
+    await fs.rm(lifecycleRoot, { recursive: true, force: true });
+});
 
 const mockRedis = {
     on: mock.fn(),
@@ -66,12 +78,17 @@ test('Redis connection events are registered', () => {
 });
 
 test('createWorker creates a worker with correct configuration', async () => {
-    const processorFn = async (): Promise<{ status: string }> => ({ status: 'completed' });
+    const { repositoryStorageLifecycle } = await import('../packages/core/src/storage/lifecycle.ts');
+    const processorFn = async (): Promise<{ status: string }> => {
+        assert.equal(await repositoryStorageLifecycle.busy(), true, 'worker holds a storage claim');
+        return { status: 'completed' };
+    };
     const worker = await createWorker('test-queue', processorFn as Parameters<typeof createWorker>[1]);
 
     assert.ok(worker);
     assert.strictEqual(mockWorker.name, 'test-queue');
-    assert.strictEqual(mockWorker.processor, processorFn);
+    assert.deepEqual(await (mockWorker.processor as typeof processorFn)(), { status: 'completed' });
+    assert.equal(await repositoryStorageLifecycle.busy(), false, 'worker releases its claim');
     assert.strictEqual(mockWorker.opts.concurrency, 5);
 
     const eventNames = mockWorker.on.mock.calls.map((call: { arguments: unknown[] }) => call.arguments[0]);

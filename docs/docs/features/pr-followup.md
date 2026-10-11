@@ -83,6 +83,19 @@ for reason codes and issue state labels.
 
 While Ultrafix is waiting for CI, its periodic check also recovers failed-CI follow-ups whose webhook was missed, such as during a restart. Recovery respects this setting and the repository's non-blocking checks, ignores replaced commits and closed PRs, and shares duplicate protection with webhook delivery.
 
+A cancelled check is not a failure, and neither is a check that failed only because its workflow run was deliberately cancelled. For example, an aggregate gate that runs under `always()` and fails closed when its shards were cancelled. Without this rule, [cancelling obsolete checks during follow-up](#cancelling-obsolete-checks-during-follow-up) would start a new follow-up from the gate's failure, which would then cancel the next commit's checks. ProPR skips the comment only when all of the following hold:
+
+- The check itself concluded `failure`. A check that timed out, failed to start or is waiting for approval is always reported, even if the cancellation evidence points elsewhere.
+- The run attempt was cancelled by ProPR's own recorded suspension, or GitHub reports that attempt as cancelled.
+- No other job of that attempt failed or timed out.
+- The check failed after the cancellation stopped its sibling jobs.
+- The check's own failure annotations show it failed because of the cancellation: at least one reports a needed job as `cancelled`, and every other one is the runner's exit-code notice or a recognized consequence of cancelled shards, such as shard coverage verification failing.
+- Every step of the check that failed is the recognized gate that enforces its needed jobs' results (or the shard coverage verification that fails only because cancelled shards uploaded nothing), and the gate itself failed. Any other failed step — including a plain shell command whose only annotation is `Process completed with exit code 1.` — is reported.
+
+Timing and provenance alone are not enough: a job that runs under `always()` and fails its own step after the cancellation still produces a follow-up.
+
+If ProPR can't read that evidence, it posts the comment. The check keeps its failing conclusion, so required merge gates are unchanged, and a genuine failure on a later attempt of the same commit is still reported.
+
 ## Automatic Pull Request Assignment
 
 When work on a ProPR pull request completes, ProPR can assign the pull request to someone, and optionally request their review, so it lands in a person's queue instead of waiting unowned. It is off unless you turn it on. See [Task Assignment](./assignment.md) for how assignment works in general.

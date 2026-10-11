@@ -158,7 +158,8 @@ describe('AgentsPage', () => {
       : { definitions: [firstPage[199], agent('late', 'Quarterly audit')], total: 202, limit: 200, offset: 200 });
     renderAt('/automations');
 
-    await screen.findByRole('link', { name: /Agent 0/ });
+    // Wait for the loaded rows without computing accessible names for all 200 links.
+    await screen.findByText('Agent 0');
     fireEvent.change(screen.getByLabelText('Search automations'), { target: { value: 'Quarterly' } });
 
     expect(await screen.findByRole('link', { name: /Quarterly audit/ })).toBeInTheDocument();

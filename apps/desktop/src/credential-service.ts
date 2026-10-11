@@ -547,7 +547,7 @@ const authenticationSummary = (capabilities: {
 }): string => capabilities.browserPairing
   && capabilities.instanceBearerTokens
   && capabilities.socketIoBearerAuthentication
-  ? 'Sign in in your browser, then approve access for ProPR Desktop'
+  ? 'Use your browser to sign in, then approve access for ProPR Desktop'
   : 'Secure desktop pairing is unavailable';
 
 export class DesktopCredentialService {

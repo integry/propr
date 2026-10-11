@@ -1,3 +1,4 @@
+import { createStorageRouteEntries } from '../instanceStorageRouteRegistry.js';
 import type { RequestHandler } from 'express';
 import type { InstancePermission } from '@propr/shared';
 import {
@@ -40,6 +41,7 @@ function placeholderDeps(): never {
 export function listRegistryRouteEntries(): RouteEntry[] {
   return [
     ...createOperationalRouteEntries(placeholderDeps()),
+    ...createStorageRouteEntries(placeholderDeps()),
     ...createMemberCatalogRouteEntries(placeholderDeps()),
     ...createManagementRouteEntries(placeholderDeps()),
   ];

@@ -46,6 +46,7 @@ describe('current-user response schema', () => {
   it('reports fixed accepted and rejected parse outcomes for an active scope', async () => {
     (window as AcceptanceWindow).__PROPR_PACKAGED_ACCEPTANCE__ = {
       setZoomFactor: vi.fn(),
+      setupEvidence: vi.fn(),
     };
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     apiFetch.mockResolvedValueOnce(new Response(JSON.stringify(validUser), {

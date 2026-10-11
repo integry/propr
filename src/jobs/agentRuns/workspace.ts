@@ -227,19 +227,15 @@ async function prepareRepositoryWorkspace(input: PrepareAgentRunWorkspaceInput, 
 
 async function prepareScratchWorkspace(input: PrepareAgentRunWorkspaceInput, log: Logger): Promise<AgentRunWorkspace> {
     const { runId, definition } = input;
-    const worktreePath = path.join(AGENT_RUN_SCRATCH_ROOT, path.basename(runId));
+    await fs.ensureDir(AGENT_RUN_SCRATCH_ROOT);
+    const worktreePath = await fs.mkdtemp(path.join(AGENT_RUN_SCRATCH_ROOT, `${path.basename(runId)}-`));
     const branchName = `agent-run/${runId}`;
     const cleanup = async (): Promise<void> => {
-        try {
-            await fs.remove(worktreePath);
-        } catch (error) {
-            log.warn({ runId, worktreePath, error: (error as Error).message }, 'Failed to remove agent run scratch directory');
-        }
+        log.info({ runId }, 'Retaining scratch workspace: private work cannot be refetched');
     };
 
     try {
-        await fs.remove(worktreePath);
-        await fs.ensureDir(worktreePath);
+        // Each attempt gets a new directory; retries never wipe prior private work.
         await createHooklessGit(worktreePath).init(['--initial-branch', branchName]);
         const attachments = await copyAgentInputFiles(worktreePath, definition.id, definition.attachments, { log });
         await setupWorktreePermissions(worktreePath, branchName, 'agent-run');

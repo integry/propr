@@ -330,4 +330,20 @@ describe('Electron fixture runner', () => {
       timeout: 250,
     }), /exited SIGKILL after exhausting its own budget/u);
   });
+
+  it('ends a spent budget even when a wrapper left a child holding its output', {
+    skip: process.platform === 'win32' && 'process groups are POSIX-only',
+  }, async () => {
+    // Mirrors `xvfb-run`: the spawned shell forks the real fixture, which
+    // inherits stdout and would otherwise outlive the killed wrapper.
+    const startedAt = Date.now();
+    await assert.rejects(() => runElectronFixture({
+      attempts: 1,
+      electronArguments: ['-c', 'sleep 30 & wait'],
+      name: 'probe',
+      setup: { electronExecutable: '/bin/sh' },
+      timeout: 250,
+    }), /exited SIGKILL after exhausting its own budget/u);
+    assert.ok(Date.now() - startedAt < 5_000, `the launch took ${Date.now() - startedAt}ms to end`);
+  });
 });

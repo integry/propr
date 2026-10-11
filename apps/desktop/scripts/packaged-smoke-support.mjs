@@ -1,4 +1,5 @@
 import { chmod, lstat, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, win32 } from 'node:path';
 import windowSizing from '../window-sizing.json' with { type: 'json' };
@@ -10,6 +11,7 @@ const MAX_DISPLAY_DIMENSION = 32_768;
 const MAX_XAUTHORITY_BYTES = 64 * 1024;
 const PRIVATE_SMOKE_PREFIX = 'propr-desktop-smoke-';
 const createdProfiles = new WeakSet();
+const removingProfiles = new WeakSet();
 
 const assertDimension = (value, description) => {
   if (!Number.isInteger(value) || value <= 0 || value > MAX_DISPLAY_DIMENSION) {
@@ -201,12 +203,88 @@ export const createPrivateSmokeProfile = async (temporaryDirectory = tmpdir()) =
   }
 };
 
-export const removePrivateSmokeProfile = async profile => {
+export const removePrivateSmokeProfile = async (profile, {
+  removeDirectory = rm,
+  wait = delay,
+} = {}) => {
   if (!profile || !createdProfiles.has(profile)) {
     throw new Error('Packaged smoke cleanup rejected an unknown profile');
   }
-  createdProfiles.delete(profile);
-  await rm(profile.root, { recursive: true, force: true });
+  if (removingProfiles.has(profile)) {
+    throw new Error('Packaged smoke cleanup already in progress for this profile');
+  }
+  removingProfiles.add(profile);
+  try {
+    // Retry the whole owned root, not every recursive entry: at most four passes
+    // and 600ms of backoff. A late Chromium write can invalidate an empty scan.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await removeDirectory(profile.root, { recursive: true, force: true });
+        // A failed removal remains owned so callers can retry later.
+        createdProfiles.delete(profile);
+        return;
+      } catch (error) {
+        if (error?.code !== 'ENOTEMPTY' || attempt === 3) throw error;
+        await wait(100 * (attempt + 1));
+      }
+    }
+  } finally {
+    removingProfiles.delete(profile);
+  }
+};
+
+// Keep the original exception (including its stack) as the rejection. Cleanup
+// diagnostics are separate, and every registered cleanup gets an attempt.
+export const runWithSmokeCleanup = async (run, cleanupSteps, report = console.error) => {
+  let failed = false;
+  let primaryError;
+  let result;
+  try {
+    result = await run();
+  } catch (error) {
+    failed = true;
+    primaryError = error;
+  }
+  const errors = [];
+  for (const { name, cleanup } of cleanupSteps) {
+    try {
+      await cleanup();
+    } catch (cause) {
+      const error = new Error(`Packaged smoke cleanup failed: ${name}`, { cause });
+      errors.push(error);
+      report(error);
+    }
+  }
+  if (failed) throw primaryError;
+  if (errors.length) throw new AggregateError(errors, 'Packaged smoke cleanup failed');
+  return result;
+};
+
+// Register immediately after spawn, before any close event can be missed.
+// A profile must not be removed if shutdown cannot be confirmed.
+export const trackSmokeChildShutdown = (child, timeoutMs = 5_000) => {
+  let closed = false;
+  const close = new Promise(resolveClose => child.once('close', () => {
+    closed = true;
+    resolveClose();
+  }));
+  return async () => {
+    if (closed) return;
+    child.kill('SIGKILL');
+    let timer;
+    try {
+      await Promise.race([
+        close,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(
+            `Packaged smoke child did not close within ${timeoutMs}ms; retaining its private profile`,
+          )), timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 };
 
 const validateProfileApiUrl = value => {

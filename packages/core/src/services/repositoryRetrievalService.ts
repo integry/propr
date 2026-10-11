@@ -1,3 +1,4 @@
+import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 /**
  * Repository retrieval primitives: semantic/literal file search and bounded
  * file reading straight from the git object database.
@@ -447,6 +448,10 @@ async function searchLiteral({ options, query, pathPrefix, offset, limit }: Sear
  * summaries) or literally (`git grep` at the requested ref).
  */
 export async function searchRepositoryFiles(options: SearchRepositoryFilesOptions): Promise<SearchRepositoryFilesResult> {
+  return repositoryStorageLifecycle.use(() => searchRepositoryFilesInternal(options));
+}
+
+async function searchRepositoryFilesInternal(options: SearchRepositoryFilesOptions): Promise<SearchRepositoryFilesResult> {
   const mode: RepositorySearchMode = options.mode ?? 'semantic';
   if (mode !== 'semantic' && mode !== 'literal') {
     throw new RepositoryRetrievalError(`Unsupported search mode "${String(mode)}"`, 400);
@@ -478,7 +483,10 @@ export async function searchRepositoryFiles(options: SearchRepositoryFilesOption
  * Reads a bounded line range of a file from the git object database at the
  * requested ref, without touching the working tree.
  */
-export async function readRepositoryFileContent(options: ReadRepositoryFileOptions): Promise<ReadRepositoryFileResult> {
+export const readRepositoryFileContent = async (options: ReadRepositoryFileOptions): Promise<ReadRepositoryFileResult> =>
+  repositoryStorageLifecycle.use(() => readRepositoryFileContentInternal(options));
+
+async function readRepositoryFileContentInternal(options: ReadRepositoryFileOptions): Promise<ReadRepositoryFileResult> {
   const filePath = canonicalRepositoryPath(options.path);
   parseRepository(options.repository);
 

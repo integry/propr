@@ -6,9 +6,12 @@
 // cross-subdomain cookies can talk to the API. localhost/127.0.0.1/[::1] are
 // allowed for local development.
 
-import type { ErrorRequestHandler } from 'express';
+import type { ErrorRequestHandler, RequestHandler } from 'express';
+import cors from 'cors';
+import { validatedConnectOrigin } from './connectAuth.js';
 import {
   DESKTOP_RENDERER_ORIGIN,
+  parseProprConnectEndpoint,
   canonicalProprHttpUrlOrigin,
   isProprLoopbackHostname,
   normalizeProprApiOrigin,
@@ -104,5 +107,55 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
     } catch {
       callback(new CorsOriginError());
     }
+  };
+}
+
+/**
+ * Connect uses the existing host-only instance session. Only canonical hosted
+ * tunnels share its HTTPS site; this does not solve third-party cookie policy
+ * for cross-site self-hosted deployments. Never add Connect to the validator
+ * shared with Socket.IO or infer authority from Host/Forwarded request headers.
+ */
+export function createConnectStorageCorsMiddleware(env: NodeJS.ProcessEnv = process.env): RequestHandler {
+  const connectOrigin = validatedConnectOrigin(env.PROPR_CONNECT_URL);
+  const connectUrl = new URL(connectOrigin);
+  const hosted = parseProprConnectEndpoint(env.API_PUBLIC_URL);
+  const sameSite = hosted && connectUrl.hostname.endsWith('.propr.dev') && !connectUrl.port;
+  const base = '/api/instance/storage/v1';
+  const routes = new Map([
+    ['/api/auth/user', ['GET']],
+    [`${base}/usage`, ['GET']],
+    [`${base}/policy`, ['GET', 'PUT']],
+    [`${base}/cleanup/preview`, ['POST']],
+    [`${base}/cleanup/execute`, ['POST']],
+  ]);
+  const operationPath = /^\/api\/instance\/storage\/v1\/cleanup\/operations\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  return (req, res, next) => {
+    if (!sameSite || req.get('Origin') !== connectOrigin) { next(); return; }
+    const methods = routes.get(req.path) ?? (operationPath.test(req.path) ? ['GET'] : []);
+    const method = req.method === 'OPTIONS' ? req.get('Access-Control-Request-Method') : req.method;
+    const mutation = method === 'PUT' || method === 'POST';
+    const allowedHeaders = mutation ? ['content-type', 'x-propr-storage'] : [];
+    const requestedHeaders = (req.get('Access-Control-Request-Headers') ?? '')
+      .split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+    if (!method || !methods.includes(method)
+      || requestedHeaders.some(header => !allowedHeaders.includes(header))) {
+      // No exception: preserve any explicitly configured existing UI policy.
+      // Default Fleet's validator rejects Connect here, including preflights.
+      next(); return;
+    }
+    cors({
+      origin: connectOrigin,
+      credentials: true,
+      methods: [method],
+      allowedHeaders,
+      maxAge: CORS_PREFLIGHT_MAX_AGE_SECONDS,
+    })(req, res, error => {
+      if (error) { next(error); return; }
+      // Signal only that CORS was handled; authentication/authorization must
+      // still run. OPTIONS ends in cors without creating a session or grant.
+      res.locals.connectStorageCors = true;
+      next();
+    });
   };
 }

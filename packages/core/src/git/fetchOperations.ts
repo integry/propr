@@ -1,3 +1,4 @@
+import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
@@ -70,6 +71,10 @@ async function fetchAllBranches(git: SimpleGit, owner: string, repoName: string)
  * This function should be called before indexing to ensure the local copy is up-to-date.
  */
 export async function fetchLatestChanges(options: FetchLatestChangesOptions): Promise<FetchLatestChangesResult> {
+    return repositoryStorageLifecycle.use(() => fetchLatestChangesInternal(options));
+}
+
+async function fetchLatestChangesInternal(options: FetchLatestChangesOptions): Promise<FetchLatestChangesResult> {
     const { owner, repoName, authToken, branch } = options;
     const localRepoPath = getRepoPath(owner, repoName);
 

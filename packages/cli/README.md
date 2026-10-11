@@ -663,3 +663,11 @@ propr <command> --help          # Command group help
 propr plan --help               # Plan commands
 propr todo category --help      # Category commands
 ```
+
+### Prepare a source-aligned Hosted Fleet preview (internal only)
+
+The prepare-only packaging mode produces an installable `propr-cli` prerelease
+without publishing npm packages, Docker images, tags, or deploying anything.
+Stable `cli:pack` (dry run) and `cli:publish` behavior stays unchanged. See
+[scripts/preview-package.md](scripts/preview-package.md) for the reviewed-input
+format, source trust checks, output evidence, and later fleet handoff.

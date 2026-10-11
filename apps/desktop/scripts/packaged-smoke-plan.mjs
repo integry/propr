@@ -1,3 +1,6 @@
+import { lstatSync, realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve } from 'node:path';
+
 export const READY_EVENT = 'desktop.renderer.ready';
 export const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
 export const PROFILE_API_PROOF = 'desktop.renderer.profile_api.ready';
@@ -46,11 +49,38 @@ export const createPackagedSmokeLaunch = ({
   firstOrigin,
   secondOrigin,
   dbusSessionAddress,
+  nativeCrashDirectory = process.env.PROPR_DESKTOP_NATIVE_CRASH_DIRECTORY,
 }) => {
   if (!PACKAGED_SMOKE_LAUNCH_MODES.includes(mode)) {
     throw new Error(`Unknown packaged smoke launch mode: ${mode}`);
   }
   const transport = mode !== 'release-guard';
+  if (nativeCrashDirectory !== undefined && (platform !== 'linux'
+    || !isAbsolute(nativeCrashDirectory) || /[\0\r\n]/.test(nativeCrashDirectory))) {
+    throw new Error('Native crash capture requires an absolute Linux evidence directory');
+  }
+  if (nativeCrashDirectory !== undefined) {
+    // Preflight for a useful launcher error; the child revalidates at use time.
+    try {
+      const root = nativeCrashDirectory;
+      const stats = lstatSync(root);
+      if (resolve(root) !== root || !stats.isDirectory() || stats.isSymbolicLink()
+        || realpathSync(root) !== root || stats.uid !== process.getuid?.()
+        || (stats.mode & 0o777) !== 0o700) {
+        throw new Error('expected an existing owned 0700 canonical directory without links');
+      }
+      const profile = realpathSync(userDataPath);
+      const within = (parent, child) => {
+        const path = relative(parent, child);
+        return path === '' || (!path.startsWith('../') && path !== '..' && !isAbsolute(path));
+      };
+      if (within(profile, root) || within(root, profile)) {
+        throw new Error('evidence must be separate from smoke profile cleanup');
+      }
+    } catch (cause) {
+      throw new Error(`Native crash capture directory preflight failed: ${cause.message}`, { cause });
+    }
+  }
   for (const name of TRANSPORT_SMOKE_ENVIRONMENT_NAMES) {
     if (Object.hasOwn(baseChildEnvironment, name)) {
       throw new Error(`Packaged smoke base environment unexpectedly contains ${name}`);
@@ -61,6 +91,7 @@ export const createPackagedSmokeLaunch = ({
     '--disable-gpu',
     '--propr-smoke-test',
     `--user-data-dir=${userDataPath}`,
+    ...(nativeCrashDirectory === undefined ? [] : [`--propr-native-crash-directory=${nativeCrashDirectory}`]),
     ...(platform === 'linux' ? ['--password-store=gnome-libsecret'] : []),
     ...(!transport ? [CONNECT_DEEP_LINK] : []),
   ];

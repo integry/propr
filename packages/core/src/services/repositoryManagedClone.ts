@@ -1,3 +1,4 @@
+import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 /**
  * Managed clone preparation for repository retrieval: cloning/refreshing the
  * shared clone and fetching a single requested ref into it.
@@ -153,7 +154,7 @@ export function fetchRequestedRef(repoPath: string, ref: string, authToken: stri
   const key = `${repoPath}\0${ref}`;
   const pending = inflightFetches.get(key);
   if (pending) return pending;
-  const fetching = fetchRequestedRefOnce(repoPath, ref, authToken).finally(() => inflightFetches.delete(key));
+  const fetching = repositoryStorageLifecycle.use(() => fetchRequestedRefOnce(repoPath, ref, authToken)).finally(() => inflightFetches.delete(key));
   inflightFetches.set(key, fetching);
   return fetching;
 }

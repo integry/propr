@@ -29,6 +29,11 @@ jobs:
       e2e_tests: ${{ steps.e2e_tests.outcome }}
 
     steps:
+      # Live E2E plan creation stops by this deadline so the job, whose
+      # 120-minute timeout also covers the full suite, still uploads diagnostics.
+      - name: Record E2E deadline
+        run: echo "PROPR_E2E_DEADLINE_EPOCH_MS=$(( ($(date +%s) + 110 * 60) * 1000 ))" >> "$GITHUB_ENV"
+
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 

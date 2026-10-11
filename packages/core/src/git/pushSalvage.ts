@@ -328,7 +328,7 @@ async function writeFileAtomically(filePath: string, content: string): Promise<v
 
 /** Records in worker-controlled storage that the salvage ladder kept this worktree, so
  * cleanupWorktree keeps it regardless of WORKTREE_RETENTION_STRATEGY and
- * cleanupExpiredWorktrees removes it after retention. A retention of 0 days writes no
+ * cleanupExpiredWorktrees retains it even after retention: age cannot prove recovery. A retention of 0 days writes no
  * cleanup deadline, so the worktree is never expired. `.retention-info.json` in the
  * worktree is informational only: repository contents can forge it. */
 export async function writeSalvageRetentionMarker(worktreePath: string, details: { taskId: string; branchName: string; retentionHours?: number | null }): Promise<void> {

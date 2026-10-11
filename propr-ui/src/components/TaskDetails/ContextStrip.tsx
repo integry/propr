@@ -7,6 +7,7 @@ import { ProviderLogo } from '../ui/ProviderLogo';
 import AttemptLineage from './AttemptLineage';
 import AssignmentControl from './AssignmentControl';
 import type { TaskAssignment } from './useTaskAssignment';
+import { METRIC_KEY_LABELS, humanizeMetricKey } from '../../utils/usageMetricLabels';
 
 // GitHub icon component
 const GitHubIcon: React.FC<{ size?: number; className?: string }> = ({ size = 14, className = '' }) => (
@@ -188,20 +189,6 @@ const TokenUsageChip: React.FC<{ tokenUsage: TokenUsage }> = ({ tokenUsage }) =>
     </span>
   );
 };
-
-// Map of raw Agent Tank metric keys to human-readable labels
-const METRIC_KEY_LABELS: Record<string, string> = {
-  session: 'Session', weeklyAll: 'Weekly', weeklySonnet: 'Sonnet',
-  weeklyFable: 'Fable',
-  weeklyOpus: 'Opus', weeklyHaiku: 'Haiku', fiveHour: 'Five Hour',
-  weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly',
-};
-
-function humanizeMetricKey(key: string): string {
-  if (METRIC_KEY_LABELS[key]) return METRIC_KEY_LABELS[key];
-  if (/^[A-Z]/.test(key)) return key;
-  return key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
-}
 
 // Match a metric record by raw or humanized key
 function findMetricRecord(records: UsageMetricRecord[], rawKey: string): UsageMetricRecord | undefined {

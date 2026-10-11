@@ -286,7 +286,9 @@ jobs:
           test ! -e packages/shared/dist
           test ! -e packages/client/dist
           test ! -e apps/desktop/out
-          node apps/desktop/scripts/retry-transient-download.mjs -- npm run desktop:package
+          # Release downloads can fail across several consecutive connections.
+          # Keep retries bounded and restricted to transient download failures.
+          node apps/desktop/scripts/retry-transient-download.mjs --attempts 5 --backoff-ms 30000 -- npm run desktop:package
 
       - name: Verify packaged Linux and macOS native icon assets and metadata
         if: matrix.platform == 'linux' || matrix.platform == 'darwin'

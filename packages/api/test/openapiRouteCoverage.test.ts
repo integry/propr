@@ -87,6 +87,20 @@ describe('OpenAPI spec generated from the route registry', () => {
     assert.deepEqual(specOperations.get('POST /api/mcp')!.security, [{ mcpOAuth: ['read'] }]);
   });
 
+  it('requires the Fleet control secret header on the hosted Fleet routes', async () => {
+    const scheme = document.components.securitySchemes.fleetSecret as { type: string; in: string; name: string };
+    assert.deepEqual({ type: scheme.type, in: scheme.in, name: scheme.name }, { type: 'apiKey', in: 'header', name: 'x-propr-fleet-secret' });
+    const handler = await readFile(path.join(apiRoot, 'routes/hostedFleetRoutes.ts'), 'utf8');
+    assert.match(handler, new RegExp(`req\\.get\\('${scheme.name}'\\)`), 'the handler reads the documented header');
+    const hosted = [...specOperations.entries()].filter(([key]) => key.includes(' /api/internal/hosted/'));
+    assert.deepEqual(hosted.map(([key]) => key).sort(),
+      ['GET /api/internal/hosted/bootstrap', 'GET /api/internal/hosted/queue', 'GET /api/internal/hosted/status']);
+    for (const [key, operation] of hosted) {
+      assert.deepEqual(operation.security, [{ fleetSecret: [] }], key);
+      assert.equal(operation['x-propr-auth'], 'fleetSecret', key);
+    }
+  });
+
   it('documents the MCP OAuth endpoints the mcpOAuth scheme points at', () => {
     const scheme = document.components.securitySchemes.mcpOAuth as { flows: { authorizationCode: { authorizationUrl: string; tokenUrl: string } } };
     const { authorizationUrl, tokenUrl } = scheme.flows.authorizationCode;

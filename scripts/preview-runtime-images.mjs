@@ -330,13 +330,13 @@ const collectNativeArtifacts = (input, sourceRevision) => {
 
 const repositoryReference = reference => reference.replace(/@sha256:[0-9a-f]{64}$/, '').replace(/:[^/:]+$/, '');
 
-const manifestJson = reference => JSON.parse(runRegctl(['manifest', 'get', reference, '--format', 'raw-body']));
+const manifestJson = (reference, registry = runRegctl) => JSON.parse(registry(['manifest', 'get', reference, '--format', 'raw-body']));
 
-const configForManifest = (reference, descriptorDigest) => {
+const configForManifest = (reference, descriptorDigest, registry = runRegctl) => {
   const repository = repositoryReference(reference);
-  const manifest = manifestJson(`${repository}@${descriptorDigest}`);
+  const manifest = manifestJson(`${repository}@${descriptorDigest}`, registry);
   if (!manifest || !DIGEST.test(manifest?.config?.digest || '')) throw new Error(`Image manifest ${descriptorDigest} has invalid config`);
-  const config = JSON.parse(runRegctl(['blob', 'get', repository, manifest.config.digest]));
+  const config = JSON.parse(registry(['blob', 'get', repository, manifest.config.digest]));
   return { manifest, config };
 };
 
@@ -364,20 +364,20 @@ export function validateRuntimeIndex(index, image, sourceRevision, expectedArchi
   return runnable;
 }
 
-const inspectRuntimeReference = (reference, image, sourceRevision, expectedArchitectures = ARCHITECTURES) => {
+export const inspectRuntimeReference = (reference, image, sourceRevision, expectedArchitectures = ARCHITECTURES, registry = runRegctl) => {
   requireKnownImage(image);
-  const top = manifestJson(reference);
+  const top = manifestJson(reference, registry);
   let descriptors;
   if (Array.isArray(top?.manifests)) {
     descriptors = validateRuntimeIndex(top, image, sourceRevision, expectedArchitectures);
   } else {
     if (expectedArchitectures.length !== 1) throw new Error(`${image} image is not a multi-architecture index`);
-    const digest = runRegctl(['image', 'digest', reference]);
+    const digest = registry(['image', 'digest', reference]);
     if (!DIGEST.test(digest)) throw new Error(`${image} image has an invalid manifest digest`);
     descriptors = [{ digest, platform: { os: 'linux', architecture: expectedArchitectures[0] } }];
   }
   for (const descriptor of descriptors) {
-    const { config } = configForManifest(reference, descriptor.digest);
+    const { config } = configForManifest(reference, descriptor.digest, registry);
     const architecture = descriptor.platform.architecture;
     if (config?.os !== 'linux' || config?.architecture !== architecture) {
       throw new Error(`${image} descriptor does not match its linux/${architecture} config`);
@@ -389,7 +389,7 @@ const inspectRuntimeReference = (reference, image, sourceRevision, expectedArchi
     }
     if (image === AGENT_IMAGE) validateAgentBundleLabels(labels);
   }
-  const digest = runRegctl(['image', 'digest', reference]);
+  const digest = registry(['image', 'digest', reference]);
   if (!DIGEST.test(digest)) throw new Error(`${image} image has an invalid top-level digest`);
   return { digest, reference: `propr/${image}:${sourceRevision}@${digest}` };
 };

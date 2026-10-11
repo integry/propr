@@ -1,10 +1,57 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { build } from 'esbuild';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+export function resolveSdkEvidence(testFile = fileURLToPath(new URL('../packages/api/test/mcpConnectIntegration.test.ts', import.meta.url))) {
+  // Use ESM resolution from the integration test's directory, including import-only
+  // exports. An eval module is rooted at cwd; no files or dependencies are copied.
+  const specifiers = ['@modelcontextprotocol/server', '@modelcontextprotocol/node',
+    '@modelcontextprotocol/client', '@modelcontextprotocol/sdk/client/index.js'];
+  const entries = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '--eval', `
+    const entries = JSON.parse(process.argv[1]).map(specifier => {
+      try { return { entry: import.meta.resolve(specifier) }; }
+      catch (error) { return { error: error.message }; }
+    });
+    console.log(JSON.stringify(entries));
+  `, JSON.stringify(specifiers)], { cwd: dirname(resolve(testFile)), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  const sdkVersions = {};
+  const sdkProvenance = {};
+  for (const [index, specifier] of specifiers.entries()) {
+    const packageName = specifier.split('/').slice(0, 2).join('/');
+    const name = packageName.split('/')[1];
+    try {
+      if (entries[index].error) throw new Error(entries[index].error);
+      const entryPoint = fileURLToPath(entries[index].entry);
+      // import.meta.resolve can return a URL even when the export target is absent.
+      if (!statSync(entryPoint).isFile()) throw new Error(`Not a file: ${entryPoint}`);
+      let directory = dirname(entryPoint);
+      for (;;) {
+        const packageJson = join(directory, 'package.json');
+        let metadata;
+        try { metadata = JSON.parse(readFileSync(packageJson, 'utf8')); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        // Skip dist/esm/package.json (which only declares type), and do not
+        // resolve package.json as an export: SDKs may hide or remap that subpath.
+        if (metadata?.name === packageName) {
+          if (typeof metadata.version !== 'string' || !metadata.version.trim()) throw new Error(`Missing version in ${packageJson}`);
+          sdkVersions[name] = metadata.version;
+          sdkProvenance[name] = { specifier, entryPoint, packageJson };
+          break;
+        }
+        const parent = dirname(directory);
+        if (parent === directory) throw new Error(`No matching package metadata for ${entryPoint}`);
+        directory = parent;
+      }
+    } catch (cause) {
+      throw new Error(`Cannot resolve SDK evidence for ${packageName} from ${testFile}: ${cause.message}`, { cause });
+    }
+  }
+  return { sdkVersions, sdkProvenance };
+}
 
 export function resolveRoutingRevision(repository, revision = '1fcf82fd1a843fbdf199d79b8f92843dc74a89e0') {
   if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error('MCP_ROUTING_REVISION must be a full lowercase 40-character commit SHA.');
@@ -28,8 +75,8 @@ async function main() {
   const hash = createHash('sha256');
   for (const dir of ['packages/api/mcp', 'packages/api/test/fixtures']) for (const file of readdirSync(dir).sort()) hash.update(file).update(readFileSync(join(dir, file)));
   for (const file of ['packages/api/test/mcpConnectIntegration.test.ts', 'packages/api/server.ts', 'scripts/mcp-connect-register.ts', 'scripts/test-mcp-connect.mjs', 'packages/api/requestRateLimits.ts', 'packages/api/routes/plannerAbortHandlers.ts', 'packages/api/routes/plannerActionHandlers.ts', 'packages/api/routes/plannerHelpers/executionStop.ts', 'packages/api/routes/plannerHelpers/utils.ts', 'packages/api/routes/plannerHelpers/refineBackground.ts', 'package.json', 'package-lock.json']) hash.update(file).update(readFileSync(file));
-  const sdkVersions = Object.fromEntries(['server', 'node', 'client', 'sdk'].map(name => [name, JSON.parse(readFileSync(`node_modules/@modelcontextprotocol/${name}/package.json`, 'utf8')).version]));
-  const report = { coreHead, sdkVersions, coreImplementationSha256: hash.digest('hex'), routingHead: commit, routingPackageLockSha256: createHash('sha256').update(readFileSync(join(fixture, 'package-lock.json'))).digest('hex'), fixture,
+  const { sdkVersions, sdkProvenance } = resolveSdkEvidence();
+  const report = { coreHead, sdkVersions, sdkProvenance, coreImplementationSha256: hash.digest('hex'), routingHead: commit, routingPackageLockSha256: createHash('sha256').update(readFileSync(join(fixture, 'package-lock.json'))).digest('hex'), fixture,
     isolation: 'Actual bundled Worker with its DurableObject base stub (unused by MCP), actual SQL on SQLite via D1 API adapter; external GitHub and DNS isolated. Core HTTP/auth/tools execute without fixture replacements.' };
   writeFileSync(join(fixture, 'commits.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));

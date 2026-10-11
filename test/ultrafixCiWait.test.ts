@@ -44,6 +44,7 @@ function makeDeps(start = Date.parse('2026-10-06T00:00:00Z')) {
         now: () => now,
         loadTimeoutMs: async () => TIMEOUT_MS,
         postComment,
+        updateComment: mock.fn(async () => false),
         stopLoop,
     };
     return { deps, postComment, stopLoop, advance: (ms: number) => { now += ms; } };

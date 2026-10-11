@@ -9,6 +9,12 @@ interface Window {
   proprDesktop?: import('../../apps/desktop/src/shared/contract').DesktopBridge;
   /** @internal Main-attested, packaged-Linux acceptance capability. */
   __PROPR_PACKAGED_ACCEPTANCE__?: Readonly<{
+    setupEvidence(): {
+      presentation: string;
+      fixture: string;
+      phase: import('../../apps/desktop/src/shared/contract').DesktopSetupSnapshot['phase'];
+      calls: string[];
+    };
     setZoomFactor(factor: 1 | 2): Promise<unknown>;
   }>;
 }

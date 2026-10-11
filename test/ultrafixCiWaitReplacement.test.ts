@@ -57,6 +57,7 @@ function makeDeps(commentId: number | null = 4242) {
         now: () => now,
         loadTimeoutMs: async () => TIMEOUT_MS,
         postComment: mock.fn(async () => commentId),
+        updateComment: mock.fn(async () => true),
         stopLoop,
     };
     return { deps, stopLoop, advance: (ms: number) => { now += ms; } };
@@ -93,6 +94,66 @@ describe('Ultrafix CI wait comment is replaced by its outcome', () => {
         await handleUltrafixCiDeferral(deferral(redis), deps);
         const record = await loadUltrafixCiWait(redis as never, OWNER, REPO, PR);
         assert.equal(record?.noticeCommentId, 4242);
+    });
+
+    for (const change of ['head', 'epoch'] as const) {
+        test(`a new ${change} retains one waiting comment for the next review`, async () => {
+            const redis = createMockRedis();
+            const { deps, advance } = makeDeps();
+            const post = mock.fn(deps.postComment);
+            const update = mock.fn(deps.updateComment);
+            deps.postComment = post;
+            deps.updateComment = update;
+            const input = deferral(redis);
+            await handleUltrafixCiDeferral(input, deps);
+            advance(TIMEOUT_MS / 2);
+            if (change === 'head') input.ci.headSha = 'new5678head';
+            else input.workEpoch++;
+            input.ci.status.blockingPending = ['Tests'];
+
+            await handleUltrafixCiDeferral(input, deps);
+            await handleUltrafixCiDeferral(input, deps);
+            assert.equal(post.mock.callCount(), 1, 'only the original waiting comment is posted');
+            assert.equal(update.mock.callCount(), 1, 'new deferral updates once; later polls stay quiet');
+            assert.equal(update.mock.calls[0].arguments[0].commentId, 4242);
+            assert.ok(update.mock.calls[0].arguments[0].body.includes(input.ci.headSha.slice(0, 7)));
+            assert.match(update.mock.calls[0].arguments[0].body, /`Tests`/);
+            const record = await loadUltrafixCiWait(redis as never, OWNER, REPO, PR);
+            assert.equal(record?.since, '2026-10-09T01:00:00.000Z', 'new deferral resets its timeout');
+            assert.equal(record?.noticeCommentId, 4242);
+
+            await settleUltrafixCiWait(redis as never, OWNER, REPO, PR);
+            const octokit = makeOctokit();
+            const comment = await postReviewStartingComment({
+                octokit, redis: redis as never, owner: OWNER, repo: REPO, pr: PR,
+                body: '🔍 **Starting AI Code Review** requested by @integry',
+                adoptWaitNotice: true, correlatedLogger: logger,
+            });
+            assert.equal(comment.data.id, 4242, 'review completion will update the original waiting comment');
+            assert.equal(octokit.request.mock.callCount(), 1);
+            assert.equal(octokit.request.mock.calls[0].arguments[0], 'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}');
+        });
+    }
+
+    test('a deleted waiting comment is superseded and the review adopts its replacement', async () => {
+        const redis = createMockRedis();
+        const { deps } = makeDeps();
+        await handleUltrafixCiDeferral(deferral(redis), deps);
+        deps.updateComment = mock.fn(async () => false);
+        const post = mock.fn(async () => 5252);
+        deps.postComment = post;
+        const input = deferral(redis);
+        input.ci.headSha = 'new5678head';
+        await handleUltrafixCiDeferral(input, deps);
+        assert.equal(post.mock.callCount(), 1);
+        assert.equal((await loadUltrafixCiWait(redis as never, OWNER, REPO, PR))?.noticeCommentId, 5252);
+
+        await settleUltrafixCiWait(redis as never, OWNER, REPO, PR);
+        const comment = await postReviewStartingComment({
+            octokit: makeOctokit(), redis: redis as never, owner: OWNER, repo: REPO, pr: PR,
+            body: 'starting', adoptWaitNotice: true, correlatedLogger: logger,
+        });
+        assert.equal(comment.data.id, 5252);
     });
 
     test('wait -> review complete: the next review edits the waiting comment instead of posting a new one', async () => {

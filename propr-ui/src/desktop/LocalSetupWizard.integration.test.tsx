@@ -16,7 +16,7 @@ describe('production local setup journey', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('keeps the production wizard and secure connection action in acceptance mode', async () => {
-    window.__PROPR_PACKAGED_ACCEPTANCE__ = { setZoomFactor: vi.fn() };
+    window.__PROPR_PACKAGED_ACCEPTANCE__ = { setZoomFactor: vi.fn(), setupEvidence: vi.fn() };
     const fixture = createPackagedAcceptanceSetup(true, 'setup-complete')!;
     const adapters = adaptersFor([], null, async () => ({ status: 'authentication-required', message: 'Approve desktop access in your browser.' }));
     adapters.localSetup = { supported: true, ...fixture.localSetup };

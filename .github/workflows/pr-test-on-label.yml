@@ -458,10 +458,13 @@ jobs:
   test:
     # Required status check. Keep this name stable: it aggregates the shards
     # and docs validation so branch protection keeps the same merge gate.
+    # Cancellation must not turn incomplete work into a failed check that queues
+    # a CI-fix followup. Still run after failures/skips on non-cancelled runs;
+    # cancelled attempts provide no successful full-suite evidence.
     name: Run Full Test Suite
     needs: [classify, shard, docs, native-electron]
     if: >-
-      ${{ always() &&
+      ${{ !cancelled() &&
           (github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -565,9 +568,8 @@ jobs:
           exit "$status"
 
   comment:
-    # The gate above still runs, and fails, when a newer push cancels this
-    # run. Only runs that were not cancelled post a report, so a superseded
-    # commit's cancelled shards are not reported as a test failure.
+    # Like the aggregate, report only non-cancelled runs so supersession or
+    # deliberate CI suspension cannot generate recursive failure followups.
     name: Report Full Test Failure
     needs: [classify, shard, docs, native-electron, test]
     if: >-

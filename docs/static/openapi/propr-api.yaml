@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 261
-    documented: 41
+    total: 267
+    documented: 47
     undocumented: 220
 servers:
   - url: "{origin}"
@@ -3451,6 +3451,230 @@ paths:
       x-propr-auth: member
       x-undocumented: true
       x-legacy-error: true
+  /api/instance/storage/v1/cleanup/execute:
+    post:
+      operationId: executeInstanceStorageCleanup
+      summary: Consume a principal-bound confirmation and revalidate before deleting any candidate.
+      description: |-
+        Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - System
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Storage
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstanceStorageExecuteRequest"
+      responses:
+        "200":
+          description: Versioned instance storage response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceStorageResult"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/storage/v1/cleanup/operations/{operationId}:
+    get:
+      operationId: getInstanceStorageCleanupResult
+      summary: Read the initiating principal’s durable cleanup result.
+      description: |-
+        Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - System
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: operationId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: instanceId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Versioned instance storage response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceStorageResult"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-query-type: InstanceStorageResultQuery
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/storage/v1/cleanup/preview:
+    post:
+      operationId: previewInstanceStorageCleanup
+      summary: Preview an explicit instance/category selection; terminal task history requires explicit taskIds.
+      description: |-
+        Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - System
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Storage
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstanceStoragePreviewRequest"
+      responses:
+        "200":
+          description: Versioned instance storage response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceStoragePreview"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/storage/v1/policy:
+    get:
+      operationId: getInstanceStoragePolicy
+      summary: Get opt-in repository cleanup policy (disabled, 24 idle hours by default).
+      description: |-
+        Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - System
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Versioned instance storage response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceStoragePolicy"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+    put:
+      operationId: updateInstanceStoragePolicy
+      summary: Persist the explicitly selected instance cleanup policy.
+      description: |-
+        Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - System
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: X-ProPR-Storage
+          in: header
+          required: true
+          description: Must equal 1; browser calls require an authorized CORS preflight.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstanceStoragePolicyRequest"
+      responses:
+        "200":
+          description: Versioned instance storage response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceStoragePolicy"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+  /api/instance/storage/v1/usage:
+    get:
+      operationId: getInstanceStorageUsage
+      summary: Get bounded asynchronous per-instance storage observations.
+      description: |-
+        Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - System
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Versioned instance storage response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceStorageUsage"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
   /api/internal/agent-runs/{runId}/mcp-grants:
     post:
       operationId: postApiInternalAgentRunsRunIdMcpGrants
@@ -3502,13 +3726,14 @@ paths:
       description: This route is registered but not documented yet.
       tags:
         - System
-      security: []
+      security:
+        - fleetSecret: []
       responses:
         "200":
           description: Success. The response body is not documented yet.
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
-      x-propr-auth: public
+      x-propr-auth: fleetSecret
       x-undocumented: true
       x-legacy-error: true
   /api/internal/hosted/queue:
@@ -3518,13 +3743,14 @@ paths:
       description: This route is registered but not documented yet.
       tags:
         - System
-      security: []
+      security:
+        - fleetSecret: []
       responses:
         "200":
           description: Success. The response body is not documented yet.
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
-      x-propr-auth: public
+      x-propr-auth: fleetSecret
       x-undocumented: true
       x-legacy-error: true
   /api/internal/hosted/status:
@@ -3534,13 +3760,14 @@ paths:
       description: This route is registered but not documented yet.
       tags:
         - System
-      security: []
+      security:
+        - fleetSecret: []
       responses:
         "200":
           description: Success. The response body is not documented yet.
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
-      x-propr-auth: public
+      x-propr-auth: fleetSecret
       x-undocumented: true
       x-legacy-error: true
   /api/llm-logs:
@@ -7390,6 +7617,319 @@ components:
         - status
       additionalProperties: false
       description: Liveness probe result.
+    InstanceStorageExecuteRequest:
+      type: object
+      properties:
+        instanceId:
+          type: string
+        confirmation:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+      required:
+        - instanceId
+        - confirmation
+      additionalProperties: false
+    InstanceStoragePolicy:
+      type: object
+      properties:
+        version:
+          type: number
+          const: 1
+        instanceId:
+          type: string
+        policy:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            idleHours:
+              type: integer
+              minimum: 1
+              maximum: 8760
+          required:
+            - enabled
+            - idleHours
+          additionalProperties: false
+      required:
+        - version
+        - instanceId
+        - policy
+      additionalProperties: false
+    InstanceStoragePolicyRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        idleHours:
+          type: integer
+          minimum: 1
+          maximum: 8760
+        instanceId:
+          type: string
+      required:
+        - enabled
+        - idleHours
+        - instanceId
+      additionalProperties: false
+    InstanceStoragePreview:
+      type: object
+      properties:
+        version:
+          type: number
+          const: 1
+        instanceId:
+          type: string
+        confirmation:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        expiresAt:
+          type: string
+          format: date-time
+        categories:
+          type: array
+          items:
+            type: string
+            enum:
+              - database_config
+              - repository_caches
+              - worktrees
+              - salvage
+              - logs_artifacts
+              - provider_credentials
+              - task_history
+        impact:
+          type: string
+        candidates:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              category:
+                type: string
+                enum:
+                  - database_config
+                  - repository_caches
+                  - worktrees
+                  - salvage
+                  - logs_artifacts
+                  - provider_credentials
+                  - task_history
+              estimatedBytes:
+                anyOf:
+                  - type: number
+                    minimum: 0
+                  - type: "null"
+              protectedReasons:
+                type: array
+                items:
+                  type: string
+                  enum:
+                    - busy
+                    - unknown_use
+                    - recent_use
+                    - unknown_ownership
+                    - unsafe_path
+                    - private_work
+                    - worktrees
+                    - local_history
+                    - salvage
+                    - remote_unavailable
+                    - unknown_git_state
+                    - changed
+                    - unsupported
+            required:
+              - id
+              - category
+              - estimatedBytes
+              - protectedReasons
+            additionalProperties: false
+      required:
+        - version
+        - instanceId
+        - confirmation
+        - expiresAt
+        - categories
+        - impact
+        - candidates
+      additionalProperties: false
+    InstanceStoragePreviewRequest:
+      type: object
+      properties:
+        instanceId:
+          type: string
+        categories:
+          minItems: 1
+          maxItems: 7
+          type: array
+          items:
+            type: string
+            enum:
+              - database_config
+              - repository_caches
+              - worktrees
+              - salvage
+              - logs_artifacts
+              - provider_credentials
+              - task_history
+        taskIds:
+          maxItems: 10
+          type: array
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,255}$
+      required:
+        - instanceId
+        - categories
+      additionalProperties: false
+    InstanceStorageResult:
+      type: object
+      properties:
+        version:
+          type: number
+          const: 1
+        instanceId:
+          type: string
+        operationId:
+          type: string
+          format: uuid
+          pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+        state:
+          type: string
+          enum:
+            - completed
+            - interrupted
+        deleted:
+          type: array
+          items:
+            type: string
+        retained:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              reasons:
+                type: array
+                items:
+                  type: string
+                  enum:
+                    - busy
+                    - unknown_use
+                    - recent_use
+                    - unknown_ownership
+                    - unsafe_path
+                    - private_work
+                    - worktrees
+                    - local_history
+                    - salvage
+                    - remote_unavailable
+                    - unknown_git_state
+                    - changed
+                    - unsupported
+            required:
+              - id
+              - reasons
+            additionalProperties: false
+      required:
+        - version
+        - instanceId
+        - operationId
+        - state
+        - deleted
+        - retained
+      additionalProperties: false
+    InstanceStorageUsage:
+      type: object
+      properties:
+        version:
+          type: number
+          const: 1
+        instanceId:
+          type: string
+        observedAt:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        state:
+          type: string
+          enum:
+            - complete
+            - partial
+            - unknown
+            - unsupported
+        scanning:
+          type: boolean
+        ownedBytes:
+          anyOf:
+            - type: number
+              minimum: 0
+            - type: "null"
+        categories:
+          type: array
+          items:
+            type: object
+            properties:
+              category:
+                type: string
+                enum:
+                  - database_config
+                  - repository_caches
+                  - worktrees
+                  - salvage
+                  - logs_artifacts
+                  - provider_credentials
+                  - task_history
+              bytes:
+                anyOf:
+                  - type: number
+                    minimum: 0
+                  - type: "null"
+              state:
+                type: string
+                enum:
+                  - complete
+                  - partial
+                  - unknown
+                  - unsupported
+            required:
+              - category
+              - bytes
+              - state
+            additionalProperties: false
+        filesystems:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              totalBytes:
+                type: number
+                minimum: 0
+              availableBytes:
+                type: number
+                minimum: 0
+            required:
+              - id
+              - totalBytes
+              - availableBytes
+            additionalProperties: false
+      required:
+        - version
+        - instanceId
+        - observedAt
+        - state
+        - scanning
+        - ownedBytes
+        - categories
+        - filesystems
+      additionalProperties: false
     JsonObject:
       type: object
       properties: {}
@@ -7908,3 +8448,8 @@ components:
       in: header
       name: X-Hub-Signature-256
       description: HMAC SHA-256 signature of the body with `GH_WEBHOOK_SECRET`.
+    fleetSecret:
+      type: apiKey
+      in: header
+      name: x-propr-fleet-secret
+      description: The hosted Fleet control secret, `PROPR_FLEET_CONTROL_SECRET`. The routes that accept it are registered only when that secret is configured.

@@ -17,6 +17,9 @@ const MAX_CAPTURED_BYTES = 256 * 1024;
 
 export const TRANSIENT_DOWNLOAD_PATTERNS = [
   /fetch failed/i,
+  // Forge prints the stack but omits the socket error cause when a fetch body
+  // is interrupted. Require Undici's fetch stack, not just "terminated".
+  /TypeError: terminated\r?\n\s*at Fetch\.onAborted \(node:internal\/deps\/undici\//,
   /socket hang up/i,
   /network (?:timeout|error)/i,
   /(?:failed|unable) to download/i,
@@ -54,7 +57,7 @@ const runOnce = ({ command, arguments: commandArguments, spawn, output, stdout, 
     child.once('error', reject);
     child.stdout?.on('data', chunk => { output.append(chunk); stdout.write(chunk); });
     child.stderr?.on('data', chunk => { output.append(chunk); stderr.write(chunk); });
-    child.once('close', (exitCode, signal) => resolve(signal ? 1 : exitCode ?? 1));
+    child.once('close', (exitCode, signal) => resolve({ exitCode: signal ? 1 : exitCode ?? 1, signal }));
   });
 
 export const runWithTransientDownloadRetries = async ({
@@ -77,10 +80,11 @@ export const runWithTransientDownloadRetries = async ({
 
   for (let attempt = 1; ; attempt += 1) {
     const output = createBoundedTail();
-    const exitCode = await runOnce({
+    const { exitCode, signal } = await runOnce({
       command, arguments: commandArguments, spawn, output, stdout, stderr,
     });
     if (exitCode === 0) return 0;
+    if (signal) return exitCode;
     if (attempt >= attempts) {
       log(`Command failed after ${attempt} attempt(s); giving up.`);
       return exitCode;

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, readFile, readdir, rm, rmdir, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
 import { describe, test } from 'node:test';
@@ -10,6 +12,8 @@ import {
   createSmokeChildEnvironment,
   MINIMUM_WINDOW_SIZE,
   removePrivateSmokeProfile,
+  runWithSmokeCleanup,
+  trackSmokeChildShutdown,
   validateWindowsSystemRoot,
 } from './packaged-smoke-support.mjs';
 import {
@@ -428,5 +432,159 @@ describe('packaged smoke child environment', () => {
     ]) {
       assert.throws(() => assertPackagedSpawnOptions(invalidOptions.join('\n')));
     }
+  });
+});
+
+
+describe('packaged smoke failure cleanup', () => {
+  test('preserves the exact primary error and reports all cleanup failures separately', async () => {
+    const primary = new Error('synthetic missing renderer marker');
+    const stack = primary.stack;
+    const cleanupError = Object.assign(new Error('synthetic late write'), { code: 'ENOTEMPTY' });
+    const reports = [];
+    const attempted = [];
+    await assert.rejects(runWithSmokeCleanup(async () => { throw primary; }, [
+      { name: 'first profile', cleanup: async () => { attempted.push(1); throw cleanupError; } },
+      { name: 'second profile', cleanup: async () => { attempted.push(2); throw new Error('second failure'); } },
+      { name: 'third profile', cleanup: async () => { attempted.push(3); } },
+    ], error => reports.push(error)), error => error === primary && error.stack === stack);
+    assert.deepEqual(attempted, [1, 2, 3]);
+    assert.equal(reports.length, 2);
+    assert.equal(reports[0].cause, cleanupError);
+    assert.match(reports[0].message, /first profile/);
+  });
+
+  test('cleanup alone fails the run, while successful cleanup preserves its result', async () => {
+    const cause = new Error('synthetic cleanup failure');
+    await assert.rejects(runWithSmokeCleanup(async () => 'passed', [
+      { name: 'profile', cleanup: async () => { throw cause; } },
+    ], () => {}), error => error instanceof AggregateError && error.errors[0].cause === cause);
+    assert.equal(await runWithSmokeCleanup(async () => 'passed', []), 'passed');
+  });
+
+  test('retries a verified ENOTEMPTY from a late synthetic write without touching a sibling', async () => {
+    const outer = await createPrivateSmokeProfile();
+    const profile = await createPrivateSmokeProfile(outer.root);
+    const sibling = join(outer.root, 'retained');
+    await writeFile(sibling, 'synthetic sibling');
+    const waits = [];
+    let attempts = 0;
+    try {
+      await removePrivateSmokeProfile(profile, {
+        wait: async ms => { waits.push(ms); },
+        removeDirectory: async (root, options) => {
+          assert.equal(root, profile.root);
+          attempts += 1;
+          if (attempts === 1) {
+            // Force the filesystem interleaving: traversal observes empty, then
+            // a writer creates a leaf before the final rmdir syscall.
+            for (const entry of await readdir(root)) await rm(join(root, entry), options);
+            assert.deepEqual(await readdir(root), []);
+            const writer = spawn(process.execPath, ['-e',
+              "require('node:fs').writeFileSync(process.argv[1], 'synthetic state')",
+              join(root, 'Network Persistent State.tmp'),
+            ], { stdio: 'ignore', shell: false });
+            const [code, signal] = await once(writer, 'close');
+            assert.equal(code, 0);
+            assert.equal(signal, null);
+            try { await rmdir(root); } catch (error) {
+              assert.equal(error.code, 'ENOTEMPTY');
+              throw error;
+            }
+            assert.fail('rmdir unexpectedly accepted a nonempty directory');
+          }
+          await rm(root, options);
+        },
+      });
+      assert.equal(attempts, 2);
+      assert.deepEqual(waits, [100]);
+      await assert.rejects(lstat(profile.root), { code: 'ENOENT' });
+      assert.equal(await readFile(sibling, 'utf8'), 'synthetic sibling');
+    } finally {
+      await removePrivateSmokeProfile(outer);
+    }
+  });
+
+  test('bounds persistent ENOTEMPTY and does not retry unrelated failures', async () => {
+    for (const code of ['ENOTEMPTY', 'EACCES']) {
+      const outer = await createPrivateSmokeProfile();
+      const profile = await createPrivateSmokeProfile(outer.root);
+      const failure = Object.assign(new Error('synthetic failure'), { code });
+      let attempts = 0;
+      const waits = [];
+      try {
+        await assert.rejects(removePrivateSmokeProfile(profile, {
+          removeDirectory: async () => { attempts += 1; throw failure; },
+          wait: async ms => { waits.push(ms); },
+        }), error => error === failure);
+        assert.equal(attempts, code === 'ENOTEMPTY' ? 4 : 1);
+        assert.deepEqual(waits, code === 'ENOTEMPTY' ? [100, 200, 300] : []);
+        assert.ok((await lstat(profile.root)).isDirectory());
+        await removePrivateSmokeProfile(profile);
+        await assert.rejects(lstat(profile.root), { code: 'ENOENT' });
+        await assert.rejects(removePrivateSmokeProfile(profile), /unknown profile/);
+      } finally {
+        await removePrivateSmokeProfile(outer);
+      }
+    }
+  });
+
+  test('excludes concurrent cleanup while retaining a failed removal for later retry', async () => {
+    const profile = await createPrivateSmokeProfile();
+    let rejectRemoval;
+    const pendingRemoval = new Promise((_, reject) => { rejectRemoval = reject; });
+    const failure = Object.assign(new Error('synthetic failure'), { code: 'EACCES' });
+    const cleanup = removePrivateSmokeProfile(profile, { removeDirectory: () => pendingRemoval });
+    const rejected = assert.rejects(cleanup, error => error === failure);
+    let duplicateAttempted = false;
+    try {
+      await assert.rejects(removePrivateSmokeProfile(profile, {
+        removeDirectory: async () => { duplicateAttempted = true; },
+      }), /already in progress/);
+      assert.equal(duplicateAttempted, false);
+    } finally {
+      rejectRemoval(failure);
+      await rejected;
+      await removePrivateSmokeProfile(profile);
+    }
+    await assert.rejects(lstat(profile.root), { code: 'ENOENT' });
+    await assert.rejects(removePrivateSmokeProfile(profile), /unknown profile/);
+  });
+
+  test('rejects forged profiles before any deletion or retry', async () => {
+    let touched = false;
+    await assert.rejects(removePrivateSmokeProfile({ root: tmpdir() }, {
+      removeDirectory: async () => { touched = true; },
+      wait: async () => { touched = true; },
+    }), /unknown profile/);
+    assert.equal(touched, false);
+  });
+
+  test('waits for child close before profile cleanup and retains profiles on shutdown timeout', async () => {
+    const child = new EventEmitter();
+    const events = [];
+    child.kill = signal => { events.push(signal); return true; };
+    const shutdown = trackSmokeChildShutdown(child, 100);
+    const pending = shutdown().then(() => events.push('remove profile'));
+    assert.deepEqual(events, ['SIGKILL']);
+    child.emit('close', null, 'SIGKILL');
+    await pending;
+    assert.deepEqual(events, ['SIGKILL', 'remove profile']);
+    await shutdown();
+    assert.equal(events.length, 2);
+
+    const stuck = new EventEmitter();
+    stuck.kill = () => false;
+    const stop = trackSmokeChildShutdown(stuck, 5);
+    let removed = false;
+    await assert.rejects(runWithSmokeCleanup(async () => {}, [{
+      name: 'stuck child profile',
+      cleanup: async () => { await stop(); removed = true; },
+    }], () => {}), error => {
+      assert.match(error.errors[0].cause.message, /retaining its private profile/);
+      return true;
+    });
+    assert.equal(removed, false);
+    stuck.emit('close');
   });
 });

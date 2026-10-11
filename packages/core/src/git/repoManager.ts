@@ -1,3 +1,5 @@
+import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
+import { registerRepositoryCache } from '../storage/registry.js';
 import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
@@ -66,11 +68,24 @@ export interface EnsureRepoClonedOptions {
 }
 
 export async function ensureRepoCloned(options: EnsureRepoClonedOptions): Promise<string> {
-    return ensureRepoClonedInternal(options);
+    return repositoryStorageLifecycle.use(async () => {
+        const candidate = getRepoPath(options.owner, options.repoName);
+        const wasPresent = await fs.lstat(candidate).then(() => true, error => {
+            if (error.code === 'ENOENT') return false;
+            throw error;
+        });
+        const directory = await ensureRepoClonedInternal(options);
+        // Legacy/user-supplied directories cannot acquire ownership merely by being used.
+        if (!wasPresent) {
+            try { await registerRepositoryCache(directory, options.owner, options.repoName); }
+            catch { logger.warn('Repository cache ownership could not be registered; automatic cleanup will retain it'); }
+        }
+        return directory;
+    });
 }
 
 /**
- * Configure git gc globally to not prune worktree metadata younger than 24 hours.
+ * Disable global age-only worktree metadata pruning.
  * This prevents race conditions where concurrent operations might cause
  * gc to prune metadata for actively running tasks.
  * Uses --global so it applies to all repos including existing ones.
@@ -79,9 +94,9 @@ let gcWorktreePruneConfigured = false;
 async function configureGcWorktreePrune(git: SimpleGit): Promise<void> {
     if (gcWorktreePruneConfigured) return;
     try {
-        await git.raw(['config', '--global', 'gc.worktreePruneExpire', '24.hours.ago']);
+        await git.raw(['config', '--global', 'gc.worktreePruneExpire', 'never']);
         gcWorktreePruneConfigured = true;
-        logger.info('Set global gc.worktreePruneExpire to 24 hours');
+        logger.info('Disabled automatic worktree metadata pruning');
     } catch (configError) {
         logger.warn({ error: (configError as Error).message }, 'Failed to set gc.worktreePruneExpire');
     }
@@ -110,7 +125,7 @@ async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoPar
         await setupAuthenticatedRemote(git, repoUrl, authToken, lockRetry);
         await withGitLockRetry('fetching origin', () => git.fetch(['origin', '--prune']), lockRetry);
     } catch (gitError) {
-        const errorMessage = (gitError as Error).message;
+        const errorMessage = redactAuthenticatedGitUrl((gitError as Error).message);
         // Another worker holding a lock in this shared clone says nothing about
         // its health; removing or re-cloning would destroy that worker's state.
         if (isGitLockContentionError(gitError)) {
@@ -122,10 +137,8 @@ async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoPar
             logger.error({ repo: `${owner}/${repoName}`, path: localRepoPath, error: errorMessage }, 'Git repository has issues but has active worktrees - cannot remove and re-clone.');
             throw new Error(`Repository ${owner}/${repoName} is corrupted but has active worktrees: ${errorMessage}`);
         }
-        logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath, error: errorMessage }, 'Git repository is corrupted or invalid. Removing and re-cloning...');
-        await fs.remove(localRepoPath);
-        await ensureRepoClonedInternal(opts);
-        return;
+        // Authentication/network failures and corrupt state never authorize deletion.
+        throw new Error(`Repository ${owner}/${repoName} could not be refreshed; retained for recovery: ${redactAuthenticatedGitUrl(errorMessage)}`);
     }
 
     const git: SimpleGit = createHooklessGit(localRepoPath);
@@ -151,8 +164,7 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
     logger.info({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Cloning repository...');
 
     if (await fs.pathExists(localRepoPath)) {
-        logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Directory exists without .git folder - removing before clone');
-        await fs.remove(localRepoPath);
+        throw new Error('Existing repository directory has uncertain ownership; retained for recovery');
     }
     await fs.ensureDir(localRepoPath);
 
@@ -293,6 +305,10 @@ async function fetchReusableBranch(git: SimpleGit, branch: string): Promise<stri
 }
 
 export async function createWorktreeForIssue(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions = {}): Promise<WorktreeResult> {
+    return repositoryStorageLifecycle.use(() => createWorktreeForIssueInternal(localRepoPath, issueInfo, options));
+}
+
+async function createWorktreeForIssueInternal(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions): Promise<WorktreeResult> {
     const { issueId, issueTitle, owner, repoName } = issueInfo;
     const { baseBranch = null, octokit = null, modelName = null, startRevision = null, reuseBranch = null } = options;
     assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, owner, repoName);
@@ -335,14 +351,12 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
 
         logger.info({ localRepoPath, worktreePath, branchName, baseBranch: resolvedBaseBranch, issueId }, 'Creating Git worktree...');
 
-        // NOTE: Removed `git worktree prune` here - it was causing race conditions
-        // when multiple tasks run concurrently on the same repo. The prune could
-        // delete worktree metadata for actively running tasks. Prune is still
-        // called during cleanup in worktreeOperations.ts after task completion.
+        // Worktree registrations are retained: they can protect detached history,
+        // including checkouts whose directories are temporarily unavailable.
 
         const reusedStartPoint = reuseBranch ? await fetchReusableBranch(git, reuseBranch) : null;
         if (reusedStartPoint) branchName = reuseBranch!;
-        await cleanupExistingBranch(git, branchName);
+        if (!reusedStartPoint) await cleanupExistingBranch(git, branchName);
         // Use explicit refspec to ensure remote tracking ref is updated
         // Simple `git fetch origin <branch>` may only update FETCH_HEAD without
         // updating refs/remotes/origin/<branch> in some git configurations
@@ -367,7 +381,7 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
             git,
             worktreePath,
             branchName,
-            { startPoint },
+            { startPoint, resetBranch: Boolean(reusedStartPoint) },
         );
         await setupWorktreePermissions(worktreePath, branchName, issueId);
         await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId });

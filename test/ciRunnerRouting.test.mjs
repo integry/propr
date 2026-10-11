@@ -109,7 +109,7 @@ case "$command" in
         sed -i 's/propr.ci.redis.job=.*/propr.ci.redis.job=foreign/' "$state/$name"
       fi
       echo "\${FAKE_RUN_ERROR:-error while calling RootlessKit PortManager.AddPort(): listen tcp4 127.0.0.1:32768: bind: address already in use}" >&2
-      exit 125
+      exit "\${FAKE_RUN_STATUS:-125}"
     fi
     ;;
   inspect)
@@ -163,6 +163,11 @@ case "$command" in
 esac
 `);
     chmodSync(join(bin, 'docker'), 0o755);
+    writeFileSync(join(bin, 'sleep'), `#!/usr/bin/env bash
+echo "$1" >> ${JSON.stringify(join(state, '.sleeps'))}
+exit "\${FAKE_SLEEP_STATUS:-0}"
+`);
+    chmodSync(join(bin, 'sleep'), 0o755);
     const containers = () => readdirSync(state).filter(name => !name.startsWith('.')).sort();
     const removals = () => (existsSync(join(state, '.log')) ? readFileSync(join(state, '.log'), 'utf8') : '')
         .split('\n').filter(line => line.startsWith('rm ')).map(line => line.slice(3));
@@ -199,6 +204,62 @@ function startRedis(docker, env) {
 }
 
 describe('scripts/ci-redis.sh shared-host isolation', () => {
+    test('retries registry gateway failures with backoff and the same pinned image and port', () => {
+        for (const code of [502, 503, 504]) {
+            const docker = createFakeDocker();
+            const file = join(docker.state, '../redis.env');
+            const env = {
+                CI_REDIS_ENV_FILE: file, FAKE_RUN_FAILURES: '2',
+                FAKE_RUN_ERROR: `docker: received unexpected HTTP status: ${code} Bad Gateway`,
+            };
+            const name = startRedis(docker, env);
+            assert.deepEqual(docker.publishedPorts(name), Array(3).fill('127.0.0.1::6379'));
+            assert.equal(readFileSync(join(docker.state, '.sleeps'), 'utf8'), '5\n10\n');
+            assert.match(docker.runArguments(name).at(-1), /^redis:7-alpine@sha256:[a-f0-9]{64}$/);
+            assert.match(readFileSync(file, 'utf8'), /^REDIS_PORT=\d+$/m);
+            assert.deepEqual(docker.containers(), [name]);
+        }
+    });
+
+    test('exhausted registry retries fail without exporting Redis connection settings', () => {
+        const docker = createFakeDocker();
+        const file = join(docker.state, '../redis.env');
+        const env = {
+            CI_REDIS_ENV_FILE: file, FAKE_RUN_FAILURES: '99',
+            FAKE_RUN_ERROR: 'docker: received unexpected HTTP status: 502 Bad Gateway',
+        };
+        const result = runRedis(docker, 'start', env);
+        const name = redisName(docker, env);
+        assert.equal(result.status, 125, result.stderr);
+        assert.match(result.stderr, /Redis image download failed after 5 startup attempts/);
+        assert.equal(docker.publishedPorts(name).length, 5);
+        assert.equal(readFileSync(join(docker.state, '.sleeps'), 'utf8'), '5\n10\n15\n20\n');
+        assert.deepEqual(docker.containers(), []);
+        assert.equal(existsSync(file), false);
+        assert.equal(existsSync(join(docker.state, '../redis-state', `${name}.name`)), false);
+    });
+
+    test('does not retry permanent registry errors or interrupted startup and backoff', () => {
+        for (const extra of [
+            { FAKE_RUN_ERROR: 'docker: received unexpected HTTP status: 401 Unauthorized' },
+            { FAKE_RUN_ERROR: 'manifest unknown' },
+            { FAKE_RUN_STATUS: '143' },
+            { FAKE_RUN_STATUS: '130' },
+            { FAKE_SLEEP_STATUS: '143' },
+        ]) {
+            const docker = createFakeDocker();
+            const env = {
+                FAKE_RUN_FAILURES: '99',
+                FAKE_RUN_ERROR: 'docker: received unexpected HTTP status: 502 Bad Gateway',
+                ...extra,
+            };
+            const result = runRedis(docker, 'start', env);
+            assert.equal(result.status, Number(extra.FAKE_RUN_STATUS ?? extra.FAKE_SLEEP_STATUS ?? 125), result.stderr);
+            assert.equal(docker.publishedPorts(redisName(docker, env)).length, 1);
+            assert.deepEqual(docker.containers(), []);
+        }
+    });
+
     test('recovers a RootlessKit host port collision and exports the successful mapping', () => {
         const docker = createFakeDocker();
         const other = startRedis(docker, { CI_REDIS_INSTANCE: 'shard-1' });
@@ -698,8 +759,7 @@ describe('PR check routing', () => {
 
     test('reports cancelled shards as cancelled and posts no report for a superseded run', () => {
         const gate = jobBlock(fullSuite, 'test');
-        assert.match(gate, /\$\{\{ always\(\) &&\n/, 'the gate still fails a cancelled run closed');
-        assert.doesNotMatch(gate, /cancelled\(\)/);
+        assert.match(gate, /\$\{\{ !cancelled\(\) &&\n/, 'cancelled runs must not emit synthetic aggregate failures');
         const comment = jobBlock(fullSuite, 'comment');
         assert.match(comment, /\$\{\{ always\(\) && !cancelled\(\) && github\.event_name == 'pull_request' &&\n/);
 

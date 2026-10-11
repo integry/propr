@@ -1,3 +1,4 @@
+import { repositoryStorageLifecycle, protectStorageQueue } from '../storage/lifecycle.js';
 // Task queue module for processing GitHub issues and PR comments
 import { Queue, Worker, Job, QueueOptions, WorkerOptions } from 'bullmq';
 import { Redis, RedisOptions } from 'ioredis';
@@ -106,7 +107,7 @@ async function ensureInitialized(): Promise<void> {
         },
     };
 
-    _issueQueue = new Queue<IssueJobData | CommentJobData | GoalJobData>(GITHUB_ISSUE_QUEUE_NAME, issueQueueOptions);
+    _issueQueue = protectStorageQueue(new Queue<IssueJobData | CommentJobData | GoalJobData>(GITHUB_ISSUE_QUEUE_NAME, issueQueueOptions));
     _issueQueue.on('error', (err: Error) => {
         logger.error({ queue: GITHUB_ISSUE_QUEUE_NAME, err }, 'Queue error');
     });
@@ -129,7 +130,7 @@ async function ensureInitialized(): Promise<void> {
         },
     };
 
-    _indexingQueue = new Queue<IndexingJobData>(INDEXING_QUEUE_NAME, indexingQueueOptions);
+    _indexingQueue = protectStorageQueue(new Queue<IndexingJobData>(INDEXING_QUEUE_NAME, indexingQueueOptions));
     _indexingQueue.on('error', (err: Error) => {
         logger.error({ queue: INDEXING_QUEUE_NAME, err }, 'Indexing Queue error');
     });
@@ -205,7 +206,7 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
         autorun: options.autorun ?? true,
     };
 
-    const worker = new Worker<T, R>(queueName, processorFunction, workerOptions);
+    const worker = new Worker<T, R>(queueName, job => repositoryStorageLifecycle.use(() => processorFunction(job)), workerOptions);
 
     worker.on('completed', async (job: Job<T>, result: R) => {
         const duration = Date.now() - job.timestamp;

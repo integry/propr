@@ -21,9 +21,9 @@ export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   { method: 'post', path: '/api/internal/agent-runs/:runId/mcp-grants/revoke', auth: 'public', source: 'server.ts' },
   // Hosted Fleet control authenticates with the X-Propr-Fleet-Secret header
   // (PROPR_FLEET_CONTROL_SECRET); registered only when that secret is set.
-  { method: 'get', path: '/api/internal/hosted/bootstrap', auth: 'public', source: 'routes/hostedFleetRoutes.ts' },
-  { method: 'get', path: '/api/internal/hosted/status', auth: 'public', source: 'routes/hostedFleetRoutes.ts' },
-  { method: 'get', path: '/api/internal/hosted/queue', auth: 'public', source: 'routes/hostedFleetRoutes.ts' },
+  { method: 'get', path: '/api/internal/hosted/bootstrap', auth: 'fleetSecret', source: 'routes/hostedFleetRoutes.ts' },
+  { method: 'get', path: '/api/internal/hosted/status', auth: 'fleetSecret', source: 'routes/hostedFleetRoutes.ts' },
+  { method: 'get', path: '/api/internal/hosted/queue', auth: 'fleetSecret', source: 'routes/hostedFleetRoutes.ts' },
 
   { method: 'get', path: '/api/auth/github', auth: 'public', source: 'auth.ts' },
   { method: 'get', path: '/api/auth/github/callback', auth: 'public', source: 'auth.ts' },

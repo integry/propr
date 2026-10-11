@@ -73,8 +73,17 @@ const readEvidence = stdout => {
   }
 };
 
+// The budget has to end the whole launch, not just the process we spawned.
+// Under `xvfb-run` that process is a shell wrapper: killing it alone leaves
+// Electron and Xvfb running with our stdout pipe still open, so `close` waits
+// for Electron to finish on its own — a starved fixture then overran the
+// frame-semantics test's 50s timeout before reporting anything. On POSIX the
+// launch gets its own process group and the budget kills the group.
+const killsProcessGroup = process.platform !== 'win32';
+
 const spawnFixture = ({ args, command, timeout }) => new Promise(resolveRun => {
   const child = spawn(command, args, {
+    detached: killsProcessGroup,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -88,7 +97,12 @@ const spawnFixture = ({ args, command, timeout }) => new Promise(resolveRun => {
   child.stderr.on('data', value => { stderr += value; });
   const timer = setTimeout(() => {
     timedOut = true;
-    child.kill('SIGKILL');
+    try {
+      if (killsProcessGroup) process.kill(-child.pid, 'SIGKILL');
+      else child.kill('SIGKILL');
+    } catch {
+      child.kill('SIGKILL');
+    }
   }, timeout);
   child.once('error', error => {
     clearTimeout(timer);

@@ -202,7 +202,7 @@ test('the rescue ref sweep sends no URL credentials and runs no credential helpe
     }
 });
 
-test('expired rescue bundles are deleted and empty directories removed', async () => {
+test('expired rescue bundles remain recovery data', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-bundles-'));
     try {
         const repoDir = path.join(directory, 'integry', 'propr');
@@ -216,45 +216,26 @@ test('expired rescue bundles are deleted and empty directories removed', async (
         await utimes(oldBundle, fifteenDaysAgo, fifteenDaysAgo);
 
         const result = await pruneRescueBundles({ directory, olderThanDays: 14 });
-        assert.deepEqual(result.deleted, [oldBundle]);
-        assert.equal(result.retained, 1);
-        assert.ok(!existsSync(repoDir));
+        assert.deepEqual(result.deleted, []);
+        assert.equal(result.retained, 2);
+        assert.ok(existsSync(oldBundle));
         assert.ok(existsSync(newBundle));
     } finally {
         await rm(directory, { recursive: true, force: true });
     }
 });
 
-test('a bundle written after the sweep emptied its directory survives the directory cleanup', async () => {
+test('bundle inventory never invokes directory removal', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-bundles-'));
     const originalRemove = fs.remove;
     const originalRmdir = fs.rmdir;
     try {
-        const repoDir = path.join(directory, 'integry', 'propr');
-        await mkdir(repoDir, { recursive: true });
-        const oldBundle = path.join(repoDir, 'old.bundle');
-        const freshBundle = path.join(repoDir, 'fresh.bundle');
-        await writeFile(oldBundle, 'old');
-        const fifteenDaysAgo = new Date(Date.now() - 15 * DAY);
-        await utimes(oldBundle, fifteenDaysAgo, fifteenDaysAgo);
-
-        // A worker salvages into the directory after the sweep deleted its last expired
-        // bundle, just before the sweep removes the directory.
-        const salvageBeforeDirectoryRemoval = async (target: unknown) => {
-            if (target === repoDir && !existsSync(freshBundle)) await writeFile(freshBundle, 'fresh');
-        };
-        (fs as { remove: unknown }).remove = async (target: string) => {
-            await salvageBeforeDirectoryRemoval(target);
-            return originalRemove(target);
-        };
-        (fs as { rmdir: unknown }).rmdir = async (target: string) => {
-            await salvageBeforeDirectoryRemoval(target);
-            return originalRmdir(target);
-        };
-
-        const result = await pruneRescueBundles({ directory, olderThanDays: 14 });
-        assert.deepEqual(result.deleted, [oldBundle]);
-        assert.ok(existsSync(freshBundle));
+        await writeFile(path.join(directory, 'old.bundle'), 'unique recovery sentinel');
+        (fs as { remove: unknown }).remove = async () => { throw new Error('must not delete salvage'); };
+        (fs as { rmdir: unknown }).rmdir = async () => { throw new Error('must not remove directories'); };
+        const result = await pruneRescueBundles({ directory, olderThanDays: 0 });
+        assert.deepEqual(result.deleted, []);
+        assert.equal(result.retained, 1);
     } finally {
         (fs as { remove: unknown }).remove = originalRemove;
         (fs as { rmdir: unknown }).rmdir = originalRmdir;
@@ -262,7 +243,7 @@ test('a bundle written after the sweep emptied its directory survives the direct
     }
 });
 
-test('directories that disappear during the sweep are skipped', async () => {
+test('empty salvage directories are left intact', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-bundles-'));
     const originalRmdir = fs.rmdir;
     try {
@@ -274,7 +255,7 @@ test('directories that disappear during the sweep are skipped', async () => {
         };
         const result = await pruneRescueBundles({ directory, olderThanDays: 14 });
         assert.deepEqual(result.deleted, []);
-        assert.ok(!existsSync(path.join(directory, 'integry')));
+        assert.ok(existsSync(path.join(directory, 'integry')));
     } finally {
         (fs as { rmdir: unknown }).rmdir = originalRmdir;
         await rm(directory, { recursive: true, force: true });

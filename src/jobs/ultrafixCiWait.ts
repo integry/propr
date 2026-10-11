@@ -78,6 +78,7 @@ export interface UltrafixCiWaitDeps {
     loadTimeoutMs: () => Promise<number>;
     /** Posts the deferral comment; resolves to its id when known. */
     postComment: (options: { owner: string; repo: string; pullRequestNumber: number; body: string; correlatedLogger: Logger }) => Promise<number | null | void>;
+    updateComment: typeof updatePrComment;
     stopLoop: (input: UltrafixCiTimeoutStopInput) => Promise<boolean>;
 }
 
@@ -216,6 +217,7 @@ const defaultDeps: UltrafixCiWaitDeps = {
     now: () => Date.now(),
     loadTimeoutMs: loadTimeoutMsSafely,
     postComment: postPrComment,
+    updateComment: updatePrComment,
     stopLoop: stopUltrafixLoopForCiTimeout,
 };
 
@@ -225,10 +227,25 @@ function isSameLoopWait(recordedEpoch: number, workEpoch: number, carryOverFromE
     return carryOverFromEpoch !== undefined && recordedEpoch >= carryOverFromEpoch && recordedEpoch < workEpoch;
 }
 
+async function postOrUpdateCiWaitComment(
+    deps: UltrafixCiWaitDeps,
+    existing: UltrafixCiWaitRecord | null,
+    comment: Parameters<UltrafixCiWaitDeps['postComment']>[0],
+): Promise<number | null | void> {
+    // A new head/epoch resets the timeout, but must not orphan the old
+    // waiting comment: the next review still needs to replace it.
+    if (existing?.noticeCommentId !== undefined
+        && await deps.updateComment({ ...comment, commentId: existing.noticeCommentId })) {
+        return existing.noticeCommentId;
+    }
+    return deps.postComment(comment);
+}
+
 /**
  * Record that blocking CI deferred the next Ultrafix review. The first
- * deferral for a head posts one PR comment naming the blocking checks; later
- * polls of the same deferral stay quiet. Once the wait exceeds the timeout,
+ * deferral posts one PR comment naming the blocking checks; a new head or
+ * epoch rewrites that pending notice, and polls of the same deferral stay quiet.
+ * Once the wait exceeds the timeout,
  * the loop stops with "CI did not settle".
  */
 export async function handleUltrafixCiDeferral(
@@ -274,7 +291,7 @@ export async function handleUltrafixCiDeferral(
     }
 
     if (!record.noticePostedAt) {
-        const commentId = await deps.postComment({
+        const commentId = await postOrUpdateCiWaitComment(deps, existing, {
             owner,
             repo,
             pullRequestNumber: pr,

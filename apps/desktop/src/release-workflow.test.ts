@@ -424,7 +424,7 @@ describe('desktop trusted release workflow', () => {
     const validation = job('package', 'finalize');
     assert.match(
       validation,
-      /- name: Package desktop app from clean checkout[\s\S]*?node apps\/desktop\/scripts\/retry-transient-download\.mjs -- npm run desktop:package\n/,
+      /- name: Package desktop app from clean checkout[\s\S]*?node apps\/desktop\/scripts\/retry-transient-download\.mjs --attempts 5 --backoff-ms 30000 -- npm run desktop:package\n/,
     );
     assert.match(
       validation,

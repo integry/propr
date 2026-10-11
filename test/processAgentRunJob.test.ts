@@ -993,7 +993,14 @@ describe('agent run workspace', () => {
       } finally {
         await workspace.cleanup();
       }
-      assert.equal(await fs.pathExists(workspace.worktreePath), false);
+      assert.equal(await fs.pathExists(workspace.worktreePath), true);
+      assert.equal(await fs.readFile(path.join(workspace.worktreePath, AGENT_INPUTS_DIR, 'notes.txt'), 'utf8'), 'notes');
+      const retry = await prepareAgentRunWorkspace({
+        runId: 'run-scratch', definition: definition({ capabilities: ['web'] }), githubToken: 'unused',
+      });
+      assert.notEqual(retry.worktreePath, workspace.worktreePath);
+      await retry.cleanup();
+      assert.equal(await fs.readFile(path.join(workspace.worktreePath, AGENT_INPUTS_DIR, 'notes.txt'), 'utf8'), 'notes');
     } finally {
       await fs.remove(inputs);
     }
@@ -1020,7 +1027,8 @@ describe('agent run workspace', () => {
         `printf '%s\\n' "$*" >> "${bin}/calls"`,
         `printf '%s\\n' "$GIT_CONFIG_KEY_1=$GIT_CONFIG_VALUE_1" >> "${bin}/env"`,
         'for last; do :; done',
-        'if [ "$1 $2" = "-c core.hooksPath=/dev/null" ] && [ "$3" = clone ]; then',
+        'while [ "$1" = -c ]; do shift 2; done',
+        'if [ "$1" = clone ]; then',
         '  mkdir -p "$last/.git"',
         '  for arg; do case "$arg" in https://*) printf \'[remote "origin"]\\n\\turl = %s\\n\' "$arg" > "$last/.git/config";; esac; done',
         'fi',
@@ -1032,7 +1040,7 @@ describe('agent run workspace', () => {
 
       const calls = await fs.readFile(path.join(bin, 'calls'), 'utf8');
       assert.ok(!calls.includes('ghs_worker_secret'));
-      assert.match(calls, /^-c core\.hooksPath=\/dev\/null clone .* https:\/\/github\.com\/acme\/api\.git /);
+      assert.match(calls, /^-c core\.hooksPath=\/dev\/null (?:-c \S+ )*clone .* https:\/\/github\.com\/acme\/api\.git /);
       assert.equal(await fs.readFile(path.join(destination, '.git', 'config'), 'utf8'), '[remote "origin"]\n\turl = https://github.com/acme/api.git\n');
       const header = `http.https://github.com/.extraheader=AUTHORIZATION: basic ${Buffer.from('x-access-token:ghs_worker_secret').toString('base64')}`;
       assert.deepEqual((await fs.readFile(path.join(bin, 'env'), 'utf8')).trim().split('\n'), [header]);

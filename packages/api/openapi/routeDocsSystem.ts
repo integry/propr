@@ -1,4 +1,5 @@
 import {
+  InstanceStorageUsage, InstanceStoragePolicy, InstanceStoragePolicyRequest, InstanceStoragePreviewRequest, InstanceStorageExecuteRequest, InstanceStoragePreview, InstanceStorageResult, InstanceStorageResultQuery,
   AuthenticatedUser,
   Compatibility,
   DemoModeStatus,
@@ -20,6 +21,55 @@ const PAIRING_GUIDE = 'See the desktop pairing guide (docs/operations/desktop-pa
 const MCP_OAUTH = 'Served by the MCP SDK\'s OAuth router at the API origin root, and only while MCP is enabled. See the MCP guide (docs/features/mcp).';
 
 export const SYSTEM_ROUTE_DOCS: Record<string, RouteDoc> = {
+  'GET /api/instance/storage/v1/usage': {
+    operationId: 'getInstanceStorageUsage',
+    summary: 'Get bounded asynchronous per-instance storage observations.',
+    description: 'Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.',
+    tags: ['System'],
+    responses: { 200: { description: 'Versioned instance storage response.', schema: InstanceStorageUsage } },
+  },
+  'GET /api/instance/storage/v1/policy': {
+    operationId: 'getInstanceStoragePolicy',
+    summary: 'Get opt-in repository cleanup policy (disabled, 24 idle hours by default).',
+    description: 'Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.',
+    tags: ['System'],
+    responses: { 200: { description: 'Versioned instance storage response.', schema: InstanceStoragePolicy } },
+  },
+  'PUT /api/instance/storage/v1/policy': {
+    operationId: 'updateInstanceStoragePolicy',
+    summary: 'Persist the explicitly selected instance cleanup policy.',
+    description: 'Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.',
+    tags: ['System'],
+    requestBody: { schema: InstanceStoragePolicyRequest },
+    headers: [{ name: 'X-ProPR-Storage', description: 'Must equal 1; browser calls require an authorized CORS preflight.', required: true }],
+    responses: { 200: { description: 'Versioned instance storage response.', schema: InstanceStoragePolicy } },
+  },
+  'POST /api/instance/storage/v1/cleanup/preview': {
+    operationId: 'previewInstanceStorageCleanup',
+    summary: 'Preview an explicit instance/category selection; terminal task history requires explicit taskIds.',
+    description: 'Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.',
+    tags: ['System'],
+    requestBody: { schema: InstanceStoragePreviewRequest },
+    headers: [{ name: 'X-ProPR-Storage', description: 'Must equal 1; browser calls require an authorized CORS preflight.', required: true }],
+    responses: { 200: { description: 'Versioned instance storage response.', schema: InstanceStoragePreview } },
+  },
+  'POST /api/instance/storage/v1/cleanup/execute': {
+    operationId: 'executeInstanceStorageCleanup',
+    summary: 'Consume a principal-bound confirmation and revalidate before deleting any candidate.',
+    description: 'Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.',
+    tags: ['System'],
+    requestBody: { schema: InstanceStorageExecuteRequest },
+    headers: [{ name: 'X-ProPR-Storage', description: 'Must equal 1; browser calls require an authorized CORS preflight.', required: true }],
+    responses: { 200: { description: 'Versioned instance storage response.', schema: InstanceStorageResult } },
+  },
+  'GET /api/instance/storage/v1/cleanup/operations/:operationId': {
+    operationId: 'getInstanceStorageCleanupResult',
+    summary: 'Read the initiating principal’s durable cleanup result.',
+    description: 'Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.',
+    tags: ['System'],
+    query: InstanceStorageResultQuery,
+    responses: { 200: { description: 'Versioned instance storage response.', schema: InstanceStorageResult } },
+  },
   'GET /health': {
     operationId: 'getHealth',
     summary: 'Liveness probe',

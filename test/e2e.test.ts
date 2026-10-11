@@ -11,14 +11,18 @@ import assert from "node:assert/strict";
 
 import {
   API_URL, REPO, SKIP_SLOW, NO_CLEANUP, MISSING_ENV,
-  createTestClient, sleep,
+  createTestClient, sleep, withE2EWork,
   type ModelTestResult, type AgentModelPair,
   newModelResult,
-  createAndGeneratePlan, waitForTasks, pollTasksToCompletion, assertModelTasksSucceeded,
+  createAndGeneratePlan, createPlanWithRetries, waitForTasks, pollTasksToCompletion, assertModelTasksSucceeded,
   triggerSequentialImplementation, waitForPlanIssueCondition,
   hasInProgressIssue, getIssueStatusCounts,
   IN_PROGRESS_STATUSES,
 } from "./e2e/helpers.js";
+import {
+  PLAN_TEST_TIMEOUT_MS, PLAN_SUITE_CLEANUP_MS, PLAN_RETRY_MIN_REMAINING_MS,
+  MODEL_MATRIX_PLAN_BUDGET_MS, PlanWorkTracker, planDeadline,
+} from "./e2e/planGeneration.js";
 import { writeReport } from "./e2e/report.js";
 import { parseModelPairLimit, selectAgentModelPairs } from "./e2e/modelMatrix.js";
 
@@ -59,35 +63,25 @@ const createdTodoIds: string[] = [];
 const createdCategoryIds: string[] = [];
 const createdPlanIds: string[] = [];
 let addedRepo = false;
+// Plan operations a cancelled test may still be unwinding when cleanup starts.
+const planWork = new PlanWorkTracker();
 const modelPairLimit = parseModelPairLimit(process.env.PROPR_E2E_MAX_MODEL_PAIRS);
 
 function allPairs(): AgentModelPair[] {
   return selectAgentModelPairs(availableAgents, modelPairLimit);
 }
 
-async function listAllLlmLogs(options: Omit<ListLlmLogsOptions, "page" | "limit">): Promise<LlmLogEntry[]> {
+async function listAllLlmLogs(options: Omit<ListLlmLogsOptions, "page" | "limit">, logClient = client): Promise<LlmLogEntry[]> {
   const logs: LlmLogEntry[] = [];
   for (let page = 1; ; page++) {
-    const result = await listLlmLogs({ ...options, page, limit: 100 }, client);
+    const result = await listLlmLogs({ ...options, page, limit: 100 }, logClient);
     logs.push(...result.logs);
     if (!result.pagination.hasNextPage) return logs;
   }
 }
 
-async function createPlanWithRetries(
-  label: string,
-  prompt: string,
-  minIssues = 1,
-  attempts = 3,
-): Promise<{ planId: string; issues: PlanIssue[] }> {
-  let lastResult: { planId: string; issues: PlanIssue[] } | null = null;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    const result = await createAndGeneratePlan(REPO!, prompt, client, createdPlanIds);
-    lastResult = result;
-    if (result.issues.length >= minIssues) return result;
-    console.log(`    ${label} plan attempt ${attempt} produced ${result.issues.length} issue(s), retrying`);
-  }
-  return lastResult ?? { planId: "", issues: [] };
+function createSuitePlan(label: string, prompt: string, signal: AbortSignal, minIssues = 1) {
+  return planWork.track(createPlanWithRetries(REPO!, label, prompt, client, createdPlanIds, { signal, minIssues, tracker: planWork }));
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +94,12 @@ describe("ProPR CLI E2E", {
   before(() => { client = createTestClient(); });
 
   after(async () => {
+    // A timed-out test is only signalled; let its plan work and every request
+    // it sent settle before the plans it created are deleted, so a plan whose
+    // creation answered after the cancellation is still recorded and deleted.
+    if (!(await planWork.settle(PLAN_SUITE_CLEANUP_MS))) {
+      console.log(`  [cleanup] ${planWork.size} plan operation(s) still running after ${PLAN_SUITE_CLEANUP_MS}ms`);
+    }
     if (NO_CLEANUP) { console.log("  [cleanup] Skipped"); return; }
     const taskIds = modelTestResults.map((r) => r.taskId).filter(Boolean) as string[];
     for (const id of taskIds) {
@@ -290,11 +290,12 @@ describe("ProPR CLI E2E", {
   });
 
   // 8. Plan — greenfield
-  describe("8. Plan — greenfield", { timeout: 600_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
-    it("create + generate + finalize", async () => {
-      const { planId, issues } = await createPlanWithRetries(
+  describe("8. Plan — greenfield", { timeout: PLAN_TEST_TIMEOUT_MS + 60_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
+    it("create + generate + finalize", { timeout: PLAN_TEST_TIMEOUT_MS }, async (t) => {
+      const { planId, issues } = await createSuitePlan(
         "Greenfield",
         "Add a CONTRIBUTING.md with guidelines for contributing to the project",
+        t.signal,
       );
       greenfieldDraftId = planId;
       greenfieldPlan = await getPlan(planId, client);
@@ -309,11 +310,12 @@ describe("ProPR CLI E2E", {
   });
 
   // 9. Plan — brownfield
-  describe("9. Plan — brownfield", { timeout: 600_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
-    it("create + generate + finalize", async () => {
-      const { planId, issues } = await createPlanWithRetries(
+  describe("9. Plan — brownfield", { timeout: PLAN_TEST_TIMEOUT_MS + 60_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
+    it("create + generate + finalize", { timeout: PLAN_TEST_TIMEOUT_MS }, async (t) => {
+      const { planId, issues } = await createSuitePlan(
         "Brownfield",
         "Improve error handling and add input validation across the codebase",
+        t.signal,
       );
       brownfieldDraftId = planId;
       brownfieldPlan = await getPlan(planId, client);
@@ -323,38 +325,32 @@ describe("ProPR CLI E2E", {
   });
 
   // 10. Plan sequential processing
-  describe("10. Plan sequential processing", { timeout: 900_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
+  // Plan creation, then up to 10 minutes polling the first issue, plus triggers.
+  describe("10. Plan sequential processing", { timeout: PLAN_TEST_TIMEOUT_MS + 900_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
     let sequentialPlanId: string | null = null;
 
-    it("create plan with multiple issues for sequential test", async () => {
-      let issues: Awaited<ReturnType<typeof createAndGeneratePlan>>["issues"] = [];
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const result = await createAndGeneratePlan(
-          REPO!,
-          [
-            "Create exactly 3 separate GitHub issues for sequential processing validation.",
-            "Issue 1: add a constants.ts file with a VERSION constant.",
-            "Issue 2: add a types.ts file with a Config interface.",
-            "Issue 3: add a utils/helpers.ts file with a sleep function.",
-            "Do not combine these tasks into one issue."
-          ].join(" "),
-          client,
-          createdPlanIds,
-        );
-        issues = result.issues;
-        if (issues.length >= 2) {
-          sequentialPlanId = result.planId;
-          break;
-        }
-        console.log(`    Sequential plan attempt ${attempt} produced ${issues.length} issue(s), retrying`);
-      }
+    it("create plan with multiple issues for sequential test", { timeout: PLAN_TEST_TIMEOUT_MS }, async (t) => {
+      const result = await createSuitePlan(
+        "Sequential",
+        [
+          "Create exactly 3 separate GitHub issues for sequential processing validation.",
+          "Issue 1: add a constants.ts file with a VERSION constant.",
+          "Issue 2: add a types.ts file with a Config interface.",
+          "Issue 3: add a utils/helpers.ts file with a sleep function.",
+          "Do not combine these tasks into one issue."
+        ].join(" "),
+        t.signal,
+        2,
+      );
+      const { issues } = result;
+      if (issues.length >= 2) sequentialPlanId = result.planId;
 
       // We need at least 2 issues to test sequential processing
       assert.ok(issues.length >= 2, `Expected at least 2 issues, got ${issues.length}`);
       console.log(`    Created plan with ${issues.length} issues`);
     });
 
-    it("trigger sequential processing (useEpic + autoMerge)", async () => {
+    it("trigger sequential processing (useEpic + autoMerge)", async (t) => withE2EWork(client, t.signal, async (client) => {
       if (!sequentialPlanId) {
         console.log("    Skipping: no plan created");
         return;
@@ -370,9 +366,9 @@ describe("ProPR CLI E2E", {
 
       console.log(`    Epic label: ${result.epicLabel}`);
       console.log(`    Auto-merge: ${result.autoMergeEnabled}`);
-    });
+    }));
 
-    it("first issue is in-progress, subsequent issues remain pending", async () => {
+    it("first issue is in-progress, subsequent issues remain pending", async (t) => withE2EWork(client, t.signal, async (client, sleep) => {
       if (!sequentialPlanId) {
         console.log("    Skipping: no plan created");
         return;
@@ -396,9 +392,9 @@ describe("ProPR CLI E2E", {
       for (const issue of issues) {
         console.log(`    Issue #${issue.issue_number}: ${issue.status}`);
       }
-    });
+    }));
 
-    it("in-progress issue blocks next trigger", async () => {
+    it("in-progress issue blocks next trigger", async (t) => withE2EWork(client, t.signal, async (client) => {
       if (!sequentialPlanId) {
         console.log("    Skipping: no plan created");
         return;
@@ -432,9 +428,9 @@ describe("ProPR CLI E2E", {
       );
 
       console.log(`    Verified: ${pendingIssues.length} pending issue(s) blocked by in-progress issue #${inProgressIssue.issue_number}`);
-    });
+    }));
 
-    it("poll first issue to completion", { timeout: 600_000 }, async () => {
+    it("poll first issue to completion", { timeout: 600_000 }, async (t) => withE2EWork(client, t.signal, async (client) => {
       if (!sequentialPlanId) {
         console.log("    Skipping: no plan created");
         return;
@@ -465,12 +461,12 @@ describe("ProPR CLI E2E", {
       assert.ok(progressedIssue, "Expected at least one issue to progress to under_review, merged, or closed");
 
       console.log(`    Issue #${progressedIssue!.issue_number} progressed to: ${progressedIssue!.status}`);
-    });
+    }));
   });
 
   // 11. Bounded model-matrix implementation
   describe("11. Model matrix", { timeout: 3_600_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
-    it("create plans with enough issues", async () => {
+    it("create plans with enough issues", { timeout: MODEL_MATRIX_PLAN_BUDGET_MS + PLAN_SUITE_CLEANUP_MS }, async (t) => {
       const pairs = allPairs();
       if (pairs.length === 0) return;
       const availableCount = availableAgents.reduce((total, agent) => total + agent.supportedModels.length, 0);
@@ -486,9 +482,16 @@ describe("ProPR CLI E2E", {
       ];
 
       const maxAttempts = Math.ceil(needed / 2) + 2;
+      const deadline = planDeadline(MODEL_MATRIX_PLAN_BUDGET_MS);
       for (let i = 0; i < maxAttempts && collected.length < needed; i++) {
+        if (deadline - Date.now() < PLAN_RETRY_MIN_REMAINING_MS) {
+          console.log(`    Plan budget exhausted before plan ${i + 1}/${maxAttempts}`);
+          break;
+        }
         console.log(`    Plan ${i + 1}/${maxAttempts}...`);
-        const { issues } = await createAndGeneratePlan(REPO!, prompts[i % prompts.length], client, createdPlanIds);
+        const { issues } = await planWork.track(createAndGeneratePlan(
+          REPO!, prompts[i % prompts.length], client, createdPlanIds, { signal: t.signal, deadline, tracker: planWork },
+        ));
         collected.push(...issues);
         console.log(`    +${issues.length} issues (total: ${collected.length}/${needed})`);
       }
@@ -496,7 +499,7 @@ describe("ProPR CLI E2E", {
       assert.ok(collected.length >= needed, `Expected at least ${needed} issues, got ${collected.length}`);
     });
 
-    it("multi-model parallel: all models on one issue", async () => {
+    it("multi-model parallel: all models on one issue", async (t) => withE2EWork(client, t.signal, async (client) => {
       const pairs = allPairs();
       if (pairs.length < 2) return;
 
@@ -518,9 +521,9 @@ describe("ProPR CLI E2E", {
       await waitForTasks(pr, REPO!, client);
       await pollTasksToCompletion(pr, client);
       assertModelTasksSucceeded(pr);
-    });
+    }));
 
-    it("single-model: each model on a separate issue", async () => {
+    it("single-model: each model on a separate issue", async (t) => withE2EWork(client, t.signal, async (client) => {
       const pairs = allPairs();
       const used = new Set(modelTestResults.map((r) => r.issueNumber));
 
@@ -544,21 +547,21 @@ describe("ProPR CLI E2E", {
       await waitForTasks(sr, REPO!, client);
       await pollTasksToCompletion(sr, client);
       assertModelTasksSucceeded(sr);
-    });
+    }));
 
-    it("every model has execution history", async () => {
+    it("every model has execution history", async (t) => withE2EWork(client, t.signal, async (client) => {
       for (const r of modelTestResults.filter((r) => r.taskId)) {
         const s = await getTaskStatus(r.taskId!, client);
         r.hasHistory = s.history.length > 1;
         r.historyCount = s.history.length;
         assert.ok(s.history.length > 0, `${r.agent_alias}/${r.model_name} no history`);
       }
-    });
+    }));
 
-    it("collect LLM logs", async () => {
+    it("collect LLM logs", async (t) => withE2EWork(client, t.signal, async (client) => {
       const withTasks = modelTestResults.filter((r) => r.taskId && r.finalState);
       for (const pid of createdPlanIds) {
-        const logs = await listAllLlmLogs({ draftId: pid });
+        const logs = await listAllLlmLogs({ draftId: pid }, client);
         for (const r of withTasks) {
           const ml = logs.filter((l) => l.agentAlias === r.agent_alias);
           r.logCount += ml.length;
@@ -567,7 +570,7 @@ describe("ProPR CLI E2E", {
           r.outputTokens += ml.reduce((s, l) => s + (l.outputTokens ?? 0), 0);
         }
       }
-    });
+    }));
   });
 
   // 12. Report + verification

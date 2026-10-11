@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -11,14 +12,6 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { Client as LegacyClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport as LegacyTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { db, closeConnection } from '@propr/core';
-import { up as initial } from '../../core/src/db/migrations/20251216000000_initial_sqlite_schema.js';
-import { up as planIssues } from '../../core/src/db/migrations/20260120000000_add_plan_issues.js';
-import { up as configs } from '../../core/src/db/migrations/20251217000000_add_system_configs.js';
-import { up as members } from '../../core/src/db/migrations/20260730000000_create_instance_members.js';
-import { up as migration } from '../../core/src/db/migrations/20260910220000_add_mcp.js';
-import { up as lifecycleMigration } from '../../core/src/db/migrations/20261001000000_add_mcp_operation_lifecycle.js';
-import { up as planRevisions } from '../../core/src/db/migrations/20260928000000_add_task_draft_plan_revisions.js';
-import { up as planRevisionCauses } from '../../core/src/db/migrations/20261002000000_add_plan_revision_causes.js';
 import { loadMcpConfig, MCP_SCOPES } from '../mcp/config.js';
 import { McpConnect, registerMcpInstance, MCP_CONNECT_CONTRACT, type InstanceIdentity } from '../mcp/connect.js';
 import { McpStore, digest } from '../mcp/store.js';
@@ -62,11 +55,10 @@ test('pinned actual Connect Worker -> actual core registration, OAuth, SDK eras,
     MCP_CONNECT_TRUST: 'true', MCP_CONNECT_ISSUER: origin, PROPR_ADMIN_USERS: '', GH_INSTALLATION_ID: '1', PROPR_GH_RELAY_TOKEN: relay,
     PROPR_GH_RELAY_URL: `${origin}/v1`, PROPR_INSTANCE_ID: 'tunnel-1', PROPR_UI_TUNNEL_ENABLED: 'true',
     PROPR_UI_TUNNEL_TOKEN: 'fixture-connector-only', GITHUB_USER_WHITELIST: 'member' });
-  await initial(db); await planIssues(db); await migration(db); await lifecycleMigration(db); await planRevisions(db); await planRevisionCauses(db);
-  await db.schema.alterTable('task_drafts', table => table.boolean('paused').defaultTo(false));
-  await members(db);
+  // Match the established isolated integration setup: run every production
+  // migration, including follow-on columns required by current core handlers.
+  await db.migrate.latest({ directory: fileURLToPath(new URL('../../core/src/db/migrations/', import.meta.url)) });
   await db('instance_members').insert({ github_user_id: '777', github_username: 'member', role: 'member', source: 'local' });
-  await configs(db);
   await db('system_configs').insert({ key: 'repos_to_monitor', value: JSON.stringify([{ id: 'repo-1', name: 'acme/allowed', enabled: true }, { id: 'repo-2', name: 'acme/restricted', enabled: true }]) });
   delete process.env.MCP_CONNECT_TUNNEL_ID;
   const config = loadMcpConfig()!;
@@ -226,6 +218,21 @@ test('pinned actual Connect Worker -> actual core registration, OAuth, SDK eras,
         assert.equal((await client.readResource({ uri: `propr://instances/${config.instanceId}/plans/${data.result.planId}` })).contents.length, 1);
         const forbidden = await client.callTool({ name: 'create_plan', arguments: { ...args, repository: 'acme/restricted', idempotencyKey: `forbidden-${modern}` } });
         assert.equal(forbidden.isError, true);
+        // Access logging is best-effort in production, so successful HTTP calls
+        // alone would not catch an incomplete fixture schema or failed writes.
+        const audits = await db('mcp_access_log').where({ kind: 'tool', name: 'create_plan',
+          protocol_version: modern ? '2026-07-28' : '2025-11-25' }).orderBy('id');
+        assert.equal(audits.length, 3, 'Creation, deduplication and denial must each persist an audit row');
+        assert.deepEqual(audits.map(row => [row.repository, row.outcome, row.status]), [
+          ['acme/allowed', 'success', 200], ['acme/allowed', 'success', 200], ['acme/restricted', 'denied', 403]
+        ]);
+        for (const row of audits) {
+          assert.equal(row.owner_id, '777');
+          assert.ok(row.grant_id);
+          assert.ok(row.request_id);
+        }
+        assert.equal(audits[0].operation_id, data.operationId);
+        assert.equal(audits[1].operation_id, data.operationId);
         const before = instancePosts.filter(p => p.path.endsWith('/validate')).length;
         await client.listPrompts();
         assert.equal(instancePosts.filter(p => p.path.endsWith('/validate')).length, before + 1);
@@ -238,6 +245,8 @@ test('pinned actual Connect Worker -> actual core registration, OAuth, SDK eras,
     const knex = (await import('knex')).default;
     const reopened = knex(db.client.config);
     assert.equal((await reopened('task_drafts').whereIn('draft_id', planIds).select()).length, 2);
+    assert.equal((await reopened('mcp_access_log').where({ kind: 'tool', name: 'create_plan' }).select()).length, 6,
+      'Both SDK eras must persist their audit writes in the isolated SQLite file');
     await reopened.destroy();
     const delegated = upstream.at(-1)!.headers.get('authorization')!.slice(7);
     const claims = decodeJwt(delegated);
@@ -333,7 +342,7 @@ test('pinned actual Connect Worker -> actual core registration, OAuth, SDK eras,
     assert.equal((await api('/mcp', 'GET', undefined, keyGrant.access_token)).status, 401, 'Restoring an old key must not revive grants');
     const allAssertions = instancePosts.map(post => decodeJwt(post.body.instance_assertion));
     assert.equal(new Set(allAssertions.map(claim => claim.jti)).size, allAssertions.length, 'Every core POST uses a new proof');
-    console.log('PASS: real registration, discovery/PKCE/consent, modern+legacy calls, SQLite mutation/deduplication, encrypted proof-bound credential handoff, key/instance/repository/scope/hash restrictions, local and Connect membership removal, revocation, offline/version denials');
+    console.log('PASS: real registration, discovery/PKCE/consent, modern+legacy calls, SQLite mutation/deduplication and persisted success/denial audits, encrypted proof-bound credential handoff, key/instance/repository/scope/hash restrictions, local and Connect membership removal, revocation, offline/version denials');
   } finally {
     globalThis.fetch = nativeFetch;
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
