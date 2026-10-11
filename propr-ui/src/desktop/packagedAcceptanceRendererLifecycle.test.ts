@@ -28,7 +28,7 @@ describe('packaged acceptance renderer lifecycle evidence', () => {
   });
 
   it('emits only fixed bounded secret-free state', () => {
-    (window as AcceptanceWindow).__PROPR_PACKAGED_ACCEPTANCE__ = { setZoomFactor: vi.fn() };
+    (window as AcceptanceWindow).__PROPR_PACKAGED_ACCEPTANCE__ = { setZoomFactor: vi.fn(), setupEvidence: vi.fn() };
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
     reportPackagedAcceptanceRendererLifecycle('profile-activation-published', {
@@ -65,7 +65,7 @@ describe('packaged acceptance renderer lifecycle evidence', () => {
   });
 
   it('emits bounded current-user stages without identity or transport values', () => {
-    (window as AcceptanceWindow).__PROPR_PACKAGED_ACCEPTANCE__ = { setZoomFactor: vi.fn() };
+    (window as AcceptanceWindow).__PROPR_PACKAGED_ACCEPTANCE__ = { setZoomFactor: vi.fn(), setupEvidence: vi.fn() };
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
     for (let index = 0; index < 20; index += 1) {

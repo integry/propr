@@ -166,22 +166,9 @@ function errorCode(error: unknown): string | undefined {
     return (error as NodeJS.ErrnoException | undefined)?.code;
 }
 
-/** Non-recursive, so a bundle a worker writes into the directory after the sweep emptied
- * it is never deleted with it: the removal then fails with ENOTEMPTY instead. */
-async function removeDirectoryIfEmpty(dir: string): Promise<void> {
-    try {
-        await fs.rmdir(dir);
-    } catch (error) {
-        const code = errorCode(error);
-        if (code !== 'ENOTEMPTY' && code !== 'EEXIST' && code !== 'ENOENT') throw error;
-    }
-}
-
-/** Deletes bundles older than the retention period and the directories they leave empty. */
+/** Inventory retained bundles. Expiry alone cannot authorize deletion of recovery data. */
 export async function pruneRescueBundles(options: { olderThanDays?: number; directory?: string; now?: Date } = {}): Promise<RescueBundlePruneResult> {
     const directory = options.directory ?? getRescueBundleDirectory();
-    const olderThanDays = options.olderThanDays ?? getRescueRetentionDays();
-    const cutoff = (options.now ?? new Date()).getTime() - olderThanDays * 24 * 60 * 60 * 1000;
     const result: RescueBundlePruneResult = { deleted: [], retained: 0 };
     if (!await fs.pathExists(directory)) return result;
 
@@ -197,15 +184,11 @@ export async function pruneRescueBundles(options: { olderThanDays?: number; dire
             const entryPath = path.join(dir, entry.name);
             if (entry.isDirectory()) {
                 await visit(entryPath);
-                await removeDirectoryIfEmpty(entryPath);
+                // Keep directory ownership and any concurrently written salvage intact.
             } else if (entry.isFile() && entry.name.endsWith('.bundle')) {
-                const stats = await fs.stat(entryPath);
-                if (stats.mtime.getTime() <= cutoff) {
-                    await fs.remove(entryPath);
-                    result.deleted.push(entryPath);
-                } else {
-                    result.retained++;
-                }
+                // Retention age cannot prove these recovery objects exist elsewhere.
+                // Bundles are durable salvage, never automatic repository-cache candidates.
+                result.retained++;
             }
         }
     };

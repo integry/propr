@@ -1,3 +1,4 @@
+import { SETUP_ACTIONS, setupPhase } from './packaged-acceptance-setup.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
@@ -9,7 +10,8 @@ import {
   ACCEPTANCE_ARTIFACT_LEAF,
   ACCEPTANCE_JOURNEYS,
   ACCEPTANCE_REDACTION_PLACEHOLDER,
-  ACCEPTANCE_VARIANTS,
+  acceptanceVariantsFor,
+  validateSetupEvidence,
   DETERMINISTIC_INPUTS,
   FIXED_TIME,
   expectedScreenshotNames,
@@ -108,12 +110,12 @@ const viewportMetricEvidenceFor = config => {
 };
 
 const accessibilityFor = () => ({
-  schemaVersion: 6,
+  schemaVersion: 7,
   generatedAt: FIXED_TIME,
   serious: 0,
   critical: 0,
   findings: [],
-  checks: ACCEPTANCE_JOURNEYS.flatMap(journey => Object.entries(ACCEPTANCE_VARIANTS).map(([variant, config]) => ({
+  checks: ACCEPTANCE_JOURNEYS.flatMap(journey => Object.entries(acceptanceVariantsFor(journey)).map(([variant, config]) => ({
     name: screenshotName(journey, variant), journey, variant, serious: 0, critical: 0, accessibleNames: true,
     locale: DETERMINISTIC_INPUTS.locale, timezone: DETERMINISTIC_INPUTS.timezone, fontLoaded: true,
     reducedMotion: config.reducedMotion, animationsDisabled: true, rendererTime: FIXED_TIME,
@@ -131,7 +133,7 @@ const accessibilityFor = () => ({
 });
 
 const summaryFor = () => ({
-  schemaVersion: 6,
+  schemaVersion: 7,
   generatedAt: FIXED_TIME,
   status: 'passed',
   journeys: ACCEPTANCE_JOURNEYS.length,
@@ -232,11 +234,35 @@ const sanitizedLogFor = () => ({
   ],
 });
 
+const setupEvidenceFor = (journey, variant) => {
+  if (!SETUP_ACTIONS[journey]) return null;
+  const id = variant.startsWith('zoom-200-') ? variant.slice('zoom-200-'.length) : null;
+  const action = SETUP_ACTIONS[journey][id];
+  return { presentation: 'LocalSetupWizard', fixture: 'preload-setup-v1', phase: setupPhase(journey),
+    capture: id ? 'keyboard-reached' : 'initial-viewport',
+    action: id ? { id, label: action.label, tabs: 3, focused: true, visible: true, focusVisible: true, activated: true,
+      outcome: action.heading ?? (id === 'back' ? 'instance-chooser' : 'authentication-required'), bridgeCall: action.call } : null };
+};
+
+it('rejects substituted setup presentation and presence-only action evidence', () => {
+  const journey = 'local-setup-completion', variant = 'zoom-200-connect';
+  const valid = setupEvidenceFor(journey, variant);
+  validateSetupEvidence(valid, journey, variant);
+  for (const presentation of ['PackagedAcceptanceLocalSetup', 'hand-built-success']) {
+    assert.throws(() => validateSetupEvidence({ ...valid, presentation }, journey, variant), /presentation/);
+  }
+  for (const field of ['focused', 'visible', 'focusVisible', 'activated']) {
+    assert.throws(() => validateSetupEvidence({ ...valid, action: { ...valid.action, [field]: false } }, journey, variant), /activation/);
+  }
+  assert.throws(() => validateSetupEvidence({ ...valid, capture: 'initial-viewport' }, journey, variant), /presentation/);
+  assert.throws(() => validateSetupEvidence({ ...valid, phase: 'idle' }, journey, variant), /fixture/);
+});
+
 const createCompleteArtifactSet = async root => {
   await mkdir(join(root, 'screenshots'), { recursive: true });
   const metadata = [];
   for (const journey of ACCEPTANCE_JOURNEYS) {
-    for (const [variant, config] of Object.entries(ACCEPTANCE_VARIANTS)) {
+    for (const [variant, config] of Object.entries(acceptanceVariantsFor(journey))) {
       const name = screenshotName(journey, variant);
       const bytes = Buffer.concat([
         pngHeader(config.viewport.width * config.deviceScaleFactor, config.viewport.height * config.deviceScaleFactor),
@@ -245,6 +271,7 @@ const createCompleteArtifactSet = async root => {
       await writeFile(join(root, 'screenshots', name), bytes);
       metadata.push({
         name, journey, variant,
+        setup: setupEvidenceFor(journey, variant),
         width: config.viewport.width * config.deviceScaleFactor,
         height: config.viewport.height * config.deviceScaleFactor,
         reducedMotion: config.reducedMotion,
@@ -273,28 +300,28 @@ const createCompleteArtifactSet = async root => {
 };
 
 describe('packaged acceptance artifact contract', () => {
-  it('has exactly 60 deterministic unique names and physical dimensions', () => {
-    const names = ACCEPTANCE_JOURNEYS.flatMap(journey => Object.entries(ACCEPTANCE_VARIANTS).map(([variant, config]) => {
+  it('has exactly 67 deterministic unique names and physical dimensions', () => {
+    const names = ACCEPTANCE_JOURNEYS.flatMap(journey => Object.entries(acceptanceVariantsFor(journey)).map(([variant, config]) => {
       assert.deepEqual(readPngDimensions(pngHeader(config.viewport.width * config.deviceScaleFactor, config.viewport.height * config.deviceScaleFactor)), {
         width: config.viewport.width * config.deviceScaleFactor,
         height: config.viewport.height * config.deviceScaleFactor,
       });
       return screenshotName(journey, variant);
     }));
-    assert.equal(names.length, 60);
+    assert.equal(names.length, 67);
     assert.deepEqual(names, expectedScreenshotNames());
-    assert.equal(new Set(names).size, 60);
+    assert.equal(new Set(names).size, 67);
     assert.ok(names.every(name => /^[a-z0-9-]+--[a-z0-9-]+\.png$/.test(name)));
   });
 
-  it('writes and verifies the complete strict 60-entry manifest and supporting set', async () => {
+  it('writes and verifies the complete strict 67-entry manifest and supporting set', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'propr-acceptance-contract-full-'));
     const root = join(parent, ACCEPTANCE_ARTIFACT_LEAF);
     try {
       const evidence = await createCompleteArtifactSet(root);
-      assert.equal(evidence.manifest.screenshots.length, 60);
-      assert.equal(evidence.manifest.schemaVersion, 6);
-      assert.equal(evidence.accessibility.schemaVersion, 6);
+      assert.equal(evidence.manifest.screenshots.length, 67);
+      assert.equal(evidence.manifest.schemaVersion, 7);
+      assert.equal(evidence.accessibility.schemaVersion, 7);
       const zoomEvidence = evidence.manifest.screenshots.find(entry => entry.variant === 'zoom-200');
       assert.deepEqual(zoomEvidence.rendererViewport, { width: 640, height: 410 });
       assert.deepEqual(zoomEvidence.documentClientViewport, { width: 632, height: 410 });

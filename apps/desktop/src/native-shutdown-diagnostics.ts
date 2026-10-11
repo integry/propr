@@ -4,9 +4,9 @@ import type { App, CrashReporter } from 'electron';
 
 const SWITCH = '--propr-native-crash-directory';
 const PHASES = new Set([
-  'startup', 'admission-closed', 'ipc-closed', 'session-closed', 'protocol-disposed',
+  'startup', 'admission-closed', 'deep-links-closed', 'native-actions-closed', 'tray-closed', 'ipc-closed', 'session-closed', 'protocol-disposed', 'notifications-closed',
   'credentials-dispose-started', 'authentication-cleared', 'lifecycle-drain-started',
-  'setup-drain-started', 'ipc-drain-started', 'service-drain-finished',
+  'setup-drain-started', 'ipc-drain-started', 'deep-link-drain-started', 'service-drain-finished',
   'profiles-close-started', 'profiles-close-finished', 'session-disposed',
   'ipc-disposed', 'window-destroyed', 'final-quit', 'will-quit',
 ]);

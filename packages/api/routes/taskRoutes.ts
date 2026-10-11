@@ -1,3 +1,4 @@
+import { deleteTaskRecords } from '../../core/src/storage/taskHistoryControl.js';
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Queue } from 'bullmq';
@@ -321,17 +322,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      await db.transaction(async (trx) => {
-        await trx('llm_execution_details')
-          .whereIn('execution_id', function() {
-            this.select('execution_id').from('llm_executions').where({ task_id: taskId });
-          })
-          .delete();
-        await trx('llm_executions').where({ task_id: taskId }).delete();
-        await trx('task_history').where({ task_id: taskId }).delete();
-        await trx('task_assignees').where({ task_id: taskId }).delete();
-        await trx('tasks').where({ task_id: taskId }).delete();
-      });
+      await deleteTaskRecords(db, String(taskId));
 
       res.status(204).send();
     } catch (error) {

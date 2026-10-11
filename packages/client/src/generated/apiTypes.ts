@@ -175,6 +175,78 @@ export interface Health {
   status: "ok";
 }
 
+export interface InstanceStorageExecuteRequest {
+  instanceId: string;
+  confirmation: string;
+}
+
+export interface InstanceStoragePolicy {
+  version: 1;
+  instanceId: string;
+  policy: {
+    enabled: boolean;
+    idleHours: number;
+  };
+}
+
+export interface InstanceStoragePolicyRequest {
+  enabled: boolean;
+  idleHours: number;
+  instanceId: string;
+}
+
+export interface InstanceStoragePreview {
+  version: 1;
+  instanceId: string;
+  confirmation: string;
+  expiresAt: string;
+  categories: Array<"database_config" | "repository_caches" | "worktrees" | "salvage" | "logs_artifacts" | "provider_credentials" | "task_history">;
+  impact: string;
+  candidates: Array<{
+    id: string;
+    category: "database_config" | "repository_caches" | "worktrees" | "salvage" | "logs_artifacts" | "provider_credentials" | "task_history";
+    estimatedBytes: number | null;
+    protectedReasons: Array<"busy" | "unknown_use" | "recent_use" | "unknown_ownership" | "unsafe_path" | "private_work" | "worktrees" | "local_history" | "salvage" | "remote_unavailable" | "unknown_git_state" | "changed" | "unsupported">;
+  }>;
+}
+
+export interface InstanceStoragePreviewRequest {
+  instanceId: string;
+  categories: Array<"database_config" | "repository_caches" | "worktrees" | "salvage" | "logs_artifacts" | "provider_credentials" | "task_history">;
+  taskIds?: string[];
+}
+
+export interface InstanceStorageResult {
+  version: 1;
+  instanceId: string;
+  operationId: string;
+  state: "completed" | "interrupted";
+  deleted: string[];
+  retained: Array<{
+    id: string;
+    reasons: Array<"busy" | "unknown_use" | "recent_use" | "unknown_ownership" | "unsafe_path" | "private_work" | "worktrees" | "local_history" | "salvage" | "remote_unavailable" | "unknown_git_state" | "changed" | "unsupported">;
+  }>;
+}
+
+export interface InstanceStorageUsage {
+  version: 1;
+  instanceId: string;
+  observedAt: string | null;
+  state: "complete" | "partial" | "unknown" | "unsupported";
+  scanning: boolean;
+  ownedBytes: number | null;
+  categories: Array<{
+    category: "database_config" | "repository_caches" | "worktrees" | "salvage" | "logs_artifacts" | "provider_credentials" | "task_history";
+    bytes: number | null;
+    state: "complete" | "partial" | "unknown" | "unsupported";
+  }>;
+  filesystems: {
+    id: string;
+    totalBytes: number;
+    availableBytes: number;
+  }[];
+}
+
 /** A JSON object whose fields are not documented yet. */
 export interface JsonObject {
   [key: string]: unknown;
@@ -360,6 +432,11 @@ export interface TaskSummary {
 export interface DeleteTaskQuery {
   /** Delete even when the task is still active. */
   force?: "true" | "false";
+}
+
+/** Query parameters of `getInstanceStorageCleanupResult`. */
+export interface InstanceStorageResultQuery {
+  instanceId: string;
 }
 
 /** Query parameters of `getTaskAssignees`. */

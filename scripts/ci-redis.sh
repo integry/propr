@@ -208,6 +208,19 @@ start_redis() {
     # Failed starts can leave a created container even with --rm. Recheck
     # every ownership label and remove by immutable ID before reusing its name.
     remove_container "$CONTAINER_NAME" || return 1
+    # A missing image is pulled by docker run. Registry gateway outages can
+    # fail that download before Redis exists (Docker exits 125). Retry only
+    # these transient HTTP responses, preserving the pinned image and port.
+    # Share the startup attempt budget so mixed failures remain bounded.
+    if [[ "$run_status" == 125 && "$run_error" =~ unexpected\ HTTP\ status:\ (502|503|504)\  ]]; then
+      if (( port_attempt == 5 )); then
+        echo 'Redis image download failed after 5 startup attempts' >&2
+        return "$run_status"
+      fi
+      echo "Retrying Redis image download in $((port_attempt * 5)) seconds" >&2
+      sleep "$((port_attempt * 5))" || return $?
+      continue
+    fi
     if [[ "$run_status" != 125 || ( "$run_error" != *'bind: address already in use'* && "$run_error" != *'port is already allocated'* ) ]]; then
       return "$run_status"
     fi

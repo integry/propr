@@ -142,11 +142,11 @@ before/after run is pending; no result is inferred here.
 The operator reports 32 successful native launches of diagnostic source
 `f8181fc` (16 capture, 16 ordinary), without reproducing the original crash.
 Those qualify neither this runtime update nor the original root cause.
-For the updated PR source, repeat the locked install, typecheck, full desktop
+For the final merged candidate source, repeat the locked install, typecheck, full desktop
 suite, native package/fuse inspection, complete unmodified four-launch smoke
 with capture and a separately declared ordinary run. Retain the existing
 source-bound packaged acceptance and native platform gates in
-[the desktop README](https://github.com/integry/propr/blob/e74a8f4ebc56c5cd704311f1a7573ccf2698c912/apps/desktop/README.md#packaged-visual-and-accessibility-acceptance).
+[the desktop README](https://github.com/integry/propr/blob/main/apps/desktop/README.md#packaged-visual-and-accessibility-acceptance).
 Bind all results to the exact rebuilt source revision, lockfile, package hashes,
 architecture and runtime versions; do not combine an old app with a new harness
 or carry forward f818 acceptance. Linux evidence does not qualify macOS.
@@ -209,7 +209,8 @@ Keep the command's actual exit status. The launcher adds only
 `--propr-native-crash-directory=<directory>` to each existing smoke mode. The
 application accepts it only after the existing packaged smoke authorization
 succeeds, on Linux, with an existing owned 0700 canonical directory outside
-the profile tree. Invalid capture configuration fails the launch.
+the profile tree. The launcher checks this contract before spawning; the application revalidates it
+at use time. Invalid capture configuration fails the launch.
 
 Before ready, Electron's crash reporter starts with `uploadToServer: false`,
 no submission URL, and `ignoreSystemCrashHandler: false`. Each process gets a

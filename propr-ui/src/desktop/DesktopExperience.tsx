@@ -17,8 +17,6 @@ import { useDesktopDeepLinks } from './useDesktopDeepLinks';
 import { useConnectCandidatePresentation } from './useConnectCandidatePresentation';
 import { useDesktopNativeCommands } from './useDesktopNativeCommands';
 import { DesktopConnectionDiagnostics } from './DesktopConnectionDiagnostics';
-import { PackagedAcceptanceLocalSetup } from './PackagedAcceptanceLocalSetup';
-import { packagedAcceptanceSetupSurface, type PackagedAcceptanceSetupSurface } from './packagedAcceptanceLocalSetupSurface';
 import './desktop.css';
 
 interface DesktopExperienceProps {
@@ -35,7 +33,6 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [acceptanceSetup, setAcceptanceSetup] = useState<PackagedAcceptanceSetupSurface | null>(null);
   const [localSetupOpen, setLocalSetupOpen] = useState(false);
   const connectionAttempt = useRef(0);
   const { recordPresentation: connectCandidatePresented, waitForPresentation } = useConnectCandidatePresentation();
@@ -189,7 +186,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   useDesktopNativeCommands({
     app: adapters.app,
     state,
-    instanceChooserBlocked: localSetupOpen || Boolean(acceptanceSetup),
+    instanceChooserBlocked: localSetupOpen,
     onManageInstances: () => { setEditing(null); openManager(); },
     onConnectInstance: () => {
       openEditor('new');
@@ -256,7 +253,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     }
   };
 
-  const settleSetupBeforeConnectCandidate = () => settleConnectCandidateSetup({ acceptanceSetupOpen: Boolean(acceptanceSetup), candidatePending: hasPendingConnectCandidate(), guidedSetup: localSetupOpen && isGuidedLocalSetup(adapters.localSetup) ? adapters.localSetup : null, onAcceptanceSetupSettled: () => setAcceptanceSetup(null), onFailure: () => setOperationError('Local setup could not be cancelled safely. Try Connect again or return to setup.'), onGuidedSetupSettled: () => setLocalSetupOpen(false) });
+  const settleSetupBeforeConnectCandidate = () => settleConnectCandidateSetup({ candidatePending: hasPendingConnectCandidate(), guidedSetup: localSetupOpen && isGuidedLocalSetup(adapters.localSetup) ? adapters.localSetup : null, onFailure: () => setOperationError('Local setup could not be cancelled safely. Try Connect again or return to setup.'), onGuidedSetupSettled: () => setLocalSetupOpen(false) });
 
   const saveProfile = async (profile: DesktopProfile, shouldConnect = true) => {
     cancelDiscovery();
@@ -282,11 +279,6 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   const setupLocal = async () => {
     cancelDiscovery();
-    const acceptanceSurface = packagedAcceptanceSetupSurface();
-    if (acceptanceSurface) {
-      setAcceptanceSetup(acceptanceSurface);
-      return;
-    }
     if (isGuidedLocalSetup(adapters.localSetup)) {
       setOperationError(null);
       setLocalSetupOpen(true);
@@ -403,7 +395,6 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     const setupLayer = (surface: React.ReactNode) => <DesktopSetupLayer editor={profileEditor} suspended={Boolean(profileEditor && hasPendingConnectCandidate())}>{surface}</DesktopSetupLayer>;
 
     if (state.phase === 'loading') return <div className="desktop-loading"><LoaderCircle className="desktop-spin" /><span>Opening ProPR…</span></div>;
-    if (acceptanceSetup) return setupLayer(<PackagedAcceptanceLocalSetup initial={acceptanceSetup} onBack={() => setAcceptanceSetup(null)} />);
     if (state.phase === 'connecting') return <ConnectionPanel profile={state.profile} onBack={choose} onRetry={retry} onAuthenticate={() => undefined} onHelp={() => undefined} onReenter={() => undefined} onRediscover={() => undefined} />;
     if (state.phase === 'authenticating') return <AuthenticationPanel profile={state.profile} progress={state.progress} onCancel={() => cancelAuthentication(state)} onChoose={choose} onReopen={adapters.authentication.reopenApproval ? () => adapters.authentication.reopenApproval!(state.profile.id) : undefined} onCopy={adapters.authentication.copyApproval ? () => adapters.authentication.copyApproval!(state.profile.id) : undefined} />;
     if (state.phase === 'recovery-review') return <ManagedRecoveryReview profile={state.profile} onCancel={() => { cancelDiscovery(); setState({ phase: 'blocked', profile: state.profile, result: { status: 'offline', message: managedRecoveryMessage } }); }} onConfirm={() => void connect(state.candidate)} />;

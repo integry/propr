@@ -337,6 +337,7 @@ describe('main-process desktop credential service', () => {
     const result = await service.probe({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
 
     assert.equal(result.status, 'authentication-required');
+    assert.equal('authentication' in result && result.authentication, 'Use your browser to sign in, then approve access for ProPR Desktop');
     assert.ok(requests.length >= 1);
     assert.equal(requests[0].url, `${profile.apiBaseUrl}/api/desktop/discovery`);
     assert.equal(requests.some(request => request.authorization !== null), false);

@@ -1,3 +1,4 @@
+import { SETUP_ACTIONS, prepareProductionSetup, reachSetupAction, activateSetupAction } from './packaged-acceptance-setup.mjs';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -19,7 +20,7 @@ import {
   ACCEPTANCE_JOURNEYS,
   ACCEPTANCE_PROFILE_PREFIX,
   ACCEPTANCE_SURFACES_PREFIX,
-  ACCEPTANCE_VARIANTS,
+  acceptanceVariantsFor,
   DETERMINISTIC_INPUTS,
   FIXED_ACCEPTANCE_ORIGINS,
   FIXED_TIME,
@@ -44,6 +45,7 @@ import {
 } from './packaged-acceptance-current-user.mjs';
 import {
   captureElectronRendererScreenshot,
+  configureElectronRendererVariant,
   forEachElectronRendererVariant,
   waitForUsableElectronRenderer,
 } from './packaged-acceptance-renderer.mjs';
@@ -740,6 +742,48 @@ const terminateProcessTree = async (child, childClosed) => {
   }
 };
 
+const initializeRenderer = async page => {
+    await page.evaluate(({ fixedTime, fixedMillis }) => {
+      const NativeDate = Date;
+      class AcceptanceDate extends NativeDate {
+        constructor(...args) { super(...(args.length ? args : [fixedMillis])); }
+        static now() { return fixedMillis; }
+      }
+      Object.defineProperty(window, 'Date', { configurable: false, value: AcceptanceDate });
+      let uuidCounter = 0;
+      Object.defineProperty(Crypto.prototype, 'randomUUID', {
+        configurable: false,
+        value: () => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
+      });
+      document.documentElement.dataset.acceptanceFixedTime = fixedTime;
+    }, { fixedTime: FIXED_TIME, fixedMillis: FIXED_MILLIS });
+    await page.waitForFunction(() => Boolean(document.querySelector('.desktop-entry, .desktop-app')), null, { timeout: 15_000 });
+    await page.addStyleTag({ content: `
+      *, *::before, *::after { animation: none !important; caret-color: transparent !important; transition: none !important; scroll-behavior: auto !important; }
+      html body, html body button, html body input, html body select, html body textarea { font-family: "Liberation Sans", sans-serif !important; }
+    ` });
+    const initialization = await page.evaluate(fixedTime => ({
+      rendererOrigin: `${location.protocol}//${location.host}`,
+      preloadBridge: typeof window.proprDesktop === 'object' && window.proprDesktop !== null,
+      acceptanceZoomBridge: typeof window.__PROPR_PACKAGED_ACCEPTANCE__ === 'object'
+        && window.__PROPR_PACKAGED_ACCEPTANCE__ !== null
+        && Object.keys(window.__PROPR_PACKAGED_ACCEPTANCE__).sort().join('\n') === 'setZoomFactor\nsetupEvidence'
+        && typeof window.__PROPR_PACKAGED_ACCEPTANCE__.setZoomFactor === 'function',
+      fontLoaded: document.fonts.check('12px "Liberation Sans"'),
+      locale: navigator.language,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      rendererTime: new Date().toISOString(),
+      fixedMarker: document.documentElement.dataset.acceptanceFixedTime === fixedTime,
+    }), FIXED_TIME);
+    if (initialization.rendererOrigin !== 'propr-app://renderer' || !initialization.preloadBridge
+      || !initialization.acceptanceZoomBridge
+      || !initialization.fontLoaded || initialization.locale !== DETERMINISTIC_INPUTS.locale
+      || initialization.timezone !== DETERMINISTIC_INPUTS.timezone || initialization.rendererTime !== FIXED_TIME
+      || !initialization.fixedMarker) {
+      throw new Error(`Packaged acceptance deterministic boundary initialization failed: ${JSON.stringify(initialization)}`);
+    }
+};
+
 const launchApplication = async (scenario, initialDeepLink) => {
   const userData = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
   let child;
@@ -825,45 +869,7 @@ const launchApplication = async (scenario, initialDeepLink) => {
       pendingConsoleRecords.push(pending);
     });
     page.on('pageerror', error => pageErrorRecords.push({ journey: activeJourney, name: error.name, message: error.message, stack: error.stack || '' }));
-    await page.evaluate(({ fixedTime, fixedMillis }) => {
-      const NativeDate = Date;
-      class AcceptanceDate extends NativeDate {
-        constructor(...args) { super(...(args.length ? args : [fixedMillis])); }
-        static now() { return fixedMillis; }
-      }
-      Object.defineProperty(window, 'Date', { configurable: false, value: AcceptanceDate });
-      let uuidCounter = 0;
-      Object.defineProperty(Crypto.prototype, 'randomUUID', {
-        configurable: false,
-        value: () => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
-      });
-      document.documentElement.dataset.acceptanceFixedTime = fixedTime;
-    }, { fixedTime: FIXED_TIME, fixedMillis: FIXED_MILLIS });
-    await page.waitForFunction(() => Boolean(document.querySelector('.desktop-entry, .desktop-app')), null, { timeout: 15_000 });
-    await page.addStyleTag({ content: `
-      *, *::before, *::after { animation: none !important; caret-color: transparent !important; transition: none !important; scroll-behavior: auto !important; }
-      html body, html body button, html body input, html body select, html body textarea { font-family: "Liberation Sans", sans-serif !important; }
-    ` });
-    const initialization = await page.evaluate(fixedTime => ({
-      rendererOrigin: `${location.protocol}//${location.host}`,
-      preloadBridge: typeof window.proprDesktop === 'object' && window.proprDesktop !== null,
-      acceptanceZoomBridge: typeof window.__PROPR_PACKAGED_ACCEPTANCE__ === 'object'
-        && window.__PROPR_PACKAGED_ACCEPTANCE__ !== null
-        && Object.keys(window.__PROPR_PACKAGED_ACCEPTANCE__).join('\n') === 'setZoomFactor'
-        && typeof window.__PROPR_PACKAGED_ACCEPTANCE__.setZoomFactor === 'function',
-      fontLoaded: document.fonts.check('12px "Liberation Sans"'),
-      locale: navigator.language,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      rendererTime: new Date().toISOString(),
-      fixedMarker: document.documentElement.dataset.acceptanceFixedTime === fixedTime,
-    }), FIXED_TIME);
-    if (initialization.rendererOrigin !== 'propr-app://renderer' || !initialization.preloadBridge
-      || !initialization.acceptanceZoomBridge
-      || !initialization.fontLoaded || initialization.locale !== DETERMINISTIC_INPUTS.locale
-      || initialization.timezone !== DETERMINISTIC_INPUTS.timezone || initialization.rendererTime !== FIXED_TIME
-      || !initialization.fixedMarker) {
-      throw new Error(`Packaged acceptance deterministic boundary initialization failed: ${JSON.stringify(initialization)}`);
-    }
+    await initializeRenderer(page);
     boundaryJourneys.add(activeJourney);
     return { context, page, close: cleanup };
   } catch (error) {
@@ -1036,7 +1042,26 @@ const inspectAccessibility = async (page, journey, variant, config, metrics, nam
 const captureVariants = async (page, journey) => {
   const cdp = await page.context().newCDPSession(page);
   try {
-    await forEachElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS, async ({ variant, config, metrics }) => {
+    await forEachElectronRendererVariant(page, cdp, acceptanceVariantsFor(journey), async ({ variant, config, metrics }) => {
+      const actionId = variant.startsWith('zoom-200-') ? variant.slice('zoom-200-'.length) : null;
+      let setup = null;
+      if (SETUP_ACTIONS[journey]) {
+        if (actionId) {
+          await page.reload();
+          await initializeRenderer(page);
+          await prepareProductionSetup(page, journey);
+          // Reload may reset Electron zoom. Reapply and measure on the new document.
+          metrics = await configureElectronRendererVariant(page, cdp, config);
+        }
+        // Initial viewport and action reachability are different evidence. Reset only
+        // the initial capture's scroll; action captures use normal Tab scrolling.
+        if (!actionId) await page.evaluate(() => { window.scrollTo(0, 0); document.querySelector('.desktop-entry')?.scrollTo(0, 0); });
+        const fixture = await page.evaluate(() => window.__PROPR_PACKAGED_ACCEPTANCE__.setupEvidence());
+        setup = { presentation: fixture.presentation, fixture: fixture.fixture, phase: fixture.phase,
+          capture: actionId ? 'keyboard-reached' : 'initial-viewport', action: null };
+        if (actionId) setup.action = { id: actionId, label: SETUP_ACTIONS[journey][actionId].label,
+          ...await reachSetupAction(page, SETUP_ACTIONS[journey][actionId].label) };
+      }
       const name = screenshotName(journey, variant);
       const accessibilityCheck = await inspectAccessibility(page, journey, variant, config, metrics, name);
       await collectRendererSurface(page, journey, name);
@@ -1055,7 +1080,9 @@ const captureVariants = async (page, journey) => {
       const physicalPngDimensions = { ...dimensions };
       accessibilityChecks.push({ ...accessibilityCheck, physicalPngDimensions });
       await writeFile(join(outputDirectory, 'screenshots', name), first, { mode: 0o600 });
+      if (actionId) Object.assign(setup.action, await activateSetupAction(page, journey, actionId));
       screenshotMetadata.push({
+        setup,
         name, journey, variant,
         width: dimensions.width,
         height: dimensions.height,
@@ -1583,24 +1610,10 @@ try {
     await observeLiveMutation(page, 'status', 'remote-pairing', () => fillEndpoint(page, readyOrigin, 'Remote Team'));
     await page.getByRole('button', { name: 'Sign in in browser' }).waitFor();
   });
-  await runJourney('local-setup-prerequisites', 'default', null, async page => {
-    await page.getByRole('button', { name: /Set up this computer/ }).click();
-    await page.getByRole('heading', { name: 'Check the essentials' }).waitFor();
-  });
-  await runJourney('local-setup-progress', 'default', null, async page => {
-    await page.getByRole('button', { name: /Set up this computer/ }).click();
-    for (let index = 0; index < 5; index += 1) await page.getByRole('button', { name: /Continue/ }).click();
-    await page.getByRole('button', { name: /Install ProPR/ }).click();
-    await page.getByRole('heading', { name: 'Setting up ProPR' }).waitFor();
-  });
-  await runJourney('local-setup-error', 'setup-error', null, async page => {
-    await page.getByRole('button', { name: /Set up this computer/ }).click();
-    await page.getByRole('heading', { name: 'Setup needs attention' }).waitFor();
-  });
-  await runJourney('local-setup-completion', 'setup-complete', null, async page => {
-    await page.getByRole('button', { name: /Set up this computer/ }).click();
-    await page.getByRole('heading', { name: 'ProPR is ready' }).waitFor();
-  });
+  for (const [journey, scenario] of [
+    ['local-setup-prerequisites', 'default'], ['local-setup-progress', 'default'],
+    ['local-setup-error', 'setup-error'], ['local-setup-completion', 'setup-complete'],
+  ]) await runJourney(journey, scenario, null, page => prepareProductionSetup(page, journey));
   await runJourney('dashboard-profile-manager', 'default', null, async (page, application) => {
     await pair(page, readyOrigin, 'Operations');
     const opener = page.getByRole('button', { name: /Connected: Operations/ });
@@ -1695,7 +1708,7 @@ try {
   const serious = axeFindings.filter(finding => finding.impact === 'serious').length;
   const critical = axeFindings.filter(finding => finding.impact === 'critical').length;
   const accessibility = {
-    schemaVersion: 6,
+    schemaVersion: 7,
     generatedAt: FIXED_TIME,
     serious,
     critical,
@@ -1712,7 +1725,7 @@ try {
 
   const services = observedServiceSummary();
   const sanitizedSummary = {
-    schemaVersion: 6,
+    schemaVersion: 7,
     generatedAt: FIXED_TIME,
     status: 'passed',
     journeys: ACCEPTANCE_JOURNEYS.length,

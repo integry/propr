@@ -32,6 +32,8 @@ import {
   createPrivateSmokeProfile,
   createSmokeChildEnvironment,
   removePrivateSmokeProfile,
+  runWithSmokeCleanup,
+  trackSmokeChildShutdown,
 } from './packaged-smoke-support.mjs';
 import { verifyPackagedLinuxIcon, verifyPackagedTrayIcon } from './desktop-icon-assets.mjs';
 
@@ -255,6 +257,18 @@ const listenFixture = async name => {
   if (!address || typeof address === 'string') throw new Error(`Packaged ${name} fixture did not bind`);
   const fixture = { server, io, origin: `http://127.0.0.1:${address.port}` };
   fixtures.push(fixture);
+  cleanupSteps.push({
+    name: `${name} Socket.IO fixture`,
+    cleanup: () => new Promise(resolveClose => io.close(resolveClose)),
+  }, {
+    name: `${name} HTTP fixture`,
+    cleanup: async () => {
+      if (server.listening) await new Promise((resolveClose, rejectClose) => server.close(error => {
+        if (error) rejectClose(error);
+        else resolveClose();
+      }));
+    },
+  });
   return fixture;
 };
 
@@ -285,7 +299,7 @@ let first;
 let second;
 let profileApiOrigin;
 const runs = [];
-const smokeProfiles = [];
+const cleanupSteps = [];
 const shutdownSteps = [
   'admission-closed',
   'ipc-closed',
@@ -306,7 +320,14 @@ const shutdownSteps = [
 
 const launch = async mode => {
   const smokeProfile = await createPrivateSmokeProfile();
-  smokeProfiles.push(smokeProfile);
+  let shutdownChild = async () => {};
+  cleanupSteps.unshift({
+    name: `private profile ${smokeProfile.root}`,
+    cleanup: async () => {
+      await shutdownChild();
+      await removePrivateSmokeProfile(smokeProfile);
+    },
+  });
   const userDataPath = smokeProfile.userData;
   const transport = mode !== 'release-guard';
   const baseChildEnvironment = await createSmokeChildEnvironment({
@@ -347,6 +368,7 @@ const launch = async mode => {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
+  shutdownChild = trackSmokeChildShutdown(child);
   const capture = chunk => {
     const value = chunk.toString();
     output += value;
@@ -475,7 +497,19 @@ const launch = async mode => {
   runs.push({ mode, userDataPath, output, launchArguments, secrets });
 };
 
-try {
+await runWithSmokeCleanup(async () => {
+  cleanupSteps.push({
+    name: 'profile API fixture',
+    cleanup: async () => {
+      if (profileApiServer.listening) {
+        profileApiServer.closeAllConnections();
+        await new Promise((resolveClose, rejectClose) => profileApiServer.close(error => {
+          if (error) rejectClose(error);
+          else resolveClose();
+        }));
+      }
+    },
+  });
   profileApiOrigin = await listenProfileApiFixture();
   first = await listenFixture('first');
   second = await listenFixture('second');
@@ -488,29 +522,12 @@ try {
   if (await scanPathsForSecrets(scanRoots, allSecrets)) {
     throw new Error('A packaged credential entered the isolated userData or OS keyring scan roots');
   }
+  return scanRoots;
+}, cleanupSteps).then(scanRoots => {
   console.log(
     `Packaged ${process.platform} desktop smoke passed (4/4 isolated launches): release-guard protocol-1 profile `
     + 'and Connect UI proof; 3/3 protocol-2 transport shutdown modes with production OS credentials, real '
     + 'Socket.IO/Engine.IO namespace auth, scope rotation/reconnect/error handling, five-type both-origin '
     + `rollback cleanup, compiled welcome-card layout, no cookies, and byte scans of ${scanRoots.join(', ')}.`,
   );
-} finally {
-  try {
-    for (const { io, server } of fixtures) {
-      await new Promise(resolveClose => io.close(resolveClose));
-      if (server.listening) await new Promise(resolveClose => server.close(resolveClose));
-    }
-  } finally {
-    try {
-      if (profileApiServer.listening) {
-        profileApiServer.closeAllConnections();
-        await new Promise((resolveClose, rejectClose) => profileApiServer.close(error => {
-          if (error) rejectClose(error);
-          else resolveClose();
-        }));
-      }
-    } finally {
-      for (const smokeProfile of smokeProfiles) await removePrivateSmokeProfile(smokeProfile);
-    }
-  }
-}
+});

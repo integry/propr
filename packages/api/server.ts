@@ -1,3 +1,6 @@
+import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
+import { protectStorageQueue } from '../core/src/storage/lifecycle.js';
+import { createDefaultStorageService, createInstanceStorageRoutes } from './routes/instanceStorageRoutes.js';
 import { startDashboardReadService, type DashboardReadService } from './services/dashboardReadService.js';
 import { createUsageTipsRoutes } from './routes/usageTipsRoutes.js';
 import { dashboardNarrativeModel } from './routes/dashboardNarrativeModel.js';
@@ -22,7 +25,7 @@ import { authenticateSocketRequest, setupAuth } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
-import { CORS_PREFLIGHT_MAX_AGE_SECONDS, corsRejectionHandler, createCorsOriginValidator, isTrustedMcpWebOrigin, type CorsOriginValidator } from './corsValidation.js';
+import { CORS_PREFLIGHT_MAX_AGE_SECONDS, corsRejectionHandler, createConnectStorageCorsMiddleware, createCorsOriginValidator, isTrustedMcpWebOrigin, type CorsOriginValidator } from './corsValidation.js';
 import {
   createStatusRoutes, createTaskRoutes,
   createTaskHistoryRoutes, createLiveDetailsRoutes,
@@ -214,7 +217,10 @@ try {
 // Mark even parser/rate-limit/error responses at the instance boundary.
 app.use('/api/mcp', (req, res, next) => { if (isMcpEnabledSync()) { mcpResponseHeaders(req, res, next); } else { next(); } });
 
+app.use(createConnectStorageCorsMiddleware());
+
 app.use((req, res, next) => {
+  if (res.locals.connectStorageCors) { next(); return; }
   // Server-rendered MCP consent forms submit on the API's own public origin,
   // which can differ from FRONTEND_URL. Known remote MCP web clients also need
   // their exact origin accepted at the bearer-authenticated MCP endpoint. Keep
@@ -299,9 +305,9 @@ async function initRedis(): Promise<void> {
   await redisClient.connect();
   
   const queueName = process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
-  taskQueue = new Queue(queueName, {
+  taskQueue = protectStorageQueue(new Queue(queueName, {
     connection: { ...redisRuntimeConfig.options }
-  });
+  }));
   runtimeBuildQueue = new Queue(AGENT_RUNTIME_BUILD_QUEUE_NAME, {
     connection: { ...redisRuntimeConfig.options }
   });
@@ -411,6 +417,13 @@ function setupRoutes(): void {
     managedStorage: createManagedPreviewStorageClient(() => redisClient.get(ROUTING_STATUS_REDIS_KEY)),
   });
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
+  const storageService = createDefaultStorageService();
+  const storageRoutes = createInstanceStorageRoutes(storageService);
+  // Background work is bounded/coalesced; no startup deletion or live-data scan.
+  const storageSweep = setInterval(() => {
+    void storageService.sweep().catch(() => undefined);
+  }, 60_000);
+  storageSweep.unref();
   const agentVersionRoutes = createAgentVersionRoutes();
   const activeWorkRoutes = createActiveWorkRoutes({ db, taskQueue });
   const taskSubmissionRoutes = createTaskSubmissionRoutes({ db });
@@ -458,6 +471,7 @@ function setupRoutes(): void {
   });
   const routes = [
     ...operationalRoutes,
+    ...createStorageRouteEntries(storageRoutes),
     ...createMemberCatalogRouteEntries({ instanceCatalogRoutes }),
     ...createManagementRouteEntries({
       adminRoutes,

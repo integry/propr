@@ -24,7 +24,7 @@ export const GIT_AUTHENTICATION_ENVIRONMENT = [
 export function createHooklessGit(baseDir?: string): SimpleGit {
     return simpleGit({
         ...(baseDir ? { baseDir } : {}),
-        config: [`core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`],
+        config: [`core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`, 'gc.auto=0', 'gc.worktreePruneExpire=never', 'gc.pruneExpire=never'],
         allowEnvironment: GIT_AUTHENTICATION_ENVIRONMENT,
         // simple-git treats every hooksPath override as potentially dangerous.
         // This one is a fixed, non-executable sink rather than caller input.

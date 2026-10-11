@@ -1,3 +1,4 @@
+import { repositoryStorageLifecycle } from '../storage/lifecycle.js';
 import { extractKeywords, extractKeywordsWithLLM, mergeKeywords } from './relevance/keywordExtractor.js';
 import { mineGitHistory, mineGitHistoryWithLLM, type FileScore as GitFileScore, type SemanticMiningOptions } from './relevance/gitMiner.js';
 import { listTrackedFiles, scorePaths, FileScore as PathFileScore } from './relevance/pathScorer.js';
@@ -388,6 +389,10 @@ export async function findRelevantFiles(
   prompt: string,
   options: RelevanceOptions = {}
 ): Promise<RelevanceResult> {
+  return repositoryStorageLifecycle.use(() => findRelevantFilesInternal(repoPath, prompt, options));
+}
+
+async function findRelevantFilesInternal(repoPath: string, prompt: string, options: RelevanceOptions): Promise<RelevanceResult> {
   const {
     maxResults = DEFAULT_MAX_RESULTS,
     minScore = DEFAULT_MIN_SCORE,

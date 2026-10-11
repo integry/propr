@@ -522,7 +522,7 @@ describe('release test-suite runner', () => {
         assert.match(shardJob, /runs-on: \$\{\{ fromJSON\(\(vars\.PROPR_ROOTLESS_PR_CHECKS == 'true' \|\| \(vars\.PROPR_ROOTLESS_PR_CHECKS == 'overflow' && needs\.route\.outputs\.overflow == 'true'\)\) && /, 'self-hosted routing requires explicit activation');
         const gate = workflow.slice(workflow.indexOf('\n  test:\n'), workflow.indexOf('\n  comment:\n'));
         assert.match(gate, /name: Run Full Test Suite\n/);
-        assert.match(gate, /always\(\) &&\s+\(github\.event_name == 'workflow_dispatch' \|\| !github\.event\.pull_request\.draft\)/);
+        assert.match(gate, /!cancelled\(\) &&\s+\(github\.event_name == 'workflow_dispatch' \|\| !github\.event\.pull_request\.draft\)/);
         assert.match(gate, /--verify-shard-summaries/);
         for (const job of ['shard', 'docs']) {
             const start = workflow.indexOf(`\n  ${job}:\n`);

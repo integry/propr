@@ -12,8 +12,9 @@ import type { RouteMethod } from '../routeRegistry.js';
  * - `mcp`: an MCP OAuth access token; the tool decides the required scope.
  * - `webhook`: a GitHub webhook signature (`X-Hub-Signature-256`).
  * - `browserSession`: a browser session cookie only (HTML consent pages).
+ * - `fleetSecret`: the hosted Fleet control secret (`x-propr-fleet-secret`).
  */
-export type RouteAuth = 'member' | 'public' | 'instanceToken' | 'mcp' | 'webhook' | 'browserSession';
+export type RouteAuth = 'member' | 'public' | 'instanceToken' | 'mcp' | 'webhook' | 'browserSession' | 'fleetSecret';
 
 export interface RegisteredRoute {
   method: RouteMethod;

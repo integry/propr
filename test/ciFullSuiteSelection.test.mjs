@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, describe, test } from 'node:test';
+import { parse } from 'yaml';
 
 import { SURFACES, classifyChanges } from '../scripts/ci-change-classification.mjs';
 
@@ -105,12 +106,12 @@ function expressionMap(block, header) {
  * Evaluate a GitHub expression. Property access on a missing object yields
  * undefined rather than throwing, as GitHub yields null.
  */
-function evaluate(expression, { github = {}, needs = {}, steps = {}, cancelled = false }) {
+function evaluate(expression, { github = {}, needs = {}, steps = {}, runner = {}, env = {}, cancelled = false }) {
     const body = expression.trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '')
-        .replace(/\b(github|needs|steps)((?:\.[A-Za-z_][\w-]*)+)/g, (_, root, path) =>
+        .replace(/\b(github|needs|steps|runner|env)((?:\.[A-Za-z_][\w-]*)+)/g, (_, root, path) =>
             root + path.split('.').slice(1).map(key => `?.[${JSON.stringify(key)}]`).join(''));
-    return new Function('github', 'needs', 'steps', 'cancelled', 'always', `return (${body});`)(
-        github, needs, steps, () => cancelled, () => true);
+    return new Function('github', 'needs', 'steps', 'runner', 'env', 'cancelled', 'always', `return (${body});`)(
+        github, needs, steps, runner, env, () => cancelled, () => true);
 }
 
 const STATUS_FUNCTION = /\b(always|cancelled|success|failure)\(\)/;
@@ -364,10 +365,59 @@ describe('Full Test Suite job selection', () => {
         }
     });
 
-    test('a cancelled run is never reported green', () => {
-        const run = simulateRun({ classifier: 'cancelled', cancelled: true });
-        assert.equal(run.gateRuns, true, 'the gate still runs and fails a cancelled run closed');
-        assert.equal(run.gate.status, 1);
+    for (const eventName of ['pull_request', 'workflow_dispatch']) {
+        test(`${eventName}: cancellation suppresses the aggregate and failure report`, () => {
+            const run = simulateRun({ eventName, classifier: 'cancelled', cancelled: true });
+            assert.equal(run.gateRuns, false);
+            assert.equal(run.gate, null, 'cancellation must produce neither a failed nor a successful aggregate');
+
+            // Re-evaluate after dependencies finish, including cancellation while
+            // the aggregate is running. Even completed proofs must not keep it alive.
+            for (const result of ['cancelled', 'failure', 'skipped', 'success']) {
+                const context = {
+                    github: {
+                        event_name: eventName, repository: 'integry/propr',
+                        event: { pull_request: { draft: false, head: { repo: { full_name: 'integry/propr' } } } },
+                    },
+                    needs: {
+                        ...run.needs,
+                        ...Object.fromEntries(['shard', 'docs', 'native-electron'].map(job => [job, { result }])),
+                        test: { result: 'failure' },
+                    },
+                    cancelled: true,
+                };
+                assert.equal(jobRuns('test', context), false, result);
+                assert.equal(jobRuns('comment', context), false, result);
+            }
+        });
+
+        for (const job of ['shard', 'docs', 'native-electron']) {
+            for (const result of ['failure', 'cancelled', 'skipped']) {
+                test(`${eventName}: ${job} ${result} fails closed when the workflow is not cancelled`, () => {
+                    const run = simulateRun({
+                        eventName, classifier: narrowDecision(['.github/workflows/pr-test-on-label.yml']),
+                        results: { [job]: result },
+                    });
+                    assert.equal(run.gateRuns, true);
+                    assert.equal(run.gate.status, 1, run.gate.stdout);
+                });
+            }
+        }
+    }
+
+    test('cleanup steps remain eligible during cancellation', () => {
+        const jobs = parse(fullSuite).jobs;
+        for (const [job, name, runner, env, expected] of [
+            ['shard', 'Remove raw test output', {}, {}, true],
+            ['shard', 'Stop isolated Redis', { environment: 'github-hosted' }, {}, true],
+            ['shard', 'Stop isolated Redis', { environment: 'self-hosted' }, { PROPR_ROOTLESS_DOCKER_READY: 'true' }, true],
+            ['shard', 'Stop isolated Redis', { environment: 'self-hosted' }, {}, false],
+            ...['shard', 'docs'].map(job => [job, 'Remove job files from the persistent workspace', { environment: 'self-hosted' }, {}, true]),
+        ]) {
+            const step = jobs[job].steps.find(step => step.name === name);
+            assert.ok(step, `${job}: ${name} exists`);
+            assert.equal(evaluate(step.if, { cancelled: true, runner, env }), expected, `${job}: ${name}`);
+        }
     });
 
     test('manual dispatch never consults the classifier and runs everything', () => {

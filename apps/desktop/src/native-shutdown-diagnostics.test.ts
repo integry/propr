@@ -99,6 +99,10 @@ for (const mode of ['normal', 'in-flight', 'forced-timeout'] as const) {
         profiles: { close: async () => undefined },
         sessionSecurity: { close() {}, dispose() {} },
         disposeRendererProtocol() {},
+        nativeActions: { close() {} },
+        tray: { close() {} },
+        notifications: { close() {}, idle: async () => undefined },
+        deepLinks: { close() {}, whenIdle: async () => undefined },
         getWindow: () => ({ isDestroyed: () => destroyed, destroy: () => {
           destroyed = true;
           // Electron's window-all-closed handler can request quit again.
@@ -132,6 +136,9 @@ for (const mode of ['normal', 'in-flight', 'forced-timeout'] as const) {
       assert.equal(retries, 1);
       assert.equal(forced, mode === 'forced-timeout' ? 1 : 0);
       assert.deepEqual(f.calls.at(-1), ['phase', 'propr_shutdown_phase', 'will-quit']);
+      for (const phase of phases) {
+        assert.ok(f.calls.some(call => call[0] === 'phase' && call[2] === phase), `missing crash phase: ${phase}`);
+      }
       assert.equal(phases.filter(phase => phase === 'final-quit').length, 1);
       settle();
     } finally { f.cleanup(); }

@@ -1,15 +1,11 @@
+import { createPackagedAcceptanceSetup } from '../../../apps/desktop/src/acceptance-setup';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesktopGithubInstallationDecision, DesktopSetupSnapshot } from '../../../apps/desktop/src/shared/contract';
 import { DesktopExperience } from './DesktopExperience';
 import { adaptersFor, localProfile } from './DesktopExperience.testSupport';
 import { LocalSetupWizard } from './LocalSetupWizard';
-import {
-  completed,
-  guidedAdapter,
-  idle,
-  openAndSubmitWizard,
-} from './LocalSetupWizard.integration.testSupport';
+import { completed, guidedAdapter, idle, openAndSubmitWizard } from './LocalSetupWizard.integration.testSupport';
 
 const apiMock = vi.hoisted(() => ({ setApiBaseUrl: vi.fn() }));
 const runtimeMock = vi.hoisted(() => ({ setDesktopApiBaseUrl: vi.fn() }));
@@ -18,6 +14,33 @@ vi.mock('../config/runtimeConfig', () => ({ setDesktopApiBaseUrl: runtimeMock.se
 
 describe('production local setup journey', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('keeps the production wizard and secure connection action in acceptance mode', async () => {
+    window.__PROPR_PACKAGED_ACCEPTANCE__ = { setZoomFactor: vi.fn(), setupEvidence: vi.fn() };
+    const fixture = createPackagedAcceptanceSetup(true, 'setup-complete')!;
+    const adapters = adaptersFor([], null, async () => ({ status: 'authentication-required', message: 'Approve desktop access in your browser.' }));
+    adapters.localSetup = { supported: true, ...fixture.localSetup };
+    try {
+      const { container } = render(<DesktopExperience adapters={adapters}>Workspace</DesktopExperience>);
+      fireEvent.click(await screen.findByRole('button', { name: /Set up this computer/ }));
+      const connect = await screen.findByRole('button', { name: 'Connect securely' });
+      expect(container.querySelector('main.desktop-setup-wizard .desktop-setup-success')).not.toBeNull();
+      fireEvent.click(connect);
+      await screen.findByRole('button', { name: 'Sign in in browser' });
+      expect(adapters.connection.probe).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'http://127.0.0.2:41731' }));
+      expect(adapters.authentication.authenticate).not.toHaveBeenCalled();
+      expect(adapters.externalBrowser.open).not.toHaveBeenCalled();
+    } finally { delete window.__PROPR_PACKAGED_ACCEPTANCE__; }
+  });
+
+  it.each(['retry', 'replace', 'review'] as const)('uses the production %s recovery handler with acceptance snapshots', async action => {
+    const fixture = createPackagedAcceptanceSetup(true, 'setup-error')!;
+    render(<LocalSetupWizard adapter={{ supported: true, ...fixture.localSetup }} onBack={vi.fn()} onComplete={vi.fn()} />);
+    const label = { retry: 'Retry setup', replace: 'Restart with aligned runtime', review: 'Review saved choices' }[action];
+    fireEvent.click(await screen.findByRole('button', { name: label }));
+    await screen.findByRole('heading', { name: action === 'review' ? 'Connect GitHub' : 'Setting up ProPR' });
+    expect(fixture.evidence().calls).toEqual(action === 'review' ? [] : [action === 'retry' ? 'retry' : 'replace-running-stack']);
+  });
 
   it('shows the authenticated identity, installation types, and explicit recovery controls', async () => {
     const choosing: DesktopSetupSnapshot = {
@@ -34,9 +57,7 @@ describe('production local setup journey', () => {
     const resolveGithubInstallation = vi.fn(async () => ({
       ...choosing, githubIdentity: { ...choosing.githubIdentity!, status: 'enrolling' as const, selectedInstallationId: '200' },
     }));
-    render(<LocalSetupWizard adapter={guidedAdapter({
-      status: vi.fn(async () => choosing), resolveGithubInstallation,
-    })} onBack={vi.fn()} onComplete={vi.fn()} />);
+    render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => choosing), resolveGithubInstallation })} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     expect(await screen.findByText('@member-user')).toBeInTheDocument();
     expect(screen.getByText('Organization · Installation 100')).toBeInTheDocument();
@@ -69,9 +90,7 @@ describe('production local setup journey', () => {
     };
     const resolveGithubInstallation = vi.fn(async (decision: DesktopGithubInstallationDecision) => decision.action === 'reauthenticate'
       ? afterReauthentication : choosing);
-    render(<LocalSetupWizard adapter={guidedAdapter({
-      status: vi.fn(async () => choosing), resolveGithubInstallation,
-    })} onBack={vi.fn()} onComplete={vi.fn()} />);
+    render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => choosing), resolveGithubInstallation })} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     expect(await screen.findByRole('radio', { name: /shared-org/i })).toBeChecked();
     fireEvent.click(screen.getByRole('radio', { name: /shared-user/i }));
@@ -98,9 +117,7 @@ describe('production local setup journey', () => {
       },
     };
     const resolveGithubInstallation = vi.fn(async () => refreshed);
-    render(<LocalSetupWizard adapter={guidedAdapter({
-      status: vi.fn(async () => choosing), resolveGithubInstallation,
-    })} onBack={vi.fn()} onComplete={vi.fn()} />);
+    render(<LocalSetupWizard adapter={guidedAdapter({ status: vi.fn(async () => choosing), resolveGithubInstallation })} onBack={vi.fn()} onComplete={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole('radio', { name: /member-user/i }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh installations' }));
@@ -245,8 +262,7 @@ describe('production local setup journey', () => {
 
   it('requires the dedicated recovery control before replacing an incompatible running stack', async () => {
     const incompatible: DesktopSetupSnapshot = {
-      ...idle,
-      phase: 'failed',
+      ...idle, phase: 'failed',
       state: {
         rootDir: '/redacted',
         steps: [{
@@ -271,8 +287,7 @@ describe('production local setup journey', () => {
     fireEvent.click(replace);
     expect(await screen.findByRole('heading', { name: 'ProPR is ready' })).toBeInTheDocument();
     expect(retry).toHaveBeenCalledWith({
-      sessionId: idle.sessionId,
-      recoveryAction: 'replace-running-stack',
+      sessionId: idle.sessionId, recoveryAction: 'replace-running-stack',
     });
   });
 
@@ -397,9 +412,7 @@ describe('production local setup journey', () => {
       ...requiresSecret, phase, error: phase === 'cancelled' ? 'Setup was cancelled safely.' : 'Webhook setup failed.',
       reconfigurationRequired: false,
     };
-    const retry = vi.fn()
-      .mockResolvedValueOnce(terminal)
-      .mockResolvedValueOnce(completed);
+    const retry = vi.fn().mockResolvedValueOnce(terminal).mockResolvedValueOnce(completed);
     const adapter = guidedAdapter({
       status: vi.fn(async () => requiresSecret), retry,
       acquireWebhookSecret: vi.fn(async () => ({ capability: 'webhook-secret-capability', label: 'Secret entered' as const })),

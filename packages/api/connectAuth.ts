@@ -33,19 +33,26 @@ export function resolveBrowserAuthMode(
     return 'disabled';
 }
 
+/** The login bridge and its narrowly scoped browser integration share one authority parser. */
+export function validatedConnectOrigin(value = DEFAULT_PROPR_CONNECT_ORIGIN): string {
+    const configured = value || DEFAULT_PROPR_CONNECT_ORIGIN;
+    const origin = new URL(configured);
+    if (origin.protocol !== 'https:'
+        || origin.search
+        || origin.hash
+        || normalizeProprApiOrigin(configured) !== origin.origin) {
+        throw new Error('PROPR_CONNECT_URL must be a bare HTTPS origin');
+    }
+    return origin.origin;
+}
+
 export function buildConnectAuthorizationUrl(options: {
     connectOrigin?: string;
     callbackUrl: string;
     state: string;
     installationId?: string;
 }): string {
-    const origin = new URL(options.connectOrigin || DEFAULT_PROPR_CONNECT_ORIGIN);
-    if (origin.protocol !== 'https:'
-        || origin.search
-        || origin.hash
-        || normalizeProprApiOrigin(options.connectOrigin || DEFAULT_PROPR_CONNECT_ORIGIN) !== origin.origin) {
-        throw new Error('PROPR_CONNECT_URL must be a bare HTTPS origin');
-    }
+    const origin = validatedConnectOrigin(options.connectOrigin);
     const url = new URL('/instance-login', origin);
     url.searchParams.set('callback_url', options.callbackUrl);
     url.searchParams.set('state', options.state);

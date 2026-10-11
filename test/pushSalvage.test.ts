@@ -450,7 +450,7 @@ test('PUSH_RESCUE_RETENTION_DAYS=0 retains a salvaged worktree indefinitely', as
     }
 });
 
-test('a salvaged worktree past its finite retention is expired', async () => {
+test('a salvaged worktree past its finite retention remains protected', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-expired-'));
     try {
         const worktreePath = path.join(tempDir, 'worktree');
@@ -458,14 +458,14 @@ test('a salvaged worktree past its finite retention is expired', async () => {
         await writeSalvageRetentionMarker(worktreePath, { taskId: 'task/1', branchName: '2736/salvage', retentionHours: -1 });
         assert.equal(await isSalvageRetainedWorktree(worktreePath), false);
         const result = await cleanupExpiredWorktrees(tempDir);
-        assert.equal(result.cleaned, 1);
-        assert.ok(!existsSync(worktreePath));
+        assert.equal(result.cleaned, 0);
+        assert.ok(existsSync(worktreePath));
     } finally {
         await rm(tempDir, { recursive: true, force: true });
     }
 });
 
-test('a repository-committed salvage marker does not retain a worktree in either cleanup path', async () => {
+test('a forged marker never authorizes deletion of an unknown worktree', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-forged-'));
     try {
         const forged = JSON.stringify({ reason: 'push_salvage', scheduledCleanup: null });
@@ -474,21 +474,21 @@ test('a repository-committed salvage marker does not retain a worktree in either
         await writeFile(path.join(jobWorktree, '.retention-info.json'), forged);
         assert.equal(await isSalvageRetainedWorktree(jobWorktree), false);
         await cleanupWorktree(tempDir, jobWorktree, 'pr-branch', { success: true, retentionStrategy: 'always_delete' });
-        assert.ok(!existsSync(jobWorktree));
+        assert.ok(existsSync(jobWorktree));
 
         const sweptWorktree = path.join(tempDir, 'swept');
         await mkdir(sweptWorktree);
         await writeFile(path.join(sweptWorktree, '.retention-info.json'), forged);
         const result = await cleanupExpiredWorktrees(tempDir);
-        assert.equal(result.cleaned, 1);
-        assert.equal(result.retained, 0);
-        assert.ok(!existsSync(sweptWorktree));
+        assert.equal(result.cleaned, 0);
+        assert.equal(result.retained, 1);
+        assert.ok(existsSync(sweptWorktree));
     } finally {
         await rm(tempDir, { recursive: true, force: true });
     }
 });
 
-test('salvage retention survives a removed in-worktree marker and ends when its worktree is deleted', async () => {
+test('salvage retention survives a removed marker and an ambiguous path reuse', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'propr-rescue-record-'));
     const previousDays = process.env.PUSH_RESCUE_RETENTION_DAYS;
     try {
@@ -504,15 +504,15 @@ test('salvage retention survives a removed in-worktree marker and ends when its 
         assert.equal((await cleanupExpiredWorktrees(tempDir)).retained, 1);
         assert.ok(existsSync(worktreePath));
 
-        // An operator deletes the retained worktree; the sweep drops its record, so a later
-        // directory at the same path is not retained.
+        // An operator deletes the retained worktree; the sweep does not infer that the
+        // durable salvage record can be discarded or that a reused path is safe.
         await rm(worktreePath, { recursive: true, force: true });
         await cleanupExpiredWorktrees(tempDir);
         await mkdir(worktreePath);
         await writeFile(path.join(worktreePath, '.retention-info.json'), JSON.stringify({ reason: 'push_salvage', scheduledCleanup: null }));
-        assert.equal(await isSalvageRetainedWorktree(worktreePath), false);
+        assert.equal(await isSalvageRetainedWorktree(worktreePath), true);
         await cleanupWorktree(tempDir, worktreePath, 'next-job', { success: true, retentionStrategy: 'always_delete' });
-        assert.ok(!existsSync(worktreePath));
+        assert.ok(existsSync(worktreePath));
     } finally {
         if (previousDays === undefined) delete process.env.PUSH_RESCUE_RETENTION_DAYS;
         else process.env.PUSH_RESCUE_RETENTION_DAYS = previousDays;

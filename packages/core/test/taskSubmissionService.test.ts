@@ -306,9 +306,13 @@ test('a terminated dispatch owner releases exclusion so concurrent retries resum
   try {
     const row = await insertTaskSubmission(database, input);
     await database('task_submissions').where({ id: row.id }).update({ state: 'issue_created', issue_number: 17 });
-    child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
-      import knex from 'knex';
-      import { resumeTaskSubmission } from './packages/core/src/services/taskSubmissionService.ts';
+    // Run the owner from a file: an --input-type flag would be inherited by the
+    // logger's pino transport worker, which Node then refuses to start, killing
+    // the child before it claims (nightly run 38105782983).
+    const script = path.join(root, 'owner.mjs');
+    await fs.writeFile(script, `
+      import knex from ${JSON.stringify(import.meta.resolve('knex'))};
+      import { resumeTaskSubmission } from ${JSON.stringify(new URL('../src/services/taskSubmissionService.ts', import.meta.url).href)};
       const database = knex({ client: 'better-sqlite3', connection: { filename: process.env.SUBMISSION_TEST_DB }, useNullAsDefault: true,
         pool: { afterCreate: (connection, done) => { connection.pragma('synchronous = OFF'); done(null, connection); } } });
       await resumeTaskSubmission(database, process.env.SUBMISSION_TEST_ID, {
@@ -319,7 +323,9 @@ test('a terminated dispatch owner releases exclusion so concurrent retries resum
           await new Promise(() => { setInterval(() => {}, 1000); });
         },
       });
-    `], { env: { ...process.env, SUBMISSION_TEST_DB: filename, SUBMISSION_TEST_ID: row.id }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+    `);
+    child = spawn(process.execPath, ['--import', 'tsx', script], {
+      env: { ...process.env, SUBMISSION_TEST_DB: filename, SUBMISSION_TEST_ID: row.id }, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
     await once(child, 'message', { signal: AbortSignal.timeout(10_000) });
     const interrupted = await database('task_submissions').first();
     assert.ok(interrupted.dispatch_claim);

@@ -526,14 +526,14 @@ body:has(.desktop-platform-macos),
 .desktop-setup-summary > div { display: grid; grid-template-columns: 7rem 1fr; gap: .8rem; padding: .7rem .85rem; border-bottom: 1px solid #e6edec; font-size: .78rem; }
 .desktop-setup-summary > div:last-child { border-bottom: 0; }
 .desktop-setup-summary dt { color: #758382; } .desktop-setup-summary dd { overflow-wrap: anywhere; color: #273a39; font-weight: 600; }
-.desktop-setup-footer { display: flex; justify-content: flex-end; gap: .6rem; margin-top: 1.4rem; }
+.desktop-setup-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .6rem; margin-top: 1.4rem; }
 .desktop-setup-progress { height: .45rem; margin: 1.2rem 0; border-radius: 999px; overflow: hidden; background: #e4eceb; }
 .desktop-setup-progress > span { display: block; height: 100%; border-radius: inherit; background: #16827c; transition: width .25s ease; }
 .desktop-setup-step-list { display: grid; gap: .35rem; max-height: 22rem; overflow-y: auto; }
 .desktop-setup-step-list > div { display: grid; grid-template-columns: 1.25rem 1fr; gap: .55rem; padding: .45rem .55rem; border-radius: .5rem; }
 .desktop-setup-step-list > div[data-status="active"] { background: #edf8f7; } .desktop-setup-step-list > div[data-status="failed"] { color: #9f2d20; background: #fff6f4; }
 .desktop-setup-step-list svg { width: .95rem; height: .95rem; } .desktop-setup-step-list strong, .desktop-setup-step-list small { display: block; }
-.desktop-setup-step-list strong { font-size: .78rem; } .desktop-setup-step-list small { margin-top: .1rem; color: #6d7c7b; font-size: .68rem; line-height: 1.35; }
+.desktop-setup-step-list strong { font-size: .78rem; } .desktop-setup-step-list small { margin-top: .1rem; color: #5e6d6d; font-size: .68rem; line-height: 1.35; }
 .desktop-setup-log { max-height: 7rem; margin: .8rem 0; overflow: auto; border-radius: .55rem; padding: .65rem; color: #c7e8e4; background: #18302f; font-size: .65rem; line-height: 1.45; white-space: pre-wrap; }
 .desktop-github-choice { margin-top: 1rem; border: 1px solid #bcdad7; border-radius: .85rem; padding: 1rem; background: #f8fcfb; }
 .desktop-github-choice h2 { margin: .9rem 0 .2rem; color: #193130; font-size: 1rem; }
