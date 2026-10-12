@@ -55,4 +55,234 @@ export class ManagedLogSpool {
                 BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, identity TEXT NOT NULL, cursor TEXT NOT NULL DEFAULT '{}', next INTEGER NOT NULL DEFAULT 1,
-                    dropped INTEGER NOT NULL DEFAULT 0, gaps INTEGER NOT NULL D
+                    dropped INTEGER NOT NULL DEFAULT 0, gaps INTEGER NOT NULL DEFAULT 0, last_success INTEGER, reason TEXT, protection TEXT, protected_bytes INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS segments (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, day TEXT NOT NULL,
+                    first INTEGER NOT NULL, last INTEGER NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, raw INTEGER NOT NULL,
+                    digest TEXT NOT NULL, data BLOB NOT NULL, sealed INTEGER NOT NULL DEFAULT 0, ack INTEGER NOT NULL DEFAULT 0);
+                CREATE INDEX IF NOT EXISTS segments_source ON segments(source,id); COMMIT; PRAGMA busy_timeout=100;`);
+            this.atomic(() => {
+                if (!(this.db.prepare('PRAGMA table_info(sources)').all() as Array<{ name: string }>).some(column => column.name === 'inventory_complete')) {
+                    this.db.exec('ALTER TABLE sources ADD COLUMN inventory_complete INTEGER NOT NULL DEFAULT 0');
+                }
+                for (const [name, type] of [['retired', 'INTEGER NOT NULL DEFAULT 0'], ['native_root', 'TEXT'], ['native_inventory', 'TEXT']]) {
+                    if (!(this.db.prepare('PRAGMA table_info(sources)').all() as Array<{ name: string }>).some(column => column.name === name)) {
+                        this.db.exec(`ALTER TABLE sources ADD COLUMN ${name} ${type}`);
+                    }
+                }
+                const binding = JSON.stringify({ instance, policy: this.limits });
+                this.db.prepare('INSERT OR IGNORE INTO settings VALUES (?,?)').run('binding', binding);
+                if ((this.db.prepare('SELECT value FROM settings WHERE key=?').get('binding') as { value: string }).value !== binding) throw new DiagnosticPolicyError('diagnostic policy/instance mismatch');
+            });
+        } catch (e) { this.db?.close(); this.dir.close(); throw e; }
+    }
+    private atomic<T>(fn: () => T): T {
+        this.db.exec('BEGIN IMMEDIATE');
+        try { const result = fn(); this.db.exec('COMMIT'); return result; }
+        catch (e) { try { this.db.exec('ROLLBACK'); } catch { /* SQLite may have rolled back on SQLITE_FULL. */ } throw e; }
+    }
+    private source(identity: LogIdentity): Source {
+        for (const value of Object.values(identity)) if (!/^[a-zA-Z0-9._:-]{1,160}$/.test(value)) throw new Error('invalid diagnostic identity');
+        const json = JSON.stringify(identity), id = digest(json);
+        let source = this.db.prepare('SELECT * FROM sources WHERE id=?').get(id) as Source | undefined;
+        if (!source || source.retired) {
+            if ((this.db.prepare('SELECT count(*) AS n FROM sources WHERE retired=0').get() as { n: number }).n >= this.limits.sources) throw new Error('diagnostic source capacity');
+            this.db.prepare('INSERT INTO sources(id,identity) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET retired=0').run(id, json);
+            source = this.db.prepare('SELECT * FROM sources WHERE id=?').get(id) as Source;
+        }
+        return source;
+    }
+    private gap(source: Source, bytes: number, reason: string): void {
+        this.db.prepare('UPDATE sources SET dropped=dropped+?,gaps=gaps+1,reason=?,inventory_complete=0 WHERE id=?').run(bytes, reason, source.id);
+    }
+    report(identity: LogIdentity, reason: 'buffer-capacity' | 'unsafe-source' | 'scan-limit' | 'source-replaced' | 'capture-interrupted' | 'protected-native-state' | 'ownership-unverified' | 'storage-unavailable', bytes = 0): void {
+        this.atomic(() => {
+            const source = this.source(identity);
+            if (reason === 'protected-native-state') this.db.prepare('UPDATE sources SET protected_bytes=?,protection=? WHERE id=?').run(bytes, reason, source.id);
+            else this.gap(source, bytes, reason);
+        });
+    }
+    measureNativeState(identity: LogIdentity, bytes: number, complete: boolean, inventory?: NativeInventory, now = Date.now()): void {
+        this.atomic(() => {
+            const source = this.source(identity);
+            // A partial scan can only raise the known lower bound. A complete
+            // scan may release capacity, without erasing historical gaps.
+            this.db.prepare('UPDATE sources SET protected_bytes=?,protection=?,inventory_complete=?,native_inventory=? WHERE id=?')
+                .run(complete ? bytes : Math.max(bytes, source.protected_bytes), 'protected-native-state', Number(complete),
+                    inventory ? JSON.stringify({ ...inventory, measuredAt: now, complete }) : null, source.id);
+        });
+    }
+    /** Persist membership before collection so retirement survives worker restarts. */
+    trackNativeSource(identity: LogIdentity, root: string | undefined): void {
+        if (!root) return;
+        this.atomic(() => {
+            const source = this.source(identity);
+            this.db.prepare('UPDATE sources SET native_root=? WHERE id=?').run(digest(root), source.id);
+        });
+    }
+    /** Only confirmed absence releases a transient root's measured contribution. */
+    retireNativeRoot(identity: Pick<LogIdentity, 'provider' | 'agent'>, root: string): void {
+        this.atomic(() => {
+            try { fs.lstatSync(root); return; }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+            const summary = digest(JSON.stringify({ ...identity, source: `native-state:${digest(root)}` }));
+            this.db.prepare(`UPDATE sources SET retired=1,protected_bytes=0,inventory_complete=1
+                WHERE id=? OR (native_root=? AND json_extract(identity,'$.provider')=? AND json_extract(identity,'$.agent')=?)`)
+                .run(summary, digest(root), identity.provider, identity.agent);
+            this.prune(Date.now());
+        });
+    }
+    cursor(identity: LogIdentity): Cursor {
+        const existing = this.db.prepare('SELECT cursor FROM sources WHERE id=?').get(digest(JSON.stringify(identity))) as { cursor: string } | undefined;
+        return existing ? JSON.parse(existing.cursor) as Cursor : this.atomic(() => JSON.parse(this.source(identity).cursor) as Cursor);
+    }
+    /** Cursor CAS + segments commit together. Concurrent/restarted scans cannot duplicate records. */
+    append(identity: LogIdentity, records: string[], format: 'jsonl' | 'text', options: AppendOptions): boolean {
+        const { credentials, now = Date.now(), cursor, droppedBytes = 0 } = options;
+        if (records.length > 4096 || records.reduce((sum, r) => sum + Buffer.byteLength(r), 0) > this.limits.scanBytes) throw new Error('diagnostic batch exceeds bound');
+        return this.atomic(() => {
+            const source = this.source(identity);
+            if (cursor && source.cursor !== JSON.stringify(cursor.before)) return false;
+            this.prune(now);
+            let next = source.next;
+            const batch: Array<{ text: string; seq: number; size: number }> = [];
+            const flush = () => { if (batch.length) this.appendRecords(source, batch.splice(0), now); };
+            if (droppedBytes) this.gap(source, droppedBytes, 'oversize-record');
+            for (const record of records) {
+                const size = Buffer.byteLength(record) + (record.endsWith('\n') ? 0 : 1);
+                const redacted = size <= this.limits.recordBytes ? redactRecord(record, format, credentials) : null;
+                const seq = next++;
+                if (!redacted || Buffer.byteLength(redacted) > this.limits.recordBytes) { flush(); this.gap(source, size, 'unsafe-record'); continue; }
+                batch.push({ text: redacted, seq, size });
+            }
+            flush();
+            this.db.prepare('UPDATE sources SET next=?,cursor=?,last_success=? WHERE id=?').run(next, cursor ? JSON.stringify(cursor.after) : source.cursor,
+                (this.db.prepare('SELECT gaps FROM sources WHERE id=?').get(source.id) as { gaps: number }).gaps === source.gaps ? now : source.last_success, source.id);
+            return true;
+        });
+    }
+    private appendRecords(source: Source, records: Array<{ text: string; seq: number; size: number }>, now: number): void {
+        const day = new Date(now).toISOString().slice(0, 10);
+        let segment = this.db.prepare('SELECT * FROM segments WHERE source=? ORDER BY id DESC LIMIT 1').get(source.id) as Segment | undefined;
+        // Rejected inputs consume sequence numbers, but not segment capacity.
+        if (segment && (segment.sealed || segment.day !== day || segment.last >= records[0].seq)) segment = undefined;
+        let index = 0;
+        while (index < records.length) {
+            const parts: Buffer[] = segment ? [gunzipSync(segment.data, { maxOutputLength: this.limits.segmentBytes })] : [];
+            let bytes = segment?.raw ?? 0;
+            const start = index;
+            while (index < records.length && bytes + Buffer.byteLength(records[index].text) <= this.limits.segmentBytes) {
+                const data = Buffer.from(records[index++].text); parts.push(data); bytes += data.length;
+            }
+            if (start === index && segment) { segment = undefined; continue; }
+            if (start === index) { this.gap(source, records[index++].size, 'oversize-record'); continue; }
+            const raw = Buffer.concat(parts);
+            this.storeBatch(source, { segment, day, raw, records: records.slice(start, index), now });
+            segment = undefined;
+        }
+    }
+    private storeBatch(source: Source, batch: { segment?: Segment; day: string; raw: Buffer; records: Array<{ seq: number; size: number }>; now: number }): void {
+        const { segment, day, raw, records, now } = batch;
+        const compressed = gzipSync(raw, { level: 6 });
+        const total = this.db.prepare('SELECT coalesce(sum(length(data)),0) AS bytes, count(*) AS n FROM segments').get() as { bytes: number; n: number };
+        const perSource = this.db.prepare('SELECT coalesce(sum(length(data)),0) AS bytes FROM segments WHERE source=?').get(source.id) as { bytes: number };
+        const added = compressed.length - (segment?.data.length ?? 0);
+        if (total.bytes + added > this.limits.spoolBytes || perSource.bytes + added > this.limits.sourceBytes || (!segment && total.n >= this.limits.segments)) {
+            for (const record of records) this.gap(source, record.size, 'unacknowledged-capacity');
+            return;
+        }
+        const last = records.at(-1)!.seq;
+        if (segment) this.db.prepare('UPDATE segments SET last=?,end=?,raw=?,digest=?,data=? WHERE id=?').run(last, now, raw.length, digest(compressed), compressed, segment.id);
+        else {
+            this.db.prepare('UPDATE segments SET sealed=1 WHERE source=?').run(source.id);
+            this.db.prepare('INSERT INTO segments(source,day,first,last,start,end,raw,digest,data) VALUES (?,?,?,?,?,?,?,?,?)')
+                .run(source.id, day, records[0].seq, last, now, now, raw.length, digest(compressed), compressed);
+        }
+    }
+    private prune(now: number): void {
+        // Acknowledgement includes encrypted upload AND verified readback. Unacked
+        // data is never evicted; capacity drops NEW diagnostics with durable gaps.
+        this.db.prepare('DELETE FROM segments WHERE ack=1').run();
+        this.db.prepare('DELETE FROM sources WHERE retired=1 AND NOT EXISTS (SELECT 1 FROM segments WHERE segments.source=sources.id)').run();
+        this.db.prepare('UPDATE segments SET sealed=1 WHERE day<>?').run(new Date(now).toISOString().slice(0, 10));
+    }
+    status(): object {
+        const sources = this.db.prepare('SELECT * FROM sources ORDER BY id').all() as Source[];
+        return { policyVersion: 1, redactionVersion: REDACTION_VERSION, instance: this.instance, private: true, historyComplete: false,
+            offsiteRetentionDays: 14, limits: this.limits, sourceCapacityWarning: sources.filter(s => !s.retired).length >= this.limits.sources,
+            sources: sources.map(s => ({ ...JSON.parse(s.identity), id: s.id, retired: Boolean(s.retired), nextSequence: s.next, droppedBytes: s.dropped, gaps: s.gaps,
+                inventoryComplete: Boolean(s.inventory_complete), lastSuccessfulCollection: s.last_success, reason: s.reason, protectedReason: s.protection, protectedBytes: s.protection && !s.reason && JSON.parse(s.identity).source.startsWith('native-state') ? s.protected_bytes : null, capacityWarning: s.protected_bytes >= this.limits.protectedBytes })),
+            nativeSources: {
+                rotation: 'none', growthBounded: false, inventoryComplete: false,
+                maintenance: 'unsupported-writer-lifecycle',
+                admission: { existingWritersCapped: false },
+                unmeasured: ['container-only', 'unowned', 'excluded-or-unrecognized'],
+                sources: sources.filter(s => (/^(?:native-state(?::|$)|unmapped-native-state$|shared-tmp-claude-logs$)/).test(JSON.parse(s.identity).source))
+                    .map(s => ({ ...JSON.parse(s.identity), protected: true, growthBounded: false,
+                        inventory: s.native_inventory ? JSON.parse(s.native_inventory) : null,
+                        capacityBytesLowerBound: s.protected_bytes,
+                        measurement: s.protection && !s.reason && JSON.parse(s.identity).source.startsWith('native-state') ? 'allowlisted-files-only' : 'unknown',
+                        measuredBytes: s.protection && !s.reason && JSON.parse(s.identity).source.startsWith('native-state') ? s.protected_bytes : null })),
+            },
+            spool: this.db.prepare('SELECT count(*) AS segments,coalesce(sum(length(data)),0) AS bytes FROM segments').get() };
+    }
+    assertCapacity(): void {
+        const sources = this.db.prepare('SELECT * FROM sources WHERE retired=0').all() as Source[];
+        const roots = new Map<string, number>();
+        for (const source of sources) {
+            const rootIdentity = source.native_inventory ? (JSON.parse(source.native_inventory) as NativeInventory).rootIdentity : source.id;
+            roots.set(rootIdentity, Math.max(roots.get(rootIdentity) ?? 0, source.protected_bytes));
+        }
+        const count = (this.db.prepare('SELECT count(*) AS n FROM sources WHERE retired=0').get() as { n: number }).n;
+        if (count >= this.limits.sources) throw new Error('managed diagnostics: source capacity; operator action required');
+        const bytes = [...roots.values()];
+        if (bytes.some(value => value >= this.limits.protectedBytes) || bytes.reduce((sum, value) => sum + value, 0) >= 4 * this.limits.protectedBytes) throw new Error('managed diagnostics: protected native state capacity; operator action required');
+    }
+    assertFilesystemCapacity(directory: PinnedDirectory = this.dir): void {
+        const stat = fs.statfsSync(`/proc/self/fd/${directory.fd}`, { bigint: true });
+        if (stat.bavail * stat.bsize < BigInt(this.limits.spoolBytes) || stat.ffree === 0n) {
+            throw new Error('managed diagnostics: filesystem capacity; operator action required');
+        }
+    }
+    exportOne(): { manifest: object; data: Buffer; id: number; digest: string } | null {
+        return this.atomic(() => {
+            const s = this.db.prepare('SELECT * FROM segments WHERE ack=0 ORDER BY id LIMIT 1').get() as Segment | undefined;
+            if (!s) return null;
+            this.db.prepare('UPDATE segments SET sealed=1 WHERE id=?').run(s.id);
+            const source = this.db.prepare('SELECT * FROM sources WHERE id=?').get(s.source) as Source;
+            return { id: s.id, digest: s.digest, data: s.data, manifest: {
+                schemaVersion: 1, policyVersion: 1, redactionVersion: REDACTION_VERSION, tenantPrivate: true, instance: this.instance,
+                ...JSON.parse(source.identity), sourceId: source.id, segment: s.id, utcDay: s.day,
+                collectionWindow: { start: s.start, end: s.end }, firstSequence: s.first, lastSequence: s.last,
+                compressedBytes: s.data.length, uncompressedBytes: s.raw, sha256: s.digest, encoding: 'gzip-jsonl',
+                droppedBytes: source.dropped, gaps: source.gaps, historyComplete: false, lastSuccessfulCollection: source.last_success,
+            } };
+        });
+    }
+    acknowledge(id: number, sha256: string): void {
+        this.atomic(() => {
+            const s = this.db.prepare('SELECT * FROM segments WHERE id=? AND digest=? AND sealed=1').get(id, sha256) as Segment | undefined;
+            if (!s) {
+                const previous = this.db.prepare('SELECT value FROM settings WHERE key=?').get('lastAck') as { value: string } | undefined;
+                if (previous?.value === JSON.stringify({ id, sha256 })) return;
+                throw new Error('unknown diagnostic acknowledgement');
+            }
+            this.db.prepare('INSERT OR REPLACE INTO settings VALUES (?,?)').run('lastAck', JSON.stringify({ id, sha256 }));
+            this.db.prepare('UPDATE segments SET ack=1 WHERE id=?').run(id);
+            this.prune(Date.now());
+        });
+    }
+    discardLocal(id: number, sha256: string): void {
+        if (process.env.PROPR_MANAGED_LOGS !== '1' || process.env.PROPR_DIAGNOSTIC_LOCAL_ONLY !== '1') {
+            throw new Error('local-only diagnostic disposal disabled');
+        }
+        this.atomic(() => {
+            const segment = this.db.prepare('SELECT * FROM segments WHERE id=? AND digest=? AND sealed=1 AND ack=0').get(id, sha256) as Segment | undefined;
+            if (!segment) throw new Error('unknown diagnostic local disposal');
+            const source = this.db.prepare('SELECT * FROM sources WHERE id=?').get(segment.source) as Source;
+            this.gap(source, segment.raw, 'local-only-discard');
+            this.db.prepare('DELETE FROM segments WHERE id=?').run(segment.id);
+            this.prune(Date.now());
+        });
+    }
+    close(): void { this.db.close(); this.dir.close(); }
+}

@@ -90,7 +90,9 @@ test('filesystem admission refuses free-byte/inode exhaustion without touching n
 test('self-managed launch gate refreshes multi-GB originals, refuses unsafe roots and never caps active descriptors', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-log-launch-'));
     try {
-        const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+        // Node 22 detects the eval's module syntax. Avoid --input-type, which
+        // imported dependencies can inherit when starting file-based workers.
+        const result = spawnSync(process.execPath, ['--import', 'tsx', '-e', `
             import assert from 'node:assert/strict';
             import fs from 'node:fs';
             import { mock } from 'node:test';
