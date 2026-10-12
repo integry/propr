@@ -1,0 +1,57 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+
+const apiFetch = vi.hoisted(() => vi.fn());
+vi.mock('./apiClient', () => ({ API_BASE_URL: 'https://example.test', apiFetch }));
+import { StorageExportGoneError, StorageTransientError, databaseExportStatus, downloadDatabaseExport, startDatabaseExport, verifyStorageActor } from './instanceStorageApi';
+
+const job = { version: 1 as const, instanceId: 'instance', generation: 'generation', operationId: 'job', scope: 'customer_database' as const, state: 'running' as const, expiresAt: new Date().toISOString() };
+const capabilities = { version: 1 as const, instanceId: 'instance', generation: 'generation', features: ['database_export' as const] };
+const reply = (status: number, body: unknown = {}) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+const failure = async (run: () => Promise<unknown>) => { try { await run(); } catch (error) { return error as Error; } throw new Error('expected failure'); };
+
+describe('instance storage error classification', () => {
+  afterEach(() => apiFetch.mockReset());
+  it('treats 503, 5xx, 429 and network failures as transient', async () => {
+    for (const status of [503, 500, 502, 429]) {
+      apiFetch.mockResolvedValueOnce(reply(status, { error: 'Storage operation unavailable; data retained' }));
+      expect(await failure(() => databaseExportStatus(job))).toBeInstanceOf(StorageTransientError);
+    }
+    apiFetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    expect(await failure(() => databaseExportStatus(job))).toBeInstanceOf(StorageTransientError);
+  });
+  it('surfaces a sanitized 409 lock state as transient, but an instance change as authority-bearing', async () => {
+    apiFetch.mockResolvedValueOnce(reply(409, { error: 'Another database export is in progress. Wait for it to finish or expire, then try again.' }));
+    const busy = await failure(() => startDatabaseExport(capabilities));
+    expect(busy).toBeInstanceOf(StorageTransientError);
+    expect(busy.message).toMatch(/in progress/);
+    apiFetch.mockResolvedValueOnce(reply(409, { error: 'Instance selection changed' }));
+    const changed = await failure(() => startDatabaseExport(capabilities));
+    expect(changed).not.toBeInstanceOf(StorageTransientError);
+    expect(changed.message).toMatch(/Instance selection changed/);
+  });
+  it('treats 401/403, 404 and desktop scope aborts as authority-bearing', async () => {
+    for (const status of [401, 403, 404]) {
+      apiFetch.mockResolvedValueOnce(reply(status));
+      const error = await failure(() => databaseExportStatus(job));
+      expect(error).not.toBeInstanceOf(StorageTransientError); expect(error).not.toBeInstanceOf(StorageExportGoneError);
+    }
+    apiFetch.mockRejectedValueOnce(new DOMException('Desktop connection changed', 'AbortError'));
+    expect(await failure(() => databaseExportStatus(job))).not.toBeInstanceOf(StorageTransientError);
+  });
+  it('treats 410 and a refused one-shot download as a gone job', async () => {
+    apiFetch.mockResolvedValueOnce(reply(410));
+    expect(await failure(() => databaseExportStatus(job))).toBeInstanceOf(StorageExportGoneError);
+    apiFetch.mockResolvedValueOnce(reply(503));
+    expect(await failure(() => downloadDatabaseExport(job))).toBeInstanceOf(StorageExportGoneError);
+    apiFetch.mockResolvedValueOnce(reply(403));
+    expect(await failure(() => downloadDatabaseExport(job))).not.toBeInstanceOf(StorageExportGoneError);
+  });
+  it('actor verification is transient only for server or network failure', async () => {
+    apiFetch.mockResolvedValueOnce(reply(503));
+    expect(await failure(() => verifyStorageActor('admin'))).toBeInstanceOf(StorageTransientError);
+    apiFetch.mockResolvedValueOnce(reply(401));
+    expect(await failure(() => verifyStorageActor('admin'))).not.toBeInstanceOf(StorageTransientError);
+    apiFetch.mockResolvedValueOnce(reply(200, { id: 'other', role: 'admin', permissions: ['instance.manage_settings'] }));
+    expect(await failure(() => verifyStorageActor('admin'))).not.toBeInstanceOf(StorageTransientError);
+  });
+});

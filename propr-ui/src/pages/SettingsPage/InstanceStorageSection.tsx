@@ -22,33 +22,54 @@ function StorageControls({ actor }: { actor: string }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [pollFailures, setPollFailures] = useState(0);
   const alive = useRef(true);
   const capabilitiesRef = useRef<StorageCapabilities | undefined>(undefined);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const clear = useCallback(() => { capabilitiesRef.current = undefined; setCapabilities(undefined); setInventory(undefined); setPreview(undefined); setJob(undefined); setConfirmed(false); }, []);
-  const action = useCallback(async (run: () => Promise<void>) => {
+  const action = useCallback(async (run: () => Promise<void>, onTransient?: () => void) => {
     setBusy(true); setError(''); setMessage('');
     try { await api.verifyStorageActor(actor); if (alive.current) await run(); }
-    catch (e) { if (alive.current) { clear(); setError(e instanceof Error ? e.message : 'Storage unavailable.'); } }
+    catch (e) {
+      if (alive.current) {
+        setError(e instanceof Error ? e.message : 'Storage unavailable.');
+        // Transient failures keep the known job so an administrator can retry, download or discard it.
+        // Authority, account, instance or generation failures clear every authority-bearing result.
+        if (e instanceof api.StorageTransientError) onTransient?.();
+        else if (e instanceof api.StorageExportGoneError) setJob(undefined);
+        else clear();
+      }
+    }
     finally { if (alive.current) setBusy(false); }
   }, [actor, clear]);
   const refresh = useCallback(() => action(async () => {
     const value = await api.storageCapabilities();
     if (value.version !== 1 || !value.features.includes('repository_inventory')) throw new Error('This runtime does not support instance storage management.');
+    // Clear before reading inventory: a later transient failure must not retain a changed instance's job.
+    const previous = capabilitiesRef.current;
+    if (previous && (previous.instanceId !== value.instanceId || previous.generation !== value.generation)) clear();
     const repositories = await api.storageInventory();
     await api.verifyStorageActor(actor);
     if (repositories.instanceId !== value.instanceId) throw new Error('Instance selection changed.');
-    if (alive.current) { const previous = capabilitiesRef.current; if (previous && (previous.instanceId !== value.instanceId || previous.generation !== value.generation)) setJob(undefined); capabilitiesRef.current = value; setCapabilities(value); setInventory(repositories); setPreview(undefined); setConfirmed(false); }
-  }), [action, actor]);
+    if (alive.current) { capabilitiesRef.current = value; setCapabilities(value); setInventory(repositories); setPreview(undefined); setConfirmed(false); }
+  }), [action, actor, clear]);
   useEffect(() => { void refresh(); }, [refresh]); // The keyed component resets all authority on account switch.
   useEffect(() => {
     if (job?.state !== 'running') return;
+    // Keep polling through transient failures, backing off up to 30 seconds.
     const timer = setTimeout(() => { void action(async () => {
       const value = await api.databaseExportStatus(job);
-      if (alive.current) setJob(value);
-    }); }, 1000);
+      if (value.operationId !== job.operationId || value.instanceId !== job.instanceId || value.generation !== job.generation) throw new Error('Instance selection changed. Refresh before continuing.');
+      if (alive.current) { setJob(value); setPollFailures(0); }
+    }, () => setPollFailures(count => count + 1)); }, Math.min(30_000, 1000 * 2 ** pollFailures));
     return () => clearTimeout(timer);
-  }, [job, action]);
+  }, [job, action, pollFailures]);
+  useEffect(() => {
+    if (!job) return;
+    // The server refuses an expired job; never keep offering it.
+    const timer = setTimeout(() => { setJob(undefined); setMessage('Database export expired. Create a new export if needed.'); }, Math.max(0, Date.parse(job.expiresAt) - Date.now()));
+    return () => clearTimeout(timer);
+  }, [job]);
   const checkInstance = async () => {
     const current = await api.storageCapabilities();
     if (!capabilities || current.instanceId !== capabilities.instanceId || current.generation !== capabilities.generation) throw new Error('Instance selection changed. Refresh before continuing.');
@@ -61,7 +82,7 @@ function StorageControls({ actor }: { actor: string }) {
         <h5 className="mb-2 font-semibold text-slate-900">Database export</h5>
         <p className="mb-3 max-w-2xl leading-5 text-slate-500">Includes customer records and encrypted customer credentials. Provider homes, agent environment variables, operator credentials and repository files are excluded. This is not a complete configuration backup. Encrypted fields require the original encryption key or reauthentication after import.</p>
         <button className={button} disabled={busy || Boolean(job) || !supports(capabilities, 'database_export')} onClick={() => void action(async () => {
-          await checkInstance(); const value = await api.startDatabaseExport(capabilities!); if (alive.current) setJob(value);
+          await checkInstance(); const value = await api.startDatabaseExport(capabilities!); if (alive.current) { setPollFailures(0); setJob(value); }
         })}>Create database export</button>
         {job && <div className="mt-3 space-y-2" role="status">
           <p>Export: {job.state}. Expires {new Date(job.expiresAt).toLocaleTimeString()}.</p>

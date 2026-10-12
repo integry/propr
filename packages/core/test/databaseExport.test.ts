@@ -4,9 +4,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createRequire } from 'node:module';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { configuredExportSecrets, DatabaseExports } from '../src/storage/databaseExport.js';
+import { configuredExportSecrets, DatabaseExportLockError, DatabaseExports } from '../src/storage/databaseExport.js';
 import { isExportSecretName } from '../src/storage/databaseExportWorker.js';
 const SQLite = createRequire(import.meta.url)('better-sqlite3');
 const allow = async () => {};
@@ -169,9 +169,155 @@ test('expired artifacts of a proven-dead process are reaped; a new generation ca
   await fs.chmod(root, 0o700);
   const directory = await fs.mkdtemp(path.join(root, 'snapshot-'));
   await fs.writeFile(path.join(directory, 'database.sqlite'), 'expired private canary');
-  await fs.writeFile(path.join(root, 'active', 'owner.json'), JSON.stringify({ pid: 2147483647, pidNamespace: await fs.readlink('/proc/self/ns/pid'), expiresAt: Date.now() - 1, directory: path.basename(directory) }));
+  await fs.writeFile(path.join(root, 'active', 'owner.json'), JSON.stringify({ pid: 2147483647, pidNamespace: await fs.readlink('/proc/self/ns/pid'), expiresAt: Date.now() - 1, directory: path.basename(directory) }), { mode: 0o600 });
   const job = await f.start(); assert.equal((await settled(f.exports, job.operationId)).state, 'ready');
   await assert.rejects(fs.stat(directory));
+});
+
+const DEAD_PID = 2147483647;
+const GRACE = 60_000;
+type OwnerFixture = { pid?: unknown; pidNamespace?: unknown; expiresAt?: unknown; legacy?: boolean; raw?: string; mode?: number; extraFile?: boolean };
+/** Writes a lock left by another process: a current lease or a pre-upgrade `active` lock. */
+async function staleLock(root: string, fixture: OwnerFixture) {
+  const exportsRoot = path.join(root, 'exports');
+  await fs.mkdir(exportsRoot, { recursive: true, mode: 0o700 }); await fs.chmod(exportsRoot, 0o700);
+  const token = randomUUID().replace(/-/g, '');
+  const lock = path.join(exportsRoot, fixture.legacy ? 'active' : `lease-${token}`);
+  const snapshot = fixture.legacy ? await fs.mkdtemp(path.join(exportsRoot, 'snapshot-')) : path.join(exportsRoot, `snapshot-${token}`);
+  if (!fixture.legacy) await fs.mkdir(snapshot, { mode: 0o700 });
+  await fs.writeFile(path.join(snapshot, 'database.sqlite'), 'expired private canary', { mode: 0o600 });
+  if (fixture.extraFile) await fs.writeFile(path.join(snapshot, 'unexpected.txt'), 'operator evidence');
+  await fs.mkdir(lock, { mode: 0o700 });
+  const owner = { token: fixture.legacy ? undefined : token, pid: 'pid' in fixture ? fixture.pid : DEAD_PID,
+    pidNamespace: 'pidNamespace' in fixture ? fixture.pidNamespace : await fs.readlink('/proc/self/ns/pid'),
+    expiresAt: 'expiresAt' in fixture ? fixture.expiresAt : Date.now() - 1, directory: path.basename(snapshot) };
+  await fs.writeFile(path.join(lock, 'owner.json'), fixture.raw ?? JSON.stringify(owner), { mode: fixture.mode ?? 0o600 });
+  return { lock, snapshot, exportsRoot };
+}
+const recovered = async (lock: { lock: string; snapshot: string }) => {
+  await assert.rejects(fs.stat(lock.lock)); await assert.rejects(fs.stat(lock.snapshot));
+};
+const retained = async (lock: { lock: string; snapshot: string }) => {
+  assert.equal(await fs.readFile(path.join(lock.snapshot, 'database.sqlite'), 'utf8'), 'expired private canary');
+  assert.ok((await fs.stat(path.join(lock.lock, 'owner.json'))).isFile());
+};
+
+for (const legacy of [false, true]) {
+  const kind = legacy ? 'pre-upgrade' : 'current';
+  test(`${kind} lock: Linux same-namespace dead owner is recovered at expiry`, async t => {
+    const f = await fixture(t); const lock = await staleLock(f.root, { legacy });
+    const job = await f.start(); assert.equal((await settled(f.exports, job.operationId)).state, 'ready');
+    await recovered(lock);
+  });
+  for (const [owner, pidNamespace] of [['different PID namespace', 'pid:[4026531836]'], ['non-Linux runtime', null]] as const) {
+    test(`${kind} lock: expired ${owner} owner is recovered after the grace period, with a specific state before it`, async t => {
+      const f = await fixture(t);
+      // A live PID here may be an unrelated process in another namespace: liveness is unprovable.
+      const early = await staleLock(f.root, { legacy, pidNamespace, pid: process.pid, expiresAt: Date.now() - 1 });
+      let failure: unknown;
+      await assert.rejects(f.start(), error => { failure = error; return error instanceof DatabaseExportLockError && /can be recovered after/.test(error.message); });
+      assert.equal((failure as DatabaseExportLockError).status, 409);
+      assert.equal(String((failure as Error).message).includes(f.root), false);
+      await retained(early);
+      await fs.writeFile(path.join(early.lock, 'owner.json'), JSON.stringify({ ...JSON.parse(await fs.readFile(path.join(early.lock, 'owner.json'), 'utf8')), expiresAt: Date.now() - GRACE - 1 }), { mode: 0o600 });
+      const job = await f.start(); assert.equal((await settled(f.exports, job.operationId)).state, 'ready');
+      await recovered(early);
+    });
+  }
+  test(`${kind} lock: an expired owner whose same-namespace PID is alive waits for the grace period`, async t => {
+    const f = await fixture(t); const lock = await staleLock(f.root, { legacy, pid: process.pid });
+    await assert.rejects(f.start(), /can be recovered after/); await retained(lock);
+  });
+  test(`${kind} lock: a live unexpired owner is never stolen, even if its PID is unprovable`, async t => {
+    const f = await fixture(t);
+    for (const pidNamespace of [null, 'pid:[4026531836]', await fs.readlink('/proc/self/ns/pid')]) {
+      const lock = await staleLock(f.root, { legacy, pidNamespace, expiresAt: Date.now() + 60_000 });
+      await assert.rejects(f.start(), error => error instanceof DatabaseExportLockError && /in progress/.test(error.message));
+      await retained(lock);
+      await fs.rm(lock.lock, { recursive: true }); await fs.rm(lock.snapshot, { recursive: true });
+    }
+  });
+}
+
+for (const [name, owner] of Object.entries({
+  'malformed JSON': { raw: '{"pid":' }, 'null owner': { raw: 'null' }, 'invalid PID': { pid: -1 }, 'string PID': { pid: '1' },
+  'non-finite expiry': { expiresAt: 'soon' }, 'group-readable owner': { mode: 0o640 },
+  'unexpected snapshot files': { extraFile: true, expiresAt: Date.now() - GRACE - 1, pidNamespace: null },
+} satisfies Record<string, OwnerFixture>)) {
+  test(`unsafe or malformed expired lock fails closed with an actionable state: ${name}`, async t => {
+    const f = await fixture(t); const lock = await staleLock(f.root, owner);
+    await assert.rejects(f.start(), error => error instanceof DatabaseExportLockError && /cannot be recovered automatically/.test(error.message) && !error.message.includes(f.root));
+    assert.equal(await fs.readFile(path.join(lock.snapshot, 'database.sqlite'), 'utf8'), 'expired private canary');
+    if (owner.extraFile) assert.equal(await fs.readFile(path.join(lock.snapshot, 'unexpected.txt'), 'utf8'), 'operator evidence');
+    else await retained(lock);
+  });
+}
+
+test('expired lock recovery never follows a symlinked owner file or snapshot', async t => {
+  const f = await fixture(t); const lock = await staleLock(f.root, {});
+  const outside = path.join(f.root, 'outside'); await fs.mkdir(outside);
+  await fs.writeFile(path.join(outside, 'database.sqlite'), 'caller-controlled');
+  await fs.rm(lock.snapshot, { recursive: true }); await fs.symlink(outside, lock.snapshot);
+  await assert.rejects(f.start(), DatabaseExportLockError);
+  assert.equal(await fs.readFile(path.join(outside, 'database.sqlite'), 'utf8'), 'caller-controlled');
+  const other = await staleLock(f.root, { legacy: true });
+  await fs.rm(path.join(other.lock, 'owner.json')); await fs.symlink(path.join(outside, 'database.sqlite'), path.join(other.lock, 'owner.json'));
+  await assert.rejects(new DatabaseExports(f.source, path.join(f.root, 'exports')).start('instance', 'admin', allow), DatabaseExportLockError);
+  assert.equal(await fs.readFile(path.join(outside, 'database.sqlite'), 'utf8'), 'caller-controlled');
+});
+
+test('concurrent recovery of one expired lock admits at most one export and never deletes a live snapshot', async t => {
+  const f = await fixture(t);
+  for (let round = 0; round < 5; round++) {
+    const lock = await staleLock(f.root, { pidNamespace: null, expiresAt: Date.now() - GRACE - 1 });
+    const contenders = Array.from({ length: 6 }, () => new DatabaseExports(f.source, path.join(f.root, 'exports')));
+    const results = await Promise.allSettled(contenders.map(exports => exports.start('instance', 'admin', allow)));
+    const admitted = results.flatMap((result, index) => result.status === 'fulfilled' ? [{ exports: contenders[index], job: result.value }] : []);
+    assert.ok(admitted.length <= 1, `round ${round}: ${admitted.length} admitted`);
+    for (const result of results) if (result.status === 'rejected') assert.ok(result.reason instanceof DatabaseExportLockError, String(result.reason));
+    let winner = admitted[0];
+    if (!winner) {
+      // Every contender may observe another's fresh lease and back off; a retry is then admitted.
+      const exports = new DatabaseExports(f.source, path.join(f.root, 'exports'));
+      winner = { exports, job: await exports.start('instance', 'admin', allow) };
+    }
+    await recovered(lock);
+    // A late contender cannot steal the admitted, live job or erase its snapshot.
+    await assert.rejects(new DatabaseExports(f.source, path.join(f.root, 'exports')).start('instance', 'admin', allow), /in progress/);
+    const ready = await settled(winner.exports, winner.job.operationId);
+    assert.equal(ready.state, 'ready');
+    const download = await winner.exports.redeem('instance', winner.exports.generation, winner.job.operationId, 'admin', allow);
+    try { assert.equal((await download.file.readFile()).length, ready.sizeBytes); }
+    finally { await download.file.close(); await download.dispose(); }
+    assert.deepEqual(await fs.readdir(path.join(f.root, 'exports')), []);
+  }
+});
+
+test('a still-running expired owner releasing its lock concurrently with recovery is safe', async t => {
+  const f = await fixture(t);
+  const owner = new DatabaseExports(f.source, path.join(f.root, 'exports'));
+  const job = await owner.start('instance', 'admin', allow);
+  await settled(owner, job.operationId);
+  const lease = (await fs.readdir(path.join(f.root, 'exports'))).find(name => name.startsWith('lease-'))!;
+  const ownerFile = path.join(f.root, 'exports', lease, 'owner.json');
+  // Simulate the original worker finishing late after its lease expired in another namespace.
+  await fs.writeFile(ownerFile, JSON.stringify({ ...JSON.parse(await fs.readFile(ownerFile, 'utf8')), pidNamespace: null, expiresAt: Date.now() - GRACE - 1 }), { mode: 0o600 });
+  const recoverer = new DatabaseExports(f.source, path.join(f.root, 'exports'));
+  const [next] = await Promise.all([recoverer.start('instance', 'admin', allow), owner.cancel('instance', owner.generation, job.operationId, 'admin', allow).catch(() => undefined)]);
+  assert.equal((await settled(recoverer, next.operationId)).state, 'ready');
+  await recoverer.cancel('instance', recoverer.generation, next.operationId, 'admin', allow);
+  assert.deepEqual(await fs.readdir(path.join(f.root, 'exports')), []);
+});
+
+test('an expired in-memory job does not permanently block its own process', async t => {
+  const f = await fixture(t); const job = await f.start(); await settled(f.exports, job.operationId);
+  const now = Date.now(); t.mock.timers.enable({ apis: ['Date'], now });
+  t.mock.timers.setTime(now + 5 * 60_000 + 1);
+  await assert.rejects(f.exports.status('instance', f.exports.generation, job.operationId, 'admin', allow), (error: Error & { status?: number }) => error.status === 410);
+  const next = await f.exports.start('instance', 'admin', allow);
+  t.mock.timers.reset();
+  assert.equal((await settled(f.exports, next.operationId)).state, 'ready');
+  await f.exports.cancel('instance', f.exports.generation, next.operationId, 'admin', allow);
 });
 
 test('historical customer content containing a configured Fleet control secret is never downloadable', async t => {

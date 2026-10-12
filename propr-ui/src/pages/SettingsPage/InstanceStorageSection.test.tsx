@@ -4,7 +4,7 @@ import { AuthProvider } from '../../contexts/AuthContext';
 import type { CurrentUser } from '../../api/proprTypes';
 import InstanceStorageSection from './InstanceStorageSection';
 import * as api from '../../api/instanceStorageApi';
-vi.mock('../../api/instanceStorageApi', () => ({ storageCapabilities: vi.fn(), storageInventory: vi.fn(), storagePreview: vi.fn(), storageExecute: vi.fn(), startDatabaseExport: vi.fn(), databaseExportStatus: vi.fn(), downloadDatabaseExport: vi.fn(), cancelDatabaseExport: vi.fn(), verifyStorageActor: vi.fn() }));
+vi.mock('../../api/instanceStorageApi', async importOriginal => ({ ...await importOriginal<typeof import('../../api/instanceStorageApi')>(), storageCapabilities: vi.fn(), storageInventory: vi.fn(), storagePreview: vi.fn(), storageExecute: vi.fn(), startDatabaseExport: vi.fn(), databaseExportStatus: vi.fn(), downloadDatabaseExport: vi.fn(), cancelDatabaseExport: vi.fn(), verifyStorageActor: vi.fn() }));
 const user = { id: 'admin', username: 'admin', role: 'admin', permissions: ['instance.manage_settings'] } as CurrentUser;
 const capabilities = { version: 1 as const, instanceId: 'instance', generation: 'generation', features: ['repository_inventory', 'repository_cleanup', 'database_export'] as const };
 const inventory = { version: 1 as const, instanceId: 'instance', state: 'partial' as const, observedAt: new Date().toISOString(), lastUseAt: null, repositories: [{ id: 'repo', name: 'example/project', category: 'repository_caches' as const, estimatedBytes: null, protectedReasons: [] }] };
@@ -72,5 +72,116 @@ describe('native instance storage', () => {
     expect(screen.queryByRole('button', { name: 'Download once' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Discard export' }));
     await waitFor(() => expect(api.cancelDatabaseExport).toHaveBeenCalled());
+  });
+});
+
+describe('database export job across transient and authority-bearing failures', () => {
+  const running = { version: 1 as const, instanceId: 'instance', generation: 'generation', operationId: 'job', scope: 'customer_database' as const, state: 'running' as const, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString() };
+  const ready = { ...running, state: 'ready' as const, sizeBytes: 4096, sha256: 'a'.repeat(64), schemaVersion: 7, migration: 'customer-schema-v1' };
+  const transient = () => new api.StorageTransientError('Storage operation temporarily unavailable. Try again.');
+  async function started() {
+    vi.mocked(api.startDatabaseExport).mockResolvedValue(running);
+    vi.mocked(api.databaseExportStatus).mockReturnValue(new Promise(() => {}));
+    render(view()); await screen.findByText('example/project');
+    fireEvent.click(screen.getByRole('button', { name: 'Create database export' }));
+    expect(await screen.findByText(/Export: running/)).toBeInTheDocument();
+  }
+  const jobShown = () => screen.queryByRole('button', { name: 'Discard export' });
+
+  it('a transient status-poll failure keeps the job and polling continues until ready', async () => {
+    vi.mocked(api.startDatabaseExport).mockResolvedValue(running);
+    vi.mocked(api.databaseExportStatus).mockRejectedValueOnce(transient()).mockResolvedValue(ready);
+    render(view()); await screen.findByText('example/project');
+    fireEvent.click(screen.getByRole('button', { name: 'Create database export' }));
+    expect(await screen.findByRole('alert', {}, { timeout: 3000 })).toHaveTextContent('temporarily unavailable');
+    expect(screen.getByText(/Export: running/)).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Download once' }, { timeout: 5000 })).toBeInTheDocument();
+    expect(api.databaseExportStatus).toHaveBeenCalledTimes(2);
+  }, 10_000);
+
+  for (const [name, failure] of [
+    ['inventory 503', () => vi.mocked(api.storageInventory).mockRejectedValue(transient())],
+    ['network failure', () => vi.mocked(api.storageCapabilities).mockRejectedValue(new api.StorageTransientError('Storage service unreachable. Check the connection and try again.'))],
+    ['409 busy', () => vi.mocked(api.storageInventory).mockRejectedValue(new api.StorageTransientError('Another database export is in progress. Wait for it to finish or expire, then try again.'))],
+  ] as const) {
+    it(`a transient refresh failure (${name}) keeps the job so it can still be discarded`, async () => {
+      await started();
+      failure();
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh inventory' }));
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      expect(screen.getByText(/Export: running/)).toBeInTheDocument();
+      vi.mocked(api.storageCapabilities).mockResolvedValue({ ...capabilities, features: [...capabilities.features] });
+      fireEvent.click(jobShown()!);
+      await waitFor(() => expect(api.cancelDatabaseExport).toHaveBeenCalledWith(running));
+      await waitFor(() => expect(jobShown()).not.toBeInTheDocument());
+    });
+  }
+
+  it('a transient discard failure keeps the job for a retry', async () => {
+    await started();
+    vi.mocked(api.cancelDatabaseExport).mockRejectedValueOnce(transient());
+    fireEvent.click(jobShown()!);
+    expect(await screen.findByRole('alert')).toHaveTextContent('temporarily unavailable');
+    expect(jobShown()).toBeInTheDocument();
+    fireEvent.click(jobShown()!);
+    await waitFor(() => expect(jobShown()).not.toBeInTheDocument());
+    expect(api.cancelDatabaseExport).toHaveBeenCalledTimes(2);
+  });
+
+  it('a 409 lock state from export creation is shown without clearing instance authority', async () => {
+    vi.mocked(api.startDatabaseExport).mockRejectedValue(new api.StorageTransientError('A previous database export expired and its lock can be recovered after 2026-10-12T20:00:00.000Z. Try again then.'));
+    render(view()); await screen.findByText('example/project');
+    fireEvent.click(screen.getByRole('button', { name: 'Create database export' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('can be recovered after');
+    expect(screen.getByText('example/project')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create database export' })).toBeEnabled();
+  });
+
+  for (const [name, failure] of [
+    ['401/403 on status refresh', () => vi.mocked(api.storageCapabilities).mockRejectedValue(new Error('Current instance administrator access is required.'))],
+    ['actor/account switch', () => vi.mocked(api.verifyStorageActor).mockRejectedValue(new Error('Account or instance authority changed. Reload Settings.'))],
+    ['instance mismatch', () => vi.mocked(api.storageCapabilities).mockResolvedValue({ ...capabilities, instanceId: 'other-instance', features: [...capabilities.features] })],
+    ['generation mismatch', () => vi.mocked(api.storageCapabilities).mockResolvedValue({ ...capabilities, generation: 'restarted', features: [...capabilities.features] })],
+    ['generation mismatch followed by a transient inventory failure', () => {
+      vi.mocked(api.storageCapabilities).mockResolvedValue({ ...capabilities, generation: 'restarted', features: [...capabilities.features] });
+      vi.mocked(api.storageInventory).mockRejectedValue(transient());
+    }],
+  ] as const) {
+    it(`${name} clears the job`, async () => {
+      await started();
+      failure();
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh inventory' }));
+      await waitFor(() => expect(jobShown()).not.toBeInTheDocument());
+      expect(screen.queryByText(/Export: running/)).not.toBeInTheDocument();
+    });
+  }
+
+  it('401/403 from a status poll clears the job and authority', async () => {
+    vi.mocked(api.startDatabaseExport).mockResolvedValue(running);
+    vi.mocked(api.databaseExportStatus).mockRejectedValue(new Error('Current instance administrator access is required.'));
+    render(view()); await screen.findByText('example/project');
+    fireEvent.click(screen.getByRole('button', { name: 'Create database export' }));
+    expect(await screen.findByRole('alert', {}, { timeout: 3000 })).toHaveTextContent('administrator access is required');
+    expect(jobShown()).not.toBeInTheDocument();
+    expect(screen.queryByText('example/project')).not.toBeInTheDocument();
+  });
+
+  it('a status poll for a different generation clears the job', async () => {
+    vi.mocked(api.startDatabaseExport).mockResolvedValue(running);
+    vi.mocked(api.databaseExportStatus).mockResolvedValue({ ...running, generation: 'restarted' });
+    render(view()); await screen.findByText('example/project');
+    fireEvent.click(screen.getByRole('button', { name: 'Create database export' }));
+    expect(await screen.findByRole('alert', {}, { timeout: 3000 })).toHaveTextContent('Instance selection changed');
+    expect(jobShown()).not.toBeInTheDocument();
+  });
+
+  it('an export the server no longer holds is dropped while instance data remains', async () => {
+    vi.mocked(api.startDatabaseExport).mockResolvedValue(running);
+    vi.mocked(api.databaseExportStatus).mockRejectedValue(new api.StorageExportGoneError('This export is no longer available. Create a new export.'));
+    render(view()); await screen.findByText('example/project');
+    fireEvent.click(screen.getByRole('button', { name: 'Create database export' }));
+    expect(await screen.findByRole('alert', {}, { timeout: 3000 })).toHaveTextContent('no longer available');
+    expect(jobShown()).not.toBeInTheDocument();
+    expect(screen.getByText('example/project')).toBeInTheDocument();
   });
 });
