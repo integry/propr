@@ -8,7 +8,9 @@ import { spawnSync } from 'node:child_process';
 import { ManagedLogSpool, DiagnosticPolicyError, MANAGED_LOG_POLICY, digest, type ManagedLogPolicy } from '../src/diagnostics/managedLogSpool.js';
 import { collectProvider } from '../src/diagnostics/providerCollector.js';
 import { inspectNativeLogRoot, nativeAdmissionReason, UNSUPPORTED_OWNERSHIP_REASON } from '../src/diagnostics/nativeLogPolicy.js';
-import { supportedProviderOwners, AGENT_CONTAINER_UID } from '../src/diagnostics/providerOwnership.js';
+import { supportedProviderOwners, AGENT_CONTAINER_UID, containerUidConfigurationError, INVALID_CONTAINER_UID_REASON, isProviderOwnershipError, providerOwnershipStatus } from '../src/diagnostics/providerOwnership.js';
+import { nativeCredentialValues } from '../src/diagnostics/credentialRedaction.js';
+import Database from 'better-sqlite3';
 
 const repository = path.resolve(import.meta.dirname, '../../..');
 function fixture() {
@@ -250,4 +252,114 @@ test('mixed ownership inside a supported root is reported per file and refuses a
         assert.throws(() => collectProvider(f.spool, { ...input, measureOnly: true, rejectUnsafe: true }), /ownership unsupported/);
         assert.equal(inspectNativeLogRoot({ provider: 'claude', agent: 'agent-a', root: f.home }).reason, 'unsupported-ownership');
     } finally { f.close(); }
+});
+
+test('credential stores that fail the ownership check report ownership-unsupported in collection and capture', t => {
+    const f = fixture();
+    const fstat = fs.fstatSync;
+    try {
+        fs.writeFileSync(path.join(f.home, 'debug', 'owned.txt'), 'INFO owned\n');
+        fs.writeFileSync(path.join(f.home, '.credentials.json'), '{"token":"credential-canary-value"}');
+        // A credential file that missed the entrypoint chown.
+        t.mock.method(fs, 'fstatSync', (fd: number, options?: fs.StatOptions) => {
+            const stat = fstat(fd, options as never) as fs.Stats;
+            if (fs.readlinkSync(`/proc/self/fd/${fd}`).endsWith('/.credentials.json')) (stat as { uid: number }).uid = stat.uid + 1;
+            return stat;
+        });
+        assert.throws(() => nativeCredentialValues(f.home, 'claude'), (e: unknown) => isProviderOwnershipError(e));
+        assert.equal(collectProvider(f.spool, { provider: 'claude', agent: 'agent-a', root: f.home, credentials: [] }), false);
+        assert.deepEqual(drain(f.spool), []);
+        assert.equal((f.spool.status() as { sources: Array<{ source: string; reason: string | null }> }).sources.find(s => s.source === 'native-state')!.reason, 'ownership-unsupported');
+    } finally { f.close(); }
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-diagnostics-capture-owner-'));
+    try {
+        const home = path.join(root, '.claude');
+        fs.mkdirSync(home);
+        fs.writeFileSync(path.join(home, '.credentials.json'), '{"token":"credential-canary-value"}');
+        const output = run(`
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            const fstat = fs.fstatSync;
+            fs.fstatSync = (fd, options) => {
+                const stat = fstat(fd, options);
+                if (fs.readlinkSync('/proc/self/fd/' + fd).endsWith('/.credentials.json')) stat.uid += 1;
+                return stat;
+            };
+            const runtime = await import('./packages/core/src/diagnostics/managedLogRuntime.ts');
+            assert.equal(runtime.prepareProviderCapture({ provider: 'claude', agent: 'agent-a', authenticationRoot: ${JSON.stringify(home)} }), null);
+            const spool = runtime.managedDiagnostics();
+            console.log(spool.status().sources.find(s => s.source === 'capture').reason);
+            spool.close();
+            process.exit(0);
+        `, { PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a', PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool') });
+        assert.equal(output.trim(), 'ownership-unsupported');
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('misdeclared policy migration chains refuse before any step is applied', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-diagnostics-chain-'));
+    const dir = path.join(root, 'spool');
+    const v1: ManagedLogPolicy = { ...MANAGED_LOG_POLICY };
+    const v2: ManagedLogPolicy = { ...v1, version: 2, segmentBytes: 128 * 1024 };
+    const v3: ManagedLogPolicy = { ...v2, version: 3, sourceBytes: 16 * 1024 * 1024 };
+    try {
+        new ManagedLogSpool(dir, 'tenant-a').close();
+        const invalid = [
+            // Copy-pasted `previous` shared by two steps.
+            [{ from: 1, to: 2, previous: v1 }, { from: 2, to: 3, previous: v1 }],
+            // Duplicate `from` values.
+            [{ from: 1, to: 2, previous: v1 }, { from: 1, to: 3, previous: v1 }, { from: 2, to: 3, previous: v2 }],
+            // Non-advancing step.
+            [{ from: 1, to: 1, previous: v1 }],
+        ];
+        for (const migrations of invalid) {
+            assert.throws(() => new ManagedLogSpool(dir, 'tenant-a', v3, { migrations }),
+                (e: unknown) => e instanceof DiagnosticPolicyError && /invalid diagnostic policy migrations/.test((e as Error).message));
+        }
+        // The refused attempts left the v1 binding intact; a valid chain still upgrades.
+        new ManagedLogSpool(dir, 'tenant-a').close();
+        new ManagedLogSpool(dir, 'tenant-a', v3, { migrations: [{ from: 1, to: 2, previous: v1 }, { from: 2, to: 3, previous: v2 }] }).close();
+        new ManagedLogSpool(dir, 'tenant-a', v3).close();
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a newer stored policy with keys this release does not know refuses as a downgrade', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-diagnostics-future-'));
+    const dir = path.join(root, 'spool');
+    try {
+        new ManagedLogSpool(dir, 'tenant-a').close();
+        const db = new Database(path.join(dir, 'spool.sqlite'));
+        db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify({ instance: 'tenant-a',
+            policy: { ...MANAGED_LOG_POLICY, version: MANAGED_LOG_POLICY.version + 1, futureLimit: 1 } }), 'binding');
+        db.close();
+        assert.throws(() => new ManagedLogSpool(dir, 'tenant-a'), /diagnostic policy downgrade refused/);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a malformed container UID is surfaced as a configuration error, not an alignment refusal', () => {
+    for (const value of ['-1', 'node', '4294967295']) {
+        const env = { PROPR_AGENT_CONTAINER_UID: value };
+        assert.deepEqual(supportedProviderOwners(env, 0), [0]);
+        assert.equal(containerUidConfigurationError(env, 0), INVALID_CONTAINER_UID_REASON);
+        assert.deepEqual(providerOwnershipStatus(env, 0), { processUid: 0, supportedOwners: [0], agentContainerUid: null,
+            configurationError: INVALID_CONTAINER_UID_REASON, mapping: 'hosted-root-worker' });
+        // Non-root workers never consult the container UID.
+        assert.equal(containerUidConfigurationError(env, 1000), null);
+    }
+    assert.equal(containerUidConfigurationError({ PROPR_AGENT_CONTAINER_UID: '2000' }, 0), null);
+    assert.equal((providerOwnershipStatus({ PROPR_AGENT_CONTAINER_UID: '2000' }, 0) as { agentContainerUid: number }).agentContainerUid, 2000);
+
+    const previous = process.env.PROPR_AGENT_CONTAINER_UID;
+    const getuid = process.getuid;
+    process.env.PROPR_AGENT_CONTAINER_UID = '-1';
+    process.getuid = () => 0;
+    try {
+        assert.equal(nativeAdmissionReason([{ reason: 'unsupported-ownership' } as never]), INVALID_CONTAINER_UID_REASON);
+    } finally {
+        process.getuid = getuid;
+        if (previous === undefined) delete process.env.PROPR_AGENT_CONTAINER_UID;
+        else process.env.PROPR_AGENT_CONTAINER_UID = previous;
+    }
+    assert.equal(nativeAdmissionReason([{ reason: 'unsupported-ownership' } as never]), UNSUPPORTED_OWNERSHIP_REASON);
 });

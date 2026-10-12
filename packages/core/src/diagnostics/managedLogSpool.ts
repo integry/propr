@@ -112,11 +112,15 @@ export class ManagedLogSpool {
     /** The instance binding is permanent; the policy binding changes only
      * through declared migrations. Downgrades and unversioned tuning refuse. */
     private bind(migrations: readonly ManagedLogPolicyMigration[]): void {
+        validMigrations(migrations);
         const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get('binding') as { value: string } | undefined;
         const write = () => this.db.prepare('INSERT OR REPLACE INTO settings VALUES (?,?)').run('binding', JSON.stringify({ instance: this.instance, policy: this.limits }));
         if (!row) { write(); return; }
         const stored = JSON.parse(row.value) as { instance?: unknown; policy?: ManagedLogPolicy };
         if (stored.instance !== this.instance) throw new DiagnosticPolicyError('diagnostic policy/instance mismatch');
+        // A newer release may bind a policy shape this one cannot validate.
+        const storedVersion = Number((stored.policy as { version?: unknown } | undefined)?.version);
+        if (Number.isSafeInteger(storedVersion) && storedVersion > this.limits.version) throw new DiagnosticPolicyError('diagnostic policy downgrade refused');
         const policy = stored.policy ? validPolicy(stored.policy) : undefined;
         if (policy && samePolicy(policy, this.limits)) return;
         const history = JSON.parse((this.db.prepare('SELECT value FROM settings WHERE key=?').get('policyHistory') as { value: string } | undefined)?.value ?? '[]') as object[];
@@ -418,6 +422,14 @@ function validPolicy(policy: ManagedLogPolicy): ManagedLogPolicy {
         throw new DiagnosticPolicyError('invalid diagnostic policy');
     }
     return policy;
+}
+/** Each step starts from exactly its declared version, once, and strictly advances. */
+function validMigrations(migrations: readonly ManagedLogPolicyMigration[]): void {
+    const from = new Set<number>();
+    for (const step of migrations) {
+        if (!Number.isSafeInteger(step.from) || !Number.isSafeInteger(step.to) || step.to <= step.from || from.has(step.from) || validPolicy(step.previous).version !== step.from) throw new DiagnosticPolicyError('invalid diagnostic policy migrations');
+        from.add(step.from);
+    }
 }
 function samePolicy(a: ManagedLogPolicy, b: ManagedLogPolicy): boolean {
     return Object.keys(MANAGED_LOG_POLICY).every(key => a[key as keyof ManagedLogPolicy] === b[key as keyof ManagedLogPolicy]);

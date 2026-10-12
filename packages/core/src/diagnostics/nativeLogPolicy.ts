@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PinnedDirectory } from './privateDirectory.js';
-import { assertProviderOwner, isProviderOwnershipError } from './providerOwnership.js';
+import { assertProviderOwner, containerUidConfigurationError, isProviderOwnershipError } from './providerOwnership.js';
 import { nativeDirectoryAllowed, nativeFileClass, type DiagnosticProvider } from './providerCollector.js';
 
 export interface NativeLogRoot { provider: DiagnosticProvider; agent: string; root: string }
@@ -124,7 +124,7 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
 
 export const UNSUPPORTED_OWNERSHIP_REASON = 'provider file ownership unsupported; align worker and agent container UIDs; operator action required (docs/operations/managed-diagnostics.md)';
 export function nativeAdmissionReason(inventories: NativeLogInventory[], limits: NativeLogLimits = NATIVE_LOG_LIMITS): string | null {
-    if (inventories.some(i => i.reason === 'unsupported-ownership')) return UNSUPPORTED_OWNERSHIP_REASON;
+    if (inventories.some(i => i.reason === 'unsupported-ownership')) return containerUidConfigurationError() ?? UNSUPPORTED_OWNERSHIP_REASON;
     if (inventories.some(i => i.reason === 'unsafe-root' || i.reason === 'unsafe-entry' || i.availableBytes === null)) return 'native log inventory incomplete; operator action required';
     if (inventories.some(i => i.availableBytes! < limits.minimumFreeBytes)) return 'native log filesystem reserve exhausted; operator action required';
     // Legacy high-water marks counted every class; only classified diagnostic

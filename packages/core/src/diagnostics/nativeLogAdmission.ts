@@ -4,7 +4,7 @@ import { collectProvider, type DiagnosticProvider } from './providerCollector.js
 import { managedDiagnostics } from './managedLogRuntime.js';
 import { digest } from './managedLogSpool.js';
 import { UNSUPPORTED_OWNERSHIP_REASON } from './nativeLogPolicy.js';
-import { isProviderOwnershipError } from './providerOwnership.js';
+import { containerUidConfigurationError, isProviderOwnershipError } from './providerOwnership.js';
 
 const targets: Record<string, DiagnosticProvider> = {
     '/home/node/.codex': 'codex', '/home/node/.claude': 'claude',
@@ -62,7 +62,7 @@ export function assertNativeLogAdmission(args: readonly string[]): void {
             spool.assertFilesystemCapacity(pinned);
             collectProvider(spool, { provider, agent, root, credentials: [], measureOnly: true, pinnedRoot: pinned, rejectUnsafe: true });
         } catch (error) {
-            if (isProviderOwnershipError(error)) throw new Error(`managed diagnostics: ${UNSUPPORTED_OWNERSHIP_REASON}`);
+            if (isProviderOwnershipError(error)) throw new Error(`managed diagnostics: ${containerUidConfigurationError() ?? UNSUPPORTED_OWNERSHIP_REASON}`);
             throw new Error('managed diagnostics: native capacity unavailable; operator action required');
         } finally { pinned?.close(); }
     }

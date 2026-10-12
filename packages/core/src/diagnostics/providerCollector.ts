@@ -67,7 +67,7 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
     catch (e) { if (!input.pinnedRoot) root.close(); return rejectRoot(e); }
     let credentials: readonly string[];
     try { credentials = input.measureOnly ? [] : [...input.credentials, ...nativeCredentialValues(input.root, input.provider, root)]; }
-    catch { if (!input.pinnedRoot) root.close(); spool.report(summary, 'unsafe-source'); return false; }
+    catch (e) { if (!input.pinnedRoot) root.close(); spool.report(summary, isProviderOwnershipError(e) ? 'ownership-unsupported' : 'unsafe-source'); return false; }
     rememberDiagnosticCredentials(credentials);
     let count = 0, readBytes = 0, protectedBytes = 0;
     const inventory: NativeInventory = { rootIdentity: digest(`${rootStat.dev}:${rootStat.ino}`), diagnosticBytes: 0, sessionBytes: 0, databaseBytes: 0,
