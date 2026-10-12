@@ -20,6 +20,7 @@ const runtime = { git_sha: config.sourceRevision,
   desktopRuntime: { schemaVersion: 1, distribution: 'published', sourceRevision: config.sourceRevision,
     apiCompatibility: '2026-09-01', desktopAuthenticationProtocol: 2 } };
 const rejectsAs = result => error => error instanceof SmokeFailure && error.result === result;
+const linuxOnly = { skip: process.platform !== 'linux' && 'Requires Linux flock and /proc for live runner isolation' };
 
 test('fixtures complete every production journey stage without credentials', async () => {
   const calls = [];
@@ -150,7 +151,7 @@ test('all account boundaries require the pinned numeric ID and the API username 
   assertAccount(EXPECTED_ACCOUNT);
 });
 
-test('deadline unwinds through production cleanup and the next run can acquire its lock', async () => {
+test('deadline unwinds through production cleanup and the next run can acquire its lock', linuxOnly, async () => {
   const root = await mkdtemp(join(tmpdir(), 'live-smoke-'));
   try {
     const releaseLock = await acquireRunLock(root);
@@ -188,7 +189,7 @@ test('deadline unwinds through production cleanup and the next run can acquire i
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('dead PID lock recovers while active or malformed locks refuse and concurrent recovery is exclusive', async () => {
+test('dead PID lock recovers while active or malformed locks refuse and concurrent recovery is exclusive', linuxOnly, async () => {
   const root = await mkdtemp(join(tmpdir(), 'live-smoke-'));
   try {
     // Linux PID maximum is below this sentinel.
@@ -205,7 +206,7 @@ test('dead PID lock recovers while active or malformed locks refuse and concurre
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('stale Chromium singleton recovery refuses live unrelated PIDs and foreign hosts', async () => {
+test('stale Chromium singleton recovery refuses live unrelated PIDs and foreign hosts', linuxOnly, async () => {
   const root = await mkdtemp(join(tmpdir(), 'live-smoke-'));
   try {
     for (const target of [`${hostname()}-${process.pid}`, 'foreign-host-2147483647']) {
