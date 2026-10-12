@@ -1,4 +1,4 @@
-import { loadAgents, resolveConfigPath } from '@propr/core';
+import { loadAgents } from '@propr/core';
 import { DiagnosticPolicyError, collectProvider, managedDiagnostics, nativeDiagnosticStatus, diagnosticsFailure, providerCredentialRoot } from '@propr/core/diagnostics';
 
 /** Daemon measures native inventories; workers own capture with run credentials.
@@ -31,7 +31,8 @@ export function scheduleManagedDiagnostics(): () => void {
                 }
                 const agent = agents[nextAgent % count];
                 nextAgent = (nextAgent + 1) % count;
-                const root = providerCredentialRoot({ provider: agent.type, agent: agent.id, configPath: agent.configPath }, resolveConfigPath);
+                // Default per-provider resolution, as at capture (Codex keeps its own resolver).
+                const root = providerCredentialRoot({ provider: agent.type, agent: agent.id, configPath: agent.configPath });
                 if (!root) {
                     spool.report({ provider: agent.type, agent: agent.id, source: 'unmapped-native-state' }, 'ownership-unverified');
                     continue;

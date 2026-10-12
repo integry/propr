@@ -2,6 +2,7 @@ import path from 'node:path';
 import { isManagedAgentConfigPath, type AgentType } from '@propr/shared';
 import { DEFAULT_CONFIG_PATHS, resolveCodexConfigPath, resolveConfigPath } from '../config/agentConfigPaths.js';
 import { antigravityCredentialRoot } from './credentialRedaction.js';
+import { openCodeEnvVarRejection } from '../agents/impl/openCodeEnvForwarding.js';
 
 export interface CredentialRootAgent {
     provider: string;
@@ -50,7 +51,11 @@ export function resolveProviderCredentialRoot(agent: CredentialRootAgent, option
                 // Credentials live in the data directory, never the config directory.
                 const managed = isManagedAgentConfigPath(configPath);
                 if (env.HOST_OPENCODE_DATA_DIR && !managed) return absolute(env.HOST_OPENCODE_DATA_DIR, 'configured');
-                if (agent.credentials?.XDG_DATA_HOME) return { reason: 'no-mounted-auth-store' };
+                // Mirrors the launcher: only a forwarded XDG_DATA_HOME replaces the data
+                // mount. The launcher also mounts the inferred sibling only when it exists;
+                // a missing root is refused at capture as `credential-root:missing`.
+                const xdgDataHome = agent.credentials?.XDG_DATA_HOME;
+                if (xdgDataHome && !openCodeEnvVarRejection('XDG_DATA_HOME', xdgDataHome)) return { reason: 'no-mounted-auth-store' };
                 const config = trimTrailingSlashes(resolve(configPath));
                 if (!config.endsWith('/.config/opencode')) return { reason: 'no-mounted-auth-store' };
                 return absolute(`${config.slice(0, -'/.config/opencode'.length)}/.local/share/opencode`, 'configured');

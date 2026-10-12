@@ -16,25 +16,11 @@ export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, pa
 export type { NormalizedOpenCodeUsage, OpenCodeEvent, OpenCodeUsage, ParsedOpenCodeOutput } from './openCodeParsing.js';
 import type { ParsedOpenCodeOutput } from './openCodeParsing.js';
 import { toOpenCodeExternalModelId } from './openCodeModelIds.js';
+import { openCodeEnvVarRejection } from './openCodeEnvForwarding.js';
 
 const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
 const CONTAINER_SOURCE_DATA_PATH = '/home/node/.local/share/opencode-source';
 const CONTAINER_RUNTIME_DATA_HOME = '/tmp/propr-opencode-data';
-
-// Hardening for user-configured agent env vars forwarded into the OpenCode
-// container: enforce POSIX-valid names, never forward GitHub credentials or
-// wrapper-managed vars, and reject values that could break the `-e KEY=VALUE`
-// contract (newlines/NUL).
-const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const BLOCKED_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
-const RESERVED_ENV_NAMES = new Set([
-    'OPENCODE_CONFIG_DIR',
-    'OPENCODE_CONFIG_CONTENT',
-    'PROPR_MANAGED_CREDENTIALS',
-    'XDG_CONFIG_HOME',
-    'XDG_DATA_HOME'
-]);
-const GITHUB_CREDENTIAL_NAME_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
 
 export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: IssueRef; branchName?: string; modelName?: string; issueDetails?: IssueDetails; isRetry?: boolean; retryReason?: string; systemPrompt?: string; }
 
@@ -214,24 +200,17 @@ function buildEnvVars(config: AgentConfig): string[] {
  * containing newlines/NUL.
  */
 export function shouldForwardEnvVar(key: string, value: string): boolean {
-    if (!ENV_NAME_PATTERN.test(key)) {
-        logger.warn({ envVar: key }, 'Skipping OpenCode env var with invalid name');
-        return false;
-    }
-    if (BLOCKED_ENV_NAMES.has(key) || GITHUB_CREDENTIAL_NAME_PATTERN.test(key)) {
-        logger.warn({ envVar: key }, 'Skipping GitHub credential env var for OpenCode container');
-        return false;
-    }
-    if (RESERVED_ENV_NAMES.has(key)) {
-        logger.warn({ envVar: key }, 'Skipping OpenCode env var managed by ProPR');
-        return false;
-    }
-    if (value.includes('\n') || value.includes('\r') || value.includes('\0')) {
-        logger.warn({ envVar: key }, 'Skipping OpenCode env var with unsupported multiline or NUL value');
-        return false;
-    }
-    return true;
+    const rejection = openCodeEnvVarRejection(key, value);
+    if (rejection) logger.warn({ envVar: key }, REJECTION_MESSAGES[rejection]);
+    return !rejection;
 }
+
+const REJECTION_MESSAGES = {
+    'invalid-name': 'Skipping OpenCode env var with invalid name',
+    'github-credential': 'Skipping GitHub credential env var for OpenCode container',
+    reserved: 'Skipping OpenCode env var managed by ProPR',
+    'unsafe-value': 'Skipping OpenCode env var with unsupported multiline or NUL value',
+} as const;
 
 function buildOpenCodeContainerName(alias: string, taskType: string, shortTaskId: string, modelName?: string): string {
     const suffix = `-${shortTaskId}`;

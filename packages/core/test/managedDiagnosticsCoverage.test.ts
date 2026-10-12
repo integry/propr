@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { resolveProviderCredentialRoot } from '../src/diagnostics/providerRoots.js';
 import { resolveCodexConfigPath, resolveConfigPath } from '../src/config/agentConfigPaths.js';
 import { classifyTextLine, redactRecord, CONTINUATION_LINE_LIMIT } from '../src/diagnostics/redaction.js';
+import { openCodeEnvVarRejection } from '../src/agents/impl/openCodeEnvForwarding.js';
 
 const repository = path.resolve(import.meta.dirname, '../../..');
 const providers = ['codex', 'claude', 'antigravity', 'opencode', 'vibe'] as const;
@@ -79,9 +80,21 @@ test('unresolvable provider roots refuse with explicit reasons and no credential
     const containerized = { HOME: '/root', PROPR_CONTAINERIZED: '1' };
     assert.deepEqual(resolveProviderCredentialRoot({ provider: 'codex' }, { env: containerized }), { reason: 'unmapped-default-root' });
     assert.deepEqual(resolveProviderCredentialRoot({ provider: 'claude', configPath: 'relative/.claude' }, { env: containerized }), { reason: 'relative-root' });
-    assert.deepEqual(resolveProviderCredentialRoot({ provider: 'opencode', credentials: { XDG_DATA_HOME: '/data' } }, { env: containerized }), { reason: 'no-mounted-auth-store' });
     assert.deepEqual(resolveProviderCredentialRoot({ provider: 'opencode', configPath: '/srv/opencode' }, { env: containerized }), { reason: 'no-mounted-auth-store' });
     assert.deepEqual(resolveProviderCredentialRoot({ provider: 'unknown' }, { env: containerized }), { reason: 'unsupported-provider' });
+});
+
+test('OpenCode refuses only when the launcher would forward XDG_DATA_HOME and skip the data mount', () => {
+    const env = { HOME: '/home/operator' };
+    // The launcher reserves XDG_DATA_HOME and still mounts the inferred sibling.
+    assert.equal(openCodeEnvVarRejection('XDG_DATA_HOME', '/data'), 'reserved');
+    for (const configPath of [undefined, '/srv/b/.config/opencode']) {
+        const plain = resolveProviderCredentialRoot({ provider: 'opencode', configPath }, { env });
+        assert.ok(plain.root);
+        assert.deepEqual(resolveProviderCredentialRoot({ provider: 'opencode', configPath, credentials: { XDG_DATA_HOME: '/data' } }, { env }), plain);
+    }
+    // Other refusals are unchanged by an unforwarded XDG_DATA_HOME.
+    assert.deepEqual(resolveProviderCredentialRoot({ provider: 'opencode', configPath: '/srv/opencode', credentials: { XDG_DATA_HOME: '/data' } }, { env }), { reason: 'no-mounted-auth-store' });
 });
 
 test('native fixtures capture with a verified credential context or refuse with an explicit reason', () => {
@@ -169,7 +182,10 @@ test('continuation records cannot carry structured or auth data past redaction',
     assert.equal(redactRecord('    at {"token":"x"}', 'text', [], { continuation: true }), null);
     assert.equal(redactRecord('    token: ', 'text', [], { continuation: true }), null);
     assert.equal(redactRecord('    free indented text', 'text', [], { continuation: true }), null);
-    assert.equal(redactRecord('    at run (/app/a.js:1:2)', 'text', []), null, 'native files keep the single-line adapter');
+    assert.equal(redactRecord('    at run (/app/a.js:1:2)', 'text', []), null, 'native files never carry continuations');
+    // Native files share head recognition: Docker/exception heads are single-line records.
+    assert.equal(redactRecord('TypeError: boom opaque-native-canary', 'text', ['opaque-native-canary']), JSON.stringify({ message: 'TypeError: boom [REDACTED]' }) + '\n');
+    assert.equal(redactRecord("Error response from daemon: token=opaque-daemon-value", 'text', []), JSON.stringify({ message: 'Error response from daemon: token=[REDACTED]' }) + '\n');
     assert.equal(redactRecord('    at f (https://user:opaque-pass@host/x.js:1:1)', 'text', [], { continuation: true }),
         JSON.stringify({ continuation: '    at f (https://[REDACTED]@host/x.js:1:1)' }) + '\n');
     let window = classifyTextLine('Traceback (most recent call last):', 0).window;
