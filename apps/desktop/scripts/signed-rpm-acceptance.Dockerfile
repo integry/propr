@@ -1,6 +1,11 @@
 FROM node:22-bookworm-slim AS node
 FROM opensuse/leap:16.0
-COPY --from=node /usr/local/ /usr/local/
+# Copy only the fixture's runtime and npm; Node's /usr/local/man symlink
+# conflicts with the directory provided by the Leap base image.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules/npm/ /usr/local/lib/node_modules/npm/
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 RUN zypper --non-interactive install --no-recommends \
     rpm cpio gpg2 dbus-1 gnome-keyring libsecret-1-0 xorg-x11-server-Xvfb \
     xauth xdg-utils liberation-fonts gtk3 libgtk-3-0 libnotify4 at-spi2-core \
