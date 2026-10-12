@@ -1,3 +1,4 @@
+import { createBrowserApproval } from './packaged-browser-approval.mjs';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
@@ -9,7 +10,7 @@ import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { Server as SocketIOServer } from 'socket.io';
 import * as shared from '@propr/shared';
-import { DesktopCredentialService } from '../src/credential-service.ts';
+import { desktopPairingFailureCode, DesktopCredentialService } from '../src/credential-service.ts';
 import { ProfileStore } from '../src/profile-store.ts';
 import {
   authorizePackagedAcceptanceTest,
@@ -44,7 +45,7 @@ const createFixture = async mode => {
     ${between('const json =', 'let readyOrigin;')}
     ({ createFixture, fixtures, requestRecords, fixtureCurrentUserRecords, INSTANCE_TOKEN });
   `, {
-    ...shared, URL, Buffer, createServer, SocketIOServer, once, FIXED_TIME,
+    ...shared, URL, URLSearchParams, setTimeout, createBrowserApproval, Buffer, createServer, SocketIOServer, once, FIXED_TIME,
     PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS, classifyCurrentUserRequestShape,
   });
   const origin = PACKAGED_ACCEPTANCE_LOOPBACK_ORIGINS[mode === 'revoked' ? 1 : 0];
@@ -55,6 +56,14 @@ const createFixture = async mode => {
       for (const { io } of fixture.fixtures) await new Promise(resolve => io.close(resolve));
     },
   };
+};
+
+const approveFixture = async (fixture, url, decision = 'approve') => {
+  const opened = await fetch(url);
+  assert.equal(opened.status, 200);
+  const cookie = opened.headers.get('set-cookie').split(';')[0];
+  const response = await fetch(url, { method: 'POST', headers: { Origin: fixture.origin, Cookie: cookie }, body: `decision=${decision}` });
+  assert.equal(response.status, 200);
 };
 
 // Unit/integration storage only; packaged acceptance still uses the real OS credential backend.
@@ -79,7 +88,7 @@ const setup = async (mode, overrides = {}) => {
   const service = new DesktopCredentialService({
     profiles, fetch, clientName: 'Acceptance account regression',
     pairingTiming: packagedAcceptancePairingTiming(authorized),
-    openPairingBrowser: async () => {},
+    openPairingBrowser: async request => approveFixture(fixture, request.approvalUrl),
     confirmAccount: async (observed, origin, signal) => {
       confirmations++;
       assert.deepEqual(observed, account);
@@ -198,6 +207,7 @@ test('acceptance revocation persists across request sources and resets for a new
       const started = await post('/api/desktop/pairings');
       const path = `/api/desktop/pairings/${started.pairingId}`;
       await check('/api/auth/user', nativeHeaders, 401, 'INVALID_INSTANCE_TOKEN');
+      await approveFixture(fixture, started.approvalUrl);
       const polled = await post(`${path}/poll`, { deviceSecret: started.deviceSecret });
       await post(`${path}/activate`, {
         deviceSecret: started.deviceSecret, activationTicket: polled.activationTicket,
@@ -271,5 +281,40 @@ test('acceptance identity routes reject inactive tokens, wrong custody and malfo
     for (const path of [`${confirmationPath}&extra=1`, '/api/auth/user?desktop_account_confirmation=0']) {
       assert.equal((await fetch(`${f.fixture.origin}${path}`, { headers: bearer })).status, 401);
     }
+  } finally { await f.close(); }
+});
+
+for (const [decision, code] of [['reject', 'PAIRING_REJECTED'], ['expire', 'APPROVAL_EXPIRED'], ['wrong-account', 'PAIRING_CANCELLED']]) {
+  test(`real credential service fails closed after browser ${decision}`, linuxFixtureOptions, async () => {
+    let fixture;
+    const f = await setup('ready', { openPairingBrowser: async request => approveFixture(fixture, request.approvalUrl, decision),
+      confirmAccount: async observed => observed.id === account.id && observed.username === account.username });
+    fixture = f.fixture;
+    if (decision === 'expire') fixture.fixtures[0].approval.setNextLifetime(250);
+    try {
+      await assert.rejects(f.service.pair(f.profile), error => desktopPairingFailureCode(error) === code);
+      assert.equal(await f.profiles.readCredential(f.profile.id), null);
+      assert.equal((await f.profiles.list()).profiles.length, 0);
+      const activated = fixture.requestRecords.some(record => record.url.endsWith('/activate'));
+      assert.equal(activated, decision === 'wrong-account');
+      if (activated) assert.ok(fixture.requestRecords.some(record => record.method === 'POST' && record.url.endsWith('/cancel')));
+    } finally { await f.close(); }
+  });
+}
+
+test('HTTP fixture never supplies a provisional token or activation before explicit browser approval', linuxFixtureOptions, async () => {
+  const f = await createFixture('ready');
+  const post = async (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    const start = await (await post(`${f.origin}/api/desktop/pairings`, {})).json();
+    const base = `${f.origin}/api/desktop/pairings/${start.pairingId}`;
+    for (const open of [false, true]) {
+      if (open) await fetch(start.approvalUrl);
+      const poll = await post(`${base}/poll`, { deviceSecret: start.deviceSecret });
+      assert.deepEqual(await poll.json(), { status: 'pending', interval: 1 });
+      assert.equal((await post(`${base}/activate`, { deviceSecret: start.deviceSecret, activationTicket: 'A'.repeat(43) })).status, 400);
+    }
+    await approveFixture(f, start.approvalUrl);
+    assert.equal((await (await post(`${base}/poll`, { deviceSecret: start.deviceSecret })).json()).status, 'provisional');
   } finally { await f.close(); }
 });

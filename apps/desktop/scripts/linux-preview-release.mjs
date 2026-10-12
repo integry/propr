@@ -1,3 +1,4 @@
+import { validateSignedRpmAcceptanceEvidence, verifySignedRpmEvidenceArtifact } from './signed-rpm-acceptance-evidence.mjs';
 import { execFile as execFileCallback } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -720,7 +721,7 @@ export const stageLinuxPreviewDraft = async ({
 };
 
 export const publishLinuxPreviewDraft = async ({
-  version, sourceRevision, repository, token, rpmIdentity, sourceDirectory,
+  version, sourceRevision, repository, token, rpmIdentity, sourceDirectory, acceptanceEvidence, signingRunId,
   apiUrl = 'https://api.github.com', fetchImpl = fetch,
 }) => {
   if (!rpmIdentity) throw new Error('Public Linux publication requires authenticated DEB and RPM mode');
@@ -763,6 +764,17 @@ export const publishLinuxPreviewDraft = async ({
   }
   const manifest = JSON.parse(metadata[PREVIEW_MANIFEST].toString('utf8'));
   const artifactMetadata = validateManifest(manifest, { version, sourceRevision, repository, rpmIdentity });
+  const acceptedRpm = artifactMetadata.find(artifact => artifact.kind === 'rpm' && artifact.arch === 'x64');
+  validateSignedRpmAcceptanceEvidence(acceptanceEvidence, { sourceRevision, rpmSha256: acceptedRpm.sha256,
+    signingRunId, fingerprint: rpmIdentity.fingerprint });
+  const signingRun = await json(`/actions/runs/${signingRunId}`);
+  if (String(signingRun?.id) !== signingRunId || signingRun.event !== 'workflow_dispatch'
+    || signingRun.path !== '.github/workflows/desktop-linux-signed-preview.yml'
+    || signingRun.head_branch !== 'main' || signingRun.conclusion !== 'success'
+    || signingRun.repository?.full_name !== repository) {
+    throw new Error('Installed signed RPM acceptance requires a successful trusted signing workflow run');
+  }
+  await verifySignedRpmEvidenceArtifact({ json, request, signingRunId, evidence: acceptanceEvidence });
   if (metadata[INSTALL_NOTES].toString('utf8') !== linuxPreviewInstallNotes({ version, sourceRevision, tag, rpmIdentity })) {
     throw new Error('Linux preview install and channel instructions do not match the approved identity');
   }
@@ -873,7 +885,11 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       });
       console.log(JSON.stringify(result));
     } else if (command === 'publish-draft') {
+      const evidencePath = argument('--acceptance-evidence');
+      if (!evidencePath || (await lstat(evidencePath)).size > 16 * 1024) throw new Error('Missing or oversized installed signed RPM acceptance evidence');
+      const acceptanceEvidence = JSON.parse(await readFile(evidencePath, 'utf8'));
       await publishLinuxPreviewDraft({
+        acceptanceEvidence, signingRunId: argument('--signing-run-id'),
         version,
         sourceRevision,
         repository,

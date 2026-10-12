@@ -1,10 +1,11 @@
+import { createBrowserApproval } from './packaged-browser-approval.mjs';
 import { SETUP_ACTIONS, prepareProductionSetup, reachSetupAction, activateSetupAction } from './packaged-acceptance-setup.mjs';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { constants as fsConstants } from 'node:fs';
-import { access, lstat, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
@@ -18,6 +19,7 @@ import {
 } from '@propr/shared';
 import {
   ACCEPTANCE_JOURNEYS,
+  ACCEPTANCE_VARIANTS,
   ACCEPTANCE_PROFILE_PREFIX,
   ACCEPTANCE_SURFACES_PREFIX,
   acceptanceVariantsFor,
@@ -55,7 +57,8 @@ if (process.platform !== 'linux' || process.arch !== 'x64') {
 }
 
 const outputDirectory = resolve(process.env.PROPR_DESKTOP_ACCEPTANCE_OUTPUT || defaultAcceptanceOutputDirectory());
-const binaryPath = resolve('out', 'propr-desktop-linux-x64', 'propr-desktop');
+const installedRpm = process.env.PROPR_DESKTOP_INSTALLED_RPM_ACCEPTANCE === '1';
+const binaryPath = installedRpm ? '/usr/lib/propr-desktop/propr-desktop' : resolve('out', 'propr-desktop-linux-x64', 'propr-desktop');
 const DEVICE_SECRET = 'D'.repeat(43);
 const INSTANCE_TOKEN = `propr_it_${'T'.repeat(43)}`;
 const ACTIVATION_TICKET = 'A'.repeat(43);
@@ -407,6 +410,7 @@ const createFixture = async (mode, fixedOrigin) => {
   let tokenActive = false;
   let tokenRevoked = false;
   let authChecks = 0;
+  const approval = createBrowserApproval(fixedOrigin, `/api/desktop/pairings/${PAIRING_ID}/browser`);
   const recordCurrentUserFixture = record => {
     if (fixtureCurrentUserRecords.filter(item => item.journey === activeJourney).length >= 4) {
       currentUserEvidenceInvalid = true;
@@ -431,6 +435,7 @@ const createFixture = async (mode, fixedOrigin) => {
       hasAuthorization: Boolean(request.headers.authorization),
       bodyBytes: Buffer.byteLength(bodyText),
     });
+    if (approval.handle(request, response, bodyText)) return;
     if (request.method === 'OPTIONS') return json(response, 204, {});
     if (request.url === '/api/desktop/discovery') {
       return json(response, 200, {
@@ -448,6 +453,7 @@ const createFixture = async (mode, fixedOrigin) => {
       });
     }
     if (request.method === 'POST' && request.url === '/api/desktop/pairings') {
+      approval.reset();
       binding = body;
       tokenActive = false;
       tokenRevoked = false;
@@ -455,12 +461,18 @@ const createFixture = async (mode, fixedOrigin) => {
       return json(response, 200, {
         pairingId: PAIRING_ID,
         deviceSecret: DEVICE_SECRET,
-        approvalUrl: `${fixedOrigin}/api/desktop/pairings/${PAIRING_ID}/browser`,
-        expiresAt: new Date(FIXED_MILLIS + 60_000).toISOString(),
+        approvalUrl: approval.url(),
+        expiresAt: new Date(FIXED_MILLIS + approval.lifetime()).toISOString(),
         interval: 1,
       });
     }
     if (request.method === 'POST' && request.url === `/api/desktop/pairings/${PAIRING_ID}/poll`) {
+      if (!binding || body.deviceSecret !== DEVICE_SECRET) return json(response, 403, { code: 'PAIRING_REJECTED' });
+      if (['rejected', 'cancelled'].includes(approval.status())) return json(response, 403, { code: 'PAIRING_REJECTED', error: 'Browser approval rejected' });
+      if (!approval.approved()) {
+        await new Promise(resolveValue => setTimeout(resolveValue, 25));
+        return json(response, 200, { status: 'pending', interval: 1 });
+      }
       return json(response, 200, {
         status: 'provisional', token: INSTANCE_TOKEN, tokenType: 'Bearer', activationTicket: ACTIVATION_TICKET,
         activationExpiresAt: new Date(FIXED_MILLIS + 60_000).toISOString(), instanceId: binding?.instanceId,
@@ -468,17 +480,24 @@ const createFixture = async (mode, fixedOrigin) => {
       });
     }
     if (request.method === 'POST' && request.url === `/api/desktop/pairings/${PAIRING_ID}/activate`) {
-      if (!binding || body.deviceSecret !== DEVICE_SECRET || body.activationTicket !== ACTIVATION_TICKET) {
+      if (!approval.approved() || !binding || body.deviceSecret !== DEVICE_SECRET || body.activationTicket !== ACTIVATION_TICKET) {
         return json(response, 400, { code: 'INVALID_ACTIVATION' });
       }
       tokenActive = true;
       return json(response, 200, { status: 'active', receipt: RECEIPT, activatedAt: FIXED_TIME, expiresAt: null });
     }
     if (request.method === 'POST' && request.url === `/api/desktop/pairings/${PAIRING_ID}/cancel`) {
+      if (!binding || body.deviceSecret !== DEVICE_SECRET || body.activationTicket !== ACTIVATION_TICKET) {
+        return json(response, 400, { code: 'INVALID_CANCELLATION' });
+      }
+      approval.cancel();
       tokenActive = false;
       return json(response, 200, { status: 'cancelled', cancelledAt: FIXED_TIME });
     }
     if (request.method === 'DELETE' && request.url === '/api/desktop/tokens/current') {
+      if (!tokenActive || request.headers.authorization !== `Bearer ${INSTANCE_TOKEN}` || request.headers.cookie) {
+        return json(response, 401, { code: 'INVALID_INSTANCE_TOKEN' });
+      }
       tokenActive = false;
       return json(response, 204, {});
     }
@@ -522,7 +541,7 @@ const createFixture = async (mode, fixedOrigin) => {
       }
       recordCurrentUserFixture(record);
       return json(response, 200, {
-        id: '2296', login: 'acceptance-admin', username: 'acceptance-admin', displayName: 'Acceptance Admin',
+        id: approval.wrongAccount() ? '2297' : '2296', login: approval.wrongAccount() ? 'other-admin' : 'acceptance-admin', username: approval.wrongAccount() ? 'other-admin' : 'acceptance-admin', displayName: 'Acceptance Admin',
         email: null, avatarUrl: null, role: 'admin',
         permissions: ['instance.manage_agents', 'instance.manage_members', 'instance.manage_runtime', 'instance.manage_settings'],
         authorizationSource: 'local',
@@ -700,7 +719,7 @@ const createFixture = async (mode, fixedOrigin) => {
     once(server, 'error').then(([error]) => { throw error; }),
   ]);
   const address = server.address();
-  fixtures.push({ server, io });
+  fixtures.push({ server, io, approval, origin: fixedOrigin });
   const observedOrigin = `http://${address.address}:${address.port}`;
   if (observedOrigin !== fixedOrigin) throw new Error(`Acceptance fixture origin changed: ${observedOrigin}`);
   return fixedOrigin;
@@ -784,8 +803,8 @@ const initializeRenderer = async page => {
     }
 };
 
-const launchApplication = async (scenario, initialDeepLink) => {
-  const userData = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
+const launchApplication = async (scenario, initialDeepLink, retainedProfile) => {
+  const userData = retainedProfile || await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
   let child;
   let childClosed;
   let browser;
@@ -800,7 +819,7 @@ const launchApplication = async (scenario, initialDeepLink) => {
     await scanAcceptancePaths([userData], SENTINELS).catch(error => failures.push(error));
     surfaces.push({ kind: 'packaged-process-output', journey: activeJourney, value: output });
     processRecords.push({ journey: activeJourney, source: 'packaged-process', level: 'combined', bytes: Buffer.byteLength(output), sha256: digest(output) });
-    await safeRemoveAcceptanceLeaf(userData, { kind: 'profile' }).catch(error => failures.push(error));
+    if (!retainedProfile) await safeRemoveAcceptanceLeaf(userData, { kind: 'profile' }).catch(error => failures.push(error));
     if (failures.length) throw new AggregateError(failures, 'Packaged acceptance cleanup failed');
   };
 
@@ -887,10 +906,155 @@ const fillEndpoint = async (page, origin, name = 'Acceptance ProPR') => {
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
 };
 
+const pairingEvidenceDirectory = join(outputDirectory, '../pairing-evidence');
+const assertVisibleKeyboardControl = async control => {
+  await control.focus();
+  if (!await control.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return element === document.activeElement && style.visibility === 'visible'
+      && style.display !== 'none' && !element.disabled && bounds.width > 0 && bounds.height > 0
+      && bounds.left >= -1 && bounds.right <= innerWidth + 1 && bounds.top >= -1 && bounds.bottom <= innerHeight + 1
+      && (style.outlineStyle !== 'none' || style.boxShadow !== 'none');
+  })) throw new Error('Pairing keyboard control is not visibly reachable');
+};
+const captureInstalledLogin = async page => {
+  await mkdir(pairingEvidenceDirectory, { recursive: true });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    for (const variant of ['narrow', 'zoom-200']) {
+      await configureElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS[variant]);
+      await assertVisibleKeyboardControl(page.getByRole('button', { name: 'Sign in in browser' }));
+      await writeFile(join(pairingEvidenceDirectory, `installed-login-${variant}.png`), await captureElectronRendererScreenshot(cdp));
+    }
+    await configureElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS.standard);
+  } finally { await cdp.detach(); }
+};
+const captureInstalledBrowserConfirmation = async page => {
+  // CSS layout zoom belongs to this fixture browser page. Electron evidence above
+  // uses the authenticated web-frame bridge and measured desktop geometry.
+  for (const [variant, zoom] of [['narrow', 1], ['zoom-200', 2]]) {
+    await page.evaluate(factor => { document.documentElement.style.zoom = String(factor); }, zoom);
+    for (const control of await page.getByRole('button').all()) await assertVisibleKeyboardControl(control);
+    await assertVisibleKeyboardControl(page.getByRole('button', { name: 'Approve @acceptance-admin', exact: true }));
+    await page.screenshot({ path: join(pairingEvidenceDirectory, `browser-confirmation-${variant}.png`) });
+  }
+  await page.evaluate(() => { document.documentElement.style.zoom = '1'; });
+};
+
+const approveInBrowser = async (page, origin, decision = 'approve') => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext({ viewport: { width: 880, height: 620 } });
+    await context.route('**/*', route => new URL(route.request().url()).origin === origin
+      ? route.continue() : route.abort());
+    const approvalPage = await context.newPage();
+    if (installedRpm && activeJourney === 'installed-approved') await captureInstalledLogin(page);
+    const fixture = fixtures.find(candidate => candidate.origin === origin);
+    if (decision === 'expire') fixture.approval.setNextLifetime(2_000);
+    await page.getByRole('button', { name: 'Sign in in browser' }).click();
+    await waitForObserved(() => fixture.approval.status() === 'pending', 'server-created browser approval');
+    const approvalUrl = fixture.approval.url();
+    await approvalPage.goto(approvalUrl);
+    await approvalPage.getByRole('heading', { name: 'Approve desktop pairing' }).waitFor();
+    if (installedRpm && activeJourney === 'installed-approved') await captureInstalledBrowserConfirmation(approvalPage);
+    const button = approvalPage.locator(`button[value="${decision}"]`);
+    await button.focus();
+    if (!await button.evaluate(element => element === document.activeElement
+      && getComputedStyle(element).outlineStyle !== 'none')) throw new Error('Approval keyboard focus is not visible');
+    await approvalPage.keyboard.press('Enter');
+    await approvalPage.getByRole('heading', { name: 'Approval complete' }).waitFor();
+    if (fixture.approval.status() === 'pending') throw new Error('Browser approval did not transition');
+  } finally { await browser.close(); }
+};
+
 const pair = async (page, origin, name = 'Acceptance ProPR') => {
   await fillEndpoint(page, origin, name);
   await page.getByRole('button', { name: 'Sign in in browser' }).waitFor();
-  await page.getByRole('button', { name: 'Sign in in browser' }).click();
+  await approveInBrowser(page, origin);
+};
+
+const installedPairingLifecycle = async () => {
+  const checks = {};
+  const userData = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
+  let application;
+  const connected = page => page.getByRole('button', { name: 'Connected: Installed RPM' }).waitFor({ timeout: 15_000 });
+  try {
+    activeJourney = 'installed-approved';
+    application = await launchApplication('default', null, userData);
+    await pair(application.page, readyOrigin, 'Installed RPM');
+    await connected(application.page);
+    await application.page.getByText('@acceptance-admin', { exact: true }).first().waitFor();
+    const records = requestRecords.filter(record => record.journey === activeJourney);
+    if (!records.some(record => record.url.endsWith('/activate'))
+      || !fixtureCurrentUserRecords.some(record => record.journey === activeJourney
+        && record.source === 'renderer' && record.authorizationMatchesActivatedBearer && record.responseStatus === 200)) {
+      throw new Error('Installed RPM did not activate and authenticate the live renderer');
+    }
+    checks.browserApproval = checks.expectedAccount = checks.activation = checks.authenticatedUi = true;
+    await application.close(); application = null;
+    activeJourney = 'installed-restart';
+    application = await launchApplication('default', null, userData);
+    await connected(application.page);
+    await application.page.getByText('@acceptance-admin', { exact: true }).first().waitFor();
+    if (requestRecords.some(record => record.journey === activeJourney && record.url === '/api/desktop/pairings')) {
+      throw new Error('Installed RPM restart paired again instead of using the persisted credential');
+    }
+    checks.persistedCredential = true;
+    await application.page.getByRole('button', { name: 'Logout', exact: true }).click();
+    await waitForObserved(() => requestRecords.some(record => record.journey === activeJourney
+      && record.method === 'DELETE' && record.url === '/api/desktop/tokens/current'), 'logout revocation');
+    await application.close(); application = null;
+    activeJourney = 'installed-logged-out';
+    application = await launchApplication('default', null, userData);
+    await application.page.getByRole('button', { name: /Installed RPM/ }).first().click();
+    await application.page.getByRole('button', { name: 'Sign in in browser' }).waitFor({ timeout: 15_000 });
+    if (await application.page.getByRole('button', { name: 'Connected: Installed RPM' }).count()) throw new Error('Logout credential survived restart');
+    checks.logoutRevocation = true;
+    await application.close(); application = null;
+  } finally {
+    if (application) await application.close();
+    await safeRemoveAcceptanceLeaf(userData, { kind: 'profile' });
+  }
+  for (const [decision, check, message] of [
+    ['reject', 'rejection', /could not verify the pairing response/i],
+    ['expire', 'timeout', /browser approval expired/i],
+    ['wrong-account', 'wrongAccount', /cancelled|not confirmed/i],
+  ]) {
+    activeJourney = `installed-${decision}`;
+    const profile = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
+    let failedApp;
+    try {
+      failedApp = await launchApplication('default', null, profile);
+      await fillEndpoint(failedApp.page, readyOrigin, 'Rejected RPM');
+      await failedApp.page.getByRole('button', { name: 'Sign in in browser' }).waitFor();
+      await approveInBrowser(failedApp.page, readyOrigin, decision);
+      await failedApp.page.getByText(message).first().waitFor({ timeout: 15_000 });
+      if (await failedApp.page.getByRole('button', { name: 'Connected: Rejected RPM' }).count()) throw new Error('Failed approval authenticated the renderer');
+      if (decision !== 'wrong-account' && requestRecords.some(record => record.journey === activeJourney && record.url.endsWith('/activate'))) {
+        throw new Error('Rejected or expired browser approval activated a token');
+      }
+      if (decision === 'wrong-account') await waitForObserved(() => requestRecords.some(record => record.journey === activeJourney
+        && record.method === 'POST' && record.url.endsWith('/cancel')), 'wrong-account provisional cancellation');
+      await failedApp.close(); failedApp = null;
+      // Persisted storage must remain unauthenticated even after a process restart.
+      activeJourney = `installed-${decision}-restart`;
+      failedApp = await launchApplication('default', null, profile);
+      await failedApp.page.getByRole('heading', { name: 'Let’s set up this computer' }).waitFor();
+      checks[check] = true;
+    } finally {
+      if (failedApp) await failedApp.close();
+      await safeRemoveAcceptanceLeaf(profile, { kind: 'profile' });
+    }
+  }
+  // Existing packaged acceptance already measured real Electron zoom/window geometry,
+  // visible controls, focus and axe findings for login and endpoint confirmation.
+  checks.narrowWindow = checks.zoom200 = checks.keyboardFocus = true;
+  await scanAcceptancePaths([pairingEvidenceDirectory], SENTINELS);
+  await writeFile(join(pairingEvidenceDirectory, 'usability.json'), JSON.stringify({ schemaVersion: 1,
+    desktop: { variants: ['narrow', 'zoom-200'], zoomMechanism: 'electron-web-frame', phoneViewport: false },
+    browser: { viewport: { width: 880, height: 620 }, layoutZoom: [1, 2], keyboardControlsVisible: true } }) + '\n');
+  await writeFile(join(outputDirectory, '../browser.json'), JSON.stringify(checks) + '\n', { mode: 0o600 });
 };
 
 const liveRegionSnapshot = () => [...document.querySelectorAll('[aria-live], [role="status"], [role="alert"]')].map(element => ({
@@ -1772,6 +1936,7 @@ try {
   }
   await writeAcceptanceManifest(outputDirectory, screenshotMetadata);
   await verifyAcceptanceArtifacts(outputDirectory, { sentinels: SENTINELS });
+  if (installedRpm) await installedPairingLifecycle();
   console.log(`Packaged desktop acceptance produced ${screenshotMetadata.length} deterministic screenshots with zero serious/critical findings.`);
 } finally {
   activeJourney = 'fixture-cleanup';
