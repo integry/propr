@@ -394,3 +394,59 @@ test('a malformed container UID is surfaced as a configuration error, not an ali
     }
     assert.equal(nativeAdmissionReason([{ reason: 'unsupported-ownership' } as never]), UNSUPPORTED_OWNERSHIP_REASON);
 });
+
+test('pre-spawn capture validates the credential root owner before reading any credential content', () => {
+    const uid = process.getuid!();
+    const scenarios = [
+        { name: 'hosted root worker, container-owned home', processUid: 0, container: String(uid), supported: true },
+        { name: 'native aligned worker', processUid: uid, container: undefined, supported: true },
+        { name: 'native misaligned worker', processUid: uid + 1, container: undefined, supported: false },
+        { name: 'hosted root worker, foreign container UID', processUid: 0, container: String(uid + 1), supported: uid === 0 },
+    ];
+    for (const scenario of scenarios) {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-diagnostics-capture-root-'));
+        try {
+            const home = path.join(root, '.claude');
+            fs.mkdirSync(home);
+            fs.writeFileSync(path.join(home, '.credentials.json'), '{"token":"credential-canary-value"}');
+            const output = run(`
+                import assert from 'node:assert/strict';
+                import fs from 'node:fs';
+                import { gunzipSync } from 'node:zlib';
+                const runtime = await import('./packages/core/src/diagnostics/managedLogRuntime.ts');
+                // The worker's own spool is opened before the mapping under test applies.
+                const spool = runtime.managedDiagnostics();
+                process.getuid = () => ${scenario.processUid};
+                const opened = [], open = fs.openSync;
+                fs.openSync = (target, ...rest) => { opened.push(String(target)); return open(target, ...rest); };
+                const capture = runtime.prepareProviderCapture({ provider: 'claude', agent: 'agent-a', authenticationRoot: ${JSON.stringify(home)} });
+                fs.openSync = open;
+                const credentialReads = opened.filter(target => target.endsWith('/.credentials.json')).length;
+                if (capture) { capture.stdout.write('INFO token credential-canary-value\\n'); capture.stdout.close(); capture.stderr.close(); }
+                const messages = [];
+                for (let item; (item = spool.exportOne());) {
+                    messages.push(...gunzipSync(item.data).toString().trim().split('\\n').map(line => JSON.parse(line).message));
+                    spool.acknowledge(item.id, item.digest);
+                }
+                const reason = spool.status().sources.find(s => s.source === 'capture')?.reason ?? null;
+                console.log(JSON.stringify({ captured: capture !== null, credentialReads, reason, messages }));
+                spool.close();
+                process.exit(0);
+            `, { PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a', PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool'), PROPR_AGENT_CONTAINER_UID: scenario.container });
+            const result = JSON.parse(output.trim()) as { captured: boolean; credentialReads: number; reason: string | null; messages: string[] };
+            if (scenario.supported) {
+                assert.equal(result.captured, true, scenario.name);
+                assert.equal(result.credentialReads, 1, scenario.name);
+                assert.equal(result.reason, null, scenario.name);
+                assert.equal(result.messages.length, 1, scenario.name);
+                assert.match(result.messages[0], /^INFO token /, scenario.name);
+                assert.doesNotMatch(result.messages[0], /credential-canary-value/, scenario.name);
+            } else {
+                assert.equal(result.captured, false, scenario.name);
+                assert.equal(result.credentialReads, 0, scenario.name);
+                assert.equal(result.reason, 'ownership-unsupported', scenario.name);
+                assert.deepEqual(result.messages, [], scenario.name);
+            }
+        } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    }
+});

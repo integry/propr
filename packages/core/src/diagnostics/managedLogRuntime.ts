@@ -1,5 +1,6 @@
 import { PinnedDirectory } from './privateDirectory.js';
 import { rememberDiagnosticCredentials, diagnosticCredentials, processDiagnosticState } from './redaction.js';
+import fs from 'node:fs';
 import path from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
@@ -8,7 +9,7 @@ import { collectProvider } from './providerCollector.js';
 import { nativeCredentialValues, antigravityCredentialRoot } from './credentialRedaction.js';
 import { ManagedLogSpool, type LogIdentity } from './managedLogSpool.js';
 import { configuredNativeLogRoots, inspectNativeLogRoots, nativeAdmissionReason, NATIVE_LOG_LIMITS } from './nativeLogPolicy.js';
-import { providerOwnershipStatus } from './providerOwnership.js';
+import { assertProviderOwner, isProviderOwnershipError, providerOwnershipStatus } from './providerOwnership.js';
 
 /** Shared by every module instance in the process: one spool, one queue. */
 const state = processDiagnosticState('runtime@1', () => ({
@@ -174,7 +175,12 @@ export function prepareProviderCapture(agent: DiagnosticAgent, args: string[] = 
         if (!root) throw new Error('credential root unavailable');
         // Missing roots cannot establish native authentication context.
         const pinned = PinnedDirectory.open(root);
-        try { secrets.push(...nativeCredentialValues(root, agent.provider, pinned)); }
+        try {
+            // Unsupported worker/container UID mappings fail closed before any
+            // credential read; entries are then checked against this pinned root.
+            assertProviderOwner(fs.fstatSync(pinned.fd).uid);
+            secrets.push(...nativeCredentialValues(root, agent.provider, pinned));
+        }
         finally { pinned.close(); }
         rememberDiagnosticCredentials(secrets);
         const snapshot = () => {
@@ -188,9 +194,11 @@ export function prepareProviderCapture(agent: DiagnosticAgent, args: string[] = 
             stdout: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stdout' }, secrets),
             stderr: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stderr' }, secrets),
         };
-    } catch {
+    } catch (error) {
         diagnosticsFailure();
-        try { db?.report({ provider: agent.provider, agent: agent.agent, source: 'capture' }, 'unsafe-source'); } catch { /* failure is already surfaced */ }
+        // Only the root-level check raises the ownership error; foreign entries
+        // inside a supported root surface as unsafe, never as a UID remedy.
+        try { db?.report({ provider: agent.provider, agent: agent.agent, source: 'capture' }, isProviderOwnershipError(error) ? 'ownership-unsupported' : 'unsafe-source'); } catch { /* failure is already surfaced */ }
         return null;
     }
 }
