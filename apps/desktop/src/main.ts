@@ -84,6 +84,7 @@ import {
   normalizeApiBaseUrl,
   normalizeDeepLink,
   rendererContentSecurityPolicy,
+  rendererPolicyOriginsForSelection,
   validatedDevServerUrl,
 } from './security';
 import {
@@ -1963,7 +1964,7 @@ if (!hasSingleInstanceLock) {
         onRendererActiveProfileChanged: (origin: string | null) => {
           notifications.clear();
           if (packagedAcceptanceTest) return;
-          const nextOrigins = origin?.startsWith('http://') ? [origin] : [];
+          const nextOrigins = rendererPolicyOriginsForSelection(rendererPolicyOrigins, origin);
           if (rendererPolicyOrigins.length === nextOrigins.length
             && rendererPolicyOrigins.every((value, index) => value === nextOrigins[index])) return;
           rendererPolicyOrigins = nextOrigins;
