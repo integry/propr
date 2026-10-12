@@ -272,7 +272,8 @@ export class ManagedLogSpool {
     }
     assertFilesystemCapacity(directory: PinnedDirectory = this.dir): void {
         const stat = fs.statfsSync(`/proc/self/fd/${directory.fd}`, { bigint: true });
-        if (stat.bavail * stat.bsize < BigInt(this.limits.spoolBytes) || stat.ffree === 0n) {
+        // Dynamic-inode filesystems report files=ffree=0 without exhaustion.
+        if (stat.bavail * stat.bsize < BigInt(this.limits.spoolBytes) || (stat.files > 0n && stat.ffree === 0n)) {
             throw new Error('managed diagnostics: filesystem capacity; operator action required');
         }
     }

@@ -77,14 +77,81 @@ test('filesystem admission refuses free-byte/inode exhaustion without touching n
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-log-space-'));
     const db = new ManagedLogSpool(path.join(root, 'spool'), 'tenant-a');
     try {
-        const statfs = mock.method(fs, 'statfsSync', () => ({ bavail: 1n, bsize: 4096n, ffree: 100n }));
+        const statfs = mock.method(fs, 'statfsSync', () => ({ bavail: 1n, bsize: 4096n, files: 1000n, ffree: 100n }));
         assert.throws(() => db.assertFilesystemCapacity(), /filesystem capacity/);
-        statfs.mock.mockImplementation(() => ({ bavail: 100000n, bsize: 4096n, ffree: 0n }));
+        statfs.mock.mockImplementation(() => ({ bavail: 100000n, bsize: 4096n, files: 1000n, ffree: 0n }));
+        assert.throws(() => db.assertFilesystemCapacity(), /filesystem capacity/);
+        statfs.mock.mockImplementation(() => ({ bavail: 100000n, bsize: 4096n, files: 0n, ffree: 0n }));
+        assert.doesNotThrow(() => db.assertFilesystemCapacity());
+        statfs.mock.mockImplementation(() => ({ bavail: 1n, bsize: 4096n, files: 0n, ffree: 0n }));
         assert.throws(() => db.assertFilesystemCapacity(), /filesystem capacity/);
         statfs.mock.mockImplementation(() => { throw Object.assign(new Error('full'), { code: 'ENOSPC' }); });
         assert.throws(() => db.assertFilesystemCapacity(), /full/);
         statfs.mock.restore();
     } finally { mock.restoreAll(); db.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('launch admission accepts unaccounted inodes on spool and native mounts, including after acquisition', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-log-dynamic-inodes-'));
+    try {
+        const result = spawnSync(process.execPath, ['--import', 'tsx', '-e', `
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import { mock } from 'node:test';
+            import { prepareAdmittedAgent } from './packages/core/src/agents/agentRunAdmission.ts';
+            import { managedDiagnostics } from './packages/core/src/diagnostics/managedLogRuntime.ts';
+            const base = ${JSON.stringify(root)};
+            delete process.env.PROPR_AGENT_RUN_LIMIT;
+            process.env.PROPR_MANAGED_CREDENTIALS_DIR = base + '/managed';
+            const home = base + '/managed/agent-a/.claude';
+            fs.mkdirSync(home + '/debug', {recursive:true});
+            fs.writeFileSync(home + '/debug/run.txt', 'INFO running');
+            const args = ['run','-v',home + ':/home/node/.claude:rw','image'];
+            const accounted = {bavail:100000n,bsize:4096n,files:1000n,ffree:100n};
+            const unaccounted = {...accounted,files:0n,ffree:0n};
+            const exhausted = {...accounted,ffree:0n};
+            let spoolStat = unaccounted, nativeStat = accounted;
+            let spoolChecks = 0, nativeChecks = 0;
+            mock.method(fs, 'statfsSync', filename => {
+                if (fs.readlinkSync(filename) === home) { nativeChecks++; return nativeStat; }
+                spoolChecks++; return spoolStat;
+            });
+            assert.equal(await prepareAdmittedAgent(args), null);
+            spoolStat = accounted; nativeStat = unaccounted;
+            assert.equal(await prepareAdmittedAgent(args), null);
+            assert.ok(spoolChecks > 0 && nativeChecks > 0);
+            nativeStat = exhausted;
+            await assert.rejects(prepareAdmittedAgent(args), /native capacity unavailable/);
+            nativeStat = unaccounted; spoolStat = exhausted;
+            await assert.rejects(prepareAdmittedAgent(args), /filesystem capacity/);
+            spoolStat = accounted; nativeStat = accounted;
+            let created = 0, removed = 0, released = 0;
+            const admission = await prepareAdmittedAgent(args, {
+                config:{instance:'tenant-a',limit:1},
+                client:{zadd:async()=>0,zrem:async()=>0,zremrangebyscore:async()=>0,zcard:async()=>0,hgetall:async()=>({}),
+                    eval:async(_sql,_keys,_holders,_config,op)=> {
+                        if (op === 'expired') return [];
+                        if (op === 'release') released++;
+                        if (op === 'acquire') {
+                            spoolStat = unaccounted; nativeStat = unaccounted;
+                            spoolChecks = 0; nativeChecks = 0;
+                        }
+                        return 1;
+                    }},
+                docker:{daemon:async()=> 'test-daemon',create:async()=>{
+                    assert.ok(spoolChecks > 0 && nativeChecks > 0);
+                    created++; return 'new';
+                },remove:async()=>{removed++;}},
+            });
+            assert.equal(created, 1);
+            await admission.finish();
+            assert.equal(removed, 1); assert.equal(released, 1);
+            assert.equal(fs.readFileSync(home + '/debug/run.txt', 'utf8'), 'INFO running');
+            managedDiagnostics().close();
+        `], { encoding: 'utf8', timeout: 30000, env: { ...process.env, PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a',
+            PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool'), PROPR_NATIVE_LOG_ROOTS: '', PROPR_FLEET_CONTROL_SECRET: '', PROPR_AGENT_RUN_LIMIT: '' } });
+        assert.equal(result.status, 0, result.stderr);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('self-managed launch gate refreshes multi-GB originals, refuses unsafe roots and never caps active descriptors', () => {
@@ -99,7 +166,7 @@ test('self-managed launch gate refreshes multi-GB originals, refuses unsafe root
             import { assertNativeLogAdmission } from './packages/core/src/diagnostics/nativeLogAdmission.ts';
             import { managedDiagnostics } from './packages/core/src/diagnostics/managedLogRuntime.ts';
             import { prepareAdmittedAgent } from './packages/core/src/agents/agentRunAdmission.ts';
-            mock.method(fs, 'statfsSync', () => ({bavail:100000n,bsize:4096n,ffree:100n}));
+            mock.method(fs, 'statfsSync', () => ({bavail:100000n,bsize:4096n,files:1000n,ffree:100n}));
             const base = ${JSON.stringify(root)};
             delete process.env.PROPR_AGENT_RUN_LIMIT;
             process.env.PROPR_MANAGED_CREDENTIALS_DIR = base + '/managed';
@@ -193,7 +260,7 @@ test('bounded homes and saturated copy cursors preserve task, goal and declared-
             import { managedDiagnostics, assertNativeLogAdmission as assertDeclared, nativeDiagnosticStatus } from './packages/core/src/diagnostics/managedLogRuntime.ts';
             import { prepareAdmittedAgent, spawnAdmittedAgent } from './packages/core/src/agents/agentRunAdmission.ts';
             mock.method(fs, 'statfsSync', (_path, options) => options?.bigint
-                ? {bavail:1000000n,bsize:4096n,ffree:100n} : {bavail:1000000,bsize:4096,ffree:100});
+                ? {bavail:1000000n,bsize:4096n,files:1000n,ffree:100n} : {bavail:1000000,bsize:4096,files:1000,ffree:100});
             const base = ${JSON.stringify(root)};
             delete process.env.PROPR_AGENT_RUN_LIMIT;
             process.env.PROPR_MANAGED_CREDENTIALS_DIR = base + '/managed';
@@ -277,7 +344,7 @@ test('confirmed private capacity reset releases removed and perpetually incomple
             import { managedDiagnostics, assertNativeLogAdmission as assertDeclared } from './packages/core/src/diagnostics/managedLogRuntime.ts';
             import { prepareAdmittedAgent } from './packages/core/src/agents/agentRunAdmission.ts';
             mock.method(fs, 'statfsSync', (_path, options) => options?.bigint
-                ? {bavail:1000000n,bsize:4096n,ffree:100n} : {bavail:1000000,bsize:4096,ffree:100});
+                ? {bavail:1000000n,bsize:4096n,files:1000n,ffree:100n} : {bavail:1000000,bsize:4096,files:1000,ffree:100});
             const base = ${JSON.stringify(root)};
             delete process.env.PROPR_AGENT_RUN_LIMIT;
             delete process.env.PROPR_NATIVE_LOG_ROOTS;
