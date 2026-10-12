@@ -3,7 +3,6 @@ import { isManagedAgentConfigPath } from '@propr/shared';
 import { parse as parseEnv } from 'dotenv';
 import fs from 'node:fs';
 import { PinnedDirectory } from './privateDirectory.js';
-import { isProviderOwnershipError, ProviderOwnershipError } from './providerOwnership.js';
 
 /** Read only the known auth stores for redaction, never for export. A malformed,
  * oversized, linked or unreadable store refuses collection instead of leaking an
@@ -38,11 +37,7 @@ export function nativeCredentialValues(root: string, provider: string, pinned?: 
                 for (const part of parts.slice(0, -1)) { parent = parent.child(part); children.push(parent); }
                 fd = parent.file(parts.at(-1)!);
                 walk(parseCredentialContent(name, readCredentialContent(fd)));
-            } catch (e) {
-                if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
-                // Ownership keeps its distinct code so callers report the UID remedy.
-                throw isProviderOwnershipError(e) ? new ProviderOwnershipError() : new Error('credential redaction unavailable');
-            }
+            } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('credential redaction unavailable'); }
             finally { if (fd !== undefined) fs.closeSync(fd); for (const child of children.reverse()) child.close(); }
         }
     } finally { if (!pinned) dir.close(); }

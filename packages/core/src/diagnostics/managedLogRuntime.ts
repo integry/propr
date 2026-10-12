@@ -8,7 +8,7 @@ import { collectProvider } from './providerCollector.js';
 import { nativeCredentialValues, antigravityCredentialRoot } from './credentialRedaction.js';
 import { ManagedLogSpool, type LogIdentity } from './managedLogSpool.js';
 import { configuredNativeLogRoots, inspectNativeLogRoots, nativeAdmissionReason, NATIVE_LOG_LIMITS } from './nativeLogPolicy.js';
-import { isProviderOwnershipError, providerOwnershipStatus } from './providerOwnership.js';
+import { providerOwnershipStatus } from './providerOwnership.js';
 
 /** Shared by every module instance in the process: one spool, one queue. */
 const state = processDiagnosticState('runtime@1', () => ({
@@ -188,9 +188,9 @@ export function prepareProviderCapture(agent: DiagnosticAgent, args: string[] = 
             stdout: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stdout' }, secrets),
             stderr: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stderr' }, secrets),
         };
-    } catch (error) {
+    } catch {
         diagnosticsFailure();
-        try { db?.report({ provider: agent.provider, agent: agent.agent, source: 'capture' }, isProviderOwnershipError(error) ? 'ownership-unsupported' : 'unsafe-source'); } catch { /* failure is already surfaced */ }
+        try { db?.report({ provider: agent.provider, agent: agent.agent, source: 'capture' }, 'unsafe-source'); } catch { /* failure is already surfaced */ }
         return null;
     }
 }

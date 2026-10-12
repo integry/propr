@@ -3,7 +3,7 @@ import { nativeCredentialValues } from './credentialRedaction.js';
 import fs from 'node:fs';
 import { ManagedLogSpool, digest, type LogIdentity, type Cursor } from './managedLogSpool.js';
 import { PinnedDirectory } from './privateDirectory.js';
-import { assertProviderOwner, isProviderOwnershipError, ProviderOwnershipError } from './providerOwnership.js';
+import { assertProviderOwner, isProviderOwnershipError } from './providerOwnership.js';
 
 export type DiagnosticProvider = 'codex' | 'claude' | 'antigravity' | 'opencode' | 'vibe';
 // Exact structural allowlists. No glob of an entire home; no repository paths.
@@ -67,7 +67,7 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
     catch (e) { if (!input.pinnedRoot) root.close(); return rejectRoot(e); }
     let credentials: readonly string[];
     try { credentials = input.measureOnly ? [] : [...input.credentials, ...nativeCredentialValues(input.root, input.provider, root)]; }
-    catch (e) { if (!input.pinnedRoot) root.close(); spool.report(summary, isProviderOwnershipError(e) ? 'ownership-unsupported' : 'unsafe-source'); return false; }
+    catch { if (!input.pinnedRoot) root.close(); spool.report(summary, 'unsafe-source'); return false; }
     rememberDiagnosticCredentials(credentials);
     let count = 0, readBytes = 0, protectedBytes = 0;
     const inventory: NativeInventory = { rootIdentity: digest(`${rootStat.dev}:${rootStat.ino}`), diagnosticBytes: 0, sessionBytes: 0, databaseBytes: 0,
@@ -80,17 +80,17 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
         inventory[`${kind}Files`]++;
     };
     let deadline = performance.now() + spool.limits.scanMs;
-    let limited = false, inventoryIncomplete = false, unsafe = false, unsupportedOwner = false;
-    const refuse = (error: unknown, identity?: LogIdentity): void => {
-        const reason = isProviderOwnershipError(error) ? 'ownership-unsupported' : 'unsafe-source';
-        unsafe = true; inventoryIncomplete = true; spool.report(summary, reason);
-        if (identity) spool.report(identity, reason);
-        if (reason === 'ownership-unsupported') unsupportedOwner = true;
+    let limited = false, inventoryIncomplete = false, unsafe = false;
+    // Entries whose owner differs from the supported root are unsafe sources,
+    // never a UID-mapping remedy: the foreign owner may be adversarial.
+    const refuse = (identity?: LogIdentity): void => {
+        unsafe = true; inventoryIncomplete = true; spool.report(summary, 'unsafe-source');
+        if (identity) spool.report(identity, 'unsafe-source');
     };
     const measureProtectedFile = (dir: PinnedDirectory, entry: fs.Dirent, relative: string): void => {
         let fd: number | undefined;
         try { fd = dir.file(entry.name); measure(relative, fs.fstatSync(fd).size); }
-        catch (e) { refuse(e); }
+        catch { refuse(); }
         finally { if (fd !== undefined) fs.closeSync(fd); }
     };
     const collectFile = (dir: PinnedDirectory, entry: fs.Dirent, relative: string): void => {
@@ -125,7 +125,7 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
             if (recordBound) limited = true;
             spool.append(identity, records, relative.endsWith('.jsonl') ? 'jsonl' : 'text', { credentials, now,
                 cursor: { before, after: { inode: current.inode, birth: current.birth, offset: offset + start, discard, anchor: anchorAt(offset + start) } }, droppedBytes: dropped });
-        } catch (e) { refuse(e, identity); }
+        } catch { refuse(identity); }
         finally { if (fd !== undefined) fs.closeSync(fd); }
     };
     const visitEntry = (dir: PinnedDirectory, entry: fs.Dirent, relative: string): void => {
@@ -143,7 +143,7 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
                 assertProviderOwner(fs.fstatSync(child.fd).uid, rootStat.uid);
                 walk(child, relative + '/');
             }
-            catch (e) { refuse(e); }
+            catch { refuse(); }
             finally { child?.close(); }
         }
         else {
@@ -168,7 +168,7 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
     if (!input.measureOnly && !input.credentialContextComplete) spool.report(summary, 'ownership-unverified');
     // Scan bounds and unknown subtrees remain lower bounds. Admission must
     // distinguish those from verified unsafe entries.
-    if (input.rejectUnsafe && unsafe) throw unsupportedOwner ? new ProviderOwnershipError() : new Error('unsafe native inventory');
+    if (input.rejectUnsafe && unsafe) throw new Error('unsafe native inventory');
     return !inventoryIncomplete;
 }
 

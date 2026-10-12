@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ProviderOwnershipError } from './providerOwnership.js';
+import { ProviderEntryOwnershipError } from './providerOwnership.js';
 
 const directoryFlags = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
 /** Linux openat equivalent using pinned descriptors; never re-resolve an ancestor. */
@@ -38,8 +38,8 @@ export class PinnedDirectory {
         const fd = fs.openSync(this.path(name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
         const s = fs.fstatSync(fd);
         if (!s.isFile() || s.nlink !== 1) { fs.closeSync(fd); throw new Error('unsafe diagnostic file'); }
-        // Ownership is reported distinctly; it is never assumed from the directory.
-        if (s.uid !== fs.fstatSync(this.fd).uid) { fs.closeSync(fd); throw new ProviderOwnershipError(); }
+        // Ownership is checked explicitly; it is never assumed from the directory.
+        if (s.uid !== fs.fstatSync(this.fd).uid) { fs.closeSync(fd); throw new ProviderEntryOwnershipError(); }
         return fd;
     }
     close(): void { fs.closeSync(this.fd); }

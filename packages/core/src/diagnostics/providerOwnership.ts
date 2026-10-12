@@ -35,9 +35,19 @@ export function supportedProviderOwners(env: NodeJS.ProcessEnv = process.env, pr
     return container === undefined ? [0] : [...new Set([0, container])];
 }
 
-/** Every entry must share the root owner; mixed ownership fails closed. */
+/** An entry whose owner differs from its supported root. This may be a missed
+ * `chown` or a planted file, so it is an unsafe entry, never a UID-mapping
+ * signal: aligning the container UID to a foreign owner is not a remedy. */
+export class ProviderEntryOwnershipError extends Error {
+    readonly code = 'EMIXEDOWNER';
+    constructor() { super('unsafe provider entry ownership'); this.name = 'ProviderEntryOwnershipError'; }
+}
+
+/** Roots must have a supported owner; every entry must share the root owner,
+ * and mixed ownership fails closed as an unsafe entry. */
 export function assertProviderOwner(uid: number, rootOwner?: number): void {
-    if (rootOwner === undefined ? !supportedProviderOwners().includes(uid) : uid !== rootOwner) throw new ProviderOwnershipError();
+    if (rootOwner === undefined) { if (!supportedProviderOwners().includes(uid)) throw new ProviderOwnershipError(); }
+    else if (uid !== rootOwner) throw new ProviderEntryOwnershipError();
 }
 
 export function providerOwnershipStatus(env: NodeJS.ProcessEnv = process.env, processUid: number | null = process.getuid?.() ?? null): object {

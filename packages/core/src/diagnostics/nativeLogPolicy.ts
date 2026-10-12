@@ -68,9 +68,9 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
     };
     const deadline = performance.now() + limits.scanMs;
     let root: PinnedDirectory | undefined;
-    const unsafe = (error: unknown) => incomplete(isProviderOwnershipError(error) ? 'unsupported-ownership' : 'unsafe-entry');
     const inspectDirectory = (dir: PinnedDirectory, name: string, relative: string, stat: fs.Stats): void => {
-        if (stat.uid !== fs.fstatSync(root!.fd).uid) { incomplete('unsupported-ownership'); return; }
+        // Mixed ownership inside a supported root is an unsafe entry, not a UID mapping.
+        if (stat.uid !== fs.fstatSync(root!.fd).uid) { incomplete('unsafe-entry'); return; }
         if (!nativeDirectoryAllowed(input.provider, relative)) { incomplete('unmeasured-directory'); return; }
         let child: PinnedDirectory | undefined;
         try {
@@ -79,7 +79,7 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
             if (actual.dev !== stat.dev || actual.ino !== stat.ino) throw new Error('replaced directory');
             assertProviderOwner(actual.uid, fs.fstatSync(root!.fd).uid);
             walk(child, relative + '/');
-        } catch (e) { unsafe(e); }
+        } catch { incomplete('unsafe-entry'); }
         finally { child?.close(); }
     };
     const inspectFile = (dir: PinnedDirectory, name: string, relative: string, stat: fs.Stats): void => {
@@ -91,7 +91,7 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
             result.bytes[nativeFileClass(input.provider, relative)] += actual.size;
             result.observedBytes += actual.size;
             result.allocatedBytes += actual.blocks * 512;
-        } catch (e) { unsafe(e); }
+        } catch { incomplete('unsafe-entry'); }
         finally { if (fd !== undefined) fs.closeSync(fd); }
     };
     const walk = (dir: PinnedDirectory, prefix: string): void => {

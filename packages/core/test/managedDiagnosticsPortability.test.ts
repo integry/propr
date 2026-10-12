@@ -233,28 +233,59 @@ test('hosted and native UID mappings: supported owners collect, unsupported mapp
     }
 });
 
-test('mixed ownership inside a supported root is reported per file and refuses admission', t => {
+// A foreign-owned entry inside a supported root may be planted rather than a
+// missed chown; it must not suggest aligning the container UID to its owner.
+function assertUnsafeEntryFraming(f: ReturnType<typeof fixture>, input: Parameters<typeof collectProvider>[1], source?: string): void {
+    assert.equal(collectProvider(f.spool, input), false);
+    assert.deepEqual(drain(f.spool), ['INFO owned']);
+    if (source) assert.equal(sourceStatus(f.spool, source).reason, 'unsafe-source');
+    assert.notEqual((f.spool.status() as { sources: Array<{ source: string; reason: string | null }> }).sources.find(s => s.source === 'native-state')!.reason, 'ownership-unsupported');
+    assert.throws(() => collectProvider(f.spool, { ...input, measureOnly: true, rejectUnsafe: true }),
+        (e: unknown) => !isProviderOwnershipError(e) && /unsafe native inventory/.test((e as Error).message));
+    const inventory = inspectNativeLogRoot({ provider: 'claude', agent: 'agent-a', root: f.home });
+    assert.equal(inventory.reason, 'unsafe-entry');
+    assert.equal(inventory.inventoryComplete, false);
+    const reason = nativeAdmissionReason([inventory])!;
+    assert.match(reason, /operator action required/);
+    assert.doesNotMatch(reason, /align worker|container UID/);
+}
+
+test('a foreign-owned file inside a supported root is an unsafe entry, not a UID-alignment refusal', t => {
     const f = fixture();
     const fstat = fs.fstatSync;
     try {
         fs.writeFileSync(path.join(f.home, 'debug', 'owned.txt'), 'INFO owned\n');
         fs.writeFileSync(path.join(f.home, 'debug', 'foreign.txt'), 'INFO foreign\n');
-        // Simulate an entrypoint chown that missed one provider file.
         t.mock.method(fs, 'fstatSync', (fd: number, options?: fs.StatOptions) => {
             const stat = fstat(fd, options as never) as fs.Stats;
             if (fs.readlinkSync(`/proc/self/fd/${fd}`).endsWith('/foreign.txt')) (stat as { uid: number }).uid = stat.uid + 1;
             return stat;
         });
-        const input = { provider: 'claude' as const, agent: 'agent-a', root: f.home, credentials: [], credentialContextComplete: true };
-        assert.equal(collectProvider(f.spool, input), false);
-        assert.deepEqual(drain(f.spool), ['INFO owned']);
-        assert.equal(sourceStatus(f.spool, 'debug/foreign.txt').reason, 'ownership-unsupported');
-        assert.throws(() => collectProvider(f.spool, { ...input, measureOnly: true, rejectUnsafe: true }), /ownership unsupported/);
-        assert.equal(inspectNativeLogRoot({ provider: 'claude', agent: 'agent-a', root: f.home }).reason, 'unsupported-ownership');
+        assertUnsafeEntryFraming(f, { provider: 'claude', agent: 'agent-a', root: f.home, credentials: [], credentialContextComplete: true }, 'debug/foreign.txt');
     } finally { f.close(); }
 });
 
-test('credential stores that fail the ownership check report ownership-unsupported in collection and capture', t => {
+test('a foreign-owned directory inside a supported root is an unsafe entry, not a UID-alignment refusal', t => {
+    const f = fixture();
+    const fstat = fs.fstatSync, lstat = fs.lstatSync;
+    try {
+        fs.writeFileSync(path.join(f.home, 'debug', 'owned.txt'), 'INFO owned\n');
+        fs.mkdirSync(path.join(f.home, 'projects', 'planted'), { recursive: true });
+        fs.writeFileSync(path.join(f.home, 'projects', 'planted', 'session.jsonl'), '{"n":1}\n');
+        const foreign = (stat: fs.Stats) => { (stat as { uid: number }).uid = stat.uid + 1; return stat; };
+        t.mock.method(fs, 'fstatSync', (fd: number, options?: fs.StatOptions) => {
+            const stat = fstat(fd, options as never) as fs.Stats;
+            return fs.readlinkSync(`/proc/self/fd/${fd}`).endsWith('/projects') ? foreign(stat) : stat;
+        });
+        t.mock.method(fs, 'lstatSync', (target: fs.PathLike, options?: fs.StatOptions) => {
+            const stat = lstat(target, options as never) as fs.Stats;
+            return stat.isDirectory() && fs.realpathSync(target).endsWith('/projects') ? foreign(stat) : stat;
+        });
+        assertUnsafeEntryFraming(f, { provider: 'claude', agent: 'agent-a', root: f.home, credentials: [], credentialContextComplete: true });
+    } finally { f.close(); }
+});
+
+test('foreign-owned credential stores inside a root refuse collection and capture as unsafe, without a UID remedy', t => {
     const f = fixture();
     const fstat = fs.fstatSync;
     try {
@@ -266,10 +297,10 @@ test('credential stores that fail the ownership check report ownership-unsupport
             if (fs.readlinkSync(`/proc/self/fd/${fd}`).endsWith('/.credentials.json')) (stat as { uid: number }).uid = stat.uid + 1;
             return stat;
         });
-        assert.throws(() => nativeCredentialValues(f.home, 'claude'), (e: unknown) => isProviderOwnershipError(e));
+        assert.throws(() => nativeCredentialValues(f.home, 'claude'), (e: unknown) => !isProviderOwnershipError(e) && /credential redaction unavailable/.test((e as Error).message));
         assert.equal(collectProvider(f.spool, { provider: 'claude', agent: 'agent-a', root: f.home, credentials: [] }), false);
         assert.deepEqual(drain(f.spool), []);
-        assert.equal((f.spool.status() as { sources: Array<{ source: string; reason: string | null }> }).sources.find(s => s.source === 'native-state')!.reason, 'ownership-unsupported');
+        assert.equal((f.spool.status() as { sources: Array<{ source: string; reason: string | null }> }).sources.find(s => s.source === 'native-state')!.reason, 'unsafe-source');
     } finally { f.close(); }
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-diagnostics-capture-owner-'));
@@ -293,7 +324,7 @@ test('credential stores that fail the ownership check report ownership-unsupport
             spool.close();
             process.exit(0);
         `, { PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a', PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool') });
-        assert.equal(output.trim(), 'ownership-unsupported');
+        assert.equal(output.trim(), 'unsafe-source');
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
