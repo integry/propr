@@ -156,11 +156,36 @@ export function providerCredentialRoot(agent: DiagnosticAgent, resolve?: (value:
     return resolveProviderCredentialRoot(agent, { resolve }).root;
 }
 const secretName = /secret|token|password|passwd|key|credential|auth|cookie/i;
+/** `user[:password]` of every `scheme://user[:password]@` in a value, scanned
+ * linearly (a backtracking pattern is polynomial on long scheme-like runs). */
+function urlUserinfo(value: string): Array<[string, string | undefined]> {
+    const found: Array<[string, string | undefined]> = [];
+    const schemeChar = /[a-z0-9+.-]/i;
+    const stop = (c: string, colon: boolean) => /\s/.test(c) || c === '/' || c === '@' || (colon && c === ':');
+    for (let at = value.indexOf('://'); at !== -1; at = value.indexOf('://', at + 3)) {
+        let start = at;
+        while (start > 0 && schemeChar.test(value[start - 1])) start--;
+        if (!/[a-z]/i.test(value.slice(start, at))) continue;
+        let i = at + 3;
+        const userStart = i;
+        while (i < value.length && !stop(value[i], true)) i++;
+        const user = value.slice(userStart, i);
+        let password: string | undefined;
+        if (value[i] === ':') {
+            const passwordStart = ++i;
+            while (i < value.length && !stop(value[i], false)) i++;
+            password = value.slice(passwordStart, i) || undefined;
+            if (!password) continue;
+        }
+        if (user && value[i] === '@') found.push([user, password]);
+    }
+    return found;
+}
 /** Secret-shaped parts of values under innocuous names, e.g. a proxy URL with
  * userinfo, an injected authorization header or an MCP JSON configuration. */
 function secretShapedValues(value: string): string[] {
     const parts: string[] = [];
-    for (const match of value.matchAll(/[a-z][a-z0-9+.-]*:\/\/([^\s/@:]+)(?::([^\s/@]+))?@/gi)) parts.push(match[1], ...(match[2] ? [match[2], `${match[1]}:${match[2]}`] : []));
+    for (const [user, password] of urlUserinfo(value)) parts.push(user, ...(password ? [password, `${user}:${password}`] : []));
     for (const match of value.matchAll(/\b(?:Bearer|Basic|token)\s+([^\s"',;]+)/gi)) parts.push(match[1]);
     if (/^\s*[{[]/.test(value)) {
         const walk = (node: unknown, key = '', depth = 0): void => {

@@ -51,7 +51,7 @@ export function resolveProviderCredentialRoot(agent: CredentialRootAgent, option
                 const managed = isManagedAgentConfigPath(configPath);
                 if (env.HOST_OPENCODE_DATA_DIR && !managed) return absolute(env.HOST_OPENCODE_DATA_DIR, 'configured');
                 if (agent.credentials?.XDG_DATA_HOME) return { reason: 'no-mounted-auth-store' };
-                const config = resolve(configPath).replace(/\/+$/, '');
+                const config = trimTrailingSlashes(resolve(configPath));
                 if (!config.endsWith('/.config/opencode')) return { reason: 'no-mounted-auth-store' };
                 return absolute(`${config.slice(0, -'/.config/opencode'.length)}/.local/share/opencode`, 'configured');
             }
@@ -67,4 +67,11 @@ function absolute(root: string, basis: 'launch' | 'configured'): CredentialRootR
     const normalized = path.normalize(root);
     if (!path.isAbsolute(normalized) || normalized.includes('\0') || normalized === path.parse(normalized).root) return { reason: 'relative-root' };
     return { root: normalized, basis };
+}
+
+/** Linear trailing-slash trim; `/\/+$/` backtracks polynomially on long slash runs. */
+function trimTrailingSlashes(value: string): string {
+    let end = value.length;
+    while (end > 0 && value[end - 1] === '/') end--;
+    return value.slice(0, end);
 }
