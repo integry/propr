@@ -6,6 +6,7 @@ import { Redis } from 'ioredis';
 import logger from '../utils/logger.js';
 import { checkAbortSignal, plannerAbortSignalKeyForTask } from '../claude/docker/dockerAbortController.js';
 import { ExecutionAbortedError, getExecutionAbortError } from '../claude/docker/dockerExecutionOwnership.js';
+import { assertNativeLogAdmission } from '../diagnostics/nativeLogAdmission.js';
 
 /** Fleet's existing server-side activation boundary is PROPR_FLEET_CONTROL_SECRET.
  * WORKER_CONCURRENCY is provisioned by Fleet, not the persisted UI setting.
@@ -210,6 +211,7 @@ function createAdmissionClient(): Redis {
  * when a process resumes after its lease expired. Recovery removes that exact
  * container before freeing capacity; a late start of the removed ID fails. */
 export async function prepareAdmittedAgent(args: string[], options: AdmissionOptions = {}): Promise<AdmittedAgent | null> {
+    assertNativeLogAdmission(args);
     const config = options.config ?? resolveAgentRunAdmission();
     if (!config) return null;
     const ownedClient = options.client ? undefined : createAdmissionClient();
@@ -310,7 +312,9 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
         // names, environment and network policy arguments intact. Do not race or
         // abandon create on cancellation: collect its immutable ID (the Docker
         // call is separately bounded), then remove it without ever starting it.
-        id = await runtime.create(['run', '--label', `propr.agent-admission.token=${token}`, '--label', `propr.agent-admission.instance=${createHash('sha256').update(config.instance).digest('hex')}`, ...(options.createArgs?.() ?? args).slice(1)], options.extraEnvVars, options.cwd);
+        const createArgs = options.createArgs?.() ?? args;
+        assertNativeLogAdmission(createArgs);
+        id = await runtime.create(['run', '--label', `propr.agent-admission.token=${token}`, '--label', `propr.agent-admission.instance=${createHash('sha256').update(config.instance).digest('hex')}`, ...createArgs.slice(1)], options.extraEnvVars, options.cwd);
         await checkCancelled();
         if (await call('attach', token, id) !== 1) throw new Error('Agent admission lost before container start');
         checkAdmissionAbort(signal);

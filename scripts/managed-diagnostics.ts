@@ -13,6 +13,9 @@ try {
     } else if (command === 'ack' && /^\d+$/.test(id ?? '') && /^[a-f0-9]{64}$/.test(sha256 ?? '') && confirmation === '--encrypted-upload-readback-verified') {
         spool.acknowledge(Number(id), sha256);
         process.stdout.write('{"acknowledged":true}\n');
+    } else if (command === 'discard-local' && /^\d+$/.test(id ?? '') && /^[a-f0-9]{64}$/.test(sha256 ?? '') && confirmation === '--accept-local-diagnostic-loss') {
+        spool.discardLocal(Number(id), sha256);
+        process.stdout.write('{"discardedLocally":true,"offsiteAcknowledged":false}\n');
     } else throw new Error('invalid command');
     spool.close();
 } catch {
