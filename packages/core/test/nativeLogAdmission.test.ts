@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { ManagedLogSpool } from '../src/diagnostics/managedLogSpool.js';
 import { collectProvider, nativeFileClass } from '../src/diagnostics/providerCollector.js';
 import { PinnedDirectory } from '../src/diagnostics/privateDirectory.js';
@@ -318,8 +319,11 @@ test('bounded homes and saturated copy cursors preserve task, goal and declared-
             const status = nativeDiagnosticStatus();
             assert.equal(status.nativeAdmission.status,'available');
             assert.equal(status.nativeAdmission.inventoryComplete,false);
-            // Byte refusal remains active even when inventory is partial and
-            // the spool's source warning is already set.
+            // Diagnostic byte refusal remains active even when another
+            // inventory is partial and the spool's source warning is set.
+            fs.mkdirSync(codex + '/log');
+            fs.writeFileSync(codex + '/log/codex-tui.log', 'INFO retained');
+            assertNativeLogAdmission(codexArgs);
             db.limits.protectedBytes = 1;
             assert.throws(()=>assertNativeLogAdmission(args), /protected native state capacity/);
             assert.equal(fs.readFileSync(home + '/todos/canary','utf8'),'RESUME-CANARY');
@@ -339,6 +343,7 @@ test('confirmed private capacity reset releases removed and perpetually incomple
             import assert from 'node:assert/strict';
             import fs from 'node:fs';
             import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
             import { mock } from 'node:test';
             import { assertNativeLogAdmission } from './packages/core/src/diagnostics/nativeLogAdmission.ts';
             import { managedDiagnostics, assertNativeLogAdmission as assertDeclared } from './packages/core/src/diagnostics/managedLogRuntime.ts';
@@ -434,4 +439,119 @@ test('confirmed private capacity reset releases removed and perpetually incomple
             PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool'), PROPR_FLEET_CONTROL_SECRET: '', PROPR_AGENT_RUN_LIMIT: '' } });
         assert.equal(result.status, 0, result.stderr);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test('session-dominated homes admit another agent through declared and physical launch gates', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-log-resume-capacity-'));
+    try {
+        const result = spawnSync(process.execPath, ['--import', 'tsx', '-e', `
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import path from 'node:path';
+            import { prepareAdmittedAgent } from './packages/core/src/agents/agentRunAdmission.ts';
+            import { assertNativeLogAdmission as declared, managedDiagnostics, nativeDiagnosticStatus } from './packages/core/src/diagnostics/managedLogRuntime.ts';
+            const base = process.argv[1];
+            delete process.env.PROPR_AGENT_RUN_LIMIT;
+            process.env.PROPR_MANAGED_CREDENTIALS_DIR = base + '/managed';
+            const layouts = [
+                ['claude', '.claude', 'projects/-workspace/resume.jsonl', 'session'],
+                ['codex', '.codex', 'sessions/2026/10/12/rollout-resume.jsonl', 'session'],
+                ['codex', '.codex', 'logs_2.sqlite-wal', 'database'],
+                ['codex', '.codex', 'state_2.sqlite', 'database'],
+                ['opencode', '.local/share/opencode', 'opencode.db', 'database'],
+                ['antigravity', '.gemini', 'antigravity-cli/brain/run/.system_generated/logs/transcript.jsonl', 'session'],
+                ['vibe', '.vibe', 'logs/session/run/messages.jsonl', 'session'],
+            ];
+            const bytes = 300 * 1024 ** 2;
+            const roots = layouts.map(([provider, suffix, relative], n) => {
+                const root = base + '/managed/agent-' + n + '/' + suffix;
+                const file = path.join(root, relative);
+                fs.mkdirSync(path.dirname(file), {recursive:true});
+                fs.writeFileSync(file, 'RESUME-CANARY');
+                fs.truncateSync(file, bytes);
+                return {provider, agent:'agent-' + n, root};
+            });
+            fs.mkdirSync(roots[0].root + '/debug');
+            const other = {provider:'claude', agent:'other', root:base + '/managed/other/.claude'};
+            fs.mkdirSync(other.root + '/debug', {recursive:true});
+            process.env.PROPR_NATIVE_LOG_ROOTS = JSON.stringify({instance:'tenant-a',instanceOwned:true,roots:[...roots,other]});
+            const args = r => ['run','-v',r.root + ':/home/node/' + layouts.find(l=>l[0]===r.provider)[1] + ':rw','image'];
+            // Warm all persisted contributions, then launch a different agent.
+            for (const r of roots) assert.equal(await prepareAdmittedAgent(args(r)), null);
+            declared(other);
+            assert.equal(await prepareAdmittedAgent(args(other)), null);
+            let created = 0, released = 0;
+            const admission = await prepareAdmittedAgent(args(other), {
+                config:{instance:'tenant-a',limit:1},
+                client:{zadd:async()=>0,zrem:async()=>0,zremrangebyscore:async()=>0,zcard:async()=>0,hgetall:async()=>({}),
+                    eval:async(_sql,_keys,_holders,_config,op)=> {
+                        if (op === 'expired') return [];
+                        if (op === 'release') released++;
+                        if (op === 'acquire') {
+                            const session = other.root + '/projects/-workspace/resume.jsonl';
+                            fs.mkdirSync(path.dirname(session),{recursive:true});
+                            fs.writeFileSync(session,''); fs.truncateSync(session,bytes);
+                        }
+                        return 1;
+                    }},
+                docker:{daemon:async()=> 'test-daemon',create:async()=>{created++;return 'new';},remove:async()=>{}},
+            });
+            assert.equal(created,1);
+            await admission.finish(); assert.equal(released,1);
+            const status = nativeDiagnosticStatus();
+            assert.equal(status.nativeAdmission.status, 'available');
+            assert.ok(status.nativeAdmission.observedBytes > 1024 ** 3);
+            for (const [n, r] of roots.entries()) {
+                const state = status.nativeSources.sources.find(s=>s.agent===r.agent);
+                assert.equal(state.inventory[layouts[n][3] + 'Bytes'], bytes);
+                assert.equal(state.capacityBytesLowerBound, 0);
+                assert.equal(status.sources.find(s=>s.agent===r.agent && s.source==='native-state').capacityWarning, false);
+                const file = path.join(r.root, layouts[n][2]);
+                assert.equal(fs.statSync(file).size, bytes);
+                const fd = fs.openSync(file,'r');
+                const canary = Buffer.alloc(13); fs.readSync(fd,canary,0,13,0); fs.closeSync(fd);
+                assert.equal(canary.toString(), 'RESUME-CANARY');
+            }
+            managedDiagnostics().close();
+        `, root], { encoding: 'utf8', timeout: 30000, env: { ...process.env, PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a',
+            PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool'), PROPR_NATIVE_LOG_ROOTS: '', PROPR_FLEET_CONTROL_SECRET: '', PROPR_AGENT_RUN_LIMIT: '' } });
+        assert.equal(result.status, 0, result.stderr);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('legacy session totals migrate to classified diagnostic capacity and partial scans retain that evidence', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-log-capacity-migration-'));
+    const spoolRoot = path.join(root, 'spool');
+    let spool = new ManagedLogSpool(spoolRoot, 'tenant-a');
+    try {
+        const home = path.join(root, 'home');
+        fs.mkdirSync(path.join(home, 'debug'), { recursive: true });
+        fs.mkdirSync(path.join(home, 'projects/-workspace'), { recursive: true });
+        fs.writeFileSync(path.join(home, 'debug/run.txt'), 'INFO old');
+        const session = path.join(home, 'projects/-workspace/resume.jsonl');
+        fs.writeFileSync(session, ''); fs.truncateSync(session, 300 * 1024 ** 2);
+        const input = { provider: 'claude' as const, agent: 'a', root: home, credentials: [], measureOnly: true };
+        collectProvider(spool, input);
+        const output = { provider: 'claude', agent: 'a', source: 'stdout' };
+        spool.append(output, ['INFO pending'], 'text', { credentials: [], cursor: { before: {}, after: { offset: 13 } } });
+        const pending = spool.exportOne();
+        spool.close();
+        const Sqlite = createRequire(import.meta.url)('better-sqlite3');
+        const legacy = new Sqlite(path.join(spoolRoot, 'spool.sqlite'));
+        try { legacy.exec('ALTER TABLE sources DROP COLUMN diagnostic_bytes'); }
+        finally { legacy.close(); }
+        spool = new ManagedLogSpool(spoolRoot, 'tenant-a');
+        assert.doesNotThrow(() => spool.assertCapacity());
+        assert.deepEqual(spool.exportOne(), pending);
+        assert.deepEqual(spool.cursor(output), { offset: 13 });
+        const status = spool.status() as any;
+        assert.equal(status.nativeSources.sources[0].capacityBytesLowerBound, 8);
+        assert.ok(status.nativeSources.sources[0].measuredBytes > 300 * 1024 ** 2);
+        spool.limits.scanFiles = 0;
+        collectProvider(spool, input);
+        assert.equal((spool.status() as any).nativeSources.sources[0].capacityBytesLowerBound, 8);
+        spool.limits.protectedBytes = 8;
+        assert.throws(() => spool.assertCapacity(), /protected native state capacity/);
+    } finally { spool.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });

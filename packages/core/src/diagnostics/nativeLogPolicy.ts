@@ -9,6 +9,7 @@ export interface NativeLogInventory {
     bytes: Record<ReturnType<typeof nativeFileClass>, number>;
     observedBytes: number;
     capacityBytesLowerBound?: number;
+    capacityBasis?: 'diagnostic';
     allocatedBytes: number;
     availableBytes: number | null;
     inventoryComplete: boolean;
@@ -114,8 +115,12 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
 export function nativeAdmissionReason(inventories: NativeLogInventory[], limits: NativeLogLimits = NATIVE_LOG_LIMITS): string | null {
     if (inventories.some(i => i.reason === 'unsafe-root' || i.reason === 'unsafe-entry' || i.availableBytes === null)) return 'native log inventory incomplete; operator action required';
     if (inventories.some(i => i.availableBytes! < limits.minimumFreeBytes)) return 'native log filesystem reserve exhausted; operator action required';
-    if (inventories.some(i => (i.capacityBytesLowerBound ?? i.observedBytes) >= limits.rootBytes)
-        || inventories.reduce((sum, i) => sum + (i.capacityBytesLowerBound ?? i.observedBytes), 0) >= limits.totalBytes) return 'protected native state capacity; operator action required; after storage remediation use private CLI reset-native-capacity (docs/operations/managed-diagnostics.md)';
+    // Legacy high-water marks counted every class; only classified diagnostic
+    // evidence may contribute to this gate. Disk reserves cover session growth.
+    const bytes = inventories.map(i => i.capacityBasis === 'diagnostic'
+        ? i.capacityBytesLowerBound ?? i.bytes.diagnostic : i.bytes.diagnostic);
+    if (bytes.some(value => value >= limits.rootBytes)
+        || bytes.reduce((sum, value) => sum + value, 0) >= limits.totalBytes) return 'protected native state capacity; operator action required; after storage remediation use private CLI reset-native-capacity (docs/operations/managed-diagnostics.md)';
     return null;
 }
 

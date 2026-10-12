@@ -233,3 +233,30 @@ test('scan limits and unknown directories cannot mask an unsafe entry', () => {
         assert.match(nativeAdmissionReason([inventory], limits)!, /incomplete/);
     } finally { f.close(); }
 });
+
+
+test('declared capacity excludes session, database, auth and unknown bytes, including legacy high-water totals', () => {
+    const f = fixture();
+    const spool = new ManagedLogSpool(path.join(f.base, 'spool'), 'tenant-a');
+    try {
+        write(f.root, 'log/codex-tui.log', 'INFO');
+        for (const relative of ['sessions/2026/10/12/rollout-resume.jsonl', 'state_2.sqlite', 'auth.json', 'unknown-file']) {
+            write(f.root, relative, ''); fs.truncateSync(path.join(f.root, relative), 300 * 1024 ** 2);
+        }
+        const inventory = inspectNativeLogRoot(f.input, { ...limits, scanMs: 10000 });
+        assert.ok(inventory.observedBytes > limits.totalBytes);
+        const legacy = { ...inventory, capacityBytesLowerBound: inventory.observedBytes };
+        assert.equal(nativeAdmissionReason([legacy], limits), null);
+        // Seed the legacy persisted JSON to verify an incomplete new scan
+        // cannot import its all-class high-water mark into diagnostic capacity.
+        const internal = (spool as any).db;
+        spool.recordNativeInventory(f.input, inventory);
+        internal.prepare('UPDATE sources SET native_details=?').run(JSON.stringify(legacy));
+        const partial = spool.recordNativeInventory(f.input, inspectNativeLogRoot(f.input, { ...limits, entries: 0 }));
+        assert.equal(partial.capacityBytesLowerBound, 4);
+        assert.equal(nativeAdmissionReason([partial], limits), null);
+        assert.match(nativeAdmissionReason([partial], { ...limits, rootBytes: 4 })!, /capacity/);
+        assert.match(nativeAdmissionReason([partial, partial], { ...limits, totalBytes: 8 })!, /capacity/);
+        assert.match(nativeAdmissionReason([{ ...partial, availableBytes: 0 }], { ...limits, minimumFreeBytes: 1 })!, /reserve/);
+    } finally { spool.close(); f.close(); }
+});
