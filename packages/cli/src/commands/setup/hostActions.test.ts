@@ -49,18 +49,34 @@ for (const host of ['::1', '127.0.0.1']) {
     resolveTestConfig = () => resolveHostConfig({ rootDir: root, env: {} }) as OrchestratorConfig;
     let started: OrchestratorConfig | undefined;
     let existingUi: ReturnType<typeof createServer> | undefined;
+    t.after(() => new Promise<void>(resolve => { if (existingUi?.listening) existingUi.close(() => resolve()); else resolve(); }));
     orch = {
+      dockerAsync: async () => ({ status: existingUi?.listening ? 0 : 1, stdout: JSON.stringify([
+        `/${resolveTestConfig!().stack}-ui`, { Running: true },
+        { 'propr.stack': resolveTestConfig!().stack, 'propr.service': 'ui' },
+        { '5173/tcp': [{ HostIp: '127.0.0.1', HostPort: String((existingUi?.address() as { port: number } | null)?.port) }] },
+      ]) }),
       validateEnv: () => ({ ok: true, warnings: [] }),
       ensureNetworkAsync: async () => {},
       replaceStackContainersAsync: async () => {
         await new Promise<void>(resolve => existingUi!.close(() => resolve()));
       },
-      startStackAsync: async (config: OrchestratorConfig) => { started = config; },
+      startStackAsync: async (config: OrchestratorConfig) => {
+        started = config;
+        if (existingUi?.listening) {
+          assert.equal((existingUi.address() as { port: number }).port, Number(config.uiPort.split(':').at(-1)));
+          return;
+        }
+        existingUi = createServer();
+        await new Promise<void>((resolve, reject) => {
+          existingUi!.once('error', reject);
+          existingUi!.listen(Number(config.uiPort.split(':').at(-1)), '127.0.0.1', resolve);
+        });
+      },
     } as unknown as OrchestratorModule;
     const actions = createDefaultActions();
     if (host === '::1') {
       existingUi = createServer();
-      t.after(() => new Promise<void>(resolve => { if (existingUi?.listening) existingUi.close(() => resolve()); else resolve(); }));
       await new Promise<void>((resolve, reject) => {
         existingUi!.once('error', reject);
         existingUi!.listen(5173, '127.0.0.1', resolve);
@@ -86,10 +102,83 @@ for (const host of ['::1', '127.0.0.1']) {
     assert.equal(unrelated.listening, true);
     // The selection survives rerunning setup without drifting to another port.
     const selected = started.uiPort;
+    const selectedUrl = started.frontendUrl;
+    await actions.startStack({ rootDir: root });
     await actions.startStack({ rootDir: root });
     assert.equal(started.uiPort, selected);
+    assert.equal(started.frontendUrl, selectedUrl);
+    assert.equal(readEnvVars(root).UI_PORT, selected);
+    assert.equal(readEnvVars(root).FRONTEND_URL, selectedUrl);
+    assert.equal(existingUi!.listening, true);
   });
 }
+
+test('repeat starts preserve an already-running managed IPv4 UI and its persisted OAuth URL', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'propr-managed-ui-port-'));
+  const managedUi = createServer();
+  t.after(() => { resolveTestConfig = undefined; rmSync(root, { recursive: true, force: true }); });
+  t.after(() => new Promise<void>(resolve => { if (managedUi.listening) managedUi.close(() => resolve()); else resolve(); }));
+  await new Promise<void>((resolve, reject) => {
+    managedUi.once('error', reject);
+    managedUi.listen(0, '127.0.0.1', resolve);
+  });
+  const port = (managedUi.address() as { port: number }).port;
+  const env = `UI_PORT=127.0.0.1:${port}\nFRONTEND_URL=http://localhost:${port}\n`;
+  writeFileSync(join(root, '.env'), env, { mode: 0o600 });
+  // @ts-expect-error dependency-free launcher has no TypeScript declaration
+  const { resolveHostConfig } = await import('../../../../../docker/launcher/orchestrator.mjs');
+  resolveTestConfig = () => resolveHostConfig({ rootDir: root, env: {} }) as OrchestratorConfig;
+  let starts = 0;
+  let started: OrchestratorConfig | undefined;
+  orch = {
+    dockerAsync: async (args: string[]) => {
+      assert.equal(args[0], 'inspect');
+      assert.equal(args.at(-1), `${resolveTestConfig!().stack}-ui`);
+      return { status: 0, stdout: JSON.stringify([
+        `/${resolveTestConfig!().stack}-ui`, { Running: true, Health: { Status: 'healthy' } },
+        { 'propr.stack': resolveTestConfig!().stack, 'propr.service': 'ui' },
+        { '5173/tcp': [{ HostIp: '127.0.0.1', HostPort: String(port) }] },
+      ]) };
+    },
+    validateEnv: () => ({ ok: true, warnings: [] }),
+    ensureNetworkAsync: async () => {},
+    startStackAsync: async (config: OrchestratorConfig) => {
+      starts++;
+      started = config;
+    },
+  } as unknown as OrchestratorModule;
+  const actions = createDefaultActions();
+  for (let run = 0; run < 3; run++) {
+    await actions.startStack({ rootDir: root });
+    assert.equal(started!.uiPort, `127.0.0.1:${port}`);
+    assert.equal(started!.frontendUrl, `http://localhost:${port}`);
+    assert.equal(readFileSync(join(root, '.env'), 'utf8'), env);
+    assert.equal(await actions.resolveUiUrl(root), `http://localhost:${port}`);
+    assert.equal(managedUi.listening, true);
+  }
+  assert.equal(starts, 3);
+  await t.test('the managed IPv4 binding does not hide an unrelated IPv6 owner', async sub => {
+    const unrelated = createServer();
+    sub.after(() => new Promise<void>(resolve => { if (unrelated.listening) unrelated.close(() => resolve()); else resolve(); }));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        unrelated.once('error', reject);
+        unrelated.listen({ host: '::1', port, ipv6Only: true }, resolve);
+      });
+    } catch (error) {
+      if (['EAFNOSUPPORT', 'EADDRNOTAVAIL', 'EPROTONOSUPPORT'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        sub.skip('IPv6 loopback unavailable'); return;
+      }
+      throw error;
+    }
+    await actions.startStack({ rootDir: root });
+    const selectedPort = Number(started!.uiPort.split(':').at(-1));
+    assert.ok(selectedPort > port);
+    assert.equal(started!.frontendUrl, `http://localhost:${selectedPort}`);
+    assert.equal(managedUi.listening, true);
+    assert.equal(unrelated.listening, true);
+  });
+});
 
 test('failed browser token save cannot leak through a later stack-root write and allows retry', async t => {
   const configDir = mkdtempSync(join(tmpdir(), 'propr-browser-save-'));
