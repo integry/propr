@@ -113,7 +113,7 @@ node dist/scripts/managed-diagnostics.js ack SEGMENT SHA256 --encrypted-upload-r
 
 `nativeMaintenance` reports the independent metadata inventory; `nativeAdmission` reports current declared-root eligibility, including `unconfigured` when no roots are declared. These checks supplement the existing mount and filesystem admission described below.
 
-`status` emits policy/redaction versions, instance, all source identities, next sequence, cumulative dropped bytes/gaps, last successful clean collection, protected reasons, capacity warnings, and compressed spool usage. `nativeSources` separately reports protected native sources with `growthBounded: false`, unknown measurements as `null`, and explicit container-only/unowned/excluded coverage limitations. `measuredBytes` (and legacy `protectedBytes`) is populated only for an allowlisted native inventory with no recorded uncertainty; it is never a complete provider-home measurement. The shared physical Docker admission boundary enforces diagnostics capacity before initial admission and again after any entitlement wait, before container creation. This also applies to explicitly enabled self-managed instances without Fleet or Redis entitlement admission. Capacity high-water marks remain conservative until a complete scan or an explicit operator capacity reset; historical gaps remain visible; spool usage measures only collected compressed copies. No paths, credentials or record contents appear in status. A last-success timestamp denotes collection, not upload or complete history.
+`status` emits the policy version, the current redaction adapter version (`redactionVersion`), the distinct versions of stored segments (`segmentRedactionVersions`), instance, all source identities, next sequence, cumulative dropped bytes/gaps, last successful clean collection, protected reasons, capacity warnings, and compressed spool usage. `nativeSources` separately reports protected native sources with `growthBounded: false`, unknown measurements as `null`, and explicit container-only/unowned/excluded coverage limitations. `measuredBytes` (and legacy `protectedBytes`) is populated only for an allowlisted native inventory with no recorded uncertainty; it is never a complete provider-home measurement. The shared physical Docker admission boundary enforces diagnostics capacity before initial admission and again after any entitlement wait, before container creation. This also applies to explicitly enabled self-managed instances without Fleet or Redis entitlement admission. Capacity high-water marks remain conservative until a complete scan or an explicit operator capacity reset; historical gaps remain visible; spool usage measures only collected compressed copies. No paths, credentials or record contents appear in status. A last-success timestamp denotes collection, not upload or complete history.
 
 `export` emits `null`, or one JSON object:
 
@@ -122,7 +122,7 @@ node dist/scripts/managed-diagnostics.js ack SEGMENT SHA256 --encrypted-upload-r
   "manifest": {
     "schemaVersion": 1,
     "policyVersion": 1,
-    "redactionVersion": 1,
+    "redactionVersion": 2,
     "tenantPrivate": true,
     "instance": "tenant-instance",
     "provider": "codex",
@@ -147,7 +147,7 @@ node dist/scripts/managed-diagnostics.js ack SEGMENT SHA256 --encrypted-upload-r
 }
 ```
 
-Native `source` is a SHA-256 of its allowlisted relative filename; absolute filesystem/repository paths are not in manifests. Times describe **collection**, not provider event time. Sequence is monotonic per tracked source, including rejected input records. Discarded oversize byte ranges are also counted as gaps even when a complete record could not be assigned a sequence. Gap/dropped-byte counts are cumulative and can change between exports of the same immutable payload.
+`redactionVersion` is the adapter that produced that segment, recorded per segment. Segments stored before an upgrade (including those spooled before per-segment versions existed, which are version 1) are preserved, never extended by a newer adapter, and export with their original version; new records after an upgrade start a new segment. Native `source` is a SHA-256 of its allowlisted relative filename; absolute filesystem/repository paths are not in manifests. Times describe **collection**, not provider event time. Sequence is monotonic per tracked source, including rejected input records. Discarded oversize byte ranges are also counted as gaps even when a complete record could not be assigned a sequence. Gap/dropped-byte counts are cumulative and can change between exports of the same immutable payload.
 
 Fleet must use a private pipe, validate instance binding, digest and lengths, encrypt before off-site upload, verify a readback, then acknowledge that exact sealed segment/digest. An interrupted export/upload is retried from the same oldest unacknowledged segment. Export alone does not acknowledge. Acknowledgement permits immediate local pruning; retrying the most recent acknowledgement is idempotent. Fleet owns encryption keys, transport, remote coverage/gap reporting and the 14-day encrypted diagnostic retention policy. Do not attach the envelope to a task or GitHub.
 

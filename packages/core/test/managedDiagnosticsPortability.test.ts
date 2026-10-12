@@ -355,6 +355,58 @@ test('misdeclared policy migration chains refuse before any step is applied', ()
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('pre-upgrade v1 segments are never extended and export as v1 across restart; new records start a v2 segment', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-diagnostics-redaction-'));
+    const dir = path.join(root, 'spool');
+    const identity = { provider: 'codex', agent: 'agent-a', source: 'stdout' };
+    const other = { ...identity, source: 'stderr' };
+    const now = Date.now();
+    type Manifest = { segment: number; redactionVersion: number; firstSequence: number; lastSequence: number };
+    try {
+        // A spool written by the release before per-segment redaction versions:
+        // one sealed-but-unacknowledged segment and one open segment.
+        const old = new ManagedLogSpool(dir, 'tenant-a');
+        old.append(identity, [JSON.stringify({ n: 1 })], 'jsonl', { credentials: [], now });
+        const pending = old.exportOne()!;
+        old.append(identity, [JSON.stringify({ n: 2 })], 'jsonl', { credentials: [], now });
+        old.append(other, [JSON.stringify({ n: 10 })], 'jsonl', { credentials: [], now });
+        old.close();
+        const legacy = new Database(path.join(dir, 'spool.sqlite'));
+        legacy.exec('ALTER TABLE segments DROP COLUMN redaction');
+        const before = legacy.prepare('SELECT id,sealed,digest,data,first,last FROM segments ORDER BY id').all() as Array<{ id: number; sealed: number; digest: string; data: Buffer }>;
+        legacy.close();
+        assert.deepEqual(before.map(s => s.sealed), [1, 0, 0]);
+
+        const upgraded = new ManagedLogSpool(dir, 'tenant-a');
+        assert.deepEqual((upgraded.status() as { segmentRedactionVersions: number[] }).segmentRedactionVersions, [1]);
+        upgraded.append(identity, [JSON.stringify({ n: 3 })], 'jsonl', { credentials: [], now });
+        upgraded.close();
+
+        // Restart again: stored versions survive, not the current constant.
+        const restarted = new ManagedLogSpool(dir, 'tenant-a');
+        restarted.append(other, [JSON.stringify({ n: 11 })], 'jsonl', { credentials: [], now });
+        assert.deepEqual((restarted.status() as { redactionVersion: number; segmentRedactionVersions: number[] }).redactionVersion, 2);
+        assert.deepEqual((restarted.status() as { segmentRedactionVersions: number[] }).segmentRedactionVersions, [1, 2]);
+        const exported: Array<{ manifest: Manifest; digest: string; data: Buffer; records: number[] }> = [];
+        for (let item; (item = restarted.exportOne());) {
+            exported.push({ manifest: item.manifest as Manifest, digest: item.digest, data: item.data,
+                records: gunzipSync(item.data).toString().trim().split('\n').map(line => JSON.parse(line).n) });
+            restarted.acknowledge(item.id, item.digest);
+        }
+        restarted.close();
+        assert.deepEqual(exported.map(e => [e.manifest.redactionVersion, e.records]), [[1, [1]], [1, [2]], [1, [10]], [2, [3]], [2, [11]]]);
+        // Preserved v1 segments are byte-identical: the open one was never extended.
+        assert.equal(exported[0].manifest.segment, pending.id);
+        assert.equal(exported[0].digest, pending.digest);
+        for (const [index, segment] of before.entries()) {
+            assert.equal(exported[index].manifest.segment, segment.id);
+            assert.equal(exported[index].digest, segment.digest);
+            assert.ok(exported[index].data.equals(segment.data));
+        }
+        assert.deepEqual(exported.slice(3).map(e => [e.manifest.firstSequence, e.manifest.lastSequence]), [[3, 3], [2, 2]]);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('a newer stored policy with keys this release does not know refuses as a downgrade', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-diagnostics-future-'));
     const dir = path.join(root, 'spool');
