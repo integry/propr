@@ -110,7 +110,8 @@ export class ManagedLogSpool {
             else this.gap(source, bytes, reason);
         });
     }
-    measureNativeState(identity: LogIdentity, bytes: number, complete: boolean, inventory?: NativeInventory, now = Date.now()): void {
+    measureNativeState(identity: LogIdentity, bytes: number, complete: boolean, options: { inventory?: NativeInventory; now?: number } = {}): void {
+        const { inventory, now = Date.now() } = options;
         this.atomic(() => {
             const source = this.source(identity);
             // A partial scan can only raise the known lower bound. A complete

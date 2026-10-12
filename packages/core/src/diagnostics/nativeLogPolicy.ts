@@ -36,10 +36,7 @@ export function configuredNativeLogRoots(env: NodeJS.ProcessEnv = process.env): 
     }
     const roots: NativeLogRoot[] = [];
     for (const value of config.roots) {
-        if (!value || !providers.has(value.provider) || typeof value.agent !== 'string' || !/^[a-zA-Z0-9._:-]{1,160}$/.test(value.agent)
-            || typeof value.root !== 'string' || value.root.length > 4096 || !path.isAbsolute(value.root)
-            || value.root.includes('\0') || value.root.split('/').some((part: string) => part === '..' || part === '.')
-            || path.normalize(value.root) !== value.root || value.root === '/') throw new Error('unsafe native log root configuration');
+        validateNativeLogRoot(value);
         // Overlapping roots would double-count bytes and blur ownership. The
         // shared Claude UI directory cannot acquire ownership by a declaration.
         if (value.root === '/tmp/claude-logs' || value.root.startsWith('/tmp/claude-logs/')
@@ -49,6 +46,13 @@ export function configuredNativeLogRoots(env: NodeJS.ProcessEnv = process.env): 
         roots.push({ provider: value.provider, agent: value.agent, root: value.root });
     }
     return roots;
+}
+
+function validateNativeLogRoot(value: NativeLogRoot): void {
+    if (!value || !providers.has(value.provider) || typeof value.agent !== 'string' || !/^[a-zA-Z0-9._:-]{1,160}$/.test(value.agent)
+        || typeof value.root !== 'string' || value.root.length > 4096 || !path.isAbsolute(value.root)
+        || value.root.includes('\0') || value.root.split('/').some((part: string) => part === '..' || part === '.')
+        || path.normalize(value.root) !== value.root || value.root === '/') throw new Error('unsafe native log root configuration');
 }
 
 /** Metadata only: no credential reads, content copies, scratch files or native
@@ -63,6 +67,30 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
     };
     const deadline = performance.now() + limits.scanMs;
     let root: PinnedDirectory | undefined;
+    const inspectDirectory = (dir: PinnedDirectory, name: string, relative: string, stat: fs.Stats): void => {
+        if (stat.uid !== fs.fstatSync(root!.fd).uid) { incomplete('unsafe-entry'); return; }
+        if (!nativeDirectoryAllowed(input.provider, relative)) { incomplete('unmeasured-directory'); return; }
+        let child: PinnedDirectory | undefined;
+        try {
+            child = dir.child(name);
+            const actual = fs.fstatSync(child.fd);
+            if (actual.uid !== fs.fstatSync(root!.fd).uid || actual.dev !== stat.dev || actual.ino !== stat.ino) throw new Error('foreign or replaced directory');
+            walk(child, relative + '/');
+        } catch { incomplete('unsafe-entry'); }
+        finally { child?.close(); }
+    };
+    const inspectFile = (dir: PinnedDirectory, name: string, relative: string, stat: fs.Stats): void => {
+        let fd: number | undefined;
+        try {
+            fd = dir.file(name);
+            const actual = fs.fstatSync(fd);
+            if (actual.dev !== stat.dev || actual.ino !== stat.ino) throw new Error('replaced native entry');
+            result.bytes[nativeFileClass(input.provider, relative)] += actual.size;
+            result.observedBytes += actual.size;
+            result.allocatedBytes += actual.blocks * 512;
+        } catch { incomplete('unsafe-entry'); }
+        finally { if (fd !== undefined) fs.closeSync(fd); }
+    };
     const walk = (dir: PinnedDirectory, prefix: string): void => {
         const listing = fs.opendirSync(`/proc/self/fd/${dir.fd}`);
         try {
@@ -74,29 +102,8 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
                 // lstat never follows the entry. Opening and fstat then validate
                 // the actual object, including malicious replacement races.
                 const stat = fs.lstatSync(dir.path(entry.name));
-                if (stat.isDirectory()) {
-                    if (stat.uid !== fs.fstatSync(root!.fd).uid) { incomplete('unsafe-entry'); continue; }
-                    if (!nativeDirectoryAllowed(input.provider, relative)) { incomplete('unmeasured-directory'); continue; }
-                    let child: PinnedDirectory | undefined;
-                    try {
-                        child = dir.child(entry.name);
-                        const actual = fs.fstatSync(child.fd);
-                        if (actual.uid !== fs.fstatSync(root!.fd).uid || actual.dev !== stat.dev || actual.ino !== stat.ino) throw new Error('foreign or replaced directory');
-                        walk(child, relative + '/');
-                    } catch { incomplete('unsafe-entry'); }
-                    finally { child?.close(); }
-                } else {
-                    let fd: number | undefined;
-                    try {
-                        fd = dir.file(entry.name);
-                        const actual = fs.fstatSync(fd);
-                        if (actual.dev !== stat.dev || actual.ino !== stat.ino) throw new Error('replaced native entry');
-                        result.bytes[nativeFileClass(input.provider, relative)] += actual.size;
-                        result.observedBytes += actual.size;
-                        result.allocatedBytes += actual.blocks * 512;
-                    } catch { incomplete('unsafe-entry'); }
-                    finally { if (fd !== undefined) fs.closeSync(fd); }
-                }
+                if (stat.isDirectory()) inspectDirectory(dir, entry.name, relative, stat);
+                else inspectFile(dir, entry.name, relative, stat);
                 if (result.reason === 'scan-limit') break;
             }
         } finally { listing.closeSync(); }

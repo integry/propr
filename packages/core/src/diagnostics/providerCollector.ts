@@ -107,18 +107,9 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
             const buffer = Buffer.alloc(Math.min(spool.limits.scanBytes - readBytes, stat.size - offset));
             const length = fs.readSync(fd, buffer, 0, buffer.length, offset);
             readBytes += length;
-            let start = 0, dropped = 0, discard = replaced ? false : before.discard ?? false;
-            const records: string[] = [];
-            let recordBound = false;
-            for (let end = 0; end < length; end++) if (buffer[end] === 10) {
-                if (discard || end - start > spool.limits.recordBytes) dropped += end + 1 - start;
-                else records.push(buffer.subarray(start, end).toString('utf8'));
-                discard = false; start = end + 1;
-                if (records.length >= 4096) { recordBound = true; limited = true; break; }
-            }
-            // An oversized unfinished line is consumed in bounded pieces,
-            // and its tail can NEVER be reclassified as a safe record.
-            if (!recordBound && (discard || length - start > spool.limits.recordBytes)) { dropped += length - start; start = length; discard = true; }
+            const { records, start, dropped, discard, recordBound } = readCommittedRecords(buffer.subarray(0, length),
+                spool.limits.recordBytes, replaced ? false : before.discard ?? false);
+            if (recordBound) limited = true;
             spool.append(identity, records, relative.endsWith('.jsonl') ? 'jsonl' : 'text', { credentials, now,
                 cursor: { before, after: { inode, offset: offset + start, discard, anchor: anchorAt(offset + start) } }, droppedBytes: dropped });
         } catch { unsafe = true; inventoryIncomplete = true; spool.report(summary, 'unsafe-source'); spool.report(identity, 'unsafe-source'); }
@@ -155,7 +146,7 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
     };
     try { walk(root, ''); }
     finally { if (!input.pinnedRoot) root.close(); }
-    spool.measureNativeState(summary, protectedBytes, !inventoryIncomplete, inventory, now);
+    spool.measureNativeState(summary, protectedBytes, !inventoryIncomplete, { inventory, now });
     if (limited || inventoryIncomplete) spool.report(summary, 'scan-limit');
     if (!input.measureOnly && !input.credentialContextComplete) spool.report(summary, 'ownership-unverified');
     // Scan bounds and unknown subtrees remain lower bounds. Admission must
@@ -171,4 +162,22 @@ function sourceWasReplaced(before: Cursor, current: { offset: number; size: numb
 
 function sourceIsCaughtUp(before: Cursor, current: { offset: number; size: number; inode: string }, replaced: boolean): boolean {
     return !replaced && before.inode === current.inode && current.offset === current.size;
+}
+
+/** Keep oversized unfinished lines discarded across bounded reads. */
+function readCommittedRecords(buffer: Buffer, recordBytes: number, discard: boolean) {
+    let start = 0, dropped = 0, recordBound = false;
+    const records: string[] = [];
+    for (let end = 0; end < buffer.length; end++) if (buffer[end] === 10) {
+        if (discard || end - start > recordBytes) dropped += end + 1 - start;
+        else records.push(buffer.subarray(start, end).toString('utf8'));
+        discard = false; start = end + 1;
+        if (records.length >= 4096) { recordBound = true; break; }
+    }
+    // An oversized unfinished line is consumed in bounded pieces,
+    // and its tail can NEVER be reclassified as a safe record.
+    if (!recordBound && (discard || buffer.length - start > recordBytes)) {
+        dropped += buffer.length - start; start = buffer.length; discard = true;
+    }
+    return { records, start, dropped, discard, recordBound };
 }
