@@ -444,6 +444,12 @@ jobs:
             echo '::warning::Packaged ARM64 smoke crashed after final quit; rerunning all four launches in a fresh session.'
           done
 
+      # Browser binaries installed by renderer-axe-boundary belong to its runner.
+      # Pairing acceptance launches Chromium on this package job's runner too.
+      - name: Install Chromium for packaged Linux x64 browser approval
+        if: matrix.platform == 'linux' && matrix.arch == 'x64'
+        run: npx playwright install chromium
+
       - name: Capture packaged Linux x64 visual and accessibility acceptance evidence
         id: desktop-acceptance
         if: matrix.platform == 'linux' && matrix.arch == 'x64'
