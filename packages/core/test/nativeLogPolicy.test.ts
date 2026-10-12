@@ -95,7 +95,7 @@ test('real active writer survives capacity refusal, daily boundary, collector/ex
     } finally { fs.closeSync(writer); spool.close(); f.close(); }
 });
 
-test('multi-GB metadata scans are bounded; unknown directories, unsafe files and low free space refuse admission', () => {
+test('multi-GB metadata scans are bounded; unknown directories retain byte and reserve admission checks', () => {
     const f = fixture();
     try {
         write(f.root, 'log/codex-tui.log', '');
@@ -111,7 +111,7 @@ test('multi-GB metadata scans are bounded; unknown directories, unsafe files and
         fs.mkdirSync(path.join(f.root, 'unknown-state'));
         assert.equal(inspectNativeLogRoot(f.input).inventoryComplete, false);
         assert.equal(inspectNativeLogRoot(f.input, { ...limits, entries: 1 }).reason, 'scan-limit');
-        assert.match(nativeAdmissionReason([inspectNativeLogRoot(f.input)], limits)!, /incomplete/);
+        assert.match(nativeAdmissionReason([inspectNativeLogRoot(f.input)], limits)!, /capacity/);
     } finally { f.close(); }
 });
 
@@ -184,5 +184,52 @@ test('launch preflight refuses a configured oversized root and ENOSPC reporting 
             runtime, module], { env, encoding: 'utf8' });
         assert.equal(full.status, 1); assert.match(full.stderr, /ENOSPC/); assert.equal(full.stdout, '');
         assert.equal(fs.statSync(path.join(f.root, 'log/codex-tui.log')).size, NATIVE_LOG_LIMITS.rootBytes);
+    } finally { f.close(); }
+});
+
+
+test('entry and deadline bounds and unknown directories admit small homes while retaining persisted capacity', () => {
+    const f = fixture();
+    let spool = new ManagedLogSpool(path.join(f.base, 'spool'), 'tenant-a');
+    try {
+        write(f.root, 'log/codex-tui.log', 'INFO small');
+        const complete = inspectNativeLogRoot(f.input, { ...limits, scanMs: 10000 });
+        spool.recordNativeInventory(f.input, complete);
+        write(f.root, 'todos/retained', 'SESSION-CANARY');
+        for (const bounds of [{}, { entries: 1 }, { scanMs: -1 }]) {
+            const inventory = inspectNativeLogRoot(f.input, { ...limits, ...bounds });
+            assert.equal(inventory.inventoryComplete, false);
+            const measured = spool.recordNativeInventory(f.input, inventory);
+            assert.equal(nativeAdmissionReason([measured], limits), null);
+            assert.equal(measured.capacityBytesLowerBound, complete.observedBytes);
+            assert.match(nativeAdmissionReason([measured], { ...limits, rootBytes: 1 })!, /capacity/);
+            assert.match(nativeAdmissionReason([measured, measured], { ...limits, totalBytes: 1 })!, /capacity/);
+        }
+        spool.close();
+        spool = new ManagedLogSpool(path.join(f.base, 'spool'), 'tenant-a');
+        const partial = spool.recordNativeInventory(f.input, inspectNativeLogRoot(f.input, { ...limits, entries: 0 }));
+        assert.equal(partial.capacityBytesLowerBound, complete.observedBytes);
+        assert.match(nativeAdmissionReason([partial], { ...limits, rootBytes: 1 })!, /capacity/);
+        fs.rmSync(path.join(f.root, 'todos'), { recursive: true });
+        fs.writeFileSync(path.join(f.root, 'log/codex-tui.log'), '');
+        const refreshed = spool.recordNativeInventory(f.input, inspectNativeLogRoot(f.input, { ...limits, scanMs: 10000 }));
+        assert.equal(refreshed.capacityBytesLowerBound, 0);
+        assert.equal(nativeAdmissionReason([refreshed], { ...limits, rootBytes: 1 }), null);
+    } finally { spool.close(); f.close(); }
+});
+
+test('scan limits and unknown directories cannot mask an unsafe entry', () => {
+    const f = fixture();
+    try {
+        write(f.root, 'log/codex-tui.log', 'safe');
+        const original = inspectNativeLogRoot(f.input);
+        for (const reason of ['unsafe-entry', 'unsafe-root'] as const) {
+            assert.match(nativeAdmissionReason([{ ...original, inventoryComplete: false, reason }], limits)!, /incomplete/);
+        }
+        fs.symlinkSync('/unowned', path.join(f.root, 'log/escape'));
+        write(f.root, 'unknown/canary', 'RESUME-CANARY');
+        const inventory = inspectNativeLogRoot(f.input);
+        assert.equal(inventory.reason, 'unsafe-entry');
+        assert.match(nativeAdmissionReason([inventory], limits)!, /incomplete/);
     } finally { f.close(); }
 });

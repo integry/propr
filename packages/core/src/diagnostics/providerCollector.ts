@@ -48,13 +48,14 @@ export interface NativeInventory {
 }
 /** Snapshot only committed newline-delimited records. Never modifies the writer's
  * descriptor, native filename, DB, resume state, or live UI watcher. */
-export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { measureOnly?: boolean; pinnedRoot?: PinnedDirectory }, now = Date.now()): boolean {
+export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { measureOnly?: boolean; pinnedRoot?: PinnedDirectory; rejectUnsafe?: boolean }, now = Date.now()): boolean {
     const summary: LogIdentity = { provider: input.provider, agent: input.agent, source: input.transient ? `native-state:${digest(input.root)}` : 'native-state' };
     const transientRoot = input.transient ? input.root : undefined;
     let root: PinnedDirectory;
     try { root = input.pinnedRoot ?? PinnedDirectory.open(input.root); }
     catch (e) {
         spool.report(summary, (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'ownership-unverified' : 'unsafe-source');
+        if (input.rejectUnsafe) throw e;
         return false;
     }
     let credentials: readonly string[];
@@ -73,11 +74,11 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
         inventory[`${kind}Files`]++;
     };
     let deadline = performance.now() + spool.limits.scanMs;
-    let limited = false, inventoryIncomplete = false;
+    let limited = false, inventoryIncomplete = false, unsafe = false;
     const measureProtectedFile = (dir: PinnedDirectory, entry: fs.Dirent, relative: string): void => {
         let fd: number | undefined;
         try { fd = dir.file(entry.name); measure(relative, fs.fstatSync(fd).size); }
-        catch { inventoryIncomplete = true; spool.report(summary, 'unsafe-source'); }
+        catch { unsafe = true; inventoryIncomplete = true; spool.report(summary, 'unsafe-source'); }
         finally { if (fd !== undefined) fs.closeSync(fd); }
     };
     const collectFile = (dir: PinnedDirectory, entry: fs.Dirent, relative: string): void => {
@@ -120,7 +121,7 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
             if (!recordBound && (discard || length - start > spool.limits.recordBytes)) { dropped += length - start; start = length; discard = true; }
             spool.append(identity, records, relative.endsWith('.jsonl') ? 'jsonl' : 'text', { credentials, now,
                 cursor: { before, after: { inode, offset: offset + start, discard, anchor: anchorAt(offset + start) } }, droppedBytes: dropped });
-        } catch { inventoryIncomplete = true; spool.report(summary, 'unsafe-source'); spool.report(identity, 'unsafe-source'); }
+        } catch { unsafe = true; inventoryIncomplete = true; spool.report(summary, 'unsafe-source'); spool.report(identity, 'unsafe-source'); }
         finally { if (fd !== undefined) fs.closeSync(fd); }
     };
     const visitEntry = (dir: PinnedDirectory, entry: fs.Dirent, relative: string): void => {
@@ -134,10 +135,13 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
         else if (directories[input.provider].test(relative)) {
             let child: PinnedDirectory | undefined;
             try { child = dir.child(entry.name); walk(child, relative + '/'); }
-            catch { inventoryIncomplete = true; spool.report(summary, 'unsafe-source'); }
+            catch { unsafe = true; inventoryIncomplete = true; spool.report(summary, 'unsafe-source'); }
             finally { child?.close(); }
         }
-        else inventory.excludedEntries++;
+        else {
+            inventory.excludedEntries++;
+            if (entry.isDirectory()) inventoryIncomplete = true;
+        }
     };
     const walk = (dir: PinnedDirectory, prefix: string): void => {
         const listing = fs.opendirSync(`/proc/self/fd/${dir.fd}`);
@@ -154,6 +158,9 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
     spool.measureNativeState(summary, protectedBytes, !inventoryIncomplete, inventory, now);
     if (limited || inventoryIncomplete) spool.report(summary, 'scan-limit');
     if (!input.measureOnly && !input.credentialContextComplete) spool.report(summary, 'ownership-unverified');
+    // Scan bounds and unknown subtrees remain lower bounds. Admission must
+    // distinguish those from verified unsafe entries.
+    if (input.rejectUnsafe && unsafe) throw new Error('unsafe native inventory');
     return !inventoryIncomplete;
 }
 

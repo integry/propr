@@ -181,3 +181,86 @@ test('local-only disposal requires explicit admin policy and reports loss withou
         db.close(); fs.rmSync(root, { recursive: true, force: true });
     }
 });
+
+test('bounded homes and saturated copy cursors preserve task, goal and declared-root admission', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-log-partial-launch-'));
+    try {
+        const result = spawnSync(process.execPath, ['--import', 'tsx', '-e', `
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import { mock } from 'node:test';
+            import { assertNativeLogAdmission } from './packages/core/src/diagnostics/nativeLogAdmission.ts';
+            import { managedDiagnostics, assertNativeLogAdmission as assertDeclared, nativeDiagnosticStatus } from './packages/core/src/diagnostics/managedLogRuntime.ts';
+            import { prepareAdmittedAgent, spawnAdmittedAgent } from './packages/core/src/agents/agentRunAdmission.ts';
+            mock.method(fs, 'statfsSync', (_path, options) => options?.bigint
+                ? {bavail:1000000n,bsize:4096n,ffree:100n} : {bavail:1000000,bsize:4096,ffree:100});
+            const base = ${JSON.stringify(root)};
+            delete process.env.PROPR_AGENT_RUN_LIMIT;
+            process.env.PROPR_MANAGED_CREDENTIALS_DIR = base + '/managed';
+            const home = base + '/managed/agent-a/.claude';
+            fs.mkdirSync(home + '/projects/-workspace', {recursive:true});
+            fs.mkdirSync(home + '/todos', {recursive:true});
+            fs.writeFileSync(home + '/todos/canary', 'RESUME-CANARY');
+            for (let n = 0; n < 4100; n++) fs.writeFileSync(home + '/projects/-workspace/session-' + n + '.jsonl', '{}');
+            const args = ['run','-v',home + ':/home/node/.claude:rw','image'];
+            assert.equal(await prepareAdmittedAgent(args), null);
+            const db = managedDiagnostics();
+            assert.equal(db.status().sources.find(s=>s.source==='native-state').inventoryComplete, false);
+            db.limits.scanFiles = 1;
+            assert.equal(await prepareAdmittedAgent(args), null);
+            db.limits.scanFiles = 4096;
+            db.limits.scanMs = -1;
+            assertNativeLogAdmission(args);
+            db.limits.scanMs = 10000;
+            // Cursor saturation arrives at an awaited admission boundary. The
+            // second native check must still succeed before physical creation.
+            let created = 0, removed = 0, released = 0;
+            const admission = await prepareAdmittedAgent(args, {
+                config:{instance:'tenant-a',limit:1},
+                client:{zadd:async()=>0,zrem:async()=>0,zremrangebyscore:async()=>0,zcard:async()=>0,hgetall:async()=>({}),
+                    eval:async(_sql,_keys,_holders,_config,op)=> {
+                        if (op === 'expired') return [];
+                        if (op === 'release') released++;
+                        if (op === 'acquire') {
+                            db.limits.sources = db.status().sources.length + 1;
+                            db.append({provider:'codex',agent:'old',source:'cursor'}, ['INFO retained'], 'text', {credentials:[]});
+                        }
+                        return 1;
+                    }},
+                docker:{daemon:async()=> 'test-daemon',create:async()=>{created++;return 'new';},remove:async()=>{removed++;}},
+            });
+            assert.equal(created,1);
+            assert.equal(db.status().sourceCapacityWarning,true);
+            assert.throws(()=>db.cursor({provider:'codex',agent:'old',source:'another-cursor'}), /source capacity/);
+            await admission.finish();
+            assert.equal(removed,1); assert.equal(released,1);
+            const codex = base + '/managed/agent-b/.codex';
+            fs.mkdirSync(codex + '/sessions/2026/10/12', {recursive:true});
+            fs.writeFileSync(codex + '/sessions/2026/10/12/rollout-resume.jsonl', '{}');
+            // A different agent needs a new admission row after saturation.
+            const codexArgs = ['run','-v',codex + ':/home/node/.codex:rw','image'];
+            assert.equal(await prepareAdmittedAgent(codexArgs),null);
+            let spawned = 0;
+            const child = {};
+            assert.equal(await spawnAdmittedAgent(codexArgs, ()=>{spawned++;return child;}),child);
+            assert.equal(spawned,1);
+            process.env.PROPR_NATIVE_LOG_ROOTS = JSON.stringify({instance:'tenant-a',instanceOwned:true,roots:[
+                {provider:'claude',agent:'agent-a',root:home},{provider:'codex',agent:'agent-b',root:codex}]});
+            assertDeclared({provider:'claude',agent:'agent-a'});
+            assertDeclared({provider:'codex',agent:'agent-b'});
+            const status = nativeDiagnosticStatus();
+            assert.equal(status.nativeAdmission.status,'available');
+            assert.equal(status.nativeAdmission.inventoryComplete,false);
+            // Byte refusal remains active even when inventory is partial and
+            // the spool's source warning is already set.
+            db.limits.protectedBytes = 1;
+            assert.throws(()=>assertNativeLogAdmission(args), /protected native state capacity/);
+            assert.equal(fs.readFileSync(home + '/todos/canary','utf8'),'RESUME-CANARY');
+            assert.equal(fs.readFileSync(codex + '/sessions/2026/10/12/rollout-resume.jsonl','utf8'),'{}');
+            assert.ok(db.exportOne());
+            db.close();
+        `], { encoding: 'utf8', timeout: 30000, env: { ...process.env, PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a',
+            PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool'), PROPR_NATIVE_LOG_ROOTS: '', PROPR_FLEET_CONTROL_SECRET: '', PROPR_AGENT_RUN_LIMIT: '' } });
+        assert.equal(result.status, 0, result.stderr);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

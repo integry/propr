@@ -113,8 +113,7 @@ export function assertNativeLogAdmission(agent: DiagnosticAgent | undefined): vo
     if (!roots.some(root => root.provider === agent.provider && root.agent === agent.agent)) return;
     const db = managedDiagnostics();
     if (!db) throw new Error('native log admission unavailable; operator action required');
-    const inventories = inspectNativeLogRoots(roots);
-    roots.forEach((root, index) => db.recordNativeInventory(root, inventories[index]));
+    const inventories = inspectNativeLogRoots(roots).map((inventory, index) => db.recordNativeInventory(roots[index], inventory));
     const reason = nativeAdmissionReason(inventories);
     if (reason) throw new Error(`managed diagnostics: ${reason}`);
 }
@@ -122,8 +121,7 @@ export function nativeDiagnosticStatus(): object {
     const db = managedDiagnostics();
     if (!db) throw new Error('disabled');
     const roots = configuredNativeLogRoots();
-    const inventories = inspectNativeLogRoots(roots);
-    roots.forEach((root, index) => db.recordNativeInventory(root, inventories[index]));
+    const inventories = inspectNativeLogRoots(roots).map((inventory, index) => db.recordNativeInventory(roots[index], inventory));
     return { ...db.status(), nativeAdmission: { configuredRoots: roots.length, limits: NATIVE_LOG_LIMITS,
         status: roots.length ? nativeAdmissionReason(inventories) ? 'refused' : 'available' : 'unconfigured',
         reason: nativeAdmissionReason(inventories), newLaunchesOnly: true, existingWritersCapped: false,

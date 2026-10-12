@@ -8,6 +8,7 @@ export interface NativeLogInventory {
     checkedAt: number;
     bytes: Record<ReturnType<typeof nativeFileClass>, number>;
     observedBytes: number;
+    capacityBytesLowerBound?: number;
     allocatedBytes: number;
     availableBytes: number | null;
     inventoryComplete: boolean;
@@ -54,7 +55,11 @@ export function configuredNativeLogRoots(env: NodeJS.ProcessEnv = process.env): 
 export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimits = NATIVE_LOG_LIMITS): NativeLogInventory {
     const result: NativeLogInventory = { checkedAt: Date.now(), bytes: { diagnostic: 0, session: 0, database: 0, 'auth-config': 0, unknown: 0 },
         observedBytes: 0, allocatedBytes: 0, availableBytes: null, inventoryComplete: true, entries: 0, reason: 'protected-unbounded' };
-    const incomplete = (reason: NativeLogInventory['reason']) => { result.inventoryComplete = false; result.reason = reason; };
+    const incomplete = (reason: NativeLogInventory['reason']) => {
+        result.inventoryComplete = false;
+        // A later scan bound or unknown directory cannot erase unsafe evidence.
+        if (result.reason !== 'unsafe-entry' && result.reason !== 'unsafe-root') result.reason = reason;
+    };
     const deadline = performance.now() + limits.scanMs;
     let root: PinnedDirectory | undefined;
     const walk = (dir: PinnedDirectory, prefix: string): void => {
@@ -69,6 +74,7 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
                 // the actual object, including malicious replacement races.
                 const stat = fs.lstatSync(dir.path(entry.name));
                 if (stat.isDirectory()) {
+                    if (stat.uid !== fs.fstatSync(root!.fd).uid) { incomplete('unsafe-entry'); continue; }
                     if (!nativeDirectoryAllowed(input.provider, relative)) { incomplete('unmeasured-directory'); continue; }
                     let child: PinnedDirectory | undefined;
                     try {
@@ -106,10 +112,10 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
 }
 
 export function nativeAdmissionReason(inventories: NativeLogInventory[], limits: NativeLogLimits = NATIVE_LOG_LIMITS): string | null {
-    if (inventories.some(i => !i.inventoryComplete || i.availableBytes === null)) return 'native log inventory incomplete; operator action required';
+    if (inventories.some(i => i.reason === 'unsafe-root' || i.reason === 'unsafe-entry' || i.availableBytes === null)) return 'native log inventory incomplete; operator action required';
     if (inventories.some(i => i.availableBytes! < limits.minimumFreeBytes)) return 'native log filesystem reserve exhausted; operator action required';
-    if (inventories.some(i => i.observedBytes >= limits.rootBytes)
-        || inventories.reduce((sum, i) => sum + i.observedBytes, 0) >= limits.totalBytes) return 'protected native state capacity; operator action required';
+    if (inventories.some(i => (i.capacityBytesLowerBound ?? i.observedBytes) >= limits.rootBytes)
+        || inventories.reduce((sum, i) => sum + (i.capacityBytesLowerBound ?? i.observedBytes), 0) >= limits.totalBytes) return 'protected native state capacity; operator action required';
     return null;
 }
 

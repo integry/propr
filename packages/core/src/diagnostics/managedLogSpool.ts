@@ -86,7 +86,9 @@ export class ManagedLogSpool {
         const json = JSON.stringify(identity), id = digest(json);
         let source = this.db.prepare('SELECT * FROM sources WHERE id=?').get(id) as Source | undefined;
         if (!source || source.retired) {
-            if ((this.db.prepare('SELECT count(*) AS n FROM sources WHERE retired=0').get() as { n: number }).n >= this.limits.sources) throw new Error('diagnostic source capacity');
+            // Admission metadata must remain writable when copy cursors fill.
+            const admissionMetadata = /^(?:native-state(?::|$)|native-capacity:|unmapped-native-state$)/.test(identity.source);
+            if (!admissionMetadata && (this.db.prepare('SELECT count(*) AS n FROM sources WHERE retired=0').get() as { n: number }).n >= this.limits.sources) throw new Error('diagnostic source capacity');
             this.db.prepare('INSERT INTO sources(id,identity) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET retired=0').run(id, json);
             source = this.db.prepare('SELECT * FROM sources WHERE id=?').get(id) as Source;
         }
@@ -112,10 +114,14 @@ export class ManagedLogSpool {
                     inventory ? JSON.stringify({ ...inventory, measuredAt: now, complete }) : null, source.id);
         });
     }
-    recordNativeInventory(root: NativeLogRoot, inventory: NativeLogInventory): void {
-        this.atomic(() => {
+    recordNativeInventory(root: NativeLogRoot, inventory: NativeLogInventory): NativeLogInventory {
+        return this.atomic(() => {
             const source = this.source({ provider: root.provider, agent: root.agent, source: `native-capacity:${digest(root.root)}` });
-            this.db.prepare('UPDATE sources SET native_details=? WHERE id=?').run(JSON.stringify(inventory), source.id);
+            const previous = source.native_details ? JSON.parse(source.native_details) as NativeLogInventory : undefined;
+            const measured = { ...inventory, capacityBytesLowerBound: inventory.inventoryComplete ? inventory.observedBytes
+                : Math.max(inventory.observedBytes, previous?.capacityBytesLowerBound ?? previous?.observedBytes ?? 0) };
+            this.db.prepare('UPDATE sources SET native_details=? WHERE id=?').run(JSON.stringify(measured), source.id);
+            return measured;
         });
     }
     /** Persist membership before collection so retirement survives worker restarts. */
@@ -247,8 +253,6 @@ export class ManagedLogSpool {
             const rootIdentity = source.native_inventory ? (JSON.parse(source.native_inventory) as NativeInventory).rootIdentity : source.id;
             roots.set(rootIdentity, Math.max(roots.get(rootIdentity) ?? 0, source.protected_bytes));
         }
-        const count = (this.db.prepare('SELECT count(*) AS n FROM sources WHERE retired=0').get() as { n: number }).n;
-        if (count >= this.limits.sources) throw new Error('managed diagnostics: source capacity; operator action required');
         const bytes = [...roots.values()];
         if (bytes.some(value => value >= this.limits.protectedBytes) || bytes.reduce((sum, value) => sum + value, 0) >= 4 * this.limits.protectedBytes) throw new Error('managed diagnostics: protected native state capacity; operator action required');
     }

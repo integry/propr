@@ -58,9 +58,7 @@ export function assertNativeLogAdmission(args: readonly string[]): void {
         try {
             pinned = PinnedDirectory.open(root);
             spool.assertFilesystemCapacity(pinned);
-            if (!collectProvider(spool, { provider, agent, root, credentials: [], measureOnly: true, pinnedRoot: pinned })) {
-                throw new Error('incomplete native inventory');
-            }
+            collectProvider(spool, { provider, agent, root, credentials: [], measureOnly: true, pinnedRoot: pinned, rejectUnsafe: true });
         } catch {
             throw new Error('managed diagnostics: native capacity unavailable; operator action required');
         } finally { pinned?.close(); }
