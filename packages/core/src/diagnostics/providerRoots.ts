@@ -36,44 +36,75 @@ const providers = new Set<string>(['codex', 'claude', 'antigravity', 'opencode',
  * resolvable; a root the launcher would refuse is refused here too.
  */
 export function resolveProviderCredentialRoot(agent: CredentialRootAgent, options: { resolve?: (value: string) => string; env?: Environment } = {}): CredentialRootResolution {
-    // Launchers that compute their mount source pass it; it is authoritative.
-    if (agent.authenticationRoot) return absolute(agent.authenticationRoot, 'launch');
-    if (agent.provider === 'vibe' && agent.nativeRoot) return absolute(agent.nativeRoot, 'launch');
+    const launch = launchRoot(agent);
+    if (launch) return launch;
     if (!providers.has(agent.provider)) return { reason: 'unsupported-provider' };
     const env = options.env ?? process.env;
     const provider = agent.provider as AgentType;
-    const configPath = agent.configPath || DEFAULT_CONFIG_PATHS[provider];
-    const resolve = options.resolve ?? ((value: string) => provider === 'codex' ? resolveCodexConfigPath(value, env) : resolveConfigPath(value, env));
+    const context: RootContext = {
+        agent,
+        env,
+        configPath: agent.configPath || DEFAULT_CONFIG_PATHS[provider],
+        resolve: options.resolve ?? defaultResolver(provider, env),
+    };
     try {
-        switch (provider) {
-            case 'antigravity': return absolute(antigravityCredentialRoot(configPath, resolve, env), 'configured');
-            case 'claude': {
-                // Compose mounts the host Claude home at CLAUDE_CONFIG_PATH; the worker's
-                // own HOME (e.g. /root) has no .claude, so the default must not expand there.
-                const mapping = env.CLAUDE_CONFIG_PATH?.trim() || env.HOST_CLAUDE_DIR?.trim();
-                if (mapping && trimTrailingSlashes(configPath) === DEFAULT_CONFIG_PATHS.claude) return absolute(mapping, 'configured');
-                return absolute(resolve(configPath), 'configured');
-            }
-            case 'vibe': return absolute(resolve(env.VIBE_CONFIG_PATH || configPath), 'configured');
-            case 'opencode': {
-                // Credentials live in the data directory, never the config directory.
-                const managed = isManagedAgentConfigPath(configPath);
-                if (env.HOST_OPENCODE_DATA_DIR && !managed) return absolute(env.HOST_OPENCODE_DATA_DIR, 'configured');
-                // Mirrors the launcher: only a forwarded XDG_DATA_HOME replaces the data
-                // mount. The launcher also mounts the inferred sibling only when it exists;
-                // a missing root is refused at capture as `credential-root:missing`.
-                const xdgDataHome = agent.credentials?.XDG_DATA_HOME;
-                if (xdgDataHome && !openCodeEnvVarRejection('XDG_DATA_HOME', xdgDataHome)) return { reason: 'no-mounted-auth-store' };
-                const config = trimTrailingSlashes(resolve(configPath));
-                if (!config.endsWith('/.config/opencode')) return { reason: 'no-mounted-auth-store' };
-                return absolute(`${config.slice(0, -'/.config/opencode'.length)}/.local/share/opencode`, 'configured');
-            }
-            default: return absolute(resolve(configPath), 'configured');
-        }
+        return (configuredRootResolvers[provider] ?? defaultConfiguredRoot)(context);
     } catch {
         // e.g. a containerized default with no host mapping: the launch refuses too.
         return { reason: 'unmapped-default-root' };
     }
+}
+
+interface RootContext {
+    agent: CredentialRootAgent;
+    env: Environment;
+    configPath: string;
+    resolve: (value: string) => string;
+}
+
+/** Launchers that compute their mount source pass it; it is authoritative. */
+function launchRoot(agent: CredentialRootAgent): CredentialRootResolution | undefined {
+    if (agent.authenticationRoot) return absolute(agent.authenticationRoot, 'launch');
+    if (agent.provider === 'vibe' && agent.nativeRoot) return absolute(agent.nativeRoot, 'launch');
+    return undefined;
+}
+
+function defaultResolver(provider: AgentType, env: Environment): (value: string) => string {
+    return provider === 'codex'
+        ? (value) => resolveCodexConfigPath(value, env)
+        : (value) => resolveConfigPath(value, env);
+}
+
+const configuredRootResolvers: Partial<Record<AgentType, (context: RootContext) => CredentialRootResolution>> = {
+    antigravity: ({ configPath, resolve, env }) => absolute(antigravityCredentialRoot(configPath, resolve, env), 'configured'),
+    claude: claudeRoot,
+    vibe: ({ configPath, resolve, env }) => absolute(resolve(env.VIBE_CONFIG_PATH || configPath), 'configured'),
+    opencode: openCodeRoot,
+};
+
+function defaultConfiguredRoot({ configPath, resolve }: RootContext): CredentialRootResolution {
+    return absolute(resolve(configPath), 'configured');
+}
+
+function claudeRoot({ configPath, resolve, env }: RootContext): CredentialRootResolution {
+    // Compose mounts the host Claude home at CLAUDE_CONFIG_PATH; the worker's
+    // own HOME (e.g. /root) has no .claude, so the default must not expand there.
+    const mapping = env.CLAUDE_CONFIG_PATH?.trim() || env.HOST_CLAUDE_DIR?.trim();
+    if (mapping && trimTrailingSlashes(configPath) === DEFAULT_CONFIG_PATHS.claude) return absolute(mapping, 'configured');
+    return absolute(resolve(configPath), 'configured');
+}
+
+function openCodeRoot({ agent, configPath, resolve, env }: RootContext): CredentialRootResolution {
+    // Credentials live in the data directory, never the config directory.
+    if (env.HOST_OPENCODE_DATA_DIR && !isManagedAgentConfigPath(configPath)) return absolute(env.HOST_OPENCODE_DATA_DIR, 'configured');
+    // Mirrors the launcher: only a forwarded XDG_DATA_HOME replaces the data
+    // mount. The launcher also mounts the inferred sibling only when it exists;
+    // a missing root is refused at capture as `credential-root:missing`.
+    const xdgDataHome = agent.credentials?.XDG_DATA_HOME;
+    if (xdgDataHome && !openCodeEnvVarRejection('XDG_DATA_HOME', xdgDataHome)) return { reason: 'no-mounted-auth-store' };
+    const config = trimTrailingSlashes(resolve(configPath));
+    if (!config.endsWith('/.config/opencode')) return { reason: 'no-mounted-auth-store' };
+    return absolute(`${config.slice(0, -'/.config/opencode'.length)}/.local/share/opencode`, 'configured');
 }
 
 function absolute(root: string, basis: 'launch' | 'configured'): CredentialRootResolution {
