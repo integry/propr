@@ -264,3 +264,107 @@ test('bounded homes and saturated copy cursors preserve task, goal and declared-
         assert.equal(result.status, 0, result.stderr);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('confirmed private capacity reset releases removed and perpetually incomplete roots across both admission paths', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-capacity-reset-'));
+    try {
+        const result = spawnSync(process.execPath, ['--import', 'tsx', '-e', `
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import { spawnSync } from 'node:child_process';
+            import { mock } from 'node:test';
+            import { assertNativeLogAdmission } from './packages/core/src/diagnostics/nativeLogAdmission.ts';
+            import { managedDiagnostics, assertNativeLogAdmission as assertDeclared } from './packages/core/src/diagnostics/managedLogRuntime.ts';
+            import { prepareAdmittedAgent } from './packages/core/src/agents/agentRunAdmission.ts';
+            mock.method(fs, 'statfsSync', (_path, options) => options?.bigint
+                ? {bavail:1000000n,bsize:4096n,ffree:100n} : {bavail:1000000,bsize:4096,ffree:100});
+            const base = ${JSON.stringify(root)};
+            delete process.env.PROPR_AGENT_RUN_LIMIT;
+            delete process.env.PROPR_NATIVE_LOG_ROOTS;
+            process.env.PROPR_MANAGED_CREDENTIALS_DIR = base + '/managed';
+            const a = base + '/managed/agent-a/.claude', b = base + '/managed/agent-b/.claude';
+            fs.mkdirSync(a + '/debug', {recursive:true});
+            fs.mkdirSync(b, {recursive:true});
+            const original = a + '/debug/run.txt';
+            fs.writeFileSync(original, '');
+            const size = 300 * 1024 ** 2;
+            fs.truncateSync(original, size);
+            const args = home => ['run','-v',home + ':/home/node/.claude:rw','image'];
+            assert.throws(() => assertNativeLogAdmission(args(a)), /protected native state capacity/);
+            const db = managedDiagnostics();
+            const nativeId = () => db.status().sources.find(s=>s.agent==='agent-a' && s.source==='native-state').id;
+            const cli = (args, env = {}) => spawnSync(process.execPath,
+                ['--import','tsx','scripts/managed-diagnostics.ts',...args],
+                {encoding:'utf8',env:{...process.env,...env}});
+            const resetArgs = id => ['reset-native-capacity',id,'--operator-storage-remediation-verified'];
+            const reset = id => {
+                const r = cli(resetArgs(id));
+                assert.equal(r.status,0,r.stderr);
+                assert.deepEqual(JSON.parse(r.stdout), {nativeCapacityReset:true,offsiteAcknowledged:false});
+            };
+            const id = nativeId();
+            assert.equal(cli(['reset-native-capacity',id]).status,1);
+            assert.equal(cli(resetArgs(id),{PROPR_MANAGED_LOGS:'0'}).status,1);
+            assert.equal(cli(resetArgs(id),{PROPR_INSTANCE_ID:'other'}).status,1);
+            assert.equal(cli(resetArgs('0'.repeat(64))).status,1);
+            // Reset is no bypass for a root that is still oversized.
+            reset(id);
+            assert.throws(() => assertNativeLogAdmission(args(a)), /protected native state capacity/);
+            // Removing/disablement leaves a stale row that used to block every agent.
+            fs.rmSync(a,{recursive:true});
+            await assert.rejects(prepareAdmittedAgent(args(b)), /protected native state capacity/);
+            reset(id);
+            assert.equal(await prepareAdmittedAgent(args(b)),null);
+            assert.throws(() => assertNativeLogAdmission(args(a)), /capacity unavailable/);
+            // Rebuild an oversized root, then make its inventory permanently incomplete.
+            fs.mkdirSync(a + '/debug',{recursive:true});
+            fs.writeFileSync(original,''); fs.truncateSync(original,size);
+            process.env.PROPR_NATIVE_LOG_ROOTS = JSON.stringify({instance:'tenant-a',instanceOwned:true,
+                roots:[{provider:'claude',agent:'agent-a',root:a}]});
+            const agent = {provider:'claude',agent:'agent-a'};
+            assert.throws(() => assertDeclared(agent), /protected native state capacity/);
+            assert.throws(() => assertNativeLogAdmission(args(a)), /protected native state capacity/);
+            fs.mkdirSync(a + '/unknown-directory');
+            db.limits.scanFiles = 1; // Physical entry-bound scans cannot lower the old mark.
+            fs.truncateSync(original,8);
+            assert.throws(() => assertDeclared(agent), /protected native state capacity/);
+            assert.throws(() => assertNativeLogAdmission(args(a)), /protected native state capacity/);
+            // An unacknowledged copy remains an obligation throughout remediation.
+            db.append({provider:'claude',agent:'agent-a',source:'stdout'},['INFO diagnostic'],'text',{credentials:[]});
+            const exported = db.exportOne();
+            const copyId = db.status().sources.find(s=>s.source==='stdout').id;
+            assert.equal(cli(resetArgs(copyId)).status,1);
+            db.report({provider:'claude',agent:'agent-a',source:'native-state'},'scan-limit');
+            const gaps = db.status().sources.find(s=>s.id===id).gaps;
+            const capacityId = db.status().sources.find(s=>s.source.startsWith('native-capacity:')).id;
+            reset(id); reset(capacityId);
+            const cleared = db.status().sources.find(s=>s.id===id);
+            assert.equal(cleared.inventoryComplete,false);
+            assert.equal(cleared.protectedBytes,null);
+            assert.equal(cleared.gaps,gaps);
+            assert.equal(cleared.reason,'scan-limit');
+            // Reopen the database to verify that the CLI reset is durable.
+            const { ManagedLogSpool } = await import('./packages/core/src/diagnostics/managedLogSpool.ts');
+            const reopened = new ManagedLogSpool(process.env.PROPR_DIAGNOSTIC_ROOT,'tenant-a');
+            reopened.assertCapacity(); reopened.close();
+            assertDeclared(agent);
+            assertNativeLogAdmission(args(a));
+            assert.equal(await prepareAdmittedAgent(args(b)),null);
+            assert.deepEqual(db.exportOne(),exported);
+            // Fresh oversized lower bounds and unsafe entries still refuse after reset.
+            db.limits.scanFiles = 4096;
+            fs.truncateSync(original,size);
+            assert.throws(() => assertDeclared(agent), /protected native state capacity/);
+            assert.throws(() => assertNativeLogAdmission(args(a)), /protected native state capacity/);
+            reset(id); reset(capacityId);
+            fs.truncateSync(original,8);
+            fs.symlinkSync(base,a + '/debug/unsafe.txt');
+            assert.throws(() => assertDeclared(agent), /inventory incomplete/);
+            assert.throws(() => assertNativeLogAdmission(args(a)), /capacity unavailable/);
+            assert.deepEqual(db.exportOne(),exported);
+            db.close();
+        `], { encoding: 'utf8', timeout: 30000, env: { ...process.env, PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a',
+            PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool'), PROPR_FLEET_CONTROL_SECRET: '', PROPR_AGENT_RUN_LIMIT: '' } });
+        assert.equal(result.status, 0, result.stderr);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

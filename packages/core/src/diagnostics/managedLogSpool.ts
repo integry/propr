@@ -124,6 +124,20 @@ export class ManagedLogSpool {
             return measured;
         });
     }
+    /** Private operator remediation, never evidence of native disposal or backup.
+     * Serialize with measurements so the next scan starts a new lower bound.
+     * Keep cursors, gaps and unacknowledged segments intact. */
+    resetNativeCapacity(id: string): void {
+        if (process.env.PROPR_MANAGED_LOGS !== '1') throw new DiagnosticPolicyError('native capacity reset disabled');
+        this.atomic(() => {
+            const source = this.db.prepare('SELECT * FROM sources WHERE id=? AND retired=0').get(id) as Source | undefined;
+            if (!source || !/^(?:native-state(?::[a-f0-9]{64})?|native-capacity:[a-f0-9]{64})$/.test(JSON.parse(source.identity).source)) {
+                throw new DiagnosticPolicyError('unknown native capacity source');
+            }
+            this.db.prepare(`UPDATE sources SET protected_bytes=0,inventory_complete=0,protection=NULL,
+                native_inventory=NULL,native_details=NULL WHERE id=?`).run(id);
+        });
+    }
     /** Persist membership before collection so retirement survives worker restarts. */
     trackNativeSource(identity: LogIdentity, root: string | undefined): void {
         if (!root) return;
@@ -254,7 +268,7 @@ export class ManagedLogSpool {
             roots.set(rootIdentity, Math.max(roots.get(rootIdentity) ?? 0, source.protected_bytes));
         }
         const bytes = [...roots.values()];
-        if (bytes.some(value => value >= this.limits.protectedBytes) || bytes.reduce((sum, value) => sum + value, 0) >= 4 * this.limits.protectedBytes) throw new Error('managed diagnostics: protected native state capacity; operator action required');
+        if (bytes.some(value => value >= this.limits.protectedBytes) || bytes.reduce((sum, value) => sum + value, 0) >= 4 * this.limits.protectedBytes) throw new Error('managed diagnostics: protected native state capacity; operator action required; after storage remediation use private CLI reset-native-capacity (docs/operations/managed-diagnostics.md)');
     }
     assertFilesystemCapacity(directory: PinnedDirectory = this.dir): void {
         const stat = fs.statfsSync(`/proc/self/fd/${directory.fd}`, { bigint: true });

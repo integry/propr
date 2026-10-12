@@ -10,6 +10,9 @@ try {
     else if (command === 'export') {
         const item = spool.exportOne();
         process.stdout.write(JSON.stringify(item ? { manifest: item.manifest, gzipBase64: item.data.toString('base64') } : null) + '\n');
+    } else if (command === 'reset-native-capacity' && /^[a-f0-9]{64}$/.test(id ?? '') && sha256 === '--operator-storage-remediation-verified' && confirmation === undefined) {
+        spool.resetNativeCapacity(id);
+        process.stdout.write('{"nativeCapacityReset":true,"offsiteAcknowledged":false}\n');
     } else if (command === 'ack' && /^\d+$/.test(id ?? '') && /^[a-f0-9]{64}$/.test(sha256 ?? '') && confirmation === '--encrypted-upload-readback-verified') {
         spool.acknowledge(Number(id), sha256);
         process.stdout.write('{"acknowledged":true}\n');

@@ -115,7 +115,7 @@ export function nativeAdmissionReason(inventories: NativeLogInventory[], limits:
     if (inventories.some(i => i.reason === 'unsafe-root' || i.reason === 'unsafe-entry' || i.availableBytes === null)) return 'native log inventory incomplete; operator action required';
     if (inventories.some(i => i.availableBytes! < limits.minimumFreeBytes)) return 'native log filesystem reserve exhausted; operator action required';
     if (inventories.some(i => (i.capacityBytesLowerBound ?? i.observedBytes) >= limits.rootBytes)
-        || inventories.reduce((sum, i) => sum + (i.capacityBytesLowerBound ?? i.observedBytes), 0) >= limits.totalBytes) return 'protected native state capacity; operator action required';
+        || inventories.reduce((sum, i) => sum + (i.capacityBytesLowerBound ?? i.observedBytes), 0) >= limits.totalBytes) return 'protected native state capacity; operator action required; after storage remediation use private CLI reset-native-capacity (docs/operations/managed-diagnostics.md)';
     return null;
 }
 
