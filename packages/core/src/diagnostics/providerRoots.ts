@@ -28,7 +28,8 @@ const providers = new Set<string>(['codex', 'claude', 'antigravity', 'opencode',
  * The credential directory a provider container actually mounts, resolved by
  * the same rules as its launcher, for hosted, native and Compose installs:
  * managed accounts below PROPR_MANAGED_CREDENTIALS_DIR (or ~/.propr/agent-credentials),
- * Codex's default through CODEX_CONFIG_PATH/HOST_CODEX_DIR, Vibe through
+ * Codex's default through CODEX_CONFIG_PATH/HOST_CODEX_DIR, Claude's default
+ * through CLAUDE_CONFIG_PATH/HOST_CLAUDE_DIR, Vibe through
  * VIBE_CONFIG_PATH, OpenCode's data directory (HOST_OPENCODE_DATA_DIR or the
  * sibling of its config directory) and other `~` paths against HOME. Launcher-only
  * HOST_* variables are therefore never required when the launch path itself is
@@ -46,6 +47,13 @@ export function resolveProviderCredentialRoot(agent: CredentialRootAgent, option
     try {
         switch (provider) {
             case 'antigravity': return absolute(antigravityCredentialRoot(configPath, resolve, env), 'configured');
+            case 'claude': {
+                // Compose mounts the host Claude home at CLAUDE_CONFIG_PATH; the worker's
+                // own HOME (e.g. /root) has no .claude, so the default must not expand there.
+                const mapping = env.CLAUDE_CONFIG_PATH?.trim() || env.HOST_CLAUDE_DIR?.trim();
+                if (mapping && trimTrailingSlashes(configPath) === DEFAULT_CONFIG_PATHS.claude) return absolute(mapping, 'configured');
+                return absolute(resolve(configPath), 'configured');
+            }
             case 'vibe': return absolute(resolve(env.VIBE_CONFIG_PATH || configPath), 'configured');
             case 'opencode': {
                 // Credentials live in the data directory, never the config directory.

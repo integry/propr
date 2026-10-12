@@ -1,5 +1,5 @@
 import { PinnedDirectory } from './privateDirectory.js';
-import { rememberDiagnosticCredentials, diagnosticCredentials, processDiagnosticState, classifyTextLine } from './redaction.js';
+import { rememberDiagnosticCredentials, diagnosticCredentials, processDiagnosticState, classifyTextLine, redactRecord } from './redaction.js';
 import fs from 'node:fs';
 import type { ChildProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
@@ -84,7 +84,13 @@ export function captureProviderOutput(identity: LogIdentity, secrets: readonly s
         const size = Buffer.byteLength(record);
         if (bytes + size > db.limits.scanBytes || records.length >= 4096) flush();
         const kind = classifyTextLine(record, window);
-        window = kind.window;
+        // A head the spool will reject as unsafe-record must not license orphan
+        // frames: check it with the same adapter and bound the spool applies.
+        const rejectedHead = !kind.continuation && kind.window > 0 && (() => {
+            const redacted = redactRecord(record, 'text', secrets);
+            return !redacted || Buffer.byteLength(redacted) > db.limits.recordBytes;
+        })();
+        window = rejectedHead ? 0 : kind.window;
         records.push(record); continuation.push(kind.continuation); bytes += size;
     };
     const reset = () => { records.length = 0; continuation.length = 0; dropped = 0; bytes = 0; };
@@ -174,8 +180,8 @@ function urlUserinfo(value: string): Array<[string, string | undefined]> {
         if (value[i] === ':') {
             const passwordStart = ++i;
             while (i < value.length && !stop(value[i], false)) i++;
+            // `user:@host` still names `user`; only the empty password is absent.
             password = value.slice(passwordStart, i) || undefined;
-            if (!password) continue;
         }
         if (user && value[i] === '@') found.push([user, password]);
     }

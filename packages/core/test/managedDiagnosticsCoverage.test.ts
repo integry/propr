@@ -76,6 +76,39 @@ test('Compose and hosted installs resolve configured and managed roots consisten
     assert.equal(resolveProviderCredentialRoot({ provider: 'vibe', authenticationRoot: '/run/vibe-home' }, { env: compose }).root, '/run/vibe-home');
 });
 
+test('Compose Claude default resolves to the mounted CLAUDE_CONFIG_PATH/HOST_CLAUDE_DIR, never the worker HOME', () => {
+    const host = '/home/desktop-user';
+    const env = { HOME: '/root', PROPR_CONTAINERIZED: '1', CLAUDE_CONFIG_PATH: `${host}/.claude`, PROPR_MANAGED_CREDENTIALS_DIR: `${host}/.propr/agent-credentials` };
+    for (const configPath of [undefined, '~/.claude', '~/.claude/']) {
+        assert.deepEqual(resolveProviderCredentialRoot({ provider: 'claude', configPath }, { env }), { root: `${host}/.claude`, basis: 'configured' }, String(configPath));
+    }
+    assert.equal(resolveProviderCredentialRoot({ provider: 'claude' }, { env: { ...env, CLAUDE_CONFIG_PATH: '', HOST_CLAUDE_DIR: `${host}/claude-b` } }).root, `${host}/claude-b`);
+    // Managed, custom and absolute paths keep their own per-agent meaning.
+    assert.equal(resolveProviderCredentialRoot({ provider: 'claude', configPath: '~/.propr/agent-credentials/agent-a/.claude' }, { env }).root,
+        `${host}/.propr/agent-credentials/agent-a/.claude`);
+    assert.equal(resolveProviderCredentialRoot({ provider: 'claude', configPath: '/srv/claude-b' }, { env }).root, '/srv/claude-b');
+    assert.equal(resolveProviderCredentialRoot({ provider: 'claude', configPath: '~/work/.claude' }, { env }).root, '/root/work/.claude');
+    assert.deepEqual(resolveProviderCredentialRoot({ provider: 'claude' }, { env: { ...env, CLAUDE_CONFIG_PATH: 'relative/.claude' } }), { reason: 'relative-root' });
+});
+
+test('Compose Claude capture and daemon inventory use the mounted default root', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'diagnostic-compose-claude-'));
+    try {
+        // The worker HOME has no .claude; only the host directory is mounted.
+        const mounted = path.join(root, 'host', '.claude');
+        fs.mkdirSync(mounted, { recursive: true });
+        fs.writeFileSync(path.join(mounted, '.credentials.json'), JSON.stringify({ access_token: 'opaque-compose-store-canary' }));
+        const result = run(root, `
+            const capture = runtime.prepareProviderCapture({ provider: 'claude', agent: 'compose', configPath: '~/.claude' });
+            capture?.stdout.write('INFO opaque-compose-store-canary\\n'); capture?.stdout.close(); capture?.stderr.close();
+            console.log(JSON.stringify({ capture: Boolean(capture), inventory: runtime.providerCredentialRoot({ provider: 'claude', agent: 'compose', configPath: '~/.claude' }), records: exported() }));
+        `, { CLAUDE_CONFIG_PATH: mounted });
+        assert.equal(result.capture, true);
+        assert.equal(result.inventory, mounted);
+        assert.deepEqual(result.records.filter((r: { message?: string }) => r.message), [{ message: 'INFO [REDACTED]' }]);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('unresolvable provider roots refuse with explicit reasons and no credential read', () => {
     const containerized = { HOME: '/root', PROPR_CONTAINERIZED: '1' };
     assert.deepEqual(resolveProviderCredentialRoot({ provider: 'codex' }, { env: containerized }), { reason: 'unmapped-default-root' });
@@ -149,6 +182,10 @@ test('stdout/stderr capture has deterministic safe outcomes for tails, stacks, D
             stderr.write('{"token": "malformed-canary"\\n');
             stderr.write('INFO bell \\x07 control\\n');
             stderr.write('ERROR head\\n' + Array.from({ length: ${CONTINUATION_LINE_LIMIT + 2} }, (_, n) => '    at frame' + n + ' (/app/d.js:1:1)\\n').join(''));
+            // A head rejected as unsafe-record opens no window, within or across writes.
+            stderr.write('Error: bell \\x07 head\\n    at rejected (/app/e.js:1:1)\\n');
+            stderr.write('TypeError: bell \\x07 head\\n');
+            stderr.write('    at rejected (/app/f.js:1:1)\\n');
             stderr.write('INFO ' + 'x'.repeat(70000) + '\\n');
             stderr.write('INFO final unterminated opaque-run-canary-1');
             stderr.close();
@@ -171,9 +208,10 @@ test('stdout/stderr capture has deterministic safe outcomes for tails, stacks, D
         assert.ok(!text.includes('orphan') && !text.includes('plain unprefixed') && !text.includes('bell'));
         const frames = records.filter(r => r.continuation?.includes('/app/d.js'));
         assert.equal(frames.length, CONTINUATION_LINE_LIMIT, 'one head carries a bounded window');
+        assert.ok(!text.includes('rejected'), 'frames of a rejected head are not exported as orphans');
         assert.ok(!text.includes('x'.repeat(100)) && !text.includes('y'.repeat(100)), 'oversized lines never export');
         assert.equal(records.at(-1)!.message, 'INFO final unterminated [REDACTED]', 'a bounded final line without newline is a record');
-        assert.ok(result.status.stderr.gaps >= 7, JSON.stringify(result.status));
+        assert.ok(result.status.stderr.gaps >= 11, JSON.stringify(result.status));
         assert.ok(result.status.stdout.gaps >= 1 && result.status.stdout.dropped >= 70000, 'an oversized unterminated tail is a gap');
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
@@ -199,11 +237,12 @@ test('post-policy environment arguments are discovered and redacted from exporte
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'diagnostic-post-policy-'));
     try {
         fs.mkdirSync(path.join(root, '.claude'));
-        const canaries = ['opaque-equals-canary', 'opaque-attached-canary', 'opaque-inherited-canary', 'opaque-proxy-canary', 'opaque-mcp-canary', 'opaque-final-canary'];
+        const canaries = ['opaque-equals-canary', 'opaque-attached-canary', 'opaque-inherited-canary', 'opaque-proxy-canary', 'opaque-mcp-canary', 'opaque-final-canary',
+            'opaque-userinfo-canary'];
         const result = run(root, `
             const create = ['run', '--env=RUN_TOKEN=${canaries[0]}', '-eAPI_KEY=${canaries[1]}', '-e', 'INHERITED_SECRET',
                 '-e', 'GIT_CONFIG_VALUE_0=http://propr:${canaries[3]}@proxy:8080', '-e', 'MCP_CONFIG={"servers":{"x":{"headers":{"Authorization":"Bearer ${canaries[4]}"}}}}',
-                '--network', 'none', '--entrypoint', '/bin/bash', 'image', '-c', 'agent'];
+                '-e', 'UPSTREAM=http://${canaries[6]}:@proxy:8080', '--network', 'none', '--entrypoint', '/bin/bash', 'image', '-c', 'agent'];
             const final = ['start', '--attach', '--interactive', 'container', '--env', 'SESSION_SECRET=${canaries[5]}'];
             const capture = runtime.prepareProviderCapture({ provider: 'claude', agent: 'policy' }, final, { INHERITED_SECRET: '${canaries[2]}' }, create);
             capture.stdout.write(${JSON.stringify(canaries.map(c => `INFO leaked ${c}`).join('\n') + '\n')});
