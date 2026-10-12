@@ -1,5 +1,5 @@
 import { PinnedDirectory } from './privateDirectory.js';
-import { rememberDiagnosticCredentials, diagnosticCredentials } from './redaction.js';
+import { rememberDiagnosticCredentials, diagnosticCredentials, processDiagnosticState } from './redaction.js';
 import path from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
@@ -8,24 +8,29 @@ import { collectProvider } from './providerCollector.js';
 import { nativeCredentialValues, antigravityCredentialRoot } from './credentialRedaction.js';
 import { ManagedLogSpool, type LogIdentity } from './managedLogSpool.js';
 import { configuredNativeLogRoots, inspectNativeLogRoots, nativeAdmissionReason, NATIVE_LOG_LIMITS } from './nativeLogPolicy.js';
+import { providerOwnershipStatus } from './providerOwnership.js';
 
-let spool: ManagedLogSpool | undefined;
-let warningAt = 0;
-let applicationLostBytes = 0, applicationOverflowBytes = 0;
+/** Shared by every module instance in the process: one spool, one queue. */
+const state = processDiagnosticState('runtime@1', () => ({
+    spool: undefined as ManagedLogSpool | undefined, warningAt: 0,
+    applicationLostBytes: 0, applicationOverflowBytes: 0,
+    applicationLines: [] as string[], applicationBytes: 0,
+    applicationTimer: undefined as NodeJS.Timeout | undefined,
+}));
 export function diagnosticsFailure(): void {
-    if (Date.now() - warningAt > 60_000) {
-        warningAt = Date.now();
+    if (Date.now() - state.warningAt > 60_000) {
+        state.warningAt = Date.now();
         // Deliberately no exception text, file names or record contents.
         process.stderr.write('managed diagnostics unavailable; collection coverage is incomplete\n');
     }
 }
 export function managedDiagnostics(): ManagedLogSpool | null {
-    if (spool !== undefined) return spool;
+    if (state.spool !== undefined) return state.spool;
     const enabled = process.env.PROPR_MANAGED_LOGS === '1';
     if (!enabled) return null;
     const root = process.env.PROPR_DIAGNOSTIC_ROOT || '/usr/src/app/data/managed-diagnostics';
-    spool = new ManagedLogSpool(root, process.env.PROPR_INSTANCE_ID || '');
-    return spool;
+    state.spool = new ManagedLogSpool(root, process.env.PROPR_INSTANCE_ID || '');
+    return state.spool;
 }
 function availableDiagnostics(): ManagedLogSpool | null {
     try { return managedDiagnostics(); }
@@ -35,30 +40,28 @@ export function configuredDiagnosticSecrets(env: Record<string, string | undefin
     return Object.entries(env).filter(([k, v]) => /secret|token|password|key|credential/i.test(k) && v && v.length >= 8).map(([, v]) => v!);
 }
 const applicationIdentity = { provider: 'application', agent: 'application', source: 'pino' };
-let applicationLines: string[] = [], applicationBytes = 0;
-let applicationTimer: NodeJS.Timeout | undefined;
 export function flushApplicationRecords(): void {
-    if (applicationTimer) clearTimeout(applicationTimer);
-    applicationTimer = undefined;
-    const lines = applicationLines;
+    if (state.applicationTimer) clearTimeout(state.applicationTimer);
+    state.applicationTimer = undefined;
+    const lines = state.applicationLines;
     try {
         const db = managedDiagnostics();
         if (!db) return;
-        if (applicationLostBytes) { db.report(applicationIdentity, 'storage-unavailable', applicationLostBytes); applicationLostBytes = 0; }
-        if (applicationOverflowBytes) { db.report(applicationIdentity, 'buffer-capacity', applicationOverflowBytes); applicationOverflowBytes = 0; }
+        if (state.applicationLostBytes) { db.report(applicationIdentity, 'storage-unavailable', state.applicationLostBytes); state.applicationLostBytes = 0; }
+        if (state.applicationOverflowBytes) { db.report(applicationIdentity, 'buffer-capacity', state.applicationOverflowBytes); state.applicationOverflowBytes = 0; }
         // Use one bounded, deduplicated context, including current environment values.
         rememberDiagnosticCredentials(configuredDiagnosticSecrets());
         if (lines.length) db.append(applicationIdentity, lines, 'jsonl', { credentials: diagnosticCredentials() });
-    } catch { applicationLostBytes = Math.min(Number.MAX_SAFE_INTEGER, applicationLostBytes + applicationBytes); diagnosticsFailure(); }
-    finally { applicationLines = []; applicationBytes = 0; }
+    } catch { state.applicationLostBytes = Math.min(Number.MAX_SAFE_INTEGER, state.applicationLostBytes + state.applicationBytes); diagnosticsFailure(); }
+    finally { state.applicationLines = []; state.applicationBytes = 0; }
 }
 /** Bounded queue: the synchronous Pino hook never opens a transaction. */
 export function captureApplicationRecord(line: string): void {
     if (process.env.PROPR_MANAGED_LOGS !== '1') return;
     const size = Buffer.byteLength(line);
-    if (applicationBytes + size > 1024 * 1024 || applicationLines.length >= 4096) applicationOverflowBytes = Math.min(Number.MAX_SAFE_INTEGER, applicationOverflowBytes + size);
-    else { applicationLines.push(line); applicationBytes += size; }
-    if (!applicationTimer) applicationTimer = setTimeout(flushApplicationRecords, 25);
+    if (state.applicationBytes + size > 1024 * 1024 || state.applicationLines.length >= 4096) state.applicationOverflowBytes = Math.min(Number.MAX_SAFE_INTEGER, state.applicationOverflowBytes + size);
+    else { state.applicationLines.push(line); state.applicationBytes += size; }
+    if (!state.applicationTimer) state.applicationTimer = setTimeout(flushApplicationRecords, 25);
 }
 export function captureProviderOutput(identity: LogIdentity, secrets: readonly string[]): { write(chunk: string): void; close(): void } {
     let pending = '', discard = false, lostBytes = 0;
@@ -122,7 +125,7 @@ export function nativeDiagnosticStatus(): object {
     if (!db) throw new Error('disabled');
     const roots = configuredNativeLogRoots();
     const inventories = inspectNativeLogRoots(roots).map((inventory, index) => db.recordNativeInventory(roots[index], inventory));
-    return { ...db.status(), nativeAdmission: { configuredRoots: roots.length, limits: NATIVE_LOG_LIMITS,
+    return { ...db.status(), providerOwnership: providerOwnershipStatus(), nativeAdmission: { configuredRoots: roots.length, limits: NATIVE_LOG_LIMITS,
         status: roots.length ? nativeAdmissionReason(inventories) ? 'refused' : 'available' : 'unconfigured',
         reason: nativeAdmissionReason(inventories), newLaunchesOnly: true, existingWritersCapped: false,
         inventoryComplete: roots.length > 0 && inventories.every(i => i.inventoryComplete),

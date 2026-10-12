@@ -1,7 +1,5 @@
 import { loadAgents, resolveConfigPath } from '@propr/core';
-import { DiagnosticPolicyError } from '../../packages/core/src/diagnostics/managedLogSpool.js';
-import { collectProvider } from '../../packages/core/src/diagnostics/providerCollector.js';
-import { managedDiagnostics, nativeDiagnosticStatus, diagnosticsFailure, providerCredentialRoot } from '../../packages/core/src/diagnostics/managedLogRuntime.js';
+import { DiagnosticPolicyError, collectProvider, managedDiagnostics, nativeDiagnosticStatus, diagnosticsFailure, providerCredentialRoot } from '@propr/core/diagnostics';
 
 /** Daemon measures native inventories; workers own capture with run credentials.
  * Only configured managed roots and explicit launcher mounts are eligible. */

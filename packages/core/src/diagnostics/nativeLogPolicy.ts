@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PinnedDirectory } from './privateDirectory.js';
+import { assertProviderOwner, isProviderOwnershipError } from './providerOwnership.js';
 import { nativeDirectoryAllowed, nativeFileClass, type DiagnosticProvider } from './providerCollector.js';
 
 export interface NativeLogRoot { provider: DiagnosticProvider; agent: string; root: string }
@@ -14,7 +15,7 @@ export interface NativeLogInventory {
     availableBytes: number | null;
     inventoryComplete: boolean;
     entries: number;
-    reason: 'protected-unbounded' | 'unsafe-root' | 'unsafe-entry' | 'scan-limit' | 'unmeasured-directory';
+    reason: 'protected-unbounded' | 'unsafe-root' | 'unsafe-entry' | 'unsupported-ownership' | 'scan-limit' | 'unmeasured-directory';
 }
 export const NATIVE_LOG_LIMITS = Object.freeze({ roots: 128, entries: 4096, scanMs: 250, passMs: 2000,
     rootBytes: 256 * 1024 * 1024, totalBytes: 1024 * 1024 * 1024, minimumFreeBytes: 256 * 1024 * 1024 });
@@ -63,20 +64,22 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
     const incomplete = (reason: NativeLogInventory['reason']) => {
         result.inventoryComplete = false;
         // A later scan bound or unknown directory cannot erase unsafe evidence.
-        if (result.reason !== 'unsafe-entry' && result.reason !== 'unsafe-root') result.reason = reason;
+        if (result.reason !== 'unsafe-entry' && result.reason !== 'unsafe-root' && result.reason !== 'unsupported-ownership') result.reason = reason;
     };
     const deadline = performance.now() + limits.scanMs;
     let root: PinnedDirectory | undefined;
+    const unsafe = (error: unknown) => incomplete(isProviderOwnershipError(error) ? 'unsupported-ownership' : 'unsafe-entry');
     const inspectDirectory = (dir: PinnedDirectory, name: string, relative: string, stat: fs.Stats): void => {
-        if (stat.uid !== fs.fstatSync(root!.fd).uid) { incomplete('unsafe-entry'); return; }
+        if (stat.uid !== fs.fstatSync(root!.fd).uid) { incomplete('unsupported-ownership'); return; }
         if (!nativeDirectoryAllowed(input.provider, relative)) { incomplete('unmeasured-directory'); return; }
         let child: PinnedDirectory | undefined;
         try {
             child = dir.child(name);
             const actual = fs.fstatSync(child.fd);
-            if (actual.uid !== fs.fstatSync(root!.fd).uid || actual.dev !== stat.dev || actual.ino !== stat.ino) throw new Error('foreign or replaced directory');
+            if (actual.dev !== stat.dev || actual.ino !== stat.ino) throw new Error('replaced directory');
+            assertProviderOwner(actual.uid, fs.fstatSync(root!.fd).uid);
             walk(child, relative + '/');
-        } catch { incomplete('unsafe-entry'); }
+        } catch (e) { unsafe(e); }
         finally { child?.close(); }
     };
     const inspectFile = (dir: PinnedDirectory, name: string, relative: string, stat: fs.Stats): void => {
@@ -88,7 +91,7 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
             result.bytes[nativeFileClass(input.provider, relative)] += actual.size;
             result.observedBytes += actual.size;
             result.allocatedBytes += actual.blocks * 512;
-        } catch { incomplete('unsafe-entry'); }
+        } catch (e) { unsafe(e); }
         finally { if (fd !== undefined) fs.closeSync(fd); }
     };
     const walk = (dir: PinnedDirectory, prefix: string): void => {
@@ -110,16 +113,18 @@ export function inspectNativeLogRoot(input: NativeLogRoot, limits: NativeLogLimi
     };
     try {
         root = PinnedDirectory.open(input.root);
-        if (fs.fstatSync(root.fd).uid !== process.getuid?.()) throw new Error('foreign root');
         const capacity = fs.statfsSync(`/proc/self/fd/${root.fd}`);
         result.availableBytes = capacity.bavail * capacity.bsize;
+        assertProviderOwner(fs.fstatSync(root.fd).uid);
         walk(root, '');
-    } catch { incomplete(root ? 'unsafe-entry' : 'unsafe-root'); }
+    } catch (e) { if (isProviderOwnershipError(e)) incomplete('unsupported-ownership'); else incomplete(root ? 'unsafe-entry' : 'unsafe-root'); }
     finally { root?.close(); }
     return result;
 }
 
+export const UNSUPPORTED_OWNERSHIP_REASON = 'provider file ownership unsupported; align worker and agent container UIDs; operator action required (docs/operations/managed-diagnostics.md)';
 export function nativeAdmissionReason(inventories: NativeLogInventory[], limits: NativeLogLimits = NATIVE_LOG_LIMITS): string | null {
+    if (inventories.some(i => i.reason === 'unsupported-ownership')) return UNSUPPORTED_OWNERSHIP_REASON;
     if (inventories.some(i => i.reason === 'unsafe-root' || i.reason === 'unsafe-entry' || i.availableBytes === null)) return 'native log inventory incomplete; operator action required';
     if (inventories.some(i => i.availableBytes! < limits.minimumFreeBytes)) return 'native log filesystem reserve exhausted; operator action required';
     // Legacy high-water marks counted every class; only classified diagnostic

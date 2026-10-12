@@ -5,6 +5,17 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./diagnostics": {
+      "types": "./dist/diagnostics/index.d.ts",
+      "default": "./dist/diagnostics/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "engines": {
     "node": ">=22.12.0"
   },

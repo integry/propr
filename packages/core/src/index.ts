@@ -1,5 +1,7 @@
 /* eslint-disable max-lines -- public package exports are intentionally centralized */
 export { default as logger, generateCorrelationId, createCorrelatedLogger } from './utils/logger.js';
+// Full diagnostics runtime: '@propr/core/diagnostics' (same module instance as the logger).
+export { managedDiagnostics, nativeDiagnosticStatus, DiagnosticPolicyError } from './diagnostics/index.js';
 export { handleError, withErrorHandling, safeAsync, makeIdempotent, categorizeError, ErrorCategories } from './utils/errorHandler.js';
 export type { ErrorCategory, ErrorDetails, ErrorHandlerOptions, IssueRef as ErrorIssueRef } from './utils/errorHandler.js';
 export { withRetry, retryConfigs, calculateDelay, isDefaultRetryableError, isQuotaExhaustionError } from './utils/retryHandler.js';

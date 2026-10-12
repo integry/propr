@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { managedDiagnostics, nativeDiagnosticStatus } from '../packages/core/src/diagnostics/managedLogRuntime.js';
+import { managedDiagnostics, nativeDiagnosticStatus } from '@propr/core/diagnostics';
 
 // Private Fleet pipe only. Do not attach output to tasks, public artifacts or GitHub.
 try {

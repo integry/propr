@@ -8,8 +8,14 @@ import type { NativeInventory } from './providerCollector.js';
 import type { NativeLogInventory, NativeLogRoot } from './nativeLogPolicy.js';
 
 interface Statement { run(...args: unknown[]): { lastInsertRowid: number | bigint }; get(...args: unknown[]): unknown; all(...args: unknown[]): unknown[] }
-interface Database { exec(sql: string): void; prepare(sql: string): Statement; close(): void }
-const Sqlite = createRequire(import.meta.url)('better-sqlite3') as new (file: string) => Database;
+export interface Database { exec(sql: string): void; prepare(sql: string): Statement; close(): void }
+type SqliteConstructor = new (file: string) => Database;
+let sqlite: SqliteConstructor | undefined;
+/** The native binding loads only when a spool is constructed, so importing the
+ * logger never adds a native-module requirement to disabled entry points. */
+function loadSqlite(): SqliteConstructor {
+    return sqlite ??= createRequire(import.meta.url)('better-sqlite3') as SqliteConstructor;
+}
 export const MANAGED_LOG_POLICY = Object.freeze({
     version: 1, recordBytes: 64 * 1024, segmentBytes: 256 * 1024,
     sourceBytes: 8 * 1024 * 1024, spoolBytes: 64 * 1024 * 1024,
@@ -17,9 +23,30 @@ export const MANAGED_LOG_POLICY = Object.freeze({
     retentionMs: 14 * 86400_000, scanBytes: 1024 * 1024, scanFiles: 4096,
     scanMs: 250, protectedBytes: 256 * 1024 * 1024,
 });
-export class DiagnosticPolicyError extends Error {}
+export type ManagedLogPolicy = { [K in keyof typeof MANAGED_LOG_POLICY]: number };
+/** One explicit upgrade step. `previous` is the exact policy bound by the prior
+ * release: tuned or unknown bindings never migrate implicitly. Every step seals
+ * open segments, so no stored segment is extended under different bounds, and
+ * preserves the instance binding, cursors, gaps and unacknowledged segments. */
+export interface ManagedLogPolicyMigration {
+    from: number;
+    to: number;
+    previous: ManagedLogPolicy;
+    migrate?(db: Database): void;
+}
+/** Append a step (and bump MANAGED_LOG_POLICY.version) whenever a limit changes. */
+export const MANAGED_LOG_POLICY_MIGRATIONS: readonly ManagedLogPolicyMigration[] = Object.freeze([]);
+const policyErrorBrand = Symbol.for('@propr/core/diagnostics/DiagnosticPolicyError');
+/** Branded so `instanceof` holds across duplicate module instances. */
+export class DiagnosticPolicyError extends Error {
+    override name = 'DiagnosticPolicyError';
+    readonly [policyErrorBrand] = true;
+    static [Symbol.hasInstance](value: unknown): boolean {
+        return value instanceof Error && (value as unknown as Record<symbol, unknown>)[policyErrorBrand] === true;
+    }
+}
 export type LogIdentity = { provider: string; agent: string; source: string };
-export type Cursor = { inode?: string; offset?: number; discard?: boolean; anchor?: string };
+export type Cursor = { inode?: string; birth?: string; offset?: number; discard?: boolean; anchor?: string };
 export interface AppendOptions {
     credentials: readonly string[];
     now?: number;
@@ -36,10 +63,12 @@ export const digest = (value: string | Buffer): string => createHash('sha256').u
 export class ManagedLogSpool {
     private readonly dir: PinnedDirectory;
     private readonly db!: Database;
-    readonly limits: typeof MANAGED_LOG_POLICY;
-    constructor(root: string, readonly instance: string, limits: Partial<typeof MANAGED_LOG_POLICY> = {}) {
+    readonly limits: ManagedLogPolicy;
+    constructor(root: string, readonly instance: string, limits: Partial<ManagedLogPolicy> = {},
+        options: { migrations?: readonly ManagedLogPolicyMigration[] } = {}) {
         if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(instance)) throw new DiagnosticPolicyError('invalid diagnostic instance');
-        this.limits = { ...MANAGED_LOG_POLICY, ...limits };
+        this.limits = validPolicy({ ...MANAGED_LOG_POLICY, ...limits });
+        const Sqlite = loadSqlite();
         this.dir = PinnedDirectory.open(root, true);
         try {
             for (const name of ['spool.sqlite', 'spool.sqlite-journal', 'spool.sqlite-wal', 'spool.sqlite-shm']) {
@@ -76,11 +105,42 @@ export class ManagedLogSpool {
                     // diagnostic evidence can seed the new capacity bound.
                     this.db.exec(`UPDATE sources SET diagnostic_bytes=coalesce(json_extract(native_inventory,'$.diagnosticBytes'),0)`);
                 }
-                const binding = JSON.stringify({ instance, policy: this.limits });
-                this.db.prepare('INSERT OR IGNORE INTO settings VALUES (?,?)').run('binding', binding);
-                if ((this.db.prepare('SELECT value FROM settings WHERE key=?').get('binding') as { value: string }).value !== binding) throw new DiagnosticPolicyError('diagnostic policy/instance mismatch');
+                this.bind(options.migrations ?? MANAGED_LOG_POLICY_MIGRATIONS);
             });
         } catch (e) { this.db?.close(); this.dir.close(); throw e; }
+    }
+    /** The instance binding is permanent; the policy binding changes only
+     * through declared migrations. Downgrades and unversioned tuning refuse. */
+    private bind(migrations: readonly ManagedLogPolicyMigration[]): void {
+        const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get('binding') as { value: string } | undefined;
+        const write = () => this.db.prepare('INSERT OR REPLACE INTO settings VALUES (?,?)').run('binding', JSON.stringify({ instance: this.instance, policy: this.limits }));
+        if (!row) { write(); return; }
+        const stored = JSON.parse(row.value) as { instance?: unknown; policy?: ManagedLogPolicy };
+        if (stored.instance !== this.instance) throw new DiagnosticPolicyError('diagnostic policy/instance mismatch');
+        const policy = stored.policy ? validPolicy(stored.policy) : undefined;
+        if (policy && samePolicy(policy, this.limits)) return;
+        const history = JSON.parse((this.db.prepare('SELECT value FROM settings WHERE key=?').get('policyHistory') as { value: string } | undefined)?.value ?? '[]') as object[];
+        const migrated = policy && this.migrate(policy, migrations, history);
+        if (!migrated || !samePolicy(migrated, this.limits)) {
+            throw new DiagnosticPolicyError(migrated && migrated.version > this.limits.version
+                ? 'diagnostic policy downgrade refused' : 'diagnostic policy change requires an explicit versioned migration');
+        }
+        this.db.prepare('INSERT OR REPLACE INTO settings VALUES (?,?)').run('policyHistory', JSON.stringify(history.slice(-32)));
+        write();
+    }
+    /** Apply consecutive declared steps; stop at the first undeclared one. */
+    private migrate(policy: ManagedLogPolicy, migrations: readonly ManagedLogPolicyMigration[], history: object[]): ManagedLogPolicy | undefined {
+        let current: ManagedLogPolicy | undefined = policy;
+        while (current && current.version < this.limits.version) {
+            const from: ManagedLogPolicy = current;
+            const step = migrations.find(m => m.from === from.version);
+            if (!step || step.to <= step.from || step.to > this.limits.version || !samePolicy(step.previous, from)) return from;
+            this.db.prepare('UPDATE segments SET sealed=1 WHERE sealed=0').run();
+            step.migrate?.(this.db);
+            history.push({ from: step.from, to: step.to, migratedAt: Date.now() });
+            current = step.to === this.limits.version ? this.limits : migrations.find(m => m.from === step.to)?.previous;
+        }
+        return current;
     }
     private atomic<T>(fn: () => T): T {
         this.db.exec('BEGIN IMMEDIATE');
@@ -103,7 +163,7 @@ export class ManagedLogSpool {
     private gap(source: Source, bytes: number, reason: string): void {
         this.db.prepare('UPDATE sources SET dropped=dropped+?,gaps=gaps+1,reason=?,inventory_complete=0 WHERE id=?').run(bytes, reason, source.id);
     }
-    report(identity: LogIdentity, reason: 'buffer-capacity' | 'unsafe-source' | 'scan-limit' | 'source-replaced' | 'capture-interrupted' | 'protected-native-state' | 'ownership-unverified' | 'storage-unavailable', bytes = 0): void {
+    report(identity: LogIdentity, reason: 'buffer-capacity' | 'unsafe-source' | 'ownership-unsupported' | 'scan-limit' | 'source-replaced' | 'capture-interrupted' | 'protected-native-state' | 'ownership-unverified' | 'storage-unavailable', bytes = 0): void {
         this.atomic(() => {
             const source = this.source(identity);
             if (reason === 'protected-native-state') this.db.prepare('UPDATE sources SET protected_bytes=?,diagnostic_bytes=?,protection=? WHERE id=?').run(bytes, bytes, reason, source.id);
@@ -245,7 +305,7 @@ export class ManagedLogSpool {
     }
     status(): object {
         const sources = this.db.prepare('SELECT * FROM sources ORDER BY id').all() as Source[];
-        return { policyVersion: 1, redactionVersion: REDACTION_VERSION, instance: this.instance, private: true, historyComplete: false,
+        return { policyVersion: this.limits.version, redactionVersion: REDACTION_VERSION, instance: this.instance, private: true, historyComplete: false,
             disposalPolicy: process.env.PROPR_DIAGNOSTIC_DISPOSAL === 'local-only' || process.env.PROPR_DIAGNOSTIC_LOCAL_ONLY === '1' ? 'local-only-loss-accepted' : 'verified-remote-acknowledgement',
             offsiteRetentionDays: 14, limits: this.limits, sourceCapacityWarning: sources.filter(s => !s.retired).length >= this.limits.sources,
             sources: sources.map(s => ({ ...JSON.parse(s.identity), id: s.id, retired: Boolean(s.retired), nextSequence: s.next, droppedBytes: s.dropped, gaps: s.gaps,
@@ -296,7 +356,7 @@ export class ManagedLogSpool {
             this.db.prepare('UPDATE segments SET sealed=1 WHERE id=?').run(s.id);
             const source = this.db.prepare('SELECT * FROM sources WHERE id=?').get(s.source) as Source;
             return { id: s.id, digest: s.digest, data: s.data, manifest: {
-                schemaVersion: 1, policyVersion: 1, redactionVersion: REDACTION_VERSION, tenantPrivate: true, instance: this.instance,
+                schemaVersion: 1, policyVersion: this.limits.version, redactionVersion: REDACTION_VERSION, tenantPrivate: true, instance: this.instance,
                 ...JSON.parse(source.identity), sourceId: source.id, segment: s.id, utcDay: s.day,
                 collectionWindow: { start: s.start, end: s.end }, firstSequence: s.first, lastSequence: s.last,
                 compressedBytes: s.data.length, uncompressedBytes: s.raw, sha256: s.digest, encoding: 'gzip-jsonl',
@@ -350,4 +410,15 @@ export class ManagedLogSpool {
         });
     }
     close(): void { this.db.close(); this.dir.close(); }
+}
+
+function validPolicy(policy: ManagedLogPolicy): ManagedLogPolicy {
+    const keys = Object.keys(MANAGED_LOG_POLICY);
+    if (Object.keys(policy).length !== keys.length || keys.some(key => !Number.isSafeInteger(policy[key as keyof ManagedLogPolicy]) || policy[key as keyof ManagedLogPolicy] <= 0)) {
+        throw new DiagnosticPolicyError('invalid diagnostic policy');
+    }
+    return policy;
+}
+function samePolicy(a: ManagedLogPolicy, b: ManagedLogPolicy): boolean {
+    return Object.keys(MANAGED_LOG_POLICY).every(key => a[key as keyof ManagedLogPolicy] === b[key as keyof ManagedLogPolicy]);
 }
