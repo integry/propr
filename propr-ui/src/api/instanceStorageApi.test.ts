@@ -2,7 +2,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 const apiFetch = vi.hoisted(() => vi.fn());
 vi.mock('./apiClient', () => ({ API_BASE_URL: 'https://example.test', apiFetch }));
-import { StorageExportGoneError, StorageTransientError, databaseExportStatus, downloadDatabaseExport, startDatabaseExport, verifyStorageActor } from './instanceStorageApi';
+import { STORAGE_INSTANCE_CHANGED_CODE } from '@propr/shared';
+import { StorageExportGoneError, StorageTransientError, databaseExportStatus, downloadDatabaseExport, startDatabaseExport, storagePreview, verifyStorageActor } from './instanceStorageApi';
 
 const job = { version: 1 as const, instanceId: 'instance', generation: 'generation', operationId: 'job', scope: 'customer_database' as const, state: 'running' as const, expiresAt: new Date().toISOString() };
 const capabilities = { version: 1 as const, instanceId: 'instance', generation: 'generation', features: ['database_export' as const] };
@@ -24,10 +25,18 @@ describe('instance storage error classification', () => {
     const busy = await failure(() => startDatabaseExport(capabilities));
     expect(busy).toBeInstanceOf(StorageTransientError);
     expect(busy.message).toMatch(/in progress/);
-    apiFetch.mockResolvedValueOnce(reply(409, { error: 'Instance selection changed' }));
+    apiFetch.mockResolvedValueOnce(reply(409, { error: 'Instance selection changed', code: STORAGE_INSTANCE_CHANGED_CODE }));
     const changed = await failure(() => startDatabaseExport(capabilities));
     expect(changed).not.toBeInstanceOf(StorageTransientError);
     expect(changed.message).toMatch(/Instance selection changed/);
+  });
+  it('classifies an instance change by structured code, not display text', async () => {
+    apiFetch.mockResolvedValueOnce(reply(409, { error: 'Reworded instance message', code: STORAGE_INSTANCE_CHANGED_CODE }));
+    const changed = await failure(() => storagePreview('instance'));
+    expect(changed).not.toBeInstanceOf(StorageTransientError);
+    expect(changed.message).toMatch(/Instance selection changed/);
+    apiFetch.mockResolvedValueOnce(reply(409, { error: 'Instance selection changed', code: 'something_else' }));
+    expect(await failure(() => startDatabaseExport(capabilities))).toBeInstanceOf(StorageTransientError);
   });
   it('treats 401/403, 404 and desktop scope aborts as authority-bearing', async () => {
     for (const status of [401, 403, 404]) {
@@ -41,10 +50,33 @@ describe('instance storage error classification', () => {
   it('treats 410 and a refused one-shot download as a gone job', async () => {
     apiFetch.mockResolvedValueOnce(reply(410));
     expect(await failure(() => databaseExportStatus(job))).toBeInstanceOf(StorageExportGoneError);
-    apiFetch.mockResolvedValueOnce(reply(503));
-    expect(await failure(() => downloadDatabaseExport(job))).toBeInstanceOf(StorageExportGoneError);
+    for (const status of [410, 404, 400]) {
+      apiFetch.mockResolvedValueOnce(reply(status));
+      expect(await failure(() => downloadDatabaseExport(job))).toBeInstanceOf(StorageExportGoneError);
+    }
     apiFetch.mockResolvedValueOnce(reply(403));
     expect(await failure(() => downloadDatabaseExport(job))).not.toBeInstanceOf(StorageExportGoneError);
+  });
+  it('keeps a possibly-unredeemed download retryable on transient failure', async () => {
+    for (const status of [503, 502, 429, 408]) {
+      apiFetch.mockResolvedValueOnce(reply(status, { error: 'Storage operation unavailable; data retained' }));
+      expect(await failure(() => downloadDatabaseExport(job))).toBeInstanceOf(StorageTransientError);
+    }
+    apiFetch.mockResolvedValueOnce(reply(409, { error: 'Export not ready for download' }));
+    expect(await failure(() => downloadDatabaseExport(job))).toBeInstanceOf(StorageTransientError);
+    apiFetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    expect(await failure(() => downloadDatabaseExport(job))).toBeInstanceOf(StorageTransientError);
+    apiFetch.mockResolvedValueOnce(reply(409, { error: 'Instance selection changed', code: STORAGE_INSTANCE_CHANGED_CODE }));
+    const changed = await failure(() => downloadDatabaseExport(job));
+    expect(changed).not.toBeInstanceOf(StorageTransientError); expect(changed).not.toBeInstanceOf(StorageExportGoneError);
+  });
+  it('treats a body failure after a successful download response as consumed', async () => {
+    const broken = (reason: Error) => new Response(new ReadableStream({ start(controller) { controller.error(reason); } }), { status: 200 });
+    apiFetch.mockResolvedValueOnce(broken(new TypeError('network error')));
+    expect(await failure(() => downloadDatabaseExport(job))).toBeInstanceOf(StorageExportGoneError);
+    apiFetch.mockResolvedValueOnce(broken(new DOMException('Desktop connection changed', 'AbortError')));
+    const aborted = await failure(() => downloadDatabaseExport(job));
+    expect(aborted).not.toBeInstanceOf(StorageExportGoneError); expect(aborted).not.toBeInstanceOf(StorageTransientError);
   });
   it('actor verification is transient only for server or network failure', async () => {
     apiFetch.mockResolvedValueOnce(reply(503));

@@ -1,12 +1,12 @@
 import { API_BASE_URL, apiFetch } from './apiClient';
-import type { DatabaseExportStatus, RepositoryStorageInventory, StorageCapabilities, StorageCleanupPreview, StorageCleanupResult } from '@propr/shared';
+import { STORAGE_INSTANCE_CHANGED_CODE } from '@propr/shared';
+import type { DatabaseExportStatus, RepositoryStorageInventory, StorageCapabilities, StorageCleanupPreview, StorageCleanupResult, StorageErrorBody } from '@propr/shared';
 
 const base = () => `${API_BASE_URL}/api/instance/storage/v1`;
 /** A retryable failure that carries no authority change: keep the known export job. */
 export class StorageTransientError extends Error {}
 /** The server no longer holds this export job: discard it, but keep instance authority. */
 export class StorageExportGoneError extends Error {}
-const INSTANCE_CHANGED = 'Instance selection changed';
 async function storageFetch(url: string, init: RequestInit): Promise<Response> {
   try { return await apiFetch(url, init); }
   catch (error) {
@@ -15,15 +15,19 @@ async function storageFetch(url: string, init: RequestInit): Promise<Response> {
     throw error;
   }
 }
-async function serverMessage(response: Response): Promise<string | undefined> {
-  try { const body = await response.json(); return typeof body?.error === 'string' ? body.error : undefined; } catch { return undefined; }
+async function serverError(response: Response): Promise<{ message?: string; instanceChanged: boolean }> {
+  try {
+    const body: Partial<StorageErrorBody> | null = await response.json();
+    return { message: typeof body?.error === 'string' ? body.error : undefined, instanceChanged: typeof body?.code === 'string' && body.code === STORAGE_INSTANCE_CHANGED_CODE };
+  } catch { return { instanceChanged: false }; }
 }
 async function failure(response: Response): Promise<Error> {
   if (response.status === 401 || response.status === 403) return new Error('Current instance administrator access is required.');
   if (response.status === 404) return new Error('This runtime does not support instance storage management.');
   if (response.status === 410) return new StorageExportGoneError('This export is no longer available. Create a new export.');
-  const message = await serverMessage(response);
-  if (response.status === 409 && message === INSTANCE_CHANGED) return new Error('Instance selection changed. Refresh before continuing.');
+  const { message, instanceChanged } = await serverError(response);
+  // The structured code, not the display text, carries the authority change.
+  if (response.status === 409 && instanceChanged) return new Error('Instance selection changed. Refresh before continuing.');
   // Server contract messages are sanitized: no paths, credentials or snapshot contents.
   if (response.status === 409) return new StorageTransientError(message || 'Storage is busy. Try again shortly.');
   if (response.status === 408 || response.status === 429 || response.status >= 500) return new StorageTransientError('Storage operation temporarily unavailable. Try again.');
@@ -49,10 +53,20 @@ export async function downloadDatabaseExport(job: DatabaseExportStatus): Promise
     method: 'POST', credentials: 'include', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'X-ProPR-Storage': '1' },
     body: JSON.stringify({ instanceId: job.instanceId, generation: job.generation }),
   });
-  if (response.status === 401 || response.status === 403) throw new Error('Current instance administrator access is required.');
-  // Redemption is one-shot: any other refusal leaves nothing to retry.
-  if (!response.ok) throw new StorageExportGoneError('Download denied, expired or already used. Create a new export.');
-  return response.blob();
+  if (!response.ok) {
+    const error = await failure(response);
+    // A transient failure (5xx, 408/429, busy 409, network) may precede redemption: keep the job.
+    // Retrying is safe: a consumed redemption is refused with a definitive 410.
+    if (error instanceof StorageTransientError || response.status === 401 || response.status === 403 || response.status === 409) throw error;
+    throw new StorageExportGoneError('Download denied, expired or already used. Create a new export.');
+  }
+  // A body failure after a successful response means the one-shot redemption was consumed.
+  try { return await response.blob(); }
+  catch (error) {
+    // Desktop scope changes and aborts stay authority-bearing.
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    throw new StorageExportGoneError('Download interrupted after the one-shot export was consumed. Create a new export.');
+  }
 }
 /** Detect a changed browser account before displaying or redeeming sensitive results. */
 export async function verifyStorageActor(actor: string) {

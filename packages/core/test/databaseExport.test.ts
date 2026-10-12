@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { configuredExportSecrets, DatabaseExportLockError, DatabaseExports } from '../src/storage/databaseExport.js';
 import { isExportSecretName } from '../src/storage/databaseExportWorker.js';
+import { recoverExpiredExportLocks } from '../src/storage/databaseExportLease.js';
 const SQLite = createRequire(import.meta.url)('better-sqlite3');
 const allow = async () => {};
 async function fixture(t: test.TestContext) {
@@ -150,8 +151,26 @@ test('download refuses hardlinked output and expired jobs', async t => {
   const snapshot = (await fs.readdir(path.join(f.root, 'exports'))).find(name => name.startsWith('snapshot-'))!;
   const file = path.join(f.root, 'exports', snapshot, 'database.sqlite');
   await fs.link(file, path.join(f.root, 'linked-export'));
+  // Cleanup refuses the hardlinked snapshot (retained for an operator); the job is still consumed.
   await assert.rejects(f.exports.redeem('instance', f.exports.generation, job.operationId, 'admin', allow));
+  // A retry of the consumed redemption is a definitive 410, never a retryable 503.
+  await assert.rejects(f.exports.redeem('instance', f.exports.generation, job.operationId, 'admin', allow), (error: Error & { status?: number }) => error.status === 410);
   await fs.unlink(path.join(f.root, 'linked-export'));
+});
+
+test('redemption distinguishes a consumed export (410) from one not yet ready (409, retained)', async t => {
+  const f = await fixture(t);
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  // Hold the worker before it starts: the job stays running until released.
+  const job = await f.start(async () => { if (++calls === 2) await gate; });
+  await assert.rejects(f.exports.redeem('instance', f.exports.generation, job.operationId, 'admin', allow), (error: Error & { status?: number }) => error.status === 409);
+  release();
+  assert.equal((await settled(f.exports, job.operationId)).state, 'ready');
+  const download = await f.exports.redeem('instance', f.exports.generation, job.operationId, 'admin', allow);
+  await assert.rejects(f.exports.redeem('instance', f.exports.generation, job.operationId, 'admin', allow), (error: Error & { status?: number }) => error.status === 410);
+  await download.file.close(); await download.dispose();
+  await assert.rejects(f.exports.redeem('instance', f.exports.generation, job.operationId, 'admin', allow), (error: Error & { status?: number }) => error.status === 410);
 });
 
 test('expiry denies status and redemption even before the cleanup timer runs', async t => {
@@ -320,6 +339,48 @@ test('an expired in-memory job does not permanently block its own process', asyn
   await f.exports.cancel('instance', f.exports.generation, next.operationId, 'admin', allow);
 });
 
+test('concurrent starts after an in-memory expiry: the in-process guard admits only one before any await', async t => {
+  const f = await fixture(t); const job = await f.start(); await settled(f.exports, job.operationId);
+  const now = Date.now(); t.mock.timers.enable({ apis: ['Date'], now });
+  t.mock.timers.setTime(now + 5 * 60_000 + 1);
+  let loserAuthorized = 0;
+  const [first, second] = await Promise.allSettled([
+    f.exports.start('instance', 'admin', allow),
+    f.exports.start('instance', 'admin', async () => { loserAuthorized++; }),
+  ]);
+  t.mock.timers.reset();
+  assert.equal(first.status, 'fulfilled');
+  assert.ok(second.status === 'rejected' && second.reason instanceof DatabaseExportLockError && /in progress/.test(second.reason.message));
+  // Refused by the in-process guard, never reaching authorization or on-disk admission.
+  assert.equal(loserAuthorized, 0);
+  const next = (first as PromiseFulfilledResult<Awaited<ReturnType<typeof f.exports.start>>>).value;
+  assert.equal((await settled(f.exports, next.operationId)).state, 'ready');
+  await f.exports.cancel('instance', f.exports.generation, next.operationId, 'admin', allow);
+});
+
+test('background recovery takes no lease when nothing is stale, so it never contends with a start', async t => {
+  const f = await fixture(t);
+  const root = path.join(f.root, 'exports');
+  // Missing root and empty root: nothing to recover, nothing created.
+  await recoverExpiredExportLocks(root);
+  await assert.rejects(fs.stat(root));
+  await fs.mkdir(root, { mode: 0o700 });
+  for (let round = 0; round < 20; round++) {
+    const exports = new DatabaseExports(f.source, root);
+    const [job] = await Promise.all([exports.start('instance', 'admin', allow), recoverExpiredExportLocks(root)]);
+    // With a live lease present the probe also backs off instead of failing busy.
+    await recoverExpiredExportLocks(root);
+    assert.equal((await settled(exports, job.operationId)).state, 'ready');
+    await exports.cancel('instance', exports.generation, job.operationId, 'admin', allow);
+    assert.deepEqual(await fs.readdir(root), []);
+  }
+  // A stale lock is still recovered.
+  const lock = await staleLock(f.root, {});
+  await recoverExpiredExportLocks(root);
+  await recovered(lock);
+  assert.deepEqual(await fs.readdir(root), []);
+});
+
 test('historical customer content containing a configured Fleet control secret is never downloadable', async t => {
   const f = await fixture(t);
   const previous = process.env.PROPR_FLEET_CONTROL_SECRET;
@@ -410,7 +471,7 @@ for (const name of ['GH_WEBHOOK_SECRET', 'MISTRAL_API_KEY', 'GITHUB_TOKEN', 'GH_
     assert.equal(result.state, 'failed');
     let failure = '';
     await assert.rejects(f.exports.redeem('instance', f.exports.generation, job.operationId, 'admin', allow), error => {
-      failure = String(error); return /Export not ready or consumed/.test(failure);
+      failure = String(error); return /Export not ready for download/.test(failure) && (error as { status?: number }).status === 409;
     });
     // Await worker termination and cleanup, not just the failed state transition.
     await f.exports.cancel('instance', f.exports.generation, job.operationId, 'admin', allow);

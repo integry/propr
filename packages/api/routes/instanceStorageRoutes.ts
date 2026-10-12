@@ -3,10 +3,10 @@ import { pipeline } from 'node:stream/promises';
 import { taskHistoryControl } from '../../core/src/storage/taskHistoryControl.js';
 import type { Request, Response, RequestHandler } from 'express';
 import { db, getIndexingQueue, getIssueQueue, getGitHubInstallationToken, loadMonitoredReposRaw } from '@propr/core';
-import { InstanceStorageService, StorageContractError } from '../../core/src/storage/service.js';
+import { InstanceStorageService, StorageContractError, instanceSelectionChanged } from '../../core/src/storage/service.js';
 import { repositoryStorageLifecycle, StorageBusyError, storageControlRoot } from '../../core/src/storage/lifecycle.js';
 import { getRescueBundleDirectory, getSalvageRetentionRecordDirectory } from '../../core/src/git/rescueRefs.js';
-import type { StorageCategory } from '@propr/shared';
+import type { StorageCategory, StorageErrorBody } from '@propr/shared';
 
 const categories = new Set<StorageCategory>(['database_config', 'repository_caches', 'worktrees', 'salvage', 'logs_artifacts', 'provider_credentials', 'task_history']);
 
@@ -67,7 +67,10 @@ export function createInstanceStorageRoutes(service: InstanceStorageService, res
     catch (error) {
       const status = error instanceof StorageContractError ? error.status : error instanceof StorageBusyError ? 409 : 503;
       if (res.headersSent) { res.destroy(); return; }
-      res.status(status).json({ error: error instanceof StorageContractError ? error.message : 'Storage operation unavailable; data retained' });
+      const body: StorageErrorBody = error instanceof StorageContractError
+        ? { error: error.message, ...(error.code ? { code: error.code } : {}) }
+        : { error: 'Storage operation unavailable; data retained' };
+      res.status(status).json(body);
     }
   };
   const exactBody = (req: Request, keys: string[]) => {
@@ -83,7 +86,7 @@ export function createInstanceStorageRoutes(service: InstanceStorageService, res
     startExport: handle(async (req, res) => {
       exactBody(req, ['instanceId', 'generation']);
       const capabilities = await service.capabilities();
-      if (req.body.instanceId !== capabilities.instanceId || req.body.generation !== capabilities.generation) throw new StorageContractError(409, 'Instance selection changed');
+      if (req.body.instanceId !== capabilities.instanceId || req.body.generation !== capabilities.generation) throw instanceSelectionChanged();
       res.status(202).json(await exportService().start(capabilities.instanceId, req.user!.id, authority(req)));
     }),
     exportStatus: handle(async (req, res) => {

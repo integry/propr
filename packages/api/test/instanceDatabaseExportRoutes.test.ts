@@ -12,6 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { AddressInfo } from 'node:net';
 import { InstanceStorageService } from '../../core/src/storage/service.js';
 import { StorageLifecycle } from '../../core/src/storage/lifecycle.js';
+import { STORAGE_INSTANCE_CHANGED_CODE } from '@propr/shared';
 
 test('self-hosted admin without Connect/Fleet completes inventory, cleanup and real export; fresh authority and binding are enforced', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-storage-api-'));
@@ -72,7 +73,8 @@ test('self-hosted admin without Connect/Fleet completes inventory, cleanup and r
   const binding = { instanceId: capabilities.instanceId, generation: capabilities.generation };
   assert.equal((await fetch(base + '/exports', { method: 'POST', headers: { 'x-actor': 'admin', 'Content-Type': 'application/json' }, body: JSON.stringify(binding) })).status, 403);
   assert.equal((await call('/exports', { ...binding, actor: 'admin' })).status, 400);
-  assert.equal((await call('/exports', { ...binding, generation: 'other' })).status, 409);
+  const changed = await call('/exports', { ...binding, generation: 'other' });
+  assert.equal(changed.status, 409); assert.equal((await changed.json()).code, STORAGE_INSTANCE_CHANGED_CODE);
   const accepted = await call('/exports', binding); assert.equal(accepted.status, 202);
   const job = await accepted.json(); const query = '?' + new URLSearchParams(binding);
   for (let i = 0; i < 200; i++) {
@@ -85,7 +87,8 @@ test('self-hosted admin without Connect/Fleet completes inventory, cleanup and r
   const downloaded = await call(`/exports/${job.operationId}/download`, binding);
   assert.equal(downloaded.status, 200); assert.equal(downloaded.headers.get('cache-control'), 'no-store');
   assert.equal(Buffer.from(await downloaded.arrayBuffer()).subarray(0, 15).toString(), 'SQLite format 3');
-  assert.notEqual((await call(`/exports/${job.operationId}/download`, binding)).status, 200);
+  // A consumed one-shot redemption is a definitive 410, distinct from a retryable 503.
+  assert.equal((await call(`/exports/${job.operationId}/download`, binding)).status, 410);
   let response = await call('/exports', binding);
   for (let i = 0; response.status !== 202 && i < 100; i++) { await delay(10); response = await call('/exports', binding); }
   assert.equal(response.status, 202);

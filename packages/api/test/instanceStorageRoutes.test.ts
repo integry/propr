@@ -7,6 +7,7 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { InstanceStorageService } from '../../core/src/storage/service.js';
 import { StorageLifecycle } from '../../core/src/storage/lifecycle.js';
+import { STORAGE_INSTANCE_CHANGED_CODE } from '@propr/shared';
 
 test('instance storage enforces administrator, CSRF, instance and confirmation actor boundaries', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-api-'));
@@ -39,13 +40,17 @@ test('instance storage enforces administrator, CSRF, instance and confirmation a
   const body = { instanceId: usage.instanceId, categories: ['repository_caches'] };
   assert.equal((await fetch(`${base}/cleanup/preview`, { method: 'POST', headers: { 'x-actor': 'admin', 'content-type': 'application/json' }, body: JSON.stringify(body) })).status, 403);
   assert.equal((await fetch(`${base}/cleanup/preview`, { method: 'POST', headers, body: JSON.stringify({ ...body, path: '/etc' }) })).status, 400);
-  assert.equal((await fetch(`${base}/cleanup/preview`, { method: 'POST', headers, body: JSON.stringify({ ...body, instanceId: 'another-instance' }) })).status, 409);
+  const changed = await fetch(`${base}/cleanup/preview`, { method: 'POST', headers, body: JSON.stringify({ ...body, instanceId: 'another-instance' }) });
+  assert.equal(changed.status, 409);
+  // Clients classify the authority change by structured code, never by message text.
+  assert.equal((await changed.json()).code, STORAGE_INSTANCE_CHANGED_CODE);
   const preview = await fetch(`${base}/cleanup/preview`, { method: 'POST', headers, body: JSON.stringify(body) }).then(r => r.json());
   const execute = { instanceId: usage.instanceId, confirmation: preview.confirmation };
   assert.equal((await fetch(`${base}/cleanup/execute`, { method: 'POST', headers: { ...headers, 'x-actor': 'other-admin' }, body: JSON.stringify(execute) })).status, 403);
   const result = await fetch(`${base}/cleanup/execute`, { method: 'POST', headers, body: JSON.stringify(execute) });
   assert.equal(result.status, 200);
   assert.equal((await result.json()).state, 'completed');
-  assert.equal((await fetch(`${base}/cleanup/execute`, { method: 'POST', headers, body: JSON.stringify(execute) })).status, 409);
+  const reused = await fetch(`${base}/cleanup/execute`, { method: 'POST', headers, body: JSON.stringify(execute) });
+  assert.equal(reused.status, 409); assert.equal((await reused.json()).code, undefined);
   assert.equal((await fetch(`${base}/cleanup/operations/${preview.confirmation}?instanceId=${usage.instanceId}`, { headers: { 'x-actor': 'other-admin' } })).status, 404);
 });

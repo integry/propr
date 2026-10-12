@@ -1,4 +1,4 @@
-import { StorageContractError, validatePreviewSelection, type CleanupPreviewArgs, type CleanupPreviewRequest, type CandidateExecution, type SavedPreview } from './cleanupRequest.js';
+import { StorageContractError, instanceSelectionChanged, validatePreviewSelection, type CleanupPreviewArgs, type CleanupPreviewRequest, type CandidateExecution, type SavedPreview } from './cleanupRequest.js';
 import fs from 'node:fs/promises';
 import { DatabaseExports, type StorageAuthority } from './databaseExport.js';
 import type { RepositoryStorageInventory } from '@propr/shared';
@@ -12,7 +12,7 @@ import { auditRepository } from './repositorySafety.js';
 import type { CacheRecord } from './registry.js';
 import { resolveRepositoryClonePath } from '../git/repositoryPaths.js';
 
-export { StorageContractError } from './cleanupRequest.js';
+export { StorageContractError, instanceSelectionChanged } from './cleanupRequest.js';
 interface StorageServices {
   databaseFile?: string;
   lifecycle: StorageLifecycle;
@@ -149,7 +149,7 @@ export class InstanceStorageService {
     });
   }
   private async assertInstance(id: string): Promise<void> {
-    if (id !== await this.initialize()) throw new StorageContractError(409, 'Instance selection changed');
+    if (id !== await this.initialize()) throw instanceSelectionChanged();
   }
   async usage(): Promise<StorageObservation> {
     const instanceId = await this.initialize();

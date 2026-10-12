@@ -1,10 +1,11 @@
-import type { StorageCategory, StorageCleanupPreview } from '@propr/shared';
+import { STORAGE_INSTANCE_CHANGED_CODE, type StorageCategory, type StorageCleanupPreview, type StorageErrorBody } from '@propr/shared';
 import type { StorageAuthority } from './databaseExport.js';
 import type { CacheRecord } from './registry.js';
 
 export class StorageContractError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
+  constructor(readonly status: number, message: string, readonly code?: StorageErrorBody['code']) { super(message); }
 }
+export const instanceSelectionChanged = () => new StorageContractError(409, 'Instance selection changed', STORAGE_INSTANCE_CHANGED_CODE);
 // Preserve existing positional callers, including the optional task selection.
 export type CleanupPreviewArgs = [instanceId: string, categories: StorageCategory[], actor: string, taskIds?: string[], authorize?: StorageAuthority];
 export interface CleanupPreviewRequest {

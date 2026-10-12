@@ -68,14 +68,15 @@ export class DatabaseExports {
   async start(instanceId: string, actor: string, authorize: StorageAuthority): Promise<DatabaseExportStatus> {
     if (this.admitting) throw new DatabaseExportLockError('Another database export is in progress. Wait for it to finish or expire, then try again.');
     const previous = this.job;
-    if (previous) {
-      if (Date.parse(previous.status.expiresAt) > Date.now()) throw new DatabaseExportLockError('Another database export is in progress. Wait for it to finish or expire, then try again.');
-      // An expired job is never redeemable; any retained files stay governed by its on-disk lease.
-      await this.discard(previous).catch(() => undefined);
-      if (this.job === previous) this.job = undefined;
-    }
+    if (previous && Date.parse(previous.status.expiresAt) > Date.now()) throw new DatabaseExportLockError('Another database export is in progress. Wait for it to finish or expire, then try again.');
+    // Claimed synchronously, before any await: concurrent starts cannot both pass the guard.
     this.admitting = true;
     try {
+      if (previous) {
+        // An expired job is never redeemable; any retained files stay governed by its on-disk lease.
+        await this.discard(previous).catch(() => undefined);
+        if (this.job === previous) this.job = undefined;
+      }
       await authorize();
       const stat = await this.validateSource();
       await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
@@ -172,7 +173,9 @@ export class DatabaseExports {
     const job = this.selected(request);
     const { authorize } = request;
     await authorize();
-    if (job.status.state !== 'ready') throw new Error('Export not ready or consumed');
+    // A consumed redemption is a definitive refusal (410); an unready job is retained (409).
+    if (job.status.state === 'redeemed') throw new StorageContractError(410, 'Export unavailable or expired');
+    if (job.status.state !== 'ready') throw new StorageContractError(409, 'Export not ready for download');
     // Synchronous consumption before opening: simultaneous redemptions cannot both succeed.
     job.status.state = 'redeemed';
     try {
@@ -184,7 +187,11 @@ export class DatabaseExports {
         await authorize();
         return { file, status: { ...job.status }, dispose: () => this.discard(job) };
       } catch (error) { await file.close(); throw error; }
-    } catch (error) { await this.discard(job); throw error; }
+    } catch (error) {
+      await this.discard(job);
+      // Consumed and discarded: only authority failures keep their own status.
+      throw error instanceof StorageContractError ? error : new StorageContractError(410, 'Export unavailable or expired');
+    }
   }
   async cancel(...args: ExportOperationArgs) {
     const request = exportRequest(args);

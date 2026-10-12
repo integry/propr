@@ -141,12 +141,14 @@ async function retire(root: string, lock: Lock) {
   } catch { throw unsafe(); }
 }
 
+const lockName = (name: string) => name === LEGACY || LEASE.test(name) || PENDING.test(name) || RETIRED.test(name);
+
 async function admit(root: string, token: string) {
   const now = Date.now();
   const stale: Lock[] = [];
   let later = 0;
   for (const name of await fs.readdir(root)) {
-    if (name === `lease-${token}` || !(name === LEGACY || LEASE.test(name) || PENDING.test(name) || RETIRED.test(name))) continue;
+    if (name === `lease-${token}` || !lockName(name)) continue;
     const lock = await inspect(root, name);
     if (!lock) continue;
     if (lock.recoverableAt <= now) stale.push(lock);
@@ -190,8 +192,26 @@ export async function releaseExportLease(root: string, token: string): Promise<v
   await fs.rmdir(lease).catch(ignoreMissing);
 }
 
+/**
+ * Read-only probe: is any lock recoverable now? Lets background recovery skip
+ * acquiring a lease (and contending with a user's start) when nothing is stale.
+ * Unsafe or busy states are left for admission to report; admission re-verifies.
+ */
+async function hasRecoverableLock(root: string): Promise<boolean> {
+  let names: string[];
+  try { await assertRealDirectory(root); names = await fs.readdir(root); }
+  catch (error) { ignoreMissing(error); return false; }
+  const now = Date.now();
+  for (const name of names.filter(lockName)) {
+    const lock = await inspect(root, name).catch(() => undefined);
+    if (lock && lock.recoverableAt <= now) return true;
+  }
+  return false;
+}
+
 /** Opportunistic background recovery of expired locks; never contends with a live job. */
 export async function recoverExpiredExportLocks(root: string): Promise<void> {
+  if (!await hasRecoverableLock(root)) return;
   const token = await acquireExportLease(root, Date.now() + EXPORT_LOCK_GRACE);
   await fs.rmdir(path.join(root, exportSnapshotName(token))).catch(ignoreMissing);
   await releaseExportLease(root, token);
