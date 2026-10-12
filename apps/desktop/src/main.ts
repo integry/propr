@@ -180,6 +180,7 @@ try {
     argv: process.argv, environment: process.env, isPackaged: app.isPackaged,
     platform: process.platform, appData: app.getPath('appData'),
   });
+  if (liveGithubSmoke) app.commandLine.appendSwitch('password-store', 'gnome-libsecret');
   packagedAcceptanceUserDataDirectory = authorizePackagedAcceptanceTest({
     argv: process.argv,
     defaultUserDataDirectory: join(app.getPath('appData'), app.name),
@@ -1668,7 +1669,7 @@ if (!hasSingleInstanceLock) {
       clientName: `ProPR Desktop (${process.platform})`,
       confirmAccount: async (account, origin, signal) => {
         if (!mainWindow || mainWindow.isDestroyed() || signal.aborted) return false;
-        if (liveGithubSmoke) return liveGithubSmoke.confirmAccount(account.username, origin);
+        if (liveGithubSmoke) return liveGithubSmoke.confirmAccount(account, origin);
         if (packagedJourneyAccountConfirmation) {
           return packagedJourneyAccountConfirmation.confirm(account, origin, signal);
         }

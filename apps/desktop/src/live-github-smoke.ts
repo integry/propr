@@ -3,9 +3,12 @@ import { connect } from 'node:net';
 import { join } from 'node:path';
 
 const ROOT = '/var/lib/propr-desktop-live/state';
-const ACCOUNT = 'propr-ultrafix';
-export const isExpectedLiveSmokeAccount = (username: string, endpoint: string, origin: string): boolean =>
-  username === ACCOUNT && endpoint === origin;
+export const LIVE_SMOKE_ACCOUNT = Object.freeze({ username: 'propr-ultrafix', id: '297689653' });
+export const isExpectedLiveSmokeAccount = (account: { username: string; id: string }, endpoint: string, origin: string): boolean =>
+  account.username === LIVE_SMOKE_ACCOUNT.username && account.id === LIVE_SMOKE_ACCOUNT.id && endpoint === origin;
+
+export const hasPrivateLiveSmokeDebugger = (argv: string[]): boolean =>
+  argv.includes('--remote-debugging-pipe') && argv.filter(value => value.startsWith('--remote-debugging-')).length === 1;
 
 const reject = (): never => { throw new Error('Live GitHub smoke authorization rejected'); };
 
@@ -21,6 +24,7 @@ export function authorizeLiveGithubSmoke(options: {
   const env = options.environment;
   if (!requested || options.argv.filter(value => value === '--propr-live-github-smoke').length !== 1
     || options.argv.some(value => /^--(?:user-data-dir|disk-cache-dir|profile-directory)(?:=|$)/.test(value))
+    || !hasPrivateLiveSmokeDebugger(options.argv)
     || env.HOME !== join(ROOT, 'desktop-home')
     || env.XDG_DATA_HOME !== join(ROOT, 'desktop-home/.local/share')
     || env.PROPR_DESKTOP_LIVE_GITHUB_SMOKE !== '1' || env.PROPR_LIVE_PRIVATE_DBUS !== '1'
@@ -64,8 +68,8 @@ export function authorizeLiveGithubSmoke(options: {
         || !/^\/api\/desktop\/pairings\/dpr_[A-Za-z0-9_-]{22}\/browser$/.test(url.pathname)
         || !await send({ event: 'handoff', url: value })) reject();
     },
-    confirmAccount: async (username: string, endpoint: string): Promise<boolean> => {
-      const expected = isExpectedLiveSmokeAccount(username, endpoint, origin.origin);
+    confirmAccount: async (account: { username: string; id: string }, endpoint: string): Promise<boolean> => {
+      const expected = isExpectedLiveSmokeAccount(account, endpoint, origin.origin);
       const accepted = await send({ event: 'confirmation', expected });
       return expected && accepted;
     },

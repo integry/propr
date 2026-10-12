@@ -40,13 +40,14 @@ try {
   let output = '';
   child.stdout.on('data', data => { if (output.length < 4096) output += data; });
   const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already stopped */ } };
-  const timer = setTimeout(kill, 210_000);
+  const timer = setTimeout(kill, 270_000);
   const interrupted = () => kill();
   process.once('SIGTERM', interrupted);
   process.once('SIGINT', interrupted);
   try {
     await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
-    // Kill any leftover Chromium/Electron/DBus/keyring descendants on every exit.
+    // Kill this process group (Desktop/DBus/keyring). Detached Playwright Chromium
+    // is verified and recovered under the run lock before the next browser launch.
     kill();
     const candidate = JSON.parse(output.trim());
     if (Object.keys(candidate).sort().join(',') === 'mode,result,schemaVersion'

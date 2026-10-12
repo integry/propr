@@ -2,8 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { ACCOUNT, RESULTS, SmokeFailure, assertAccount, assertRuntime, classifyBrowserUrl,
-  resultRecord, runJourney, validateConfig, assertMetadataAccess, verifyInstalled } from './live-github-smoke.mjs';
+import { ACCOUNT, ACCOUNT_ID, EXPECTED_ACCOUNT, RESULTS, SmokeFailure, assertAccount, assertRuntime, classifyBrowserUrl,
+  resultRecord, runJourney, validateConfig, assertMetadataAccess, verifyInstalled, acquireRunLock, recoverBrowser, cleanupLiveRun, pipeRenderer } from './live-github-smoke.mjs';
+import { mkdtemp, writeFile, readFile, rm, symlink, access } from 'node:fs/promises';
+import { tmpdir, hostname } from 'node:os';
+import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
+import { runInNewContext } from 'node:vm';
+import { EventEmitter } from 'node:events';
 import { fixtureDriver } from './live-github-smoke-fixture.mjs';
 
 const config = { apiOrigin: 'https://staging.propr.dev', sourceRevision: 'a'.repeat(40),
@@ -25,7 +31,7 @@ test('wrong browser account stops before approval and repository use', async () 
   const calls = [];
   await assert.rejects(runJourney(fixtureDriver({ username: 'integry', calls })), rejectsAs('account_mismatch'));
   assert.equal(calls.includes('approve'), false);
-  for (const name of ['', 'PROPR-ULTRAFIX', null, 'propr-ultrafix ']) assert.throws(() => assertAccount(name), rejectsAs('account_mismatch'));
+  for (const name of ['', 'PROPR-ULTRAFIX', null, 'propr-ultrafix ']) assert.throws(() => assertAccount({ username: name, id: ACCOUNT_ID }), rejectsAs('account_mismatch'));
 });
 test('native and connected identity mismatches refuse further work', async () => {
   for (const step of ['confirmedAccount', 'connectedAccount']) {
@@ -127,4 +133,149 @@ test('missing exact RPM is a runtime binding failure, never a pairing regression
   if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch)) return;
   await assert.rejects(verifyInstalled({ ...config, arch: process.arch,
     rpmPath: '/nonexistent-propr-live-rpm/ghp_SENTINEL.rpm' }), rejectsAs('runtime_source_mismatch'));
+});
+
+
+test('all account boundaries require the pinned numeric ID and the API username contract', async () => {
+  for (const step of ['browserAccount', 'confirmedAccount', 'connectedAccount']) {
+    for (const account of [{ username: ACCOUNT, id: '123' }, { login: ACCOUNT, id: ACCOUNT_ID },
+      { username: ACCOUNT }, { username: ACCOUNT, id: Number(ACCOUNT_ID) }]) {
+      const calls = [], driver = fixtureDriver({ calls });
+      driver[step] = async () => account;
+      await assert.rejects(runJourney(driver), rejectsAs('account_mismatch'));
+      assert.equal(calls.includes('repositoryUsable'), false);
+      if (step === 'browserAccount') assert.equal(calls.includes('approve'), false);
+    }
+  }
+  assertAccount(EXPECTED_ACCOUNT);
+});
+
+test('deadline unwinds through production cleanup and the next run can acquire its lock', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'live-smoke-'));
+  try {
+    const releaseLock = await acquireRunLock(root);
+    await writeFile(join(root, 'handoff.sock'), 'fixture');
+    const controller = new AbortController();
+    const calls = [];
+    const driver = fixtureDriver({ calls });
+    driver.confirmedAccount = () => new Promise(() => {});
+    const timer = setTimeout(() => controller.abort(new SmokeFailure('app_pairing_failed')), 20);
+    const window = {
+      evaluate: async (fn, id) => {
+        assert.equal(id, 'fixture-profile');
+        // Execute the same renderer cleanup callback as production.
+        globalThis.window = { proprDesktop: {
+          authentication: { cancel: async () => calls.push('cancel') },
+          profiles: { remove: async () => calls.push('remove') },
+        } };
+        try { await runInNewContext(`(${fn.toString()})(${JSON.stringify(id)})`, { window: globalThis.window }); } finally { delete globalThis.window; }
+      }, close: () => calls.push('pipe-close'),
+    };
+    await assert.rejects((async () => {
+      try { await runJourney(driver, controller.signal); }
+      finally {
+        await cleanupLiveRun({ window, profile: { id: 'fixture-profile' },
+          desktop: { kill: () => calls.push('desktop-stop') }, browser: { close: async () => calls.push('browser-close') },
+          releaseLock, stateRoot: root });
+      }
+    })(), rejectsAs('app_pairing_failed'));
+    clearTimeout(timer);
+    assert.deepEqual(calls.slice(-5), ['cancel', 'remove', 'pipe-close', 'desktop-stop', 'browser-close']);
+    assert.equal(calls.includes('connect'), false);
+    await assert.rejects(access(join(root, 'run.lock')));
+    await assert.rejects(access(join(root, 'handoff.sock')));
+    await (await acquireRunLock(root))();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('dead PID lock recovers while active or malformed locks refuse and concurrent recovery is exclusive', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'live-smoke-'));
+  try {
+    // Linux PID maximum is below this sentinel.
+    await writeFile(join(root, 'run.lock'), '2147483647\n', { mode: 0o600 });
+    const outcomes = await Promise.allSettled([acquireRunLock(root), acquireRunLock(root)]);
+    const winner = outcomes.find(result => result.status === 'fulfilled');
+    assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 1);
+    assert.equal(await readFile(join(root, 'run.lock'), 'utf8'), `${process.pid}\n`);
+    await winner.value();
+    for (const value of [`${process.pid}\n`, '', 'bad\n']) {
+      await writeFile(join(root, 'run.lock'), value, { mode: 0o600 });
+      await assert.rejects(acquireRunLock(root), rejectsAs('configuration_failed'));
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('stale Chromium singleton recovery refuses live unrelated PIDs and foreign hosts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'live-smoke-'));
+  try {
+    for (const target of [`${hostname()}-${process.pid}`, 'foreign-host-2147483647']) {
+      await symlink(target, join(root, 'SingletonLock'));
+      await assert.rejects(recoverBrowser(root), rejectsAs('configuration_failed'));
+      await rm(join(root, 'SingletonLock'));
+    }
+    await symlink(`${hostname()}-2147483647`, join(root, 'SingletonLock'));
+    await symlink('/fixture/socket', join(root, 'SingletonSocket'));
+    await symlink('fixture-cookie', join(root, 'SingletonCookie'));
+    await recoverBrowser(root);
+    await assert.rejects(access(join(root, 'SingletonLock')));
+    await recoverBrowser(root);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Desktop pipe supports fragmented CDP frames and awaiting renderer promises without a TCP endpoint', async () => {
+  const child = new EventEmitter();
+  child.stdio = [null, null, null, new PassThrough(), new PassThrough()];
+  child.stdio[3].on('data', bytes => {
+    const request = JSON.parse(bytes.toString().slice(0, -1));
+    let result;
+    if (request.method === 'Target.getTargets') result = { targetInfos: [{ type: 'page', targetId: 'page', url: 'file:///renderer' }] };
+    else if (request.method === 'Target.attachToTarget') result = { sessionId: 'session' };
+    else {
+      assert.equal(request.sessionId, 'session');
+      assert.equal(request.params.awaitPromise, true);
+      assert.equal(request.params.returnByValue, true);
+      result = { result: { value: true } };
+    }
+    const frame = JSON.stringify({ id: request.id, result }) + '\0';
+    child.stdio[4].write(frame.slice(0, 5)); child.stdio[4].write(frame.slice(5));
+  });
+  const renderer = pipeRenderer(child);
+  await renderer.ready();
+  assert.equal(await renderer.evaluate(() => true), true);
+  renderer.close();
+  const source = readFileSync(new URL('./live-github-smoke.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /remote-debugging-port|connectOverCDP|127\.0\.0\.1/);
+  assert.match(source, /remote-debugging-pipe/);
+});
+
+
+test('deadline waits for an authorized profile save before cleanup and starts no subsequent stage', async () => {
+  const controller = new AbortController(), calls = [];
+  let finishSave, enteredSave;
+  const entered = new Promise(resolve => { enteredSave = resolve; });
+  const driver = fixtureDriver({ calls });
+  driver.startPairing = async () => {
+    enteredSave();
+    await new Promise(resolve => { finishSave = resolve; });
+    calls.push('saved');
+  };
+  const journey = runJourney(driver, controller.signal).finally(() => calls.push('cleanup'));
+  await entered;
+  controller.abort(new SmokeFailure('app_pairing_failed'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.includes('cleanup'), false);
+  finishSave();
+  await assert.rejects(journey, rejectsAs('app_pairing_failed'));
+  assert.deepEqual(calls, ['preflight', 'saved', 'cleanup']);
+});
+
+test('profile cleanup failure cannot report a pass and still releases the lock', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'live-smoke-'));
+  let released = false;
+  try {
+    await assert.rejects(cleanupLiveRun({ stateRoot: root, completed: true, profile: { id: 'fixture' },
+      window: { evaluate: async () => { throw new Error('ghp_SENTINEL'); }, close: () => {} },
+      releaseLock: async () => { released = true; } }), rejectsAs('app_pairing_failed'));
+    assert.equal(released, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
