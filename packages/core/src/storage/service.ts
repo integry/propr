@@ -1,11 +1,11 @@
-import { StorageContractError, instanceSelectionChanged, validatePreviewSelection, type CleanupPreviewArgs, type CleanupPreviewRequest, type CandidateExecution, type SavedPreview } from './cleanupRequest.js';
+import { StorageContractError, confirmationInvalid, instanceSelectionChanged, validatePreviewSelection, type CleanupPreviewArgs, type CleanupPreviewRequest, type CandidateExecution, type SavedPreview } from './cleanupRequest.js';
 import fs from 'node:fs/promises';
 import { DatabaseExports, type StorageAuthority } from './databaseExport.js';
 import type { RepositoryStorageInventory } from '@propr/shared';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
-import { DEFAULT_STORAGE_POLICY, type StoragePolicy, type StorageObservation, type StorageCleanupPreview, type StorageCleanupResult, type StorageCandidate, type StorageProtection } from '@propr/shared';
+import { DEFAULT_STORAGE_POLICY, STORAGE_INSTANCE_CHANGED_CODE, type StoragePolicy, type StorageObservation, type StorageCleanupPreview, type StorageCleanupResult, type StorageCandidate, type StorageProtection } from '@propr/shared';
 import { StorageLifecycle, StorageBusyError, assertRealDirectory } from './lifecycle.js';
 import { observeStorage, type StorageRoot } from './observation.js';
 import { auditRepository } from './repositorySafety.js';
@@ -329,9 +329,9 @@ export class InstanceStorageService {
     return this.removeCache(record, fingerprint, signal, authorize);
   }
   private validateConfirmation(saved: SavedPreview, instanceId: string, actor: string): void {
-    if (saved.generation !== this.generation) throw new StorageContractError(409, 'Instance generation changed');
+    if (saved.generation !== this.generation) throw new StorageContractError(409, 'Instance generation changed', STORAGE_INSTANCE_CHANGED_CODE);
     if (saved.actor !== actor || saved.preview.instanceId !== instanceId) throw new StorageContractError(403, 'Confirmation belongs to another principal');
-    if (!Number.isFinite(Date.parse(saved.preview.expiresAt)) || Date.parse(saved.preview.expiresAt) <= Date.now()) throw new StorageContractError(409, 'Confirmation expired');
+    if (!Number.isFinite(Date.parse(saved.preview.expiresAt)) || Date.parse(saved.preview.expiresAt) <= Date.now()) throw confirmationInvalid('Confirmation expired');
   }
   private async validateAutomaticExecution(): Promise<void> {
     const policy = await this.policy();
@@ -346,7 +346,7 @@ export class InstanceStorageService {
       await authorize?.();
       let saved: SavedPreview;
       try { saved = await this.read<SavedPreview>(`preview-${confirmation}.json`); }
-      catch { throw new StorageContractError(409, 'Confirmation unavailable or consumed'); }
+      catch { throw confirmationInvalid('Confirmation unavailable or consumed'); }
       this.validateConfirmation(saved, instanceId, actor);
       const result: StorageCleanupResult = { version: 1, instanceId, operationId: confirmation, state: 'interrupted', deleted: [], retained: [] };
       // Consume before any side effects; never automatically replay an interrupted operation.

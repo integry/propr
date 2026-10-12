@@ -1,5 +1,5 @@
 import { API_BASE_URL, apiFetch } from './apiClient';
-import { STORAGE_INSTANCE_CHANGED_CODE } from '@propr/shared';
+import { STORAGE_CONFIRMATION_INVALID_CODE, STORAGE_INSTANCE_CHANGED_CODE } from '@propr/shared';
 import type { DatabaseExportStatus, RepositoryStorageInventory, StorageCapabilities, StorageCleanupPreview, StorageCleanupResult, StorageErrorBody } from '@propr/shared';
 
 const base = () => `${API_BASE_URL}/api/instance/storage/v1`;
@@ -7,6 +7,8 @@ const base = () => `${API_BASE_URL}/api/instance/storage/v1`;
 export class StorageTransientError extends Error {}
 /** The server no longer holds this export job: discard it, but keep instance authority. */
 export class StorageExportGoneError extends Error {}
+/** The cleanup confirmation expired or was consumed: discard the preview, but keep instance authority. */
+export class StorageConfirmationError extends Error {}
 async function storageFetch(url: string, init: RequestInit): Promise<Response> {
   try { return await apiFetch(url, init); }
   catch (error) {
@@ -15,19 +17,21 @@ async function storageFetch(url: string, init: RequestInit): Promise<Response> {
     throw error;
   }
 }
-async function serverError(response: Response): Promise<{ message?: string; instanceChanged: boolean }> {
+async function serverError(response: Response): Promise<{ message?: string; code?: StorageErrorBody['code'] }> {
   try {
     const body: Partial<StorageErrorBody> | null = await response.json();
-    return { message: typeof body?.error === 'string' ? body.error : undefined, instanceChanged: typeof body?.code === 'string' && body.code === STORAGE_INSTANCE_CHANGED_CODE };
-  } catch { return { instanceChanged: false }; }
+    const code = body?.code === STORAGE_INSTANCE_CHANGED_CODE || body?.code === STORAGE_CONFIRMATION_INVALID_CODE ? body.code : undefined;
+    return { message: typeof body?.error === 'string' ? body.error : undefined, code };
+  } catch { return {}; }
 }
 async function failure(response: Response): Promise<Error> {
   if (response.status === 401 || response.status === 403) return new Error('Current instance administrator access is required.');
   if (response.status === 404) return new Error('This runtime does not support instance storage management.');
   if (response.status === 410) return new StorageExportGoneError('This export is no longer available. Create a new export.');
-  const { message, instanceChanged } = await serverError(response);
+  const { message, code } = await serverError(response);
   // The structured code, not the display text, carries the authority change.
-  if (response.status === 409 && instanceChanged) return new Error('Instance selection changed. Refresh before continuing.');
+  if (response.status === 409 && code === STORAGE_INSTANCE_CHANGED_CODE) return new Error('Instance selection changed. Refresh before continuing.');
+  if (response.status === 409 && code === STORAGE_CONFIRMATION_INVALID_CODE) return new StorageConfirmationError(`${message || 'Confirmation unavailable'}. Preview cleanup again.`);
   // Server contract messages are sanitized: no paths, credentials or snapshot contents.
   if (response.status === 409) return new StorageTransientError(message || 'Storage is busy. Try again shortly.');
   if (response.status === 408 || response.status === 429 || response.status >= 500) return new StorageTransientError('Storage operation temporarily unavailable. Try again.');

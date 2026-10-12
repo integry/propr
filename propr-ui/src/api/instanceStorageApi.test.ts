@@ -2,8 +2,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 const apiFetch = vi.hoisted(() => vi.fn());
 vi.mock('./apiClient', () => ({ API_BASE_URL: 'https://example.test', apiFetch }));
-import { STORAGE_INSTANCE_CHANGED_CODE } from '@propr/shared';
-import { StorageExportGoneError, StorageTransientError, databaseExportStatus, downloadDatabaseExport, startDatabaseExport, storagePreview, verifyStorageActor } from './instanceStorageApi';
+import { STORAGE_CONFIRMATION_INVALID_CODE, STORAGE_INSTANCE_CHANGED_CODE } from '@propr/shared';
+import { StorageConfirmationError, StorageExportGoneError, StorageTransientError, databaseExportStatus, downloadDatabaseExport, startDatabaseExport, storageExecute, storagePreview, verifyStorageActor } from './instanceStorageApi';
 
 const job = { version: 1 as const, instanceId: 'instance', generation: 'generation', operationId: 'job', scope: 'customer_database' as const, state: 'running' as const, expiresAt: new Date().toISOString() };
 const capabilities = { version: 1 as const, instanceId: 'instance', generation: 'generation', features: ['database_export' as const] };
@@ -37,6 +37,18 @@ describe('instance storage error classification', () => {
     expect(changed.message).toMatch(/Instance selection changed/);
     apiFetch.mockResolvedValueOnce(reply(409, { error: 'Instance selection changed', code: 'something_else' }));
     expect(await failure(() => startDatabaseExport(capabilities))).toBeInstanceOf(StorageTransientError);
+  });
+  it('classifies dead cleanup confirmations and generation changes by structured code', async () => {
+    const preview = { version: 1 as const, instanceId: 'instance', confirmation: 'confirmation', expiresAt: new Date().toISOString(), categories: ['repository_caches' as const], candidates: [], impact: '' };
+    for (const error of ['Confirmation expired', 'Confirmation unavailable or consumed']) {
+      apiFetch.mockResolvedValueOnce(reply(409, { error, code: STORAGE_CONFIRMATION_INVALID_CODE }));
+      const dead = await failure(() => storageExecute(preview));
+      expect(dead).toBeInstanceOf(StorageConfirmationError); expect(dead.message).toMatch(error);
+    }
+    apiFetch.mockResolvedValueOnce(reply(409, { error: 'Instance generation changed', code: STORAGE_INSTANCE_CHANGED_CODE }));
+    const changed = await failure(() => storageExecute(preview));
+    expect(changed).not.toBeInstanceOf(StorageTransientError); expect(changed).not.toBeInstanceOf(StorageConfirmationError);
+    expect(changed.message).toMatch(/Instance selection changed/);
   });
   it('treats 401/403, 404 and desktop scope aborts as authority-bearing', async () => {
     for (const status of [401, 403, 404]) {

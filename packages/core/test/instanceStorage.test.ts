@@ -9,6 +9,7 @@ import { auditRepository, repositoryIdentity, repositoryMetadataFingerprint } fr
 import { StorageLifecycle } from '../src/storage/lifecycle.js';
 import { observeStorage } from '../src/storage/observation.js';
 import { InstanceStorageService } from '../src/storage/service.js';
+import { STORAGE_CONFIRMATION_INVALID_CODE, STORAGE_INSTANCE_CHANGED_CODE } from '@propr/shared';
 
 const exec = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await exec('git', ['-c', 'core.hooksPath=/dev/null', '-C', cwd, ...args], { env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 'Storage Test', GIT_AUTHOR_EMAIL: 'storage@example.invalid', GIT_COMMITTER_NAME: 'Storage Test', GIT_COMMITTER_EMAIL: 'storage@example.invalid' } })).stdout;
@@ -111,14 +112,14 @@ test('policy defaults persist; confirmation is instance/actor bound and single u
   const result = await service.execute(id, preview.confirmation, 'admin');
   assert.deepEqual(result.deleted, []);
   assert.deepEqual(result.retained[0].reasons, ['unsupported']);
-  await assert.rejects(service.execute(id, preview.confirmation, 'admin'));
+  await assert.rejects(service.execute(id, preview.confirmation, 'admin'), { status: 409, code: STORAGE_CONFIRMATION_INVALID_CODE });
   assert.deepEqual(await service.result(id, preview.confirmation, 'admin'), result);
   const expired = await service.preview(id, ['repository_caches'], 'admin');
   const previewFile = path.join(root, `preview-${expired.confirmation}.json`);
   const saved = JSON.parse(await fs.readFile(previewFile, 'utf8'));
   saved.preview.expiresAt = 'unknown';
   await fs.writeFile(previewFile, JSON.stringify(saved));
-  await assert.rejects(service.execute(id, expired.confirmation, 'admin'));
+  await assert.rejects(service.execute(id, expired.confirmation, 'admin'), { status: 409, message: 'Confirmation expired', code: STORAGE_CONFIRMATION_INVALID_CODE });
   const concurrent = await service.preview(id, ['repository_caches'], 'admin');
   const attempts = await Promise.allSettled([
     service.execute(id, concurrent.confirmation, 'admin'),
@@ -207,8 +208,8 @@ test('interrupted cleanup progress remains readable after restart without replay
   assert.deepEqual(result.deleted, ['first']);
   assert.deepEqual(result.retained, [{ id: 'worktrees', reasons: ['unsupported'] }]);
   await assert.rejects(restarted.result(instanceId, preview.confirmation, 'other-admin'), { status: 404 });
-  await assert.rejects(restarted.execute(instanceId, preview.confirmation, 'admin'), /consumed/);
-  await assert.rejects(restarted.execute(instanceId, unused.confirmation, 'admin'), /generation changed/);
+  await assert.rejects(restarted.execute(instanceId, preview.confirmation, 'admin'), { message: /consumed/, code: STORAGE_CONFIRMATION_INVALID_CODE });
+  await assert.rejects(restarted.execute(instanceId, unused.confirmation, 'admin'), { message: /generation changed/, code: STORAGE_INSTANCE_CHANGED_CODE });
 });
 
 for (const format of ['legacy', 'preview-bound'] as const) {

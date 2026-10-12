@@ -2,8 +2,10 @@
 export const INSTANCE_STORAGE_VERSION = 1 as const;
 /** Structured error code: the request was bound to a different instance or generation. */
 export const STORAGE_INSTANCE_CHANGED_CODE = 'instance_changed' as const;
+/** Structured error code: the cleanup confirmation expired or was consumed; retrying it can never succeed. */
+export const STORAGE_CONFIRMATION_INVALID_CODE = 'confirmation_invalid' as const;
 /** Storage error body; `code` is authoritative where present, `error` is display text only. */
-export interface StorageErrorBody { error: string; code?: typeof STORAGE_INSTANCE_CHANGED_CODE }
+export interface StorageErrorBody { error: string; code?: typeof STORAGE_INSTANCE_CHANGED_CODE | typeof STORAGE_CONFIRMATION_INVALID_CODE }
 export type StorageCategory = 'database_config' | 'repository_caches' | 'worktrees' | 'salvage' | 'logs_artifacts' | 'provider_credentials' | 'task_history';
 export type StorageState = 'complete' | 'partial' | 'unknown' | 'unsupported';
 export interface StorageObservation {

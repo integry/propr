@@ -54,6 +54,32 @@ describe('native instance storage', () => {
     expect(api.storageExecute).not.toHaveBeenCalled();
     expect(screen.queryByText('example/project')).not.toBeInTheDocument();
   });
+  it('an expired or consumed confirmation clears the dead preview but keeps instance data and the export job', async () => {
+    vi.mocked(api.startDatabaseExport).mockResolvedValue({ version: 1, instanceId: 'instance', generation: 'generation', operationId: 'job', scope: 'customer_database', state: 'ready', expiresAt: new Date(Date.now() + 60_000).toISOString(), sizeBytes: 1, sha256: 'a'.repeat(64), schemaVersion: 7, migration: null });
+    render(view()); await screen.findByText('example/project');
+    fireEvent.click(screen.getByRole('button', { name: 'Create database export' }));
+    await screen.findByRole('button', { name: 'Download once' });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview cache cleanup' }));
+    await screen.findByRole('button', { name: 'Confirm cleanup' });
+    fireEvent.click(screen.getByRole('checkbox'));
+    vi.mocked(api.storageExecute).mockRejectedValue(new api.StorageConfirmationError('Confirmation expired. Preview cleanup again.'));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm cleanup' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Confirmation expired');
+    expect(screen.queryByRole('button', { name: 'Confirm cleanup' })).not.toBeInTheDocument();
+    expect(screen.getByText('example/project')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download once' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Preview cache cleanup' })).toBeEnabled();
+  });
+  it('a transient cleanup failure keeps the preview for a retry', async () => {
+    render(view()); await screen.findByText('example/project');
+    fireEvent.click(screen.getByRole('button', { name: 'Preview cache cleanup' }));
+    await screen.findByRole('button', { name: 'Confirm cleanup' });
+    fireEvent.click(screen.getByRole('checkbox'));
+    vi.mocked(api.storageExecute).mockRejectedValueOnce(new api.StorageTransientError('Storage is busy. Try again shortly.'));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm cleanup' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('busy');
+    expect(screen.getByRole('button', { name: 'Confirm cleanup' })).toBeInTheDocument();
+  });
   it('account change unmounts old results; a late inventory cannot repopulate them', async () => {
     let resolve!: (value: typeof inventory) => void;
     vi.mocked(api.storageInventory).mockImplementationOnce(() => new Promise(done => { resolve = done; }));

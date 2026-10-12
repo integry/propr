@@ -7,7 +7,7 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { InstanceStorageService } from '../../core/src/storage/service.js';
 import { StorageLifecycle } from '../../core/src/storage/lifecycle.js';
-import { STORAGE_INSTANCE_CHANGED_CODE } from '@propr/shared';
+import { STORAGE_CONFIRMATION_INVALID_CODE, STORAGE_INSTANCE_CHANGED_CODE } from '@propr/shared';
 
 test('instance storage enforces administrator, CSRF, instance and confirmation actor boundaries', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-api-'));
@@ -51,6 +51,6 @@ test('instance storage enforces administrator, CSRF, instance and confirmation a
   assert.equal(result.status, 200);
   assert.equal((await result.json()).state, 'completed');
   const reused = await fetch(`${base}/cleanup/execute`, { method: 'POST', headers, body: JSON.stringify(execute) });
-  assert.equal(reused.status, 409); assert.equal((await reused.json()).code, undefined);
+  assert.equal(reused.status, 409); assert.equal((await reused.json()).code, STORAGE_CONFIRMATION_INVALID_CODE);
   assert.equal((await fetch(`${base}/cleanup/operations/${preview.confirmation}?instanceId=${usage.instanceId}`, { headers: { 'x-actor': 'other-admin' } })).status, 404);
 });

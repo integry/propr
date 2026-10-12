@@ -37,6 +37,7 @@ function StorageControls({ actor }: { actor: string }) {
         // Authority, account, instance or generation failures clear every authority-bearing result.
         if (e instanceof api.StorageTransientError) onTransient?.();
         else if (e instanceof api.StorageExportGoneError) setJob(undefined);
+        else if (e instanceof api.StorageConfirmationError) { setPreview(undefined); setConfirmed(false); }
         else clear();
       }
     }
