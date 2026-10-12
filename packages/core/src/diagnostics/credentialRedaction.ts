@@ -64,9 +64,9 @@ function parseCredentialContent(name: string, content: string): unknown {
 }
 
 /** Shared with the provider launch path, including legacy .antigravity homes. */
-export function antigravityCredentialRoot(configPath: string, resolve: (value: string) => string): string {
+export function antigravityCredentialRoot(configPath: string, resolve: (value: string) => string, env: Record<string, string | undefined> = process.env): string {
     const managed = isManagedAgentConfigPath(configPath);
-    const root = resolve(managed ? configPath : process.env.ANTIGRAVITY_CONFIG_PATH || configPath);
+    const root = resolve(managed ? configPath : env.ANTIGRAVITY_CONFIG_PATH || configPath);
     if (!managed && path.basename(root) === '.antigravity') {
         const sibling = path.join(path.dirname(root), '.gemini');
         if (fs.existsSync(sibling) && fs.statSync(sibling).isDirectory()) return sibling;

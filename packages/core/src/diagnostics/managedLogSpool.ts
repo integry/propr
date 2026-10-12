@@ -5,7 +5,7 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 import { PinnedDirectory } from './privateDirectory.js';
 import { redactRecord, REDACTION_VERSION } from './redaction.js';
 import type { NativeInventory } from './providerCollector.js';
-import type { NativeLogInventory, NativeLogRoot } from './nativeLogPolicy.js';
+import type { NativeLogInventory, NativeLogRoot } from './nativeLogPolicy.js'; import type { CredentialRootRefusal } from './providerRoots.js';
 
 interface Statement { run(...args: unknown[]): { lastInsertRowid: number | bigint }; get(...args: unknown[]): unknown; all(...args: unknown[]): unknown[] }
 export interface Database { exec(sql: string): void; prepare(sql: string): Statement; close(): void }
@@ -51,7 +51,7 @@ export interface AppendOptions {
     credentials: readonly string[];
     now?: number;
     cursor?: { before: Cursor; after: Cursor };
-    droppedBytes?: number;
+    droppedBytes?: number; continuation?: readonly boolean[]; // per record: a bounded stack/error continuation
 }
 interface Source { retired: number; id: string; identity: string; cursor: string; next: number; dropped: number; gaps: number; last_success: number | null; reason: string | null; protected_bytes: number; diagnostic_bytes: number; inventory_complete: number; protection: string | null; native_inventory: string | null; native_details: string | null }
 interface Segment { id: number; source: string; day: string; first: number; last: number; start: number; end: number; raw: number; digest: string; data: Buffer; sealed: number; ack: number }
@@ -167,7 +167,7 @@ export class ManagedLogSpool {
     private gap(source: Source, bytes: number, reason: string): void {
         this.db.prepare('UPDATE sources SET dropped=dropped+?,gaps=gaps+1,reason=?,inventory_complete=0 WHERE id=?').run(bytes, reason, source.id);
     }
-    report(identity: LogIdentity, reason: 'buffer-capacity' | 'unsafe-source' | 'ownership-unsupported' | 'scan-limit' | 'source-replaced' | 'capture-interrupted' | 'protected-native-state' | 'ownership-unverified' | 'storage-unavailable', bytes = 0): void {
+    report(identity: LogIdentity, reason: 'buffer-capacity' | 'unsafe-source' | 'ownership-unsupported' | 'scan-limit' | 'source-replaced' | 'capture-interrupted' | 'protected-native-state' | 'ownership-unverified' | 'storage-unavailable' | `credential-root:${CredentialRootRefusal | 'missing'}`, bytes = 0): void {
         this.atomic(() => {
             const source = this.source(identity);
             if (reason === 'protected-native-state') this.db.prepare('UPDATE sources SET protected_bytes=?,diagnostic_bytes=?,protection=? WHERE id=?').run(bytes, bytes, reason, source.id);
@@ -239,7 +239,7 @@ export class ManagedLogSpool {
     }
     /** Cursor CAS + segments commit together. Concurrent/restarted scans cannot duplicate records. */
     append(identity: LogIdentity, records: string[], format: 'jsonl' | 'text', options: AppendOptions): boolean {
-        const { credentials, now = Date.now(), cursor, droppedBytes = 0 } = options;
+        const { credentials, now = Date.now(), cursor, droppedBytes = 0, continuation } = options;
         if (records.length > 4096 || records.reduce((sum, r) => sum + Buffer.byteLength(r), 0) > this.limits.scanBytes) throw new Error('diagnostic batch exceeds bound');
         return this.atomic(() => {
             const source = this.source(identity);
@@ -249,9 +249,9 @@ export class ManagedLogSpool {
             const batch: Array<{ text: string; seq: number; size: number }> = [];
             const flush = () => { if (batch.length) this.appendRecords(source, batch.splice(0), now); };
             if (droppedBytes) this.gap(source, droppedBytes, 'oversize-record');
-            for (const record of records) {
+            for (const [index, record] of records.entries()) {
                 const size = Buffer.byteLength(record) + (record.endsWith('\n') ? 0 : 1);
-                const redacted = size <= this.limits.recordBytes ? redactRecord(record, format, credentials) : null;
+                const redacted = size <= this.limits.recordBytes ? redactRecord(record, format, credentials, { continuation: continuation?.[index] === true }) : null;
                 const seq = next++;
                 if (!redacted || Buffer.byteLength(redacted) > this.limits.recordBytes) { flush(); this.gap(source, size, 'unsafe-record'); continue; }
                 batch.push({ text: redacted, seq, size });

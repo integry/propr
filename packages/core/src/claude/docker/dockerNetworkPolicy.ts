@@ -1,4 +1,4 @@
-import { spawnAdmittedAgent } from '../../agents/agentRunAdmission.js';
+import { spawnAdmittedAgent, type SpawnedAgentLaunch } from '../../agents/agentRunAdmission.js';
 import type { ChildProcess } from 'node:child_process';
 import {
     dockerRunNeedsNetworkPolicy, executeWithNetworkPolicy, mayNeedUnscopedNetworkPolicy, networkEgressReportFromError, prepareDockerRunNetwork,
@@ -75,14 +75,14 @@ function startWithScopedNetworkPolicy<T>(
  * goal session): its proxy lives until the `docker run` process closes, which
  * Node also reports after a failed spawn.
  */
-export async function spawnWithNetworkPolicy(args: string[], spawnChild: (args: string[]) => ChildProcess): Promise<ChildProcess> {
+export async function spawnWithNetworkPolicy(args: string[], spawnChild: (args: string[], launch?: SpawnedAgentLaunch) => ChildProcess): Promise<ChildProcess> {
     // The proxy keeps the run's recorder, so a session started outside any policy is still bounded by it;
     // its logged report covers the launch only.
     if (mayNeedUnscopedNetworkPolicy('docker', args)) return withUnscopedNetworkPolicy('docker', args, undefined, () => spawnWithScopedNetworkPolicy(args, spawnChild));
     return spawnWithScopedNetworkPolicy(args, spawnChild);
 }
 
-async function spawnWithScopedNetworkPolicy(args: string[], spawnChild: (args: string[]) => ChildProcess): Promise<ChildProcess> {
+async function spawnWithScopedNetworkPolicy(args: string[], spawnChild: (args: string[], launch?: SpawnedAgentLaunch) => ChildProcess): Promise<ChildProcess> {
     if (!dockerRunNeedsNetworkPolicy('docker', args)) return spawnAdmittedAgent(args, spawnChild);
     const network = await prepareDockerRunNetwork('docker', args);
     if (!network) return spawnAdmittedAgent(args, spawnChild);

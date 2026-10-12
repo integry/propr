@@ -92,8 +92,8 @@ export async function executeCodexAppServerGoal(
     });
     const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
     assertNativeLogAdmission({ provider: config.type, agent: config.id });
-    const child = await spawnWithNetworkPolicy(args, runArgs => {
-        const capture = prepareProviderCapture({ provider: config.type, agent: config.id, configPath: config.configPath, credentials: config.envVars }, runArgs, undefined, args);
+    const child = await spawnWithNetworkPolicy(args, (runArgs, launched) => {
+        const capture = prepareProviderCapture({ provider: config.type, agent: config.id, configPath: config.configPath, credentials: config.envVars }, runArgs, launched?.environment, launched?.createArgs ?? args);
         const spawned = spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
         attachProviderCapture(spawned, capture);
         return spawned;

@@ -386,8 +386,8 @@ export async function executeAntigravityNativeGoal(
         if (expired) throw new Error('Antigravity native goal attempt exceeded its execution timeout');
         const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
         assertNativeLogAdmission(launch.diagnostics);
-        const child = await spawnWithNetworkPolicy(args, runArgs => {
-            const capture = launch.diagnostics ? prepareProviderCapture(launch.diagnostics, runArgs, undefined, args) : null;
+        const child = await spawnWithNetworkPolicy(args, (runArgs, launched) => {
+            const capture = launch.diagnostics ? prepareProviderCapture(launch.diagnostics, runArgs, launched?.environment, launched?.createArgs ?? args) : null;
             const spawned = spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
             attachProviderCapture(spawned, capture);
             return spawned;

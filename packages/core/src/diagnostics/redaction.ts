@@ -1,4 +1,5 @@
-export const REDACTION_VERSION = 1;
+/** 2: stdout/stderr continuation records and Docker/exception heads. */
+export const REDACTION_VERSION = 2;
 const credentialCountLimit = 512, credentialBytesLimit = 512 * 1024;
 /** One cache per process, even if this module is loaded from both source and
  * dist (or another duplicate path). The versioned key isolates shape changes. */
@@ -24,7 +25,23 @@ export function diagnosticCredentials(): readonly string[] {
 }
 const authField = /auth|token|cookie|password|passwd|secret|credential|private.?key|api.?key|^headers$/i;
 const known = /(?:\b(?:sk-[a-zA-Z0-9_-]{8,}|gh[pousr]_[a-zA-Z0-9_]{8,}|github_pat_[a-zA-Z0-9_]+|AIza[a-zA-Z0-9_-]{20,})\b|\beyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)/g;
-export function redactRecord(line: string, format: 'jsonl' | 'text', credentials: readonly string[]): string | null {
+/** Single-line timestamp/severity log heads recognized by the native text adapter. */
+const textHead = /^\s*(?:\d{4}-\d{2}-\d{2}[T ]|\[(?:\d{4}-|TRACE\b|DEBUG\b|INFO\b|WARN\b|ERROR\b|FATAL\b)|TRACE\b|DEBUG\b|INFO\b|WARN(?:ING)?\b|ERROR\b|FATAL\b)/i;
+/** Unprefixed Docker CLI/daemon errors and exception or traceback headers. */
+const errorHead = /^(?:docker(?:: | [a-z]+: )|Error response from daemon: |Unable to find image '|See 'docker [a-z -]*--help'\.$|(?:[A-Z][\w.$]*)?(?:Error|Exception)(?: \[[A-Z0-9_]+\])?: |Uncaught |Traceback \(most recent call last\):$|panic: |Caused by: )/;
+/** The only continuation shapes accepted after a head: stack frames, chained
+ * causes and elision markers. Indented free text or data is never accepted. */
+const continuationLine = /^(?:\s+at \S|\s+File "[^"]*", line \d+(?:, in [\w<>.]+)?$|\s*\.\.\. \d+ (?:more|lines matching cause stack trace)$|Caused by: |\s+\[cause\]: |goroutine \d+ \[[\w ,]+\]:$|\s+\/\S+\.go:\d+(?: \+0x[0-9a-f]+)?$)/;
+const authTail = /(?:password|secret|credential|authorization|token|api[_-]?key)["']?\s*[:=]\s*$/i;
+/** Lines one head may carry; the window resets on any other line. */
+export const CONTINUATION_LINE_LIMIT = 64;
+/** Stateful stdout/stderr adapter: whether `line` is a continuation of the
+ * previous head, and the window left for the next line. */
+export function classifyTextLine(line: string, window: number): { continuation: boolean; window: number } {
+    if (window > 0 && continuationLine.test(line)) return { continuation: true, window: window - 1 };
+    return { continuation: false, window: textHead.test(line) || errorHead.test(line) ? CONTINUATION_LINE_LIMIT : 0 };
+}
+export function redactRecord(line: string, format: 'jsonl' | 'text', credentials: readonly string[], options: { continuation?: boolean } = {}): string | null {
     if (credentials.length > 512 || credentials.reduce((n, value) => n + value.length, 0) > 512 * 1024) return null;
     // eslint-disable-next-line no-control-regex -- Intentionally reject control characters except tab, LF, and CR.
     if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(line)) return null;
@@ -51,18 +68,24 @@ export function redactRecord(line: string, format: 'jsonl' | 'text', credentials
             if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
             return JSON.stringify(walk(parsed)) + '\n';
         }
-        // JSON-looking text is never allowed to bypass structured redaction.
-        if (/^\s*\{/.test(line)) return redactRecord(line, 'jsonl', credentials);
-        // Native text adapters recognize single-line timestamp/severity logs.
-        // Unknown continuation lines cannot bypass malformed structured/auth data.
-        if (!/^\s*(?:\d{4}-\d{2}-\d{2}[T ]|\[(?:\d{4}-|TRACE\b|DEBUG\b|INFO\b|WARN\b|ERROR\b|FATAL\b)|TRACE\b|DEBUG\b|INFO\b|WARN(?:ING)?\b|ERROR\b|FATAL\b)/i.test(line)) return null;
-        if (/(?:password|secret|credential|authorization|token|api[_-]?key)["']?\s*[:=]\s*$/.test(line)) return null;
-        const objectStart = line.indexOf('{');
-        if (objectStart >= 0) {
-            const structured = redactRecord(line.slice(objectStart), 'jsonl', credentials);
-            if (!structured) return null;
-            return JSON.stringify({ message: text(line.slice(0, objectStart)), record: JSON.parse(structured) }) + '\n';
-        }
-        return JSON.stringify({ message: text(line) }) + '\n';
+        return redactText(line, credentials, text, options.continuation === true);
     } catch { return null; }
+}
+function redactText(line: string, credentials: readonly string[], text: (value: string) => string, continuation: boolean): string | null {
+    // JSON-looking text is never allowed to bypass structured redaction.
+    if (/^\s*\{/.test(line)) return redactRecord(line, 'jsonl', credentials);
+    if (authTail.test(line)) return null;
+    // A continuation is accepted only in its narrow frame shapes and never
+    // carries structured data, so it cannot bypass structured redaction.
+    if (continuation) return continuationLine.test(line) && !/[{}]/.test(line) ? JSON.stringify({ continuation: text(line) }) + '\n' : null;
+    // Native text adapters recognize single-line timestamp/severity logs and
+    // Docker/exception heads. Unknown lines cannot bypass malformed structured/auth data.
+    if (!textHead.test(line) && !errorHead.test(line)) return null;
+    const objectStart = line.indexOf('{');
+    if (objectStart >= 0) {
+        const structured = redactRecord(line.slice(objectStart), 'jsonl', credentials);
+        if (!structured) return null;
+        return JSON.stringify({ message: text(line.slice(0, objectStart)), record: JSON.parse(structured) }) + '\n';
+    }
+    return JSON.stringify({ message: text(line) }) + '\n';
 }

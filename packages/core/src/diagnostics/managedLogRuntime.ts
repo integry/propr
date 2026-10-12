@@ -1,15 +1,14 @@
 import { PinnedDirectory } from './privateDirectory.js';
-import { rememberDiagnosticCredentials, diagnosticCredentials, processDiagnosticState } from './redaction.js';
+import { rememberDiagnosticCredentials, diagnosticCredentials, processDiagnosticState, classifyTextLine } from './redaction.js';
 import fs from 'node:fs';
-import path from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import { getManagedAgentConfigRelativePath } from '@propr/shared';
 import { collectProvider } from './providerCollector.js';
-import { nativeCredentialValues, antigravityCredentialRoot } from './credentialRedaction.js';
+import { nativeCredentialValues } from './credentialRedaction.js';
 import { ManagedLogSpool, type LogIdentity } from './managedLogSpool.js';
 import { configuredNativeLogRoots, inspectNativeLogRoots, nativeAdmissionReason, NATIVE_LOG_LIMITS } from './nativeLogPolicy.js';
 import { assertProviderOwner, isProviderOwnershipError, providerOwnershipStatus } from './providerOwnership.js';
+import { resolveProviderCredentialRoot } from './providerRoots.js';
 
 /** Shared by every module instance in the process: one spool, one queue. */
 const state = processDiagnosticState('runtime@1', () => ({
@@ -64,46 +63,66 @@ export function captureApplicationRecord(line: string): void {
     else { state.applicationLines.push(line); state.applicationBytes += size; }
     if (!state.applicationTimer) state.applicationTimer = setTimeout(flushApplicationRecords, 25);
 }
+/** Line-oriented stdout/stderr capture. Complete lines and a final unterminated
+ * line are records; Docker/exception heads open a bounded continuation window
+ * for stack frames (see classifyTextLine). Oversized lines become gaps. */
 export function captureProviderOutput(identity: LogIdentity, secrets: readonly string[]): { write(chunk: string): void; close(): void } {
-    let pending = '', discard = false, lostBytes = 0;
+    let pending = '', discard = false, lostBytes = 0, window = 0;
     const db = availableDiagnostics();
     if (!db) return { write() {}, close() {} };
     // There is no durable stdout offset across process death. Expose the capture
     // boundary rather than claiming continuous history after a restart.
     db.report(identity, 'capture-interrupted');
+    const records: string[] = [], continuation: boolean[] = [];
+    let dropped = 0, bytes = 0;
+    const flush = () => {
+        if (records.length || dropped) db.append(identity, records, 'text', { credentials: secrets, droppedBytes: dropped, continuation });
+        records.length = 0; continuation.length = 0; dropped = 0; bytes = 0;
+    };
+    const line = (text: string) => {
+        const record = text.endsWith('\r') ? text.slice(0, -1) : text;
+        const size = Buffer.byteLength(record);
+        if (bytes + size > db.limits.scanBytes || records.length >= 4096) flush();
+        const kind = classifyTextLine(record, window);
+        window = kind.window;
+        records.push(record); continuation.push(kind.continuation); bytes += size;
+    };
+    const reset = () => { records.length = 0; continuation.length = 0; dropped = 0; bytes = 0; };
     return {
         write(chunk) {
             try {
                 if (lostBytes) { db.report(identity, 'storage-unavailable', lostBytes); lostBytes = 0; }
-                const records: string[] = [];
-                let dropped = 0, start = 0, bytes = 0;
-                const flush = () => {
-                    if (records.length || dropped) db.append(identity, records, 'text', { credentials: secrets, droppedBytes: dropped });
-                    records.length = 0; dropped = 0; bytes = 0;
-                };
+                let start = 0;
                 for (let i = 0; i < chunk.length; i++) {
                     if (chunk[i] !== '\n') continue;
                     const part = chunk.slice(start, i); start = i + 1;
                     const size = Buffer.byteLength(pending) + Buffer.byteLength(part);
-                    if (discard || size > db.limits.recordBytes) dropped += size + 1;
-                    else {
-                        if (bytes + size > db.limits.scanBytes || records.length >= 4096) flush();
-                        records.push(pending + part); bytes += size;
-                    }
+                    // A dropped line also ends any continuation window.
+                    if (discard || size > db.limits.recordBytes) { dropped += size + 1; window = 0; }
+                    else line(pending + part);
                     pending = ''; discard = false;
                 }
                 const rest = chunk.slice(start);
                 if (discard || Buffer.byteLength(pending) + Buffer.byteLength(rest) > db.limits.recordBytes) {
                     dropped += Buffer.byteLength(pending) + Buffer.byteLength(rest);
-                    pending = ''; discard = true;
+                    pending = ''; discard = true; window = 0;
                 } else pending += rest;
                 flush();
-            } catch { lostBytes = Math.min(Number.MAX_SAFE_INTEGER, lostBytes + Buffer.byteLength(chunk) + Buffer.byteLength(pending)); pending = ''; discard = true; diagnosticsFailure(); }
+            } catch {
+                lostBytes = Math.min(Number.MAX_SAFE_INTEGER, lostBytes + Buffer.byteLength(chunk) + Buffer.byteLength(pending));
+                pending = ''; discard = true; window = 0; reset(); diagnosticsFailure();
+            }
         },
         close() {
-            try { if (lostBytes) db.report(identity, 'storage-unavailable', lostBytes); if (pending || discard) db.append(identity, [], 'text', { credentials: secrets, droppedBytes: Buffer.byteLength(pending) || 1 }); }
-            catch { diagnosticsFailure(); }
-            pending = '';
+            try {
+                if (lostBytes) db.report(identity, 'storage-unavailable', lostBytes);
+                // A bounded final line without a trailing newline is still a
+                // record; only an oversized (discarded) tail becomes a gap.
+                if (pending && !discard) line(pending);
+                else if (discard) dropped += 1;
+                flush();
+            } catch { reset(); diagnosticsFailure(); }
+            pending = ''; discard = false; window = 0;
         },
     };
 }
@@ -132,35 +151,48 @@ export function nativeDiagnosticStatus(): object {
         inventoryComplete: roots.length > 0 && inventories.every(i => i.inventoryComplete),
         observedBytes: inventories.reduce((sum, i) => sum + i.observedBytes, 0) } };
 }
+/** Root-only view of resolveProviderCredentialRoot, for inventory callers. */
 export function providerCredentialRoot(agent: DiagnosticAgent, resolve?: (value: string) => string): string | undefined {
-    if (agent.authenticationRoot) return agent.authenticationRoot;
-    if (agent.provider === 'vibe' && agent.nativeRoot) return agent.nativeRoot;
-    if (agent.provider === 'antigravity' && agent.configPath && resolve) return antigravityCredentialRoot(agent.configPath, resolve);
-    const relative = getManagedAgentConfigRelativePath(agent.configPath ?? '');
-    const mounts: Record<string, string | undefined> = {
-        codex: process.env.CODEX_CONFIG_PATH || process.env.HOST_CODEX_DIR,
-        claude: process.env.CLAUDE_CONFIG_PATH || process.env.HOST_CLAUDE_DIR,
-        antigravity: process.env.ANTIGRAVITY_CONFIG_PATH || process.env.HOST_ANTIGRAVITY_DIR,
-        opencode: process.env.HOST_OPENCODE_DATA_DIR,
-        vibe: process.env.VIBE_CONFIG_PATH || process.env.HOST_VIBE_DIR,
-    };
-    let root: string | undefined;
-    if (relative && process.env.PROPR_MANAGED_CREDENTIALS_DIR) {
-        root = path.join(process.env.PROPR_MANAGED_CREDENTIALS_DIR, relative);
-        if (agent.provider === 'opencode') root = root.replace(/\/\.config\/opencode$/, '/.local/share/opencode');
-    } else if (!relative && (agent.configPath?.startsWith('~/') || agent.configPath === mounts[agent.provider])) {
-        root = mounts[agent.provider];
-    }
-    return root;
+    return resolveProviderCredentialRoot(agent, { resolve }).root;
 }
-function argumentDiagnosticSecrets(args: readonly string[]): string[] {
+const secretName = /secret|token|password|passwd|key|credential|auth|cookie/i;
+/** Secret-shaped parts of values under innocuous names, e.g. a proxy URL with
+ * userinfo, an injected authorization header or an MCP JSON configuration. */
+function secretShapedValues(value: string): string[] {
+    const parts: string[] = [];
+    for (const match of value.matchAll(/[a-z][a-z0-9+.-]*:\/\/([^\s/@:]+)(?::([^\s/@]+))?@/gi)) parts.push(match[1], ...(match[2] ? [match[2], `${match[1]}:${match[2]}`] : []));
+    for (const match of value.matchAll(/\b(?:Bearer|Basic|token)\s+([^\s"',;]+)/gi)) parts.push(match[1]);
+    if (/^\s*[{[]/.test(value)) {
+        const walk = (node: unknown, key = '', depth = 0): void => {
+            if (depth > 16 || parts.length > 64) return;
+            if (typeof node === 'string') parts.push(...(secretName.test(key) ? [node] : []), ...secretShapedValues(node));
+            else if (node && typeof node === 'object') for (const [k, v] of Object.entries(node)) walk(v, Array.isArray(node) ? key : k, depth + 1);
+        };
+        try { walk(JSON.parse(value)); } catch { /* opaque text: only the shapes above */ }
+    }
+    return parts.filter(part => part.length >= 8);
+}
+/** Every Docker env option form (`-e K=V`, `--env K=V`, `--env=K=V`, `-eK=V`
+ * and inherited `-e K`), including those a network/admission policy appended. */
+function argumentDiagnosticSecrets(args: readonly string[], env: Record<string, string | undefined>): string[] {
     const secrets: string[] = [];
-    for (let i = 0; i < args.length - 1; i++) if (args[i] === '-e' || args[i] === '--env') {
-        const separator = args[i + 1].indexOf('=');
-        if (separator > 0) secrets.push(...configuredDiagnosticSecrets({ [args[i + 1].slice(0, separator)]: args[i + 1].slice(separator + 1) }));
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        const separate = arg === '-e' || arg === '--env';
+        const entry = separate ? args[++i]
+            : arg.startsWith('--env=') ? arg.slice('--env='.length)
+            : /^-e[^-]/.test(arg) ? arg.slice(arg.startsWith('-e=') ? 3 : 2) : undefined;
+        if (!entry) continue;
+        const separator = entry.indexOf('=');
+        const key = separator < 0 ? entry : entry.slice(0, separator);
+        const value = separator < 0 ? env[key] ?? process.env[key] : entry.slice(separator + 1);
+        if (!key || !value) continue;
+        if (value.length >= 8 && secretName.test(key)) secrets.push(value);
+        secrets.push(...secretShapedValues(value));
     }
     return secrets;
 }
+class MissingCredentialRoot extends Error {}
 /** Establish redaction context immediately before spawning with final arguments.
  * Create-time arguments are separate because admission may replace them with a
  * container start command; credentials from both vectors must remain redacted.
@@ -168,13 +200,24 @@ function argumentDiagnosticSecrets(args: readonly string[]): string[] {
 export function prepareProviderCapture(agent: DiagnosticAgent, args: string[] = [], extraEnv: Record<string, string | undefined> = {}, createArgs: readonly string[] = []) {
     const db = availableDiagnostics();
     if (!db) return null;
+    const environment = { ...process.env, ...extraEnv };
+    // Final and create arguments are scanned separately: admission replaces the
+    // final vector with a start command, and neither may hide the other's secrets.
     const secrets = [...configuredDiagnosticSecrets(), ...configuredDiagnosticSecrets(agent.credentials ?? {}), ...configuredDiagnosticSecrets(extraEnv),
-        ...argumentDiagnosticSecrets(createArgs), ...argumentDiagnosticSecrets(args)];
+        ...argumentDiagnosticSecrets(createArgs, environment), ...argumentDiagnosticSecrets(args, environment)];
+    const capture = { provider: agent.provider, agent: agent.agent, source: 'capture' };
+    const resolution = resolveProviderCredentialRoot(agent);
+    if (resolution.reason) {
+        diagnosticsFailure();
+        try { db.report(capture, `credential-root:${resolution.reason}`); } catch { /* failure is already surfaced */ }
+        return null;
+    }
+    const root = resolution.root;
     try {
-        const root = providerCredentialRoot(agent);
-        if (!root) throw new Error('credential root unavailable');
+        let pinned: PinnedDirectory;
         // Missing roots cannot establish native authentication context.
-        const pinned = PinnedDirectory.open(root);
+        try { pinned = PinnedDirectory.open(root); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new MissingCredentialRoot(); throw error; }
         try {
             // Unsupported worker/container UID mappings fail closed before any
             // credential read; entries are then checked against this pinned root.
@@ -182,23 +225,27 @@ export function prepareProviderCapture(agent: DiagnosticAgent, args: string[] = 
             secrets.push(...nativeCredentialValues(root, agent.provider, pinned));
         }
         finally { pinned.close(); }
-        rememberDiagnosticCredentials(secrets);
+        const unique = [...new Set(secrets.filter(secret => secret.length >= 8))];
+        rememberDiagnosticCredentials(unique);
         const snapshot = () => {
             if (db && agent.provider === 'vibe' && agent.nativeRoot) {
-                try { collectProvider(db, { provider: 'vibe', agent: agent.agent, root: agent.nativeRoot, credentials: secrets, credentialContextComplete: agent.nativeCredentialContextComplete === true, transient: true }); }
+                try { collectProvider(db, { provider: 'vibe', agent: agent.agent, root: agent.nativeRoot, credentials: unique, credentialContextComplete: agent.nativeCredentialContextComplete === true, transient: true }); }
                 catch { diagnosticsFailure(); }
             }
         };
         return {
             snapshot,
-            stdout: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stdout' }, secrets),
-            stderr: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stderr' }, secrets),
+            stdout: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stdout' }, unique),
+            stderr: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stderr' }, unique),
         };
     } catch (error) {
         diagnosticsFailure();
         // Only the root-level check raises the ownership error; foreign entries
         // inside a supported root surface as unsafe, never as a UID remedy.
-        try { db?.report({ provider: agent.provider, agent: agent.agent, source: 'capture' }, isProviderOwnershipError(error) ? 'ownership-unsupported' : 'unsafe-source'); } catch { /* failure is already surfaced */ }
+        try {
+            db.report(capture, error instanceof MissingCredentialRoot ? 'credential-root:missing'
+                : isProviderOwnershipError(error) ? 'ownership-unsupported' : 'unsafe-source');
+        } catch { /* failure is already surfaced */ }
         return null;
     }
 }

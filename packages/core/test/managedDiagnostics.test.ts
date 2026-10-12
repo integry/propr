@@ -325,7 +325,9 @@ test('runtime diagnostics require explicit activation and reject missing, invali
             for (const flag of ['', '0', 'true', '1']) {
                 for (const instance of ['tenant-a', '', '../tenant-b', 'tenant-b']) {
                     const env: NodeJS.ProcessEnv = { ...process.env, PROPR_MANAGED_LOGS: flag, PROPR_FLEET_CONTROL_SECRET: secret,
-                        PROPR_INSTANCE_ID: instance, PROPR_DIAGNOSTIC_ROOT: path.join(f.root, 'spool') };
+                        PROPR_INSTANCE_ID: instance, PROPR_DIAGNOSTIC_ROOT: path.join(f.root, 'spool'), HOME: f.root };
+                    // The resolved default root (HOME/.codex, or an unmapped container default) is absent.
+                    delete env.CODEX_CONFIG_PATH; delete env.HOST_CODEX_DIR;
                     if (!flag) delete env.PROPR_MANAGED_LOGS;
                     if (!secret) delete env.PROPR_FLEET_CONTROL_SECRET;
                     if (!instance) delete env.PROPR_INSTANCE_ID;

@@ -130,8 +130,10 @@ test('an agent container started outside any run follows the enforced instance p
 
         const fakeChild = Object.assign(new EventEmitter(), { kill: () => true }) as unknown as ChildProcess;
         let spawned: string[] = [];
-        const child = await spawnWithNetworkPolicy(agentArgs(), args => { spawned = args; return fakeChild; });
+        let createArgs: readonly string[] | undefined;
+        const child = await spawnWithNetworkPolicy(agentArgs(), (args, launch) => { spawned = args; createArgs = launch?.createArgs; return fakeChild; });
         assert.deepEqual(networksOf(spawned), ['none'], 'a native session spawned outside a run is covered too');
+        assert.deepEqual(createArgs, spawned, 'diagnostics see the post-policy create arguments, including injected environment');
         child.emit('close', 0);
         for (let attempt = 0; attempt < 50 && (await readdir(root)).length; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
         assert.deepEqual(await readdir(root), []);
