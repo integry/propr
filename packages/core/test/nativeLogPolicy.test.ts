@@ -175,11 +175,13 @@ test('launch preflight refuses a configured oversized root and ENOSPC reporting 
         const module = new URL('../src/diagnostics/managedLogSpool.ts', import.meta.url).href;
         const env = { ...process.env, PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a', PROPR_DIAGNOSTIC_ROOT: path.join(f.base, 'spool'),
             PROPR_NATIVE_LOG_ROOTS: JSON.stringify({ instance: 'tenant-a', instanceOwned: true, roots: [f.input] }) };
-        const code = `const {assertNativeLogAdmission}=await import(${JSON.stringify(runtime)}); assertNativeLogAdmission({provider:'codex',agent:'agent-a'}); process.stdout.write('STARTED');`;
-        const run = spawnSync(process.execPath, ['--import', 'tsx', '-e', code], { env, encoding: 'utf8' });
+        // Pass module URLs as data so filesystem paths never become JavaScript source.
+        const code = "const {assertNativeLogAdmission}=await import(process.argv[1]); assertNativeLogAdmission({provider:'codex',agent:'agent-a'}); process.stdout.write('STARTED');";
+        const run = spawnSync(process.execPath, ['--import', 'tsx', '-e', code, runtime], { env, encoding: 'utf8' });
         assert.equal(run.status, 1); assert.match(run.stderr, /capacity|reserve/); assert.equal(run.stdout, '');
         const full = spawnSync(process.execPath, ['--import', 'tsx', '-e',
-            `const {ManagedLogSpool}=await import(${JSON.stringify(module)}); ManagedLogSpool.prototype.recordNativeInventory=()=>{throw Object.assign(new Error('ENOSPC'),{code:'ENOSPC'})}; ${code}`], { env, encoding: 'utf8' });
+            "const {ManagedLogSpool}=await import(process.argv[2]); ManagedLogSpool.prototype.recordNativeInventory=()=>{throw Object.assign(new Error('ENOSPC'),{code:'ENOSPC'})}; " + code,
+            runtime, module], { env, encoding: 'utf8' });
         assert.equal(full.status, 1); assert.match(full.stderr, /ENOSPC/); assert.equal(full.stdout, '');
         assert.equal(fs.statSync(path.join(f.root, 'log/codex-tui.log')).size, NATIVE_LOG_LIMITS.rootBytes);
     } finally { f.close(); }
