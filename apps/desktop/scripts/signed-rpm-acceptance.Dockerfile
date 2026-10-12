@@ -4,7 +4,7 @@ COPY --from=node /usr/local/ /usr/local/
 RUN zypper --non-interactive install --no-recommends \
     rpm cpio gpg2 dbus-1 gnome-keyring libsecret-1-0 xorg-x11-server-Xvfb \
     xauth xdg-utils liberation-fonts gtk3 libgtk-3-0 libnotify4 at-spi2-core \
-    libdrm2 libxcb1 trash-cli libgbm1 mozilla-nss libasound2 \
+    libdrm2 libxcb1 libgbm1 mozilla-nss libasound2 \
     libXss1 libXtst6 tar gzip shadow util-linux tesseract-ocr tesseract-ocr-traineddata-eng && zypper clean --all
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 WORKDIR /acceptance
