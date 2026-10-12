@@ -1,5 +1,5 @@
 import { PinnedDirectory } from './privateDirectory.js';
-import { rememberDiagnosticCredentials, diagnosticCredentials, processDiagnosticState, classifyTextLine, redactRecord } from './redaction.js';
+import { rememberDiagnosticCredentials, diagnosticCredentials, processDiagnosticState, classifyTextLine, redactRecord, type DiagnosticAttribution } from './redaction.js';
 import fs from 'node:fs';
 import type { ChildProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
@@ -63,10 +63,26 @@ export function captureApplicationRecord(line: string): void {
     else { state.applicationLines.push(line); state.applicationBytes += size; }
     if (!state.applicationTimer) state.applicationTimer = setTimeout(flushApplicationRecords, 25);
 }
+/** Provider output is buffered in memory and committed on this short timer,
+ * not with one immediate transaction (and gzip/fsync) per child-process chunk. */
+export const PROVIDER_OUTPUT_FLUSH_MS = 50;
+/** Timer flushes that hit transient storage errors (e.g. SQLite contention
+ * from another worker) keep their bounded batch for this many later attempts. */
+const PROVIDER_OUTPUT_RETRIES = 2;
+/** Captures holding buffered records; drained synchronously on process exit. */
+const outputState = processDiagnosticState('provider-output@1', () => ({ buffered: new Set<() => void>(), exitHook: false }));
+function flushBufferedOutputOnExit(): void {
+    if (outputState.exitHook) return;
+    outputState.exitHook = true;
+    process.once('exit', () => { for (const flush of [...outputState.buffered]) flush(); });
+}
 /** Line-oriented stdout/stderr capture. Complete lines and a final unterminated
  * line are records; Docker/exception heads open a bounded continuation window
- * for stack frames (see classifyTextLine). Oversized lines become gaps. */
-export function captureProviderOutput(identity: LogIdentity, secrets: readonly string[]): { write(chunk: string): void; close(): void } {
+ * for stack frames (see classifyTextLine). Oversized lines become gaps.
+ * Records are buffered up to the spool's batch bound (scanBytes, 4096 records)
+ * and flushed by timer, when full, on close and on process exit. A hard crash
+ * loses at most the buffer, behind the capture-interrupted boundary. */
+export function captureProviderOutput(identity: LogIdentity, secrets: readonly string[], attribution?: DiagnosticAttribution): { write(chunk: string): void; close(): void } {
     let pending = '', discard = false, lostBytes = 0, window = 0;
     const db = availableDiagnostics();
     if (!db) return { write() {}, close() {} };
@@ -74,10 +90,28 @@ export function captureProviderOutput(identity: LogIdentity, secrets: readonly s
     // boundary rather than claiming continuous history after a restart.
     db.report(identity, 'capture-interrupted');
     const records: string[] = [], continuation: boolean[] = [];
-    let dropped = 0, bytes = 0;
-    const flush = () => {
-        if (records.length || dropped) db.append(identity, records, 'text', { credentials: secrets, droppedBytes: dropped, continuation });
-        records.length = 0; continuation.length = 0; dropped = 0; bytes = 0;
+    let dropped = 0, bytes = 0, failures = 0, timer: NodeJS.Timeout | undefined;
+    const reset = () => { records.length = 0; continuation.length = 0; dropped = 0; bytes = 0; failures = 0; };
+    /** `retain`: a timer flush may keep its batch for a bounded retry; a full
+     * buffer, close or exit flush accounts a failed batch as a durable gap. */
+    const flush = (retain = false) => {
+        if (timer) clearTimeout(timer);
+        timer = undefined;
+        try {
+            if (lostBytes) { db.report(identity, 'storage-unavailable', lostBytes); lostBytes = 0; }
+            if (records.length || dropped) db.append(identity, records, 'text', { credentials: secrets, droppedBytes: dropped, continuation, attribution });
+            reset();
+        } catch {
+            if (retain && failures < PROVIDER_OUTPUT_RETRIES) { failures++; schedule(); return; }
+            lostBytes = Math.min(Number.MAX_SAFE_INTEGER, lostBytes + bytes + records.length + dropped);
+            reset(); diagnosticsFailure();
+        }
+        if (!lostBytes) outputState.buffered.delete(final);
+    };
+    const final = () => flush();
+    const schedule = () => {
+        outputState.buffered.add(final);
+        if (!timer) { timer = setTimeout(flush, PROVIDER_OUTPUT_FLUSH_MS, true); timer.unref(); }
     };
     const line = (text: string) => {
         const record = text.endsWith('\r') ? text.slice(0, -1) : text;
@@ -87,17 +121,17 @@ export function captureProviderOutput(identity: LogIdentity, secrets: readonly s
         // A head the spool will reject as unsafe-record must not license orphan
         // frames: check it with the same adapter and bound the spool applies.
         const rejectedHead = !kind.continuation && kind.window > 0 && (() => {
-            const redacted = redactRecord(record, 'text', secrets);
+            const redacted = redactRecord(record, 'text', secrets, { attribution });
             return !redacted || Buffer.byteLength(redacted) > db.limits.recordBytes;
         })();
         window = rejectedHead ? 0 : kind.window;
         records.push(record); continuation.push(kind.continuation); bytes += size;
     };
-    const reset = () => { records.length = 0; continuation.length = 0; dropped = 0; bytes = 0; };
+    flushBufferedOutputOnExit();
     return {
         write(chunk) {
+            if (!chunk) return;
             try {
-                if (lostBytes) { db.report(identity, 'storage-unavailable', lostBytes); lostBytes = 0; }
                 let start = 0;
                 for (let i = 0; i < chunk.length; i++) {
                     if (chunk[i] !== '\n') continue;
@@ -113,27 +147,29 @@ export function captureProviderOutput(identity: LogIdentity, secrets: readonly s
                     dropped += Buffer.byteLength(pending) + Buffer.byteLength(rest);
                     pending = ''; discard = true; window = 0;
                 } else pending += rest;
-                flush();
             } catch {
                 lostBytes = Math.min(Number.MAX_SAFE_INTEGER, lostBytes + Buffer.byteLength(chunk) + Buffer.byteLength(pending));
-                pending = ''; discard = true; window = 0; reset(); diagnosticsFailure();
+                pending = ''; discard = true; window = 0; diagnosticsFailure();
             }
+            if (records.length || dropped || lostBytes) schedule();
         },
         close() {
             try {
-                if (lostBytes) db.report(identity, 'storage-unavailable', lostBytes);
                 // A bounded final line without a trailing newline is still a
                 // record; only an oversized (discarded) tail becomes a gap.
                 if (pending && !discard) line(pending);
                 else if (discard) dropped += 1;
-                flush();
-            } catch { reset(); diagnosticsFailure(); }
+            } catch { diagnosticsFailure(); }
+            flush();
+            // Close is final: unreported loss cannot be retried later.
+            lostBytes = 0; outputState.buffered.delete(final);
             pending = ''; discard = false; window = 0;
         },
     };
 }
 
-export interface DiagnosticAgent { provider: string; agent: string; configPath?: string; credentials?: Record<string, string>; nativeRoot?: string; authenticationRoot?: string; nativeCredentialContextComplete?: boolean }
+/** `attribution` labels records only; it never becomes part of a source identity. */
+export interface DiagnosticAgent { provider: string; agent: string; attribution?: DiagnosticAttribution; configPath?: string; credentials?: Record<string, string>; nativeRoot?: string; authenticationRoot?: string; nativeCredentialContextComplete?: boolean }
 /** Before Docker admission/creation, outside the best-effort capture catch.
  * Fresh metadata checks refuse new launches only; they never stop a writer. */
 export function assertNativeLogAdmission(agent: DiagnosticAgent | undefined): void {
@@ -266,8 +302,8 @@ export function prepareProviderCapture(agent: DiagnosticAgent, args: string[] = 
         };
         return {
             snapshot,
-            stdout: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stdout' }, unique),
-            stderr: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stderr' }, unique),
+            stdout: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stdout' }, unique, agent.attribution),
+            stderr: captureProviderOutput({ provider: agent.provider, agent: agent.agent, source: 'stderr' }, unique, agent.attribution),
         };
     } catch (error) {
         diagnosticsFailure();

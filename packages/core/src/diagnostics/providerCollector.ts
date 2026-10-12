@@ -53,8 +53,10 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
     const summary: LogIdentity = { provider: input.provider, agent: input.agent, source: input.transient ? `native-state:${digest(input.root)}` : 'native-state' };
     const transientRoot = input.transient ? input.root : undefined;
     const rejectRoot = (e: unknown): false => {
+        // Daemon measure-only passes repeat every 30s: a refused root is a
+        // standing limitation, recorded once until it changes.
         spool.report(summary, isProviderOwnershipError(e) ? 'ownership-unsupported'
-            : (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'ownership-unverified' : 'unsafe-source');
+            : (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'ownership-unverified' : 'unsafe-source', 0, { standing: input.measureOnly });
         if (input.rejectUnsafe) throw e;
         return false;
     };
@@ -164,7 +166,7 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
     try { walk(root, ''); }
     finally { if (!input.pinnedRoot) root.close(); }
     spool.measureNativeState(summary, protectedBytes, !inventoryIncomplete, { inventory, now });
-    if (limited || inventoryIncomplete) spool.report(summary, 'scan-limit');
+    if (limited || inventoryIncomplete) spool.report(summary, 'scan-limit', 0, { standing: input.measureOnly });
     if (!input.measureOnly && !input.credentialContextComplete) spool.report(summary, 'ownership-unverified');
     // Scan bounds and unknown subtrees remain lower bounds. Admission must
     // distinguish those from verified unsafe entries.
