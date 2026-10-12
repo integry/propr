@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mock, test, type TestContext } from 'node:test';
@@ -10,16 +11,85 @@ const real = await import('../../orchestrator/index.js');
 let orch: OrchestratorModule;
 let cfg: OrchestratorConfig;
 let configError: Error | undefined;
+let resolveTestConfig: (() => OrchestratorConfig) | undefined;
 mock.module('../../orchestrator/index.js', { namedExports: {
   ...real,
   loadOrchestrator: async () => orch,
   getHostConfig: async () => {
     if (configError) throw configError;
-    return { orch, cfg, rootDir: '/tmp/propr-selected-review-test' };
+    return { orch, cfg: resolveTestConfig?.() ?? cfg, rootDir: '/tmp/propr-selected-review-test' };
   },
 } });
 const { createDefaultActions } = await import('./hostActions.js');
 const { runChecks } = await import('../checkCommands.js');
+
+for (const host of ['::1', '127.0.0.1']) {
+  test(`local setup avoids a UI port occupied only on ${host} and preserves localhost OAuth`, async t => {
+    const root = mkdtempSync(join(tmpdir(), 'propr-ui-port-'));
+    t.after(() => { resolveTestConfig = undefined; rmSync(root, { recursive: true, force: true }); });
+    const unrelated = createServer();
+    t.after(() => new Promise<void>(resolve => { if (unrelated.listening) unrelated.close(() => resolve()); else resolve(); }));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        unrelated.once('error', reject);
+        unrelated.listen({ host, port: 5173, ipv6Only: host === '::1' }, resolve);
+      });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (host === '::1' && ['EAFNOSUPPORT', 'EADDRNOTAVAIL'].includes(code ?? '')) {
+        t.skip('IPv6 loopback unavailable'); return;
+      }
+      throw error;
+    }
+    // The regression is an IPv4 Docker publish with a separate IPv6 owner.
+    writeFileSync(join(root, '.env'), 'UI_PORT=127.0.0.1:5173\nFRONTEND_URL=http://localhost:5173\n# preserve configuration\nSESSION_SECRET=fixture\n', { mode: 0o600 });
+    const { readEnvVars } = await import('@propr/local-setup');
+    // @ts-expect-error dependency-free launcher has no TypeScript declaration
+    const { resolveHostConfig } = await import('../../../../../docker/launcher/orchestrator.mjs');
+    resolveTestConfig = () => resolveHostConfig({ rootDir: root, env: {} }) as OrchestratorConfig;
+    let started: OrchestratorConfig | undefined;
+    let existingUi: ReturnType<typeof createServer> | undefined;
+    orch = {
+      validateEnv: () => ({ ok: true, warnings: [] }),
+      ensureNetworkAsync: async () => {},
+      replaceStackContainersAsync: async () => {
+        await new Promise<void>(resolve => existingUi!.close(() => resolve()));
+      },
+      startStackAsync: async (config: OrchestratorConfig) => { started = config; },
+    } as unknown as OrchestratorModule;
+    const actions = createDefaultActions();
+    if (host === '::1') {
+      existingUi = createServer();
+      t.after(() => new Promise<void>(resolve => { if (existingUi?.listening) existingUi.close(() => resolve()); else resolve(); }));
+      await new Promise<void>((resolve, reject) => {
+        existingUi!.once('error', reject);
+        existingUi!.listen(5173, '127.0.0.1', resolve);
+      });
+      const health = await actions.checkBackendHealth({ rootDir: root });
+      assert.equal(health.healthy, false);
+      assert.equal(health.recoveryAction, 'replace-running-stack');
+      assert.match(health.detail, /IPv6 loopback/);
+      await actions.replaceRunningStack!({ rootDir: root });
+    } else {
+      await actions.startStack({ rootDir: root });
+    }
+    assert.ok(started);
+    const port = Number(started.uiPort.split(':').at(-1));
+    assert.ok(port > 5173);
+    assert.equal(started.uiPort, `127.0.0.1:${port}`);
+    assert.equal(started.frontendUrl, `http://localhost:${port}`);
+    assert.equal(new URL(started.apiPublicUrl).hostname, 'localhost');
+    assert.equal(new URL(started.ghOauthCallbackUrl).hostname, 'localhost');
+    assert.equal(await actions.resolveUiUrl(root), started.frontendUrl);
+    assert.equal(readEnvVars(root).UI_PORT, started.uiPort);
+    assert.match(readFileSync(join(root, '.env'), 'utf8'), /# preserve configuration\nSESSION_SECRET=fixture/);
+    assert.equal(unrelated.listening, true);
+    // The selection survives rerunning setup without drifting to another port.
+    const selected = started.uiPort;
+    await actions.startStack({ rootDir: root });
+    assert.equal(started.uiPort, selected);
+  });
+}
 
 test('failed browser token save cannot leak through a later stack-root write and allows retry', async t => {
   const configDir = mkdtempSync(join(tmpdir(), 'propr-browser-save-'));
