@@ -7,6 +7,7 @@ import { getManagedAgentConfigRelativePath } from '@propr/shared';
 import { collectProvider } from './providerCollector.js';
 import { nativeCredentialValues, antigravityCredentialRoot } from './credentialRedaction.js';
 import { ManagedLogSpool, type LogIdentity } from './managedLogSpool.js';
+import { configuredNativeLogRoots, inspectNativeLogRoots, nativeAdmissionReason, NATIVE_LOG_LIMITS } from './nativeLogPolicy.js';
 
 let spool: ManagedLogSpool | undefined;
 let warningAt = 0;
@@ -104,6 +105,31 @@ export function captureProviderOutput(identity: LogIdentity, secrets: readonly s
 }
 
 export interface DiagnosticAgent { provider: string; agent: string; configPath?: string; credentials?: Record<string, string>; nativeRoot?: string; authenticationRoot?: string; nativeCredentialContextComplete?: boolean }
+/** Before Docker admission/creation, outside the best-effort capture catch.
+ * Fresh metadata checks refuse new launches only; they never stop a writer. */
+export function assertNativeLogAdmission(agent: DiagnosticAgent | undefined): void {
+    if (!agent || process.env.PROPR_MANAGED_LOGS !== '1') return;
+    const roots = configuredNativeLogRoots();
+    if (!roots.some(root => root.provider === agent.provider && root.agent === agent.agent)) return;
+    const db = managedDiagnostics();
+    if (!db) throw new Error('native log admission unavailable; operator action required');
+    const inventories = inspectNativeLogRoots(roots);
+    roots.forEach((root, index) => db.recordNativeInventory(root, inventories[index]));
+    const reason = nativeAdmissionReason(inventories);
+    if (reason) throw new Error(`managed diagnostics: ${reason}`);
+}
+export function nativeDiagnosticStatus(): object {
+    const db = managedDiagnostics();
+    if (!db) throw new Error('disabled');
+    const roots = configuredNativeLogRoots();
+    const inventories = inspectNativeLogRoots(roots);
+    roots.forEach((root, index) => db.recordNativeInventory(root, inventories[index]));
+    return { ...db.status(), nativeAdmission: { configuredRoots: roots.length, limits: NATIVE_LOG_LIMITS,
+        status: roots.length ? nativeAdmissionReason(inventories) ? 'refused' : 'available' : 'unconfigured',
+        reason: nativeAdmissionReason(inventories), newLaunchesOnly: true, existingWritersCapped: false,
+        inventoryComplete: roots.length > 0 && inventories.every(i => i.inventoryComplete),
+        observedBytes: inventories.reduce((sum, i) => sum + i.observedBytes, 0) } };
+}
 export function providerCredentialRoot(agent: DiagnosticAgent, resolve?: (value: string) => string): string | undefined {
     if (agent.authenticationRoot) return agent.authenticationRoot;
     if (agent.provider === 'vibe' && agent.nativeRoot) return agent.nativeRoot;

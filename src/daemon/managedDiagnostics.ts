@@ -1,7 +1,7 @@
 import { loadAgents, resolveConfigPath } from '@propr/core';
 import { DiagnosticPolicyError } from '../../packages/core/src/diagnostics/managedLogSpool.js';
 import { collectProvider } from '../../packages/core/src/diagnostics/providerCollector.js';
-import { managedDiagnostics, diagnosticsFailure, providerCredentialRoot } from '../../packages/core/src/diagnostics/managedLogRuntime.js';
+import { managedDiagnostics, nativeDiagnosticStatus, diagnosticsFailure, providerCredentialRoot } from '../../packages/core/src/diagnostics/managedLogRuntime.js';
 
 /** Daemon measures native inventories; workers own capture with run credentials.
  * Only configured managed roots and explicit launcher mounts are eligible. */
@@ -17,6 +17,8 @@ export function scheduleManagedDiagnostics(): () => void {
         running = true;
         try {
             const spool = managedDiagnostics()!;
+            // Independent metadata inventory: no archive/export or native disposal.
+            nativeDiagnosticStatus();
             spool.report({ provider: 'claude', agent: 'unknown', source: 'shared-tmp-claude-logs' }, 'ownership-unverified');
             const agents = (await loadAgents()).filter(a => a.enabled);
             const inventory = { provider: 'application', agent: 'application', source: 'agent-inventory' };

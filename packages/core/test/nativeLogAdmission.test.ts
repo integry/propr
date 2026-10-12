@@ -22,9 +22,9 @@ test('native classification separates diagnostics, resume records and SQLite sid
         ['antigravity', 'antigravity-cli/log/run.log', 'diagnostic'],
         ['antigravity', 'antigravity-cli/brain/resume/.system_generated/logs/transcript.jsonl', 'session'],
         ['vibe', 'logs/session/resume/messages.jsonl', 'session'],
-        ['claude', '.credentials.json', undefined],
-        ['codex', 'config.toml', undefined],
-        ['claude', '../other/debug/run.txt', undefined],
+        ['claude', '.credentials.json', 'auth-config'],
+        ['codex', 'config.toml', 'auth-config'],
+        ['claude', '../other/debug/run.txt', 'unknown'],
     ] as const) assert.equal(nativeFileClass(provider, filename), kind);
 });
 

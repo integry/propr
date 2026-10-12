@@ -4,6 +4,8 @@ This is the application/provider dependency of Fleet issue 78. It does **not** d
 
 **Scope: only producer-owned collected copies rotate. Original provider diagnostic-log growth remains unbounded for unsupported writers.** Issue #3015 adds classified native measurements and launch capacity admission; it does not claim native rollover or safe session pruning. ProPR retains application/provider production, credential redaction, bounded spool and private export. Fleet owns Storage Box transport, encryption, verified remote readback, host/Docker/journal policy and 14-day off-site retention.
 
+See the [native provider log policy](native-provider-log-policy.md) for independent declared-root inventories, task/native-goal admission and the `dispose-local` opt-in. Existing mount admission and `discard-local` remain supported.
+
 ## Activation and lifecycle
 
 Application runtime, daemon and launcher enable diagnostics only with `PROPR_MANAGED_LOGS=1`, with or without a Fleet secret. Unset, `0` and all other values remain disabled, including when `PROPR_FLEET_CONTROL_SECRET` is present: that credential authenticates Fleet and is never a logging-policy switch. Self-managed behavior is disabled by default. Fleet provisioning will configure the explicit policy separately in integry/propr-fleet#78. Enabled collection requires a valid `PROPR_INSTANCE_ID`; missing/invalid bindings or an existing spool bound to another instance are rejected before collection. Linux `/proc/self/fd` is required; no fallback follows symlinks on unsupported platforms.
@@ -65,6 +67,8 @@ node dist/scripts/managed-diagnostics.js status
 node dist/scripts/managed-diagnostics.js export
 node dist/scripts/managed-diagnostics.js ack SEGMENT SHA256 --encrypted-upload-readback-verified
 ```
+
+`nativeMaintenance` reports the independent metadata inventory; `nativeAdmission` reports current declared-root eligibility, including `unconfigured` when no roots are declared. These checks supplement the existing mount and filesystem admission described below.
 
 `status` emits policy/redaction versions, instance, all source identities, next sequence, cumulative dropped bytes/gaps, last successful clean collection, protected reasons, capacity warnings, and compressed spool usage. `nativeSources` separately reports protected native sources with `growthBounded: false`, unknown measurements as `null`, and explicit container-only/unowned/excluded coverage limitations. `measuredBytes` (and legacy `protectedBytes`) is populated only for an allowlisted native inventory with no recorded uncertainty; it is never a complete provider-home measurement. The shared physical Docker admission boundary enforces diagnostics capacity before initial admission and again after any entitlement wait, before container creation. This also applies to explicitly enabled self-managed instances without Fleet or Redis entitlement admission. Historical uncertainty remains conservative until a fresh inventory identity is established; spool usage measures only collected compressed copies. No paths, credentials or record contents appear in status. A last-success timestamp denotes collection, not upload or complete history.
 

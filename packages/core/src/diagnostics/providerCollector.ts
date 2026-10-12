@@ -26,6 +26,19 @@ const directories: Record<DiagnosticProvider, RegExp> = {
     vibe: /^(?:logs|logs\/session|logs\/session\/[\w.-]+)$/,
     antigravity: /^(?:antigravity-cli|antigravity-cli\/log|antigravity-cli\/brain|antigravity-cli\/brain\/[\w.-]+(?:\/\.system_generated(?:\/logs)?)?)$/,
 };
+/** Classification is independent of export eligibility. Session records can
+ * supply diagnostics, but are NEVER disposable diagnostic files. */
+export function nativeFileClass(provider: DiagnosticProvider, relative: string): 'diagnostic' | 'session' | 'database' | 'auth-config' | 'unknown' {
+    if (/^(?:auth\.json|account\.json|\.credentials\.json|credentials\.json|config\.[\w.-]+|settings\.[\w.-]+|\.env)$/.test(relative)
+        || relative === 'antigravity-cli/antigravity-oauth-token') return 'auth-config';
+    if (provider === 'claude' && relative === 'history.jsonl') return 'session';
+    if (protectedFiles[provider].test(relative)) return 'database';
+    if (!files[provider].test(relative)) return 'unknown';
+    return /^(?:log\/|debug\/|antigravity-cli\/log\/)/.test(relative) ? 'diagnostic' : 'session';
+}
+export function nativeDirectoryAllowed(provider: DiagnosticProvider, relative: string): boolean {
+    return directories[provider].test(relative);
+}
 export interface ProviderRoot { provider: DiagnosticProvider; agent: string; root: string; credentials: readonly string[]; credentialContextComplete?: boolean; transient?: boolean }
 export interface NativeInventory {
     rootIdentity: string;
@@ -33,12 +46,6 @@ export interface NativeInventory {
     diagnosticFiles: number; sessionFiles: number; databaseFiles: number;
     excludedEntries: number;
 }
-export function nativeFileClass(provider: DiagnosticProvider, relative: string): 'diagnostic' | 'session' | 'database' | undefined {
-    if (protectedFiles[provider].test(relative)) return relative.includes('.sqlite') || relative.includes('.db') ? 'database' : 'session';
-    if (!files[provider].test(relative)) return undefined;
-    return relative.endsWith('.jsonl') ? 'session' : 'diagnostic';
-}
-
 /** Snapshot only committed newline-delimited records. Never modifies the writer's
  * descriptor, native filename, DB, resume state, or live UI watcher. */
 export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { measureOnly?: boolean; pinnedRoot?: PinnedDirectory }, now = Date.now()): boolean {
@@ -60,7 +67,8 @@ export function collectProvider(spool: ManagedLogSpool, input: ProviderRoot & { 
         diagnosticFiles: 0, sessionFiles: 0, databaseFiles: 0, excludedEntries: 0 };
     const measure = (relative: string, size: number) => {
         protectedBytes += size;
-        const kind = nativeFileClass(input.provider, relative)!;
+        const kind = nativeFileClass(input.provider, relative);
+        if (kind === 'auth-config' || kind === 'unknown') { inventory.excludedEntries++; return; }
         inventory[`${kind}Bytes`] += size;
         inventory[`${kind}Files`]++;
     };

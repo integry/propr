@@ -1,4 +1,4 @@
-import { prepareProviderCapture, attachProviderCapture, type DiagnosticAgent } from '../../diagnostics/managedLogRuntime.js';
+import { assertNativeLogAdmission, prepareProviderCapture, attachProviderCapture, type DiagnosticAgent } from '../../diagnostics/managedLogRuntime.js';
 /* eslint-disable max-lines -- the live Claude goal session, its transcript goal state, and the protocol loop share one boundary */
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -706,6 +706,7 @@ export async function executeClaudeNativeGoal(
     const dockerArgs = await launch.buildDockerArgs();
     if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
     const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
+    assertNativeLogAdmission(launch.diagnostics);
     const child = await spawnWithNetworkPolicy(args, runArgs => {
         const capture = launch.diagnostics ? prepareProviderCapture(launch.diagnostics, runArgs, undefined, args) : null;
         const spawned = spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });

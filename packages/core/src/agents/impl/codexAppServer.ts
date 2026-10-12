@@ -1,4 +1,4 @@
-import { prepareProviderCapture, attachProviderCapture } from '../../diagnostics/managedLogRuntime.js';
+import { assertNativeLogAdmission, prepareProviderCapture, attachProviderCapture } from '../../diagnostics/managedLogRuntime.js';
 import { prepareAgentGitAccess } from '../agentGitAccess.js';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -91,6 +91,7 @@ export async function executeCodexAppServerGoal(
         taskId: options.taskId,
     });
     const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
+    assertNativeLogAdmission({ provider: config.type, agent: config.id });
     const child = await spawnWithNetworkPolicy(args, runArgs => {
         const capture = prepareProviderCapture({ provider: config.type, agent: config.id, configPath: config.configPath, credentials: config.envVars }, runArgs, undefined, args);
         const spawned = spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });

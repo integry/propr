@@ -5,6 +5,7 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 import { PinnedDirectory } from './privateDirectory.js';
 import { redactRecord, REDACTION_VERSION } from './redaction.js';
 import type { NativeInventory } from './providerCollector.js';
+import type { NativeLogInventory, NativeLogRoot } from './nativeLogPolicy.js';
 
 interface Statement { run(...args: unknown[]): { lastInsertRowid: number | bigint }; get(...args: unknown[]): unknown; all(...args: unknown[]): unknown[] }
 interface Database { exec(sql: string): void; prepare(sql: string): Statement; close(): void }
@@ -25,7 +26,7 @@ export interface AppendOptions {
     cursor?: { before: Cursor; after: Cursor };
     droppedBytes?: number;
 }
-interface Source { retired: number; id: string; identity: string; cursor: string; next: number; dropped: number; gaps: number; last_success: number | null; reason: string | null; protected_bytes: number; inventory_complete: number; protection: string | null; native_inventory: string | null }
+interface Source { retired: number; id: string; identity: string; cursor: string; next: number; dropped: number; gaps: number; last_success: number | null; reason: string | null; protected_bytes: number; inventory_complete: number; protection: string | null; native_inventory: string | null; native_details: string | null }
 interface Segment { id: number; source: string; day: string; first: number; last: number; start: number; end: number; raw: number; digest: string; data: Buffer; sealed: number; ack: number }
 export const digest = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 
@@ -64,7 +65,7 @@ export class ManagedLogSpool {
                 if (!(this.db.prepare('PRAGMA table_info(sources)').all() as Array<{ name: string }>).some(column => column.name === 'inventory_complete')) {
                     this.db.exec('ALTER TABLE sources ADD COLUMN inventory_complete INTEGER NOT NULL DEFAULT 0');
                 }
-                for (const [name, type] of [['retired', 'INTEGER NOT NULL DEFAULT 0'], ['native_root', 'TEXT'], ['native_inventory', 'TEXT']]) {
+                for (const [name, type] of [['retired', 'INTEGER NOT NULL DEFAULT 0'], ['native_root', 'TEXT'], ['native_inventory', 'TEXT'], ['native_details', 'TEXT']]) {
                     if (!(this.db.prepare('PRAGMA table_info(sources)').all() as Array<{ name: string }>).some(column => column.name === name)) {
                         this.db.exec(`ALTER TABLE sources ADD COLUMN ${name} ${type}`);
                     }
@@ -109,6 +110,12 @@ export class ManagedLogSpool {
             this.db.prepare('UPDATE sources SET protected_bytes=?,protection=?,inventory_complete=?,native_inventory=? WHERE id=?')
                 .run(complete ? bytes : Math.max(bytes, source.protected_bytes), 'protected-native-state', Number(complete),
                     inventory ? JSON.stringify({ ...inventory, measuredAt: now, complete }) : null, source.id);
+        });
+    }
+    recordNativeInventory(root: NativeLogRoot, inventory: NativeLogInventory): void {
+        this.atomic(() => {
+            const source = this.source({ provider: root.provider, agent: root.agent, source: `native-capacity:${digest(root.root)}` });
+            this.db.prepare('UPDATE sources SET native_details=? WHERE id=?').run(JSON.stringify(inventory), source.id);
         });
     }
     /** Persist membership before collection so retirement survives worker restarts. */
@@ -208,6 +215,7 @@ export class ManagedLogSpool {
     status(): object {
         const sources = this.db.prepare('SELECT * FROM sources ORDER BY id').all() as Source[];
         return { policyVersion: 1, redactionVersion: REDACTION_VERSION, instance: this.instance, private: true, historyComplete: false,
+            disposalPolicy: process.env.PROPR_DIAGNOSTIC_DISPOSAL === 'local-only' || process.env.PROPR_DIAGNOSTIC_LOCAL_ONLY === '1' ? 'local-only-loss-accepted' : 'verified-remote-acknowledgement',
             offsiteRetentionDays: 14, limits: this.limits, sourceCapacityWarning: sources.filter(s => !s.retired).length >= this.limits.sources,
             sources: sources.map(s => ({ ...JSON.parse(s.identity), id: s.id, retired: Boolean(s.retired), nextSequence: s.next, droppedBytes: s.dropped, gaps: s.gaps,
                 inventoryComplete: Boolean(s.inventory_complete), lastSuccessfulCollection: s.last_success, reason: s.reason, protectedReason: s.protection, protectedBytes: s.protection && !s.reason && JSON.parse(s.identity).source.startsWith('native-state') ? s.protected_bytes : null, capacityWarning: s.protected_bytes >= this.limits.protectedBytes })),
@@ -222,6 +230,13 @@ export class ManagedLogSpool {
                         capacityBytesLowerBound: s.protected_bytes,
                         measurement: s.protection && !s.reason && JSON.parse(s.identity).source.startsWith('native-state') ? 'allowlisted-files-only' : 'unknown',
                         measuredBytes: s.protection && !s.reason && JSON.parse(s.identity).source.startsWith('native-state') ? s.protected_bytes : null })),
+            },
+            nativeMaintenance: {
+                rotation: 'unsupported', growthBounded: false, disposal: 'protected',
+                admission: 'new-launches-only', existingWritersCapped: false,
+                coverage: 'explicit-instance-owned-roots-only',
+                sources: sources.filter(s => s.native_details).map(s => ({ ...JSON.parse(s.identity),
+                    ...JSON.parse(s.native_details!), protected: true, growthBounded: false })),
             },
             spool: this.db.prepare('SELECT count(*) AS segments,coalesce(sum(length(data)),0) AS bytes FROM segments').get() };
     }
@@ -282,6 +297,25 @@ export class ManagedLogSpool {
             this.gap(source, segment.raw, 'local-only-discard');
             this.db.prepare('DELETE FROM segments WHERE id=?').run(segment.id);
             this.prune(Date.now());
+        });
+    }
+    /** Separate OS-admin opt-in: accepting loss is not remote acknowledgement.
+     * This disposes ONLY an exact sealed collected copy, never native history. */
+    disposeLocal(id: number, sha256: string): void {
+        if (process.env.PROPR_MANAGED_LOGS !== '1' || process.env.PROPR_DIAGNOSTIC_DISPOSAL !== 'local-only') {
+            throw new Error('local-only diagnostic disposal is not enabled');
+        }
+        this.atomic(() => {
+            const s = this.db.prepare('SELECT * FROM segments WHERE id=? AND digest=? AND sealed=1').get(id, sha256) as Segment | undefined;
+            const receipt = JSON.stringify({ id, sha256 });
+            if (!s) {
+                if ((this.db.prepare('SELECT value FROM settings WHERE key=?').get('lastLocalDisposal') as { value: string } | undefined)?.value === receipt) return;
+                throw new Error('unknown local diagnostic disposal');
+            }
+            const source = this.db.prepare('SELECT * FROM sources WHERE id=?').get(s.source) as Source;
+            this.gap(source, s.raw, 'local-only-disposal');
+            this.db.prepare('DELETE FROM segments WHERE id=?').run(id);
+            this.db.prepare('INSERT OR REPLACE INTO settings VALUES (?,?)').run('lastLocalDisposal', receipt);
         });
     }
     close(): void { this.db.close(); this.dir.close(); }

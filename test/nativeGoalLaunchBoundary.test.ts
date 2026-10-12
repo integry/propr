@@ -34,25 +34,36 @@ await mock.module('node:child_process', { namedExports: { ...childProcess,
 let beforeNetwork: () => Promise<void> = async () => {};
 let authenticationVersion = 'initial';
 let diagnosticCaptures: Array<{ args: string[]; authentication: string }> = [];
+let nativeCapacityRefusal = false;
+let networkAdmissions = 0;
+let dockerAdmissions = 0;
 const diagnostics = await import('../packages/core/src/diagnostics/managedLogRuntime.js');
 await mock.module('../packages/core/src/diagnostics/managedLogRuntime.js', { namedExports: {
     ...diagnostics,
+    assertNativeLogAdmission: (agent: unknown) => {
+        if (agent && nativeCapacityRefusal) throw new Error('Protected native capacity; operator action required');
+    },
     prepareProviderCapture: (_agent: unknown, args: string[]) => {
         diagnosticCaptures.push({ args, authentication: authenticationVersion });
         return null;
     },
 } });
 await mock.module('../packages/core/src/claude/docker/dockerNetworkPolicy.js', { namedExports: {
-    startWithNetworkPolicy: () => { throw new Error('Unexpected shared executor'); },
+    startWithNetworkPolicy: (_command: string, args: string[], _options: unknown, start: (args: string[]) => Promise<unknown>) => start(args),
     spawnWithNetworkPolicy: async (args: string[], spawn: (args: string[]) => unknown) => {
+        networkAdmissions++;
         await beforeNetwork();
         return spawn([...args, '-e', 'INJECTED_TOKEN=final-run-canary']);
     },
+} });
+await mock.module('../packages/core/src/agents/agentRunAdmission.js', { namedExports: {
+    prepareAdmittedAgent: async () => { dockerAdmissions++; throw new Error('Unexpected Docker admission'); },
 } });
 
 const claudeNative = await import('../packages/core/src/agents/impl/claudeNativeGoal.js');
 const antigravityNative = await import('../packages/core/src/agents/impl/antigravityNativeGoal.js');
 const { executeCodexAppServerGoal } = await import('../packages/core/src/agents/impl/codexAppServer.js');
+const { executeDockerCommand } = await import('../packages/core/src/claude/docker/dockerExecutor.js');
 const { runWithExecutionAbortSignal } = await import('../packages/core/src/claude/docker/dockerExecutionOwnership.js');
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 const config = (type: AgentConfig['type']): AgentConfig => ({
@@ -69,11 +80,42 @@ const options: AgentTaskOptions = {
     githubToken: 'stale-worker-token', prompt: 'Goal', executionMode: 'goal',
     environment: { PROPR_GOAL_LAUNCH_STRATEGY: 'direct' }, nativeGoalObjective: 'Ship it', goalControl: control, initialControlInputId: 'input-1', initialControlInputMessage: 'Pending input',
 };
-beforeEach(() => { mints = 0; failMint = false; spawned = []; beforeMint = async () => {}; beforeNetwork = async () => {}; authenticationVersion = 'initial'; diagnosticCaptures = []; });
+beforeEach(() => { mints = 0; failMint = false; spawned = []; beforeMint = async () => {}; beforeNetwork = async () => {}; authenticationVersion = 'initial'; diagnosticCaptures = []; nativeCapacityRefusal = false; networkAdmissions = 0; dockerAdmissions = 0; });
 after(async () => { await closeConnection(); await fs.rm(root, { recursive: true, force: true }); });
 
+test('task capacity refusal happens before Docker creation and preserves provider output', async () => {
+    nativeCapacityRefusal = true;
+    const canary = path.join(root, 'task-output.txt');
+    await fs.writeFile(canary, 'UNPUBLISHED-WORK-CANARY');
+    await assert.rejects(executeDockerCommand('docker', ['run', 'image'], {
+        diagnostics: { provider: 'codex', agent: 'codex' },
+    }), /Protected native capacity/);
+    assert.equal(dockerAdmissions, 0);
+    assert.equal(spawned.length, 0);
+    assert.equal(await fs.readFile(canary, 'utf8'), 'UNPUBLISHED-WORK-CANARY');
+});
 
 for (const provider of ['claude', 'antigravity', 'codex'] as const) {
+    test(`${provider} native capacity refusal preserves queued input and prevents Docker admission`, async () => {
+        nativeCapacityRefusal = true;
+        const diagnostics = { provider, agent: provider };
+        if (provider === 'claude') {
+            await assert.rejects(claudeNative.executeClaudeNativeGoal(options, {
+                diagnostics, buildDockerArgs: async () => ['run', 'image'], sessionId: 'resume-session',
+                transcriptPath: path.join(root, 'resume-transcript'), model: 'test-model', timeoutMs: 1000,
+            }), /Protected native capacity/);
+        } else if (provider === 'antigravity') {
+            const result = await antigravityNative.executeAntigravityNativeGoal(options, {
+                diagnostics, buildDockerArgs: async () => ['run', 'image'], model: 'test-model', timeoutMs: 1000,
+            });
+            assert.match(result.error!, /Protected native capacity/);
+        } else {
+            await assert.rejects(executeCodexAppServerGoal(config('codex'), options, 1000), /Protected native capacity/);
+        }
+        assert.equal(networkAdmissions, 0);
+        assert.equal(spawned.length, 0);
+        assert.equal((control.markInputDelivered as ReturnType<typeof mock.fn>).mock.callCount(), 0);
+    });
     test(`${provider} cancellation during async preparation prevents spawn and input delivery`, async () => {
         const abort = new AbortController();
         const prepare = async () => { abort.abort(new Error('Cancelled while minting')); return ['run', 'image']; };

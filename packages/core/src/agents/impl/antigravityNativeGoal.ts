@@ -1,4 +1,4 @@
-import { prepareProviderCapture, attachProviderCapture, type DiagnosticAgent } from '../../diagnostics/managedLogRuntime.js';
+import { assertNativeLogAdmission, prepareProviderCapture, attachProviderCapture, type DiagnosticAgent } from '../../diagnostics/managedLogRuntime.js';
 import { toAntigravityCliModelId } from './antigravityModelIds.js';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -385,6 +385,7 @@ export async function executeAntigravityNativeGoal(
         if (ownership?.signal.aborted) throw getExecutionAbortError(ownership.signal)!;
         if (expired) throw new Error('Antigravity native goal attempt exceeded its execution timeout');
         const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
+        assertNativeLogAdmission(launch.diagnostics);
         const child = await spawnWithNetworkPolicy(args, runArgs => {
             const capture = launch.diagnostics ? prepareProviderCapture(launch.diagnostics, runArgs, undefined, args) : null;
             const spawned = spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
