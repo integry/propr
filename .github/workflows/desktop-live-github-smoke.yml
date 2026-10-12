@@ -1,0 +1,84 @@
+name: Optional Desktop live GitHub smoke
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'apps/desktop/scripts/*live-github-smoke*'
+      - 'apps/desktop/src/live-github-smoke*'
+      - 'apps/desktop/src/main.ts'
+      - '.github/workflows/desktop-live-github-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-live-github-smoke
+  cancel-in-progress: false
+
+jobs:
+  fixtures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+      - run: npm ci --ignore-scripts
+      - run: npx --no-install tsx --test apps/desktop/src/live-github-smoke.test.ts
+      - run: node --test apps/desktop/scripts/live-github-smoke.test.mjs
+      - run: node apps/desktop/scripts/run-live-github-smoke.mjs --dry-run
+
+  live:
+    if: github.ref == 'refs/heads/main' && vars.PROPR_DESKTOP_LIVE_GITHUB_SMOKE_ENABLED == '1'
+    needs: fixtures
+    # Owner-assigned label on a dedicated Linux account/runner, intended host: Gram.
+    runs-on: [self-hosted, linux, propr-desktop-live-github]
+    environment: desktop-live-github-preview
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+      - name: Install reviewed harness dependencies
+        run: npm ci --ignore-scripts
+      - name: Run bounded check with runner-owned frozen configuration
+        id: smoke
+        env:
+          PROPR_DESKTOP_LIVE_GITHUB_SMOKE: '1'
+          PROPR_DESKTOP_LIVE_CONFIG: /var/lib/propr-desktop-live/config.json
+        shell: bash
+        run: |
+          set +e
+          result="$(node apps/desktop/scripts/run-live-github-smoke.mjs)"
+          status=$?
+          export SMOKE_RESULT="$result"
+          node --input-type=module - <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          import { RESULTS } from './apps/desktop/scripts/live-github-smoke.mjs';
+          let result = 'app_pairing_failed';
+          let identity = '';
+          try {
+            const record = JSON.parse(process.env.SMOKE_RESULT);
+            if (record.mode === 'live' && RESULTS.includes(record.result)) result = record.result;
+            if (/^[a-f0-9]{40}$/.test(record.artifact?.sourceRevision ?? '')
+              && /^[a-f0-9]{64}$/.test(record.artifact?.rpmSha256 ?? '')) {
+              identity = `Source: ${record.artifact.sourceRevision}\nSigned RPM SHA256: ${record.artifact.rpmSha256}\n`;
+            }
+          } catch {}
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Optional live GitHub smoke: **${result}**\n${identity}`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `result=${result}\n`);
+          console.log(`Optional live GitHub smoke: ${result}`);
+          NODE
+          exit "$status"
+      # No artifacts: persistent state, diagnostics and approval pages stay private on the runner.
