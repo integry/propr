@@ -166,14 +166,17 @@ export function captureProviderOutput(identity: LogIdentity, secrets: readonly s
             reset();
             if (mode !== 'exit') retry();
         } finally { outputState.idleUntil = Math.max(outputState.idleUntil, Date.now() + outputState.backoff * (Date.now() - started)); }
-        if (!timer) outputState.buffered.delete(final);
+        if (!timer && !pending) outputState.buffered.delete(final);
         return true;
     };
-    const final = (deadline: number) => flush('exit', deadline);
-    const line = (text: string) => {
+    const final = (deadline: number) => {
+        finishLine('exit', deadline);
+        return flush('exit', deadline);
+    };
+    const line = (text: string, mode: 'full' | 'exit' = 'full', deadline = Date.now() + providerOutputRetry.fullMs) => {
         const record = text.endsWith('\r') ? text.slice(0, -1) : text;
         const size = Buffer.byteLength(record);
-        if ((bytes + size > limits.scanBytes || records.length >= 4096) && !flush('full', Date.now() + providerOutputRetry.fullMs)) {
+        if ((bytes + size > limits.scanBytes || records.length >= 4096) && !flush(mode, deadline)) {
             // Still contended: keep the retained batch, shed this line exactly.
             owe(identity, { overflow: size + 1 }); window = 0; retry();
             return;
@@ -187,6 +190,14 @@ export function captureProviderOutput(identity: LogIdentity, secrets: readonly s
         })();
         window = rejectedHead ? 0 : kind.window;
         records.push(record); continuation.push(kind.continuation); bytes += size;
+    };
+    /** Detach once, before a capacity flush, so close/exit cannot replay a tail.
+     * Discarded tail bytes are already in `dropped`; no newline was received. */
+    const finishLine = (mode: 'full' | 'exit' = 'full', deadline?: number) => {
+        const tail = pending;
+        pending = ''; discard = false;
+        if (tail) line(tail, mode, deadline);
+        window = 0;
     };
     // There is no durable stdout offset across process death. Expose the capture
     // boundary rather than claiming continuous history after a restart. Under
@@ -219,14 +230,16 @@ export function captureProviderOutput(identity: LogIdentity, secrets: readonly s
                 pending = ''; discard = true; window = 0; diagnosticsFailure();
                 retry();
             }
+            // Register partial-only captures for exit without starting a timer
+            // that would prematurely turn an incomplete line into a record.
+            if (pending) outputState.buffered.add(final);
             if (records.length || dropped) schedule();
         },
         close() {
             try {
                 // A bounded final line without a trailing newline is still a
                 // record; only an oversized (discarded) tail becomes a gap.
-                if (pending && !discard) line(pending);
-                else if (discard) dropped += 1;
+                finishLine();
             } catch { diagnosticsFailure(); }
             pending = ''; discard = false; window = 0; closed = true;
             // A failed close keeps the batch, and anything owed, for the bounded

@@ -211,9 +211,114 @@ test('buffered records flush on process exit without close', withRoot(root => {
     try {
         const item = spool.exportOne()!;
         const records = gunzipSync(item.data).toString().trim().split('\n').map(line => JSON.parse(line));
-        // A partial final chunk without close stays an unterminated, uncommitted line.
-        assert.deepEqual(records, [{ message: 'ERROR before exit', attribution: { task: 'task-exit' } }]);
+        assert.deepEqual(records, [
+            { message: 'ERROR before exit', attribution: { task: 'task-exit' } },
+            { message: 'INFO unterminated', attribution: { task: 'task-exit' } },
+        ]);
     } finally { spool.close(); }
+}));
+
+test('pending-only output stays incomplete until exit and is redacted and attributed once', withRoot(root => {
+    const result = run(root, `
+        const capture = runtime.captureProviderOutput(identity('pending'), ['opaque-tail-canary'], { task: 'task-tail', attempt: 'attempt-tail' });
+        capture.write('INFO opaque-tail-canary');
+        await tick(runtime.PROVIDER_OUTPUT_FLUSH_MS * 4);
+        assert.equal(appends.n, 0, 'incomplete output must not start a batch');
+        process.on('exit', () => console.log(JSON.stringify({ records: exported(), source: source('pending'), appends: appends.n })));
+        process.exit(0);
+    `);
+    assert.deepEqual(result.records, [{ message: 'INFO [REDACTED]', attribution: { task: 'task-tail', attempt: 'attempt-tail' } }]);
+    assert.equal(result.appends, 1);
+    assert.deepEqual([result.source.gaps, result.source.droppedBytes], [1, 0]);
+}));
+
+test('timer and close drains preserve pending exit tails without duplicating records', withRoot(root => {
+    const result = run(root, `
+        const capture = runtime.captureProviderOutput(identity('timer-tail'), []);
+        capture.write('ERROR head\\n    at tail-frame');
+        await until(() => appends.n === 1);
+        const closed = runtime.captureProviderOutput(identity('closed-tail'), []);
+        closed.write('INFO closed tail');
+        closed.close(); closed.close();
+        process.on('exit', () => console.log(JSON.stringify({ records: exported(), sources: sources() })));
+        process.exit(0);
+    `);
+    assert.equal(result.records.length, 3);
+    assert.ok(result.records.some((r: { continuation?: string }) => r.continuation === '    at tail-frame'));
+    assert.deepEqual(result.records.filter((r: { message?: string }) => r.message).map((r: { message: string }) => r.message).sort(), ['ERROR head', 'INFO closed tail']);
+    for (const source of result.sources) assert.deepEqual([source.gaps, source.droppedBytes], [1, 0]);
+}));
+
+test('oversized unterminated tails account only received bytes on close and exit', withRoot(root => {
+    const result = run(root, `
+        for (const name of ['exit-tail', 'closed-tail']) {
+            const capture = runtime.captureProviderOutput(identity(name), []);
+            capture.write('é'.repeat(db.limits.recordBytes / 2));
+            capture.write('尾'); capture.write('end');
+            if (name === 'closed-tail') capture.close();
+        }
+        process.on('exit', () => console.log(JSON.stringify({ records: exported(), sources: sources(), expected: db.limits.recordBytes + 6 })));
+        process.exit(0);
+    `);
+    assert.deepEqual(result.records, []);
+    for (const source of result.sources) assert.deepEqual([source.gaps, source.droppedBytes, source.reason], [2, result.expected, 'oversize-record']);
+}));
+
+test('exit tails retry contention after the capture boundary and failures become exact durable gaps', withRoot(root => {
+    const result = run(root, `
+        const report = db.report.bind(db);
+        const events = [];
+        let boundaryBusy = 3, appendBusy = 2;
+        db.report = (...args) => {
+            if (args[1] === 'capture-interrupted' && boundaryBusy-- > 0) throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+            events.push(args[0].source + ':' + args[1]);
+            return report(...args);
+        };
+        db.append = (...args) => {
+            if (args[0].source === 'failed') throw Object.assign(new Error('disk full'), { code: 'SQLITE_FULL' });
+            if (appendBusy-- > 0) throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+            events.push(args[0].source + ':append'); return append(...args);
+        };
+        const kept = runtime.captureProviderOutput(identity('kept'), []);
+        kept.write('INFO kept tail');
+        const failed = runtime.captureProviderOutput(identity('failed'), []);
+        failed.write('INFO lost é');
+        process.on('exit', () => console.log(JSON.stringify({ records: exported().map(r => r.message), sources: sources(), events })));
+        process.exit(0);
+    `);
+    assert.deepEqual(result.records, ['INFO kept tail']);
+    const kept = result.sources.find((s: { source: string }) => s.source === 'kept');
+    const failed = result.sources.find((s: { source: string }) => s.source === 'failed');
+    assert.deepEqual([kept.gaps, kept.droppedBytes], [1, 0]);
+    assert.deepEqual([failed.gaps, failed.droppedBytes, failed.reason], [2, Buffer.byteLength('INFO lost é') + 1, 'storage-unavailable']);
+    assert.ok(result.events.indexOf('kept:capture-interrupted') < result.events.indexOf('kept:append'));
+}));
+
+test('an exit tail at the batch bound shares the global deadline and accounts persistent contention', withRoot(root => {
+    const result = run(root, `
+        const capture = runtime.captureProviderOutput(identity('full-tail'), []);
+        for (let n = 0; n < 4096; n++) capture.write('INFO buffered\\n');
+        capture.write('INFO final tail');
+        const pending = runtime.captureProviderOutput(identity('pending-tail'), []);
+        pending.write('INFO pending tail');
+        // Advance time on failed attempts, avoiding wall-clock sleeps. Exhaust
+        // the one exit budget on the capacity flush; later drains get no new budget.
+        let now = Date.now(), attempts = 0;
+        Date.now = () => now;
+        runtime.providerOutputRetry.exitMs = 100;
+        db.append = () => { attempts++; now += 100; throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }); };
+        process.on('exit', () => console.log(JSON.stringify({ attempts, records: exported(), sources: sources() })));
+        process.exit(0);
+    `);
+    assert.equal(result.attempts, 3, 'capacity flush and both final batches each get one attempt under the same expired deadline');
+    assert.deepEqual(result.records, []);
+    for (const [name, bytes] of [
+        ['full-tail', 4096 * Buffer.byteLength('INFO buffered\n') + Buffer.byteLength('INFO final tail\n')],
+        ['pending-tail', Buffer.byteLength('INFO pending tail\n')],
+    ] as const) {
+        const source = result.sources.find((s: { source: string }) => s.source === name);
+        assert.deepEqual([source.gaps, source.droppedBytes, source.reason], [name === 'full-tail' ? 3 : 2, bytes, 'storage-unavailable']);
+    }
 }));
 
 test('concurrent chatty providers across worker processes avoid self-inflicted storage gaps', withRoot(async root => {
