@@ -36,7 +36,7 @@ function openDiagnostics(deadline?: number): ManagedLogSpool | null {
     if (state.spool !== undefined) return state.spool;
     if (process.env.PROPR_MANAGED_LOGS !== '1') return null;
     const root = process.env.PROPR_DIAGNOSTIC_ROOT || '/usr/src/app/data/managed-diagnostics';
-    state.spool = untilDeadline(() => new ManagedLogSpool(root, process.env.PROPR_INSTANCE_ID || ''), deadline);
+    state.spool = new ManagedLogSpool(root, process.env.PROPR_INSTANCE_ID || '', {}, { openDeadline: deadline ?? 0 });
     return state.spool;
 }
 export function configuredDiagnosticSecrets(env: Record<string, string | undefined> = process.env): string[] {
