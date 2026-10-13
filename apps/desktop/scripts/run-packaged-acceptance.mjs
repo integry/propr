@@ -1,4 +1,4 @@
-import { exercisePackagedCspReload, correlateExpectedCspReloadConsoleRecords, sanitizedCspReloadError, sanitizedCspReloadRequestFailure } from './packaged-acceptance-csp-reload.mjs';
+import { exercisePackagedCspReload, observeCspReloadRequestFailures, correlateExpectedCspReloadConsoleRecords, sanitizedCspReloadError, sanitizedCspReloadRequestFailure } from './packaged-acceptance-csp-reload.mjs';
 import { SETUP_ACTIONS, prepareProductionSetup, reachSetupAction, activateSetupAction } from './packaged-acceptance-setup.mjs';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -858,16 +858,10 @@ const launchApplication = async (scenario, initialDeepLink, existingUserData) =>
       timeoutMs: 15_000,
     });
     const pageId = ++nextRendererPageId;
-    const requestPhases = new WeakMap();
-    page.on('request', request => requestPhases.set(request, activeJourney));
-    page.on('requestfailed', request => {
-      if (scenario !== 'csp-reload') return;
-      let mainFrame = false;
-      try { mainFrame = request.frame() === page.mainFrame(); } catch { /* Worker requests cannot correlate. */ }
-      cspDeniedRequests.push({ scenario, pageId, mainFrame, journey: requestPhases.get(request), failureJourney: activeJourney,
-        url: request.url(), method: request.method(), resourceType: request.resourceType(),
-        errorText: request.failure()?.errorText });
-    });
+    if (scenario === 'csp-reload') {
+      await observeCspReloadRequestFailures({ page, origin: readyOrigin, pageId,
+        journey: () => activeJourney, records: cspDeniedRequests });
+    }
     page.on('console', message => {
       const journey = activeJourney;
       // Lifecycle evidence is a single serialized renderer snapshot. Capture it

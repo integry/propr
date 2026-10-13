@@ -75,6 +75,61 @@ export const correlateExpectedCspReloadConsoleRecords = ({ records, origin, evid
   return accepted;
 };
 
+// CSP can reject fetch before Chromium creates a Network request. Observe the
+// native Audits violation and correlate it with a top-frame fetch invocation;
+// console diagnostics alone never establish a denied request.
+export const observeCspReloadRequestFailures = async ({ page, origin, pageId, journey, records }) => {
+  const marker = '[propr-acceptance-csp-fetch]';
+  const attempts = new Map();
+  const session = await page.context().newCDPSession(page);
+  page.on('console', message => {
+    if (message.type() !== 'debug' || !message.text().startsWith(marker)) return;
+    let attempt;
+    try { attempt = JSON.parse(message.text().slice(marker.length)); } catch { return; }
+    if (attempt?.method !== 'GET' || typeof attempt.url !== 'string'
+      || fixtureRequest(attempt.url, origin) === 'other') return;
+    const previous = attempts.get(attempt.url);
+    attempts.set(attempt.url, { journey: journey(), count: (previous?.count ?? 0) + 1 });
+  });
+  session.on('Audits.issueAdded', ({ issue }) => {
+    const denial = issue?.details?.contentSecurityPolicyIssueDetails;
+    if (issue?.code !== 'ContentSecurityPolicyIssue' || denial?.isReportOnly !== false
+      || denial.violatedDirective !== 'connect-src'
+      || denial.contentSecurityPolicyViolationType !== 'kURLViolation'
+      || fixtureRequest(denial.blockedURL, origin) === 'other') return;
+    const attempt = attempts.get(denial.blockedURL);
+    records.push({ scenario: 'csp-reload', pageId, mainFrame: attempt?.count === 1,
+      journey: attempt?.journey, failureJourney: journey(), url: denial.blockedURL,
+      method: attempt?.count === 1 ? 'GET' : 'unknown',
+      resourceType: attempt?.count === 1 ? 'fetch' : 'unknown',
+      errorText: 'net::ERR_BLOCKED_BY_CSP' });
+  });
+  await session.send('Audits.enable');
+  const install = ({ marker, origin }) => {
+    if (window !== window.top) return;
+    const fetch = window.fetch;
+    const debug = console.debug.bind(console);
+    window.fetch = function (...args) {
+      // Delegate the original arguments unchanged. Unknown inputs and methods
+      // cannot supply evidence for the exemption.
+      const input = args[0];
+      const url = typeof input === 'string' ? input
+        : input instanceof Request ? input.url : input instanceof URL ? input.href : undefined;
+      const method = args[1]?.method ?? (input instanceof Request ? input.method : 'GET');
+      if (method === 'GET' && typeof url === 'string' && url.startsWith(`${origin}/`)) {
+        const path = url.slice(origin.length);
+        if (path === '/api/auth/demo-mode' || /^\/api\/auth\/user\?proprDesktopScopeGeneration=[1-9]\d*$/.test(path)) {
+          debug(`${marker}${JSON.stringify({ url, method })}`);
+        }
+      }
+      return Reflect.apply(fetch, this, args);
+    };
+  };
+  await page.addInitScript(install, { marker, origin });
+  // The initial chooser document already exists when CDP attaches.
+  await page.evaluate(install, { marker, origin });
+};
+
 /** Real preload IPC and document reloads; HTTP/browser approval remain owned fixtures. */
 export const exercisePackagedCspReload = async ({ launch, pair, origin, observe, evidence,
   diagnostic = record => console.info('Packaged CSP reload diagnostics:', JSON.stringify(record)),

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { exercisePackagedCspReload, correlateExpectedCspReloadConsoleRecords, sanitizedCspReloadError, sanitizedCspReloadRequestFailure } from './packaged-acceptance-csp-reload.mjs';
+import { exercisePackagedCspReload, observeCspReloadRequestFailures, correlateExpectedCspReloadConsoleRecords, sanitizedCspReloadError, sanitizedCspReloadRequestFailure } from './packaged-acceptance-csp-reload.mjs';
 
 const origin = 'http://127.0.0.2:41731';
 const fixture = ({ activationReloads = 1, selectionReloads = 0, restartReloads = 0,
@@ -382,4 +382,98 @@ test('destroyed console argument handles cannot erase errors or change their pha
   assert.equal(consoleRecords[0].type, 'error');
   assert.equal(consoleRecords[0].journey, 'csp-reload-removal');
   assert.equal(consoleRecords[0].arguments[0].unserializable, true);
+});
+
+const requestObserverFixture = async () => {
+  const listeners = new Map();
+  const records = [];
+  let phase = 'csp-reload-pairing';
+  const scripts = [];
+  const page = {
+    context: () => ({ newCDPSession: async () => ({
+      on: (event, callback) => listeners.set(event, callback),
+      send: async command => assert.equal(command, 'Audits.enable'),
+    }) }),
+    on: (event, callback) => listeners.set(event, callback),
+    addInitScript: async (...args) => scripts.push(args),
+    evaluate: async (...args) => scripts.push(args),
+  };
+  await observeCspReloadRequestFailures({ page, origin, pageId: 1, journey: () => phase, records });
+  const attempt = (url, method = 'GET') => listeners.get('console')({
+    type: () => 'debug', text: () => `[propr-acceptance-csp-fetch]${JSON.stringify({ url, method })}`,
+  });
+  const issue = (url, change = {}) => listeners.get('Audits.issueAdded')({ issue: {
+    code: 'ContentSecurityPolicyIssue', details: { contentSecurityPolicyIssueDetails: {
+      blockedURL: url, violatedDirective: 'connect-src', isReportOnly: false,
+      contentSecurityPolicyViolationType: 'kURLViolation', ...change,
+    } },
+  } });
+  return { records, scripts, attempt, issue, phase: value => { phase = value; } };
+};
+
+test('pre-network Audits denials correlate only to unique top-frame GET fetch attempts', async () => {
+  const f = await requestObserverFixture();
+  assert.equal(f.scripts.length, 2); // Future documents and the existing chooser.
+  assert.equal(f.scripts[0][0], f.scripts[1][0]);
+  for (const path of ['/api/auth/user?proprDesktopScopeGeneration=1', '/api/auth/demo-mode']) {
+    f.attempt(origin + path);
+    f.issue(origin + path);
+  }
+  assert.equal(f.records.length, 2);
+  assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records: transitionErrors(), origin,
+    evidence: convergedEvidence, deniedRequests: f.records }), transitionErrors());
+});
+
+test('missing, duplicate, wrong-method and cross-phase attempts cannot exempt CSP errors', async () => {
+  for (const mode of ['missing', 'duplicate', 'POST', 'cross-phase']) {
+    const f = await requestObserverFixture();
+    for (const path of ['/api/auth/user?proprDesktopScopeGeneration=1', '/api/auth/demo-mode']) {
+      const url = origin + path;
+      f.phase('csp-reload-pairing');
+      if (mode !== 'missing') f.attempt(url, mode === 'POST' ? 'POST' : 'GET');
+      if (mode === 'duplicate') f.attempt(url);
+      if (mode === 'cross-phase') f.phase('csp-reload-removal');
+      f.issue(url);
+    }
+    assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records: transitionErrors(), origin,
+      evidence: convergedEvidence, deniedRequests: f.records }), [], mode);
+  }
+});
+
+test('Audits report-only, unrelated directives, origins and paths never supply denial evidence', async () => {
+  const f = await requestObserverFixture();
+  const url = origin + '/api/auth/demo-mode';
+  f.attempt(url);
+  for (const change of [{ isReportOnly: true }, { violatedDirective: 'img-src' },
+    { contentSecurityPolicyViolationType: 'kInlineViolation' }]) f.issue(url, change);
+  f.issue('http://127.0.0.3:41731/api/auth/demo-mode');
+  f.issue(origin + '/api/tasks');
+  assert.deepEqual(f.records, []);
+});
+
+test('fetch observation delegates unchanged arguments and ignores subframes and unrelated requests', async () => {
+  const f = await requestObserverFixture();
+  const [install, configuration] = f.scripts[0];
+  const calls = [], markers = [];
+  const window = { fetch: function (...args) { calls.push({ receiver: this, args }); return 'native-result'; } };
+  window.top = window;
+  const context = { window, Request, URL, console: { debug: text => markers.push(text) } };
+  runInNewContext(`(${install.toString()})(${JSON.stringify(configuration)})`, context);
+  const options = { method: 'GET', headers: { Authorization: 'secret-bearer' } };
+  const url = origin + '/api/auth/demo-mode';
+  assert.equal(window.fetch(url, options), 'native-result');
+  assert.equal(calls[0].receiver, window);
+  assert.equal(calls[0].args[1], options);
+  window.fetch(url, { method: 'POST' });
+  window.fetch(origin + '/api/tasks');
+  window.fetch('https://unrelated.example/api/auth/demo-mode');
+  assert.equal(markers.length, 1);
+  assert.equal(markers[0].includes('secret-bearer'), false);
+  window.fetch(new URL(url));
+  window.fetch(new Request(url));
+  assert.equal(markers.length, 3);
+  const subframe = { fetch: window.fetch, top: {} };
+  const original = subframe.fetch;
+  runInNewContext(`(${install.toString()})(${JSON.stringify(configuration)})`, { ...context, window: subframe });
+  assert.equal(subframe.fetch, original);
 });
