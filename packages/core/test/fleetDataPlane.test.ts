@@ -58,6 +58,13 @@ async function fixture(t: test.TestContext, repository = false) {
     await fs.writeFile(path.join(native, 'repositories', `${id}.json`), JSON.stringify({ id, owner: 'owner', name: 'repo', identity: await repositoryIdentity(clone), metadataFingerprint: await repositoryMetadataFingerprint(clone) }));
   }
   const plane = new FleetDataPlane(storage, control, () => secret); await plane.initialize();
+  const exportCompletions = new Map<string, Promise<void>>();
+  const watchExport = plane['watchExport'].bind(plane);
+  t.mock.method(plane as any, 'watchExport', (id: string) => {
+    const completion = watchExport(id);
+    exportCompletions.set(id, completion);
+    return completion;
+  });
   const runtime = await plane.runtime();
   const sign = (r: FleetDataRequest, patch: Partial<FleetDataAssertion> = {}) => {
     const assertion = { ...runtime, action: r.action, requestDigest: digest(r), operationId: randomUUID(), nonce: randomBytes(32).toString('hex'), issuedAt: Math.floor(Date.now() / 1000), expiresAt: Math.floor(Date.now() / 1000) + 60, ...patch };
@@ -83,7 +90,7 @@ async function fixture(t: test.TestContext, repository = false) {
     }
     db.close(); await fs.rm(root, { recursive: true, force: true });
   });
-  return { root, control, source, native, storage, plane, sign, invoke, runtime, db, http, server, secret, authority, writeAuthority, clone, remote, id,
+  return { root, control, source, native, storage, plane, sign, invoke, runtime, db, http, server, secret, authority, writeAuthority, clone, remote, id, exportCompletions,
     pending: () => { pending = true; }, rotate: () => { secret = 'rotated-secret-canary-'.repeat(3); },
     afterProof: (callback: () => Promise<void>) => { afterProof = callback; },
     restart: async () => { const next = new FleetDataPlane(new InstanceStorageService(options), control, () => secret); await next.initialize(); return next; } };
@@ -91,7 +98,12 @@ async function fixture(t: test.TestContext, repository = false) {
 async function ready(f: Awaited<ReturnType<typeof fixture>>, id: string) {
   for (let i = 0; i < 200; i++) {
     const result = (await f.invoke({ action: 'operation.status', targetOperationId: id })).result as FleetDataResult;
-    if (result.state !== 'running') return result;
+    if (result.state !== 'running') {
+      // Status can report completion while the outbox watcher still holds the
+      // target lock. Drain it before a test attempts artifact redemption.
+      await f.exportCompletions.get(id);
+      return result;
+    }
     await delay(20);
   }
   throw new Error('Export did not settle');
