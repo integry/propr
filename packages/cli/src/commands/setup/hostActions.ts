@@ -74,9 +74,9 @@ async function managedUiLoopbackHosts(orch: OrchestratorModule, cfg: Orchestrato
   if (inspected.status !== 0) return [];
   try {
     const [containerName, state, labels, ports] = JSON.parse(inspected.stdout);
+    // Health/startup state does not change ownership of a published binding.
     if (containerName !== `/${name}` || labels?.["propr.stack"] !== cfg.stack || labels?.["propr.service"] !== "ui"
-      || state?.Running !== true || state.Paused || state.Restarting
-      || (state.Health && state.Health.Status !== "healthy")) return [];
+      || state?.Running !== true || state.Paused) return [];
     const bindings = ports?.["5173/tcp"];
     if (!Array.isArray(bindings)) return [];
     const port = dockerPublishedHostPort(cfg.uiPort);
@@ -363,7 +363,7 @@ export function createDefaultActions(configManager?: ConfigManager, options: {
       // A reused IPv4-only UI may be healthy while localhost opens a different
       // app on IPv6. Use setup's existing managed-container recovery flow;
       // replacing the stack runs port selection again after releasing IPv4.
-      if (!cfg.uiTunnelEnabled && /^127\.0\.0\.1:\d+$/.test(String(cfg.uiPort))
+      if ((configManager?.getUiEnabled() ?? true) && !cfg.uiTunnelEnabled && /^127\.0\.0\.1:\d+$/.test(String(cfg.uiPort))
         && cfg.frontendUrl === localhostServiceUrl(cfg.uiPort)
         && !(await loopbackPortAvailable(Number(dockerPublishedHostPort(cfg.uiPort)), signal, ["::1"]))) {
         return {
