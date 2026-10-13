@@ -1,10 +1,9 @@
-import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
+import { formatModelName } from '../../utils/modelDisplay';
 import type { AgentModelPair } from '../../api/planIssuesApi';
 
 export const getModelName = (modelId: string | null): string => {
   if (!modelId) return '';
-  const modelInfo = MODEL_INFO_MAP[modelId];
-  return modelInfo?.name || modelId;
+  return formatModelName(modelId);
 };
 
 /** Short model label for the in-row chip: "Claude Opus 5.5" reads as "Opus 5.5". */

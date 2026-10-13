@@ -47,6 +47,7 @@ vi.mock('../contexts/useSocket', () => ({
       return () => socketState.notificationCallbacks.delete(callback);
     },
   }),
+  useOptionalSocket: () => null,
 }));
 
 /** Delivers a `notification:update` the way the server publishes it. */
@@ -205,33 +206,36 @@ describe('Inbox page', () => {
     expect(screen.getByRole('link', { name: /Stalled task/ })).toHaveAttribute('href', '/tasks/task-event-stalled');
   });
 
-  test('sends /fix from a completed review to its pull request and clears the card', async () => {
-    const notification = item('event-review', 'Review completed for PR #1724', null, {
+  test('rows carry no follow-up commands at any width; they live in the verdict and on the run in Tasks', async () => {
+    const review = item('event-review', 'Review completed for PR #1724', null, {
       kind: 'review',
       severity: 'success',
       target: { type: 'review', repository: 'integry/propr', prNumber: 1724, taskId: 'task-review' },
       actions: ['follow_up', 'open_pr', 'dismiss'],
     });
-    const request = deferred<Awaited<ReturnType<typeof postTaskFollowup>>>();
-    vi.mocked(listNotifications).mockResolvedValue({ notifications: [notification], unreadCount: 1, nextCursor: null });
-    vi.mocked(postTaskFollowup).mockReturnValue(request.promise);
-    vi.mocked(dismissNotification).mockResolvedValue({ notification, unreadCount: 0 });
+    const ready = item('event-pr', 'Fix run completed for PR #1724', null, {
+      kind: 'pull_request',
+      severity: 'info',
+      target: { type: 'pull_request', repository: 'integry/propr', prNumber: 1724 },
+      metadata: { completedImplementationTaskId: 'task-fix', completionType: 'fix' },
+      actions: ['follow_up', 'open_pr', 'dismiss'],
+      action: {
+        type: 'external_link', label: 'Open pull request', href: 'https://github.com/integry/propr/pull/1724',
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue({ notifications: [review, ready], unreadCount: 2, nextCursor: null });
     renderInbox();
 
-    const fix = await screen.findByRole('button', { name: 'Send /fix to PR #1724' });
-    expect(screen.queryByRole('button', { name: /Send \/review/ })).not.toBeInTheDocument();
-    fireEvent.click(fix);
-    fireEvent.click(fix);
-    expect(postTaskFollowup).toHaveBeenCalledTimes(1);
-    expect(postTaskFollowup).toHaveBeenCalledWith('task-review', '/fix', 'pull_request');
-
-    await act(async () => request.resolve({ success: true, message: 'Posted' }));
-    expect(await screen.findByText('Sent /fix to PR #1724.')).toBeInTheDocument();
-    await waitFor(() => expect(dismissNotification).toHaveBeenCalledWith('event-review'));
-    expect(screen.queryByRole('article', { name: 'Review completed for PR #1724' })).not.toBeInTheDocument();
+    await screen.findByRole('article', { name: 'Review completed for PR #1724' });
+    expect(screen.queryByRole('button', { name: /^(Send \/|More commands)/ })).not.toBeInTheDocument();
+    for (const title of ['Review completed for PR #1724', 'Fix run completed for PR #1724']) {
+      expect(Array.from(screen.getByRole('article', { name: title }).querySelectorAll('button'))
+        .map(button => button.getAttribute('aria-label'))).toEqual([`Dismiss ${title}`]);
+    }
+    expect(postTaskFollowup).not.toHaveBeenCalled();
   });
 
-  test('offers /review and /ultrafix after a PR run and links to its task with a separate GitHub chip', async () => {
+  test('links a PR run to its task with a separate GitHub chip', async () => {
     const notification = item('event-pr', 'Fix run completed for PR #1724', null, {
       kind: 'pull_request',
       severity: 'info',
@@ -243,7 +247,6 @@ describe('Inbox page', () => {
       },
     });
     vi.mocked(listNotifications).mockResolvedValue({ notifications: [notification], unreadCount: 1, nextCursor: null });
-    vi.mocked(postTaskFollowup).mockRejectedValue(new Error('GitHub unavailable'));
     renderInbox();
 
     const link = await screen.findByRole('link', { name: /Fix run completed for PR #1724/ });
@@ -254,13 +257,6 @@ describe('Inbox page', () => {
     expect(chip).toHaveAttribute('target', '_blank');
     expect(chip).toHaveAttribute('rel', 'noopener noreferrer');
     expect(chip).toHaveClass('relative', 'z-10');
-    expect(screen.getByRole('button', { name: 'Send /review to PR #1724' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Send /ultrafix to PR #1724' }));
-
-    await waitFor(() => expect(postTaskFollowup).toHaveBeenCalledWith('task-fix', '/ultrafix', 'pull_request'));
-    expect(await screen.findByText(/Couldn't send \/ultrafix to PR #1724.*GitHub unavailable/)).toBeInTheDocument();
-    expect(screen.getByRole('article', { name: 'Fix run completed for PR #1724' })).toBeInTheDocument();
-    expect(dismissNotification).not.toHaveBeenCalled();
   });
 
   test('uses an external row fallback only without a producer reference and marks chip opens read', async () => {

@@ -1,3 +1,4 @@
+import { formatModelName } from '../../utils/modelDisplay';
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, ChevronUp, CheckCircle, AlertCircle } from 'lucide-react';
@@ -70,9 +71,9 @@ function buildExecutionIntentDetails(options: {
   const hasSelection = Boolean(models?.length || options.issue?.agent_alias);
   let selectionSummary = 'No agent/model selected';
   if (models) {
-    selectionSummary = models.map(model => `${model.agent_alias} / ${model.model_name}`).join(', ');
+    selectionSummary = models.map(model => `${model.agent_alias} / ${formatModelName(model.model_name)}`).join(', ');
   } else if (options.issue?.agent_alias) {
-    selectionSummary = `${options.issue.agent_alias} / ${options.issue.model_name || 'default model'}`;
+    selectionSummary = `${options.issue.agent_alias} / ${options.issue.model_name ? formatModelName(options.issue.model_name) : 'default model'}`;
   }
 
   let unavailableReason: string | null = null;

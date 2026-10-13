@@ -1,5 +1,6 @@
 import { inspectSetupEngineArchitecture, inspectSetupImagePlatform } from "./imagePlatform.js";
 import { mkdirSync } from "node:fs";
+import { createServer } from "node:net";
 import { hostname } from "node:os";
 import { isAbsolute, normalize } from "node:path";
 import { DEFAULT_PROPR_GH_RELAY_URL } from "@propr/shared";
@@ -17,7 +18,8 @@ import {
 } from "@propr/local-setup";
 import type { ConfigManager } from "../../config/index.js";
 import type { RelayClientOptions } from "../../api/relay.js";
-import { localhostServiceUrl } from "../../utils/dockerPort.js";
+import type { OrchestratorConfig, OrchestratorModule } from "../../orchestrator/types.js";
+import { dockerPublishedHostPort, localhostServiceUrl } from "../../utils/dockerPort.js";
 import { createDefaultAgentSetupActions } from "./agentHostActions.js";
 import type { AuthenticationCommandHandoff, CapturedCommandRunner } from "../../auth/githubLogin.js";
 
@@ -37,6 +39,51 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((
 function assertSafeAgentCredentialDir(path: string, name = "Agent credential path"): void {
   if (!isAbsolute(path) || normalize(path) === "/" || path.includes(":") || /[\u0000-\u001f\u007f-\u009f]/.test(path)) {
     throw new Error(`${name} must be an absolute, non-root POSIX path without ':' or control characters`);
+  }
+}
+
+/** Probe both addresses browsers can resolve for localhost, independently of Docker's bind address. */
+async function loopbackPortAvailable(port: number, signal?: AbortSignal, hosts = ["127.0.0.1", "::1"]): Promise<boolean> {
+  for (const host of hosts) {
+    signal?.throwIfAborted();
+    const available = await new Promise<boolean>((resolve, reject) => {
+      const server = createServer();
+      server.once("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "EADDRINUSE") resolve(false);
+        // Hosts without IPv6 must still be able to run local setup.
+        else if (host === "::1" && ["EAFNOSUPPORT", "EADDRNOTAVAIL", "EPROTONOSUPPORT"].includes(error.code ?? "")) resolve(true);
+        else reject(error);
+      });
+      server.listen({ host, port, ipv6Only: host === "::1" }, () => {
+        server.close(error => error ? reject(error) : resolve(true));
+      });
+    });
+    if (!available) return false;
+  }
+  signal?.throwIfAborted();
+  return true;
+}
+
+/** Only exempt bindings actually published by this stack's running UI container. */
+async function managedUiLoopbackHosts(orch: OrchestratorModule, cfg: OrchestratorConfig, signal?: AbortSignal): Promise<string[]> {
+  const name = `${cfg.stack}-ui`;
+  const inspected = await orch.dockerAsync([
+    "inspect", "--format", "[{{json .Name}},{{json .State}},{{json .Config.Labels}},{{json .NetworkSettings.Ports}}]", name,
+  ], { signal });
+  signal?.throwIfAborted();
+  if (inspected.status !== 0) return [];
+  try {
+    const [containerName, state, labels, ports] = JSON.parse(inspected.stdout);
+    // Health/startup state does not change ownership of a published binding.
+    if (containerName !== `/${name}` || labels?.["propr.stack"] !== cfg.stack || labels?.["propr.service"] !== "ui"
+      || state?.Running !== true || state.Paused) return [];
+    const bindings = ports?.["5173/tcp"];
+    if (!Array.isArray(bindings)) return [];
+    const port = dockerPublishedHostPort(cfg.uiPort);
+    return ["127.0.0.1", "::1"].filter(host => bindings.some(binding => binding.HostPort === port
+      && (binding.HostIp === host || binding.HostIp === (host === "::1" ? "::" : "0.0.0.0"))));
+  } catch {
+    return [];
   }
 }
 
@@ -71,7 +118,41 @@ export function createDefaultActions(configManager?: ConfigManager, options: {
   }): Promise<void> => {
     signal?.throwIfAborted();
     const { getHostConfig } = await import("../../orchestrator/index.js");
-    const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
+    let { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
+    const uiEnabled = ui ?? configManager?.getUiEnabled() ?? true;
+    // A free IPv4 Docker binding is insufficient: Chromium may open an
+    // unrelated IPv6 listener at the advertised localhost URL after OAuth.
+    // Keep the hostname (and therefore the API cookie site) unchanged.
+    if (uiEnabled && !cfg.uiTunnelEnabled && cfg.uiPort
+      && /^(?:127\.0\.0\.1:|\[::1\]:)?\d+$/.test(String(cfg.uiPort))
+      && cfg.frontendUrl === localhostServiceUrl(cfg.uiPort)) {
+      const currentPort = Number(dockerPublishedHostPort(cfg.uiPort));
+      let selectedPort = currentPort;
+      while (!(await loopbackPortAvailable(selectedPort, signal))) {
+        if (selectedPort === currentPort) {
+          // Repeat starts replace this container later. Its own published port
+          // must not move the browser/OAuth URL, but the other address may still
+          // belong to an unrelated app and must be probed independently.
+          const managedHosts = await managedUiLoopbackHosts(orch, cfg, signal);
+          if (managedHosts.length > 0 && await loopbackPortAvailable(currentPort, signal,
+            ["127.0.0.1", "::1"].filter(host => !managedHosts.includes(host)))) break;
+        }
+        if (++selectedPort > 65_535) throw new Error("No available localhost UI port; configure UI_PORT with an available port.");
+      }
+      if (selectedPort !== currentPort) {
+        signal?.throwIfAborted();
+        const binding = String(cfg.uiPort).replace(/\d+$/, String(selectedPort));
+        if (process.env.UI_PORT || process.env.FRONTEND_URL) {
+          throw new Error(`UI port ${currentPort} is occupied on loopback. Remove the process UI_PORT/FRONTEND_URL overrides so setup can choose an available port, or set them to ${binding} and ${localhostServiceUrl(binding)}.`);
+        }
+        applyEnvSelection(rootDir, { UI_PORT: binding, FRONTEND_URL: localhostServiceUrl(binding) }, { overwrite: true });
+        ({ orch, cfg } = await getHostConfig({ configManager, root: rootDir }));
+        if (cfg.uiPort !== binding || cfg.frontendUrl !== localhostServiceUrl(binding)) {
+          throw new Error("UI port configuration is overridden by the process environment; update UI_PORT and FRONTEND_URL to an available localhost port and retry.");
+        }
+        onLog?.(`UI port ${currentPort} is occupied on loopback; using ${cfg.frontendUrl}.`);
+      }
+    }
     // Pre-create the host Vibe prompt-cache dir owned by this user so Docker
     // does not auto-create it as root on first bind-mount — a root-owned dir
     // would fail the writability check and block future `propr start` runs.
@@ -89,7 +170,7 @@ export function createDefaultActions(configManager?: ConfigManager, options: {
     await orch.ensureNetworkAsync(cfg, onLog, signal);
     try {
       await orch.startStackAsync(cfg, {
-        ui: ui ?? configManager?.getUiEnabled() ?? true,
+        ui: uiEnabled,
         docs: docs ?? cfg.docsEnabled,
         onLog,
         signal,
@@ -277,6 +358,21 @@ export function createDefaultActions(configManager?: ConfigManager, options: {
     },
     async checkBackendHealth({ rootDir, timeoutMs = 60_000, signal }) {
       signal?.throwIfAborted();
+      const { getHostConfig } = await import("../../orchestrator/index.js");
+      const { cfg } = await getHostConfig({ configManager, root: rootDir });
+      // A reused IPv4-only UI may be healthy while localhost opens a different
+      // app on IPv6. Use setup's existing managed-container recovery flow;
+      // replacing the stack runs port selection again after releasing IPv4.
+      if ((configManager?.getUiEnabled() ?? true) && !cfg.uiTunnelEnabled && /^127\.0\.0\.1:\d+$/.test(String(cfg.uiPort))
+        && cfg.frontendUrl === localhostServiceUrl(cfg.uiPort)
+        && !(await loopbackPortAvailable(Number(dockerPublishedHostPort(cfg.uiPort)), signal, ["::1"]))) {
+        return {
+          healthy: false,
+          detail: "The local UI port is occupied on IPv6 loopback; localhost may open another app. Recreate this managed stack to select an available UI port.",
+          nextAction: "Choose Recreate managed stack, then retry setup. The unrelated service can remain running.",
+          recoveryAction: "replace-running-stack",
+        };
+      }
       const { getSystemStatus } = await import("../../api/system.js");
       const client = await localApiClient(rootDir);
       const deadline = Date.now() + timeoutMs;

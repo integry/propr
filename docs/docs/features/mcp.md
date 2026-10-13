@@ -1,6 +1,6 @@
 # MCP Connections and Operator Tools
 
-MCP lets a connected coding or chat client inspect and operate ProPR using scoped authorization. It is disabled by default. Administrators use **Settings → Integrations → MCP Server** to manage enablement and the allowed scope ceiling (default: `read`, `plan`, `review`). The UI-managed path derives an HTTPS origin and encryption key from existing instance configuration and persists an instance identity. An explicit `MCP_ENABLED=true` selects environment-managed configuration, where the settings page shows the status but no toggle or ceiling; `false` prevents UI enablement. Missing configuration is shown as a setup problem; demo mode cannot enable MCP.
+MCP lets a connected coding or chat client inspect and operate ProPR using scoped authorization. It is disabled by default. Administrators use **Settings → Integrations & MCP → MCP Server** to manage enablement and the allowed scope ceiling (default: `read`, `plan`, `review`). The UI-managed path derives an HTTPS origin and encryption key from existing instance configuration and persists an instance identity. An explicit `MCP_ENABLED=true` selects environment-managed configuration, where the settings page shows the status but no toggle or ceiling; `false` prevents UI enablement. Missing configuration is shown as a setup problem; demo mode cannot enable MCP.
 
 ![MCP server settings with enablement, public endpoint and scope controls](/img/screenshots/0.9.0/mcp-settings.png)
 

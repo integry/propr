@@ -41,7 +41,7 @@ import { getTaskReplacementService } from './taskReplacement/index.js';
 import { recoverNonterminalGoals } from './goalRecovery.js';
 import { reconcileFollowupCiSuspensions } from './jobs/followupCiSuspension.js';
 import { cancelClosedPullRequestValidation } from './jobs/closedPullRequestCiCancellation.js';
-import { prepareAgentRegistryAtStartup, processAgentImagePreparationJob } from './workerAgentPreparation.js';
+import { prepareAgentRegistryAtStartup, processAgentImagePreparationJob, startAgentImageWatchdog } from './workerAgentPreparation.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -284,7 +284,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
 
     // Do not advertise or claim task capacity while an image is still building.
-    await prepareAgentRegistryAtStartup();
+    const agentImageWatchdog = startAgentImageWatchdog(await prepareAgentRegistryAtStartup());
 
     const heartbeatRedis = new Redis({
         host: process.env.REDIS_HOST || 'localhost',
@@ -410,6 +410,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
 
     const close = async (): Promise<void> => {
         clearInterval(heartbeatInterval);
+        agentImageWatchdog.close();
         await usageTipsRunner.close();
         await taskStateRecovery.close();
         // Proxies close only after running jobs (and their containers) have drained.

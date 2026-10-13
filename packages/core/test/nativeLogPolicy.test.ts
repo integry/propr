@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { configuredNativeLogRoots, inspectNativeLogRoot, nativeAdmissionReason, NATIVE_LOG_LIMITS } from '../src/diagnostics/nativeLogPolicy.js';
-import { ManagedLogSpool } from '../src/diagnostics/managedLogSpool.js';
+import { ManagedLogSpool, digest } from '../src/diagnostics/managedLogSpool.js';
 import { collectProvider } from '../src/diagnostics/providerCollector.js';
 
 function fixture() {
@@ -93,6 +93,87 @@ test('real active writer survives capacity refusal, daily boundary, collector/ex
             assert.ok(!JSON.stringify(status).includes(f.root));
         } finally { restarted.close(); }
     } finally { fs.closeSync(writer); spool.close(); f.close(); }
+});
+
+test('sealed native exports retain metadata across later collections, retries, gaps and restart', () => {
+    const f = fixture();
+    const spoolRoot = path.join(f.base, 'spool');
+    let spool = new ManagedLogSpool(spoolRoot, 'tenant-a');
+    const input = { ...f.input, credentials: [], credentialContextComplete: true };
+    const identity = { provider: input.provider, agent: input.agent, source: digest('log/codex-tui.log') };
+    const now = Date.parse('2026-10-12T12:00:00Z');
+    try {
+        write(f.root, 'log/codex-tui.log', 'INFO first\n');
+        assert.equal(collectProvider(spool, input, now), true);
+        const first = spool.exportOne()!;
+        assert.equal((first.manifest as any).lastSuccessfulCollection, now);
+        assert.equal(digest(first.data), first.digest);
+        // Advancing the clock within one day avoids relying on midnight rolls.
+        write(f.root, 'log/codex-tui.log', 'INFO first\nINFO later\n');
+        assert.equal(collectProvider(spool, input, now + 1000), true);
+        assert.equal(collectProvider(spool, input, now + 2000), true); // caught-up retry
+        const status = (spool.status() as any).sources.find((s: any) => s.source === identity.source);
+        assert.equal(status.lastSuccessfulCollection, now + 1000);
+        assert.deepEqual(spool.exportOne(), first);
+        spool.report(identity, 'capture-interrupted', 7);
+        assert.deepEqual(spool.exportOne(), first);
+        const changed = (spool.status() as any).sources.find((s: any) => s.source === identity.source);
+        assert.equal(changed.gaps, 1);
+        assert.equal(changed.droppedBytes, 7);
+        spool.close();
+        spool = new ManagedLogSpool(spoolRoot, 'tenant-a');
+        assert.deepEqual(spool.exportOne(), first);
+        // An independently opened exporter sees the same durable snapshot.
+        const second = new ManagedLogSpool(spoolRoot, 'tenant-a');
+        try { assert.deepEqual(second.exportOne(), first); } finally { second.close(); }
+        spool.acknowledge(first.id, first.digest);
+        const later = spool.exportOne()!;
+        assert.notEqual(later.id, first.id);
+        assert.equal((later.manifest as any).firstSequence, 2);
+        assert.equal(digest(later.data), later.digest);
+        assert.equal((spool.status() as any).spool.segments, 1);
+    } finally { spool.close(); f.close(); }
+});
+
+test('daily sealing freezes native metadata before the first export is requested', () => {
+    const f = fixture();
+    const spool = new ManagedLogSpool(path.join(f.base, 'spool'), 'tenant-a');
+    const input = { ...f.input, credentials: [], credentialContextComplete: true };
+    const now = Date.parse('2026-10-11T23:59:59Z');
+    try {
+        write(f.root, 'log/codex-tui.log', 'INFO first\n');
+        collectProvider(spool, input, now);
+        write(f.root, 'log/codex-tui.log', 'INFO first\nINFO next day\n');
+        collectProvider(spool, input, now + 2000);
+        const first = spool.exportOne()!;
+        assert.equal((first.manifest as any).lastSuccessfulCollection, now);
+        assert.equal((first.manifest as any).lastSequence, 1);
+        collectProvider(spool, input, now + 3000);
+        assert.deepEqual(spool.exportOne(), first);
+    } finally { spool.close(); f.close(); }
+});
+
+test('legacy sealed native segments acquire a durable manifest snapshot on reopen', () => {
+    const f = fixture();
+    const spoolRoot = path.join(f.base, 'spool');
+    let spool = new ManagedLogSpool(spoolRoot, 'tenant-a');
+    const input = { ...f.input, credentials: [], credentialContextComplete: true };
+    const now = Date.parse('2026-10-12T12:00:00Z');
+    try {
+        write(f.root, 'log/codex-tui.log', 'INFO legacy\n');
+        collectProvider(spool, input, now);
+        const first = spool.exportOne()!;
+        // Reproduce the prior on-disk schema, which sealed only the payload.
+        (spool as any).db.exec('ALTER TABLE segments DROP COLUMN manifest');
+        spool.close();
+        spool = new ManagedLogSpool(spoolRoot, 'tenant-a');
+        write(f.root, 'log/codex-tui.log', 'INFO legacy\nINFO later\n');
+        collectProvider(spool, input, now + 1000);
+        assert.deepEqual(spool.exportOne(), first);
+        spool.close();
+        spool = new ManagedLogSpool(spoolRoot, 'tenant-a');
+        assert.deepEqual(spool.exportOne(), first);
+    } finally { spool.close(); f.close(); }
 });
 
 test('multi-GB metadata scans are bounded; unknown directories retain byte and reserve admission checks', () => {

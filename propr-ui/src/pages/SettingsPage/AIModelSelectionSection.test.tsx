@@ -128,7 +128,8 @@ describe('AIModelSelectionSection', () => {
     expect(onEnabledChange).toHaveBeenCalledWith(false);
   });
 
-  it('offers synthetic catalog models for planning and review', () => {
+  it('offers readable synthetic models and submits their internal values', () => {
+    const submittedSettings: Array<{ name: string; value: string }> = [];
     render(
       <AIModelSelectionSection
         settings={{
@@ -145,7 +146,9 @@ describe('AIModelSelectionSection', () => {
           enabled: true,
           supportedModels: ['virtual-code']
         }]}
-        onSettingChange={vi.fn()}
+        onSettingChange={event => {
+          submittedSettings.push({ name: event.target.name, value: event.target.value });
+        }}
         onReviewPromptChange={vi.fn()}
         onReviewPromptBlur={vi.fn()}
         onReviewContextEnabledChange={vi.fn()}
@@ -159,9 +162,14 @@ describe('AIModelSelectionSection', () => {
     );
 
     for (const label of ['Plan Context Analysis Model', 'Plan Generation Model', 'Default PR Review Model', 'Context Scout Model']) {
-      expect(within(screen.getByLabelText(label)).getByRole('option', { name: 'balanced - virtual-code' }))
+      expect(within(screen.getByLabelText(label)).getByRole('option', { name: 'balanced - Virtual Code' }))
         .toHaveValue('balanced:virtual-code');
     }
+
+    fireEvent.change(screen.getByLabelText('Plan Generation Model'), {
+      target: { value: 'balanced:virtual-code' },
+    });
+    expect(submittedSettings).toEqual([{ name: 'planner_generation_model', value: 'balanced:virtual-code' }]);
   });
 
   it('does not put a raw attacker flow on the AI Agents link when no active flow exists', () => {

@@ -1,7 +1,8 @@
 import { UsageTipsSettingsSection } from './UsageTipsSettingsSection';
 import React from 'react';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
-import GeneralSettingsSection from './GeneralSettingsSection';
+import WorkflowSettingsSection from './WorkflowSettingsSection';
+import UltrafixSettingsSection from './UltrafixSettingsSection';
 import AgentWatchdogSettingsSection from './AgentWatchdogSettingsSection';
 import AgentNetworkSettingsSection from './AgentNetworkSettingsSection';
 import AIModelSelectionSection from './AIModelSelectionSection';
@@ -54,10 +55,10 @@ const AdminSettingsPage: React.FC = () => {
     handleAgentRunSettingChange,
     handleReviewContextBudgetPercentCommit,
     handleRemoveLegacyReviewCap,
-    addWhitelistItem, removeWhitelistItem,
-    addPrimaryLabel, removePrimaryLabel,
-    addKeyword, removeKeyword,
-    addIgnoreKeyword, removeIgnoreKeyword,
+    addWhitelistItems, removeWhitelistItem,
+    addPrimaryLabels, removePrimaryLabel,
+    addKeywords, removeKeyword,
+    addIgnoreKeywords, removeIgnoreKeyword,
     handleSummarizationChange,
     handleSummarizationModelChange,
     handleSummarizationFallbackModelChange,
@@ -96,6 +97,18 @@ const AdminSettingsPage: React.FC = () => {
   }
 
   const settingsSections: SettingsNavigationSection[] = [
+    {
+      id: 'usage-tips',
+      category: 'general',
+      searchText: 'usage tips documentation',
+      content: <UsageTipsSettingsSection settings={settings} onChange={handleGeneralSettingChange} onBlur={triggerSettingsSave} />,
+    },
+    {
+      id: 'voice-briefings',
+      category: 'general',
+      searchText: 'voice briefings experimental microphone speech briefing catch me up enable disable desktop browser',
+      content: <VoiceSettingsSection />
+    },
     {
       id: 'model-selection',
       category: 'models',
@@ -146,24 +159,16 @@ const AdminSettingsPage: React.FC = () => {
       )
     },
     {
-      id: 'general-configuration',
-      category: 'automation',
-      searchText: 'general configuration processing worker concurrency provider failure replacements retry resolve merge conflicts follow-up followup comments assignment assignee assigned users spend cap cost budget max cost usd ultrafix escalation patience reasoning levels models rating goal maximum cycles pause seconds',
+      id: 'workflow-processing',
+      category: 'workflow',
+      searchText: 'workflow processing worker concurrency provider failure replacements retry spend cap cost budget max cost usd repository defaults resolve merge conflicts follow-up followup comments assignment assignee assigned users',
       content: (
-        <GeneralSettingsSection
-          modelAgents={catalogAgents?.length ? catalogAgents : agents}
-          onEscalationModelsChange={handleEscalationModelsChange}
+        <WorkflowSettingsSection
           settings={{
             worker_concurrency: settings.worker_concurrency,
             max_provider_replacements: settings.max_provider_replacements,
-            auto_resolve_merge_conflicts: settings.auto_resolve_merge_conflicts, followup_requires_assignment: settings.followup_requires_assignment,
-            ultrafix_escalation_enabled: settings.ultrafix_escalation_enabled,
-            ultrafix_escalation_models: settings.ultrafix_escalation_models,
-            ultrafix_escalation_patience: settings.ultrafix_escalation_patience,
-            ultrafix_escalation_max_reasoning_levels: settings.ultrafix_escalation_max_reasoning_levels,
-            ultrafix_rating_goal: settings.ultrafix_rating_goal,
-            ultrafix_max_cycles: settings.ultrafix_max_cycles,
-            ultrafix_pause_seconds: settings.ultrafix_pause_seconds,
+            auto_resolve_merge_conflicts: settings.auto_resolve_merge_conflicts,
+            followup_requires_assignment: settings.followup_requires_assignment,
             default_max_cost_usd: settings.default_max_cost_usd
           }}
           onSettingChange={handleGeneralSettingChange}
@@ -172,65 +177,8 @@ const AdminSettingsPage: React.FC = () => {
       )
     },
     {
-      id: 'agent-watchdog',
-      category: 'automation',
-      searchText: 'agent watchdog stall timeout inactivity silent hung tool stall degenerate whitespace output limit',
-      content: (
-        <AgentWatchdogSettingsSection
-          values={{
-            agent_stall_timeout_ms: settings.agent_stall_timeout_ms,
-            agent_tool_stall_timeout_ms: settings.agent_tool_stall_timeout_ms,
-            agent_degenerate_output_limit: settings.agent_degenerate_output_limit
-          }}
-          defaults={settings.agent_watchdog_defaults}
-          onCommit={handleAgentRunSettingChange}
-        />
-      )
-    },
-    { id: 'agent-network', category: 'automation', searchText: 'agent network restricted open egress proxy allowlist firewall hosts outbound internet enforce',
-      content: <AgentNetworkSettingsSection values={settings} defaults={settings.agent_network_defaults} onCommit={handleAgentRunSettingChange} /> },
-    {
-      id: 'github-user-whitelist',
-      category: 'automation',
-      searchText: 'GitHub user whitelist allowed users issue comment processing access trigger actors',
-      content: (
-        <TagListSection
-          title="GitHub trigger whitelist"
-          description="Allow these GitHub users to trigger ProPR from issues and comments. This is separate from instance roles, which you manage in Instance access. An empty whitelist allows every GitHub user."
-          items={whitelist}
-          newItem={newWhitelistItem}
-          onNewItemChange={setNewWhitelistItem}
-          onAddItem={addWhitelistItem}
-          onRemoveItem={removeWhitelistItem}
-          placeholder="e.g., octocat"
-          addLabel="GitHub username"
-          emptyMessage="Allowed for all users (Empty whitelist)."
-        />
-      )
-    },
-    {
-      id: 'primary-processing-labels',
-      category: 'automation',
-      searchText: 'primary processing labels issues auto processed state labels GitHub',
-      content: (
-        <TagListSection
-          title="Primary Processing Labels"
-          description="Issues with these labels will be auto-processed."
-          items={primaryLabels}
-          newItem={newPrimaryLabel}
-          onNewItemChange={setNewPrimaryLabel}
-          onAddItem={addPrimaryLabel}
-          onRemoveItem={removePrimaryLabel}
-          placeholder="e.g., AI"
-          addLabel="Label name"
-          emptyMessage="No labels configured."
-          helperText="State labels (-processing, -done) are generated automatically."
-        />
-      )
-    },
-    {
       id: 'pr-label',
-      category: 'automation',
+      category: 'workflow',
       searchText: 'pull request PR label follow-up comments monitor GitHub',
       content: (
         <PrLabelSection
@@ -241,8 +189,29 @@ const AdminSettingsPage: React.FC = () => {
       )
     },
     {
+      id: 'primary-processing-labels',
+      category: 'workflow',
+      searchText: 'primary processing labels issues auto processed state labels GitHub',
+      content: (
+        <TagListSection
+          title="Primary Processing Labels"
+          description="Issues with these labels will be auto-processed."
+          items={primaryLabels}
+          newItem={newPrimaryLabel}
+          onNewItemChange={setNewPrimaryLabel}
+          onAddItems={addPrimaryLabels}
+          onRemoveItem={removePrimaryLabel}
+          placeholder="e.g., AI"
+          minItems={1}
+          addLabel="Label name"
+          emptyMessage="No labels configured."
+          helperText="State labels (-processing, -done) are generated automatically."
+        />
+      )
+    },
+    {
       id: 'follow-up-keywords',
-      category: 'automation',
+      category: 'workflow',
       searchText: 'follow-up keywords trigger processing comments phrases',
       content: (
         <TagListSection
@@ -251,7 +220,7 @@ const AdminSettingsPage: React.FC = () => {
           items={keywords}
           newItem={newKeyword}
           onNewItemChange={setNewKeyword}
-          onAddItem={addKeyword}
+          onAddItems={addKeywords}
           onRemoveItem={removeKeyword}
           placeholder="e.g., PROPR"
           addLabel="Keyword"
@@ -261,7 +230,7 @@ const AdminSettingsPage: React.FC = () => {
     },
     {
       id: 'follow-up-ignore-keywords',
-      category: 'automation',
+      category: 'workflow',
       searchText: 'PR pull request follow-up ignore keywords prevent loops comments phrases',
       content: (
         <TagListSection
@@ -270,11 +239,70 @@ const AdminSettingsPage: React.FC = () => {
           items={ignoreKeywords}
           newItem={newIgnoreKeyword}
           onNewItemChange={setNewIgnoreKeyword}
-          onAddItem={addIgnoreKeyword}
+          onAddItems={addIgnoreKeywords}
           onRemoveItem={removeIgnoreKeyword}
           placeholder="e.g., Deployment In Progress"
           addLabel="Ignored phrase"
           emptyMessage="No ignore keywords configured."
+        />
+      )
+    },
+    {
+      id: 'github-user-whitelist',
+      category: 'workflow',
+      searchText: 'GitHub user whitelist allowed users issue comment processing access trigger actors',
+      content: (
+        <TagListSection
+          title="GitHub trigger whitelist"
+          description="Allow these GitHub users to trigger ProPR from issues and comments. This is separate from instance roles, which you manage in Instance access. An empty whitelist allows every GitHub user."
+          items={whitelist}
+          newItem={newWhitelistItem}
+          onNewItemChange={setNewWhitelistItem}
+          onAddItems={addWhitelistItems}
+          onRemoveItem={removeWhitelistItem}
+          placeholder="e.g., octocat"
+          addLabel="GitHub username"
+          emptyMessage="Allowed for all users (Empty whitelist)."
+        />
+      )
+    },
+    {
+      id: 'ultrafix',
+      category: 'ultrafix',
+      searchText: 'ultrafix target review score rating goal maximum max cycles pause seconds automatic escalation chain models fallback order patience reasoning levels',
+      content: (
+        <UltrafixSettingsSection
+          modelAgents={catalogAgents?.length ? catalogAgents : agents}
+          onEscalationModelsChange={handleEscalationModelsChange}
+          settings={{
+            ultrafix_escalation_enabled: settings.ultrafix_escalation_enabled,
+            ultrafix_escalation_models: settings.ultrafix_escalation_models,
+            ultrafix_escalation_patience: settings.ultrafix_escalation_patience,
+            ultrafix_escalation_max_reasoning_levels: settings.ultrafix_escalation_max_reasoning_levels,
+            ultrafix_rating_goal: settings.ultrafix_rating_goal,
+            ultrafix_max_cycles: settings.ultrafix_max_cycles,
+            ultrafix_pause_seconds: settings.ultrafix_pause_seconds
+          }}
+          onSettingChange={handleGeneralSettingChange}
+          onBlur={triggerSettingsSave}
+        />
+      )
+    },
+    { id: 'agent-network', category: 'sandbox', searchText: 'agent network restricted open egress proxy allowlist firewall hosts outbound internet enforce',
+      content: <AgentNetworkSettingsSection values={settings} defaults={settings.agent_network_defaults} onCommit={handleAgentRunSettingChange} /> },
+    {
+      id: 'agent-watchdog',
+      category: 'sandbox',
+      searchText: 'agent watchdog stall timeout inactivity silent hung tool stall degenerate whitespace output limit',
+      content: (
+        <AgentWatchdogSettingsSection
+          values={{
+            agent_stall_timeout_ms: settings.agent_stall_timeout_ms,
+            agent_tool_stall_timeout_ms: settings.agent_tool_stall_timeout_ms,
+            agent_degenerate_output_limit: settings.agent_degenerate_output_limit
+          }}
+          defaults={settings.agent_watchdog_defaults}
+          onCommit={handleAgentRunSettingChange}
         />
       )
     },
@@ -300,10 +328,10 @@ const AdminSettingsPage: React.FC = () => {
     },
     ...settingsDataSections(),
     {
-      id: 'voice-briefings',
+      id: 'mcp-server',
       category: 'integrations',
-      searchText: 'voice briefings experimental microphone speech briefing catch me up enable disable desktop browser',
-      content: <VoiceSettingsSection />
+      searchText: 'MCP model context protocol AI assistant Claude Claude Code ChatGPT tools connection OAuth enable disable toggle server',
+      content: <McpServerSection />
     },
     ...(desktop ? [{
       id: 'desktop-notifications',
@@ -312,43 +340,28 @@ const AdminSettingsPage: React.FC = () => {
       content: <DesktopNotificationSettingsSection />
     }] : []),
     {
-      id: 'mcp-server',
-      category: 'integrations',
-      searchText: 'MCP model context protocol AI assistant Claude Claude Code ChatGPT tools connection OAuth enable disable toggle server',
-      content: <McpServerSection />
-    },
-    {
       id: 'personal-notifications',
       category: 'notifications',
       searchText: 'personal notifications browser web push inbox badge quiet hours timezone plans tasks reviews pull requests indexing system failures',
       content: <NotificationSettingsSection />
-    },
-    // Least important section; keep it last.
-    {
-      id: 'usage-tips',
-      category: 'automation',
-      searchText: 'usage tips documentation',
-      content: <UsageTipsSettingsSection settings={settings} onChange={handleGeneralSettingChange} onBlur={triggerSettingsSave} />,
     }
   ];
 
   return (
     <div className="flex flex-col h-full bg-white">
-      {/* Anchored Header */}
-      <div className="flex-shrink-0 px-4 pb-4 pt-6">
-        <div className="mx-auto max-w-4xl">
-          <h2 className="text-xl font-semibold text-slate-900">Settings</h2>
-          {isDemoMode && (
-            <p className="mt-1 text-[12px] text-amber-700">
-              Demo mode is read-only. Settings can be inspected but not saved.
-            </p>
-          )}
-        </div>
-      </div>
-
       <SettingsNavigation
         sections={settingsSections}
         isReadOnly={isDemoMode}
+        header={
+          <>
+            <h2 className="text-xl font-semibold text-slate-900">Settings</h2>
+            {isDemoMode && (
+              <p className="mt-1 text-[12px] text-amber-700">
+                Demo mode is read-only. Settings can be inspected but not saved.
+              </p>
+            )}
+          </>
+        }
         {...categoryRoute}
       />
 

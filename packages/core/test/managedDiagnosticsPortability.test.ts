@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { gunzipSync } from 'node:zlib';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { ManagedLogSpool, DiagnosticPolicyError, MANAGED_LOG_POLICY, digest, type ManagedLogPolicy } from '../src/diagnostics/managedLogSpool.js';
 import { collectProvider } from '../src/diagnostics/providerCollector.js';
@@ -164,7 +164,7 @@ test('policy-limit upgrade migrates explicitly, preserving instance, unacknowled
         assert.deepEqual(upgraded.cursor(identity), { inode: '1:2', offset: 20 });
         const first = upgraded.exportOne()!;
         assert.deepEqual([first.id, first.digest], [pending.id, pending.digest]);
-        assert.equal((first.manifest as { policyVersion: number }).policyVersion, 2);
+        assert.deepEqual(first, pending); // sealed manifests retain their original policy and metadata
         assert.equal((upgraded.status() as { instance: string; policyVersion: number }).policyVersion, 2);
         assert.equal((upgraded.status() as { instance: string }).instance, 'tenant-a');
         // Open segments are sealed: new records never extend a segment bound by v1.
@@ -353,6 +353,116 @@ test('misdeclared policy migration chains refuse before any step is applied', ()
         new ManagedLogSpool(dir, 'tenant-a', v3, { migrations: [{ from: 1, to: 2, previous: v1 }, { from: 2, to: 3, previous: v2 }] }).close();
         new ManagedLogSpool(dir, 'tenant-a', v3).close();
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('pre-upgrade v1 segments are never extended and export as v1 across restart; new records start a v2 segment', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-diagnostics-redaction-'));
+    const dir = path.join(root, 'spool');
+    const identity = { provider: 'codex', agent: 'agent-a', source: 'stdout' };
+    const other = { ...identity, source: 'stderr' };
+    const now = Date.now();
+    type Manifest = { segment: number; redactionVersion: number; firstSequence: number; lastSequence: number };
+    try {
+        // A spool written by the release before per-segment redaction versions:
+        // one sealed-but-unacknowledged segment and one open segment.
+        const old = new ManagedLogSpool(dir, 'tenant-a');
+        old.append(identity, [JSON.stringify({ n: 1 })], 'jsonl', { credentials: [], now });
+        const pending = old.exportOne()!;
+        old.append(identity, [JSON.stringify({ n: 2 })], 'jsonl', { credentials: [], now });
+        old.append(other, [JSON.stringify({ n: 10 })], 'jsonl', { credentials: [], now });
+        old.close();
+        const legacy = new Database(path.join(dir, 'spool.sqlite'));
+        legacy.exec('ALTER TABLE segments DROP COLUMN redaction; ALTER TABLE segments DROP COLUMN manifest');
+        const before = legacy.prepare('SELECT id,sealed,digest,data,first,last FROM segments ORDER BY id').all() as Array<{ id: number; sealed: number; digest: string; data: Buffer }>;
+        legacy.close();
+        assert.deepEqual(before.map(s => s.sealed), [1, 0, 0]);
+
+        const upgraded = new ManagedLogSpool(dir, 'tenant-a');
+        assert.deepEqual((upgraded.status() as { segmentRedactionVersions: number[] }).segmentRedactionVersions, [1]);
+        upgraded.append(identity, [JSON.stringify({ n: 3 })], 'jsonl', { credentials: [], now });
+        upgraded.close();
+
+        // Restart again: stored versions survive, not the current constant.
+        const restarted = new ManagedLogSpool(dir, 'tenant-a');
+        restarted.append(other, [JSON.stringify({ n: 11 })], 'jsonl', { credentials: [], now });
+        assert.deepEqual((restarted.status() as { redactionVersion: number; segmentRedactionVersions: number[] }).redactionVersion, 2);
+        assert.deepEqual((restarted.status() as { segmentRedactionVersions: number[] }).segmentRedactionVersions, [1, 2]);
+        const exported: Array<{ manifest: Manifest; digest: string; data: Buffer; records: number[] }> = [];
+        for (let item; (item = restarted.exportOne());) {
+            exported.push({ manifest: item.manifest as Manifest, digest: item.digest, data: item.data,
+                records: gunzipSync(item.data).toString().trim().split('\n').map(line => JSON.parse(line).n) });
+            restarted.acknowledge(item.id, item.digest);
+        }
+        restarted.close();
+        assert.deepEqual(exported.map(e => [e.manifest.redactionVersion, e.records]), [[1, [1]], [1, [2]], [1, [10]], [2, [3]], [2, [11]]]);
+        // Preserved v1 segments are byte-identical: the open one was never extended.
+        assert.equal(exported[0].manifest.segment, pending.id);
+        assert.equal(exported[0].digest, pending.digest);
+        for (const [index, segment] of before.entries()) {
+            assert.equal(exported[index].manifest.segment, segment.id);
+            assert.equal(exported[index].digest, segment.digest);
+            assert.ok(exported[index].data.equals(segment.data));
+        }
+        assert.deepEqual(exported.slice(3).map(e => [e.manifest.firstSequence, e.manifest.lastSequence]), [[3, 3], [2, 2]]);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('rollback extension and legacy sealing repair a stale provisional manifest on re-upgrade', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-diagnostics-rollback-'));
+    const dir = path.join(root, 'spool');
+    const identity = { provider: 'codex', agent: 'agent-a', source: 'stdout' };
+    const now = Date.parse('2026-10-12T12:00:00Z');
+    type Manifest = { segment: number; sha256: string; firstSequence: number; lastSequence: number; lastSuccessfulCollection: number };
+    let spool = new ManagedLogSpool(dir, 'tenant-a');
+    try {
+        assert.equal(spool.append(identity, ['{"n":1}'], 'jsonl', { credentials: [], now }), true);
+        spool.close();
+        // The old release extends and seals the row without knowing about the
+        // manifest column introduced by this head. Leave that column untouched.
+        const legacy = new Database(path.join(dir, 'spool.sqlite'));
+        let compressed: Buffer;
+        let row: { id: number; source: string; sealed: number; data: Buffer; manifest: string };
+        try {
+            row = legacy.prepare('SELECT * FROM segments').get() as typeof row;
+            assert.equal(row.sealed, 0);
+            const provisional = JSON.parse(row.manifest) as Manifest;
+            assert.equal(provisional.lastSequence, 1);
+            compressed = gzipSync(Buffer.concat([gunzipSync(row.data), Buffer.from('{"n":2}\n')]), { level: 6 });
+            legacy.transaction(() => {
+                legacy.prepare('UPDATE segments SET last=2,end=?,raw=?,digest=?,data=?,sealed=1 WHERE id=?')
+                    .run(now + 1000, gunzipSync(compressed).length, digest(compressed), compressed, row.id);
+                legacy.prepare('UPDATE sources SET next=3,last_success=? WHERE id=?').run(now + 1000, row.source);
+            })();
+            assert.notEqual(digest(compressed), provisional.sha256);
+            assert.equal((legacy.prepare('SELECT manifest FROM segments').get() as { manifest: string }).manifest, row.manifest);
+        } finally { legacy.close(); }
+
+        spool = new ManagedLogSpool(dir, 'tenant-a');
+        // Reopening repairs before another collection can alter source status.
+        assert.equal(spool.append(identity, [], 'jsonl', { credentials: [], now: now + 2000 }), true);
+        const exported = spool.exportOne()!;
+        const manifest = exported.manifest as Manifest;
+        assert.equal(exported.id, row.id);
+        assert.deepEqual(exported.data, compressed);
+        assert.equal(manifest.sha256, digest(exported.data));
+        assert.deepEqual([manifest.firstSequence, manifest.lastSequence], [1, 2]);
+        assert.equal(manifest.lastSuccessfulCollection, now + 1000);
+        assert.deepEqual(gunzipSync(exported.data).toString().trim().split('\n').map(line => JSON.parse(line).n), [1, 2]);
+        assert.deepEqual(spool.exportOne(), exported);
+        spool.close();
+        spool = new ManagedLogSpool(dir, 'tenant-a');
+        assert.deepEqual(spool.exportOne(), exported);
+        spool.acknowledge(manifest.segment, manifest.sha256);
+        assert.equal(spool.exportOne(), null);
+        // Acknowledgement releases the row so subsequent diagnostics still drain.
+        assert.equal(spool.append(identity, ['{"n":3}'], 'jsonl', { credentials: [], now: now + 3000 }), true);
+        const later = spool.exportOne()!;
+        const laterManifest = later.manifest as Manifest;
+        assert.equal(laterManifest.firstSequence, 3);
+        assert.equal(JSON.parse(gunzipSync(later.data).toString()).n, 3);
+        spool.acknowledge(laterManifest.segment, laterManifest.sha256);
+        assert.equal(spool.exportOne(), null);
+    } finally { spool.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('a newer stored policy with keys this release does not know refuses as a downgrade', () => {

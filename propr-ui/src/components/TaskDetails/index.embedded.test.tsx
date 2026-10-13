@@ -1,3 +1,4 @@
+import { version as reactVersion } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -45,7 +46,12 @@ vi.mock('./ResultOverview', () => ({ default: () => null }));
 vi.mock('./PromptModal', () => ({ default: () => null }));
 vi.mock('./LogFilesModal', () => ({ default: () => null }));
 vi.mock('./FollowupModal', () => ({ default: () => null }));
-vi.mock('./ContextStrip', () => ({ default: ({ lead }: { lead?: React.ReactNode }) => <>{lead}</> }));
+vi.mock('./ContextStrip', () => ({
+  default: ({ lead }: { lead?: React.ReactNode }) => <>{lead}</>,
+  ConsumptionGroup: () => null,
+  MobileGitContext: () => null,
+  MobilePeopleRuntime: () => null,
+}));
 vi.mock('./TaskHeader', async importOriginal => ({ ...await importOriginal<typeof import('./TaskHeader')>(), default: () => null }));
 // The newest run is read from the API in its own suite.
 vi.mock('./useTaskHeadSummary', async importOriginal => ({ ...await importOriginal<typeof import('./useTaskHeadSummary')>(), useTaskHeadSummary: () => null }));
@@ -75,8 +81,8 @@ describe('TaskDetails embedded beside the task list', () => {
     expect(loadedTaskIds).toContain('pane-task');
     expect(document.title).toBe('Tasks | ProPR');
     // A pane is never wide enough for the timeline/output split: no desktop-only column classes.
-    expect(screen.getByTestId('task-workspace-scroll').className).not.toContain('[@container_task-workspace_(min-width:960px)]:flex-row');
-    expect(screen.getByTestId('task-timeline-scroll').className).not.toContain('[@container_task-workspace_(min-width:960px)]:w-[max(30%,576px)]');
+    expect(screen.getByTestId('task-workspace-scroll').className).not.toContain('[@container_task-workspace_(min-width:960px)]:grid');
+    expect(screen.getByTestId('task-workspace-scroll').className).not.toContain('[@container_task-workspace_(min-width:960px)]:grid-cols-[max(30%,576px)_minmax(0,1fr)]');
     // The list is beside the pane: no breadcrumb back to it.
     expect(screen.queryByTestId('task-breadcrumb')).not.toBeInTheDocument();
 
@@ -99,7 +105,7 @@ describe('TaskDetails embedded beside the task list', () => {
     );
     expect(loadedTaskIds).toContain('route-task');
     expect(document.title).toContain('ProPR');
-    expect(screen.getByTestId('task-workspace-scroll').className).toContain('[@container_task-workspace_(min-width:960px)]:flex-row');
+    expect(screen.getByTestId('task-workspace-scroll').className).toContain('[@container_task-workspace_(min-width:960px)]:grid');
     await act(async () => { fireEvent.click(screen.getAllByRole('button', { name: 'Delete task' })[0]); });
     expect(screen.getByTestId('location')).toHaveTextContent(/^\/tasks$/);
   });
@@ -178,4 +184,64 @@ describe('TaskDetails embedded beside the task list', () => {
     renderInspecting(run('run-2', 2, 'active'));
     expect(within(timelineHeader()).getByRole('button', { name: 'Return to live Run 2' })).toBeInTheDocument();
   });
+});
+
+it('disconnects timeline observers across keyed task remounts', () => {
+  // observeTimeline returns ref cleanup, a React 19 API.
+  expect(Number(reactVersion.split('.')[0])).toBeGreaterThanOrEqual(19);
+  const observers: Array<{ observe: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> = [];
+  vi.stubGlobal('ResizeObserver', class {
+    observe = vi.fn();
+    disconnect = vi.fn();
+    unobserve = vi.fn();
+    constructor() { observers.push(this); }
+  });
+  const view = (id: string) => <MemoryRouter><TaskDetails key={id} taskId={id} /></MemoryRouter>;
+  const { rerender, unmount } = render(view('first'));
+  const timelineObserver = () => observers.find(observer => observer.observe.mock.calls.some(([node]) => node === screen.getByTestId('task-timeline-scroll')))!;
+  const first = timelineObserver();
+  expect(first.observe).toHaveBeenCalledWith(screen.getByTestId('task-workspace-scroll'));
+  rerender(view('second'));
+  expect(first.disconnect).toHaveBeenCalledOnce();
+  const second = timelineObserver();
+  expect(second).not.toBe(first);
+  unmount();
+  expect(second.disconnect).toHaveBeenCalledOnce();
+  vi.unstubAllGlobals();
+});
+
+it('defers timeline positioning changes until the workspace returns to the top', () => {
+  const callbacks: ResizeObserverCallback[] = [];
+  vi.stubGlobal('ResizeObserver', class {
+    observe = vi.fn();
+    disconnect = vi.fn();
+    constructor(callback: ResizeObserverCallback) { callbacks.push(callback); }
+  });
+  const { unmount } = render(<MemoryRouter><TaskDetails taskId="streaming" /></MemoryRouter>);
+  const timeline = screen.getByTestId('task-timeline-scroll');
+  const scroller = screen.getByTestId('task-workspace-scroll');
+  Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 600 });
+  const resize = (height: number) => {
+    Object.defineProperty(timeline, 'offsetHeight', { configurable: true, value: height });
+    act(() => callbacks.forEach(callback => callback([], {} as ResizeObserver)));
+  };
+  resize(300);
+  expect(timeline.style.getPropertyValue('--timeline-position')).toBe('sticky');
+  scroller.scrollTop = 100;
+  resize(800);
+  expect(timeline.style.getPropertyValue('--timeline-position')).toBe('sticky');
+  scroller.scrollTop = 0;
+  fireEvent.scroll(scroller);
+  expect(timeline.style.getPropertyValue('--timeline-position')).toBe('static');
+  scroller.scrollTop = 100;
+  resize(300);
+  expect(timeline.style.getPropertyValue('--timeline-position')).toBe('static');
+  scroller.scrollTop = 0;
+  fireEvent.scroll(scroller);
+  expect(timeline.style.getPropertyValue('--timeline-position')).toBe('sticky');
+  unmount();
+  timeline.style.removeProperty('--timeline-position');
+  fireEvent.scroll(scroller);
+  expect(timeline.style.getPropertyValue('--timeline-position')).toBe('');
+  vi.unstubAllGlobals();
 });

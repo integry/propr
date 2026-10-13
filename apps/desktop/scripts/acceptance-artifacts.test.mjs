@@ -1,14 +1,20 @@
 import { SETUP_ACTIONS, setupPhase } from './packaged-acceptance-setup.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { chmod, mkdtemp, mkdir, lstat, readFile, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { hostname, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { inflateRawSync } from 'node:zlib';
+import { runInNewContext } from 'node:vm';
 import {
   ACCEPTANCE_ARTIFACT_LEAF,
+  ACCEPTANCE_PROFILE_PREFIX,
+  removeOwnedAcceptanceProfileSingletons,
   ACCEPTANCE_JOURNEYS,
+  CSP_SOCKET_JOURNEYS,
+  INSTALLED_SOCKET_JOURNEYS,
+  validateSocketServiceSummary,
   ACCEPTANCE_REDACTION_PLACEHOLDER,
   acceptanceVariantsFor,
   validateSetupEvidence,
@@ -132,105 +138,310 @@ const accessibilityFor = () => ({
   },
 });
 
-const summaryFor = () => ({
-  schemaVersion: 7,
-  generatedAt: FIXED_TIME,
-  status: 'passed',
-  journeys: ACCEPTANCE_JOURNEYS.length,
-  screenshots: expectedScreenshotNames().length,
-  boundary: { packagedExecutable: true, rendererOrigin: 'propr-app://renderer', preloadBridge: true, journeys: ACCEPTANCE_JOURNEYS },
-  console: {
-    records: 3,
-    errors: 0,
-    expectedErrors: 0,
-    unexpectedErrors: 0,
-    errorCategoryCounts: {
-      expectedRevokedAuthorizationResponse: 0,
-      currentUserSync: 0,
-      apiLoad: 0,
-      socketContext: 0,
-      reactRuntime: 0,
-      networkResource: 0,
-      other: 0,
-      pageError: 0,
-    },
-  },
-  services: {
-    rest: {
-      requestCount: 12,
-      authenticatedRequestCount: 3,
-      journeys: ['dashboard-profile-manager'],
-      currentUserValidation: {
-        correlation: 'current-scope-user-validation',
-        rendererRequestIssued: true,
-        rendererScopeGeneration: 1,
-        mainProxyObserved: true,
-        mainActiveScopeGeneration: 0,
-        activeScopeAccepted: true,
-        mainOnlyBearerInjection: true,
-        upstreamRequestArrived: true,
-        responseStatus: 200,
-        responseClassification: 'success',
-        parsedUserSchemaAccepted: true,
-        rendererActiveScopeAccepted: true,
-        firstFailedPredicate: 'none',
+const summaryFor = (mode = 'packaged') => {
+  const summary = {
+    schemaVersion: 7,
+    generatedAt: FIXED_TIME,
+    status: 'passed',
+    journeys: ACCEPTANCE_JOURNEYS.length,
+    screenshots: expectedScreenshotNames().length,
+    boundary: { packagedExecutable: true, rendererOrigin: 'propr-app://renderer', preloadBridge: true, journeys: ACCEPTANCE_JOURNEYS },
+    console: {
+      records: 3,
+      errors: 0,
+      expectedErrors: 0,
+      unexpectedErrors: 0,
+      errorCategoryCounts: {
+        expectedCspPolicyTransition: 0,
+        expectedRevokedAuthorizationResponse: 0,
+        currentUserSync: 0,
+        apiLoad: 0,
+        socketContext: 0,
+        reactRuntime: 0,
+        networkResource: 0,
+        other: 0,
+        pageError: 0,
       },
     },
-    socketIo: {
-      authenticatedConnections: 1,
-      events: 1,
-      journeys: ['dashboard-profile-manager'],
-      handshake: {
-        mainAttempts: 1,
-        fixtureAttempts: 1,
-        scopeQueryPresent: true,
-        scopeQueryCount: 1,
-        scopeEqualsActivatedBinding: true,
-        activeBindingPresent: true,
-        profileGenerationCurrent: true,
-        originEqualsActivatedBinding: true,
-        path: 'socket-io',
-        transport: 'websocket',
-        resource: 'websocket',
-        rendererBearerPresent: false,
-        rendererCookiePresent: false,
-        authorizationHeaderPresent: true,
-        authorizationHeaderExactlyMainInjected: true,
-        rendererObservedApplicationEvent: true,
-        rendererLifecycle: {
-          phase: 'socket-connect-invoked',
-          profileActivationPublished: true,
-          socketProviderMounted: true,
-          providerDisabled: false,
-          disabledByDemoModeLoading: false,
-          disabledByDemoMode: false,
-          disabledByCurrentUserLoading: false,
-          disabledByCurrentUserAbsent: false,
-          desktopRuntime: true,
-          connectionScope: 'available',
-          socketConstructionInvocations: 1,
-          socketConstructions: 1,
-          connectInvocations: 1,
+    services: {
+      rest: {
+        requestCount: 12,
+        authenticatedRequestCount: 3,
+        journeys: ['dashboard-profile-manager'],
+        currentUserValidation: {
+          correlation: 'current-scope-user-validation',
+          rendererRequestIssued: true,
+          rendererScopeGeneration: 1,
+          mainProxyObserved: true,
+          mainActiveScopeGeneration: 0,
+          activeScopeAccepted: true,
+          mainOnlyBearerInjection: true,
+          upstreamRequestArrived: true,
+          responseStatus: 200,
+          responseClassification: 'success',
+          parsedUserSchemaAccepted: true,
+          rendererActiveScopeAccepted: true,
+          firstFailedPredicate: 'none',
         },
-        rejectionCategory: 'none',
       },
+      socketIo: {
+        records: 3,
+        subscriptions: 1,
+        authenticatedConnections: 1,
+        events: 1,
+        journeys: ['dashboard-profile-manager'],
+        handshake: {
+          mainAttempts: 1,
+          fixtureAttempts: 1,
+          scopeQueryPresent: true,
+          scopeQueryCount: 1,
+          scopeEqualsActivatedBinding: true,
+          activeBindingPresent: true,
+          profileGenerationCurrent: true,
+          originEqualsActivatedBinding: true,
+          path: 'socket-io',
+          transport: 'websocket',
+          resource: 'websocket',
+          rendererBearerPresent: false,
+          rendererCookiePresent: false,
+          authorizationHeaderPresent: true,
+          authorizationHeaderExactlyMainInjected: true,
+          rendererObservedApplicationEvent: true,
+          rendererLifecycle: {
+            phase: 'socket-connect-invoked',
+            profileActivationPublished: true,
+            socketProviderMounted: true,
+            providerDisabled: false,
+            disabledByDemoModeLoading: false,
+            disabledByDemoMode: false,
+            disabledByCurrentUserLoading: false,
+            disabledByCurrentUserAbsent: false,
+            desktopRuntime: true,
+            connectionScope: 'available',
+            socketConstructionInvocations: 1,
+            socketConstructions: 1,
+            connectInvocations: 1,
+          },
+          rejectionCategory: 'none',
+        },
+      },
+      pairing: { started: 1, polled: 1, activated: 1, journeys: ['dashboard-profile-manager'] },
+      connect: { confirmedRequests: 1, journeys: ['connect-confirmation'] },
     },
-    pairing: { started: 1, polled: 1, activated: 1, journeys: ['dashboard-profile-manager'] },
-    connect: { confirmedRequests: 1, journeys: ['connect-confirmation'] },
-  },
-  redaction: 'Full raw surfaces were scanned; published logs retain only source, level, byte count, and digest.',
+    redaction: 'Full raw surfaces were scanned; published logs retain only source, level, byte count, and digest.',
+  };
+  summary.services.socketIo.cspSessions = CSP_SOCKET_JOURNEYS.map(journey => ({
+    ...structuredClone(summary.services.socketIo), journeys: [journey],
+    handshake: { ...structuredClone(summary.services.socketIo.handshake), rendererLifecycle: null },
+  }));
+  summary.services.socketIo.installedSessions = mode === 'installed-rpm'
+    ? INSTALLED_SOCKET_JOURNEYS.map((journey, index) => ({
+      ...structuredClone(summary.services.socketIo.cspSessions[index]), journeys: [journey],
+    })) : [];
+  summary.services.socketIo.mode = mode;
+  summary.services.socketIo.unexpectedRecords = 0;
+  return summary;
+};
+
+  for (const mode of ['packaged', 'installed-rpm']) {
+  it(`validates actual runner service evidence through final ${mode} artifacts`, async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'combined-session-contract-'));
+    try {
+      const evidence = await createCompleteArtifactSet(join(parent, ACCEPTANCE_ARTIFACT_LEAF), mode);
+      // Execute the runner's actual gate without launching Electron or capturing UI.
+      const source = await readFile(new URL('./run-packaged-acceptance.mjs', import.meta.url), 'utf8');
+      const start = source.indexOf('const observedServiceSummary = () => {');
+      const end = source.indexOf('\ntry {', start);
+      assert.ok(start >= 0 && end > start);
+      const journey = 'dashboard-profile-manager';
+      const journeys = [journey, ...CSP_SOCKET_JOURNEYS, ...(mode === 'installed-rpm' ? INSTALLED_SOCKET_JOURNEYS : [])];
+      const { rest, socketIo } = summaryFor().services;
+      const handshake = socketIo.handshake;
+      const socketRecords = journeys
+        .flatMap(journey => [
+          { journey, event: 'connection', authenticated: true },
+          { journey, event: 'subscribe:queue:stats', authenticated: true,
+            genuineApplicationSubscription: true, direction: 'client-to-fixture' },
+          { journey, event: 'queue:stats:update', authenticated: true,
+            genuineApplicationEvent: true, direction: 'fixture-to-renderer' },
+        ]);
+      const context = {
+        socketRecords,
+        CSP_SOCKET_JOURNEYS,
+        INSTALLED_SOCKET_JOURNEYS,
+        installedRpm: mode === 'installed-rpm',
+        validateSocketServiceSummary: socket => {
+          evidence.summary.services.socketIo = socket;
+          validateAcceptanceEvidence(evidence.accessibility, evidence.manifest, evidence.summary, evidence.sanitizedLog);
+        },
+        QUEUE_STATS_SUBSCRIBE_EVENT: 'subscribe:queue:stats',
+        QUEUE_STATS_UPDATE: 'queue:stats:update',
+        PAIRING_ID: 'fixture-pairing',
+        unique: values => [...new Set(values)],
+        requestRecords: [
+          { journey, method: 'GET', url: '/api/auth/user', hasAuthorization: true },
+          ...['', '/fixture-pairing/poll', '/fixture-pairing/activate'].map(suffix => ({
+            journey, method: 'POST', url: '/api/desktop/pairings' + suffix,
+          })),
+          { journey: 'connect-confirmation', method: 'GET', url: '/api/desktop/discovery' },
+        ],
+        mainHandshakeRecords: journeys.map(journey => ({ ...handshake, journey, accepted: true,
+          scopeEqualsActive: true, originEqualsActive: true, bearerMainInjected: true })),
+        fixtureHandshakeRecords: journeys.map(journey => ({ journey, accepted: true, scopeQueryPresent: true,
+          authorizationPresent: true, authorizationMatchesActivatedBearer: true })),
+        consoleRecords: journeys.map(journey => ({ journey, text: '[SocketContext] Received queue stats update: {}' })),
+        rendererLifecycleRecords: [{ journey, ...handshake.rendererLifecycle }],
+        rendererCurrentUserRecords: ['request-issued', 'parsed-user-accepted', 'active-scope-accepted']
+          .map(phase => ({ journey, phase, activeScopePresent: true, scopeGeneration: 1, schemaAccepted: true })),
+        mainCurrentUserRecords: [{ journey, activeScopeGeneration: 1, accepted: true,
+          rendererBearerPresent: false, rendererCookiePresent: false, bearerMainInjected: true }],
+        fixtureCurrentUserRecords: [{ journey, source: 'renderer', requestArrived: true,
+          responseStatus: 200, classification: 'success' }],
+        currentUserValidationFailureCategory: () => rest.currentUserValidation.firstFailedPredicate,
+        socketHandshakeFailureCategory: () => 'none',
+      };
+      const summary = () => runInNewContext(source.slice(start, end) + '\nobservedServiceSummary()', { ...context });
+      const services = summary();
+      assert.equal(services.socketIo.authenticatedConnections, 1);
+      assert.equal(services.socketIo.events, 1);
+      assert.deepEqual(Array.from(services.socketIo.journeys), [journey]);
+      assert.equal(services.socketIo.handshake.mainAttempts, 1);
+      assert.equal(services.socketIo.handshake.fixtureAttempts, 1);
+
+      assert.equal(services.socketIo.cspSessions.length, 3);
+      validateSocketServiceSummary(services.socketIo, mode);
+
+      // Every expected journey requires one complete session, independently.
+      for (const journey of journeys) {
+        for (const event of ['connection', 'subscribe:queue:stats', 'queue:stats:update']) {
+          const index = socketRecords.findIndex(record => record.journey === journey && record.event === event);
+          const [record] = socketRecords.splice(index, 1);
+          assert.throws(summary, /service journeys were incomplete/, `missing ${event}`);
+          socketRecords.splice(index, 0, record, { ...record });
+          assert.throws(summary, /service journeys were incomplete/, `duplicate ${event}`);
+          socketRecords.splice(index + 1, 1);
+          record.authenticated = false;
+          assert.throws(summary, /service journeys were incomplete/, `unauthorized ${journey} ${event}`);
+          record.authenticated = true;
+        }
+        for (const key of ['mainHandshakeRecords', 'fixtureHandshakeRecords', 'consoleRecords']) {
+          const records = context[key];
+          const index = records.findIndex(record => record.journey === journey);
+          const [record] = records.splice(index, 1);
+          assert.throws(summary, /service journeys were incomplete/, `missing ${journey} ${key}`);
+          records.splice(index, 0, record, { ...record });
+          assert.throws(summary, /service journeys were incomplete/, `duplicate ${journey} ${key}`);
+          records.splice(index + 1, 1);
+          if (key !== 'consoleRecords') {
+            record.accepted = false;
+            assert.throws(summary, /service journeys were incomplete/, `rejected ${journey} ${key}`);
+            record.accepted = true;
+          }
+        }
+      }
+      // An extra unauthenticated record in an owned journey cannot be filtered out.
+      for (const journey of journeys) {
+        socketRecords.push({ journey, event: 'connection', authenticated: false });
+        assert.throws(summary, /service journeys were incomplete/);
+        socketRecords.pop();
+        const main = context.mainHandshakeRecords.find(record => record.journey === journey);
+        const fixture = context.fixtureHandshakeRecords.find(record => record.journey === journey);
+        for (const [record, key, invalid] of [
+          [main, 'scopeQueryCount', 2], [main, 'scopeEqualsActive', false],
+          [main, 'activeBindingPresent', false], [main, 'profileGenerationCurrent', false],
+          [main, 'originEqualsActive', false], [main, 'path', 'other'],
+          [main, 'transport', 'other'], [main, 'resource', 'other'],
+          [main, 'rendererBearerPresent', true], [main, 'rendererCookiePresent', true],
+          [main, 'bearerMainInjected', false], [fixture, 'authorizationPresent', false],
+          [fixture, 'authorizationMatchesActivatedBearer', false],
+        ]) {
+          const original = record[key];
+          record[key] = invalid;
+          assert.throws(summary, /service journeys were incomplete/, `${journey} ${key}`);
+          record[key] = original;
+        }
+      }
+      for (const key of ['socketRecords', 'mainHandshakeRecords', 'fixtureHandshakeRecords']) {
+        for (const authenticated of [true, false]) {
+          for (const unexpectedJourney of ['unknown-session', 'installed-unknown',
+            ...installedJourneys.filter(value => !journeys.includes(value))]) {
+            context[key].push({ ...context[key][0], journey: unexpectedJourney, authenticated, accepted: authenticated });
+            assert.throws(summary, /service journeys were incomplete/, `${unexpectedJourney} ${key}`);
+            context[key].pop();
+          }
+        }
+      }
+      for (const mutate of [
+        socket => { socket.installedSessions = []; },
+        socket => { socket.installedSessions.push(structuredClone(socket.cspSessions[0])); },
+        socket => { socket.installedSessions = [socket.installedSessions[0], socket.installedSessions[0]]; },
+        socket => { socket.installedSessions[0].handshake.rendererLifecycle = structuredClone(handshake.rendererLifecycle); },
+      ]) {
+        if (mode !== 'installed-rpm') continue;
+        const services = summary();
+        mutate(services.socketIo);
+        evidence.summary.services.socketIo = services.socketIo;
+        assert.throws(() => validateAcceptanceEvidence(evidence.accessibility, evidence.manifest, evidence.summary, evidence.sanitizedLog), /installed sessions disagree|not observed/);
+      }
+      // The final artifact gate ties session coverage to the schema-2 log mode.
+      for (const mismatch of ['packaged', 'installed-rpm', 'unknown']) {
+        if (mismatch === mode) continue;
+        const services = summary();
+        services.socketIo.mode = mismatch;
+        evidence.summary.services.socketIo = services.socketIo;
+        assert.throws(() => validateAcceptanceEvidence(evidence.accessibility, evidence.manifest, evidence.summary, evidence.sanitizedLog), /mode/);
+      }
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+}
+
+it('requires exact dashboard and CSP session counts in the sanitized service summary', () => {
+  const valid = summaryFor().services.socketIo;
+  assert.doesNotThrow(() => validateSocketServiceSummary(valid));
+  for (const index of [-1, 0, 1, 2]) {
+    for (const field of ['records', 'authenticatedConnections', 'subscriptions', 'events']) {
+      for (const delta of [-1, 1]) {
+        const summary = structuredClone(valid);
+        const session = index === -1 ? summary : summary.cspSessions[index];
+        session[field] += delta;
+        assert.throws(() => validateSocketServiceSummary(summary), /not observed/);
+      }
+    }
+    const summary = structuredClone(valid);
+    const session = index === -1 ? summary : summary.cspSessions[index];
+    session.journeys = ['unknown-session'];
+    assert.throws(() => validateSocketServiceSummary(summary), /not observed/);
+    session.handshake.authorizationHeaderExactlyMainInjected = false;
+    session.journeys = index === -1 ? ['dashboard-profile-manager'] : [CSP_SOCKET_JOURNEYS[index]];
+    assert.throws(() => validateSocketServiceSummary(summary), /not observed/);
+  }
+  for (const mutate of [
+    summary => summary.cspSessions.pop(),
+    summary => summary.cspSessions.push(structuredClone(summary.cspSessions[0])),
+    summary => { summary.cspSessions[1] = structuredClone(summary.cspSessions[0]); },
+    summary => { summary.unexpectedRecords = 1; },
+  ]) {
+    const summary = structuredClone(valid);
+    mutate(summary);
+    assert.throws(() => validateSocketServiceSummary(summary), /not observed/);
+  }
 });
 
-const sanitizedLogFor = () => ({
-  schemaVersion: 1,
+const sanitizedLogFor = (mode = 'packaged') => ({
+  schemaVersion: 2,
   generatedAt: FIXED_TIME,
+  mode,
   records: [
     ...Array.from({ length: 3 }, (_, index) => ({
       journey: 'first-run-chooser', source: 'renderer-console', level: 'info', bytes: index, sha256: '5'.repeat(64),
     })),
-    ...ACCEPTANCE_JOURNEYS.map(journey => ({
+    ...[...ACCEPTANCE_JOURNEYS, 'csp-reload-pairing', 'csp-reload-removal'].map(journey => ({
       journey, source: 'packaged-process', level: 'combined', bytes: 0, sha256: '6'.repeat(64),
     })),
+    ...(mode === 'installed-rpm' ? installedJourneys.flatMap(journey => [
+      { journey, source: 'renderer-console', level: 'info', bytes: 12, sha256: '5'.repeat(64) },
+      { journey, source: 'packaged-process', level: 'combined', bytes: 24, sha256: '6'.repeat(64) },
+    ]) : []),
   ],
 });
 
@@ -258,7 +469,14 @@ it('rejects substituted setup presentation and presence-only action evidence', (
   assert.throws(() => validateSetupEvidence({ ...valid, phase: 'idle' }, journey, variant), /fixture/);
 });
 
-const createCompleteArtifactSet = async root => {
+const installedJourneys = [
+  'installed-approved', 'installed-restart', 'installed-logged-out',
+  'installed-reject', 'installed-reject-restart',
+  'installed-expire', 'installed-expire-restart',
+  'installed-wrong-account', 'installed-wrong-account-restart',
+];
+
+const createCompleteArtifactSet = async (root, mode = 'packaged') => {
   await mkdir(join(root, 'screenshots'), { recursive: true });
   const metadata = [];
   for (const journey of ACCEPTANCE_JOURNEYS) {
@@ -289,8 +507,9 @@ const createCompleteArtifactSet = async root => {
     }
   }
   const accessibility = accessibilityFor();
-  const summary = summaryFor();
-  const sanitizedLog = sanitizedLogFor();
+  const summary = summaryFor(mode);
+  const sanitizedLog = sanitizedLogFor(mode);
+  summary.console.records = sanitizedLog.records.filter(record => record.source !== 'packaged-process').length;
   await writeFile(join(root, 'accessibility.json'), `${JSON.stringify(accessibility)}\n`);
   await writeFile(join(root, 'sanitized-summary.json'), `${JSON.stringify(summary)}\n`);
   await writeFile(join(root, 'sanitized-log.json'), `${JSON.stringify(sanitizedLog)}\n`);
@@ -300,6 +519,47 @@ const createCompleteArtifactSet = async root => {
 };
 
 describe('packaged acceptance artifact contract', () => {
+  it('verifies installed-mode artifacts and strictly accounts for every lifecycle phase', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'acceptance-installed-contract-'));
+    const root = join(parent, ACCEPTANCE_ARTIFACT_LEAF);
+    try {
+      const evidence = await createCompleteArtifactSet(root, 'installed-rpm');
+      const validate = log => validateAcceptanceEvidence(evidence.accessibility, evidence.manifest, evidence.summary, log);
+      assert.doesNotThrow(() => validate(evidence.sanitizedLog));
+      await verifyAcceptanceArtifacts(root, { ocr: async () => '' });
+
+      for (const journey of installedJourneys) {
+        const processRecord = evidence.sanitizedLog.records.find(record => record.journey === journey && record.source === 'packaged-process');
+        assert.throws(() => validate({ ...evidence.sanitizedLog,
+          records: evidence.sanitizedLog.records.filter(record => record !== processRecord),
+        }), /process log coverage/);
+        assert.throws(() => validate({ ...evidence.sanitizedLog,
+          records: [...evidence.sanitizedLog.records, processRecord],
+        }), /process log coverage/);
+        const rendererRecord = evidence.sanitizedLog.records.find(record => record.journey === journey && record.source === 'renderer-console');
+        assert.throws(() => validate({ ...evidence.sanitizedLog,
+          records: evidence.sanitizedLog.records.filter(record => record !== rendererRecord),
+        }), /log and summary counts disagree/);
+        for (const source of ['renderer-console', 'renderer-page-error']) {
+          assert.throws(() => validate({ ...evidence.sanitizedLog,
+            records: evidence.sanitizedLog.records.map(record => record === rendererRecord ? { ...record, source, level: 'error' } : record),
+          }), /log and summary counts disagree/);
+        }
+      }
+      const unknownPhase = structuredClone(evidence.sanitizedLog);
+      unknownPhase.records.at(-1).journey = 'installed-unknown';
+      assert.throws(() => validate(unknownPhase), /log record is invalid/);
+      const reordered = structuredClone(evidence.sanitizedLog);
+      reordered.records.reverse();
+      assert.throws(() => validate(reordered), /process log coverage/);
+      assert.throws(() => validate({ ...evidence.sanitizedLog, mode: 'packaged' }), /log record is invalid/);
+      for (const mode of ['unknown', 'toString', null, ['installed-rpm']]) {
+        assert.throws(() => validate({ ...evidence.sanitizedLog, mode }), /sanitized log is invalid/);
+      }
+      assert.throws(() => validate({ ...sanitizedLogFor(), mode: 'installed-rpm' }), /process log coverage/);
+    } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+
   it('has exactly 67 deterministic unique names and physical dimensions', () => {
     const names = ACCEPTANCE_JOURNEYS.flatMap(journey => Object.entries(acceptanceVariantsFor(journey)).map(([variant, config]) => {
       assert.deepEqual(readPngDimensions(pngHeader(config.viewport.width * config.deviceScaleFactor, config.viewport.height * config.deviceScaleFactor)), {
@@ -475,6 +735,29 @@ describe('packaged acceptance artifact contract', () => {
         }, evidence.sanitizedLog),
         /console summary is invalid/,
       );
+      assert.throws(() => validateAcceptanceEvidence(
+        evidence.accessibility, evidence.manifest, evidence.summary,
+        { ...evidence.sanitizedLog, records: evidence.sanitizedLog.records.filter(record => record.journey !== 'csp-reload-removal') },
+      ), /process log coverage is incomplete/);
+      const unknownPhaseLog = structuredClone(evidence.sanitizedLog);
+      unknownPhaseLog.records.at(-1).journey = 'csp-reload-unknown';
+      assert.throws(() => validateAcceptanceEvidence(
+        evidence.accessibility, evidence.manifest, evidence.summary, unknownPhaseLog,
+      ), /sanitized log record is invalid/);
+      const transitionSummary = structuredClone(evidence.summary);
+      Object.assign(transitionSummary.console, { records: 6, errors: 6, expectedErrors: 6 });
+      transitionSummary.console.errorCategoryCounts.expectedCspPolicyTransition = 6;
+      const transitionLog = { ...evidence.sanitizedLog, records: [...evidence.sanitizedLog.records.filter(record => record.source === 'packaged-process'), ...Array.from({ length: 6 }, () => ({
+        journey: 'csp-reload-pairing', source: 'renderer-console', level: 'error', bytes: 10, sha256: '5'.repeat(64),
+      }))] };
+      assert.doesNotThrow(() => validateAcceptanceEvidence(
+        evidence.accessibility, evidence.manifest, transitionSummary, transitionLog,
+      ));
+      Object.assign(transitionSummary.console, { records: 7, errors: 7, expectedErrors: 7 });
+      transitionSummary.console.errorCategoryCounts.expectedCspPolicyTransition = 7;
+      assert.throws(() => validateAcceptanceEvidence(
+        evidence.accessibility, evidence.manifest, transitionSummary, evidence.sanitizedLog,
+      ), /console summary is invalid/);
       for (const mutateHandshake of [
         handshake => { handshake.scopeQueryPresent = false; handshake.scopeQueryCount = 0; },
         handshake => { handshake.scopeQueryCount = 2; },
@@ -611,6 +894,257 @@ describe('packaged acceptance artifact contract', () => {
         /non-link directory/,
       );
     } finally { await rm(parent, { recursive: true, force: true }); }
+  });
+
+  it('confines the singleton exception to an owned private profile root with a dangling uint64 target', {
+    skip: process.platform === 'win32' ? 'POSIX singleton regression' : false,
+  }, async () => {
+    const profile = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
+    const outside = await mkdtemp(join(tmpdir(), 'propr-cookie-escape-'));
+    try {
+      const cookie = join(profile, 'SingletonCookie');
+      for (const target of [join(outside, 'outside'), '../outside', '18446744073709551616', '01', 'not-a-cookie']) {
+        await symlink(target, cookie);
+        await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile), /uint64 token/);
+        await assert.rejects(scanAcceptancePaths([profile]), /symbolic link/);
+        await rm(cookie);
+      }
+      await symlink('123', cookie);
+      await chmod(profile, 0o755);
+      await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile), /owned private profile/);
+      await chmod(profile, 0o700);
+      await rm(cookie);
+      const alias = join(outside, 'profile-alias');
+      await symlink(profile, alias);
+      await assert.rejects(removeOwnedAcceptanceProfileSingletons(alias), /allowlisted leaf/);
+      await writeFile(join(profile, '123'), 'regular target');
+      await symlink('123', cookie);
+      await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile), /target must be absent/);
+      await rm(cookie);
+      await rm(join(profile, '123'));
+      await symlink(outside, join(profile, '123'));
+      await symlink('123', cookie);
+      await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile), /target must be absent/);
+      await rm(cookie);
+      await rm(join(profile, '123'));
+      await mkdir(join(profile, 'nested'));
+      await symlink('123', join(profile, 'nested', 'SingletonCookie'));
+      await removeOwnedAcceptanceProfileSingletons(profile);
+      await assert.rejects(scanAcceptancePaths([profile]), /symbolic link/);
+      await symlink('123', join(outside, 'SingletonCookie'));
+      await assert.rejects(removeOwnedAcceptanceProfileSingletons(outside), /allowlisted leaf/);
+      await assert.rejects(scanAcceptancePaths([outside]), /symbolic link/);
+      await writeFile(cookie, 'secret-cookie-sentinel');
+      await removeOwnedAcceptanceProfileSingletons(profile);
+      await rm(join(profile, 'nested'), { recursive: true });
+      await assert.rejects(scanAcceptancePaths([profile], ['secret-cookie-sentinel']), /Secret sentinel/);
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts only exact stopped-child singleton entries and preserves outside paths and profile files', {
+    skip: process.platform === 'win32' ? 'POSIX singleton regression' : false,
+  }, async () => {
+    const profile = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
+    const outside = await mkdtemp('/tmp/scoped_dir');
+    const pid = 12345;
+    const options = { stoppedChildPid: pid };
+    try {
+      const socketTarget = join(outside, 'SingletonSocket');
+      await writeFile(socketTarget, 'outside data');
+      await writeFile(join(profile, 'persisted-session'), 'session data');
+      for (const token of ['0', '18446744073709551615']) {
+        await symlink(token, join(profile, 'SingletonCookie'));
+        await symlink(`${hostname()}-${pid}`, join(profile, 'SingletonLock'));
+        await symlink(socketTarget, join(profile, 'SingletonSocket'));
+        await removeOwnedAcceptanceProfileSingletons(profile, options);
+        for (const name of ['SingletonCookie', 'SingletonLock', 'SingletonSocket']) {
+          await assert.rejects(lstat(join(profile, name)), { code: 'ENOENT' });
+        }
+        await scanAcceptancePaths([profile]);
+        assert.equal(await readFile(socketTarget, 'utf8'), 'outside data');
+        assert.equal(await readFile(join(profile, 'persisted-session'), 'utf8'), 'session data');
+      }
+      for (const target of ['foreign-host-12345', `${hostname()}-12346`, `${hostname()}-012345`,
+        `${hostname()}-0`, `${hostname()}--1`, `${hostname()}-12345/extra`, '../escape', socketTarget]) {
+        await symlink(target, join(profile, 'SingletonLock'));
+        await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile, options), /stopped child PID/);
+        assert.equal(await readlink(join(profile, 'SingletonLock')), target);
+        await assert.rejects(scanAcceptancePaths([profile]), /symbolic link/);
+        await rm(join(profile, 'SingletonLock'));
+      }
+      await symlink(`${hostname()}-${pid}`, join(profile, 'SingletonLock'));
+      for (const stoppedChildPid of [undefined, 0, -1, 1.5, '12345', Number.MAX_SAFE_INTEGER + 1]) {
+        await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile, { stoppedChildPid }), /stopped child PID/);
+      }
+      await chmod(profile, 0o755);
+      await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile, options), /owned private profile/);
+      await chmod(profile, 0o700);
+      await writeFile(join(profile, `${hostname()}-${pid}`), 'secret');
+      await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile, options), /target must be absent/);
+      await rm(join(profile, `${hostname()}-${pid}`));
+      await symlink(outside, join(profile, `${hostname()}-${pid}`));
+      await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile, options), /target must be absent/);
+      await rm(join(profile, `${hostname()}-${pid}`));
+      await symlink('123', join(profile, 'SingletonCookie'));
+      for (const target of ['/tmp/scoped_dirABC12/SingletonSocket', '/tmp/scoped_dirABC1234/SingletonSocket',
+        '/tmp/scoped_dirABC_12/SingletonSocket', '/tmp/scoped_dirABC123/other',
+        '/tmp/org.chromium.Chromium.ABC123/SingletonSocket', '/outside/scoped_dirABC123/SingletonSocket',
+        '../scoped_dirABC123/SingletonSocket', '/tmp/scoped_dirABC123/../SingletonSocket']) {
+        await symlink(target, join(profile, 'SingletonSocket'));
+        await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile, options), /socket requires/);
+        assert.equal(await readlink(join(profile, 'SingletonCookie')), '123'); // No partial cleanup.
+        assert.equal(await readlink(join(profile, 'SingletonSocket')), target);
+        await rm(join(profile, 'SingletonSocket'));
+      }
+      await symlink(socketTarget, join(profile, 'SingletonSocket'));
+      await rm(join(profile, 'SingletonCookie'));
+      await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile, options), /socket requires/);
+      await rm(join(profile, 'SingletonLock'));
+      await symlink('123', join(profile, 'SingletonCookie'));
+      await assert.rejects(removeOwnedAcceptanceProfileSingletons(profile, options), /socket requires/);
+      await rm(join(profile, 'SingletonSocket'));
+      await removeOwnedAcceptanceProfileSingletons(profile, options);
+      for (const name of ['SingletonLockExtra', 'SingletonSocketExtra', 'SingletonOther',
+        'singletoncookie', 'singletonlock', 'singletonsocket', 'SINGLETONLOCK']) {
+        await symlink(`${hostname()}-${pid}`, join(profile, name));
+        await removeOwnedAcceptanceProfileSingletons(profile, options);
+        await assert.rejects(scanAcceptancePaths([profile]), /symbolic link/);
+        await rm(join(profile, name));
+      }
+      // Default macOS volumes resolve this spelling to SingletonLock. Detect
+      // that identity in the fixture rather than assuming case sensitivity.
+      const caseVariant = join(profile, 'singletonlock');
+      await symlink(`${hostname()}-${pid}`, caseVariant);
+      const variantStats = await lstat(caseVariant);
+      const canonicalStats = await lstat(join(profile, 'SingletonLock')).catch(error => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (canonicalStats) {
+        assert.equal(canonicalStats.dev, variantStats.dev);
+        assert.equal(canonicalStats.ino, variantStats.ino);
+      }
+      await removeOwnedAcceptanceProfileSingletons(profile, options);
+      assert.equal(await readlink(caseVariant), `${hostname()}-${pid}`);
+      await assert.rejects(scanAcceptancePaths([profile]), /symbolic link/);
+      await rm(caseVariant);
+      await mkdir(join(profile, 'nested'));
+      await symlink(`${hostname()}-${pid}`, join(profile, 'nested', 'SingletonLock'));
+      await removeOwnedAcceptanceProfileSingletons(profile, options);
+      await assert.rejects(scanAcceptancePaths([profile]), /symbolic link/);
+      await rm(join(profile, 'nested'), { recursive: true });
+      await symlink(`${hostname()}-${pid}`, join(outside, 'SingletonLock'));
+      await assert.rejects(removeOwnedAcceptanceProfileSingletons(outside, options), /allowlisted leaf/);
+      for (const name of ['SingletonLock', 'SingletonSocket']) {
+        await writeFile(join(profile, name), 'regular-file-secret');
+        await removeOwnedAcceptanceProfileSingletons(profile, options);
+        await assert.rejects(scanAcceptancePaths([profile], ['regular-file-secret']), /Secret sentinel/);
+        await rm(join(profile, name));
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves case-insensitive singleton aliases on macOS for strict scanning', {
+    skip: process.platform !== 'darwin' ? 'macOS-only case-insensitive filesystem regression' : false,
+  }, async t => {
+    const profile = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
+    const targets = { SingletonCookie: '123', SingletonLock: `${hostname()}-12345`,
+      SingletonSocket: '/tmp/scoped_dirABC123/SingletonSocket' };
+    try {
+      for (const [name, target] of Object.entries(targets)) {
+        const alias = join(profile, name.toLowerCase());
+        await symlink(target, alias);
+        const aliasStats = await lstat(alias);
+        const canonicalStats = await lstat(join(profile, name)).catch(error => {
+          if (error.code === 'ENOENT') return undefined;
+          throw error;
+        });
+        if (!canonicalStats) {
+          t.skip('the configured macOS temporary volume is case-sensitive');
+          return;
+        }
+        assert.equal(canonicalStats.dev, aliasStats.dev);
+        assert.equal(canonicalStats.ino, aliasStats.ino);
+        await removeOwnedAcceptanceProfileSingletons(profile, { stoppedChildPid: 12345 });
+        assert.equal(await readlink(alias), target);
+        await assert.rejects(scanAcceptancePaths([profile]), /symbolic link/);
+        await rm(alias);
+      }
+    } finally {
+      await rm(profile, { recursive: true, force: true });
+    }
+  });
+
+  it('does not probe differently spelled singleton entries even when path lookup would alias them', async () => {
+    const source = await readFile(new URL('./acceptance-artifacts.mjs', import.meta.url), 'utf8');
+    const start = source.indexOf('export const removeOwnedAcceptanceProfileSingletons =');
+    const end = source.indexOf('export const prepareAcceptanceArtifactDirectory', start);
+    const cleanup = runInNewContext(source.slice(start, end).replace('export const', 'const') +
+      '; removeOwnedAcceptanceProfileSingletons;', {
+        process: { getuid: () => 1000 }, hostname: () => 'local-host', join,
+        validateAcceptanceLeaf: async () => ({ target: '/tmp/profile',
+          stats: { dev: 1, ino: 2, uid: 1000, mode: 0o40700 } }),
+        readdir: async () => ['singletoncookie', 'singletonlock', 'singletonsocket', 'SingletonOther'],
+        lstat: async () => assert.fail('unrecognized directory entry must not be probed'),
+        readlink: async () => assert.fail('unrecognized link must not be read'),
+        unlink: async () => assert.fail('unrecognized link must not be removed'),
+      });
+    await cleanup('/tmp/profile', { stoppedChildPid: 321 });
+  });
+
+  it('rejects changed links and profile identity before unlink, including replacement with the same target', async () => {
+    const source = await readFile(new URL('./acceptance-artifacts.mjs', import.meta.url), 'utf8');
+    const start = source.indexOf('export const removeOwnedAcceptanceProfileSingletons =');
+    const end = source.indexOf('export const prepareAcceptanceArtifactDirectory', start);
+    for (const name of ['SingletonCookie', 'SingletonLock', 'SingletonSocket']) {
+      for (const race of ['target', 'inode', 'regular-file', 'owner', 'profile', 'spelling']) {
+        for (const phase of [2, 3, 4, 5]) { // Before/after readlink in both validation passes.
+          const targets = { SingletonCookie: '123', SingletonLock: 'local-host-321',
+            SingletonSocket: '/tmp/scoped_dirABC123/SingletonSocket' };
+          const entryStats = { dev: 1, ino: 1, uid: 1000, mode: 0o120777, ctimeMs: 1, isSymbolicLink: () => true };
+          const profileStats = { dev: 1, ino: 2, uid: 1000, mode: 0o40700 };
+          const reads = new Map();
+          let raced = false;
+          const unlinked = [];
+          const cleanup = runInNewContext(source.slice(start, end).replace('export const', 'const') +
+            '; removeOwnedAcceptanceProfileSingletons;', {
+              process: { getuid: () => 1000 }, hostname: () => 'local-host', join, Number, BigInt,
+              validateAcceptanceLeaf: async () => ({ target: '/tmp/profile',
+                stats: raced && race === 'profile' ? { ...profileStats, ino: 9 } : profileStats }),
+              readdir: async () => Object.keys(targets).map(entry =>
+                raced && race === 'spelling' && entry === name ? entry.toLowerCase() : entry),
+              lstat: async path => {
+                const entry = path.split('/').at(-1);
+                if (!(entry in targets)) throw Object.assign(new Error('missing token'), { code: 'ENOENT' });
+                const count = (reads.get(entry) ?? 0) + 1;
+                reads.set(entry, count);
+                if (entry === name && count === phase) raced = true;
+                if (entry === name && raced) {
+                  if (race === 'target') return { ...entryStats, ctimeMs: 9 };
+                  if (race === 'inode') return { ...entryStats, ino: 9 };
+                  if (race === 'regular-file') return { ...entryStats, mode: 0o100600 };
+                  if (race === 'owner') return { ...entryStats, uid: 999 };
+                }
+                return entryStats;
+              },
+              readlink: async path => {
+                const entry = path.split('/').at(-1);
+                return raced && entry === name && race === 'target' ? '/outside/changed' : targets[entry];
+              },
+              unlink: async path => { unlinked.push(path.split('/').at(-1)); },
+            });
+          await assert.rejects(cleanup('/tmp/profile', { stoppedChildPid: 321 }), /changed during cleanup/);
+          assert.equal(unlinked.includes(name), false, `${name}/${race}/${phase}`);
+          if (phase <= 3) assert.deepEqual(unlinked, []);
+        }
+      }
+    }
   });
 
   it('authorizes the standard macOS temporary-directory alias by canonical parent identity', {

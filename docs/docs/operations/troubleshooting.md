@@ -122,7 +122,7 @@ Where to look:
 
 Common reasons a task was **not** replaced: it was cancelled by a user or withdrawn (`cancelled_*`), stopped by the stall watchdog, run timeout or cost cap, the issue was closed, it is a goal task (goals use their own recovery) or a PR follow-up task, the cap was reached, or earlier attempts used the whole per-run cost cap.
 
-To turn replacement off, set `INFRA_LOST_REPLACEMENT=false` (lost runs) and `MAX_PROVIDER_REPLACEMENTS=0` (provider errors; the **Settings → Automation → General configuration → Provider failure replacements** setting, `propr setting update max_provider_replacements 0`, or MCP `update_execution_settings` overrides the environment). Restart the worker after changing environment variables.
+To turn replacement off, set `INFRA_LOST_REPLACEMENT=false` (lost runs) and `MAX_PROVIDER_REPLACEMENTS=0` (provider errors; the **Settings → Workflow & PR Rules → Processing → Provider failure replacements** setting, `propr setting update max_provider_replacements 0`, or MCP `update_execution_settings` overrides the environment). Restart the worker after changing environment variables.
 
 ## A Push Was Rejected
 

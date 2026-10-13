@@ -153,7 +153,7 @@ async function updateRepository(namespace, authCandidates, repo, payload) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const namespace = process.env.DOCKERHUB_NS || 'propr';
-  const metadataDir = path.join(repoRoot, 'dockerhub');
+  const metadataDir = path.join(repoRoot, 'docker', 'dockerhub');
   const manifest = await readJson(path.join(metadataDir, 'repositories.json'));
 
   const repositories = options.only

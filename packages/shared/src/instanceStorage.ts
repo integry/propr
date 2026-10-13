@@ -16,11 +16,13 @@ export interface StorageObservation {
   scanning: boolean;
   ownedBytes: number | null;
   categories: Array<{ category: StorageCategory; bytes: number | null; state: StorageState }>;
+  /** Last bounded generated-payload inspection, never a complete root proof. */
+  generatedPayloads?: Record<string, unknown>;
   filesystems: Array<{ id: string; totalBytes: number; availableBytes: number }>;
 }
 export interface StoragePolicy { enabled: boolean; idleHours: number }
 export const DEFAULT_STORAGE_POLICY: StoragePolicy = { enabled: false, idleHours: 24 };
-export type StorageProtection = 'busy' | 'unknown_use' | 'recent_use' | 'unknown_ownership' | 'unsafe_path' | 'private_work' | 'worktrees' | 'local_history' | 'salvage' | 'remote_unavailable' | 'unknown_git_state' | 'changed' | 'unsupported';
+export type StorageProtection = 'partial_generated_cleanup' | 'busy' | 'unknown_use' | 'recent_use' | 'unknown_ownership' | 'unsafe_path' | 'private_work' | 'worktrees' | 'local_history' | 'salvage' | 'remote_unavailable' | 'unknown_git_state' | 'changed' | 'unsupported';
 export interface StorageCandidate {
   id: string;
   /** Validated repository identity, when this candidate is a repository cache. */

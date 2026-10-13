@@ -26,7 +26,7 @@ export default function AgentQuotaUsage({ agent, id }: { agent: AgentConfig; id:
       {error && <p role="status">{error}</p>}
       {data && (data.enabled && usage && (usage.usage || usage.error)
         ? <AgentRow agent={usage} expanded={expanded} onToggle={() => setExpanded(current => !current)} />
-        : <p>{data.error || (data.enabled ? 'No usage data available for this provider yet.' : 'Usage tracking is disabled. Enable LLM Usage Tracking in Settings → Integrations to view quota and reset times.')}</p>)}
+        : <p>{data.error || (data.enabled ? 'No usage data available for this provider yet.' : 'Usage tracking is disabled. Enable LLM Usage Tracking in Settings → Integrations & MCP to view quota and reset times.')}</p>)}
     </section>
   );
 }

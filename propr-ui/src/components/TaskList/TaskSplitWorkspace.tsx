@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { GripVertical, Maximize2, X } from 'lucide-react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import TaskDetails from '../TaskDetails';
+import type { RunRevealHistory } from '../TaskDetails/RunTimeline';
 import { buildTaskRow, buildTaskRuns, taskPath } from './rowModel';
 import type { TaskGroup } from './types';
 import { isDialogOpen, isTypingTarget } from './keyboardOwnership';
@@ -37,6 +38,11 @@ const escapeBelongsElsewhere = (event: KeyboardEvent): boolean =>
  * table breakpoint, so its container query shows the stacked cards there.
  */
 const TaskSplitWorkspace: React.FC<TaskSplitWorkspaceProps> = ({ list, selectedTaskId, selectedGroup, onSelectRun, onClose, onDeleted }) => {
+  // This owner survives the selected run's keyed details remount.
+  const revealHistory: RunRevealHistory = useRef(null);
+  useEffect(() => {
+    if (!selectedTaskId) revealHistory.current = null;
+  }, [selectedTaskId]);
   const runs = useMemo(() => (selectedGroup ? buildTaskRuns(buildTaskRow(selectedGroup)) : undefined), [selectedGroup]);
 
   useEffect(() => {
@@ -80,6 +86,7 @@ const TaskSplitWorkspace: React.FC<TaskSplitWorkspaceProps> = ({ list, selectedT
                   onClose={onClose}
                   onDeleted={onDeleted}
                   runs={runs}
+                  revealHistory={revealHistory}
                   onSelectRun={onSelectRun}
                   paneControls={(
                     <>
