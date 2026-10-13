@@ -9,6 +9,13 @@ const config: AgentConfig = {
   supportedModels: ['gpt-6-astra', 'gpt-6-luna'], defaultModel: 'gpt-6-astra',
 };
 
+function createProbeCheck(
+  createAgent: Parameters<typeof createAgentHealthCheck>[0]['createAgent'],
+  loadAgents = async () => [config],
+) {
+  return createAgentHealthCheck({ loadAgents, createAgent });
+}
+
 after(async () => { await shutdownQueue(); await closeConnection(); });
 
 test('probes use configured lightweight models for each provider and respect custom configurations', () => {
@@ -29,10 +36,9 @@ test('probes use configured lightweight models for each provider and respect cus
 
 test('does not execute disabled, missing, or unconfigured agents', async () => {
   let executions = 0;
-  const check = createAgentHealthCheck({
-    loadAgents: async () => [{ ...config, enabled: false }, { ...config, id: 'empty', supportedModels: [] }],
-    createAgent: () => { executions++; throw new Error('Should not execute'); },
-  });
+  const check = createProbeCheck(
+    () => { executions++; throw new Error('Should not execute'); },
+    async () => [{ ...config, enabled: false }, { ...config, id: 'empty', supportedModels: [] }]);
   assert.equal((await check('codex'))?.status, 'disabled');
   assert.equal(await check('missing'), undefined);
   assert.match((await check('empty'))?.error ?? '', /No models configured/);
@@ -42,19 +48,16 @@ test('does not execute disabled, missing, or unconfigured agents', async () => {
 test('shares concurrent probes and passes a bounded lightweight analysis without repository access', async () => {
   let finish!: (result: AnalysisResult) => void;
   let calls = 0;
-  const check = createAgentHealthCheck({
-    loadAgents: async () => [config],
-    createAgent: () => ({ analyze: async (prompt, options) => {
-      calls++;
-      assert.match(prompt, /only OK/);
-      assert.equal(options?.model, 'gpt-6-luna');
-      assert.equal(options?.timeoutMs, 30_000);
-      assert.equal(options?.skipUsageTracking, true);
-      assert.equal(options?.readOnlyWorkspacePath, undefined);
-      assert.equal(options?.allowReadOnlyCommands, undefined);
-      return new Promise(resolve => { finish = resolve; });
-    } }),
-  });
+  const check = createProbeCheck(() => ({ analyze: async (prompt, options) => {
+    calls++;
+    assert.match(prompt, /only OK/);
+    assert.equal(options?.model, 'gpt-6-luna');
+    assert.equal(options?.timeoutMs, 30_000);
+    assert.equal(options?.skipUsageTracking, true);
+    assert.equal(options?.readOnlyWorkspacePath, undefined);
+    assert.equal(options?.allowReadOnlyCommands, undefined);
+    return new Promise(resolve => { finish = resolve; });
+  } }));
   const one = check('codex');
   const two = check('codex');
   await new Promise(resolve => setImmediate(resolve));
@@ -68,12 +71,9 @@ test('post-login refresh waits for the pending old-credential probe and analyzes
   const finishes: ((result: AnalysisResult) => void)[] = [];
   const credentialsUsed: string[] = [];
   let credentials = 'expired';
-  const check = createAgentHealthCheck({
-    loadAgents: async () => [config],
-    createAgent: () => {
-      credentialsUsed.push(credentials);
-      return { analyze: async () => new Promise(resolve => { finishes.push(resolve); }) };
-    },
+  const check = createProbeCheck(() => {
+    credentialsUsed.push(credentials);
+    return { analyze: async () => new Promise(resolve => { finishes.push(resolve); }) };
   });
   const initial = check(config.id);
   await new Promise(resolve => setImmediate(resolve));
@@ -101,15 +101,12 @@ test('queued refresh reloads configuration after waiting, including disabled and
     let configured = [config];
     let finish!: (result: AnalysisResult) => void;
     const probedPaths: string[] = [];
-    const check = createAgentHealthCheck({
-      loadAgents: async () => configured,
-      createAgent: agent => {
-        probedPaths.push(agent.configPath);
-        return { analyze: async () => probedPaths.length === 1
-          ? new Promise(resolve => { finish = resolve; })
-          : { success: true, response: 'OK' } };
-      },
-    });
+    const check = createProbeCheck(agent => {
+      probedPaths.push(agent.configPath);
+      return { analyze: async () => probedPaths.length === 1
+        ? new Promise(resolve => { finish = resolve; })
+        : { success: true, response: 'OK' } };
+    }, async () => configured);
     const initial = check(config.id);
     await new Promise(resolve => setImmediate(resolve));
     const refresh = check(config.id, true);
@@ -132,10 +129,7 @@ test('returns CLI and runtime errors, treats empty output as failure, and permit
     async () => ({ success: true, response: '' }),
     async () => ({ success: true, response: 'OK' }),
   ];
-  const check = createAgentHealthCheck({
-    loadAgents: async () => [config],
-    createAgent: () => ({ analyze: outcomes.shift()! }),
-  });
+  const check = createProbeCheck(() => ({ analyze: outcomes.shift()! }));
   assert.equal((await check('codex'))?.error, 'Login expired');
   assert.match((await check('codex'))?.error ?? '', /timed out/);
   assert.equal((await check('codex'))?.status, 'error');
@@ -144,10 +138,7 @@ test('returns CLI and runtime errors, treats empty output as failure, and permit
 
 test('redacts credentials from provider errors before returning them to the card', async () => {
   const token = 'test-only-token-12345678901234567890';
-  const check = createAgentHealthCheck({
-    loadAgents: async () => [config],
-    createAgent: () => ({ analyze: async () => ({ success: false, response: '', error: `Request rejected: Bearer ${token}` }) }),
-  });
+  const check = createProbeCheck(() => ({ analyze: async () => ({ success: false, response: '', error: `Request rejected: Bearer ${token}` }) }));
   const result = await check('codex');
   assert.equal(result?.status, 'error');
   assert.ok(!result?.error?.includes(token));
@@ -163,16 +154,10 @@ test('distinguishes authentication, quota, HTTP 429, and unrelated failures for 
     ['Quota exhausted', 'rate_limit'],
     ['Docker execution timed out', 'unknown'],
   ] as const) {
-    const check = createAgentHealthCheck({
-      loadAgents: async () => [config],
-      createAgent: () => ({ analyze: async () => ({ success: false, response: '', error }) }),
-    });
+    const check = createProbeCheck(() => ({ analyze: async () => ({ success: false, response: '', error }) }));
     assert.equal((await check(config.id))?.errorCode, expected, error);
   }
-  const check = createAgentHealthCheck({
-    loadAgents: async () => [config],
-    createAgent: () => ({ analyze: async () => { throw Object.assign(new Error('Request failed'), { status: 429 }); } }),
-  });
+  const check = createProbeCheck(() => ({ analyze: async () => { throw Object.assign(new Error('Request failed'), { status: 429 }); } }));
   assert.equal((await check(config.id))?.errorCode, 'rate_limit');
 });
 
@@ -240,10 +225,7 @@ test('preparation completion cannot mark edited, disabled or deleted configurati
 test('all shared probe callers reload configuration before returning readiness', async () => {
   let configured = [config];
   let finish!: (result: AnalysisResult) => void;
-  const check = createAgentHealthCheck({
-    loadAgents: async () => configured,
-    createAgent: () => ({ analyze: async () => new Promise(resolve => { finish = resolve; }) }),
-  });
+  const check = createProbeCheck(() => ({ analyze: async () => new Promise(resolve => { finish = resolve; }) }), async () => configured);
   const initial = check(config.id);
   const sibling = check(config.id);
   await new Promise(resolve => setImmediate(resolve));
