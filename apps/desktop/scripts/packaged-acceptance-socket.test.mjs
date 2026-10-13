@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
+import { runInNewContext } from 'node:vm';
+import { INSTALLED_SOCKET_JOURNEYS } from './acceptance-artifacts.mjs';
 
 const readSource = relativePath => readFileSync(
   fileURLToPath(new URL(relativePath, import.meta.url)),
@@ -44,7 +46,7 @@ const assertExactSocketCounts = (source, validatorSource = artifactsSource) => {
   assert.match(source, /if \(applicationEvents\.length > 1\) return 'duplicate-application-event';/);
   assert.match(source, /return 'application-subscription-not-observed';/);
   assert.match(source, /return 'renderer-application-event-not-observed';/);
-  assert.match(summarySource, /validateSocketServiceSummary\(services\.socketIo\)/);
+  assert.match(summarySource, /validateSocketServiceSummary\(services\.socketIo, installedRpm/);
   assert.match(summarySource, /cspSessions: CSP_SOCKET_JOURNEYS\.map\(socketSessionSummary\)/);
   assert.match(summarySource, /rendererObservedApplicationEvents\.length === 1/);
   const sessionSource = sourceBetween(validatorSource, 'const validateSocketSession =', '\n};');
@@ -166,4 +168,48 @@ describe('packaged acceptance Socket.IO application synchronization', () => {
       );
     }
   });
+});
+
+
+it('installed positive phases wait for genuine renderer application events before closing', async () => {
+  const waitSource = sourceBetween(runnerSource, 'const waitForAuthenticatedSocket = async journey => {', '\n};');
+  const lifecycleSource = sourceBetween(runnerSource, 'const installedPairingLifecycle = async () => {', '\n};');
+  const categorySource = sourceBetween(runnerSource, 'const socketHandshakeFailureCategory = journey => {', '\n};');
+  assert.equal(occurrences(lifecycleSource, 'await waitForAuthenticatedSocket(activeJourney);'), 2);
+  for (const journey of INSTALLED_SOCKET_JOURNEYS) {
+    const context = {
+      INSTALLED_SOCKET_JOURNEYS,
+      QUEUE_STATS_SUBSCRIBE_EVENT: 'subscribe:queue:stats', QUEUE_STATS_UPDATE: 'queue:stats:update',
+      mainHandshakeRecords: [{ journey, accepted: true }], fixtureHandshakeRecords: [{ journey, accepted: true }],
+      socketRecords: [
+        { journey, event: 'connection', authenticated: true },
+        { journey, event: 'subscribe:queue:stats', authenticated: true,
+          genuineApplicationSubscription: true, direction: 'client-to-fixture' },
+      ],
+      consoleRecords: [],
+      rendererLifecycleCategory: () => assert.fail('Installed scenarios do not capture lifecycle diagnostics'),
+      socketHandshakeFailureCategory: () => 'renderer-application-event-not-observed',
+      currentUserPhaseSummary: () => ({}), rendererLifecycleDiagnosticSummary: () => ({}), networkPermissionSummary: () => ({}),
+    };
+    const actualCategory = runInNewContext(categorySource + '\n};\nsocketHandshakeFailureCategory', { ...context });
+    context.socketHandshakeFailureCategory = actualCategory;
+    assert.equal(actualCategory(journey), 'application-event-not-produced');
+    assert.equal(actualCategory('installed-approved' === journey ? 'installed-restart' : 'installed-approved'), 'application-session-not-observed');
+    let polls = 0;
+    context.sleep = async () => {
+      polls++;
+      if (polls === 1) context.socketRecords.push({ journey, event: 'queue:stats:update', authenticated: true,
+        genuineApplicationEvent: true, direction: 'fixture-to-renderer' });
+      else context.consoleRecords.push({ journey, text: '[SocketContext] Received queue stats update: {}' });
+    };
+    const wait = () => runInNewContext(waitSource + '\n};\nwaitForAuthenticatedSocket(' + JSON.stringify(journey) + ')', { ...context });
+    await wait();
+    assert.equal(polls, 2, 'The produced event alone must not complete the wait');
+    context.mainHandshakeRecords.push({ journey, accepted: false });
+    context.mainHandshakeRecords.at(-1).rejectionCategory = 'rejected';
+    await assert.rejects(wait, /main-rejected/);
+    context.mainHandshakeRecords.pop();
+    context.socketRecords.push({ journey, event: 'connection', authenticated: true });
+    await assert.rejects(wait, /duplicate-authenticated-connection/);
+  }
 });

@@ -10,7 +10,7 @@ Goals support two launch strategies: **Direct** (the agent implements directly) 
 
 Dismissals belong to your user account. Dismissing a tip hides it immediately for **45 days** from that dismissal; dismissing it again later simply restarts the same 45-day period. A tip becomes eligible exactly at the cooldown boundary, but only appears if it remains relevant in the current selection. New relevance never overrides an active cooldown.
 
-Settings → Automation → **Usage tips**, at the bottom of the tab, exposes **Show usage tips** (enabled by default). Disabling tips hides the strip and stops daily selection. The CLI exposes the same setting:
+Settings → General → **Usage tips** exposes **Show usage tips** (enabled by default). Disabling tips hides the strip and stops daily selection. The CLI exposes the same setting:
 
 ```sh
 propr setting update usage_tips_enabled false

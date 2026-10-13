@@ -64,7 +64,6 @@ const MetadataSection: React.FC<MetadataSectionProps> = ({ prompt }) => (
             <td className="py-2 pr-4 text-gray-600 font-medium align-top w-1/3">Model:</td>
             <td className="py-2 text-gray-700">
               <div className="text-blue-600 font-medium">{formatModelName(prompt.model)}</div>
-              <div className="text-xs text-gray-500 mt-1">{prompt.model}</div>
             </td>
           </tr>
         )}

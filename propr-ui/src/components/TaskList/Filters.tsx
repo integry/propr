@@ -98,53 +98,55 @@ export const Filters: React.FC<FiltersProps> = ({
   // filter joins them inline only where there is room; a phone puts it on
   // the search row instead.
   const header = (
-    <div className={`${hideFilters ? '' : 'task-filters '}flex items-center justify-between gap-2 sm:gap-4`}>
-      {!hideFilters && <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Tasks</h1>}
-      <div className="task-filter-controls flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
-        {!hideFilters && (
-          <>
-            {/* Takes the room the filters leave, and keeps enough of it that the repository picker gives way first in a list pane beside an open task. */}
-            {!isMobile && (
-              <ListSearchInput
-                value={searchQuery}
-                onChange={setSearchQuery}
-                onClear={() => setSearchQuery('')}
-                label="Search tasks"
-                className="task-search hidden sm:block min-w-[13rem] flex-1 max-w-xs"
-              />
-            )}
-            <div className="flex items-center gap-2 min-w-0 max-sm:flex-1">
-              <div data-testid="task-status-filter" className="flex-none">
-                <select
-                  value={selectedFilter}
-                  onChange={(e) => setFilter(e.target.value)}
-                  aria-label="Task status"
-                  className={`w-[120px] sm:w-auto px-2 sm:px-3 ${SELECT_CLASSES}`}
-                >
-                  <option value="all">All Tasks</option>
-                  <option value="attention">Needs attention</option>
-                  <option value="active">Active</option>
-                  <option value="completed">Completed</option>
-                  <option value="failed">Failed</option>
-                  <option value="waiting">Waiting</option>
-                </select>
-              </div>
-
-              {/* Repository filter - only show if multiple repos (more than just "All Repos") */}
-              {showRepoFilter && (
-                <RepoFilter repoFilter={repoFilter} setRepoFilter={setRepoFilter} availableRepos={availableRepos} reposLoading={reposLoading} />
+    <div className={hideFilters ? undefined : 'task-filters'}>
+      <div className="task-filter-layout flex items-center justify-between gap-2 sm:gap-4">
+        {!hideFilters && <h1 className="text-lg sm:text-2xl font-bold text-gray-800 flex-shrink-0">Tasks</h1>}
+        <div className="task-filter-controls flex items-center gap-2 sm:gap-4 flex-1 min-w-0 justify-end">
+          {!hideFilters && (
+            <>
+              {/* Search wraps above the labelled filters in a narrow desktop pane. */}
+              {!isMobile && (
+                <ListSearchInput
+                  value={searchQuery}
+                  onChange={setSearchQuery}
+                  onClear={() => setSearchQuery('')}
+                  label="Search tasks"
+                  className="task-search hidden sm:block min-w-[13rem] flex-1 max-w-xs"
+                />
               )}
+              <div className="task-filter-selectors flex items-center gap-2 min-w-0 max-sm:flex-1">
+                <div data-testid="task-status-filter" className="flex-none">
+                  <select
+                    value={selectedFilter}
+                    onChange={(e) => setFilter(e.target.value)}
+                    aria-label="Task status"
+                    className={`w-[120px] sm:w-auto px-2 sm:px-3 ${SELECT_CLASSES}`}
+                  >
+                    <option value="all">All Tasks</option>
+                    <option value="attention">Needs attention</option>
+                    <option value="active">Active</option>
+                    <option value="completed">Completed</option>
+                    <option value="failed">Failed</option>
+                    <option value="waiting">Waiting</option>
+                  </select>
+                </div>
 
-              {/* Gives way before the search does, so a list pane beside an open task still fits. */}
-              {!isMobile && <AssigneeFilter {...assigneeProps} className="min-w-0 max-w-[10rem] flex-initial" />}
-            </div>
-          </>
-        )}
-        {showViewAll && (
-          <Link to="/tasks" className="text-primary-600 hover:text-primary-700 transition-colors text-sm font-medium">
-            View All Tasks
-          </Link>
-        )}
+                {/* Repository filter - only show if multiple repos (more than just "All Repos") */}
+                {showRepoFilter && (
+                  <RepoFilter repoFilter={repoFilter} setRepoFilter={setRepoFilter} availableRepos={availableRepos} reposLoading={reposLoading} />
+                )}
+
+                {/* Keep the selected assignee visible even beside an open task. */}
+                {!isMobile && <AssigneeFilter {...assigneeProps} className="min-w-0 max-w-[10rem] flex-initial" />}
+              </div>
+            </>
+          )}
+          {showViewAll && (
+            <Link to="/tasks" className="text-primary-600 hover:text-primary-700 transition-colors text-sm font-medium">
+              View All Tasks
+            </Link>
+          )}
+        </div>
       </div>
     </div>
   );

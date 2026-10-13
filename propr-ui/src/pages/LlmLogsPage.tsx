@@ -1,3 +1,4 @@
+import { formatModelName } from '../utils/modelDisplay';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
@@ -241,7 +242,7 @@ const LlmLogsPage: React.FC = () => {
               >
                 <option value="all">All Models</option>
                 {availableModels.map(model => (
-                  <option key={model} value={model}>{model}</option>
+                  <option key={model} value={model}>{formatModelName(model)}</option>
                 ))}
               </select>
             )}
@@ -379,7 +380,7 @@ const LlmLogsPage: React.FC = () => {
                           )}
                         </td>
                         <td className="hidden md:table-cell px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-mono">
-                          <div>{log.modelName || '-'}</div>
+                          <div>{log.modelName ? formatModelName(log.modelName) : '-'}</div>
                           <SyntheticRoutingModelSummary value={log.metadata?.syntheticRouting} />
                         </td>
                         <td className="px-2 sm:px-4 py-3 sm:py-4 whitespace-nowrap">

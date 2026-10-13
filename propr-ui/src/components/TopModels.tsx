@@ -173,9 +173,9 @@ const TopModels: React.FC<TopModelsProps> = ({ overview, loading, error, limit }
           }
           return (
             <DrillDownRow key={row.model} to={modelLogsHref(row.model)}>
-              <DrillDownCell to={modelLogsHref(row.model)} label={`LLM log for ${row.model}`} className={CELL}>
+              <DrillDownCell to={modelLogsHref(row.model)} label={`LLM log for ${formatModelName(row.model)}`} className={CELL}>
                 <ModelIcon modelId={row.model} />
-                <span className="truncate font-medium text-slate-800" title={row.model}>
+                <span className="truncate font-medium text-slate-800" title={formatModelName(row.model)}>
                   {formatModelName(row.model)}
                 </span>
               </DrillDownCell>

@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import type { RunRevealHistory } from './RunTimeline';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import { renderMarkdown } from './renderMarkdown';
@@ -8,12 +9,12 @@ import ResultOverview from './ResultOverview';
 import PromptModal from './PromptModal';
 import LogFilesModal from './LogFilesModal';
 import FollowupModal from './FollowupModal';
-import ContextStrip from './ContextStrip';
+import ContextStrip, { ConsumptionGroup, MobileGitContext, MobilePeopleRuntime } from './ContextStrip';
 import ActionBar from './ActionBar';
 import TaskHeader, { ReturnToRunButton } from './TaskHeader';
 import ProgressBar from './ProgressBar';
 import LeftPaneBody from './LeftPaneBody';
-import SectionLabelHeader, { EXECUTION_LOG_CONTROL_ATTRIBUTE, type LogView } from './SectionLabelHeader';
+import SectionLabelHeader from './SectionLabelHeader';
 import TaskVisualPreviews from './TaskVisualPreviews';
 import { useTaskData, usePromptData, useLogFilesData } from './hooks';
 import { useThinkingLog } from './useThinkingLog';
@@ -28,6 +29,7 @@ import DesktopTaskHeader from './DesktopTaskHeader';
 import { useTaskHeaderView } from './useTaskHeaderView';
 import { useLiveRunStop } from './useLiveRunStop';
 import { useTaskAssignment } from './useTaskAssignment';
+import LatestRunCommands from './LatestRunCommands';
 
 const CenteredStatus: React.FC<{ className: string; children: React.ReactNode }> = ({ className, children }) => (
   <div className="h-full bg-white flex items-center justify-center">
@@ -46,12 +48,13 @@ const MobileSummary = React.forwardRef<HTMLDivElement, MobileHeaderProps>(({ con
   <div ref={ref} className="sm:hidden flex-shrink-0 bg-white">
     <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200">
       {/* The title block above already names the task; repeating it here stacked the title twice. */}
-      <div className="flex flex-col gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <ContextStrip {...contextStripProps} mobileRepoOnly={true} />
+      <div data-testid="task-mobile-metadata" className="flex flex-col gap-1">
+        <div className="flex min-w-0 items-center justify-between gap-1">
+          <MobileGitContext {...contextStripProps} />
+          <ActionBar {...actionBarProps} mobileSummary />
         </div>
-        <ActionBar {...actionBarProps} sheet={true} />
-        <ContextStrip {...contextStripProps} mobileMetadataOnly={true} />
+        <MobilePeopleRuntime {...contextStripProps} />
+        <ConsumptionGroup {...contextStripProps} />
       </div>
     </div>
     <ProgressBar todos={todos} />
@@ -95,7 +98,7 @@ const useMobileHeaderCollapsed = () => {
   const [summary, setSummary] = useState<HTMLDivElement | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   useEffect(() => {
-    const root = summary?.closest<HTMLElement>('[data-testid="task-details"]');
+    const root = summary?.closest<HTMLElement>('[data-scroll-lock-target]');
     if (!summary || !root || typeof IntersectionObserver === 'undefined') return;
     const observer = new IntersectionObserver(([entry]) => {
       const top = entry.rootBounds?.top ?? 0;
@@ -108,9 +111,7 @@ const useMobileHeaderCollapsed = () => {
 };
 
 const getTaskDocumentTitle = (taskInfo: React.ComponentProps<typeof TaskHeader>['taskInfo'], taskId?: string) => {
-  if (taskInfo?.title) {
-    return getCleanDocumentTitle(taskInfo.title, taskInfo.issueNumber);
-  }
+  if (taskInfo?.title) return getCleanDocumentTitle(taskInfo.title, taskInfo.issueNumber);
 
   return taskId ? `Task #${taskId}` : undefined;
 };
@@ -121,13 +122,9 @@ const renderTaskDetailsStatus = (
   history: ReturnType<typeof useTaskData>['history'],
   taskId?: string,
 ) => {
-  if (loading) {
-    return <CenteredStatus className="text-gray-600">Loading task details...</CenteredStatus>;
-  }
+  if (loading) return <CenteredStatus className="text-gray-600">Loading task details...</CenteredStatus>;
 
-  if (error) {
-    return <CenteredStatus className="text-red-600">Error loading task details: {error}</CenteredStatus>;
-  }
+  if (error) return <CenteredStatus className="text-red-600">Error loading task details: {error}</CenteredStatus>;
 
   if (!history || history.length === 0) {
     return <CenteredStatus className="text-gray-600">No history found for task {taskId}</CenteredStatus>;
@@ -154,6 +151,7 @@ interface TaskDetailsProps {
    * execution log follow the run chosen there.
    */
   runs?: TaskRunEntry[];
+  revealHistory?: RunRevealHistory;
   /** Opens another run of this task in its place. */
   onSelectRun?: (taskId: string) => void;
   /** The pane's own controls, docked at the right of the header's first row. */
@@ -193,7 +191,27 @@ const TimelineHeading: React.FC<{ runCount: number }> = ({ runCount }) => (
   </div>
 );
 
-const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded = false, onDeleted, runs, onSelectRun, paneControls }) => {
+/** Pin timelines that fit; taller ones must scroll freely to keep every run reachable. */
+const observeTimeline = (node: HTMLDivElement | null) => {
+  const scroller = node?.parentElement;
+  if (!node || !scroller || typeof ResizeObserver === 'undefined') return;
+  const update = () => {
+    // Streaming steps must not relocate the timeline while the reader is mid-scroll.
+    if (scroller.scrollTop !== 0) return;
+    node.style.setProperty('--timeline-position', node.offsetHeight <= scroller.clientHeight ? 'sticky' : 'static');
+  };
+  const observer = new ResizeObserver(update);
+  for (const target of [node, scroller]) observer.observe(target);
+  update();
+  scroller.addEventListener('scroll', update, { passive: true });
+  // Ref callback cleanup requires the React 19 version pinned by propr-ui.
+  return () => {
+    observer.disconnect();
+    scroller.removeEventListener('scroll', update);
+  };
+};
+
+const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded = false, onDeleted, runs, revealHistory, onSelectRun, paneControls }) => {
   const params = useParams();
   const taskId = taskIdProp ?? params.taskId;
   const navigate = useNavigate();
@@ -255,18 +273,9 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
 
   const mobileHeader = useMobileHeaderCollapsed();
 
-  const executionLogRef = useClickOutsideCollapse(
-    thinkingLog.eventsCollapsed,
-    thinkingLog.collapseEvents,
-    EXECUTION_LOG_CONTROL_ATTRIBUTE,
-  );
+  const executionLogRef = useClickOutsideCollapse(thinkingLog.eventsCollapsed, thinkingLog.collapseEvents);
 
-  const statusView = renderTaskDetailsStatus(
-    taskData.loading,
-    taskData.error,
-    taskData.history,
-    taskId,
-  );
+  const statusView = renderTaskDetailsStatus(taskData.loading, taskData.error, taskData.history, taskId);
 
   if (statusView) {
     // The pane's controls live in the task's header; until there is one, they sit above the status.
@@ -289,16 +298,15 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
     headActive: inspection.headActive,
     onBack: () => onSelectRun(inspection.head.task.id),
   } : null;
-  // One header names the log, counts its steps and switches to the raw terminal drawer below.
+  // One header names the log, counts its steps and identifies the inspected run.
   const logHeaderProps = {
     commandMode: getLogCommandMode(taskData.taskInfo?.commandMode, runs, taskId),
     ultrafixCycle: taskData.taskInfo?.ultrafixCycle,
     inspection: inspectionContext,
     stepCount: thinkingLog.thinkingLogWithTimestamps.length,
-    view: (thinkingLog.eventsCollapsed ? 'readable' : 'terminal') as LogView,
-    onViewChange: (view: LogView) => (view === 'terminal' ? thinkingLog.expandEvents() : thinkingLog.collapseEvents()),
   };
   const actionBarProps = {
+    followupCommands: <LatestRunCommands runs={runs} taskId={taskId} />,
     currentStatus: derivedData.currentStatus,
     historyItemWithPaths: derivedData.historyItemWithPaths,
     stoppingExecution: taskData.stoppingExecution,
@@ -313,7 +321,7 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
   };
 
   return (
-    <div data-testid="task-details" data-embedded={embedded || undefined} className="h-full min-h-0 flex flex-col overflow-x-hidden overflow-y-auto bg-white pb-24 sm:overflow-hidden sm:pb-0">
+    <div data-scroll-lock-target data-testid="task-details" data-embedded={embedded || undefined} className="h-full min-h-0 flex flex-col overflow-x-hidden overflow-y-auto bg-white pb-24 sm:overflow-hidden sm:pb-0">
       <MobileCompactBar
         contextStripProps={contextStripProps}
         actionBarProps={actionBarProps}
@@ -351,18 +359,19 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
         todos={taskData.liveDetails.todos}
       />
 
-      {/* Split only when the 576px timeline and at least 384px of output fit. */}
+      {/* Split only when the 576px timeline and at least 384px of output fit.
+          A grid row grows to the taller pane so both columns share the full scrollable height. */}
       <div className="flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-hidden [container:task-workspace/inline-size]">
         <div
           data-testid="task-workspace-scroll"
-          className={`scrollbar-stealth flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-y-auto sm:overscroll-contain${wideOnly(embedded, '[@container_task-workspace_(min-width:960px)]:flex-row [@container_task-workspace_(min-width:960px)]:overflow-hidden')}`}
+          className={`scrollbar-stealth flex flex-col min-w-0 sm:min-h-0 sm:flex-1 sm:overflow-y-auto sm:overscroll-contain${wideOnly(embedded, '[@container_task-workspace_(min-width:960px)]:grid [@container_task-workspace_(min-width:960px)]:grid-cols-[max(30%,576px)_minmax(0,1fr)]')}`}
         >
           {/* Keep 528px for step columns after pane padding, scrollbar and border. */}
           <div
-            data-testid="task-timeline-scroll"
+            ref={observeTimeline} data-testid="task-timeline-scroll"
             role="region"
             aria-label="Task timeline"
-            className={`w-full min-w-0 flex-shrink-0 border-b border-gray-200 scrollbar-stealth${wideOnly(embedded, '[@container_task-workspace_(min-width:960px)]:min-h-0 [@container_task-workspace_(min-width:960px)]:w-[max(30%,576px)] [@container_task-workspace_(min-width:960px)]:overflow-y-auto [@container_task-workspace_(min-width:960px)]:overscroll-contain [@container_task-workspace_(min-width:960px)]:border-b-0 [@container_task-workspace_(min-width:960px)]:border-r')}`}
+            className={`w-full min-w-0 flex-shrink-0 border-b border-gray-200${wideOnly(embedded, '[@container_task-workspace_(min-width:960px)]:[position:var(--timeline-position,static)] [@container_task-workspace_(min-width:960px)]:top-0 [@container_task-workspace_(min-width:960px)]:self-start [@container_task-workspace_(min-width:960px)]:border-b-0')}`}
           >
             <div className={`z-[1] flex ${PANE_HEADER_HEIGHT} items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 sm:sticky sm:top-0`}>
               <TimelineHeading runCount={runs?.length ?? 0} />
@@ -380,21 +389,22 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
               isTaskActive={derivedData.isTaskActive}
               onTodoHover={setHighlightedTodoId}
               runs={runs}
+              revealHistory={revealHistory}
               onSelectRun={onSelectRun}
             />
           </div>
 
           {/* RIGHT PANE: the run's deliverables first, then the trace of how it got there. */}
-          <div className={`flex flex-col min-w-0${wideOnly(embedded, '[@container_task-workspace_(min-width:960px)]:flex-1 [@container_task-workspace_(min-width:960px)]:min-h-0 [@container_task-workspace_(min-width:960px)]:overflow-hidden')}`}>
+          <div data-testid="task-result-pane" className={`flex flex-col min-w-0 border-gray-200${wideOnly(embedded, '[@container_task-workspace_(min-width:960px)]:border-l')}`}>
             <div
               data-testid="task-output-scroll"
               role="region"
               aria-label="Task implementation log"
-              className={`min-w-0 overflow-x-clip scrollbar-stealth${wideOnly(embedded, '[@container_task-workspace_(min-width:960px)]:min-h-0 [@container_task-workspace_(min-width:960px)]:flex-1 [@container_task-workspace_(min-width:960px)]:overflow-y-auto [@container_task-workspace_(min-width:960px)]:overscroll-contain')}`}
+              className="min-w-0 overflow-x-clip"
             >
               {/* Visual evidence is an outcome with its own header; its bottom rule divides it from the trace. */}
               <TaskVisualPreviews previews={taskData.previewMedia} />
-              {/* The trace's header stays with its logs, so its view switch sits above what it controls. */}
+              {/* The trace's header stays with its logs. */}
               <SectionLabelHeader
                 {...logHeaderProps}
                 className={`z-[1] flex ${PANE_HEADER_HEIGHT} flex-shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4 sm:sticky sm:top-0`}

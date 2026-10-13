@@ -46,7 +46,7 @@ ProPR filters PR comments by author before processing anything (commands and nat
 - Users listed in `GITHUB_USER_BLACKLIST` are ignored when no whitelist is set.
 - MCP administrators with `instance.manage_settings` can inspect all three lists with `get_trigger_access_configuration`. User and bot allowlist changes use `update_trigger_access_configuration`; the environment-only blocklist is reported but cannot be edited by the tool.
 - Comments containing a configured follow-up ignore keyword are skipped.
-- **Assignment gate** (off by default). With **Follow-ups Only From Assigned Users** on (Settings → Automation, MCP `update_execution_settings` `followup_requires_assignment`, or `propr setting update followup_requires_assignment true`), a comment that would start work on a pull request that has assignees is processed only when its author is one of them. This covers slash commands and natural follow-ups alike. It narrows the rules above and never admits a comment they rejected. An **unassigned pull request is unaffected**, and **ProPR's own system comments** (failed-CI follow-ups and the system `/ultrafix` comments) are never gated. The gate fails closed: if the assignees cannot be read from GitHub, the comment is not acted on until a redelivery or the next poll can read them. A refused author receives one explanatory comment per pull request. See [The assignment gate](./assignment.md#the-assignment-gate).
+- **Assignment gate** (off by default). With **Follow-ups Only From Assigned Users** on (Settings → Workflow & PR Rules, MCP `update_execution_settings` `followup_requires_assignment`, or `propr setting update followup_requires_assignment true`), a comment that would start work on a pull request that has assignees is processed only when its author is one of them. This covers slash commands and natural follow-ups alike. It narrows the rules above and never admits a comment they rejected. An **unassigned pull request is unaffected**, and **ProPR's own system comments** (failed-CI follow-ups and the system `/ultrafix` comments) are never gated. The gate fails closed: if the assignees cannot be read from GitHub, the comment is not acted on until a redelivery or the next poll can read them. A refused author receives one explanatory comment per pull request. See [The assignment gate](./assignment.md#the-assignment-gate).
 
 Slash commands from an allowed author are processed directly. Natural follow-up comments are additionally gated: the PR must carry one of the configured processing labels (for example `AI` or `propr`), or the comment must contain a trigger keyword from `PR_FOLLOWUP_TRIGGER_KEYWORDS` (for example `!propr`). When `PR_FOLLOWUP_TRIGGER_KEYWORDS` is empty or unset, every comment from an allowed author triggers a follow-up, labeled PR or not.
 
@@ -83,7 +83,7 @@ Reviews are read-only — the agent is instructed to leave files untouched.
 
 ### Review Context Budget
 
-**Settings → AI & Models → Review context budget** sets how much of each reviewer's *safe input capacity* a review may use, from 10% to 100% in 10% steps (`pr_review_context_budget_percent`; default 100%). The safe capacity is the routed runtime's context window minus a reserve for the review response (32K tokens) and a runtime reserve (system prompt, tool schemas, compaction headroom), so 100% never uses the reserved space. Each reviewer of a multi-model `/review`, and each model named in a `/review` command, gets its own budget; a smaller reviewer never narrows a larger one.
+**Settings → AI Models & Reasoning → Review context budget** sets how much of each reviewer's *safe input capacity* a review may use, from 10% to 100% in 10% steps (`pr_review_context_budget_percent`; default 100%). The safe capacity is the routed runtime's context window minus a reserve for the review response (32K tokens) and a runtime reserve (system prompt, tool schemas, compaction headroom), so 100% never uses the reserved space. Each reviewer of a multi-model `/review`, and each model named in a `/review` command, gets its own budget; a smaller reviewer never narrows a larger one.
 
 | Runtime | Context window used | Source |
 |---|---|---|
@@ -344,7 +344,7 @@ A bare number is treated as the goal: `/ultrafix 8` is the same as `/ultrafix go
 
 #### Automatic Escalation
 
-Settings → Automation → General configuration provides an instance-wide escalation policy, disabled by default. It does not add repository or PR overrides.
+Settings → Ultrafix & Escalation → Ultrafix provides an instance-wide escalation policy, disabled by default. It does not add repository or PR overrides.
 
 | Setting | Default | Meaning |
 |---|---|---|

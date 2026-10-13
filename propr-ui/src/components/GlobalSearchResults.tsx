@@ -182,7 +182,7 @@ const TaskDetails: React.FC<{ task: TaskSearchResult }> = ({ task }) => {
       <PreviewRow label="Status"><StatusPill status={task.status} /></PreviewRow>
       {model && (
         <PreviewRow label="Model">
-          <span className="inline-flex min-w-0 items-center gap-1.5" title={model}>
+          <span className="inline-flex min-w-0 items-center gap-1.5" title={formatModelName(model)}>
             <ProviderLogo provider={model} className="h-3.5 w-3.5 flex-shrink-0 text-slate-500" />
             <span className="truncate">{formatModelName(model)}</span>
           </span>

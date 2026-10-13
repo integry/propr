@@ -22,15 +22,16 @@ import {
 import { hasColumn } from './analyticsSchema.js';
 
 export interface TaskSummary {
-  /** Tasks created in the window, goal tasks aside. */
+  /** Tasks worked on in the window — pull requests, as `groupTaskRuns` groups them — goal tasks aside. */
   total: number;
-  /** Of those, tasks that recorded a completion. */
+  /** Of those, tasks with a run that recorded a completion. */
   completed: number;
-  /** Of those, tasks that recorded a failure. */
+  /** Of those, tasks with a run that recorded a failure. */
   failed: number;
   /**
-   * Tasks created per bucket, every bucket in the window listed; without a
-   * window, only days with tasks. A bucket is a UTC day, keyed `YYYY-MM-DD`,
+   * Tasks per bucket, each counted in the bucket of its first run in the
+   * window, every bucket in the window listed; without a window, only days
+   * with tasks. A bucket is a UTC day, keyed `YYYY-MM-DD`,
    * or for the single-day timeframe a UTC hour, keyed by the ISO instant at
    * the top of the hour (see `analyticsWindowBucket`).
    */
@@ -54,10 +55,90 @@ export const excludeGoalTasks = <T extends Knex.QueryBuilder>(query: T, column: 
     this.whereNull(column).orWhereNot(column, 'goal');
   }) as T;
 
+interface TaskRunRow {
+  task_id: string;
+  repository: string | null;
+  issue_number: number | string | null;
+  pr_number: number | string | null;
+  job_pr_number?: number | string | null;
+  job_issue_number?: number | string | null;
+  result_pr_number?: number | string | null;
+  created_at: string;
+  bucket?: string | null;
+}
+
+const positiveNumber = (value: unknown): number | null => {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+};
+
 /**
- * Task volume for a window, or for all time without one: what was submitted,
- * and how much of it finished either way. A task that failed and later
- * succeeded counts as both, as the Analytics success rate always has.
+ * Task rows grouped into tasks as the task list groups them
+ * (`groupTasksForDisplay` in the UI): a task is a pull request with every run
+ * on it — the implementation, follow-ups, reviews and merge-conflict fixes —
+ * or, before a PR exists, its issue. Each row of `tasks` is one run. An
+ * issue's runs join its PR once a run links the two; a row naming neither is
+ * a task of its own. Rows arrive oldest first, so each group's first row is
+ * the task's first run.
+ */
+export function groupTaskRuns<T extends TaskRunRow>(rows: T[], linkageRows: TaskRunRow[] = rows): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  const issueToPullRequest = new Map<string, string>();
+  // Linkage can precede the counted runs. It establishes identity only;
+  // these rows must not contribute outcomes or first-run buckets.
+  for (const row of linkageRows) {
+    const repository = row.repository || 'unknown/unknown';
+    const prNumber = positiveNumber(row.pr_number) ?? positiveNumber(row.job_pr_number) ?? positiveNumber(row.result_pr_number);
+    const linkedIssue = positiveNumber(row.job_issue_number);
+    if (prNumber && linkedIssue) issueToPullRequest.set(`${repository}-issue-${linkedIssue}`, `${repository}-pr-${prNumber}`);
+  }
+  for (const row of rows) {
+    const repository = row.repository || 'unknown/unknown';
+    const prNumber = positiveNumber(row.pr_number) ?? positiveNumber(row.job_pr_number) ?? positiveNumber(row.result_pr_number);
+    const issueNumber = positiveNumber(row.issue_number);
+    const issueKey = `${repository}-issue-${issueNumber}`;
+    const key = prNumber ? `${repository}-pr-${prNumber}`
+      : issueNumber ? issueToPullRequest.get(issueKey) ?? issueKey
+      : row.task_id;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  return groups;
+}
+
+/** Counted runs and their linkage metadata, goal tasks aside, oldest first. */
+async function loadTaskRuns(
+  db: Knex, window: AnalyticsWindow | null, repository: string, bucketKey?: string,
+): Promise<{ runs: TaskRunRow[]; linkageRows: TaskRunRow[] }> {
+  const [hasJobData, hasFinalResult] = await Promise.all([
+    hasColumn(db, 'tasks', 'initial_job_data'),
+    hasColumn(db, 'tasks', 'final_result'),
+  ]);
+  const json = (column: string, path: string, alias: string) =>
+    db.raw(`CASE WHEN json_valid(${column}) THEN json_extract(${column}, '${path}') END AS ${alias}`);
+  const query = db('tasks')
+    .select('task_id', 'repository', 'issue_number', 'pr_number', 'created_at')
+    .orderBy('created_at', 'asc');
+  if (hasJobData) query.select(json('initial_job_data', '$.pullRequestNumber', 'job_pr_number'), json('initial_job_data', '$.issueNumber', 'job_issue_number'));
+  if (hasFinalResult) query.select(json('final_result', '$.postProcessing.pr.number', 'result_pr_number'));
+  scopeToRepository(query, 'repository', repository);
+  excludeGoalTasks(query, 'task_type');
+  // Only older rows can supply omitted links. Preserve the repository and
+  // goal scope, and keep newer rows beyond the window's upper bound out.
+  const earlierLinks = window?.from && hasJobData
+    ? query.clone().where('created_at', '<', window.from.toISOString())
+      .whereRaw("CASE WHEN json_valid(initial_job_data) THEN json_extract(initial_job_data, '$.issueNumber') END IS NOT NULL")
+    : Promise.resolve([]);
+  if (bucketKey) query.select(db.raw(`${bucketKey} as bucket`));
+  whereCreatedWithin(query, 'created_at', window);
+  const [runs, links] = await Promise.all([query, earlierLinks]) as [TaskRunRow[], TaskRunRow[]];
+  return { runs, linkageRows: [...links, ...runs] };
+}
+
+/**
+ * Task volume for a window, or for all time without one: how many tasks were
+ * worked on, and how many of them finished either way. A task with a failed
+ * run and a later successful one counts as both, as the Analytics success
+ * rate always has.
  *
  * `dailySince` bounds only the per-day grouping, for a caller that draws
  * fewer days than it totals; the totals still cover the whole window.
@@ -68,53 +149,41 @@ export async function loadTaskSummary(
   const { dailySince } = options;
   const bucket = analyticsWindowBucket(window);
   const bucketKey = bucketKeySql('created_at', bucket);
-  const dailyQuery = db('tasks')
-    .select(db.raw(`${bucketKey} as date`))
-    .count('* as count')
-    .groupByRaw(bucketKey)
-    .orderBy('date', 'asc');
-  whereCreatedWithin(dailyQuery, 'created_at', window);
-  scopeToRepository(dailyQuery, 'repository', repository);
-  excludeGoalTasks(dailyQuery, 'task_type');
-  if (dailySince) dailyQuery.where('created_at', '>=', dailySince.toISOString());
 
-  // Without a bound on the days, the days themselves add up to the total.
-  const totalQuery = () => {
-    const query = db('tasks').count('* as count');
-    whereCreatedWithin(query, 'created_at', window);
-    scopeToRepository(query, 'repository', repository);
-    excludeGoalTasks(query, 'task_type');
-    return query.first() as unknown as Promise<{ count?: number | string } | undefined>;
-  };
+  const outcomesQuery = db('task_history as h')
+    .join('tasks as t', 't.task_id', 'h.task_id')
+    .distinct('h.task_id', 'h.state')
+    .whereIn('h.state', ['completed', 'failed']);
+  whereCreatedWithin(outcomesQuery, 't.created_at', window);
+  scopeToRepository(outcomesQuery, 't.repository', repository);
+  excludeGoalTasks(outcomesQuery, 't.task_type');
 
-  const outcomeCount = (state: string) => {
-    const query = db('task_history as h')
-      .join('tasks as t', 't.task_id', 'h.task_id')
-      .countDistinct('h.task_id as count')
-      .where('h.state', state);
-    whereCreatedWithin(query, 't.created_at', window);
-    scopeToRepository(query, 't.repository', repository);
-    excludeGoalTasks(query, 't.task_type');
-    return query.first() as unknown as Promise<{ count?: number | string } | undefined>;
-  };
-
-  const [dailyRows, completed, failed, bounded] = await Promise.all([
-    dailyQuery as unknown as Promise<Array<{ date: string; count: number | string }>>,
-    outcomeCount('completed'),
-    outcomeCount('failed'),
-    dailySince ? totalQuery() : Promise.resolve(undefined),
+  const [{ runs, linkageRows }, outcomes] = await Promise.all([
+    loadTaskRuns(db, window, repository, bucketKey),
+    outcomesQuery as unknown as Promise<Array<{ task_id: string; state: string }>>,
   ]);
+  const runsWith = (state: string) => new Set(outcomes.filter(row => row.state === state).map(row => String(row.task_id)));
+  const [completedRuns, failedRuns] = [runsWith('completed'), runsWith('failed')];
 
-  const counts = new Map(dailyRows.map(row => [String(row.date), Number(row.count)]));
+  // Each task counts once, in the bucket of its first run in the window.
+  const since = dailySince?.toISOString();
+  const counts = new Map<string, number>();
+  const tasks = [...groupTaskRuns(runs, linkageRows).values()];
+  const countTasks = (runIds: Set<string>) => tasks.filter(task => task.some(run => runIds.has(String(run.task_id)))).length;
+  for (const [first] of tasks) {
+    if (!first.bucket || (since && String(first.created_at) < since)) continue;
+    counts.set(first.bucket, (counts.get(first.bucket) ?? 0) + 1);
+  }
+  const dailyRows = [...counts].sort(([left], [right]) => left.localeCompare(right)).map(([date, count]) => ({ date, count }));
   const from = window?.from ?? (dailyRows.length > 0 ? bucketStart(String(dailyRows[0].date)) : null);
   const dailyCounts = !window
     ? dailyRows.map(row => ({ date: String(row.date), count: Number(row.count) }))
     : from ? analyticsBucketKeys(from, windowLastInstant(window), bucket).map(date => ({ date, count: counts.get(date) ?? 0 })) : [];
 
   return {
-    total: bounded ? Number(bounded.count ?? 0) : dailyRows.reduce((sum, row) => sum + Number(row.count), 0),
-    completed: Number(completed?.count ?? 0),
-    failed: Number(failed?.count ?? 0),
+    total: tasks.length,
+    completed: countTasks(completedRuns),
+    failed: countTasks(failedRuns),
     dailyCounts,
   };
 }
@@ -170,15 +239,16 @@ export interface RunVolume {
    * runs, its unknown-model row included.
    */
   total: number;
-  /** Tasks created in the window, goal tasks aside: the totals band's "Total tasks". */
+  /** Tasks worked on in the window, goal tasks aside: the totals band's "Total tasks". */
   tasks: number;
   /** `total / tasks`, the iteration multiplier. Null without any tasks. */
   per_task: number | null;
 }
 
 /**
- * Run volume: the compute behind the deliverables. A task often takes several
- * runs — implement, review, fix — so runs and tasks are reported separately.
+ * Run volume: the compute behind the deliverables. A task is a pull request
+ * (see `groupTaskRuns`) and takes several runs — implement, review, fix,
+ * resolve a conflict — so runs and tasks are reported separately.
  *
  * The multiplier divides the two figures the page prints beside it — total
  * runs, as the Models table sums them, by total tasks, as the totals band
@@ -190,15 +260,12 @@ export interface RunVolume {
 export async function loadRunVolume(db: Knex, window: AnalyticsWindow | null): Promise<RunVolume> {
   const runsQuery = db('llm_executions').count('* as total');
   whereCreatedWithin(runsQuery, 'start_time', window);
-  const tasksQuery = db('tasks').count('* as tasks');
-  whereCreatedWithin(tasksQuery, 'created_at', window);
-  excludeGoalTasks(tasksQuery, 'task_type');
-  const [runs, tasks] = await Promise.all([
+  const [runs, { runs: taskRuns, linkageRows }] = await Promise.all([
     runsQuery.first() as unknown as Promise<{ total?: number | string } | undefined>,
-    tasksQuery.first() as unknown as Promise<{ tasks?: number | string } | undefined>,
+    loadTaskRuns(db, window, 'all'),
   ]);
   const total = Number(runs?.total ?? 0);
-  const taskCount = Number(tasks?.tasks ?? 0);
+  const taskCount = groupTaskRuns(taskRuns, linkageRows).size;
   return {
     total,
     tasks: taskCount,

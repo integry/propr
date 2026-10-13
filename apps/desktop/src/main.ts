@@ -1,3 +1,4 @@
+import { authorizeLiveGithubSmoke } from './live-github-smoke';
 import { resolveGithubClientId } from './github-client-config';
 import { createGithubCodePresenter } from './github-code-presenter';
 import { openAllowedExternalUrl as openExternalWithPolicy } from './external-url';
@@ -169,12 +170,18 @@ interface PackagedConnectJourneyDiagnosticState {
 let packagedConnectJourneyDiagnosticState: PackagedConnectJourneyDiagnosticState | null = null;
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
+let liveGithubSmoke: ReturnType<typeof authorizeLiveGithubSmoke> = null;
 let packagedSmokeUserDataDirectory: string | null = null;
 let packagedAcceptanceUserDataDirectory: string | null = null;
 let packagedSmokeEvidence: ReturnType<typeof createPackagedSmokeEvidenceSink> = null;
 let nativeSmokePhase: NativeSmokePhase | undefined;
 let nativeShutdownDiagnostics: ReturnType<typeof configureNativeShutdownDiagnostics> = null;
 try {
+  liveGithubSmoke = authorizeLiveGithubSmoke({
+    argv: process.argv, environment: process.env, isPackaged: app.isPackaged,
+    platform: process.platform, appData: app.getPath('appData'),
+  });
+  if (liveGithubSmoke) app.commandLine.appendSwitch('password-store', 'gnome-libsecret');
   packagedAcceptanceUserDataDirectory = authorizePackagedAcceptanceTest({
     argv: process.argv,
     defaultUserDataDirectory: join(app.getPath('appData'), app.name),
@@ -218,6 +225,9 @@ try {
       throw new Error('Packaged desktop acceptance --user-data-dir must be an existing non-link directory');
     }
     app.setPath('userData', packagedAcceptanceUserDataDirectory);
+  }
+  if (liveGithubSmoke && (packagedSmokeUserDataDirectory || packagedAcceptanceUserDataDirectory)) {
+    throw new Error('Desktop test modes are mutually exclusive');
   }
   nativeShutdownDiagnostics = configureNativeShutdownDiagnostics({
     app,
@@ -675,6 +685,7 @@ const configurePackagedRendererProtocol = (
 
 const openAllowedExternalUrl = async (url: string): Promise<void> => {
   if (shutdownStarted) return;
+  if (liveGithubSmoke) throw new Error('Live smoke permits only instance browser pairing');
   await openExternalWithPolicy(url, value => shell.openExternal(value), () => log('warn', 'desktop.external_url.rejected'));
 };
 
@@ -1655,13 +1666,14 @@ if (!hasSingleInstanceLock) {
         ? packagedJourneyApprovals.open
         : packagedAcceptanceTest
           ? async () => undefined
-          : request => openApprovedDesktopPairingUrl(request, shell, {
+          : request => openApprovedDesktopPairingUrl(request, liveGithubSmoke ?? shell, {
               ambiguousOsLaunchFailure: supportsAmbiguousPairingLaunchRecovery(process.platform),
             }),
       copyPairingApproval: request => copyApprovedDesktopPairingUrl(request, clipboard),
       clientName: `ProPR Desktop (${process.platform})`,
       confirmAccount: async (account, origin, signal) => {
         if (!mainWindow || mainWindow.isDestroyed() || signal.aborted) return false;
+        if (liveGithubSmoke) return liveGithubSmoke.confirmAccount(account, origin);
         if (packagedJourneyAccountConfirmation) {
           return packagedJourneyAccountConfirmation.confirm(account, origin, signal);
         }

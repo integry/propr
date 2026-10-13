@@ -3,6 +3,13 @@ import { test } from 'node:test';
 import { createServer } from 'node:http';
 import { chromium } from 'playwright';
 import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtemp, readFile, lstat, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { ACCEPTANCE_PROFILE_PREFIX, removeOwnedAcceptanceProfileSingletons, safeRemoveAcceptanceLeaf, scanAcceptancePaths } from './acceptance-artifacts.mjs';
 import { runInNewContext } from 'node:vm';
 import { exercisePackagedCspReload, observeCspReloadRequestFailures, correlateExpectedCspReloadConsoleRecords, sanitizedCspReloadError, sanitizedCspReloadRequestFailure } from './packaged-acceptance-csp-reload.mjs';
 
@@ -349,7 +356,7 @@ for (const scenarioFailure of [false, true]) test(`failure diagnostics precede $
   const drain = runnerSource.slice(runnerSource.indexOf('const settlePendingRendererConsoleCaptures ='),
     runnerSource.indexOf('const boundedAcceptanceDiagnosticCount ='));
   Object.assign(context, {
-    traceWritten: true, pendingConsoleRecords: [], processRecords: [], outputDirectory: 'output',
+    installedRpm: false, traceWritten: true, pendingConsoleRecords: [], processRecords: [], outputDirectory: 'output',
     FIXED_TIME: 'fixed', join: (...parts) => parts.join('/'), Buffer, digest: () => '0'.repeat(64),
     console: { info: (...values) => emitted.push(values) },
     writeFile: async (path, content) => files.set(path, JSON.parse(content)),
@@ -671,4 +678,201 @@ test('fetch observation delegates unchanged arguments and ignores subframes and 
   const original = subframe.fetch;
   runInNewContext(`(${install.toString()})(${JSON.stringify(configuration)})`, { ...context, window: subframe });
   assert.equal(subframe.fetch, original);
+});
+
+// Run the actual launcher's cleanup with inert process handles. These contracts
+// differ for the installed lifecycle's caller-owned profile and CSP restart.
+const cleanupFixture = (overrides = {}) => {
+  const scanned = [], removed = [];
+  const start = runnerSource.indexOf('const launchApplication =');
+  const end = runnerSource.indexOf('  try {\n    const args =', start);
+  assert.ok(start >= 0 && end > start);
+  const launch = runInNewContext(`${runnerSource.slice(start, end)}
+    child = fixtureChild; childClosed = fixtureClosed;
+    return { userData, close: cleanup };
+  }; launchApplication;`, {
+    mkdtemp: async () => 'owned-profile', join: (...parts) => parts.join('/'), tmpdir: () => '/tmp',
+    ACCEPTANCE_PROFILE_PREFIX: 'acceptance-', Buffer, digest: () => 'digest',
+    activeJourney: 'cleanup-test', surfaces: [], processRecords: [],
+    scanAcceptancePaths: async (paths, sentinels) => { assert.deepEqual(Array.from(sentinels), ['secret']); scanned.push(...paths); },
+    fixtureChild: undefined, fixtureClosed: undefined,
+    removeOwnedAcceptanceProfileSingletons: async () => {},
+    SENTINELS: ['secret'], safeRemoveAcceptanceLeaf: async (path, options) => {
+      assert.equal(options.kind, 'profile'); removed.push(path);
+    },
+    ...overrides,
+  });
+  return { launch, scanned, removed };
+};
+
+test('CSP profile survives the restart boundary and is removed on final close', async () => {
+  const f = cleanupFixture();
+  const first = await f.launch('csp-reload', null);
+  await first.close({ preserveProfile: true });
+  assert.deepEqual(f.removed, []);
+  const restarted = await f.launch('csp-reload', null, first.userData);
+  await restarted.close();
+  await restarted.close();
+  assert.deepEqual(f.scanned, ['owned-profile', 'owned-profile']);
+  assert.deepEqual(f.removed, ['owned-profile']);
+});
+
+test('installed caller-owned profile is scanned and retained while ordinary packaged profiles are removed', async () => {
+  const f = cleanupFixture();
+  await (await f.launch('default', null, 'installed-profile')).close();
+  assert.deepEqual(f.scanned, ['installed-profile']);
+  assert.deepEqual(f.removed, []);
+  await (await f.launch('default', null)).close();
+  assert.deepEqual(f.removed, ['owned-profile']);
+});
+
+// Exercise the runner's actual cleanup and termination against a real child. The
+// child leaves the verified Chromium singleton links on shutdown, including restart.
+const startSingletonProcess = async profile => {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { symlinkSync } from 'node:fs';
+    import { join } from 'node:path';
+    import { hostname } from 'node:os';
+    process.on('SIGTERM', () => {
+      symlinkSync('18446744073709551615', join(process.argv[1], 'SingletonCookie'));
+      symlinkSync(hostname() + '-' + process.pid, join(process.argv[1], 'SingletonLock'));
+      symlinkSync('/tmp/scoped_dirABC123/SingletonSocket', join(process.argv[1], 'SingletonSocket'));
+      process.exit(0);
+    });
+    setInterval(() => {}, 1000);
+    process.stdout.write('ready');
+  `, profile], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const closed = once(child, 'close');
+  await once(child.stdout, 'data');
+  const start = runnerSource.indexOf('const terminateProcessTree =');
+  const end = runnerSource.indexOf('const initializeRenderer =', start);
+  const terminate = runInNewContext(`${runnerSource.slice(start, end)}; terminateProcessTree;`, { process, sleep });
+  const fixture = cleanupFixture({ fixtureChild: child, fixtureClosed: closed,
+    terminateProcessTree: terminate, removeOwnedAcceptanceProfileSingletons,
+    scanAcceptancePaths, safeRemoveAcceptanceLeaf });
+  return fixture.launch('default', null, profile);
+};
+
+test('owned singleton links are handled after stopped installed restart while profile secrets and foreign links still fail', {
+  skip: process.platform === 'win32' ? 'POSIX singleton regression' : false,
+}, async () => {
+  const profile = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
+  const outside = await mkdtemp(join(tmpdir(), 'propr-cookie-outside-'));
+  try {
+    const state = join(profile, 'persisted-session');
+    await writeFile(state, 'persisted binding');
+    await (await startSingletonProcess(profile)).close();
+    assert.equal(await readFile(state, 'utf8'), 'persisted binding');
+    for (const name of ['SingletonCookie', 'SingletonLock', 'SingletonSocket']) {
+      await assert.rejects(lstat(join(profile, name)), { code: 'ENOENT' });
+    }
+    await (await startSingletonProcess(profile)).close();
+    assert.equal(await readFile(state, 'utf8'), 'persisted binding');
+    for (const name of ['SingletonCookie', 'SingletonLock', 'SingletonSocket']) {
+      await assert.rejects(lstat(join(profile, name)), { code: 'ENOENT' });
+    }
+
+    await writeFile(state, 'secret');
+    await assert.rejects((await startSingletonProcess(profile)).close(), error =>
+      error.message === 'Packaged acceptance cleanup failed' && error.errors.some(inner => /Secret sentinel/.test(inner.message)));
+    await writeFile(state, 'persisted binding');
+    const external = join(outside, 'external-file');
+    await writeFile(external, 'outside data');
+    await symlink(external, join(profile, 'unrelated-link'));
+    await assert.rejects((await startSingletonProcess(profile)).close(), error =>
+      error.errors.some(inner => /symbolic link: unrelated-link/.test(inner.message)));
+    assert.equal(await readFile(external, 'utf8'), 'outside data');
+    await rm(join(profile, 'unrelated-link'));
+    await (await startSingletonProcess(profile)).close({ preserveProfile: false });
+    await assert.rejects(lstat(profile), { code: 'ENOENT' });
+  } finally {
+    await rm(profile, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test('failed child termination cannot remove singleton links or its profile', async () => {
+  for (const terminateProcessTree of [async () => { throw new Error('termination failed'); }, async () => {}]) {
+    const f = cleanupFixture({ fixtureChild: { exitCode: null, signalCode: null }, fixtureClosed: Promise.resolve(),
+      terminateProcessTree,
+      removeOwnedAcceptanceProfileSingletons: async () => assert.fail('cannot unlink before stop') });
+    await assert.rejects((await f.launch('default', null)).close(), /Packaged acceptance cleanup failed/);
+    assert.deepEqual(f.removed, []);
+  }
+});
+
+test('installed mode cannot be redirected away from the package-owned executable', () => {
+  const selection = runnerSource.slice(runnerSource.indexOf('const installedRpm ='), runnerSource.indexOf('const DEVICE_SECRET ='));
+  const binary = environment => runInNewContext(`${selection}; binaryPath`, { process: { env: environment },
+    resolve: (...parts) => `/resolved/${parts.join('/')}` });
+  assert.equal(binary({ PROPR_DESKTOP_INSTALLED_RPM_ACCEPTANCE: '1', PROPR_DESKTOP_ACCEPTANCE_BINARY: '/unowned' }), '/usr/lib/propr-desktop/propr-desktop');
+  assert.equal(binary({ PROPR_DESKTOP_ACCEPTANCE_BINARY: '/native' }), '/resolved//native');
+  assert.equal(binary({}), '/resolved/out/propr-desktop-linux-x64/propr-desktop');
+});
+
+test('successful installed lifecycle retains every phase in final logs and accounting', async () => {
+  const files = new Map();
+  const context = diagnosticContext();
+  const scenario = runnerSource.slice(runnerSource.indexOf('  if (!traceWritten)'), runnerSource.indexOf('  const serious ='));
+  const drain = runnerSource.slice(runnerSource.indexOf('const settlePendingRendererConsoleCaptures ='), runnerSource.indexOf('const boundedAcceptanceDiagnosticCount ='));
+  const installedJourneys = [
+    'installed-approved', 'installed-restart', 'installed-logged-out',
+    'installed-reject', 'installed-reject-restart',
+    'installed-expire', 'installed-expire-restart',
+    'installed-wrong-account', 'installed-wrong-account-restart',
+  ];
+  Object.assign(context, {
+    installedRpm: true, traceWritten: true, pendingConsoleRecords: [], processRecords: [], outputDirectory: 'output',
+    FIXED_TIME: 'fixed', join: (...parts) => parts.join('/'), Buffer, digest: () => 'digest', console: { info: () => {} },
+    writeFile: async (path, content) => files.set(path, JSON.parse(content)),
+    rendererLifecycleInvalidStates: new Map(), boundaryJourneys: new Set(context.ACCEPTANCE_JOURNEYS), surfaces: [],
+    launchApplication: () => {}, pair: () => {}, exercisePackagedCspReload: async () => {},
+    installedPairingLifecycle: async () => {
+      for (const journey of installedJourneys) {
+        context.processRecords.push({ journey, source: 'packaged-process', level: 'combined', bytes: 0, sha256: 'digest' });
+        context.pendingConsoleRecords.push(Promise.resolve().then(() => {
+          context.pendingConsoleRecords.push(Promise.resolve().then(() => {
+            context.consoleRecords.push({ type: 'info', journey, text: 'Lifecycle completed' });
+          }));
+        }));
+      }
+    },
+  });
+  const summary = await runInNewContext(`(async () => { ${drain}\n${runnerDiagnosticFunctions}\n${scenario}\nreturn rendererErrors; })()`, context);
+  const log = files.get('output/sanitized-log.json');
+  assert.equal(log.mode, 'installed-rpm');
+  assert.equal(log.schemaVersion, 2);
+  for (const source of ['renderer-console', 'packaged-process']) {
+    assert.deepEqual(log.records.filter(record => record.source === source).map(record => record.journey), installedJourneys);
+  }
+  assert.equal(summary.records, installedJourneys.length);
+  assert.equal(summary.unexpectedErrors, 0);
+});
+
+test('installed lifecycle errors reach final diagnostics and fail the integrated gate', async () => {
+  const files = new Map();
+  const context = diagnosticContext();
+  const scenario = runnerSource.slice(runnerSource.indexOf('  if (!traceWritten)'), runnerSource.indexOf('  const serious ='));
+  const drain = runnerSource.slice(runnerSource.indexOf('const settlePendingRendererConsoleCaptures ='), runnerSource.indexOf('const boundedAcceptanceDiagnosticCount ='));
+  Object.assign(context, {
+    installedRpm: true, traceWritten: true, pendingConsoleRecords: [], processRecords: [], outputDirectory: 'output',
+    FIXED_TIME: 'fixed', join: (...parts) => parts.join('/'), Buffer, digest: () => 'digest', console: { info: () => {} },
+    writeFile: async (path, content) => files.set(path, JSON.parse(content)),
+    rendererLifecycleInvalidStates: new Map(), boundaryJourneys: new Set(), surfaces: [],
+    launchApplication: () => {}, pair: () => {}, exercisePackagedCspReload: async () => {},
+    installedPairingLifecycle: async () => {
+      context.pendingConsoleRecords.push(Promise.resolve().then(() => {
+        context.consoleRecords.push({ type: 'error', journey: 'installed-restart', text: 'Unrelated failure' });
+        context.pageErrorRecords.push({ journey: 'installed-restart', name: 'TypeError' });
+      }));
+    },
+  });
+  await assert.rejects(runInNewContext(`(async () => { ${drain}\n${runnerDiagnosticFunctions}\n${scenario} })()`, context), /unexpected renderer errors/);
+  assert.equal(files.get('output/sanitized-log.json').records.length, 2);
+  assert.equal(files.get('output/sanitized-log.json').mode, 'installed-rpm');
+  assert.equal(files.get('output/sanitized-log.json').schemaVersion, 2);
+  assert.ok(files.get('output/sanitized-log.json').records.every(record => record.journey === 'installed-restart'));
+  const diagnostics = files.get('output/sanitized-renderer-errors.json');
+  assert.equal(diagnostics.unexpectedErrors, 2);
+  assert.ok(diagnostics.errorRecords.every(record => record.phase === 'installed-restart'));
 });

@@ -283,7 +283,7 @@ test('repository and model rows drill down to the filtered lists', async ({ page
     .toHaveAttribute('href', '/tasks?repository=example%2Fworkspace');
   await expect(repositories.getByRole('link', { name: '3 failed tasks in example/workspace' }))
     .toHaveAttribute('href', '/tasks?repository=example%2Fworkspace&status=failed');
-  await expect(page.getByTestId('model-breakdown-table').getByRole('link', { name: 'LLM log for gpt-5.6' }))
+  await expect(page.getByTestId('model-breakdown-table').getByRole('link', { name: 'LLM log for GPT-5.6' }))
     .toHaveAttribute('href', '/llm-logs?model=gpt-5.6');
 
   const row = repositories.locator('tbody tr').first();

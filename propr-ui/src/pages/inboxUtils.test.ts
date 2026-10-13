@@ -98,7 +98,7 @@ describe('Inbox notification presentation', () => {
       return { shape, className, label };
     };
     expect(notificationReviewOutcome(review('Scores 6/10, 8/10 · 3 issues found: A; B · 1 reviewer failed')))
-      .toEqual({ score: 6, issueCount: 3, reviewerFailed: true });
+      .toEqual({ score: 6, issueCount: 3, reviewerFailed: true, findings: ['A', 'B'] });
     expect(status('Score 6/10 · 2 issues found: Check the head')).toEqual({
       shape: 'square', className: 'bg-amber-500', label: 'Score 6/10 · 2 issues',
     });

@@ -12,7 +12,8 @@ interface ModelUsageRow {
   runs?: number | string;
   tasks?: number | string;
   cost?: number | string | null;
-  tokens?: number | string | null;
+  input_tokens?: number | string | null;
+  output_tokens?: number | string | null;
 }
 
 export interface ModelUsage {
@@ -34,6 +35,21 @@ export interface ModelUsage {
 }
 
 /**
+ * Summed input and output tokens over the `llm_executions as e` rows a query
+ * selects. Each execution's own totals are cache-inclusive for every provider
+ * (cache reads and writes are part of `input_tokens`), and are what its cost
+ * was priced from. Per-step detail rows carry each message's own usage, which
+ * for Claude excludes cached input, so they only stand in for an execution
+ * that recorded no totals.
+ */
+export function executionTokenSums(db: Knex): { input: Knex.Raw; output: Knex.Raw } {
+  const sum = (executionColumn: string, detailColumn: string) => db.raw(`sum(coalesce(e.${executionColumn}, (
+    select sum(d.${detailColumn}) from llm_execution_details d where d.execution_id = e.execution_id
+  ), 0))`);
+  return { input: sum('input_tokens', 'token_count_input'), output: sum('output_tokens', 'token_count_output') };
+}
+
+/**
  * Runs, tasks, tokens and recorded cost for each model, most runs first.
  *
  * A run is one agent execution. A task usually takes several — implement,
@@ -51,32 +67,23 @@ export interface ModelUsage {
  */
 export async function loadModelUsage(db: Knex, analyticsWindow: AnalyticsWindow | null, cache?: AnalyticsCache): Promise<ModelUsage[]> {
   // A null and an empty model name are both unknown, and group as one.
-  const runsQuery = db('llm_executions')
-    .select(db.raw(`NULLIF(model_name, '') as model_name`))
-    .count('* as runs')
-    .countDistinct('task_id as tasks')
-    .sum('cost_usd as cost')
-    .groupByRaw(`NULLIF(model_name, '')`);
-  whereCreatedWithin(runsQuery, 'start_time', analyticsWindow);
-
-  const tokensQuery = db('llm_execution_details as d')
-    .join('llm_executions as e', 'e.execution_id', 'd.execution_id')
+  const tokens = executionTokenSums(db);
+  const runsQuery = db('llm_executions as e')
     .select(db.raw(`NULLIF(e.model_name, '') as model_name`))
-    .select(db.raw('sum(coalesce(d.token_count_input, 0) + coalesce(d.token_count_output, 0)) as tokens'))
+    .count('* as runs')
+    .countDistinct('e.task_id as tasks')
+    .sum('e.cost_usd as cost')
+    .select(db.raw('? as input_tokens', [tokens.input]), db.raw('? as output_tokens', [tokens.output]))
     .groupByRaw(`NULLIF(e.model_name, '')`);
-  whereCreatedWithin(tokensQuery, 'e.start_time', analyticsWindow);
+  whereCreatedWithin(runsQuery, 'e.start_time', analyticsWindow);
 
-  const [runs, tokens] = await Promise.all([
-    runsQuery as unknown as Promise<ModelUsageRow[]>,
-    tokensQuery as unknown as Promise<ModelUsageRow[]>,
-  ]);
-  const tokensByModel = new Map(tokens.map(row => [row.model_name ?? null, Number(row.tokens || 0)]));
+  const runs = await runsQuery as unknown as ModelUsageRow[];
   const usage: ModelUsage[] = runs
     .map(row => ({
       model: row.model_name ?? null,
       runs: Number(row.runs || 0),
       tasks: Number(row.tasks || 0),
-      tokens: tokensByModel.get(row.model_name ?? null) ?? 0,
+      tokens: Number(row.input_tokens || 0) + Number(row.output_tokens || 0),
       cost_usd: Number(Number(row.cost || 0).toFixed(2)),
     }))
     // The unknown row is listed last, whatever its size.

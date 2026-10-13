@@ -17,8 +17,12 @@ let database: Knex;
 
 before(async () => {
   database = await createDashboardTestDatabase();
-  // The overview also reads model names, per-event token counts and indexed repositories.
-  await database.schema.alterTable('llm_executions', table => { table.string('model_name'); });
+  // The overview also reads model names, run and per-event token counts and indexed repositories.
+  await database.schema.alterTable('llm_executions', table => {
+    table.string('model_name');
+    table.integer('input_tokens');
+    table.integer('output_tokens');
+  });
   await database.schema.createTable('llm_execution_details', table => {
     table.increments('detail_id').primary();
     table.integer('execution_id');
@@ -346,4 +350,23 @@ test('goal tasks are left out of task volume on the Analytics page and the dashb
   const widget = await call(stats.getDashboardStats, { repository: 'acme/recent', period: '7d' });
   assert.equal(widget.body.tasks, 1);
   assert.equal(widget.body.completed, 1);
+});
+
+test('token figures use each run\'s cache-inclusive totals and fall back to step details only without them', async () => {
+  await seedRecentAndOlder();
+  // Claude per-step usage excludes cached input; the run total counts it.
+  await database('llm_executions').where({ execution_id: 1 }).update({ input_tokens: 3_000_000, output_tokens: 20_000 });
+  const stats = createStatsRoutes({ db: database, now: () => NOW });
+
+  const overview = await call(stats.getOverview, { period: '7d' });
+  assert.deepEqual(overview.body.model_usage, [
+    { model: 'claude-opus-5-5', runs: 1, tasks: 1, tokens: 3_020_000, cost_usd: 1.5 },
+    // No recorded totals: the run's step details stand in.
+    { model: 'gpt-5.6', runs: 1, tasks: 1, tokens: 1200, cost_usd: 0.5 },
+  ]);
+  const usage = overview.body.usage as { total_tokens: number; input_tokens: number; output_tokens: number };
+  assert.deepEqual(
+    { total: usage.total_tokens, input: usage.input_tokens, output: usage.output_tokens },
+    { total: 3_021_200, input: 3_001_000, output: 20_200 },
+  );
 });

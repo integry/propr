@@ -247,3 +247,20 @@ describe('agent health checks', () => {
     expect(screen.queryByText('Old credentials')).not.toBeInTheDocument();
   });
 });
+
+
+it('automatically refreshes preparation and displays worker failures separately', async () => {
+  vi.mocked(checkAgentHealth)
+    .mockResolvedValueOnce({ agentId: agents[0].id, status: 'preparing' })
+    .mockResolvedValueOnce({ agentId: agents[0].id, status: 'ready' });
+  const view = render(<AgentsListSection agents={[agents[0]]} loading={false} saving={false} error={null} success={null} warning={null} onSaveAgents={vi.fn()} />);
+  expect(await screen.findByText('Preparing agent image…')).toBeVisible();
+  expect(screen.queryByText('Agent unavailable')).not.toBeInTheDocument();
+  expect(await screen.findByText('Ready', {}, { timeout: 4000 })).toBeVisible();
+  expect(checkAgentHealth).toHaveBeenLastCalledWith(agents[0].id, expect.any(String), false);
+  view.unmount();
+  vi.mocked(checkAgentHealth).mockResolvedValueOnce({ agentId: agents[0].id, status: 'error', errorCode: 'preparation_failed', error: 'Check worker status. ' + 'diagnostic'.repeat(100) });
+  render(<AgentsListSection agents={[agents[0]]} loading={false} saving={false} error={null} success={null} warning={null} onSaveAgents={vi.fn()} />);
+  expect(await screen.findByRole('alert')).toHaveTextContent('Agent image preparation failed');
+  expect(screen.queryByRole('button', { name: 'Log in' })).not.toBeInTheDocument();
+});

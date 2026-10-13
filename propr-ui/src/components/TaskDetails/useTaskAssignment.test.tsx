@@ -203,12 +203,12 @@ describe('AssignmentControl while saving', () => {
     api.getTaskAssignees.mockRejectedValueOnce(outage());
     render(<Harness />);
 
-    expect(await screen.findByText("Couldn't load assignment")).toBeInTheDocument();
+    expect(await screen.findByText("Assignees unavailable")).toBeInTheDocument();
     expect(screen.queryByTestId('task-assignment')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
 
     expect(await screen.findByRole('listitem', { name: 'Assigned to @octocat' })).toBeInTheDocument();
-    expect(screen.queryByText("Couldn't load assignment")).toBeNull();
+    expect(screen.queryByText("Assignees unavailable")).toBeNull();
     expect(api.getTaskAssignees).toHaveBeenCalledTimes(2);
   });
 

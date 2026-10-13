@@ -1,7 +1,9 @@
 // CI trigger: 2026-02-18
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react';
 import { getTasks, getInstanceCatalog, MonitoredRepo } from '../api/proprApi';
 import { getDrafts, DraftListItem } from '../api/plannerApi';
+import { getDesktopConnectionScope, getDesktopSocketConfigurationKey, subscribeDesktopConnectionScope } from '../api/apiClient';
+import { isDesktopRuntime } from '../config/runtimeMode';
 
 // Debounce delay in milliseconds
 const DEBOUNCE_DELAY = 300;
@@ -30,6 +32,10 @@ export interface GlobalSearchResults {
   repositories: MonitoredRepo[];
 }
 
+// Consumers use result identity to reset their selection. Keep the hidden
+// results stable while a desktop binding is unavailable or changing.
+const EMPTY_SEARCH_RESULTS: GlobalSearchResults = { plans: [], tasks: [], repositories: [] };
+
 export interface GlobalSearchState {
   query: string;
   results: GlobalSearchResults;
@@ -46,6 +52,11 @@ export interface UseGlobalSearchReturn extends GlobalSearchState {
 }
 
 export function useGlobalSearch(): UseGlobalSearchReturn {
+  const configurationKey = useSyncExternalStore(
+    subscribeDesktopConnectionScope, getDesktopSocketConfigurationKey, getDesktopSocketConfigurationKey,
+  );
+  const [stateConfigurationKey, setStateConfigurationKey] = useState(configurationKey);
+  const canLoad = !isDesktopRuntime() || getDesktopConnectionScope() !== null;
   const [query, setQueryState] = useState('');
   const [results, setResults] = useState<GlobalSearchResults>({
     plans: [],
@@ -68,32 +79,51 @@ export function useGlobalSearch(): UseGlobalSearchReturn {
   // prevents late results from a previous query replacing the active query.
   const requestGenerationRef = useRef(0);
 
-  // Fetch all repositories once on mount
+  // Reload the cache for each active binding; logout can leave this hook mounted.
   useEffect(() => {
     let active = true;
+    const requestScope = getDesktopConnectionScope();
+    setStateConfigurationKey(configurationKey);
+    const isCurrent = () => active && configurationKey === getDesktopSocketConfigurationKey()
+      && (!isDesktopRuntime() || requestScope === getDesktopConnectionScope());
+    requestGenerationRef.current += 1;
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    repositoriesCache.current = [];
+    repositoriesReadyRef.current = Promise.resolve();
+    setQueryState('');
+    setResults({ plans: [], tasks: [], repositories: [] });
+    setError(null);
+    setIsLoading(false);
+    setIsOpen(false);
     repositoriesErrorRef.current = null;
+    if (!canLoad || (isDesktopRuntime() && !requestScope)) return;
     repositoriesReadyRef.current = getInstanceCatalog()
       .then(catalog => {
-        if (!active) return;
+        if (!isCurrent()) return;
         repositoriesCache.current = catalog.repositories.map(repository => ({
           ...repository,
           id: `${repository.name}:${repository.baseBranch || ''}`
         }));
       })
       .catch(err => {
-        if (!active) return;
+        if (!isCurrent()) return;
         repositoriesErrorRef.current = err;
         console.error('Failed to fetch repositories:', err);
       });
     return () => {
       active = false;
     };
-  }, []);
+  }, [configurationKey, canLoad]);
 
   // Perform search
   const performSearch = useCallback(async (searchQuery: string, generation: number) => {
+    const requestScope = getDesktopConnectionScope();
+    const isCurrent = () => generation === requestGenerationRef.current
+      && configurationKey === getDesktopSocketConfigurationKey()
+      && (!isDesktopRuntime() || (getDesktopConnectionScope() !== null && requestScope === getDesktopConnectionScope()));
+    if (!isCurrent()) return;
     if (!searchQuery.trim()) {
-      if (generation === requestGenerationRef.current) setIsLoading(false);
+      if (isCurrent()) setIsLoading(false);
       return;
     }
 
@@ -119,25 +149,26 @@ export function useGlobalSearch(): UseGlobalSearchReturn {
       // Extract tasks from response
       const tasksData = (tasksResponse as { tasks: TaskSearchResult[] }).tasks || [];
 
-      if (generation !== requestGenerationRef.current) return;
+      if (!isCurrent()) return;
       setResults({
         plans: plansResponse.drafts || [],
         tasks: tasksData,
         repositories: filteredRepositories,
       });
     } catch (err) {
-      if (generation !== requestGenerationRef.current) return;
+      if (!isCurrent()) return;
       console.error('Search failed:', err);
       setError((err as Error).message);
       setResults({ plans: [], tasks: [], repositories: [] });
     } finally {
-      if (generation === requestGenerationRef.current) setIsLoading(false);
+      if (isCurrent()) setIsLoading(false);
     }
-  }, []);
+  }, [configurationKey]);
 
   // Debounced query handler
   const setQuery = useCallback(
     (newQuery: string) => {
+      if (isDesktopRuntime() && !getDesktopConnectionScope()) return;
       const generation = ++requestGenerationRef.current;
       setQueryState(newQuery);
       setResults({ plans: [], tasks: [], repositories: [] });
@@ -187,17 +218,18 @@ export function useGlobalSearch(): UseGlobalSearchReturn {
   }, []);
 
   // Check if there are any results
-  const hasResults =
+  const visible = canLoad && stateConfigurationKey === configurationKey;
+  const hasResults = visible && (
     results.plans.length > 0 ||
     results.tasks.length > 0 ||
-    results.repositories.length > 0;
+    results.repositories.length > 0);
 
   return {
-    query,
-    results,
-    isLoading,
-    isOpen,
-    error,
+    query: visible ? query : '',
+    results: visible ? results : EMPTY_SEARCH_RESULTS,
+    isLoading: visible && isLoading,
+    isOpen: visible && isOpen,
+    error: visible ? error : null,
     setQuery,
     clearSearch,
     setIsOpen,

@@ -315,11 +315,16 @@ export const DeleteTaskQuery = querySet('DeleteTaskQuery', z.object({
 
 const storageCategory = z.enum(['database_config', 'repository_caches', 'worktrees', 'salvage', 'logs_artifacts', 'provider_credentials', 'task_history']);
 const storageState = z.enum(['complete', 'partial', 'unknown', 'unsupported']);
-const storageProtection = z.enum(['busy', 'unknown_use', 'recent_use', 'unknown_ownership', 'unsafe_path', 'private_work', 'worktrees', 'local_history', 'salvage', 'remote_unavailable', 'unknown_git_state', 'changed', 'unsupported']);
+const storageProtection = z.enum(['partial_generated_cleanup', 'busy', 'unknown_use', 'recent_use', 'unknown_ownership', 'unsafe_path', 'private_work', 'worktrees', 'local_history', 'salvage', 'remote_unavailable', 'unknown_git_state', 'changed', 'unsupported']);
 const storagePolicy = z.object({ enabled: z.boolean(), idleHours: z.number().int().min(1).max(8760) });
 export const InstanceStorageUsage = component('InstanceStorageUsage', z.object({
   version: z.literal(1), instanceId: z.string(), observedAt: isoDateTime.nullable(), state: storageState,
   scanning: z.boolean(), ownedBytes: z.number().nonnegative().nullable(),
+  generatedPayloads: z.object({
+    observedAt: isoDateTime.nullable(), reclaimableBytes: z.number().nonnegative().nullable(), coverage: z.string(),
+    candidates: z.array(z.object({ id: z.string(), category: storageCategory, estimatedBytes: z.number().nonnegative().nullable(), protectedReasons: z.array(storageProtection) })).optional(),
+    lastCleanup: z.record(z.string(), z.unknown()).nullable(),
+  }).optional().describe('Last bounded generated-payload proof, protected reasons and durable result. Observations may be stale or partial; unregistered worktrees remain protected.'),
   categories: z.array(z.object({ category: storageCategory, bytes: z.number().nonnegative().nullable(), state: storageState })),
   filesystems: z.array(z.object({ id: z.string(), totalBytes: z.number().nonnegative(), availableBytes: z.number().nonnegative() })),
 }));

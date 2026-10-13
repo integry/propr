@@ -1,9 +1,17 @@
 import React, { useState, useCallback } from 'react';
-import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, Gauge, RefreshCw } from 'lucide-react';
 import { getAgentTankUsage, refreshAgentTank, AgentTankUsageResponse, AgentUsageData } from '../api/revertApi';
 import { ProviderLogo } from './ui/ProviderLogo';
-import { getModelDisplayName } from '../utils/modelDisplay';
-import { stripRemainingSuffix } from '../utils/usageMetricLabels';
+import {
+  getAllMetrics,
+  getPrimaryMetric,
+  getMetricTooltip,
+  getProviderDisplayName,
+  getProviderRank,
+  getStatusColor,
+  getTextColor,
+  type UsageMetric,
+} from './agentTankMetrics';
 import { SIDEBAR_ICON_STROKE_WIDTH, SIDEBAR_ICON_STROKE_CLASS } from './icons/sidebarIconStroke';
 import { useLiveResource } from '../hooks/useLiveResource';
 
@@ -13,18 +21,19 @@ export const EXPANDED_AGENTS_STORAGE_KEY = 'agent-tank-expanded-agents';
 
 // Storage access throws in private browsing, sandboxed iframes and non-browser
 // renderers, and the stored value can be anything a previous version (or a
-// user) left behind — so both directions fall back to the collapsed default
-// rather than taking the widget down with them.
-function loadExpandedAgents(): Set<string> {
+// user) left behind — so both directions fall back to the default expansion
+// rather than taking the widget down with them. `null` means no preference has
+// been saved yet, which is what lets the default differ by layout.
+function loadExpandedAgents(): Set<string> | null {
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return new Set();
+    if (typeof window === 'undefined' || !window.localStorage) return null;
     const stored = window.localStorage.getItem(EXPANDED_AGENTS_STORAGE_KEY);
-    if (!stored) return new Set();
+    if (!stored) return null;
     const parsed = JSON.parse(stored);
-    if (!Array.isArray(parsed)) return new Set();
+    if (!Array.isArray(parsed)) return null;
     return new Set(parsed.filter((name): name is string => typeof name === 'string'));
   } catch {
-    return new Set();
+    return null;
   }
 }
 
@@ -37,213 +46,14 @@ function saveExpandedAgents(expanded: Set<string>): void {
   }
 }
 
-// Visible provider labels keyed by ProPR-facing provider key.
-const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-  antigravity: 'Antigravity',
-};
-
-// Order providers appear in the status list. Codex must appear before Antigravity.
-// Unknown providers retain their original relative order after these.
-const PROVIDER_ORDER = ['claude', 'gemini', 'codex', 'antigravity'];
-
-function getProviderRank(name: string): number {
-  const idx = PROVIDER_ORDER.indexOf(name.toLowerCase());
-  return idx === -1 ? PROVIDER_ORDER.length : idx;
-}
-
-// Antigravity quota windows arrive as "<pool> · <window> Limit" (after the
-// "Remaining" suffix is stripped). At the sidebar's label width the pool name
-// alone fills the row, so "Claude and GPT · Weekly Limit" and "Claude and GPT ·
-// Five Hour Limit" both truncated to "Claude and …". The pool becomes a
-// sub-header over its windows instead, and each row names only its window —
-// as short as Claude's and Codex's "Session" / "Weekly". The full name stays in
-// the tooltip.
-const ANTIGRAVITY_WINDOW_LABELS: Record<string, string> = {
-  weekly: 'Weekly',
-  'five hour': '5h',
-};
-
-function parseAntigravityQuotaWindow(fullName: string): { group: string; label: string } | null {
-  const match = fullName.match(/^(.+?)\s*·\s*(.+?)\s+Limit$/i);
-  if (!match) return null;
-  const windowName = match[2].trim();
-  return {
-    group: match[1].trim(),
-    label: ANTIGRAVITY_WINDOW_LABELS[windowName.toLowerCase()] ?? windowName,
-  };
-}
-
-// Map Antigravity thinking-level suffixes to compact bold badges.
-const ANTIGRAVITY_LEVEL_BADGES: Record<string, string> = {
-  medium: 'M',
-  high: 'H',
-  low: 'L',
-};
-
-// Shorten an Antigravity model name for display while keeping the full name for tooltips.
-// `(Medium)` -> bold `M`, `(High)` -> bold `H`, `(Low)` -> bold `L`, `(Thinking)` removed.
-function formatAntigravityModelLabel(fullName: string): { display: React.ReactNode; plain: string } {
-  const withoutThinking = fullName.replace(/\s*\(Thinking\)/gi, '').trim();
-  const levelMatch = withoutThinking.match(/\s*\((Medium|High|Low)\)/i);
-
-  if (levelMatch) {
-    const badge = ANTIGRAVITY_LEVEL_BADGES[levelMatch[1].toLowerCase()];
-    const base = withoutThinking.replace(levelMatch[0], '').trim();
-    return {
-      display: (
-        <>
-          {base} <strong className="font-bold">{badge}</strong>
-        </>
-      ),
-      plain: `${base} ${badge}`,
-    };
-  }
-
-  return { display: withoutThinking, plain: withoutThinking };
-}
-
-// Quota consumed past half the budget is worth noticing, past four fifths is
-// worth acting on.
-const USAGE_WARNING_PERCENT = 50;
-const USAGE_CRITICAL_PERCENT = 80;
-
-// Capacity bars stay neutral for light usage; past the thresholds they take on
-// pastel orange then pastel red. The tints are deliberately soft — the sidebar
-// reports a level, it does not raise an alarm — but still separate clearly from
-// the gray-200 track behind them.
-function getStatusColor(percent: number): string {
-  if (percent > USAGE_CRITICAL_PERCENT) return 'bg-red-400';
-  if (percent > USAGE_WARNING_PERCENT) return 'bg-orange-300';
-  return 'bg-slate-400';
-}
-
-// Text follows the same thresholds as the bar, but at a darker step: these are
-// 10px numerals, so they need readable contrast rather than the bar's pastel.
-function getTextColor(percent: number): string {
-  if (percent > USAGE_CRITICAL_PERCENT) return 'text-red-600';
-  if (percent > USAGE_WARNING_PERCENT) return 'text-orange-600';
-  return 'text-gray-500';
-}
-
-interface UsageMetric {
-  label: string;
-  // Optional rich display (e.g. bold thinking-level badge). Falls back to `label`.
-  displayLabel?: React.ReactNode;
-  // Optional explicit tooltip text (e.g. full Antigravity model name).
-  title?: string;
-  // Optional pool the metric belongs to (e.g. Antigravity's "Claude and GPT"),
-  // rendered as a sub-header above its consecutive rows.
-  group?: string;
-  percent: number;
-  resetsIn?: string;
-}
-
-// Extract all usage metrics from agent data
-function getAllMetrics(agent: AgentUsageData): UsageMetric[] {
-  const metrics: UsageMetric[] = [];
-  if (!agent.usage) return metrics;
-
-  // Claude metrics
-  if (agent.usage.session) {
-    metrics.push({
-      label: 'Session',
-      percent: agent.usage.session.percent,
-      resetsIn: agent.usage.session.resetsIn
-    });
-  }
-  if (agent.usage.weeklyAll) {
-    metrics.push({
-      label: 'Weekly',
-      percent: agent.usage.weeklyAll.percent,
-      resetsIn: agent.usage.weeklyAll.resetsIn
-    });
-  }
-  if (agent.usage.weeklySonnet) {
-    metrics.push({
-      label: 'Sonnet',
-      percent: agent.usage.weeklySonnet.percent,
-      resetsIn: agent.usage.weeklySonnet.resetsIn
-    });
-  }
-  if (agent.usage.weeklyFable) {
-    metrics.push({
-      label: 'Fable',
-      percent: agent.usage.weeklyFable.percent,
-      resetsIn: agent.usage.weeklyFable.resetsIn
-    });
-  }
-  // Gemini / Antigravity models
-  if (agent.usage.models) {
-    const isAntigravity = agent.name.toLowerCase() === 'antigravity';
-    for (const model of agent.usage.models) {
-      if (isAntigravity) {
-        // Keep the full model name (incl. "Gemini" prefix and thinking level) for the tooltip,
-        // but shorten the visible label.
-        const fullName = stripRemainingSuffix(getModelDisplayName(model.model));
-        const quotaWindow = parseAntigravityQuotaWindow(fullName);
-        if (quotaWindow) {
-          metrics.push({
-            label: quotaWindow.label,
-            group: quotaWindow.group,
-            title: fullName,
-            percent: model.percentUsed,
-            resetsIn: model.resetsIn
-          });
-          continue;
-        }
-        const { display, plain } = formatAntigravityModelLabel(fullName);
-        metrics.push({
-          label: plain,
-          displayLabel: display,
-          title: fullName,
-          percent: model.percentUsed,
-          resetsIn: model.resetsIn
-        });
-      } else {
-        metrics.push({
-          label: stripRemainingSuffix(getModelDisplayName(model.model, { compactGemini: true })),
-          percent: model.percentUsed,
-          resetsIn: model.resetsIn
-        });
-      }
-    }
-  }
-
-  // Codex metrics - fiveHour (session) first, then weekly
-  if (agent.usage.fiveHour) {
-    metrics.push({
-      label: 'Session',
-      percent: agent.usage.fiveHour.percentUsed,
-      resetsIn: agent.usage.fiveHour.resetsIn
-    });
-  }
-  // Codex weekly uses percentUsed, not percent
-  if (agent.usage.weekly && !agent.usage.weeklyAll) {
-    const weeklyData = agent.usage.weekly as { percentUsed?: number; percent?: number; resetsIn?: string };
-    metrics.push({
-      label: 'Weekly',
-      percent: weeklyData.percentUsed ?? weeklyData.percent ?? 0,
-      resetsIn: weeklyData.resetsIn
-    });
-  }
-
-  return metrics;
-}
-
-// Get primary metric for collapsed view
-function getPrimaryMetric(agent: AgentUsageData): UsageMetric | null {
-  const metrics = getAllMetrics(agent);
-  return metrics.length > 0 ? metrics[0] : null;
-}
-
-// Rows with an explicit tooltip (Antigravity, whose visible label is shortened)
-// must still report their reset countdown — the same "Resets in ..." suffix every
-// other provider's rows get — so the two are composed rather than one replacing
-// the other. Agent Tank omits the countdown for quotas it has no window for.
-function getMetricTooltip(metric: UsageMetric): string {
-  const resets = metric.resetsIn ? `Resets in ${metric.resetsIn}` : null;
-  if (metric.title) return resets ? `${metric.title} · ${resets}` : metric.title;
-  return resets ?? metric.label;
+// Until someone toggles a provider, a lone provider starts open (there is
+// nothing else to scan past), and so does every provider on a surface opened
+// only to read the numbers (the mobile Usage sheet). Once a preference is
+// saved it is shared with the sidebar.
+function defaultExpansion(agents: AgentUsageData[], expandAll: boolean): Set<string> {
+  return expandAll || agents.length === 1
+    ? new Set(agents.map(agent => agent.name))
+    : new Set();
 }
 
 interface MetricRowProps {
@@ -309,8 +119,7 @@ export const AgentRow: React.FC<AgentRowProps> = ({ agent, expanded, onToggle })
 
   if (!primaryMetric && !agent.error) return null;
 
-  const displayName = PROVIDER_DISPLAY_NAMES[agent.name.toLowerCase()]
-    ?? (agent.name.charAt(0).toUpperCase() + agent.name.slice(1));
+  const displayName = getProviderDisplayName(agent.name);
 
   return (
     <div className="min-w-0 py-1">
@@ -404,11 +213,25 @@ interface AgentTankSidebarProps {
   allowManualRefresh?: boolean;
   className?: string;
   scrollable?: boolean;
+  // `summary` folds the widget into one drill-down row ("Claude 25% · Codex 7%")
+  // that calls `onOpenDetails` — for menus, where a block of progress bars
+  // would push every entry below it off screen.
+  layout?: 'panel' | 'summary';
+  onOpenDetails?: () => void;
+  // Open every provider until a preference is saved.
+  expandAll?: boolean;
 }
 
-const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({ allowManualRefresh = true, className = '', scrollable = false }) => {
+const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({
+  allowManualRefresh = true,
+  className = '',
+  scrollable = false,
+  layout = 'panel',
+  onOpenDetails,
+  expandAll = false,
+}) => {
   const [refreshing, setRefreshing] = useState(false);
-  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(() => loadExpandedAgents());
+  const [savedExpansion, setSavedExpansion] = useState<Set<string> | null>(() => loadExpandedAgents());
 
   const { data: usage, error: usageError, isLoading: loading, refreshNow } = useLiveResource<AgentTankUsageResponse>({
     read: signal => getAgentTankUsage({ signal }),
@@ -434,18 +257,6 @@ const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({ allowManualRefresh 
     }
   }, [refreshNow]);
 
-  const toggleAgent = useCallback((agentName: string) => {
-    setExpandedAgents(prev => {
-      const next = new Set(prev);
-      if (next.has(agentName)) {
-        next.delete(agentName);
-      } else {
-        next.add(agentName);
-      }
-      saveExpandedAgents(next);
-      return next;
-    });
-  }, []);
 
   // Don't render if disabled or loading
   if (loading) return null;
@@ -457,6 +268,66 @@ const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({ allowManualRefresh 
     .sort((a, b) => getProviderRank(a.name) - getProviderRank(b.name));
   if (agents.length === 0) return null;
 
+  const expandedAgents = savedExpansion ?? defaultExpansion(agents, expandAll);
+  const toggleAgent = (agentName: string) => {
+    const next = new Set(expandedAgents);
+    if (next.has(agentName)) {
+      next.delete(agentName);
+    } else {
+      next.add(agentName);
+    }
+    saveExpandedAgents(next);
+    setSavedExpansion(next);
+  };
+
+  const refreshButton = allowManualRefresh && (
+    <button
+      type="button"
+      onClick={() => { void handleManualRefresh(); }}
+      disabled={refreshing}
+      className="-my-1 -mr-1 rounded p-1 text-slate-400 hover:text-slate-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-400 disabled:opacity-50"
+      title="Refresh usage"
+      aria-label="Refresh usage"
+    >
+      <RefreshCw className={`${SIDEBAR_ICON_STROKE_CLASS} w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} strokeWidth={SIDEBAR_ICON_STROKE_WIDTH} aria-hidden="true" />
+    </button>
+  );
+  const agentRows = agents.map(agent => (
+    <AgentRow
+      key={agent.name}
+      agent={agent}
+      expanded={expandedAgents.has(agent.name)}
+      onToggle={() => toggleAgent(agent.name)}
+    />
+  ));
+
+  if (layout === 'summary') {
+    const summary = agents.flatMap(agent => {
+      const metric = getPrimaryMetric(agent);
+      return metric ? [{ name: getProviderDisplayName(agent.name), percent: metric.percent }] : [];
+    });
+    return (
+      <button
+        type="button"
+        onClick={onOpenDetails}
+        aria-haspopup="dialog"
+        className={`flex min-h-11 w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 ${className}`}
+      >
+        <Gauge className="h-5 w-5 flex-none text-slate-500" aria-hidden="true" />
+        <span className="flex-none font-medium">API &amp; quota usage</span>
+        <span className="ml-auto min-w-0 truncate text-right text-xs font-medium text-slate-500" data-testid="usage-summary">
+          {summary.map((item, index) => (
+            <React.Fragment key={item.name}>
+              {index > 0 && <span className="text-slate-300" aria-hidden="true"> · </span>}
+              {item.name} <span className={getTextColor(item.percent)}>{item.percent}%</span>
+            </React.Fragment>
+          ))}
+        </span>
+        <ChevronRight className="h-4 w-4 flex-none text-slate-400" aria-hidden="true" />
+      </button>
+    );
+  }
+
   return (
     // In the sidebar, zone boundaries are whitespace, not rules: the utility
     // group's mt-auto (in Layout) absorbs the flexible space above, so the
@@ -467,30 +338,12 @@ const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({ allowManualRefresh 
         <span className="text-[11px] uppercase font-bold tracking-wider text-slate-400">
           Usage
         </span>
-        {allowManualRefresh && (
-          <button
-            type="button"
-            onClick={() => { void handleManualRefresh(); }}
-            disabled={refreshing}
-            className="-my-1 -mr-1 rounded p-1 text-slate-400 hover:text-slate-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-slate-400 disabled:opacity-50"
-            title="Refresh usage"
-            aria-label="Refresh usage"
-          >
-            <RefreshCw className={`${SIDEBAR_ICON_STROKE_CLASS} w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} strokeWidth={SIDEBAR_ICON_STROKE_WIDTH} aria-hidden="true" />
-          </button>
-        )}
+        {refreshButton}
       </div>
       <div className={scrollable
         ? 'agent-tank-scrollport max-h-56 min-w-0 max-w-full overflow-x-hidden overflow-y-auto'
         : 'agent-tank-scrollport min-w-0 max-w-full space-y-0'}>
-        {agents.map(agent => (
-          <AgentRow
-            key={agent.name}
-            agent={agent}
-            expanded={expandedAgents.has(agent.name)}
-            onToggle={() => toggleAgent(agent.name)}
-          />
-        ))}
+        {agentRows}
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useId, useMemo, useState } from 'react';
 import { formatTaskTerminalReason } from '@propr/shared';
 import { HistoryItem } from './types';
 import PushFailureDetails from './PushFailureDetails';
@@ -116,9 +116,7 @@ const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boo
 }) => {
   const stateUpper = state?.toUpperCase() || '';
 
-  if (isBudgetStop) {
-    return <CircleDollarSign className="h-5 w-5 text-red-500" />;
-  }
+  if (isBudgetStop) return <CircleDollarSign className="h-5 w-5 text-red-500" />;
 
   if (isRunning) {
     return (
@@ -128,30 +126,16 @@ const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boo
     );
   }
 
-  if (isFailure) {
-    return <XCircle className="h-5 w-5 text-red-500" />;
-  }
+  if (isFailure) return <XCircle className="h-5 w-5 text-red-500" />;
 
-  if (isCancelled) {
-    return <Ban className="h-5 w-5 text-orange-500" />;
-  }
+  if (isCancelled) return <Ban className="h-5 w-5 text-orange-500" />;
 
   // Specific icons for different states
-  if (stateUpper === 'PENDING') {
-    return <Clock className="h-5 w-5 text-gray-400" />;
-  }
-  if (stateUpper === 'PROCESSING') {
-    return <Timer className="h-5 w-5 text-blue-500" />;
-  }
-  if (stateUpper === 'POST_PROCESSING') {
-    return <GitPullRequest className="h-5 w-5 text-purple-500" />;
-  }
-  if (stateUpper === 'COMPLETED') {
-    return <CheckCircle2 className="h-5 w-5 text-green-500" />;
-  }
-  if (stateUpper.includes('CLAUDE_EXECUTION')) {
-    return <CircleDot className="h-5 w-5 text-blue-500" />;
-  }
+  if (stateUpper === 'PENDING') return <Clock className="h-5 w-5 text-gray-400" />;
+  if (stateUpper === 'PROCESSING') return <Timer className="h-5 w-5 text-blue-500" />;
+  if (stateUpper === 'POST_PROCESSING') return <GitPullRequest className="h-5 w-5 text-purple-500" />;
+  if (stateUpper === 'COMPLETED') return <CheckCircle2 className="h-5 w-5 text-green-500" />;
+  if (stateUpper.includes('CLAUDE_EXECUTION')) return <CircleDot className="h-5 w-5 text-blue-500" />;
 
   return <CheckCircle2 className="h-5 w-5 text-green-500" />;
 };
@@ -344,12 +328,39 @@ const coalescePipelineHistory = (history: HistoryItem[]): HistoryItem[] => {
   return steps;
 };
 
+// Match the detail renderers, including salvage summaries that are already the label.
+const hasStepDetails = (metadata: HistoryItem['metadata']): boolean => !!(metadata?.terminalReason ||
+  (metadata?.event === 'network.egress' && metadata.networkEgress) || metadata?.pushFailure ||
+  (metadata?.pushSalvage && metadata.description !== metadata.pushSalvage.summary));
+
+/** Touch and keyboard access to full labels and detail lines in compact timelines. */
+const StepDisclosure: React.FC<{ label: string; hasDetails: boolean; className: string; children: React.ReactNode }> = ({ label, hasDetails, className, children }) => {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <div className="min-w-0 flex-1">
+      <span className={`block break-words [@container(max-width:527px)]:hidden ${className}`}>{label}</span>
+      <button type="button" aria-expanded={open} aria-controls={id}
+        onClick={() => setOpen(value => !value)}
+        className={`hidden w-full items-center gap-1 text-left [@container(max-width:527px)]:flex ${className}`}>
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {hasDetails && <span role="img" aria-label="Additional step details" className="font-semibold text-teal-700">•</span>}
+        <span aria-hidden="true">{open ? '−' : '+'}</span>
+      </button>
+      <div id={id} className={open ? '' : '[@container(max-width:527px)]:hidden'}>
+        <div className="hidden break-words [@container(max-width:527px)]:block">{label}</div>
+        {children}
+      </div>
+    </div>
+  );
+};
+
 /**
  * One run's steps hanging off the run rail (2px at 7px in): each step branches
  * off it with a tic under the run's caret, and keeps to the run row's columns:
  * its time in the tag column, its label under the run's summary, its duration
- * under the run's. In a narrow timeline, stack time, label and duration in reading order
- * so metadata never competes with the label for horizontal space.
+ * under the run's. Narrow timelines keep compact single-line summaries, with
+ * fixed metadata columns and an ellipsis for labels that do not fit.
  */
 const BranchSteps: React.FC<{
   items: Array<HistoryItem & { duration: number | null }>;
@@ -362,16 +373,14 @@ const BranchSteps: React.FC<{
       const isLast = index === items.length - 1;
       const isRunning = isLast && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(stateUpper);
       const isFailure = stateUpper === 'FAILED' && !item.metadata?.event;
+      const label = getDisplayLabel(item, index, history, commandMode);
       return (
-        <li key={`${item.state}-${item.timestamp}-${index}`} className={`relative flex min-w-0 items-start gap-2 [@container(max-width:527px)]:flex-col [@container(max-width:527px)]:items-stretch [@container(max-width:527px)]:gap-0 py-0.5 ${RUN_LEAD_INSET} pr-1 text-xs leading-5`}>
-          <span aria-hidden="true" className="absolute left-[9px] top-[10px] h-px w-6 bg-slate-300" />
-          <span className={`${RUN_TAG_COLUMN} [@container(max-width:527px)]:w-auto flex-none font-mono text-[11px] tabular-nums text-slate-400`}>
+        <li key={`${item.state}-${item.timestamp}-${index}`} className={`relative flex min-w-0 items-start gap-2 [@container(max-width:527px)]:min-h-[26px] [@container(max-width:527px)]:py-[3px] [@container(max-width:527px)]:gap-1 py-0.5 ${RUN_LEAD_INSET} pr-1 text-xs leading-5`}>
+          <span aria-hidden="true" className="absolute left-[9px] top-[10px] [@container(max-width:527px)]:top-[13px] h-px w-6 bg-slate-300" />
+          <span className={`${RUN_TAG_COLUMN} [@container(max-width:527px)]:w-14 flex-none font-mono text-[11px] tabular-nums text-slate-500`}>
             {item.timestamp ? formatTimeOnly(item.timestamp) : '--:--'}
           </span>
-          <span className="min-w-0 flex-1">
-            <span className={`block break-words ${isFailure ? 'font-medium text-red-700' : isRunning ? 'font-medium text-slate-900' : 'text-slate-600'}`}>
-              {getDisplayLabel(item, index, history, commandMode)}
-            </span>
+          <StepDisclosure label={label} hasDetails={hasStepDetails(item.metadata)} className={isFailure ? 'font-medium text-red-700' : isRunning ? 'font-medium text-slate-900' : 'text-slate-800'}>
             {item.metadata?.terminalReason && (
               <span className="block break-words text-[11px] text-slate-500" data-testid="task-terminal-reason">
                 {formatTaskTerminalReason(item.metadata.terminalReason)}
@@ -379,8 +388,8 @@ const BranchSteps: React.FC<{
             )}
             <NetworkEgressDetail metadata={item.metadata} />
             <PushFailureDetails metadata={item.metadata} />
-          </span>
-          <span className={`${RUN_DURATION_COLUMN} [@container(max-width:527px)]:w-auto [@container(max-width:527px)]:text-left flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${isRunning ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
+          </StepDisclosure>
+          <span className={`${RUN_DURATION_COLUMN} [@container(max-width:527px)]:w-auto [@container(max-width:527px)]:min-w-12 flex-none whitespace-nowrap text-right font-mono text-[11px] tabular-nums ${isRunning ? 'font-medium text-teal-700' : 'text-slate-500'}`}>
             {isRunning ? 'Running…' : item.duration !== null ? formatRelativeTime(item.duration) : ''}
           </span>
         </li>

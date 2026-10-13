@@ -77,7 +77,7 @@ const DesktopTaskHeader: React.FC<DesktopTaskHeaderProps> = ({ headerProps, cont
     <div data-testid="task-header-tiers" className="flex flex-col gap-1 border-b border-slate-200 px-6 py-2">
       {breadcrumb && <TaskBreadcrumb label={crumbLabel(taskInfo)} />}
       <div data-testid="task-header-identity" className="flex min-h-8 items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <ContextStrip {...contextStripProps} part="git" />
           <TaskStatusBadge {...headerProps} />
         </div>

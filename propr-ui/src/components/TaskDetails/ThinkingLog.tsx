@@ -14,6 +14,7 @@ import {
   type CheckpointOutcome,
   type PreparedThinkingLogEvent,
 } from './checkpointLog';
+import { GUTTER_LABEL_ROW, LOG_ENTRY_GUTTER, LOG_ENTRY_GUTTER_DETAIL, LOG_ENTRY_ROW } from './logEntryLayout';
 
 // Simple thought type detection based on content. A summary is never guessed from wording: mid-run
 // notes such as "Worker side is done" read like one, so only a finished run's closing message is a summary.
@@ -46,11 +47,6 @@ const markFinalStep = (events: PreparedThinkingLogEvent[], streaming: boolean): 
 interface ThinkingLogEvent extends LiveEvent {
   relativeTime?: string | null;
 }
-
-// The entry's first line on the right is 14px text on `leading-relaxed`, i.e. a 1.4219rem line box.
-// The gutter's label row claims exactly that box and centres in it, so `ACTION` and the first line of
-// the entry start on the same horizontal line instead of the label floating a couple of pixels above.
-const gutterLabelRow = 'flex min-h-[1.4219rem] items-center gap-1.5';
 
 interface ThinkingLogProps {
   events: ThinkingLogEvent[];
@@ -102,9 +98,9 @@ const getCategoryInfo = (type: 'analysis' | 'action' | 'summary' | 'search') => 
 // streams never contain a `user_input` event, so this branch stays unreachable there.
 const UserMessageEntry: React.FC<{ event: ThinkingLogEvent }> = ({ event }) => (
   <div data-testid="goal-user-message" className="py-3 border-b border-slate-50 last:border-b-0">
-    <div className="flex items-start gap-3">
+    <div className={LOG_ENTRY_ROW}>
       {/* Left Gutter - distinct YOU label and icon */}
-      <div className="flex-shrink-0 w-[100px] flex flex-col items-start">
+      <div className={LOG_ENTRY_GUTTER}>
         <div className="flex items-center gap-1.5">
           <MessageSquare className="h-3 w-3 text-amber-500" />
           <span className="text-[11px] font-mono font-bold uppercase tracking-tighter text-amber-600">
@@ -112,7 +108,7 @@ const UserMessageEntry: React.FC<{ event: ThinkingLogEvent }> = ({ event }) => (
           </span>
         </div>
         {event.relativeTime && (
-          <span className="font-mono text-[10px] text-slate-500 mt-0.5 ml-[18px]">
+          <span className={`font-mono text-[10px] text-slate-500 ${LOG_ENTRY_GUTTER_DETAIL}`}>
             {event.relativeTime}
           </span>
         )}
@@ -176,12 +172,12 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
         isHighlighted ? 'bg-blue-50/50' : ''
       }`}
     >
-      {/* Gutter Layout: Two-Column Row */}
-      <div className="flex items-start gap-3">
-        {/* Left Gutter (100px) - Icon, Category Label, Timestamp */}
-        <div className="flex-shrink-0 w-[100px] flex flex-col items-start">
+      {/* Gutter Layout: two columns from `sm` up, one on a phone */}
+      <div className={LOG_ENTRY_ROW}>
+        {/* Left Gutter (100px; a line above the content on a phone) - Icon, Category Label, Timestamp */}
+        <div className={LOG_ENTRY_GUTTER}>
           {/* Icon + Category Label Row, on the same line box as the entry's first line of text */}
-          <div className={gutterLabelRow}>
+          <div className={GUTTER_LABEL_ROW}>
             <Icon className={`h-3 w-3 ${categoryInfo.iconColor}`} />
             <span className="text-[11px] font-mono font-bold uppercase tracking-tighter text-slate-500">
               {categoryInfo.label}
@@ -189,13 +185,13 @@ const TerminalLogEntry: React.FC<TerminalLogEntryProps> = ({ event, todoContext,
           </div>
           {/* Timestamp below category label */}
           {event.relativeTime && (
-            <span className="font-mono text-[10px] text-slate-500 mt-0.5 ml-[18px]">
+            <span className={`font-mono text-[10px] text-slate-500 ${LOG_ENTRY_GUTTER_DETAIL}`}>
               {event.relativeTime}
             </span>
           )}
           {/* Todo context if available */}
           {todoContext && (
-            <span className="text-[9px] text-slate-500 truncate mt-0.5 ml-[18px]">
+            <span className={`min-w-0 max-w-full truncate text-[9px] text-slate-500 ${LOG_ENTRY_GUTTER_DETAIL}`}>
               → {todoContext}
             </span>
           )}

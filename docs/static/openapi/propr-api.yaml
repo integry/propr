@@ -3951,7 +3951,7 @@ paths:
   /api/instance/storage/v1/cleanup/preview:
     post:
       operationId: previewInstanceStorageCleanup
-      summary: Preview an explicit instance/category selection; terminal task history requires explicit taskIds.
+      summary: Preview an explicit instance/category selection; worktrees includes only proven generated payloads; terminal task history requires explicit taskIds.
       description: |-
         Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.
 
@@ -8343,6 +8343,7 @@ components:
                 items:
                   type: string
                   enum:
+                    - partial_generated_cleanup
                     - busy
                     - unknown_use
                     - recent_use
@@ -8510,6 +8511,7 @@ components:
                 items:
                   type: string
                   enum:
+                    - partial_generated_cleanup
                     - busy
                     - unknown_use
                     - recent_use
@@ -8600,6 +8602,7 @@ components:
                 items:
                   type: string
                   enum:
+                    - partial_generated_cleanup
                     - busy
                     - unknown_use
                     - recent_use
@@ -8652,6 +8655,82 @@ components:
             - type: number
               minimum: 0
             - type: "null"
+        generatedPayloads:
+          description: Last bounded generated-payload proof, protected reasons and durable result. Observations may be stale or partial; unregistered worktrees remain protected.
+          type: object
+          properties:
+            observedAt:
+              anyOf:
+                - type: string
+                  format: date-time
+                - type: "null"
+            reclaimableBytes:
+              anyOf:
+                - type: number
+                  minimum: 0
+                - type: "null"
+            coverage:
+              type: string
+            candidates:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  category:
+                    type: string
+                    enum:
+                      - database_config
+                      - repository_caches
+                      - worktrees
+                      - salvage
+                      - logs_artifacts
+                      - provider_credentials
+                      - task_history
+                  estimatedBytes:
+                    anyOf:
+                      - type: number
+                        minimum: 0
+                      - type: "null"
+                  protectedReasons:
+                    type: array
+                    items:
+                      type: string
+                      enum:
+                        - partial_generated_cleanup
+                        - busy
+                        - unknown_use
+                        - recent_use
+                        - unknown_ownership
+                        - unsafe_path
+                        - private_work
+                        - worktrees
+                        - local_history
+                        - salvage
+                        - remote_unavailable
+                        - unknown_git_state
+                        - changed
+                        - unsupported
+                required:
+                  - id
+                  - category
+                  - estimatedBytes
+                  - protectedReasons
+                additionalProperties: false
+            lastCleanup:
+              anyOf:
+                - type: object
+                  propertyNames:
+                    type: string
+                  additionalProperties: {}
+                - type: "null"
+          required:
+            - observedAt
+            - reclaimableBytes
+            - coverage
+            - lastCleanup
+          additionalProperties: false
         categories:
           type: array
           items:

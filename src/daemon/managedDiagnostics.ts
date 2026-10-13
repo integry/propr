@@ -17,16 +17,18 @@ export function scheduleManagedDiagnostics(): () => void {
             const spool = managedDiagnostics()!;
             // Independent metadata inventory: no archive/export or native disposal.
             nativeDiagnosticStatus();
-            spool.report({ provider: 'claude', agent: 'unknown', source: 'shared-tmp-claude-logs' }, 'ownership-unverified');
+            // Standing limitations are recorded when they begin or change, not on
+            // every pass, so repeated inventories add no duplicate gap noise.
+            spool.report({ provider: 'claude', agent: 'unknown', source: 'shared-tmp-claude-logs' }, 'ownership-unverified', 0, { standing: true });
             const agents = (await loadAgents()).filter(a => a.enabled);
             const inventory = { provider: 'application', agent: 'application', source: 'agent-inventory' };
             spool.report(inventory, 'protected-native-state', 0);
-            if (agents.length > 128) spool.report(inventory, 'scan-limit');
+            if (agents.length > 128) spool.report(inventory, 'scan-limit', 0, { standing: true });
             const deadline = performance.now() + 2000;
             const count = Math.min(agents.length, 128);
             for (let visited = 0; visited < count; visited++) {
                 if (performance.now() > deadline) {
-                    spool.report({ provider: 'application', agent: 'application', source: 'agent-inventory' }, 'scan-limit');
+                    spool.report(inventory, 'scan-limit', 0, { standing: true });
                     break;
                 }
                 const agent = agents[nextAgent % count];
@@ -34,7 +36,7 @@ export function scheduleManagedDiagnostics(): () => void {
                 // Default per-provider resolution, as at capture (Codex keeps its own resolver).
                 const root = providerCredentialRoot({ provider: agent.type, agent: agent.id, configPath: agent.configPath });
                 if (!root) {
-                    spool.report({ provider: agent.type, agent: agent.id, source: 'unmapped-native-state' }, 'ownership-unverified');
+                    spool.report({ provider: agent.type, agent: agent.id, source: 'unmapped-native-state' }, 'ownership-unverified', 0, { standing: true });
                     continue;
                 }
                 collectProvider(spool, { provider: agent.type, agent: agent.id, root,

@@ -1,6 +1,7 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { capture, installSettingsFixture } from './settings-layout.fixture';
 
 /**
  * The Settings redesign: one contained column, Utility Headers over 1px
@@ -9,113 +10,24 @@ import path from 'node:path';
  * one screenshot per tab.
  */
 
-const notificationPreferences = Object.fromEntries([
-  'plan', 'task', 'review', 'pull_request', 'indexing', 'system_failure',
-].map(kind => [kind, { inboxEnabled: true, pushEnabled: kind === 'system_failure', updatedAt: null }]));
-
-const catalogAgents = [
-  { id: 'claude', kind: 'direct' as const, alias: 'claude', enabled: true, supportedModels: ['claude-opus-5-5', 'claude-sonnet-5-5'] },
-  { id: 'codex', kind: 'direct' as const, alias: 'codex', enabled: true, supportedModels: ['gpt-5-codex', 'gpt-6-astra'] },
-];
-
-async function installSettingsFixture(page: Page): Promise<void> {
-  let savedSettings: Record<string, unknown> = {};
-  await page.routeWebSocket('**/socket.io/**', socket => socket.close());
-  await page.route('**/api/**', async route => {
-    const pathname = new URL(route.request().url()).pathname;
-    const responses: Record<string, unknown> = {
-      '/api/auth/demo-mode': { demoMode: false },
-      '/api/auth/user': {
-        id: 'preview-user', login: 'preview', username: 'preview', displayName: 'Preview User',
-        email: null, avatarUrl: null, role: 'admin', permissions: ['instance.manage_settings'],
-        authorizationSource: 'local',
-      },
-      '/api/config/settings': {
-        worker_concurrency: 2,
-        auto_followup_score_threshold: 4,
-        auto_resolve_merge_conflicts: true,
-        ultrafix_rating_goal: 7,
-        ultrafix_max_cycles: 5,
-        ultrafix_pause_seconds: 60,
-        default_agent_alias: 'claude',
-        model_reasoning_level: 'high',
-        planner_context_model: 'claude:claude-sonnet-5-5',
-        planner_generation_model: 'claude:claude-opus-5-5',
-        pr_review_model: 'claude:claude-opus-5-5',
-        analysis_model_fast: 'codex:gpt-5-codex',
-        pr_review_context_enabled: true,
-        pr_review_context_model: '',
-        pr_review_max_context_tokens: 0,
-        pr_review_context_budget_percent: 100,
-        github_user_whitelist: ['octocat', 'hubot'],
-        agent_stall_timeout_ms: 300_000,
-        agent_tool_stall_timeout_ms: null,
-        agent_degenerate_output_limit: null,
-        agent_watchdog_defaults: { agent_stall_timeout_ms: 600_000, agent_tool_stall_timeout_ms: 1_800_000, agent_degenerate_output_limit: 50 },
-        agent_network_mode: 'restricted',
-        agent_network_mode_enforced: null,
-        agent_network_allow: ['registry.example.com', '*.internal.example.com'],
-        agent_network_ignore_repository_allow: true,
-        agent_network_defaults: { agent_network_mode: 'open', agent_network_mode_enforced: false, agent_network_allow: [], agent_network_ignore_repository_allow: false },
-      },
-      '/api/config/followup-keywords': { followup_keywords: ['PROPR', 'FIXIT'] },
-      '/api/config/followup-ignore-keywords': { followup_ignore_keywords: ['Deployment In Progress'] },
-      '/api/config/pr-label': { pr_label: 'propr' },
-      '/api/config/primary-processing-labels': { primary_processing_labels: ['AI'] },
-      '/api/config/agents': { agents: [] },
-      '/api/config/summarization': { enabled: true, agent_alias: 'claude:claude-sonnet-5-5', fallback_agent_alias: '' },
-      '/api/config/agent-tank': { enabled: true, url: 'http://0.0.0.0:3456' },
-      '/api/config/agent-tank/status': { available: true },
-      '/api/config/visual-preview-auth': {
-        status: 'active', source: 'github_login', configured: true, githubUsername: 'preview-bot',
-      },
-      '/api/config/preview-storage': { version: 1, state: 'enabled', enabled: true, effective: null },
-      '/api/agent-runtime/packages': {
-        installationId: 'preview', packages: ['ripgrep'], activePackages: ['ripgrep'],
-        status: 'ready', images: { claude: 'sha256:preview' }, updatedAt: '',
-      },
-      '/api/admin/mcp': {
-        status: { enabled: true, resource: 'https://propr.example/api/mcp', origin: 'https://propr.example', scopeCeiling: ['read', 'plan', 'execute'] },
-        settings: { enabled: true, scopeCeiling: ['read', 'plan', 'execute'], connectEnabled: false },
-      },
-      '/api/instance/catalog': { agents: catalogAgents, repositories: [] },
-      '/api/notifications/config': { push: { configured: false, vapidPublicKey: null } },
-      '/api/notifications/unread-count': { unreadCount: 0 },
-      '/api/notifications/preferences': {
-        preferences: notificationPreferences,
-        quietHours: { start: '22:00', end: '07:00', timezone: 'UTC' },
-        badgeEnabled: true,
-      },
-    };
-    if (pathname === '/api/config/settings') {
-      if (route.request().method() === 'POST') {
-        savedSettings = { ...savedSettings, ...route.request().postDataJSON().settings };
-        return route.fulfill({ json: { success: true, settings: savedSettings } });
-      }
-      return route.fulfill({ json: { ...(responses[pathname] as Record<string, unknown>), ...savedSettings } });
-    }
-    if (pathname in responses) return route.fulfill({ json: responses[pathname] });
-    return route.fulfill({ status: 503, json: { error: 'Unavailable in settings layout fixture' } });
-  });
-}
-
-async function capture(page: Page, name: string, scrollTo?: Locator): Promise<void> {
-  if (!process.env.PROPR_CAPTURE_PREVIEWS) return;
-  const directory = path.resolve('../.propr/previews');
-  await mkdir(directory, { recursive: true });
-  if (scrollTo) await scrollTo.scrollIntoViewIfNeeded();
-  await page.screenshot({ animations: 'disabled', path: path.join(directory, `${name}.png`) });
-}
-
-test('lays settings out as one contained, single-column form', async ({ page }) => {
+test('lays settings out as a vertical rail beside one contained, single-column form', async ({ page }) => {
   await page.setViewportSize({ width: 1600, height: 900 });
   await installSettingsFixture(page);
   await page.goto('/settings?tab=models');
 
-  // No arbitrary counts beside the tabs.
-  for (const label of ['AI & Models', 'Automation', 'Integrations', 'Notifications']) {
-    await expect(page.getByRole('tab', { name: label, exact: true })).toBeVisible();
+  // A vertical rail lists the settings domains, with no arbitrary counts.
+  const rail = page.getByRole('tablist', { name: 'Settings categories' });
+  await expect(rail.getByRole('tab')).toHaveText([
+    'General', 'AI Models & Reasoning', 'Workflow & PR Rules', 'Ultrafix & Escalation',
+    'Sandbox & Network', 'Integrations & MCP', 'Notifications',
+  ]);
+  const tabBoxes = await Promise.all((await rail.getByRole('tab').all()).map(tab => tab.boundingBox()));
+  for (const box of tabBoxes.slice(1)) {
+    expect(Math.abs(box!.x - tabBoxes[0]!.x)).toBeLessThanOrEqual(1);
+    expect(box!.y).toBeGreaterThan(tabBoxes[0]!.y);
   }
+  // The rail names the open domain; the pane does not repeat it as a heading.
+  await expect(page.getByRole('heading', { name: 'AI Models & Reasoning' })).toHaveCount(0);
 
   // The form is contained rather than stretching across a 1600px canvas.
   const select = page.getByLabel('Plan Generation Model');
@@ -129,41 +41,76 @@ test('lays settings out as one contained, single-column form', async ({ page }) 
   }
   await capture(page, 'settings-ai-models');
 
-  await page.getByRole('tab', { name: 'Automation' }).click();
-  await capture(page, 'settings-automation');
+  await page.getByRole('tab', { name: 'Workflow & PR Rules' }).click();
+  await expect(page).toHaveURL(/\/settings\?tab=workflow$/);
+  await expect(page.getByLabel('Worker Concurrency')).toBeVisible();
+  // Ultrafix, sandbox and usage-tip settings no longer share this page.
+  for (const label of ['Max Cycles', 'Network mode', 'Show usage tips']) {
+    await expect(page.getByLabel(label, { exact: true })).toBeHidden();
+  }
+  await capture(page, 'settings-workflow');
 
-  // The "Add" action is a real button, and the chips wrap in a plain flex row
-  // rather than sitting inside a padded grey box.
+  // List settings are tag inputs: chips sit inside the input container and
+  // Enter or comma turns the typed text into a chip.
   const whitelist = page.getByRole('region', { name: 'GitHub trigger whitelist' });
-  await expect(whitelist.getByRole('button', { name: 'Add' })).toBeVisible();
+  await expect(whitelist.getByRole('button', { name: 'Add' })).toHaveCount(0);
   const chipRemove = whitelist.getByRole('button', { name: 'Remove octocat' });
   await expect(chipRemove).toBeVisible();
-  await expect(chipRemove.locator('xpath=../..')).toHaveClass(/flex-wrap/);
-  await capture(page, 'settings-automation-lists', whitelist);
+  const tagInput = whitelist.getByLabel('GitHub username');
+  await expect(chipRemove.locator('xpath=../..')).toHaveAttribute('data-tag-input');
+  await expect(tagInput.locator('xpath=..')).toHaveAttribute('data-tag-input');
+  await tagInput.fill('monalisa');
+  await tagInput.press('Enter');
+  await tagInput.pressSequentially('dependabot,');
+  await expect(whitelist.getByRole('button', { name: 'Remove monalisa' })).toBeVisible();
+  await expect(whitelist.getByRole('button', { name: 'Remove dependabot' })).toBeVisible();
+  await expect(tagInput).toHaveValue('');
+  // A pasted list becomes one chip per entry, saved together; Enter adds the last one.
+  const pasted = page.waitForRequest(request => request.url().endsWith('/api/config/settings') && request.method() === 'POST');
+  await tagInput.fill('alice,bob,carol');
+  expect((await pasted).postDataJSON().settings.github_user_whitelist).toEqual(['octocat', 'hubot', 'monalisa', 'dependabot', 'alice', 'bob']);
+  await expect(tagInput).toHaveValue('carol');
+  await tagInput.press('Enter');
+  await expect(whitelist.getByRole('button', { name: /^Remove (alice|bob|carol)$/ })).toHaveCount(3);
+  await capture(page, 'settings-workflow-lists', whitelist);
 
+  await page.getByRole('tab', { name: 'Sandbox & Network' }).click();
   const network = page.getByRole('region', { name: 'Agent network' });
   await expect(network.getByLabel('Network mode')).toHaveValue('restricted');
   await expect(network.getByLabel('Additional allowed hosts')).toHaveValue('registry.example.com\n*.internal.example.com');
   await expect(network.getByLabel('Repository allowed hosts')).toHaveValue('true');
+  // The watchdog guards every agent run, so it sits with the other execution limits.
+  await expect(page.getByRole('region', { name: 'Agent watchdog' })).toBeVisible();
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
     await mkdir(path.resolve('../.propr/previews'), { recursive: true });
     await network.scrollIntoViewIfNeeded();
     await network.screenshot({ animations: 'disabled', path: path.resolve('../.propr/previews/settings-agent-network.png') });
   }
 
-  await page.getByRole('tab', { name: 'Integrations' }).click();
+  await page.getByRole('tab', { name: 'Ultrafix & Escalation' }).click();
+  // A newly opened category starts at its top, not at the previous one's scroll offset.
+  await expect.poll(() => page.locator('[data-settings-scroll]').evaluate(element => element.scrollTop)).toBe(0);
+  await expect(page.getByLabel('Target Review Score')).toHaveValue('7');
+  await expect(page.getByLabel('Target Review Score').locator('option:checked')).toHaveText('7/10 (Default)');
+  await expect(page.getByRole('region', { name: 'Agent watchdog' })).toBeHidden();
+  await capture(page, 'settings-ultrafix');
+
+  await page.getByRole('tab', { name: 'General' }).click();
+  await expect(page.getByLabel('Show usage tips')).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: 'Enable voice briefings' })).toBeVisible();
+  await capture(page, 'settings-general');
+
+  await page.getByRole('tab', { name: 'Integrations & MCP' }).click();
   await expect(page.getByRole('heading', { name: 'LLM Usage Tracking' })).toBeVisible();
   await expect(page.getByText('Agent Tank connected')).toBeVisible();
   await capture(page, 'settings-integrations');
   await capture(page, 'settings-mcp', page.getByRole('region', { name: 'MCP Server', exact: true }));
 
   // Card Hell stays banned: these blocks are separated by rules, not boxes.
-  for (const name of ['Managed preview storage', 'Voice briefings · Experimental']) {
-    const region = page.getByRole('region', { name });
-    await expect(region).toHaveCSS('border-top-width', '0px');
-    await expect(region).toHaveCSS('border-radius', '0px');
-  }
-  await capture(page, 'settings-integrations-storage', page.getByRole('region', { name: 'Voice briefings · Experimental' }));
+  const storage = page.getByRole('region', { name: 'Managed preview storage' });
+  await expect(storage).toHaveCSS('border-top-width', '0px');
+  await expect(storage).toHaveCSS('border-radius', '0px');
+  await capture(page, 'settings-integrations-storage', storage);
 
   await page.getByRole('tab', { name: 'Notifications' }).click();
   const inbox = page.getByLabel('Inbox notifications for Plans');
@@ -179,11 +126,99 @@ test('lays settings out as one contained, single-column form', async ({ page }) 
   }
 });
 
-test('keeps the contained settings column usable on a phone', async ({ page }) => {
+test('balances a widescreen canvas with an inspector beside the form', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await installSettingsFixture(page);
+  await page.goto('/settings?tab=sandbox');
+
+  const inspector = page.getByRole('complementary', { name: 'About Sandbox & Network' });
+  await expect(inspector).toBeVisible();
+  await expect(inspector).toContainText('per-run proxy');
+  await expect(inspector.getByRole('link', { name: 'Restricted network mode' }))
+    .toHaveAttribute('href', 'https://docs.propr.dev/docs/features/execution-safety#restricted-network-mode');
+
+  // Rail, form and inspector sit in one centred band: the space left of the
+  // rail and right of the inspector match instead of pooling on the right.
+  const scroll = (await page.locator('[data-settings-scroll]').boundingBox())!;
+  const rail = (await page.locator('[data-settings-rail]').boundingBox())!;
+  const inspectorBox = (await inspector.boundingBox())!;
+  const leftGutter = rail.x - scroll.x;
+  const rightGutter = scroll.x + scroll.width - (inspectorBox.x + inspectorBox.width);
+  expect(Math.abs(leftGutter - rightGutter)).toBeLessThanOrEqual(24);
+  expect(rightGutter).toBeLessThan(scroll.width * 0.2);
+  // The save status starts where the rail does.
+  const status = (await page.getByRole('status').filter({ hasText: 'Changes save automatically' }).boundingBox())!;
+  expect(Math.abs(status.x - rail.x)).toBeLessThanOrEqual(2);
+  await capture(page, 'settings-widescreen-sandbox');
+
+  await page.getByRole('tab', { name: 'Ultrafix & Escalation' }).click();
+  await expect(page.getByRole('complementary', { name: 'About Ultrafix & Escalation' })).toContainText('6 → 7 resets patience');
+  await capture(page, 'settings-widescreen-ultrafix');
+
+  // Search results mix categories, so the inspector steps aside.
+  await page.getByRole('searchbox', { name: 'Search settings' }).fill('labels');
+  await expect(page.locator('[data-settings-inspector]')).toHaveCount(0);
+
+  // Below 2xl the inspector folds away and the form keeps its width.
+  await page.getByRole('searchbox', { name: 'Search settings' }).fill('');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(page.getByRole('complementary', { name: 'About Ultrafix & Escalation' })).toBeHidden();
+});
+
+test('keeps helper text inside the block it belongs to', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await installSettingsFixture(page);
+  await page.goto('/settings?tab=workflow');
+
+  const labels = page.locator('[data-settings-section="primary-processing-labels"]');
+  const helper = labels.getByText('State labels (-processing, -done) are generated automatically.');
+  await expect(labels).toHaveCSS('border-bottom-width', '1px');
+  const [helperBox, labelsBox, nextBox] = await Promise.all([
+    helper.boundingBox(),
+    labels.boundingBox(),
+    page.locator('[data-settings-section="follow-up-keywords"]').boundingBox(),
+  ]);
+  // The helper ends inside its block, and the rule sits no further from it
+  // than from the next block's header, so the helper reads as part of its own block.
+  const ruleY = labelsBox!.y + labelsBox!.height;
+  const helperToRule = ruleY - (helperBox!.y + helperBox!.height);
+  const ruleToNext = nextBox!.y - ruleY;
+  expect(helperToRule).toBeGreaterThanOrEqual(24);
+  expect(helperToRule).toBeLessThanOrEqual(ruleToNext + 1);
+  await capture(page, 'settings-block-separation', page.locator('[data-settings-section="follow-up-keywords"]'));
+});
+
+test('drills into settings on a phone instead of scrolling a tab strip', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 780 });
   await installSettingsFixture(page);
-  await page.goto('/settings?tab=models');
+  await page.goto('/settings');
 
+  // Screen 1: every category is listed vertically and fully readable.
+  const tabs = page.getByRole('tablist', { name: 'Settings categories' }).getByRole('tab');
+  await expect(tabs).toHaveCount(7);
+  for (const tab of await tabs.all()) {
+    await expect(tab).toBeInViewport({ ratio: 1 });
+    expect(await tab.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
+  await expect(page.getByLabel('Show usage tips')).toBeHidden();
+  await capture(page, 'settings-mobile-menu');
+
+  // Screen 2: one category under a back button.
+  await page.getByRole('tab', { name: 'Workflow & PR Rules' }).click();
+  const back = page.getByRole('button', { name: 'Back to Settings' });
+  await expect(back).toBeVisible();
+  await expect(page.getByLabel('Worker Concurrency')).toBeVisible();
+  await expect(page.getByRole('searchbox', { name: 'Search settings' })).toBeHidden();
+  await expect(page.locator('[data-settings-mobile-header]')).toContainText('Workflow & PR Rules');
+  await capture(page, 'settings-mobile-category');
+
+  await back.click();
+  await expect(tabs.first()).toBeVisible();
+  await expect(page.getByLabel('Worker Concurrency')).toBeHidden();
+
+  // A link that names a category opens straight into it, without overflowing.
+  await page.goto('/settings?tab=models');
+  await expect(page.getByRole('button', { name: 'Back to Settings' })).toBeVisible();
   const select = page.getByLabel('Plan Generation Model');
   await expect(select).toBeVisible();
   const overflow = await page.evaluate(() => {
@@ -194,6 +229,29 @@ test('keeps the contained settings column usable on a phone', async ({ page }) =
   await capture(page, 'settings-mobile');
 });
 
+
+test('walks the phone category list with the keyboard before opening one', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 780 });
+  await installSettingsFixture(page);
+  await page.goto('/settings');
+
+  const tabs = page.getByRole('tablist', { name: 'Settings categories' });
+  await tabs.getByRole('tab', { name: 'General' }).focus();
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+
+  // Arrows only move focus: the list stays up and the route is unchanged.
+  const workflow = tabs.getByRole('tab', { name: 'Workflow & PR Rules' });
+  await expect(workflow).toBeFocused();
+  await expect(workflow).toBeVisible();
+  expect(new URL(page.url()).search).toBe('');
+  await expect(page.getByRole('button', { name: 'Back to Settings' })).toHaveCount(0);
+
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\?tab=workflow$/);
+  await expect(page.getByRole('button', { name: 'Back to Settings' })).toBeVisible();
+  await expect(page.getByLabel('Worker Concurrency')).toBeVisible();
+});
 
 test('fast analysis model describes the review context scout', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 820 });
@@ -212,14 +270,14 @@ test('fast analysis model describes the review context scout', async ({ page }) 
       animations: 'disabled', path: path.join(directory, 'fast-analysis-model.png'),
     });
   }
-  await page.getByRole('tab', { name: 'Automation' }).click();
+  await page.getByRole('tab', { name: 'Workflow & PR Rules' }).click();
   await expect(page.getByLabel('Auto-Followup Score Threshold')).toHaveCount(0);
 });
 
 test('ultrafix escalation controls retain ordered models and support direct handoff', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 1000 });
   await installSettingsFixture(page);
-  await page.goto('/settings?tab=automation');
+  await page.goto('/settings?tab=ultrafix');
   const section = page.getByRole('region', { name: 'Ultrafix', exact: true });
   await expect(section.getByLabel('Automatic Escalation')).not.toBeChecked();
   for (const label of ['Add escalation model', 'Escalation Patience', 'Max Reasoning Levels per Model']) {
@@ -261,7 +319,7 @@ test('ultrafix escalation controls retain ordered models and support direct hand
     ultrafix_escalation_patience: 4,
     ultrafix_escalation_max_reasoning_levels: 0,
   });
-  await expect(page.getByRole('status').filter({ hasText: 'Settings auto-saved' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'All changes saved' })).toBeVisible();
   await page.reload();
   await expect(section.getByLabel('Automatic Escalation')).toBeChecked();
   await expect(models).toHaveValue('codex:gpt-6-astra');
@@ -308,7 +366,7 @@ test('ultrafix escalation controls retain ordered models and support direct hand
 test('agent watchdog thresholds save as overrides of the environment defaults', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await installSettingsFixture(page);
-  await page.goto('/settings?tab=automation');
+  await page.goto('/settings?tab=sandbox');
   const section = page.getByRole('region', { name: 'Agent watchdog' });
   await expect(section).toBeVisible();
   const stall = section.getByLabel('Stall timeout (minutes)', { exact: true });

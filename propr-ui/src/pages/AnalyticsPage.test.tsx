@@ -174,7 +174,7 @@ describe('AnalyticsPage', () => {
     renderPage();
 
     const models = await screen.findByTestId('model-breakdown-table');
-    expect(within(models).getByRole('link', { name: 'LLM log for claude-opus-5-5' }))
+    expect(within(models).getByRole('link', { name: 'LLM log for Claude Opus 5.5' }))
       .toHaveAttribute('href', '/llm-logs?model=claude-opus-5-5');
     fireEvent.click(within(models).getByText('$3.02'));
     expect(screen.getByTestId('location')).toHaveTextContent('/llm-logs?model=gpt-5.6');
