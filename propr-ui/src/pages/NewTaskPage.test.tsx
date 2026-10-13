@@ -171,7 +171,7 @@ describe('New Task issue launcher', () => {
   it('preselects the remembered repository and drops it when no longer available', async () => {
     localStorage.setItem(`task-routing:${API_BASE_URL}:alice`, JSON.stringify({ repository: 'acme/billing', agentAlias: 'issue-only', model: 'model-1' }));
     const { unmount } = render(<MemoryRouter initialEntries={['/tasks/new']}><Routes><Route path="/tasks/new" element={<NewTaskPage />} /></Routes></MemoryRouter>);
-    await waitFor(() => expect(screen.getByRole('option', { name: 'model-1' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Model 1' })).toBeInTheDocument());
     expect(screen.getByLabelText('Repository')).toHaveValue('acme/billing');
     expect(screen.getByLabelText('Agent')).toHaveValue('issue-only');
     expect(screen.getByLabelText('Model')).toHaveValue('model-1');

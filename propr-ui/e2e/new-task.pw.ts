@@ -6,7 +6,13 @@ for (const [device, viewport] of Object.entries({ desktop: { width: 1440, height
     await page.setViewportSize(viewport);
     const requests = await fixture(page);
     await page.goto('/tasks');
-    await page.getByRole('button', { name: 'New Task', exact: true }).click();
+    if (device === 'mobile') {
+      // On phones, creation starts from the bottom bar's Create sheet.
+      await page.getByRole('navigation', { name: 'Primary navigation', exact: true }).getByRole('button', { name: 'Create', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Create' }).getByRole('link', { name: 'New Task', exact: true }).click();
+    } else {
+      await page.getByRole('button', { name: 'New Task', exact: true }).click();
+    }
     await expect(page.getByRole('heading', { name: 'New task', exact: true })).toBeVisible();
     await page.getByText('Select a repository', { exact: true }).click();
     await page.getByRole('button', { name: /acme.*billing/ }).click();
@@ -49,7 +55,8 @@ test('the next task preselects the last used repository, agent, and model', asyn
   await page.goto('/tasks/new');
   const dialog = page.getByRole('dialog', { name: 'New task' });
   await expect(dialog.getByText('billing', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('codex · gpt-6-astra', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('codex · GPT-6 Astra', { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel('Model', { exact: true })).toHaveValue('gpt-6-astra');
   await page.getByLabel('Prompt', { exact: true }).fill('Show invoice totals in the account currency');
   await expect(page.getByRole('button', { name: 'Run task', exact: true })).toBeEnabled();
   await screenshot(page, 'new-task-remembered-settings-desktop');

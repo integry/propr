@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, unlink, writeFile } from 'node:fs/promises';
+import { hostname, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
@@ -403,7 +403,7 @@ const allowedCleanup = (kind, allowedWorkspaceParents) => {
   throw new Error('Unknown acceptance cleanup kind');
 };
 
-export const safeRemoveAcceptanceLeaf = async (input, { kind = 'artifact', allowedWorkspaceParents } = {}) => {
+const validateAcceptanceLeaf = async (input, { kind = 'artifact', allowedWorkspaceParents } = {}) => {
   if (!isAbsolute(input)) throw new Error('Acceptance cleanup requires an absolute path');
   const target = resolve(input);
   const policy = allowedCleanup(kind, allowedWorkspaceParents);
@@ -430,7 +430,83 @@ export const safeRemoveAcceptanceLeaf = async (input, { kind = 'artifact', allow
   let stats;
   try { stats = await lstat(target); } catch (error) { if (error?.code === 'ENOENT') return; throw error; }
   if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error('Acceptance cleanup target must be a non-link directory');
-  await rm(target, { recursive: true, force: false });
+  return { target, stats };
+};
+
+export const safeRemoveAcceptanceLeaf = async (input, options = {}) => {
+  const leaf = await validateAcceptanceLeaf(input, options);
+  if (leaf) await rm(leaf.target, { recursive: true, force: false });
+};
+
+// Call only after the profile's child has stopped. Verified with Electron 44.7.0
+// (Chromium 152.0.7977.130): cookie = uint64, lock = hostname-PID,
+// socket = /tmp/scoped_dirXXXXXX/SingletonSocket. Chromium implements these in
+// chrome/browser/process_singleton_posix.cc (GenerateCookie/Create).
+// Only unlink these exact entries in the private profile; never follow targets.
+export const removeOwnedAcceptanceProfileSingletons = async (input, { stoppedChildPid } = {}) => {
+  const leaf = await validateAcceptanceLeaf(input, { kind: 'profile' });
+  if (!leaf) return;
+  const entries = new Map();
+  const uid = process.getuid?.();
+  // Path lookup alone accepts differently cased aliases on macOS volumes.
+  // Only actual directory entries with exact allowlisted spelling qualify.
+  const names = new Set(await readdir(leaf.target));
+  for (const name of ['SingletonCookie', 'SingletonLock', 'SingletonSocket']) {
+    if (!names.has(name)) continue;
+    const path = join(leaf.target, name);
+    let stats;
+    try { stats = await lstat(path); } catch (error) { if (error?.code === 'ENOENT') continue; throw error; }
+    if (!stats.isSymbolicLink()) continue; // Regular files still undergo secret scanning.
+    if (uid === undefined || leaf.stats.uid !== uid || stats.uid !== uid || (leaf.stats.mode & 0o077) !== 0) {
+      throw new Error('Acceptance singleton requires an owned private profile and link');
+    }
+    entries.set(name, { name, path, stats, target: await readlink(path) });
+  }
+  const cookie = entries.get('SingletonCookie');
+  if (cookie && (!/^(0|[1-9][0-9]{0,19})$/.test(cookie.target) || BigInt(cookie.target) > 18446744073709551615n)) {
+    throw new Error('Acceptance singleton cookie target is not a Chromium uint64 token');
+  }
+  const lock = entries.get('SingletonLock');
+  const host = hostname();
+  if (lock && (!Number.isSafeInteger(stoppedChildPid) || stoppedChildPid <= 0 ||
+      !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(host) || lock.target !== `${host}-${stoppedChildPid}`)) {
+    throw new Error('Acceptance singleton lock target must match the local hostname and stopped child PID');
+  }
+  const socket = entries.get('SingletonSocket');
+  if (socket && (!lock || !cookie || !/^\/tmp\/scoped_dir[A-Za-z0-9]{6}\/SingletonSocket$/.test(socket.target))) {
+    throw new Error('Acceptance singleton socket requires the verified Chromium target shape, lock and cookie');
+  }
+  // Cookie and lock are dangling non-path tokens. Refuse to hide a real file
+  // or another link inside the profile. Do not inspect the outside socket target.
+  for (const entry of [cookie, lock]) {
+    if (!entry) continue;
+    try {
+      await lstat(join(leaf.target, entry.target));
+      throw new Error('Acceptance singleton token target must be absent inside the profile');
+    } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+  }
+  const sameEntry = (current, original) => current.dev === original.dev && current.ino === original.ino &&
+    current.uid === original.uid && current.mode === original.mode && current.ctimeMs === original.ctimeMs;
+  // Validate the complete set before removing anything, including companion
+  // links used as socket evidence. Recheck each entry immediately before unlink.
+  const check = async entry => {
+    const current = await lstat(entry.path);
+    const target = await readlink(entry.path);
+    const afterRead = await lstat(entry.path);
+    const currentProfile = await validateAcceptanceLeaf(input, { kind: 'profile' });
+    const currentNames = currentProfile ? await readdir(currentProfile.target) : [];
+    if (!currentProfile || currentProfile.stats.dev !== leaf.stats.dev || currentProfile.stats.ino !== leaf.stats.ino ||
+        currentProfile.stats.uid !== uid || (currentProfile.stats.mode & 0o077) !== 0 ||
+        !currentNames.includes(entry.name) ||
+        !sameEntry(current, entry.stats) || !sameEntry(afterRead, entry.stats) || target !== entry.target) {
+      throw new Error('Acceptance singleton changed during cleanup');
+    }
+  };
+  for (const entry of entries.values()) await check(entry);
+  for (const entry of entries.values()) {
+    await check(entry);
+    await unlink(entry.path);
+  }
 };
 
 export const prepareAcceptanceArtifactDirectory = async outputDirectory => {
@@ -552,7 +628,86 @@ const validateAccessibility = accessibility => {
   });
 };
 
-const validateSummary = summary => {
+export const CSP_SOCKET_JOURNEYS = Object.freeze([
+  'csp-reload-pairing', 'csp-reload-restart', 'csp-reload-saved-selection',
+]);
+
+export const INSTALLED_SOCKET_JOURNEYS = Object.freeze(['installed-approved', 'installed-restart']);
+
+const validateSocketSession = (socketIo, journey) => {
+  assertExactKeys(socketIo, ['records', 'authenticatedConnections', 'subscriptions', 'events', 'journeys', 'handshake'], 'Acceptance Socket.IO session');
+  assertExactKeys(socketIo.handshake, [
+    'mainAttempts', 'fixtureAttempts', 'scopeQueryPresent', 'scopeQueryCount',
+    'scopeEqualsActivatedBinding', 'activeBindingPresent', 'profileGenerationCurrent',
+    'originEqualsActivatedBinding', 'path', 'transport', 'resource',
+    'rendererBearerPresent', 'rendererCookiePresent', 'authorizationHeaderPresent',
+    'authorizationHeaderExactlyMainInjected', 'rendererObservedApplicationEvent', 'rendererLifecycle',
+    'rejectionCategory',
+  ], 'Acceptance Socket.IO handshake summary');
+  const handshake = socketIo.handshake;
+  // Only the dashboard captures ordered renderer lifecycle diagnostics. CSP
+  // and installed sessions instead retain null, plus strict handshake and
+  // application subscription/event evidence from their actual scenarios.
+  const dashboard = journey === 'dashboard-profile-manager';
+  if (dashboard) {
+    assertExactKeys(handshake.rendererLifecycle, [
+      'phase', 'profileActivationPublished', 'socketProviderMounted', 'providerDisabled',
+      'disabledByDemoModeLoading', 'disabledByDemoMode',
+      'disabledByCurrentUserLoading', 'disabledByCurrentUserAbsent',
+      'desktopRuntime', 'connectionScope', 'socketConstructionInvocations', 'socketConstructions',
+      'connectInvocations',
+    ], 'Acceptance renderer Socket.IO lifecycle summary');
+  } else if (handshake.rendererLifecycle !== null) {
+    throw new Error('Acceptance claimed service journey was not observed');
+  }
+  if (socketIo.authenticatedConnections !== 1 || socketIo.events !== 1 || socketIo.subscriptions !== 1 || socketIo.records !== 3
+    || socketIo.journeys?.length !== 1 || socketIo.journeys[0] !== journey
+    || handshake.mainAttempts !== 1 || handshake.fixtureAttempts !== 1
+    || handshake.scopeQueryPresent !== true || handshake.scopeQueryCount !== 1
+    || handshake.scopeEqualsActivatedBinding !== true
+    || handshake.activeBindingPresent !== true || handshake.profileGenerationCurrent !== true
+    || handshake.originEqualsActivatedBinding !== true
+    || handshake.path !== 'socket-io' || handshake.transport !== 'websocket' || handshake.resource !== 'websocket'
+    || handshake.rendererBearerPresent !== false || handshake.rendererCookiePresent !== false
+    || handshake.authorizationHeaderPresent !== true || handshake.authorizationHeaderExactlyMainInjected !== true
+    || handshake.rendererObservedApplicationEvent !== true
+    || (dashboard && (
+      handshake.rendererLifecycle.phase !== 'socket-connect-invoked'
+      || handshake.rendererLifecycle.profileActivationPublished !== true
+      || handshake.rendererLifecycle.socketProviderMounted !== true
+      || handshake.rendererLifecycle.providerDisabled !== false
+      || handshake.rendererLifecycle.disabledByDemoModeLoading !== false
+      || handshake.rendererLifecycle.disabledByDemoMode !== false
+      || handshake.rendererLifecycle.disabledByCurrentUserLoading !== false
+      || handshake.rendererLifecycle.disabledByCurrentUserAbsent !== false
+      || handshake.rendererLifecycle.desktopRuntime !== true
+      || handshake.rendererLifecycle.connectionScope !== 'available'
+      || handshake.rendererLifecycle.socketConstructionInvocations !== 1
+      || handshake.rendererLifecycle.socketConstructions !== 1
+      || handshake.rendererLifecycle.connectInvocations !== 1))
+    || handshake.rejectionCategory !== 'none') {
+    throw new Error('Acceptance claimed service journey was not observed');
+  }
+};
+
+export const validateSocketServiceSummary = (socketIo, mode = 'packaged') => {
+  const { cspSessions, installedSessions, mode: summaryMode, unexpectedRecords, ...dashboard } = socketIo;
+  assertExactKeys(socketIo, ['records', 'authenticatedConnections', 'subscriptions', 'events', 'journeys', 'handshake', 'cspSessions', 'installedSessions', 'mode', 'unexpectedRecords'], 'Acceptance Socket.IO summary');
+  if (!['packaged', 'installed-rpm'].includes(mode) || summaryMode !== mode
+    || !Array.isArray(installedSessions)
+    || installedSessions.length !== (mode === 'installed-rpm' ? INSTALLED_SOCKET_JOURNEYS.length : 0)) {
+    throw new Error('Acceptance socket summary mode or installed sessions disagree');
+  }
+  installedSessions.forEach((session, index) => validateSocketSession(session, INSTALLED_SOCKET_JOURNEYS[index]));
+  validateSocketSession(dashboard, 'dashboard-profile-manager');
+  if (unexpectedRecords !== 0 || !Array.isArray(cspSessions)
+    || cspSessions.length !== CSP_SOCKET_JOURNEYS.length) {
+    throw new Error('Acceptance claimed service journey was not observed');
+  }
+  cspSessions.forEach((session, index) => validateSocketSession(session, CSP_SOCKET_JOURNEYS[index]));
+};
+
+const validateSummary = (summary, mode) => {
   assertExactKeys(summary, ['schemaVersion', 'generatedAt', 'status', 'journeys', 'screenshots', 'boundary', 'console', 'services', 'redaction'], 'Acceptance summary');
   if (summary.schemaVersion !== 7 || summary.generatedAt !== FIXED_TIME || summary.status !== 'passed'
     || summary.journeys !== ACCEPTANCE_JOURNEYS.length || summary.screenshots !== expectedScreenshotNames().length
@@ -567,7 +722,7 @@ const validateSummary = summary => {
     'records', 'errors', 'expectedErrors', 'unexpectedErrors', 'errorCategoryCounts',
   ], 'Acceptance console summary');
   const errorCategories = [
-    'expectedRevokedAuthorizationResponse', 'currentUserSync', 'apiLoad', 'socketContext',
+    'expectedCspPolicyTransition', 'expectedRevokedAuthorizationResponse', 'currentUserSync', 'apiLoad', 'socketContext',
     'reactRuntime', 'networkResource', 'other', 'pageError',
   ];
   assertExactKeys(summary.console.errorCategoryCounts, errorCategories, 'Acceptance console error categories');
@@ -581,6 +736,8 @@ const validateSummary = summary => {
     || summary.console.errors > summary.console.records
     || summary.console.expectedErrors + summary.console.unexpectedErrors !== summary.console.errors
     || summary.console.expectedErrors !== summary.console.errorCategoryCounts.expectedRevokedAuthorizationResponse
+      + summary.console.errorCategoryCounts.expectedCspPolicyTransition
+    || summary.console.errorCategoryCounts.expectedCspPolicyTransition > 6
     || summary.console.unexpectedErrors !== 0 || categoryTotal !== summary.console.errors) {
     throw new Error('Acceptance console summary is invalid');
   }
@@ -593,25 +750,9 @@ const validateSummary = summary => {
     'responseClassification', 'parsedUserSchemaAccepted', 'rendererActiveScopeAccepted',
     'firstFailedPredicate',
   ], 'Acceptance current-user validation summary');
-  assertExactKeys(socketIo, ['authenticatedConnections', 'events', 'journeys', 'handshake'], 'Acceptance Socket.IO summary');
+  validateSocketServiceSummary(socketIo, mode);
   assertExactKeys(pairing, ['started', 'polled', 'activated', 'journeys'], 'Acceptance pairing summary');
   assertExactKeys(connect, ['confirmedRequests', 'journeys'], 'Acceptance Connect summary');
-  assertExactKeys(socketIo.handshake, [
-    'mainAttempts', 'fixtureAttempts', 'scopeQueryPresent', 'scopeQueryCount',
-    'scopeEqualsActivatedBinding', 'activeBindingPresent', 'profileGenerationCurrent',
-    'originEqualsActivatedBinding', 'path', 'transport', 'resource',
-    'rendererBearerPresent', 'rendererCookiePresent', 'authorizationHeaderPresent',
-    'authorizationHeaderExactlyMainInjected', 'rendererObservedApplicationEvent', 'rendererLifecycle',
-    'rejectionCategory',
-  ], 'Acceptance Socket.IO handshake summary');
-  const handshake = socketIo.handshake;
-  assertExactKeys(handshake.rendererLifecycle, [
-    'phase', 'profileActivationPublished', 'socketProviderMounted', 'providerDisabled',
-    'disabledByDemoModeLoading', 'disabledByDemoMode',
-    'disabledByCurrentUserLoading', 'disabledByCurrentUserAbsent',
-    'desktopRuntime', 'connectionScope', 'socketConstructionInvocations', 'socketConstructions',
-    'connectInvocations',
-  ], 'Acceptance renderer Socket.IO lifecycle summary');
   const currentUserValidation = rest.currentUserValidation;
   if (rest.requestCount <= 0 || rest.authenticatedRequestCount <= 0 || !rest.journeys.includes('dashboard-profile-manager')
     || currentUserValidation.correlation !== 'current-scope-user-validation'
@@ -627,48 +768,46 @@ const validateSummary = summary => {
     || currentUserValidation.parsedUserSchemaAccepted !== true
     || currentUserValidation.rendererActiveScopeAccepted !== true
     || currentUserValidation.firstFailedPredicate !== 'none'
-    || socketIo.authenticatedConnections !== 1 || socketIo.events <= 0 || !socketIo.journeys.includes('dashboard-profile-manager')
-    || handshake.mainAttempts !== 1 || handshake.fixtureAttempts !== 1
-    || handshake.scopeQueryPresent !== true || handshake.scopeQueryCount !== 1
-    || handshake.scopeEqualsActivatedBinding !== true
-    || handshake.activeBindingPresent !== true || handshake.profileGenerationCurrent !== true
-    || handshake.originEqualsActivatedBinding !== true
-    || handshake.path !== 'socket-io' || handshake.transport !== 'websocket' || handshake.resource !== 'websocket'
-    || handshake.rendererBearerPresent !== false || handshake.rendererCookiePresent !== false
-    || handshake.authorizationHeaderPresent !== true || handshake.authorizationHeaderExactlyMainInjected !== true
-    || handshake.rendererObservedApplicationEvent !== true
-    || handshake.rendererLifecycle.phase !== 'socket-connect-invoked'
-    || handshake.rendererLifecycle.profileActivationPublished !== true
-    || handshake.rendererLifecycle.socketProviderMounted !== true
-    || handshake.rendererLifecycle.providerDisabled !== false
-    || handshake.rendererLifecycle.disabledByDemoModeLoading !== false
-    || handshake.rendererLifecycle.disabledByDemoMode !== false
-    || handshake.rendererLifecycle.disabledByCurrentUserLoading !== false
-    || handshake.rendererLifecycle.disabledByCurrentUserAbsent !== false
-    || handshake.rendererLifecycle.desktopRuntime !== true
-    || handshake.rendererLifecycle.connectionScope !== 'available'
-    || handshake.rendererLifecycle.socketConstructionInvocations !== 1
-    || handshake.rendererLifecycle.socketConstructions !== 1
-    || handshake.rendererLifecycle.connectInvocations !== 1
-    || handshake.rejectionCategory !== 'none'
     || pairing.started <= 0 || pairing.polled <= 0 || pairing.activated <= 0 || !pairing.journeys.includes('dashboard-profile-manager')
     || connect.confirmedRequests <= 0 || connect.journeys.join('\n') !== 'connect-confirmation') {
     throw new Error('Acceptance claimed service journey was not observed');
   }
 };
 
+const CSP_RELOAD_LOG_JOURNEYS = ['csp-reload-startup', 'csp-reload-pairing', 'csp-reload-restart', 'csp-reload-deselection', 'csp-reload-saved-selection', 'csp-reload-removal'];
+const CSP_RELOAD_PROCESS_JOURNEYS = ['csp-reload-pairing', 'csp-reload-removal'];
+const INSTALLED_LOG_JOURNEYS = Object.freeze([
+  'installed-approved', 'installed-restart', 'installed-logged-out',
+  'installed-reject', 'installed-reject-restart',
+  'installed-expire', 'installed-expire-restart',
+  'installed-wrong-account', 'installed-wrong-account-restart',
+]);
+// Each installed phase owns a separate process, including every restart.
+const SANITIZED_LOG_CONTRACTS = Object.freeze({
+  packaged: {
+    journeys: [...ACCEPTANCE_JOURNEYS, ...CSP_RELOAD_LOG_JOURNEYS],
+    processJourneys: [...ACCEPTANCE_JOURNEYS, ...CSP_RELOAD_PROCESS_JOURNEYS],
+  },
+  'installed-rpm': {
+    journeys: [...ACCEPTANCE_JOURNEYS, ...CSP_RELOAD_LOG_JOURNEYS, ...INSTALLED_LOG_JOURNEYS],
+    processJourneys: [...ACCEPTANCE_JOURNEYS, ...CSP_RELOAD_PROCESS_JOURNEYS, ...INSTALLED_LOG_JOURNEYS],
+  },
+});
+
 const validateSanitizedLog = log => {
-  assertExactKeys(log, ['schemaVersion', 'generatedAt', 'records'], 'Acceptance sanitized log');
-  if (log.schemaVersion !== 1 || log.generatedAt !== FIXED_TIME || !Array.isArray(log.records)) throw new Error('Acceptance sanitized log is invalid');
+  assertExactKeys(log, ['schemaVersion', 'generatedAt', 'mode', 'records'], 'Acceptance sanitized log');
+  if (log.schemaVersion !== 2 || log.generatedAt !== FIXED_TIME || !Array.isArray(log.records)
+    || typeof log.mode !== 'string' || !Object.hasOwn(SANITIZED_LOG_CONTRACTS, log.mode)) throw new Error('Acceptance sanitized log is invalid');
+  const contract = SANITIZED_LOG_CONTRACTS[log.mode];
   for (const record of log.records) {
     assertExactKeys(record, ['journey', 'source', 'level', 'bytes', 'sha256'], 'Acceptance sanitized log record');
-    if (!ACCEPTANCE_JOURNEYS.includes(record.journey) || !['renderer-console', 'renderer-page-error', 'packaged-process'].includes(record.source)
+    if (!contract.journeys.includes(record.journey) || !['renderer-console', 'renderer-page-error', 'packaged-process'].includes(record.source)
       || typeof record.level !== 'string' || !isInteger(record.bytes) || !isSha256(record.sha256)) {
       throw new Error('Acceptance sanitized log record is invalid');
     }
   }
   const processJourneys = log.records.filter(record => record.source === 'packaged-process').map(record => record.journey);
-  if (processJourneys.join('\n') !== ACCEPTANCE_JOURNEYS.join('\n')) throw new Error('Acceptance sanitized process log coverage is incomplete');
+  if (processJourneys.join('\n') !== contract.processJourneys.join('\n')) throw new Error('Acceptance sanitized process log coverage is incomplete');
 };
 
 export const validateAcceptanceEvidence = (accessibility, manifest, summary, sanitizedLog) => {
@@ -707,8 +846,8 @@ export const validateAcceptanceEvidence = (accessibility, manifest, summary, san
     }
   });
   validateAccessibility(accessibility);
-  validateSummary(summary);
   validateSanitizedLog(sanitizedLog);
+  validateSummary(summary, sanitizedLog.mode);
   const rendererLogs = sanitizedLog.records.filter(record => record.source !== 'packaged-process');
   if (rendererLogs.length !== summary.console.records
     || rendererLogs.filter(record => record.level === 'error').length !== summary.console.errors) {

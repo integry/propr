@@ -41,7 +41,13 @@ export function classifyTextLine(line: string, window: number): { continuation: 
     if (window > 0 && continuationLine.test(line)) return { continuation: true, window: window - 1 };
     return { continuation: false, window: textHead.test(line) || errorHead.test(line) ? CONTINUATION_LINE_LIMIT : 0 };
 }
-export function redactRecord(line: string, format: 'jsonl' | 'text', credentials: readonly string[], options: { continuation?: boolean } = {}): string | null {
+export function redactRecord(line: string, format: 'jsonl' | 'text', credentials: readonly string[], options: { continuation?: boolean; attribution?: DiagnosticAttribution } = {}): string | null {
+    if (options.attribution) {
+        // Labels are applied last, so captured output cannot spoof them.
+        const safe = redactRecord(line, format, credentials, { continuation: options.continuation });
+        const label = safe && redactAttribution(options.attribution, credentials);
+        return safe && label ? JSON.stringify({ ...JSON.parse(safe) as object, attribution: label }) + '\n' : safe;
+    }
     if (credentials.length > 512 || credentials.reduce((n, value) => n + value.length, 0) > 512 * 1024) return null;
     // eslint-disable-next-line no-control-regex -- Intentionally reject control characters except tab, LF, and CR.
     if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(line)) return null;
@@ -70,6 +76,22 @@ export function redactRecord(line: string, format: 'jsonl' | 'text', credentials
         }
         return redactText(line, credentials, text, options.continuation === true);
     } catch { return null; }
+}
+/** Lightweight task/run labels carried inside captured records. */
+export interface DiagnosticAttribution { task?: string; attempt?: string }
+const attributionValue = /^[A-Za-z0-9._:/#@+-]{1,128}$/;
+/** Bounded, allowlisted labels: unexpected shapes become `[INVALID]`, and any
+ * value the record redaction would alter becomes `[REDACTED]`. */
+export function redactAttribution(attribution: DiagnosticAttribution, credentials: readonly string[]): Record<string, string> | undefined {
+    const label: Record<string, string> = {};
+    for (const key of ['task', 'attempt'] as const) {
+        const value = attribution[key];
+        if (value === undefined || value === '') continue;
+        if (typeof value !== 'string' || !attributionValue.test(value)) { label[key] = '[INVALID]'; continue; }
+        const redacted = redactRecord(JSON.stringify({ value }), 'jsonl', credentials);
+        label[key] = redacted && (JSON.parse(redacted) as { value: string }).value === value ? value : '[REDACTED]';
+    }
+    return Object.keys(label).length ? label : undefined;
 }
 function redactText(line: string, credentials: readonly string[], text: (value: string) => string, continuation: boolean): string | null {
     // JSON-looking text is never allowed to bypass structured redaction.

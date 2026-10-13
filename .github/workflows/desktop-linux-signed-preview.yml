@@ -18,6 +18,11 @@ on:
         required: false
         type: string
 
+      signing_run_id:
+        description: Publish only - successful signing run whose exact installed RPM acceptance evidence is required
+        required: false
+        type: string
+
 permissions:
   contents: read
 
@@ -46,6 +51,7 @@ jobs:
         env:
           SOURCE_REVISION: ${{ inputs.source_revision }}
           OPERATION: ${{ inputs.operation }}
+          SIGNING_RUN_ID: ${{ inputs.signing_run_id }}
           UNSIGNED_RUN_ID: ${{ inputs.unsigned_run_id }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -57,6 +63,7 @@ jobs:
           version="$(node -p 'require(process.env.RUNNER_TEMP + "/frozen-desktop-package.json").version')"
           [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           if [ "$OPERATION" = sign-draft ]; then
+            test -z "$SIGNING_RUN_ID"
             [[ "$UNSIGNED_RUN_ID" =~ ^[0-9]+$ ]]
             gh api "repos/$REPOSITORY/actions/runs/$UNSIGNED_RUN_ID" > "$RUNNER_TEMP/unsigned-run.json"
             node --input-type=module - <<'NODE'
@@ -72,6 +79,7 @@ jobs:
           else
             test "$OPERATION" = publish-draft
             test -z "$UNSIGNED_RUN_ID"
+            [[ "$SIGNING_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "unsigned_artifact=propr-desktop-linux-preview-final-desktop-linux-preview-v${version}-${SOURCE_REVISION:0:12}-${UNSIGNED_RUN_ID}" >> "$GITHUB_OUTPUT"
@@ -92,14 +100,16 @@ jobs:
           node-version-file: '.nvmrc'
       - run: |
           sudo apt-get update
-          sudo apt-get install --yes rpm gnupg cpio apt dpkg
+          sudo apt-get install --yes rpm gnupg cpio apt dpkg python3
       - name: Exercise disposable keys, native fixtures, and signed publication rejection
         env:
           PROPR_REQUIRE_RPM_TESTS: '1'
         run: |
           node --test apps/desktop/scripts/rpm-signing.test.mjs \
             apps/desktop/scripts/linux-preview-release.test.mjs \
-            apps/desktop/scripts/linux-preview-workflow.test.mjs
+            apps/desktop/scripts/linux-preview-workflow.test.mjs \
+            apps/desktop/scripts/signed-rpm-acceptance-evidence.test.mjs \
+            apps/desktop/scripts/packaged-browser-approval.test.mjs
 
   sign:
     if: inputs.operation == 'sign-draft'
@@ -130,7 +140,7 @@ jobs:
       - name: Install Linux signing and package inspection tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes rpm gnupg cpio apt dpkg
+          sudo apt-get install --yes rpm gnupg cpio apt dpkg python3
       - name: Download only the exact finalized unsigned bundle
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
@@ -169,9 +179,60 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-  stage-draft:
+  installed-rpm-acceptance:
     if: inputs.operation == 'sign-draft'
     needs: [identity, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes rpm gnupg
+      - name: Download exact signing-run artifact, never rebuild the RPM
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-desktop-linux-signed-${{ github.run_id }}
+          path: signed-preview
+      - name: Install signed x64 RPM in disposable openSUSE and approve in fixture browser
+        env:
+          PROPR_DESKTOP_REAL_LINUX_PACKAGE_ACCEPTANCE: '1'
+          PROPR_DESKTOP_RPM_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_RPM_PUBLIC_KEY }}
+          PROPR_DESKTOP_RPM_FINGERPRINT: ${{ vars.PROPR_DESKTOP_RPM_FINGERPRINT }}
+          VERSION: ${{ needs.identity.outputs.version }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          node apps/desktop/scripts/run-signed-installed-rpm-acceptance.mjs \
+            --rpm "signed-preview/ProPR-Desktop-$VERSION-linux-x64.rpm" \
+            --source-revision "$SOURCE_REVISION" --signing-run-id "${{ github.run_id }}" \
+            --output signed-rpm-acceptance
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-installed-signed-rpm-${{ github.run_id }}
+          path: signed-rpm-acceptance/signed-rpm-acceptance.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Retain bounded visual and accessibility evidence separately
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-installed-signed-rpm-visual-${{ github.run_id }}
+          path: |
+            signed-rpm-acceptance/desktop-acceptance-artifacts
+            signed-rpm-acceptance/pairing-evidence
+          if-no-files-found: error
+          retention-days: 90
+
+  stage-draft:
+    if: inputs.operation == 'sign-draft'
+    needs: [identity, sign, installed-rpm-acceptance]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -188,7 +249,7 @@ jobs:
           persist-credentials: false
       - run: |
           sudo apt-get update
-          sudo apt-get install --yes rpm gnupg cpio apt dpkg
+          sudo apt-get install --yes rpm gnupg cpio apt dpkg python3
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: propr-desktop-linux-signed-${{ github.run_id }}
@@ -215,6 +276,7 @@ jobs:
       name: desktop-linux-preview-publication
     permissions:
       contents: write
+      actions: read
     steps:
       - name: Require explicit protected preview publication authority
         env:
@@ -229,9 +291,19 @@ jobs:
           ref: ${{ inputs.source_revision }}
           path: frozen-source
           persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
       - run: |
           sudo apt-get update
-          sudo apt-get install --yes rpm gnupg cpio apt dpkg
+          sudo apt-get install --yes rpm gnupg cpio apt dpkg python3
+      - name: Download required acceptance from the exact successful signing run
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.signing_run_id }}
+          name: propr-desktop-installed-signed-rpm-${{ inputs.signing_run_id }}
+          path: signed-rpm-acceptance
       - name: Download exact draft bytes and reverify signatures and payload before publication
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -242,4 +314,6 @@ jobs:
         run: |
           node apps/desktop/scripts/linux-preview-release.mjs publish-draft --signed-linux \
             --version "$VERSION" --source-revision "$SOURCE_REVISION" \
-            --repository "${{ github.repository }}" --source-directory frozen-source
+            --repository "${{ github.repository }}" --source-directory frozen-source \
+            --signing-run-id "${{ inputs.signing_run_id }}" \
+            --acceptance-evidence signed-rpm-acceptance/signed-rpm-acceptance.json

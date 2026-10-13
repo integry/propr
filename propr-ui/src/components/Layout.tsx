@@ -285,7 +285,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
         {!isDemoMode && <ConnectCapacityBanner />}
 
-        <main className="mobile-content-clearance flex-1 overflow-y-auto md:pb-0">
+        <main data-scroll-lock-target className="mobile-content-clearance flex-1 overflow-y-auto md:pb-0">
           <HeaderScopeSlotContext.Provider value={headerScopeSlot}>
             {children}
           </HeaderScopeSlotContext.Provider>

@@ -14,10 +14,18 @@ import {
   normalizeDesktopDashboardPath,
   normalizeDeepLink,
   rendererContentSecurityPolicy,
+  rendererPolicyOriginsForSelection,
   validatedDevServerUrl,
 } from './security';
 
 describe('desktop URL security', () => {
+  it('retains the document CSP during deselection and replaces it for a different selected origin', () => {
+    const current = ['http://localhost:4000'];
+    assert.equal(rendererPolicyOriginsForSelection(current, null), current);
+    assert.deepEqual(rendererPolicyOriginsForSelection(current, undefined), []);
+    assert.deepEqual(rendererPolicyOriginsForSelection(current, 'http://127.0.0.1:5000'), ['http://127.0.0.1:5000']);
+    assert.deepEqual(rendererPolicyOriginsForSelection(current, 'https://propr.example.com'), []);
+  });
   it('matches the shared canonical origin parity table', () => {
     for (const [name, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
       assert.equal(normalizeApiBaseUrl(input), expected, name);

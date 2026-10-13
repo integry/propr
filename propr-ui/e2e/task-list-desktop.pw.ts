@@ -261,7 +261,7 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   const header = details.getByTestId('task-header-tiers');
   await expect(header.getByTestId('task-header-identity')).toContainText('integry/propr');
   await expect(header.getByTestId('task-status-badge')).toHaveText('Implementing');
-  // Tier 1 reads `integry/propr #2664 ↗  ● Implementing`: chips set apart by space, no bullets and no empty icon.
+  // Tier 1 separates the Git cluster from Implementing with spacing, no bullets and no empty icon.
   // The cluster ends with the pull request's assignment, which GitHub answered, so no read error stands in for it.
   const gitContext = header.getByTestId('task-header-identity').getByRole('group', { name: 'Git context' });
   expect(await gitContext.getByRole('link').evaluateAll(links => links.map(link => [link.textContent!.trim(), link.getAttribute('href')]))).toEqual([
@@ -274,18 +274,14 @@ test('1920px opens a task beside the list and steps through rows from the keyboa
   await expect(gitContext).toHaveText(new RegExp(`^integry/propr#2664.*@${prAssignee.login}`));
   await expect(header.getByTestId('task-status-badge').locator('svg')).toHaveCount(0);
   await expect(header.getByRole('group', { name: 'Run', exact: true })).toHaveText('Run 3/8 (Completed 36 mins ago): Found 2 issues');
-  // Neither tier separates with dots, bullets or rules: the run line's three clusters are set apart by space,
-  // so a wrapped line never starts with a delimiter.
+  // Wrapping metadata groups use spacing so no separator can lead a new line.
   expect(await header.innerText()).not.toMatch(/[·•|]/);
-  await expect(header.locator('h2 + div [data-testid="context-divider"]')).toHaveCount(0);
-  await expect(header.getByRole('group', { name: 'Execution runtime' })).toHaveText(/gpt-6-astra.*3m 0?0s/);
+  await expect(header.getByTestId('context-divider')).toHaveCount(0);
+  await expect(header.getByRole('group', { name: 'Execution runtime' })).toHaveText(/GPT-6 Astra.*3m 0?0s/);
   await expect(header.getByRole('group', { name: 'Consumption' })).toHaveText('↑420k↓12k(0.1% quota)');
   await expect(header).not.toContainText('3.9M');
-  // No divider floats in front of Stop when nothing stands before it.
-  // The assignment's own hairline, which sets it apart inside the Git cluster, is not one of them.
-  expect(await header.getByTestId('task-header-identity').locator('.w-px').evaluateAll(nodes => nodes
-    .filter(node => !node.closest('[role="group"][aria-label="Assignment"]')).length)).toBe(0);
-  await expect(assignment.locator('.w-px')).toHaveCount(1);
+  // No standalone hairline precedes the assignment, status or Stop.
+  await expect(header.getByTestId('task-header-identity').locator('.w-px')).toHaveCount(0);
   expect((await header.boundingBox())!.height).toBeLessThanOrEqual(120);
   // The pane's controls are icons in the header's first row, not a row of their own.
   await expect(header.getByTestId('task-header-identity').getByRole('button', { name: 'Close task details' })).toBeVisible();

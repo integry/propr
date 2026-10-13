@@ -1,3 +1,4 @@
+import { formatModelName as displayModelName } from '../../utils/modelDisplay';
 import { LiveEvent } from './types';
 
 export const WORKSPACE_PREFIXES = [
@@ -44,7 +45,7 @@ export const formatModelName = (modelId: string | undefined): string => {
     'claude-opus-3-20240229': 'Claude Opus 3',
     'claude-haiku-3-20240307': 'Claude Haiku 3',
   };
-  return modelMap[modelId] || modelId;
+  return modelMap[modelId] || displayModelName(modelId);
 };
 
 export const formatRelativeTime = (milliseconds: number): string => {

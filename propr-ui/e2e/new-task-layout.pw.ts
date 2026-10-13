@@ -4,6 +4,7 @@ import { fixture, screenshot } from './new-task.fixture';
 const longRepository = `${'o'.repeat(39)}/${'repository'.repeat(8)}`;
 const longAgent = `codex-${'routing-agent-'.repeat(8)}`;
 const longModel = `gpt-6.1-sol-${'extended-model-'.repeat(8)}`;
+const longModelLabel = `GPT-6.1 Sol ${'Extended Model '.repeat(8).trim()}`;
 const longPrompt = `Keep the complete request readable. Check routing and attachments. Preserve this token: ${'unbroken'.repeat(60)}. Then verify the result.`;
 
 for (const size of [
@@ -85,7 +86,7 @@ for (const size of [
       };
       await assertLayout(['Cancel', 'Plan first', 'Run task']);
       await expect(dialog.locator('#task-agent-selection')).toHaveText(longAgent);
-      await expect(dialog.locator('#task-model-selection')).toHaveText(longModel);
+      await expect(dialog.locator('#task-model-selection')).toHaveText(longModelLabel);
       await dialog.locator('form > div:first-child').evaluate(el => { el.scrollTop = 0; });
       await screenshot(page, `new-task-long-repository-${size.name}`);
       await dialog.getByLabel('Model', { exact: true }).scrollIntoViewIfNeeded();

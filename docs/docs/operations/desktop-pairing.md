@@ -157,3 +157,5 @@ credential and its credential generation in the
 Pairing start, approval, token issuance, and revocation write audit rows and
 structured logs containing IDs and the display name only. Device secrets,
 instance tokens, token hashes, and GitHub tokens are excluded.
+
+The separate [optional nightly live GitHub smoke](desktop-live-github-smoke.md) uses a preauthorized dedicated runner browser session for signed Linux previews. It is independent of the deterministic installed-RPM publication gate.

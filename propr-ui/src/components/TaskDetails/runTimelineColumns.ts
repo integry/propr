@@ -6,12 +6,12 @@
  *   ●  ▾  Run 3  REVIEW   Found 2 issues  [6]  39 mins ago   3m 00s
  *   │  ├──  11:21:00      Task Queued                        12s
  *
- * BranchSteps stacks below 528px of container width, including narrow desktop
+ * BranchSteps uses compact columns below 528px of container width, including narrow desktop
  * panes. Aligned rows spend 268px on the lead inset (48), tag (136), duration
  * (64), two gaps (16) and right padding (4), leaving at least 260px for labels.
  * The desktop split reserves at least 576px for the timeline, including pane
  * padding and scrollbar space. Workspaces below 960px stack the panes instead
- * of squeezing the timeline; phone step rows still stack below this cutoff.
+ * of squeezing the timeline; phone step rows use single-line truncated labels.
  */
 
 /** Node box (16px + 4px margin), gap, caret (12px), gap: where the tag column starts. */

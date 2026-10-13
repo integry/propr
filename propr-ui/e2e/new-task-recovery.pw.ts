@@ -233,4 +233,3 @@ test('legacy recovery snapshots are adopted and discarded only with their matchi
   await expect(page.getByLabel('Prompt', { exact: true })).toHaveValue('');
   await expect(page.getByRole('button', { name: 'Retry agent' })).toHaveCount(0);
 });
-

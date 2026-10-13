@@ -31,7 +31,7 @@ const steps = [
 ];
 
 describe('RunTimeline', () => {
-  it('scrolls 50 runs inside a bounded list, opened on the run shown', () => {
+  it('keeps all 50 runs in the shared task scroll flow', () => {
     const many: TaskGroup = {
       ...group,
       tasks: Array.from({ length: 50 }, (_, index) => ({
@@ -40,20 +40,54 @@ describe('RunTimeline', () => {
       })),
     };
     const manyRuns = buildTaskRuns(buildTaskRow(many));
-    const top = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
-      const run = this.closest('[data-testid="run-timeline-run"]');
-      const index = run ? [...run.parentElement!.children].indexOf(run) - 1 : 0;
-      return { top: index * 30 } as DOMRect;
-    });
-    render(<RunTimeline runs={manyRuns} selectedTaskId="many-44" onSelectRun={vi.fn()}>steps</RunTimeline>);
-    top.mockRestore();
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+    const { rerender } = render(<RunTimeline runs={manyRuns} selectedTaskId="many-44" onSelectRun={vi.fn()}>steps</RunTimeline>);
     const scroller = screen.getByTestId('run-timeline-scroll');
-    // Bounded on a desktop; a phone lists every run in the page's own scroll.
-    expect(scroller).toHaveClass('lg:max-h-[420px]', 'lg:overflow-y-auto');
-    expect(scroller).not.toHaveClass('max-h-[420px]');
+    expect(scroller.className).not.toMatch(/max-h-|overflow-y-|overscroll-/);
     expect(within(scroller).getAllByTestId('run-timeline-run')).toHaveLength(50);
-    // Run 45 is the 45th row: the list scrolls to it, keeping the run before it in sight.
-    expect(scroller.scrollTop).toBe(44 * 30 - 40);
+    expect(scroll).not.toHaveBeenCalled();
+    rerender(<RunTimeline runs={[...manyRuns]} selectedTaskId="many-43" onSelectRun={vi.fn()}>updated steps</RunTimeline>);
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll.mock.instances[0]).toBe(screen.getByRole('button', { current: true }).closest('li'));
+    rerender(<RunTimeline runs={[...manyRuns]} selectedTaskId="many-43" onSelectRun={vi.fn()}>streamed steps</RunTimeline>);
+    expect(scroll).toHaveBeenCalledTimes(1);
+    rerender(<RunTimeline runs={manyRuns} selectedTaskId="many-0" onSelectRun={vi.fn()}>first run again</RunTimeline>);
+    expect(scroll).toHaveBeenCalledTimes(2);
+    expect(scroll.mock.instances[1]).toBe(screen.getByRole('button', { current: true }).closest('li'));
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+  });
+
+  it('preserves the overview when runs arrive after mount', () => {
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+    const { rerender } = render(<RunTimeline runs={[]} selectedTaskId="run-3" onSelectRun={vi.fn()}>{null}</RunTimeline>);
+    expect(scroll).not.toHaveBeenCalled();
+    rerender(<RunTimeline runs={runs} selectedTaskId="run-3" onSelectRun={vi.fn()}>{null}</RunTimeline>);
+    expect(scroll).not.toHaveBeenCalled();
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+  });
+
+  it('leaves the first run at the top even when its steps are tall', () => {
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+    render(<RunTimeline runs={runs} selectedTaskId="run-1" onSelectRun={vi.fn()}><div style={{ height: 2000 }}>steps</div></RunTimeline>);
+    expect(scroll).not.toHaveBeenCalled();
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+  });
+
+  it('does not move a later run whose header is already visible above tall steps', () => {
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return { top: this.tagName === 'BUTTON' ? 160 : 100, bottom: this.tagName === 'BUTTON' ? 204 : 700 } as DOMRect;
+    });
+    const view = (id: string) => <div style={{ overflowY: 'auto' }}><RunTimeline runs={runs} selectedTaskId={id} onSelectRun={vi.fn()}><div style={{ height: 2000 }}>steps</div></RunTimeline></div>;
+    const { rerender } = render(view('run-1'));
+    rerender(view('run-3'));
+    expect(scroll).not.toHaveBeenCalled();
+    rect.mockRestore();
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
   });
 
   it('lists every run oldest first, with only the run shown open over its steps', () => {
@@ -166,4 +200,22 @@ describe('RunTimeline', () => {
     render(<RunTimeline runs={runs} selectedTaskId="run-4" onSelectRun={vi.fn()} outcome={null}>steps</RunTimeline>);
     expect(screen.queryByTestId('pr-outcome-entry')).toBeNull();
   });
+});
+
+it('retains reveal history across keyed remounts, but preserves a new group overview', () => {
+  const scroll = vi.fn();
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+  const revealHistory = { current: null };
+  const view = (id: string, entries = runs) => <RunTimeline key={id} revealHistory={revealHistory} runs={entries} selectedTaskId={id} onSelectRun={() => {}}>Steps</RunTimeline>;
+  const { rerender, unmount } = render(view('run-4'));
+  expect(scroll).not.toHaveBeenCalled();
+  rerender(view('run-3'));
+  expect(scroll).toHaveBeenCalledTimes(1);
+  rerender(view('run-3', [...runs]));
+  expect(scroll).toHaveBeenCalledTimes(1);
+  const other = runs.map(run => ({ ...run, task: { ...run.task, id: `other-${run.task.id}` } }));
+  rerender(view('other-run-4', other));
+  expect(scroll).toHaveBeenCalledTimes(1);
+  unmount();
+  delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
 });

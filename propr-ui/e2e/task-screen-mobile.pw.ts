@@ -42,7 +42,7 @@ async function taskScreen(page: Page, width: number) {
 
 for (const width of [390, 1280]) {
   const phone = width < 640;
-  test(`${width}px task screen: merge status ends the timeline, scores in sequence, ${phone ? 'one-column log without' : 'two-column log with'} the raw switch`, async ({ page }) => {
+  test(`${width}px task screen: merge status ends the timeline, scores in sequence, ${phone ? 'one-column' : 'two-column'} log without the raw switch`, async ({ page }) => {
     await taskScreen(page, width);
 
     // 1. Every run, then the review scores as a node on the trunk, then the merge status as the last entry.
@@ -71,7 +71,8 @@ for (const width of [390, 1280]) {
       // take their own line, starting under `Run N` rather than pushed to the right.
       await expect(page.getByTestId('run-timeline-scroll')).toHaveCSS('overflow-y', 'visible');
       for (const row of await timeline.getByTestId('run-timeline-run').all()) {
-        const layout = await row.getByRole('button').evaluate(button => ({
+        // Expanded runs also contain step disclosure buttons; measure only the run header.
+        const layout = await row.locator(':scope > button').evaluate(button => ({
           label: [...button.querySelectorAll('span')].find(span => /^Run \d+$/.test(span.textContent!))!.getBoundingClientRect().left,
           time: button.querySelector('[data-testid="run-timeline-meta"] time')!.getBoundingClientRect().left,
         }));
@@ -79,28 +80,34 @@ for (const width of [390, 1280]) {
       }
     }
 
-    // 2. The raw log switch is a desktop control.
+    // 2. Both layouts show the readable log without a view selector.
     const logView = page.getByRole('group', { name: 'Log view' });
-    if (phone) await expect(logView).toBeHidden();
-    else await expect(logView).toBeVisible();
+    await expect(logView).toHaveCount(0);
 
     // 3. Each readable entry is one column on a phone: its label sits above the text, which keeps the full width.
     const entry = page.getByText('The label check also matches unrelated labels', { exact: false });
-    await entry.scrollIntoViewIfNeeded();
-    const layout = await entry.evaluate(element => {
-      const content = element.closest('.flex-1')!;
-      const row = content.parentElement!;
-      const gutter = row.firstElementChild!;
-      return { row: row.getBoundingClientRect().toJSON(), gutter: gutter.getBoundingClientRect().toJSON(), content: content.getBoundingClientRect().toJSON() };
-    });
-    if (phone) {
-      expect(layout.content.top).toBeGreaterThanOrEqual(layout.gutter.bottom - 1);
-      expect(layout.content.width).toBeCloseTo(layout.row.width, 0);
-    } else {
-      expect(layout.gutter.width).toBe(100);
-      expect(layout.content.left).toBeGreaterThan(layout.gutter.right);
-      expect(layout.content.top).toBe(layout.gutter.top);
-    }
+    // React can replace the Markdown paragraph during scrolling or before evaluation.
+    // Retry the scroll and geometry together, resolving a connected row on each attempt.
+    await expect(async () => {
+      await entry.scrollIntoViewIfNeeded();
+      const layout = await entry.evaluate(element => {
+        if (!element.isConnected) return null;
+        const content = element.closest('.flex-1');
+        const row = content?.parentElement;
+        const gutter = row?.firstElementChild;
+        if (!content || !row || !gutter) return null;
+        return { row: row.getBoundingClientRect().toJSON(), gutter: gutter.getBoundingClientRect().toJSON(), content: content.getBoundingClientRect().toJSON() };
+      });
+      if (!layout) throw new Error('Readable log entry must be connected to its content row and gutter');
+      if (phone) {
+        expect(layout.content.top).toBeGreaterThanOrEqual(layout.gutter.bottom - 1);
+        expect(layout.content.width).toBeCloseTo(layout.row.width, 0);
+      } else {
+        expect(layout.gutter.width).toBe(100);
+        expect(layout.content.left).toBeGreaterThan(layout.gutter.right);
+        expect(layout.content.top).toBe(layout.gutter.top);
+      }
+    }).toPass({ timeout: 5_000 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     if (process.env.PROPR_CAPTURE_PREVIEWS) {

@@ -42,7 +42,7 @@ describe('useTaskHeaderView', () => {
     expect(result.current.inspection?.headActive).toBe(true);
 
     // Tier 2: the run on screen, with its own model, runtime and consumption.
-    expect(result.current.runStripProps.modelName).toContain('opus-5-5');
+    expect(result.current.runStripProps.modelName).toBe('Opus 5.5');
     expect(result.current.runStripProps.tokenUsage?.input_tokens).toBe(420_000);
     expect(result.current.runStripProps.duration).toBe(4 * 60_000);
     expect(result.current.runState).toEqual({ status: 'COMPLETED', isActive: false, lastActivity: own.history[2].timestamp });

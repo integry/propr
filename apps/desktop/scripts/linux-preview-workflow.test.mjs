@@ -97,7 +97,7 @@ describe('protected authenticated Linux preview workflow', () => {
     assert.match(identity, /run.head_branch !== 'main'/);
     assert.match(identity, /run.conclusion !== 'success'/);
     assert.match(identity, /run.repository.full_name !== process.env.REPOSITORY/);
-    assert.doesNotMatch(signedWorkflow, /npm ci|npm run|make_latest: true|ENABLE_UPDATES|PRODUCTION_RELEASE/);
+    assert.doesNotMatch(signedWorkflow, /make_latest: true|ENABLE_UPDATES|PRODUCTION_RELEASE/);
   });
 
   test('confines private credentials to the protected read-only signing job and step', () => {
@@ -148,4 +148,19 @@ test('regular desktop PR validation requires disposable-key and real RPM tests',
   assert.match(block, /node --test apps\/desktop\/scripts\/rpm-signing.test.mjs/);
   assert.doesNotMatch(block, /continue-on-error|secrets\.|environment:/);
   assert.ok(block.indexOf('sudo apt-get install') < block.indexOf('node --test'));
+});
+
+test('signed preview requires installed x64 RPM gate and exact-run acceptance evidence on publication', () => {
+  const acceptance = signedJob('installed-rpm-acceptance', 'stage-draft');
+  assert.match(acceptance, /needs: \[identity, sign\]/);
+  assert.match(acceptance, /name: propr-desktop-linux-signed-\$\{\{ github.run_id \}\}/);
+  assert.match(acceptance, /run-signed-installed-rpm-acceptance.mjs/);
+  assert.match(acceptance, /name: propr-desktop-installed-signed-rpm-\$\{\{ github.run_id \}\}/);
+  assert.doesNotMatch(acceptance, /secrets\.|contents: write|continue-on-error/);
+  assert.match(signedJob('stage-draft', 'publish-draft'), /needs: \[identity, sign, installed-rpm-acceptance\]/);
+  const publish = signedJob('publish-draft');
+  assert.match(publish, /run-id: \$\{\{ inputs.signing_run_id \}\}/);
+  assert.match(publish, /name: propr-desktop-installed-signed-rpm-\$\{\{ inputs.signing_run_id \}\}/);
+  assert.match(publish, /--acceptance-evidence signed-rpm-acceptance\/signed-rpm-acceptance.json/);
+  assert.match(publish, /--signing-run-id/);
 });

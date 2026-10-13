@@ -1,3 +1,4 @@
+import { formatModelName } from '../utils/modelDisplay';
 import React, { useState, useEffect } from 'react';
 import { getStatsOverview, StatsOverviewResponse } from '../api/taskStatsApi';
 import { ProviderLogo } from './ui/ProviderLogo';
@@ -173,9 +174,9 @@ const RepositoryReport: React.FC = () => {
                   {/* Model Name - Left Aligned */}
                   <span
                     className="w-40 sm:w-48 md:w-56 text-sm font-medium text-slate-700 truncate"
-                    title={modelId}
+                    title={formatModelName(modelId)}
                   >
-                    {modelId}
+                    {formatModelName(modelId)}
                   </span>
 
                   {/* Thin Progress Bar - Middle */}

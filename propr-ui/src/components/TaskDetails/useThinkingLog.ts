@@ -84,7 +84,6 @@ export const useThinkingLog = (liveDetails: LiveDetails, history: HistoryItem[])
 
   const toggleEventsCollapse = () => setEventsCollapsed(!eventsCollapsed);
   const collapseEvents = () => setEventsCollapsed(true);
-  const expandEvents = () => setEventsCollapsed(false);
 
   return {
     thinkingLogWithTimestamps,
@@ -92,7 +91,6 @@ export const useThinkingLog = (liveDetails: LiveDetails, history: HistoryItem[])
     eventsCollapsed,
     toggleEventsCollapse,
     collapseEvents,
-    expandEvents,
     extractedSummary
   };
 };

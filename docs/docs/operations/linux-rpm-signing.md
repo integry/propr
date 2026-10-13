@@ -139,3 +139,97 @@ download tests use isolated source lists, keyrings, status, cache and download
 directories, including successful detached-signature fallback and tamper rejection.
 They neither install packages nor alter host trust. Backup, revocation, rotation,
 and maintainer contact procedures are in the [key notice](linux-release-key.md).
+
+## Required installed x64 RPM browser acceptance
+
+`sign-draft` now downloads `propr-desktop-linux-signed-<signing-run-id>` into a
+separate read-only acceptance job. It does not rebuild or re-sign the package.
+The job builds a disposable openSUSE Leap 16.0 test image, removes its bootstrap
+RPM keys, imports only the configured ProPR key, verifies both native RPM
+signatures, installs with ordinary noninteractive `zypper`, and requires clean
+`rpm -V` before and after execution. The installed file metadata must equal the
+artifact metadata, and the installed runtime manifest must carry the selected
+source SHA. No host RPM database, home, desktop profile, or keyring is mounted.
+
+The test runs `/usr/lib/propr-desktop/propr-desktop` as a fresh unprivileged user
+with private profiles and Secret Service. Playwright controls its real renderer
+through CDP and the existing authorized main/preload boundary. Polling remains
+pending until Playwright opens the fixture server's approval URL and submits an
+explicit approval in that browser page. Activation also refuses unapproved
+requests. The accepted synthetic identity is checked by the existing
+acceptance-only account confirmation predicate; production authentication is
+unchanged. The installed test checks live authenticated UI, process restart using
+the persisted credential without another pairing, logout/revocation, and another
+restart without credentials. Rejection, a short monotonic approval deadline, and
+a different account must leave no usable persisted credential; wrong-account
+rollback cancels its provisional activation.
+
+The container runs on its own disposable Docker `--internal` bridge with no
+external egress. Its active interface keeps Chromium's `navigator.onLine` true
+while acceptance services remain on loopback. It uses `--shm-size=1g` for Electron
+screenshot capture. Browser-page routing also rejects other origins. No stored GitHub
+credentials, real OAuth, production instance, interactive installation, or live
+test account is needed. The existing full packaged visual/axe suite runs against
+this installed executable. Additional login and approval-page images check
+keyboard focus and visible controls at narrow desktop width and 200% layout zoom,
+using actual Tab navigation before requiring a `:focus-visible` ring.
+Electron uses its measured web-frame zoom; the fixture browser page uses CSS
+layout zoom, labeled separately in `pairing-evidence/usability.json`. A narrow
+desktop window is not phone coverage.
+
+To reproduce locally on a native Linux x64 host with a native x64 Docker daemon,
+Node 22.15 or later, RPM tools and GnuPG, download the exact artifact from the
+signing run. Use the public key export and full fingerprint from the independent
+key notice. Run from the repository root, with a new output directory:
+
+```sh
+# SIGNING_RUN_ID, SOURCE_SHA and VERSION identify the selected signing artifact.
+gh run download "$SIGNING_RUN_ID" \
+  --name "propr-desktop-linux-signed-$SIGNING_RUN_ID" --dir signed-preview
+export PROPR_DESKTOP_RPM_PUBLIC_KEY="$(cat propr-desktop-release.asc)"
+export PROPR_DESKTOP_RPM_FINGERPRINT=DD4E7F65CE2345A1F4597D643CF856B53093D3A3
+PROPR_DESKTOP_REAL_LINUX_PACKAGE_ACCEPTANCE=1 \
+  node apps/desktop/scripts/run-signed-installed-rpm-acceptance.mjs \
+  --rpm "signed-preview/ProPR-Desktop-$VERSION-linux-x64.rpm" \
+  --source-revision "$SOURCE_SHA" --signing-run-id "$SIGNING_RUN_ID" \
+  --output signed-rpm-acceptance
+```
+
+The explicit opt-in permits only disposable package-manager containers. The test
+uses `SYS_ADMIN` for Chromium sandbox namespaces and `IPC_LOCK` for the synthetic
+keyring inside that container. It retains no raw process output or credential
+material. Failed installation, sandbox/keyring limitations, failed tests, and
+interruption emit no passed evidence. The owned container and image are cleaned
+up along with its owned internal network. Image construction needs
+registry/package/dependency access; installed acceptance has no external egress.
+
+CI retains the bounded `signed-rpm-acceptance.json` as
+`propr-desktop-installed-signed-rpm-<signing-run-id>`, and visual/accessibility
+artifacts separately with a `-visual-` name. The strict report binds all required
+checks to the exact final signed RPM SHA256, source SHA, public-key fingerprint,
+and signing run. Staging depends on the acceptance job. Protected `publish-draft`
+requires `signing_run_id` in addition to the same frozen source. Publication
+re-downloads and verifies the draft packages, checks the report against those
+bytes, verifies successful main-dispatched signing-run provenance, and retrieves
+the authoritative evidence artifact through the Actions API. Its archive digest
+and report must match the supplied evidence. Missing, expired, failed, forged,
+other-source, other-key, other-run or other-RPM evidence rejects publication.
+Protected private draft/preview controls and `make_latest: false` remain in place.
+Expired evidence requires a new candidate/signing run, never a silent waiver.
+
+Run the focused regressions with:
+
+```sh
+node --test apps/desktop/scripts/packaged-browser-approval.test.mjs \
+  apps/desktop/scripts/signed-rpm-acceptance-evidence.test.mjs \
+  apps/desktop/scripts/linux-preview-workflow.test.mjs
+npx tsx --test apps/desktop/scripts/packaged-acceptance-account.test.mjs
+# With Playwright Chromium installed (also run by the acceptance image build):
+node --test apps/desktop/scripts/packaged-browser-approval.playwright.mjs
+PROPR_REQUIRE_RPM_TESTS=1 node --test apps/desktop/scripts/rpm-signing.test.mjs
+```
+
+The account regression needs the normal workspace dependencies and built shared
+and client packages. The native signing/publication regression additionally uses
+cpio, dpkg, APT and Python 3. Live GitHub smoke remains a separate optional task;
+this gate provides no claim of live OAuth coverage or ARM64 installed acceptance.

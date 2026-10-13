@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import TaskStatusTable from './TaskStatusTable';
 import type { HistoryItem, NetworkEgressSummary } from './types';
@@ -231,4 +231,16 @@ describe('pull request auto-assignment events', () => {
     expect(screen.getAllByText('Creating Pull Request')).toHaveLength(1);
     expect(screen.getByText('Open Network')).toBeInTheDocument();
   });
+});
+
+it('marks compact steps that carry additional details, including terminal and egress records', () => {
+  render(<TaskStatusTable variant="branch" history={[
+    { state: 'PENDING', timestamp: '2026-09-30T23:50:00Z' },
+    { state: 'CLAUDE_EXECUTION', timestamp: '2026-09-30T23:51:00Z', metadata: {
+      event: 'network.egress', networkEgress: { mode: 'restricted', deniedConnections: 1, deniedHosts: [{ host: 'example.com', count: 1 }] },
+    } },
+    { state: 'FAILED', timestamp: '2026-09-30T23:52:00Z', metadata: { terminalReason: 'timed_out' } },
+  ]} />);
+  expect(screen.getAllByRole('img', { name: 'Additional step details' })).toHaveLength(2);
+  expect(within(screen.getAllByRole('button')[0]).queryByRole('img', { name: 'Additional step details' })).toBeNull();
 });

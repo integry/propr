@@ -1,3 +1,4 @@
+import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataListener.js';
 import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
 import { protectStorageQueue } from '../core/src/storage/lifecycle.js';
 import { createDefaultStorageService, createInstanceStorageRoutes } from './routes/instanceStorageRoutes.js';
@@ -183,6 +184,7 @@ const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: Comment
 const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 const app = express();
+app.use(refusePublicFleetData);
 const PORT = Number(process.env.DASHBOARD_API_PORT || 4000);
 const HOST = resolveApiListenHost();
 
@@ -269,6 +271,7 @@ let runtimeBuildQueue: Queue;
 let configReloadSubscription: ConfigReloadSubscription | undefined;
 let invalidateStatusAgentCache: (() => void) | undefined;
 let dashboardReads: DashboardReadService | undefined;
+let fleetDataListener: ReturnType<typeof startConfiguredFleetData> = Promise.resolve(undefined);
 let notificationBackground: NotificationBackgroundService | undefined;
 let webPushDispatcherConfigured = false;
 let resolvedWebPushConfiguration: ValidatedWebPushConfiguration = { configured: false, issue: 'disabled' };
@@ -419,6 +422,8 @@ function setupRoutes(): void {
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
   const storageService = createDefaultStorageService();
   const storageRoutes = createInstanceStorageRoutes(storageService);
+  // Management-only Unix transport; no customer/tunnel route is registered.
+  fleetDataListener = demoMode ? Promise.resolve(undefined) : startConfiguredFleetData(storageService);
   // Background work is bounded/coalesced; no startup deletion or live-data scan.
   const storageSweep = setInterval(() => {
     void storageService.sweep().catch(() => undefined);
@@ -657,6 +662,13 @@ async function start(): Promise<void> {
       }
     }
     setupRoutes();
+    // Configured Fleet transport is required for readiness. In a rolling overlap,
+    // fail startup and let the supervisor restart after the old listener exits.
+    // Await immediately so startup failures cannot become unhandled rejections.
+    try { await fleetDataListener; }
+    catch (error) {
+      throw new Error('Configured Fleet data listener failed to start; refusing API readiness', { cause: error });
+    }
     if (!demoMode) {
       await desktopAuthService.cleanupPairings();
       desktopPairingCleanupTimer = setInterval(() => {
@@ -712,6 +724,10 @@ async function start(): Promise<void> {
 
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
+      // Stop admissions and drain Fleet handlers before their dependencies close.
+      await (await fleetDataListener)?.shutdown().catch(error => {
+        console.warn('Fleet listener socket cleanup refused:', error);
+      });
       const shutdownTasks: ShutdownTask[] = [
         { name: 'dashboard read service', close: () => dashboardReads?.close() ?? Promise.resolve() },
         { name: 'task queue', close: () => taskQueue.close() },

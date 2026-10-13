@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
 import SectionLabelHeader from './SectionLabelHeader';
 
 describe('SectionLabelHeader', () => {
@@ -16,17 +16,11 @@ describe('SectionLabelHeader', () => {
     expect(screen.getByTestId('log-step-count')).toHaveTextContent('1 step');
   });
 
-  it('switches between the readable log and the raw terminal', () => {
-    const onViewChange = vi.fn();
-    render(<SectionLabelHeader commandMode="fix" view="readable" onViewChange={onViewChange} />);
-    expect(screen.getByRole('button', { name: 'Human readable' })).toHaveAttribute('aria-pressed', 'true');
-    fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
-    expect(onViewChange).toHaveBeenCalledWith('terminal');
-    expect(screen.getByRole('group', { name: 'Log view' })).toHaveAttribute('data-execution-log-control');
-  });
-
-  it('offers the raw log switch on desktop only, never on a phone', () => {
-    render(<SectionLabelHeader commandMode="fix" view="readable" onViewChange={vi.fn()} />);
-    expect(screen.getByTestId('log-view-switch')).toHaveClass('hidden', 'sm:inline-flex');
+  it('shows the readable log header without a view selector', () => {
+    render(<SectionLabelHeader commandMode="fix" stepCount={2} />);
+    expect(screen.getByRole('heading', { name: 'EXECUTION TRACE' })).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Log view' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Human readable' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Raw' })).not.toBeInTheDocument();
   });
 });
