@@ -305,7 +305,7 @@ export {
     buildClaudePrompt
 } from './claude/claudeHelpers.js';
 export type { ClaudeOutput, ConversationLogEntry, ClaudeOutputResult, BuildClaudePromptOptions, DockerArgsParams, StorePromptOptions } from './claude/claudeHelpers.js';
-export { buildPlannerAbortSignalKey, executeDockerCommand, findRunningDockerContainerForTask, findTaskContainer, getDockerRootDir, inspectTaskContainerLivenessForTask, inspectLegacyDockerContainerLivenessForTask, runWithExecutionAbortSignal, runWithPlannerAbortContext, stopDockerContainer, ExecutionAbortedError, ensureAgentBundleImage } from './claude/docker/dockerExecutor.js';
+export { buildPlannerAbortSignalKey, executeDockerCommand, findRunningDockerContainerForTask, findTaskContainer, getDockerRootDir, inspectTaskContainerLivenessForTask, inspectLegacyDockerContainerLivenessForTask, runWithExecutionAbortSignal, runWithPlannerAbortContext, stopDockerContainer, ExecutionAbortedError, agentDockerImageExists, ensureAgentBundleImage } from './claude/docker/dockerExecutor.js';
 export type { TaskContainerInspection, TaskContainerLiveness } from './claude/docker/dockerExecutor.js';
 export type { RunningTaskContainer } from './claude/docker/dockerExecutor.js';
 export { cleanupUnusedAgentImages, listAgentImages } from './claude/docker/dockerImageManager.js';

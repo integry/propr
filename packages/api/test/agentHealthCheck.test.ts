@@ -79,6 +79,7 @@ test('post-login refresh waits for the pending old-credential probe and analyzes
   await new Promise(resolve => setImmediate(resolve));
   credentials = 'logged-in';
   const refresh = check(config.id, true);
+  const concurrentRefresh = check(config.id, true);
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(credentialsUsed, ['expired']);
   finishes[0]({ success: false, response: '', error: 'Login expired' });
@@ -91,6 +92,7 @@ test('post-login refresh waits for the pending old-credential probe and analyzes
   assert.equal(finishes.length, 2);
   finishes[1]({ success: true, response: 'OK' });
   assert.equal((await refresh)?.status, 'ready');
+  assert.equal((await concurrentRefresh)?.status, 'ready');
   assert.equal((await sibling)?.status, 'ready');
 });
 
@@ -172,4 +174,81 @@ test('distinguishes authentication, quota, HTTP 429, and unrelated failures for 
     createAgent: () => ({ analyze: async () => { throw Object.assign(new Error('Request failed'), { status: 429 }); } }),
   });
   assert.equal((await check(config.id))?.errorCode, 'rate_limit');
+});
+
+test('absent exact image shares worker preparation and probes only after verified readiness', async () => {
+  let ready = false;
+  let finish!: () => void;
+  let preparations = 0;
+  let probes = 0;
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [config, { ...config, id: 'sibling' }],
+    imageExists: async image => { assert.equal(image, config.dockerImage); return ready; },
+    prepareImage: async image => { assert.equal(image, config.dockerImage); preparations++; await new Promise<void>(resolve => { finish = resolve; }); },
+    createAgent: () => ({ analyze: async () => { probes++; return { success: true, response: 'OK' }; } }),
+  });
+  const results = await Promise.all([check(config.id), check(config.id), check('sibling', true)]);
+  assert.ok(results.every(result => result?.status === 'preparing'));
+  assert.equal(preparations, 1);
+  assert.equal(probes, 0);
+  ready = true;
+  finish();
+  assert.equal((await check(config.id))?.status, 'ready');
+  assert.equal(probes, 1);
+});
+
+test('failed preparation is safe and sticky until explicit retry, including wrong-image completion', async () => {
+  for (const fails of [true, false]) {
+    let preparations = 0;
+    const check = createAgentHealthCheck({
+      loadAgents: async () => [config],
+      imageExists: async () => false,
+      prepareImage: async () => { preparations++; if (fails) throw new Error('private.registry/secret manifest unknown'); },
+      createAgent: () => { throw new Error('Must not probe absent image'); },
+    });
+    assert.equal((await check(config.id))?.status, 'preparing');
+    await new Promise(resolve => setImmediate(resolve));
+    const failed = await check(config.id);
+    assert.equal(failed?.errorCode, 'preparation_failed');
+    assert.ok(!failed?.error?.includes('private.registry'));
+    await check(config.id);
+    assert.equal(preparations, 1);
+    assert.equal((await check(config.id, true))?.status, 'preparing');
+    assert.equal(preparations, 2);
+  }
+});
+
+test('preparation completion cannot mark edited, disabled or deleted configurations ready', async () => {
+  for (const change of ['edit', 'disable', 'delete'] as const) {
+    let configured = [config];
+    let prepared = false;
+    const images: string[] = [];
+    const check = createAgentHealthCheck({
+      loadAgents: async () => configured,
+      imageExists: async image => image === config.dockerImage && prepared,
+      prepareImage: async () => {},
+      createAgent: agent => ({ analyze: async () => { images.push(agent.dockerImage); return { success: true, response: 'OK' }; } }),
+    });
+    assert.equal((await check(config.id))?.status, 'preparing');
+    configured = change === 'delete' ? [] : [{ ...config, ...(change === 'disable' ? { enabled: false } : { dockerImage: 'propr/agent:edited' }) }];
+    prepared = true;
+    assert.equal((await check(config.id))?.status, change === 'edit' ? 'preparing' : change === 'disable' ? 'disabled' : undefined);
+    assert.deepEqual(images, []);
+  }
+});
+
+test('all shared probe callers reload configuration before returning readiness', async () => {
+  let configured = [config];
+  let finish!: (result: AnalysisResult) => void;
+  const check = createAgentHealthCheck({
+    loadAgents: async () => configured,
+    createAgent: () => ({ analyze: async () => new Promise(resolve => { finish = resolve; }) }),
+  });
+  const initial = check(config.id);
+  const sibling = check(config.id);
+  await new Promise(resolve => setImmediate(resolve));
+  configured = [{ ...config, enabled: false }];
+  finish({ success: true, response: 'OK' });
+  assert.equal((await initial)?.status, 'disabled');
+  assert.equal((await sibling)?.status, 'disabled');
 });

@@ -342,7 +342,7 @@ const AgentCard: React.FC<AgentCardProps> = ({
         </div>
       </div>
 
-      {agent.enabled && health?.status === 'error' && (
+      {agent.enabled && (health?.status === 'error' || health?.status === 'preparing') && (
         <AgentHealthFeedback agent={agent} health={health} onLogin={onLogin} onRecheck={onRecheck} readOnly={readOnly} />
       )}
 
