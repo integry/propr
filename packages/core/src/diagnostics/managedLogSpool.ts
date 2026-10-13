@@ -29,9 +29,7 @@ export type ManagedLogPolicy = { [K in keyof typeof MANAGED_LOG_POLICY]: number 
  * open segments, so no stored segment is extended under different bounds, and
  * preserves the instance binding, cursors, gaps and unacknowledged segments. */
 export interface ManagedLogPolicyMigration {
-    from: number;
-    to: number;
-    previous: ManagedLogPolicy;
+    from: number; to: number; previous: ManagedLogPolicy;
     migrate?(db: Database): void;
 }
 /** Append a step (and bump MANAGED_LOG_POLICY.version) whenever a limit changes. */
@@ -96,9 +94,7 @@ export class ManagedLogSpool {
                         ['sources', 'native_root', 'TEXT'], ['sources', 'native_inventory', 'TEXT'], ['sources', 'native_details', 'TEXT'],
                         // Segments stored before the column existed were redacted by adapter v1.
                         ['segments', 'redaction', 'INTEGER NOT NULL DEFAULT 1'], ['segments', 'manifest', 'TEXT']]) {
-                        if (!(this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(column => column.name === name)) {
-                            this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
-                        }
+                        if (!(this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(column => column.name === name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
                     }
                     if (!(this.db.prepare('PRAGMA table_info(sources)').all() as Array<{ name: string }>).some(column => column.name === 'diagnostic_bytes')) {
                         this.db.exec('ALTER TABLE sources ADD COLUMN diagnostic_bytes INTEGER NOT NULL DEFAULT 0');
@@ -109,9 +105,7 @@ export class ManagedLogSpool {
                     this.bind(options.migrations ?? MANAGED_LOG_POLICY_MIGRATIONS);
                     // Legacy sealed segments have no snapshot. Freeze their available
                     // metadata once, before any subsequent collection can change it.
-                    for (const row of this.db.prepare('SELECT id FROM segments WHERE sealed=1 AND manifest IS NULL').all() as Array<{ id: number }>) {
-                        this.sealSegment(this.db.prepare('SELECT * FROM segments WHERE id=?').get(row.id) as Segment);
-                    }
+                    this.sealSegments('sealed=1 AND manifest IS NULL');
                 }); } catch (e) { if (this.db.inTransaction) this.db.exec('ROLLBACK'); throw e; } }, options.openDeadline ?? Date.now() + 10_000);
         } catch (e) { this.db?.close(); this.dir.close(); throw e; }
     }
@@ -330,22 +324,17 @@ export class ManagedLogSpool {
             sources: sources.map(s => ({ ...JSON.parse(s.identity), id: s.id, retired: Boolean(s.retired), nextSequence: s.next, droppedBytes: s.dropped, gaps: s.gaps,
                 inventoryComplete: Boolean(s.inventory_complete), lastSuccessfulCollection: s.last_success, reason: s.reason, protectedReason: s.protection, protectedBytes: s.protection && !s.reason && JSON.parse(s.identity).source.startsWith('native-state') ? s.protected_bytes : null, capacityWarning: s.diagnostic_bytes >= this.limits.protectedBytes })),
             nativeSources: {
-                rotation: 'none', growthBounded: false, inventoryComplete: false,
-                maintenance: 'unsupported-writer-lifecycle',
-                admission: { existingWritersCapped: false },
-                unmeasured: ['container-only', 'unowned', 'excluded-or-unrecognized'],
+                rotation: 'none', growthBounded: false, inventoryComplete: false, maintenance: 'unsupported-writer-lifecycle',
+                admission: { existingWritersCapped: false }, unmeasured: ['container-only', 'unowned', 'excluded-or-unrecognized'],
                 sources: sources.filter(s => (/^(?:native-state(?::|$)|unmapped-native-state$|shared-tmp-claude-logs$)/).test(JSON.parse(s.identity).source))
                     .map(s => ({ ...JSON.parse(s.identity), protected: true, growthBounded: false,
                         inventory: s.native_inventory ? JSON.parse(s.native_inventory) : null,
-                        capacityBytesLowerBound: s.diagnostic_bytes,
-                        capacityBasis: 'diagnostic',
+                        capacityBytesLowerBound: s.diagnostic_bytes, capacityBasis: 'diagnostic',
                         measurement: s.protection && !s.reason && JSON.parse(s.identity).source.startsWith('native-state') ? 'allowlisted-files-only' : 'unknown',
                         measuredBytes: s.protection && !s.reason && JSON.parse(s.identity).source.startsWith('native-state') ? s.protected_bytes : null })),
             },
-            nativeMaintenance: {
-                rotation: 'unsupported', growthBounded: false, disposal: 'protected',
-                admission: 'new-launches-only', existingWritersCapped: false,
-                coverage: 'explicit-instance-owned-roots-only',
+            nativeMaintenance: { rotation: 'unsupported', growthBounded: false, disposal: 'protected',
+                admission: 'new-launches-only', existingWritersCapped: false, coverage: 'explicit-instance-owned-roots-only',
                 sources: sources.filter(s => s.native_details).map(s => ({ ...JSON.parse(s.identity),
                     ...JSON.parse(s.native_details!), protected: true, growthBounded: false })),
             },
@@ -364,9 +353,7 @@ export class ManagedLogSpool {
     assertFilesystemCapacity(directory: PinnedDirectory = this.dir): void {
         const stat = fs.statfsSync(`/proc/self/fd/${directory.fd}`, { bigint: true });
         // Dynamic-inode filesystems report files=ffree=0 without exhaustion.
-        if (stat.bavail * stat.bsize < BigInt(this.limits.spoolBytes) || (stat.files > 0n && stat.ffree === 0n)) {
-            throw new Error('managed diagnostics: filesystem capacity; operator action required');
-        }
+        if (stat.bavail * stat.bsize < BigInt(this.limits.spoolBytes) || (stat.files > 0n && stat.ffree === 0n)) throw new Error('managed diagnostics: filesystem capacity; operator action required');
     }
     /** Called inside the writer transaction: payload and metadata seal together.
      * Source status remains mutable and is exposed separately by status(). */
@@ -378,13 +365,11 @@ export class ManagedLogSpool {
     }
     private segmentManifest(s: Segment): string {
         const source = this.db.prepare('SELECT * FROM sources WHERE id=?').get(s.source) as Source;
-        return JSON.stringify({
-            schemaVersion: 1, policyVersion: this.limits.version, redactionVersion: s.redaction, tenantPrivate: true, instance: this.instance,
+        return JSON.stringify({ schemaVersion: 1, policyVersion: this.limits.version, redactionVersion: s.redaction, tenantPrivate: true, instance: this.instance,
             ...JSON.parse(source.identity), sourceId: source.id, segment: s.id, utcDay: s.day,
             collectionWindow: { start: s.start, end: s.end }, firstSequence: s.first, lastSequence: s.last,
             compressedBytes: s.data.length, uncompressedBytes: s.raw, sha256: s.digest, encoding: 'gzip-jsonl',
-            droppedBytes: source.dropped, gaps: source.gaps, historyComplete: false, lastSuccessfulCollection: source.last_success,
-        });
+            droppedBytes: source.dropped, gaps: source.gaps, historyComplete: false, lastSuccessfulCollection: source.last_success });
     }
     private sealSegments(where: string, ...args: unknown[]): void {
         const rows = this.db.prepare(`SELECT id FROM segments WHERE ${where}`).all(...args) as Array<{ id: number }>;
@@ -411,9 +396,7 @@ export class ManagedLogSpool {
         });
     }
     discardLocal(id: number, sha256: string): void {
-        if (process.env.PROPR_MANAGED_LOGS !== '1' || process.env.PROPR_DIAGNOSTIC_LOCAL_ONLY !== '1') {
-            throw new Error('local-only diagnostic disposal disabled');
-        }
+        if (process.env.PROPR_MANAGED_LOGS !== '1' || process.env.PROPR_DIAGNOSTIC_LOCAL_ONLY !== '1') throw new Error('local-only diagnostic disposal disabled');
         this.atomic(() => {
             const segment = this.db.prepare('SELECT * FROM segments WHERE id=? AND digest=? AND sealed=1 AND ack=0').get(id, sha256) as Segment | undefined;
             if (!segment) throw new Error('unknown diagnostic local disposal');
