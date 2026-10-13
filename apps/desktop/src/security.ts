@@ -242,13 +242,14 @@ interface ReloadableRenderer {
 /** CSP belongs to the document; clearing account selection must not interrupt a connect attempt. */
 export const rendererPolicyOriginsForSelection = (
   current: readonly string[],
-  origin: string | null,
+  origin: string | null | undefined,
 ): readonly string[] => {
   // The main request gate still rejects traffic without an active credential
   // scope. Keep the document policy during the deselect/probe/activate sequence
   // so reload cannot strand the renderer with a cleared durable selection.
   if (origin === null) return current;
-  return origin.startsWith('http://') ? [origin] : [];
+  // Read failure or committed removal/logout explicitly narrows the document.
+  return origin?.startsWith('http://') ? [origin] : [];
 };
 
 export const createLatestRendererReloader = (

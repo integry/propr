@@ -22,6 +22,7 @@ describe('desktop URL security', () => {
   it('retains the document CSP during deselection and replaces it for a different selected origin', () => {
     const current = ['http://localhost:4000'];
     assert.equal(rendererPolicyOriginsForSelection(current, null), current);
+    assert.deepEqual(rendererPolicyOriginsForSelection(current, undefined), []);
     assert.deepEqual(rendererPolicyOriginsForSelection(current, 'http://127.0.0.1:5000'), ['http://127.0.0.1:5000']);
     assert.deepEqual(rendererPolicyOriginsForSelection(current, 'https://propr.example.com'), []);
   });

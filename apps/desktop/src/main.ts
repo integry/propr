@@ -232,6 +232,9 @@ if (process.platform === 'darwin') configureMacOSBranding(app);
 
 const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
 const packagedAcceptanceTest = packagedAcceptanceUserDataDirectory !== null;
+// This authorized fixture scenario exercises the production document policy.
+const packagedAcceptancePolicyReload = packagedAcceptanceTest
+  && process.env.PROPR_DESKTOP_ACCEPTANCE_SCENARIO === 'csp-reload';
 const acceptancePairingTiming = packagedAcceptancePairingTiming(packagedAcceptanceUserDataDirectory);
 const acceptanceAccountConfirmation = packagedAcceptanceAccountConfirmation(packagedAcceptanceUserDataDirectory);
 let mainWindow: BrowserWindow | null = null;
@@ -1561,7 +1564,7 @@ if (!hasSingleInstanceLock) {
     const smokeProfileOrigin = packagedSmokeTest
       ? normalizeApiBaseUrl(process.env.PROPR_DESKTOP_SMOKE_PROFILE_API_URL ?? '')
       : null;
-    let rendererPolicyOrigins: readonly string[] = packagedAcceptanceTest
+    let rendererPolicyOrigins: readonly string[] = packagedAcceptanceTest && !packagedAcceptancePolicyReload
       ? PACKAGED_ACCEPTANCE_LOOPBACK_ORIGINS
       : transportSmoke
       ? [transportSmoke.firstOrigin, transportSmoke.secondOrigin]
@@ -1784,7 +1787,7 @@ if (!hasSingleInstanceLock) {
       }
     }
     if (app.isPackaged && !rendererPolicyPinnedForSmoke) {
-      if (!packagedAcceptanceTest) {
+      if (!packagedAcceptanceTest || packagedAcceptancePolicyReload) {
         const current = await credentials.listProfiles();
         const activeOrigin = current.profiles
           .find(profile => profile.id === current.activeProfileId)?.apiBaseUrl;
@@ -1961,9 +1964,9 @@ if (!hasSingleInstanceLock) {
       onActiveWorkRefresh: () => desktopTray.refresh(),
       onNativeNavigationState: state => desktopNativeCommands?.updateNavigationState?.(state),
       ...(app.isPackaged && !rendererPolicyPinnedForSmoke ? {
-        onRendererActiveProfileChanged: (origin: string | null) => {
+        onRendererActiveProfileChanged: (origin: string | null | undefined) => {
           notifications.clear();
-          if (packagedAcceptanceTest) return;
+          if (packagedAcceptanceTest && !packagedAcceptancePolicyReload) return;
           const nextOrigins = rendererPolicyOriginsForSelection(rendererPolicyOrigins, origin);
           if (rendererPolicyOrigins.length === nextOrigins.length
             && rendererPolicyOrigins.every((value, index) => value === nextOrigins[index])) return;

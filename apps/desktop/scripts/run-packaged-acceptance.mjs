@@ -1,3 +1,4 @@
+import { exercisePackagedCspReload } from './packaged-acceptance-csp-reload.mjs';
 import { SETUP_ACTIONS, prepareProductionSetup, reachSetupAction, activateSetupAction } from './packaged-acceptance-setup.mjs';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -55,7 +56,10 @@ if (process.platform !== 'linux' || process.arch !== 'x64') {
 }
 
 const outputDirectory = resolve(process.env.PROPR_DESKTOP_ACCEPTANCE_OUTPUT || defaultAcceptanceOutputDirectory());
-const binaryPath = resolve('out', 'propr-desktop-linux-x64', 'propr-desktop');
+// Can target the actual installed RPM executable on a provisioned validation host.
+const binaryPath = process.env.PROPR_DESKTOP_ACCEPTANCE_BINARY
+  ? resolve(process.env.PROPR_DESKTOP_ACCEPTANCE_BINARY)
+  : resolve('out', 'propr-desktop-linux-x64', 'propr-desktop');
 const DEVICE_SECRET = 'D'.repeat(43);
 const INSTANCE_TOKEN = `propr_it_${'T'.repeat(43)}`;
 const ACTIVATION_TICKET = 'A'.repeat(43);
@@ -408,7 +412,7 @@ const createFixture = async (mode, fixedOrigin) => {
   let tokenRevoked = false;
   let authChecks = 0;
   const recordCurrentUserFixture = record => {
-    if (fixtureCurrentUserRecords.filter(item => item.journey === activeJourney).length >= 4) {
+    if (fixtureCurrentUserRecords.filter(item => item.journey === activeJourney).length >= (activeJourney.startsWith('csp-reload-') ? 12 : 4)) {
       currentUserEvidenceInvalid = true;
       return;
     }
@@ -784,14 +788,14 @@ const initializeRenderer = async page => {
     }
 };
 
-const launchApplication = async (scenario, initialDeepLink) => {
-  const userData = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
+const launchApplication = async (scenario, initialDeepLink, existingUserData) => {
+  const userData = existingUserData ?? await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
   let child;
   let childClosed;
   let browser;
   let cleaned = false;
   let output = '';
-  const cleanup = async () => {
+  const cleanup = async ({ preserveProfile = false } = {}) => {
     if (cleaned) return;
     cleaned = true;
     const failures = [];
@@ -800,7 +804,7 @@ const launchApplication = async (scenario, initialDeepLink) => {
     await scanAcceptancePaths([userData], SENTINELS).catch(error => failures.push(error));
     surfaces.push({ kind: 'packaged-process-output', journey: activeJourney, value: output });
     processRecords.push({ journey: activeJourney, source: 'packaged-process', level: 'combined', bytes: Buffer.byteLength(output), sha256: digest(output) });
-    await safeRemoveAcceptanceLeaf(userData, { kind: 'profile' }).catch(error => failures.push(error));
+    if (!preserveProfile) await safeRemoveAcceptanceLeaf(userData, { kind: 'profile' }).catch(error => failures.push(error));
     if (failures.length) throw new AggregateError(failures, 'Packaged acceptance cleanup failed');
   };
 
@@ -831,7 +835,10 @@ const launchApplication = async (scenario, initialDeepLink) => {
         remainder = lines.pop() || '';
         lines.forEach(line => {
           captureMainHandshakeEvidence(line, activeJourney);
-          captureMainCurrentUserEvidence(line, activeJourney);
+          // Existing current-user/lifecycle budgets describe one document. The
+          // reload journey records its own cross-document assertions and keeps
+          // raw process/console output and request-gate evidence for scanning.
+          if (scenario !== 'csp-reload') captureMainCurrentUserEvidence(line, activeJourney);
           captureNetworkPermissionEvidence(line, activeJourney);
         });
       };
@@ -852,7 +859,7 @@ const launchApplication = async (scenario, initialDeepLink) => {
       // Lifecycle evidence is a single serialized renderer snapshot. Capture it
       // synchronously so its strict transition order does not depend on CDP
       // JSHandle resolution or page lifetime.
-      captureRendererLifecycleEvidence(message.text(), journey);
+      if (scenario !== 'csp-reload') captureRendererLifecycleEvidence(message.text(), journey);
       const pending = Promise.all(message.args().map(async argument => {
         try { return await argument.jsonValue(); } catch { return { unserializable: argument.toString() }; }
       })).then(argumentsValue => {
@@ -864,14 +871,14 @@ const launchApplication = async (scenario, initialDeepLink) => {
           location: message.location(),
         };
         consoleRecords.push(record);
-        captureRendererCurrentUserEvidence(record.arguments, journey);
+        if (scenario !== 'csp-reload') captureRendererCurrentUserEvidence(record.arguments, journey);
       });
       pendingConsoleRecords.push(pending);
     });
     page.on('pageerror', error => pageErrorRecords.push({ journey: activeJourney, name: error.name, message: error.message, stack: error.stack || '' }));
     await initializeRenderer(page);
-    boundaryJourneys.add(activeJourney);
-    return { context, page, close: cleanup };
+    if (scenario !== 'csp-reload') boundaryJourneys.add(activeJourney);
+    return { context, page, userData, close: cleanup };
   } catch (error) {
     try { await cleanup(); } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], 'Packaged acceptance launch and cleanup failed');
@@ -1693,6 +1700,14 @@ try {
 
   if (!traceWritten) throw new Error('Playwright trace was not produced');
   await Promise.all(pendingConsoleRecords);
+  activeJourney = 'csp-reload-pairing';
+  await exercisePackagedCspReload({
+    launch: userData => launchApplication('csp-reload', null, userData),
+    pair, origin: readyOrigin,
+    observe: phase => { activeJourney = `csp-reload-${phase}`; },
+    evidence: result => surfaces.push({ kind: 'native-csp-reload', ...result }),
+  });
+
   if (rendererLifecycleInvalidStates.size > 0) {
     throw new Error(`Acceptance renderer lifecycle evidence was invalid: ${JSON.stringify(rendererLifecycleInvalidSummary())}`);
   }

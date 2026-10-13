@@ -97,7 +97,7 @@ test('paired local account survives packaged policy reload, saved selection, and
     profiles: store, credentials, connectDiscovery: {}, lifecycle: {}, logger: { log() {} },
     desktopSession: { clearStorageData: async () => {} },
     packagedRendererUrl: event.senderFrame.url, openExternal: async () => {},
-    onRendererActiveProfileChanged: (origin: string | null) => {
+    onRendererActiveProfileChanged: (origin: string | null | undefined) => {
       const next = rendererPolicyOriginsForSelection(origins, origin);
       if (JSON.stringify(next) !== JSON.stringify(origins)) reloads++;
       origins = next;
@@ -124,6 +124,7 @@ test('paired local account survives packaged policy reload, saved selection, and
     assert.equal(credentials.prepareRequest(`${profile.apiBaseUrl}/api/tasks`, {
       [DESKTOP_TRANSPORT_SCOPE_HEADER]: active.transportScope,
     }, { rendererOwned: true, resourceType: 'xhr' }).cancel, undefined);
+    return active;
   };
   try {
     const admission = await invoke(IPC_CHANNELS.authenticationPairAdmit, profile.id);
@@ -143,8 +144,21 @@ test('paired local account survives packaged policy reload, saved selection, and
     assert.equal(persisted.activeProfileId, profile.id);
     origins = [persisted.profiles[0].apiBaseUrl];
     ipc = register();
-    await select();
+    const restarted = await select();
     assert.equal(reloads, 1, 'restart reconnect must keep the connected document');
+    await assert.rejects(invoke(IPC_CHANNELS.authLogout, {
+      profileId: restarted.profileId, transportScope: 'stale-scope',
+    }), /IPC_OPERATION_FAILED/);
+    assert.deepEqual(origins, [profile.apiBaseUrl], 'rejected logout must retain the current account policy');
+    await invoke(IPC_CHANNELS.authLogout, {
+      profileId: restarted.profileId, transportScope: restarted.transportScope,
+    });
+    assert.deepEqual(origins, [], 'committed logout must narrow the production policy');
+    assert.equal((await store.list()).activeProfileId, null);
+    assert.equal(await store.readCredential(profile.id), null);
+    assert.deepEqual(credentials.prepareRequest(`${profile.apiBaseUrl}/api/tasks`, {
+      [DESKTOP_TRANSPORT_SCOPE_HEADER]: restarted.transportScope,
+    }, { rendererOwned: true, resourceType: 'xhr' }), { cancel: true });
   } finally {
     ipc.dispose();
     await credentials.dispose();

@@ -197,6 +197,10 @@ to the first-release profile.
 
 ## Packaged visual and accessibility acceptance
 
+The acceptance runner also executes a `csp-reload` scenario with production CSP updates enabled (no pinned fixture origins): first activation must reload exactly once, process restart must reconnect, saved-account selection must stay connected without another policy reload, and explicit removal must narrow the document policy. It uses the real packaged preload IPC and credential store. HTTP and browser pairing approval are owned fixtures; it does not provision the local Docker stack or prove live external browser pairing.
+
+To validate a newly installed RPM on a Linux x64 host, run from `apps/desktop` with `PROPR_DESKTOP_ACCEPTANCE_BINARY=/absolute/path/to/installed/propr-desktop npm run acceptance:package`. The host needs a display/Xvfb, a working Secret Service/keyring, the runner's npm dependencies, and its fixed fixture ports available. Use the executable from the newly built PR package. The separate install/upgrade/uninstall test does not exercise this CSP scenario. A runner or unit-test pass is not evidence of an installed-RPM run unless the installed executable was actually targeted.
+
 Linux x64 is the canonical visual runtime. `desktop:acceptance` launches the real packaged executable with a fresh
 private Electron profile and drives it over Chromium's debugging protocol with Playwright. A separately authorized
 acceptance mode supplies deterministic local API, Socket.IO, browser-pairing, ProPR Connect, and local-setup fixtures
