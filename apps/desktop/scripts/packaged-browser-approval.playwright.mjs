@@ -51,6 +51,21 @@ test('Playwright opens the fixture-owned approval URL and approves visibly with 
           && observed.rect.left >= -1 && observed.rect.right <= observed.width + 1 && observed.rect.top >= -1 && observed.rect.bottom <= observed.height + 1, JSON.stringify({ zoom, ...observed }));
       }
     }
+    // A control below the first viewport at 200% zoom remains reachable by
+    // scrolling and keyboard navigation; viewport position alone is not failure.
+    await page.evaluate(() => {
+      document.body.style.paddingTop = '700px';
+      window.scrollTo(0, 0);
+    });
+    assert.ok(await approve.evaluate(element => element.getBoundingClientRect().top > innerHeight));
+    await focusPairingControlWithKeyboard(approve);
+    assert.ok(await approve.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return element === document.activeElement && element.matches(':focus-visible')
+        && style.outlineStyle !== 'none' && rect.top >= -1 && rect.bottom <= innerHeight + 1;
+    }));
+    await page.evaluate(() => { document.body.style.paddingTop = ''; });
     // A visible control removed from the tab order must not pass by forcing focus.
     await page.locator('button[value="wrong-account"]').evaluate(element => { element.tabIndex = -1; });
     await assert.rejects(focusPairingControlWithKeyboard(page.locator('button[value="wrong-account"]')), /not keyboard reachable/);

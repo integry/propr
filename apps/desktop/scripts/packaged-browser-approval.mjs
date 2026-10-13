@@ -2,6 +2,9 @@
 // Exercise keyboard modality and the real tab order before checking :focus-visible.
 export const focusPairingControlWithKeyboard = async control => {
   await control.waitFor({ state: 'visible' });
+  // At 200% zoom the installed sign-in control can start below the viewport.
+  // Bring it into view before exercising keyboard modality and tab order.
+  await control.scrollIntoViewIfNeeded();
   for (let tabs = 0; tabs < 40; tabs += 1) {
     await control.page().keyboard.press('Tab');
     if (await control.evaluate(element => element === document.activeElement)) return;
