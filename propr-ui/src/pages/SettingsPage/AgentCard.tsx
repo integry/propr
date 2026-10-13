@@ -164,6 +164,10 @@ interface AgentCardProps {
   onRecheck?: () => void;
 }
 
+function shouldShowLogin(agentType: AgentType, health?: AgentHealthState): boolean {
+  return isAgentLoginSupported(agentType) && !(health?.status === 'error' && health.errorCode === 'rate_limit');
+}
+
 const AgentHeaderStatus: React.FC<{ enabled: boolean; health?: AgentHealthState }> = ({ enabled, health }) => {
   if (!enabled || health?.status === 'disabled') return (
     <span role="status" className="inline-flex items-center gap-1 text-[11px] text-slate-400">
@@ -318,7 +322,7 @@ const AgentCard: React.FC<AgentCardProps> = ({
                 onKeyDown={handleMenuKeyDown}
                 className="absolute right-0 top-full z-20 mt-1 w-44 rounded-md border border-slate-200 bg-white p-1 shadow-lg"
               >
-                {isAgentLoginSupported(agent.type) && !(health?.status === 'error' && health.errorCode === 'rate_limit') && (
+                {shouldShowLogin(agent.type, health) && (
                   <button type="button" role="menuitem" disabled={readOnly} onClick={() => runAction(onLogin)} className="flex min-h-9 w-full items-center gap-2 rounded px-2 text-left text-xs text-slate-700 hover:bg-slate-50 focus:bg-slate-50 focus:outline-none disabled:cursor-not-allowed disabled:text-slate-300">
                     <LogIn className="h-3.5 w-3.5" aria-hidden="true" />Log in
                   </button>

@@ -44,11 +44,16 @@ export function createAgentHealthCheck(dependencies: {
   // Share worker requests across providers using the same exact image.
   const preparations = new Map<string, { failed: boolean; pending: boolean }>();
   const inFlight = new Map<string, Promise<AgentHealthResult>>();
-  return async function check(agentId: string, fresh = false): Promise<AgentHealthResult | undefined> {
-    const agents = await dependencies.loadAgents();
+
+  function pruneUnusedPreparations(agents: AgentConfig[]): void {
     for (const [image, state] of preparations) {
       if (!state.pending && !agents.some(agent => agent.enabled && agent.dockerImage === image)) preparations.delete(image);
     }
+  }
+
+  return async function check(agentId: string, fresh = false): Promise<AgentHealthResult | undefined> {
+    const agents = await dependencies.loadAgents();
+    pruneUnusedPreparations(agents);
     const config = agents.find(agent => agent.id === agentId);
     if (!config) return undefined;
     if (!config.enabled) return { agentId, status: 'disabled' };
