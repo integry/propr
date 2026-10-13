@@ -1,8 +1,47 @@
-// The old document deliberately fails closed while activation schedules its
-// replacement. Chromium emits two policy messages and one fetch message per
-// bootstrap request. Admit only these exact messages after the native scenario
-// proves convergence; unrelated errors and excess messages remain failures.
-export const correlateExpectedCspReloadConsoleRecords = ({ records, origin, evidence }) => {
+// Parse only Chromium's exact connect-src diagnostics. URLs stay in memory;
+// exported diagnostics reduce them to fixed request labels and booleans.
+const cspDenial = text => {
+  const policy = text.match(/^Connecting to '([^']+)' violates the following Content Security Policy directive: "connect-src 'self' https: wss:"\. The action has been blocked\.$/);
+  const fetch = text.match(/^Fetch API cannot load (\S+)\. Refused to connect because it violates the document's Content Security Policy\.$/);
+  return policy ? { url: policy[1], kind: 'csp-connect-policy' }
+    : fetch ? { url: fetch[1], kind: 'csp-fetch-denied' } : undefined;
+};
+
+const fixtureRequest = (url, origin) => {
+  if (!origin || !url?.startsWith(`${origin}/`)) return 'other';
+  const path = url.slice(origin.length);
+  if (/^\/api\/auth\/user\?proprDesktopScopeGeneration=[1-9]\d*$/.test(path)) return 'current-user';
+  return path === '/api/auth/demo-mode' ? 'demo-mode' : 'other';
+};
+
+export const sanitizedCspReloadError = (record, origin) => {
+  const text = record.text ?? '';
+  // A different CSP directive is useful failure evidence, never an exemption.
+  const diagnosticPolicy = text.match(/^Connecting to '([^']+)' violates the following Content Security Policy directive: /);
+  const denial = cspDenial(text) ?? (diagnosticPolicy
+    ? { url: diagnosticPolicy[1], kind: 'csp-other-policy' } : undefined);
+  return {
+    errorClass: denial?.kind ?? (/Content Security Policy/.test(record.text ?? '') ? 'csp-other'
+      : /^(?:Uncaught )?TypeError\b/.test(record.text ?? '') ? 'type-error'
+        : /^(?:Uncaught )?ReferenceError\b/.test(record.text ?? '') ? 'reference-error'
+          : (record.text ?? '').startsWith('Failed to load resource:') ? 'network-resource' : 'other'),
+    request: fixtureRequest(denial?.url, origin),
+    ownedFixtureOrigin: Boolean(origin && denial?.url.startsWith(`${origin}/`)),
+  };
+};
+
+export const sanitizedCspReloadRequestFailure = (record, origin) => ({
+  request: fixtureRequest(record.url, origin),
+  ownedFixtureOrigin: Boolean(origin && record.url?.startsWith(`${origin}/`)),
+  failureClass: record.errorText === 'net::ERR_BLOCKED_BY_CSP' ? 'csp-blocked'
+    : record.errorText === 'net::ERR_ABORTED' ? 'aborted'
+      : record.errorText === 'net::ERR_FAILED' ? 'network-failed' : 'other',
+});
+
+// A converged activation can deny bootstrap requests in its old document.
+// Require the owned scenario's actual GET/fetch request to fail with CSP in the
+// same phase, at the exact URL. Removal or unrelated violations remain failures.
+export const correlateExpectedCspReloadConsoleRecords = ({ records, origin, evidence, deniedRequests = [] }) => {
   if (!origin || evidence?.firstActivationReloads !== 1 || !evidence.firstActivationPolicyPresent
     || !evidence.restartPolicyPresent || !evidence.restartConnected || evidence.restartReloads > 1
     || evidence.savedSelectionReloads !== 0 || !evidence.savedSelectionPolicyPresent
@@ -12,20 +51,24 @@ export const correlateExpectedCspReloadConsoleRecords = ({ records, origin, evid
   let generation;
   for (const record of records) {
     if (record.type !== 'error' || record.journey !== 'csp-reload-pairing') continue;
-    const policy = record.text.match(/^Connecting to '([^']+)' violates the following Content Security Policy directive: "connect-src 'self' https: wss:"\. The action has been blocked\.$/);
-    const fetch = record.text.match(/^Fetch API cannot load (\S+)\. Refused to connect because it violates the document's Content Security Policy\.$/);
-    const url = policy?.[1] ?? fetch?.[1];
-    if (!url?.startsWith(`${origin}/`)) continue;
-    const path = url.slice(origin.length);
-    const user = path.match(/^\/api\/auth\/user\?proprDesktopScopeGeneration=([1-9]\d*)$/);
-    if (!user && path !== '/api/auth/demo-mode') continue;
-    if (user) {
-      if (generation && generation !== user[1]) return [];
-      generation = user[1];
+    const denial = cspDenial(record.text);
+    const request = fixtureRequest(denial?.url, origin);
+    if (request === 'other') continue;
+    const matchingRequests = deniedRequests.filter(item => item.scenario === 'csp-reload'
+      && item.journey === record.journey && item.failureJourney === record.journey
+      && item.url === denial.url && item.method === 'GET' && item.resourceType === 'fetch'
+      && item.mainFrame === true && Number.isSafeInteger(record.pageId) && record.pageId > 0
+      && item.pageId === record.pageId
+      && item.errorText === 'net::ERR_BLOCKED_BY_CSP');
+    if (matchingRequests.length !== 1) return [];
+    if (request === 'current-user') {
+      const value = new URL(denial.url).searchParams.get('proprDesktopScopeGeneration');
+      if (generation && generation !== value) return [];
+      generation = value;
     }
-    const key = `${user ? 'user' : 'demo'}:${policy ? 'policy' : 'fetch'}`;
+    const key = `${request}:${denial.kind}`;
     const count = (counts.get(key) ?? 0) + 1;
-    if (count > (policy ? 2 : 1)) return [];
+    if (count > (denial.kind === 'csp-connect-policy' ? 2 : 1)) return [];
     counts.set(key, count);
     accepted.push(record);
   }
@@ -36,6 +79,7 @@ export const correlateExpectedCspReloadConsoleRecords = ({ records, origin, evid
 export const exercisePackagedCspReload = async ({ launch, pair, origin, observe, evidence,
   diagnostic = record => console.info('Packaged CSP reload diagnostics:', JSON.stringify(record)),
 }) => {
+  observe('startup');
   let application = await launch();
   const name = 'CSP reload account';
   const policy = page => page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content');
@@ -109,6 +153,7 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
   try {
     const initial = await countReloads(application.page);
     if ((await policy(application.page)).includes(origin)) throw new Error('CSP reload fixture started with a pinned origin');
+    observe('pairing');
     const activation = await stableConnection(application.page, initial, 'first-activation', 0, 1, async () => {
       await pair(application.page, origin, name);
       await application.page.waitForFunction(endpoint => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content')?.includes(endpoint), origin, { timeout: 15_000 });
@@ -123,6 +168,7 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
     const restart = await stableConnection(application.page, restarted, 'restart', 0, 1);
     // Deliberate native deselection and a new document put the saved account on
     // the chooser. Clicking it runs the production deselect/save/probe/activate sequence.
+    observe('deselection');
     await application.page.evaluate(() => window.proprDesktop.profiles.setActive(null));
     await application.page.reload();
     await application.page.getByRole('heading', { name: 'Choose an account', exact: true }).waitFor();

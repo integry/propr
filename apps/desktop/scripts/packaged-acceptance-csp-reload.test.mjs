@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { exercisePackagedCspReload, correlateExpectedCspReloadConsoleRecords } from './packaged-acceptance-csp-reload.mjs';
+import { exercisePackagedCspReload, correlateExpectedCspReloadConsoleRecords, sanitizedCspReloadError, sanitizedCspReloadRequestFailure } from './packaged-acceptance-csp-reload.mjs';
 
 const origin = 'http://127.0.0.2:41731';
 const fixture = ({ activationReloads = 1, selectionReloads = 0, restartReloads = 0,
@@ -54,7 +54,7 @@ const fixture = ({ activationReloads = 1, selectionReloads = 0, restartReloads =
         if (name === 'Choose an account') assert.equal(selected, false);
       }, isVisible: async () => selected }),
       waitForTimeout: async () => {
-        const phase = phases.at(-1) ?? 'first-activation';
+        const phase = phases.at(-1) === 'pairing' ? 'first-activation' : phases.at(-1);
         if (!delayed && delayedReloadPhase === phase) { delayed = true; navigate(); }
         if (disconnectPhase === phase) selected = false;
       },
@@ -88,7 +88,7 @@ test('native scenario restarts the same profile, selects through the UI, and rep
   await exercisePackagedCspReload(f);
   assert.deepEqual(f.launches, [undefined, 'owned-profile']);
   assert.deepEqual(f.closes, [{ preserveProfile: true }, undefined]);
-  assert.deepEqual(f.phases, ['restart', 'saved-selection', 'removal']);
+  assert.deepEqual(f.phases, ['startup', 'pairing', 'restart', 'deselection', 'saved-selection', 'removal']);
   assert.equal(f.results[0].removalNarrowed, true);
   assert.equal(f.results[0].restartReloads, 0);
   assert.equal(f.results[0].savedSelectionReloads, 0);
@@ -178,11 +178,15 @@ for (const [name, options, error, expected] of [
 
 const transitionErrors = () => ['/api/auth/user?proprDesktopScopeGeneration=1', '/api/auth/demo-mode'].flatMap(path => {
   const url = `${origin}${path}`;
-  const policy = { type: 'error', journey: 'csp-reload-pairing',
+  const policy = { type: 'error', pageId: 1, journey: 'csp-reload-pairing',
     text: `Connecting to '${url}' violates the following Content Security Policy directive: "connect-src 'self' https: wss:". The action has been blocked.` };
   return [policy, { ...policy }, { ...policy,
     text: `Fetch API cannot load ${url}. Refused to connect because it violates the document's Content Security Policy.` }];
 });
+const deniedRequests = () => ['/api/auth/user?proprDesktopScopeGeneration=1', '/api/auth/demo-mode'].map(path => ({
+  scenario: 'csp-reload', pageId: 1, mainFrame: true, journey: 'csp-reload-pairing', failureJourney: 'csp-reload-pairing',
+  url: `${origin}${path}`, method: 'GET', resourceType: 'fetch', errorText: 'net::ERR_BLOCKED_BY_CSP',
+}));
 const convergedEvidence = {
   firstActivationReloads: 1, firstActivationPolicyPresent: true,
   restartReloads: 0, restartPolicyPresent: true, restartConnected: true,
@@ -191,7 +195,7 @@ const convergedEvidence = {
 test('only bounded bootstrap CSP denials in a converged native activation are expected', () => {
   const records = transitionErrors();
   const correlate = (records, evidence = convergedEvidence) =>
-    correlateExpectedCspReloadConsoleRecords({ records, origin, evidence });
+    correlateExpectedCspReloadConsoleRecords({ records, origin, evidence, deniedRequests: deniedRequests() });
   assert.deepEqual(correlate(records), records);
   assert.deepEqual(correlate([]), []);
   assert.deepEqual(correlate(records.slice(0, 3)), records.slice(0, 3));
@@ -200,12 +204,14 @@ test('only bounded bootstrap CSP denials in a converged native activation are ex
     { ...convergedEvidence, restartPolicyPresent: false },
     { ...convergedEvidence, savedSelectionReloads: 1 },
     { ...convergedEvidence, removalNarrowed: false }]) {
-    assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records, origin, evidence }), []);
+    assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records, origin, evidence, deniedRequests: deniedRequests() }), []);
   }
   assert.deepEqual(correlate([...records, records[0]]), []);
   assert.deepEqual(correlate([...records, records[2]]), []);
   assert.deepEqual(correlate([...records, { ...records[0], text: records[0].text.replace('Generation=1', 'Generation=2') }]), []);
   for (const transform of [
+    record => ({ ...record, pageId: 2 }),
+    record => ({ ...record, pageId: undefined }),
     record => ({ ...record, journey: 'csp-reload-restart' }),
     record => ({ ...record, journey: 'csp-reload-saved-selection' }),
     record => ({ ...record, journey: 'dashboard-profile-manager' }),
@@ -225,7 +231,7 @@ test('runner totals expected transition denials while retaining unrelated consol
   const summarize = (records, pageErrors = [], evidence = convergedEvidence) => runInNewContext(
     `${functions}; rendererErrorAcceptanceSummary()`, {
       consoleRecords: records, pageErrorRecords: pageErrors,
-      cspReloadEvidence: evidence, readyOrigin: origin,
+      cspReloadEvidence: evidence, readyOrigin: origin, cspDeniedRequests: deniedRequests(),
       correlateExpectedCspReloadConsoleRecords,
       correlateExpectedRevokedAuthorizationConsoleRecord: () => undefined,
       fixtureCurrentUserRecords: [], rendererCurrentUserRecords: [],
@@ -243,4 +249,137 @@ test('runner totals expected transition denials while retaining unrelated consol
   assert.equal(failure.errorCategoryCounts.pageError, 1);
   assert.equal(summarize([...records, records[0]]).unexpectedErrors, 7);
   assert.equal(summarize(records, [], {}).unexpectedErrors, 6);
+});
+
+test('CSP exemptions require an observed denial from the exact owned request and phase', () => {
+  const records = transitionErrors();
+  const correlate = requests => correlateExpectedCspReloadConsoleRecords({
+    records, origin, evidence: convergedEvidence, deniedRequests: requests,
+  });
+  assert.deepEqual(correlate([]), []);
+  assert.deepEqual(correlate([...deniedRequests(), deniedRequests()[0]]), []);
+  for (const change of [
+    { scenario: 'other' }, { pageId: 2 }, { mainFrame: false }, { journey: 'csp-reload-removal' },
+    { failureJourney: 'csp-reload-restart' }, { method: 'POST' },
+    { resourceType: 'xhr' }, { errorText: 'net::ERR_FAILED' },
+    { url: `${origin}/api/auth/user?proprDesktopScopeGeneration=2` },
+  ]) assert.deepEqual(correlate(deniedRequests().map(record => ({ ...record, ...change }))), []);
+  const removal = records.map(record => ({ ...record, journey: 'csp-reload-removal' }));
+  assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records: removal, origin,
+    evidence: convergedEvidence, deniedRequests: deniedRequests().map(record => ({ ...record,
+      journey: 'csp-reload-removal', failureJourney: 'csp-reload-removal' })) }), []);
+});
+
+const runnerSource = readFileSync(new URL('./run-packaged-acceptance.mjs', import.meta.url), 'utf8');
+const runnerDiagnosticFunctions = runnerSource.slice(runnerSource.indexOf('const boundedAcceptanceDiagnosticCount ='),
+  runnerSource.indexOf('const rendererLifecycleDiagnosticSummary ='));
+const diagnosticContext = (records = [], pageErrors = []) => ({
+  consoleRecords: records, pageErrorRecords: pageErrors, cspReloadEvidence: convergedEvidence,
+  readyOrigin: origin, cspDeniedRequests: deniedRequests(), ACCEPTANCE_JOURNEYS: [],
+  correlateExpectedCspReloadConsoleRecords, sanitizedCspReloadError, sanitizedCspReloadRequestFailure,
+  correlateExpectedRevokedAuthorizationConsoleRecord: () => undefined,
+  fixtureCurrentUserRecords: [], rendererCurrentUserRecords: [],
+  FIXED_ACCEPTANCE_ORIGINS: { revoked: 'http://127.0.0.3:41731' },
+});
+
+test('six removal errors retain classes, exact phases and safe request labels without being expected', () => {
+  const records = transitionErrors().map(record => ({ ...record, journey: 'csp-reload-removal',
+    arguments: ['secret-token'], location: { url: 'https://private.example/secret' } }));
+  const result = runInNewContext(`${runnerDiagnosticFunctions}; sanitizedRendererErrorDiagnostics()`,
+    diagnosticContext(records));
+  assert.equal(result.unexpectedErrors, 6);
+  assert.equal(result.errorRecords.length, 6);
+  assert.deepEqual(Array.from(result.errorRecords, record => record.errorClass), [
+    'csp-connect-policy', 'csp-connect-policy', 'csp-fetch-denied',
+    'csp-connect-policy', 'csp-connect-policy', 'csp-fetch-denied',
+  ]);
+  assert.deepEqual(Array.from(result.errorRecords, record => record.request), [
+    'current-user', 'current-user', 'current-user', 'demo-mode', 'demo-mode', 'demo-mode',
+  ]);
+  assert.ok(result.errorRecords.every(record => record.phase === 'csp-reload-removal'));
+  for (const value of [origin, 'secret-token', 'private.example', 'Generation=1', 'connect-src']) {
+    assert.equal(JSON.stringify(result).includes(value), false);
+  }
+});
+
+test('diagnostics sanitize unknown errors, phases and different CSP directives', () => {
+  const secret = 'sensitive-token-and-arguments';
+  const records = [
+    { type: 'error', journey: secret, text: `TypeError: ${secret}`, arguments: [secret] },
+    { ...transitionErrors()[0], text: transitionErrors()[0].text.replace("https: wss:", secret) },
+  ];
+  const result = runInNewContext(`${runnerDiagnosticFunctions}; sanitizedRendererErrorDiagnostics()`,
+    diagnosticContext(records, [{ journey: secret, name: secret, message: secret, stack: secret }]));
+  assert.equal(result.unexpectedErrors, 3);
+  assert.equal(result.errorRecords[0].phase, 'other');
+  assert.equal(result.errorRecords[0].errorClass, 'type-error');
+  assert.equal(result.errorRecords[1].errorClass, 'csp-other-policy');
+  assert.equal(result.errorRecords[1].request, 'current-user');
+  assert.equal(result.errorRecords[2].errorClass, 'other');
+  assert.equal(JSON.stringify(result).includes(secret), false);
+  assert.equal(JSON.stringify(result).includes(origin), false);
+});
+
+test('post-CSP drain includes captures appended while earlier promises settle', async () => {
+  const functions = runnerSource.slice(runnerSource.indexOf('const settlePendingRendererConsoleCaptures ='),
+    runnerSource.indexOf('const boundedAcceptanceDiagnosticCount ='));
+  let lateCapture = false;
+  const pendingConsoleRecords = [];
+  pendingConsoleRecords.push(Promise.resolve().then(() => {
+    pendingConsoleRecords.push(Promise.resolve().then(() => { lateCapture = true; }));
+  }));
+  await runInNewContext(`${functions}; settlePendingRendererConsoleCaptures()`, { pendingConsoleRecords });
+  assert.equal(lateCapture, true);
+});
+
+for (const scenarioFailure of [false, true]) test(`failure diagnostics precede ${scenarioFailure ? 'scenario' : 'gate'} throw`, async () => {
+  const files = new Map();
+  const emitted = [];
+  const context = diagnosticContext();
+  const scenario = runnerSource.slice(runnerSource.indexOf('  if (!traceWritten)'), runnerSource.indexOf('  const serious ='));
+  const drain = runnerSource.slice(runnerSource.indexOf('const settlePendingRendererConsoleCaptures ='),
+    runnerSource.indexOf('const boundedAcceptanceDiagnosticCount ='));
+  Object.assign(context, {
+    traceWritten: true, pendingConsoleRecords: [], processRecords: [], outputDirectory: 'output',
+    FIXED_TIME: 'fixed', join: (...parts) => parts.join('/'), Buffer, digest: () => '0'.repeat(64),
+    console: { info: (...values) => emitted.push(values) },
+    writeFile: async (path, content) => files.set(path, JSON.parse(content)),
+    rendererLifecycleInvalidStates: new Map(), boundaryJourneys: new Set(), surfaces: [],
+    launchApplication: () => {}, pair: () => {},
+    exercisePackagedCspReload: async () => {
+      context.pendingConsoleRecords.push(Promise.resolve().then(() => {
+        context.consoleRecords.push(...transitionErrors().map(record => ({ ...record, journey: 'csp-reload-removal' })));
+      }));
+      if (scenarioFailure) throw new Error('scenario failed');
+    },
+  });
+  await assert.rejects(runInNewContext(`(async () => { ${drain}\n${runnerDiagnosticFunctions}\n${scenario} })()`, context),
+    scenarioFailure ? /scenario failed/ : /unexpected renderer errors/);
+  assert.equal(files.get('output/sanitized-log.json').records.length, 6);
+  assert.equal(files.get('output/sanitized-renderer-errors.json').unexpectedErrors, 6);
+  assert.equal(emitted.length, 1);
+  assert.equal(JSON.stringify([...files]).includes(origin), false);
+});
+
+test('destroyed console argument handles cannot erase errors or change their phase', async () => {
+  let listener;
+  const consoleRecords = [], pendingConsoleRecords = [];
+  const source = runnerSource.slice(runnerSource.indexOf("    page.on('console', message => {"),
+    runnerSource.indexOf("    page.on('pageerror',"));
+  const context = {
+    page: { on: (event, callback) => { assert.equal(event, 'console'); listener = callback; } },
+    activeJourney: 'csp-reload-removal', scenario: 'csp-reload', pageId: 1,
+    consoleRecords, pendingConsoleRecords,
+  };
+  runInNewContext(source, context);
+  listener({
+    type: () => 'error', text: () => transitionErrors()[0].text,
+    location: () => ({ url: origin }), args: () => [{ jsonValue: async () => { throw new Error('destroyed'); } }],
+  });
+  assert.equal(consoleRecords.length, 1);
+  context.activeJourney = 'fixture-cleanup';
+  await Promise.all(pendingConsoleRecords);
+  assert.equal(consoleRecords[0].type, 'error');
+  assert.equal(consoleRecords[0].journey, 'csp-reload-removal');
+  assert.equal(consoleRecords[0].arguments[0].unserializable, true);
 });

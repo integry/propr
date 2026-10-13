@@ -1,4 +1,4 @@
-import { exercisePackagedCspReload, correlateExpectedCspReloadConsoleRecords } from './packaged-acceptance-csp-reload.mjs';
+import { exercisePackagedCspReload, correlateExpectedCspReloadConsoleRecords, sanitizedCspReloadError, sanitizedCspReloadRequestFailure } from './packaged-acceptance-csp-reload.mjs';
 import { SETUP_ACTIONS, prepareProductionSetup, reachSetupAction, activateSetupAction } from './packaged-acceptance-setup.mjs';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -70,6 +70,8 @@ const FIXED_MILLIS = PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS;
 const consoleRecords = [];
 let cspReloadEvidence;
 const pendingConsoleRecords = [];
+const cspDeniedRequests = [];
+let nextRendererPageId = 0;
 const pageErrorRecords = [];
 const processRecords = [];
 const requestRecords = [];
@@ -855,23 +857,38 @@ const launchApplication = async (scenario, initialDeepLink, existingUserData) =>
       expectedUrlPrefix: DESKTOP_RENDERER_ORIGIN,
       timeoutMs: 15_000,
     });
+    const pageId = ++nextRendererPageId;
+    const requestPhases = new WeakMap();
+    page.on('request', request => requestPhases.set(request, activeJourney));
+    page.on('requestfailed', request => {
+      if (scenario !== 'csp-reload') return;
+      let mainFrame = false;
+      try { mainFrame = request.frame() === page.mainFrame(); } catch { /* Worker requests cannot correlate. */ }
+      cspDeniedRequests.push({ scenario, pageId, mainFrame, journey: requestPhases.get(request), failureJourney: activeJourney,
+        url: request.url(), method: request.method(), resourceType: request.resourceType(),
+        errorText: request.failure()?.errorText });
+    });
     page.on('console', message => {
       const journey = activeJourney;
       // Lifecycle evidence is a single serialized renderer snapshot. Capture it
       // synchronously so its strict transition order does not depend on CDP
       // JSHandle resolution or page lifetime.
       if (scenario !== 'csp-reload') captureRendererLifecycleEvidence(message.text(), journey);
+      // Preserve the error and its phase before async JSHandle reads can outlive
+      // the document. Failed argument reads must not erase an error from the gate.
+      const record = {
+        journey,
+        pageId,
+        type: message.type(),
+        text: message.text(),
+        arguments: [],
+        location: message.location(),
+      };
+      consoleRecords.push(record);
       const pending = Promise.all(message.args().map(async argument => {
-        try { return await argument.jsonValue(); } catch { return { unserializable: argument.toString() }; }
+        try { return await argument.jsonValue(); } catch { return { unserializable: true }; }
       })).then(argumentsValue => {
-        const record = {
-          journey,
-          type: message.type(),
-          text: message.text(),
-          arguments: argumentsValue,
-          location: message.location(),
-        };
-        consoleRecords.push(record);
+        record.arguments = argumentsValue;
         if (scenario !== 'csp-reload') captureRendererCurrentUserEvidence(record.arguments, journey);
       });
       pendingConsoleRecords.push(pending);
@@ -1212,7 +1229,7 @@ const rendererConsoleErrorCategoryCounts = (records, rendererPageErrors = []) =>
     revokedOrigin: FIXED_ACCEPTANCE_ORIGINS.revoked,
   });
   const expectedCspRecords = new Set(correlateExpectedCspReloadConsoleRecords({
-    records, origin: readyOrigin, evidence: cspReloadEvidence,
+    records, origin: readyOrigin, evidence: cspReloadEvidence, deniedRequests: cspDeniedRequests,
   }));
   const counts = {
     expectedCspPolicyTransition: 0,
@@ -1257,6 +1274,45 @@ const rendererErrorAcceptanceSummary = () => {
     expectedErrors,
     unexpectedErrors: errors - expectedErrors,
     errorCategoryCounts,
+  };
+};
+
+// Fixed labels only. Never serialize messages, locations, stacks or arguments.
+const sanitizedRendererErrorDiagnostics = () => {
+  const allowedJourneys = new Set([...ACCEPTANCE_JOURNEYS, 'startup',
+    'csp-reload-startup', 'csp-reload-pairing', 'csp-reload-restart', 'csp-reload-deselection',
+    'csp-reload-saved-selection', 'csp-reload-removal']);
+  const expectedCsp = new Set(correlateExpectedCspReloadConsoleRecords({
+    records: consoleRecords, origin: readyOrigin, evidence: cspReloadEvidence,
+    deniedRequests: cspDeniedRequests,
+  }));
+  const expectedRevoked = correlateExpectedRevokedAuthorizationConsoleRecord({
+    consoleRecords, fixtureRecords: fixtureCurrentUserRecords,
+    rendererRecords: rendererCurrentUserRecords, revokedOrigin: FIXED_ACCEPTANCE_ORIGINS.revoked,
+  });
+  const errors = [
+    ...consoleRecords.filter(record => record.type === 'error').map(record => ({
+      phase: allowedJourneys.has(record.journey) ? record.journey : 'other',
+      source: 'renderer-console',
+      category: rendererConsoleErrorCategory(record, expectedRevoked, expectedCsp),
+      ...sanitizedCspReloadError(record, readyOrigin),
+    })),
+    ...pageErrorRecords.map(record => ({
+      phase: allowedJourneys.has(record.journey) ? record.journey : 'other',
+      source: 'renderer-page-error', category: 'pageError',
+      errorClass: ['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'Error'].includes(record.name)
+        ? record.name : 'other',
+      request: 'other', ownedFixtureOrigin: false,
+    })),
+  ];
+  return { schemaVersion: 1, ...rendererErrorAcceptanceSummary(), errorRecords: errors.slice(0, 64),
+    omittedErrors: Math.max(0, errors.length - 64),
+    requestFailures: cspDeniedRequests.slice(0, 32).map(record => ({
+      issuedPhase: allowedJourneys.has(record.journey) ? record.journey : 'other',
+      failurePhase: allowedJourneys.has(record.failureJourney) ? record.failureJourney : 'other',
+      ...sanitizedCspReloadRequestFailure(record, readyOrigin),
+    })),
+    omittedRequestFailures: Math.max(0, cspDeniedRequests.length - 32),
   };
 };
 
@@ -1706,19 +1762,44 @@ try {
   });
 
   if (!traceWritten) throw new Error('Playwright trace was not produced');
-  await Promise.all(pendingConsoleRecords);
+  await settlePendingRendererConsoleCaptures();
   activeJourney = 'csp-reload-pairing';
-  await exercisePackagedCspReload({
-    launch: userData => launchApplication('csp-reload', null, userData),
-    pair, origin: readyOrigin,
-    observe: phase => { activeJourney = `csp-reload-${phase}`; },
-    evidence: result => {
-      cspReloadEvidence = result;
-      surfaces.push({ kind: 'native-csp-reload', ...result });
-    },
-  });
-
-  await Promise.all(pendingConsoleRecords);
+  try {
+    await exercisePackagedCspReload({
+      launch: userData => launchApplication('csp-reload', null, userData),
+      pair, origin: readyOrigin,
+      observe: phase => { activeJourney = `csp-reload-${phase}`; },
+      evidence: result => {
+        cspReloadEvidence = result;
+        surfaces.push({ kind: 'native-csp-reload', ...result });
+      },
+    });
+  } finally {
+    // Captures can enqueue more captures while arguments resolve. Drain to
+    // quiescence after closing both CSP applications, even on assertion failure.
+    await settlePendingRendererConsoleCaptures();
+    const sanitizedLogRecords = [
+      ...consoleRecords.map(record => ({
+        journey: record.journey, source: 'renderer-console', level: record.type,
+        bytes: Buffer.byteLength(JSON.stringify(record)), sha256: digest(JSON.stringify(record)),
+      })),
+      ...pageErrorRecords.map(record => ({
+        journey: record.journey, source: 'renderer-page-error', level: 'error',
+        bytes: Buffer.byteLength(JSON.stringify(record)), sha256: digest(JSON.stringify(record)),
+      })),
+      ...processRecords,
+    ];
+    await writeFile(join(outputDirectory, 'sanitized-log.json'), `${JSON.stringify({
+      schemaVersion: 1, generatedAt: FIXED_TIME, records: sanitizedLogRecords,
+    }, null, 2)}\n`, { mode: 0o600 });
+    const diagnostics = sanitizedRendererErrorDiagnostics();
+    if (diagnostics.unexpectedErrors > 0) {
+      await writeFile(join(outputDirectory, 'sanitized-renderer-errors.json'),
+        `${JSON.stringify(diagnostics, null, 2)}\n`, { mode: 0o600 });
+    }
+    // Fixed-label evidence reaches native CI before any scenario/gate throw.
+    console.info('Packaged renderer error diagnostics:', JSON.stringify(diagnostics));
+  }
   if (rendererLifecycleInvalidStates.size > 0) {
     throw new Error(`Acceptance renderer lifecycle evidence was invalid: ${JSON.stringify(rendererLifecycleInvalidSummary())}`);
   }
@@ -1763,23 +1844,9 @@ try {
   };
   await writeFile(join(outputDirectory, 'sanitized-summary.json'), `${JSON.stringify(sanitizedSummary, null, 2)}\n`, { mode: 0o600 });
 
-  const sanitizedLogRecords = [
-    ...consoleRecords.map(record => ({
-      journey: record.journey, source: 'renderer-console', level: record.type,
-      bytes: Buffer.byteLength(JSON.stringify(record)), sha256: digest(JSON.stringify(record)),
-    })),
-    ...pageErrorRecords.map(record => ({
-      journey: record.journey, source: 'renderer-page-error', level: 'error',
-      bytes: Buffer.byteLength(JSON.stringify(record)), sha256: digest(JSON.stringify(record)),
-    })),
-    ...processRecords,
-  ];
-  await writeFile(join(outputDirectory, 'sanitized-log.json'), `${JSON.stringify({
-    schemaVersion: 1, generatedAt: FIXED_TIME, records: sanitizedLogRecords,
-  }, null, 2)}\n`, { mode: 0o600 });
-
   const scanRoot = await mkdtemp(join(tmpdir(), ACCEPTANCE_SURFACES_PREFIX));
   try {
+    surfaces.push({ kind: 'csp-request-failures', records: cspDeniedRequests });
     surfaces.push({ kind: 'renderer-console', records: consoleRecords });
     surfaces.push({ kind: 'renderer-page-errors', records: pageErrorRecords });
     surfaces.push({ kind: 'service-urls', records: requestRecords });

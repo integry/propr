@@ -659,7 +659,7 @@ const validateSummary = summary => {
   }
 };
 
-const CSP_RELOAD_LOG_JOURNEYS = ['csp-reload-pairing', 'csp-reload-restart', 'csp-reload-saved-selection', 'csp-reload-removal'];
+const CSP_RELOAD_LOG_JOURNEYS = ['csp-reload-startup', 'csp-reload-pairing', 'csp-reload-restart', 'csp-reload-deselection', 'csp-reload-saved-selection', 'csp-reload-removal'];
 const CSP_RELOAD_PROCESS_JOURNEYS = ['csp-reload-pairing', 'csp-reload-removal'];
 
 const validateSanitizedLog = log => {
