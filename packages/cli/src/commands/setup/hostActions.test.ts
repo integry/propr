@@ -166,7 +166,7 @@ test('repeat starts preserve an already-running managed IPv4 UI and its persiste
     assert.equal(managedUi.listening, true);
   }
   assert.equal(starts, 4);
-  await t.test('the managed IPv4 binding does not hide an unrelated IPv6 owner', async sub => {
+  await t.test('direct start persists the selected port before replacing the managed IPv4 UI with an IPv6 conflict', async sub => {
     const unrelated = createServer();
     sub.after(() => new Promise<void>(resolve => { if (unrelated.listening) unrelated.close(() => resolve()); else resolve(); }));
     try {
@@ -184,6 +184,7 @@ test('repeat starts preserve an already-running managed IPv4 UI and its persiste
     // The daemon fixture actually releases/rebinds IPv4 on rm/run, so a
     // persisted port change cannot pass while the UI still serves the old port.
     const core = await real.loadOrchestrator();
+    const { readEnvVars } = await import('@propr/local-setup');
     const commands: string[][] = [];
     const containers = new Map<string, string[]>();
     const uiName = `${resolveTestConfig!().stack}-ui`;
@@ -204,13 +205,22 @@ test('repeat starts preserve an already-running managed IPv4 UI and its persiste
         } else if (args[0] === 'images') stdout = 'local-image';
         else if (args[0] === 'rm') {
           const name = args.at(-1)!;
-          if (name === uiName) await new Promise<void>(resolve => managedUi.close(() => resolve()));
+          if (name === uiName) {
+            const persisted = readEnvVars(root);
+            assert.notEqual(persisted.UI_PORT, `127.0.0.1:${port}`);
+            assert.equal(persisted.UI_PORT, started!.uiPort);
+            assert.equal(persisted.FRONTEND_URL, started!.frontendUrl);
+            assert.equal((managedUi.address() as { port: number }).port, port);
+            await new Promise<void>(resolve => managedUi.close(() => resolve()));
+          }
           containers.delete(name);
         } else if (args[0] === 'run' && args.includes('-d')) {
           const name = args[args.indexOf('--name') + 1];
           assert.equal(containers.has(name), false, 'existing container must be removed first');
           if (name === uiName) {
             const binding = args[args.indexOf('-p') + 1];
+            assert.equal(managedUi.listening, false, 'old UI binding must be released before running the new spec');
+            assert.equal(binding, `${readEnvVars(root).UI_PORT}:5173`);
             await new Promise<void>((resolve, reject) => {
               managedUi.once('error', reject);
               managedUi.listen(Number(binding.split(':')[1]), '127.0.0.1', resolve);
@@ -249,8 +259,13 @@ request.end(JSON.stringify(process.argv.slice(2)));
       if (previousSkip === undefined) delete process.env.PROPR_SKIP_REMOTE_IMAGE_CHECK;
       else process.env.PROPR_SKIP_REMOTE_IMAGE_CHECK = previousSkip;
     });
-    orch = { ...orch, startStackAsync: async (config, options) => {
+    orch = { ...orch, replaceStackContainersAsync: async () => {
+      assert.fail('direct start must replace the UI through startStackAsync');
+    }, startStackAsync: async (config, options) => {
       started = config;
+      assert.equal(readEnvVars(root).UI_PORT, config.uiPort);
+      assert.equal(readEnvVars(root).FRONTEND_URL, config.frontendUrl);
+      assert.equal((managedUi.address() as { port: number }).port, port);
       return core.startStackAsync(config, options);
     } };
     await actions.startStack({ rootDir: root });
@@ -258,6 +273,13 @@ request.end(JSON.stringify(process.argv.slice(2)));
     assert.ok(selectedPort > port);
     assert.equal(started!.frontendUrl, `http://localhost:${selectedPort}`);
     assert.equal((managedUi.address() as { port: number }).port, selectedPort);
+    const oldPortProbe = createServer();
+    sub.after(() => new Promise<void>(resolve => { if (oldPortProbe.listening) oldPortProbe.close(() => resolve()); else resolve(); }));
+    await new Promise<void>((resolve, reject) => {
+      oldPortProbe.once('error', reject);
+      oldPortProbe.listen(port, '127.0.0.1', resolve);
+    });
+    await new Promise<void>(resolve => oldPortProbe.close(() => resolve()));
     const removal = commands.findIndex(args => args[0] === 'rm' && args.at(-1) === uiName);
     const uiRun = commands.findIndex(args => args[0] === 'run' && args.includes(uiName));
     assert.ok(removal >= 0 && uiRun > removal);
