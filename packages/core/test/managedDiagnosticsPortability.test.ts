@@ -164,7 +164,7 @@ test('policy-limit upgrade migrates explicitly, preserving instance, unacknowled
         assert.deepEqual(upgraded.cursor(identity), { inode: '1:2', offset: 20 });
         const first = upgraded.exportOne()!;
         assert.deepEqual([first.id, first.digest], [pending.id, pending.digest]);
-        assert.equal((first.manifest as { policyVersion: number }).policyVersion, 2);
+        assert.deepEqual(first, pending); // sealed manifests retain their original policy and metadata
         assert.equal((upgraded.status() as { instance: string; policyVersion: number }).policyVersion, 2);
         assert.equal((upgraded.status() as { instance: string }).instance, 'tenant-a');
         // Open segments are sealed: new records never extend a segment bound by v1.
@@ -372,7 +372,7 @@ test('pre-upgrade v1 segments are never extended and export as v1 across restart
         old.append(other, [JSON.stringify({ n: 10 })], 'jsonl', { credentials: [], now });
         old.close();
         const legacy = new Database(path.join(dir, 'spool.sqlite'));
-        legacy.exec('ALTER TABLE segments DROP COLUMN redaction');
+        legacy.exec('ALTER TABLE segments DROP COLUMN redaction; ALTER TABLE segments DROP COLUMN manifest');
         const before = legacy.prepare('SELECT id,sealed,digest,data,first,last FROM segments ORDER BY id').all() as Array<{ id: number; sealed: number; digest: string; data: Buffer }>;
         legacy.close();
         assert.deepEqual(before.map(s => s.sealed), [1, 0, 0]);

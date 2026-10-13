@@ -54,7 +54,7 @@ export interface AppendOptions {
     droppedBytes?: number; continuation?: readonly boolean[]; // per record: a bounded stack/error continuation
 }
 interface Source { retired: number; id: string; identity: string; cursor: string; next: number; dropped: number; gaps: number; last_success: number | null; reason: string | null; protected_bytes: number; diagnostic_bytes: number; inventory_complete: number; protection: string | null; native_inventory: string | null; native_details: string | null }
-interface Segment { id: number; source: string; day: string; first: number; last: number; start: number; end: number; raw: number; digest: string; data: Buffer; sealed: number; ack: number; redaction: number }
+interface Segment { id: number; source: string; day: string; first: number; last: number; start: number; end: number; raw: number; digest: string; data: Buffer; sealed: number; manifest: string | null; ack: number; redaction: number }
 export const digest = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 
 /** A private transactional outbox. Only this database is pruned, never provider state.
@@ -95,7 +95,7 @@ export class ManagedLogSpool {
                     for (const [table, name, type] of [['sources', 'inventory_complete', 'INTEGER NOT NULL DEFAULT 0'], ['sources', 'retired', 'INTEGER NOT NULL DEFAULT 0'],
                         ['sources', 'native_root', 'TEXT'], ['sources', 'native_inventory', 'TEXT'], ['sources', 'native_details', 'TEXT'],
                         // Segments stored before the column existed were redacted by adapter v1.
-                        ['segments', 'redaction', 'INTEGER NOT NULL DEFAULT 1']]) {
+                        ['segments', 'redaction', 'INTEGER NOT NULL DEFAULT 1'], ['segments', 'manifest', 'TEXT']]) {
                         if (!(this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(column => column.name === name)) {
                             this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
                         }
@@ -107,6 +107,11 @@ export class ManagedLogSpool {
                         this.db.exec(`UPDATE sources SET diagnostic_bytes=coalesce(json_extract(native_inventory,'$.diagnosticBytes'),0)`);
                     }
                     this.bind(options.migrations ?? MANAGED_LOG_POLICY_MIGRATIONS);
+                    // Legacy sealed segments have no snapshot. Freeze their available
+                    // metadata once, before any subsequent collection can change it.
+                    for (const row of this.db.prepare('SELECT id FROM segments WHERE sealed=1 AND manifest IS NULL').all() as Array<{ id: number }>) {
+                        this.sealSegment(this.db.prepare('SELECT * FROM segments WHERE id=?').get(row.id) as Segment);
+                    }
                 }); } catch (e) { if (this.db.inTransaction) this.db.exec('ROLLBACK'); throw e; } }, options.openDeadline ?? Date.now() + 10_000);
         } catch (e) { this.db?.close(); this.dir.close(); throw e; }
     }
@@ -140,7 +145,7 @@ export class ManagedLogSpool {
             const from: ManagedLogPolicy = current;
             const step = migrations.find(m => m.from === from.version);
             if (!step || step.to <= step.from || step.to > this.limits.version || !samePolicy(step.previous, from)) return from;
-            this.db.prepare('UPDATE segments SET sealed=1 WHERE sealed=0').run();
+            this.sealSegments('sealed=0');
             step.migrate?.(this.db);
             history.push({ from: step.from, to: step.to, migratedAt: Date.now() });
             current = step.to === this.limits.version ? this.limits : migrations.find(m => m.from === step.to)?.previous;
@@ -262,6 +267,10 @@ export class ManagedLogSpool {
             flush();
             this.db.prepare('UPDATE sources SET next=?,cursor=?,last_success=? WHERE id=?').run(next, cursor ? JSON.stringify(cursor.after) : source.cursor,
                 (this.db.prepare('SELECT gaps FROM sources WHERE id=?').get(source.id) as { gaps: number }).gaps === source.gaps ? now : source.last_success, source.id);
+            // Reserve manifest storage with the payload so a capacity refusal
+            // cannot leave an otherwise committed segment too full to export.
+            const open = this.db.prepare('SELECT * FROM segments WHERE source=? AND sealed=0').all(source.id) as Segment[];
+            for (const segment of open) this.db.prepare('UPDATE segments SET manifest=? WHERE id=?').run(this.segmentManifest(segment), segment.id);
             return true;
         });
     }
@@ -299,7 +308,7 @@ export class ManagedLogSpool {
         const last = records.at(-1)!.seq;
         if (segment) this.db.prepare('UPDATE segments SET last=?,end=?,raw=?,digest=?,data=? WHERE id=?').run(last, now, raw.length, digest(compressed), compressed, segment.id);
         else {
-            this.db.prepare('UPDATE segments SET sealed=1 WHERE source=?').run(source.id);
+            this.sealSegments('sealed=0 AND source=?', source.id);
             this.db.prepare('INSERT INTO segments(source,day,first,last,start,end,raw,digest,data,redaction) VALUES (?,?,?,?,?,?,?,?,?,?)')
                 .run(source.id, day, records[0].seq, last, now, now, raw.length, digest(compressed), compressed, REDACTION_VERSION);
         }
@@ -309,7 +318,7 @@ export class ManagedLogSpool {
         // data is never evicted; capacity drops NEW diagnostics with durable gaps.
         this.db.prepare('DELETE FROM segments WHERE ack=1').run();
         this.db.prepare('DELETE FROM sources WHERE retired=1 AND NOT EXISTS (SELECT 1 FROM segments WHERE segments.source=sources.id)').run();
-        this.db.prepare('UPDATE segments SET sealed=1 WHERE day<>?').run(new Date(now).toISOString().slice(0, 10));
+        this.sealSegments('sealed=0 AND day<>?', new Date(now).toISOString().slice(0, 10));
     }
     status(): object {
         const sources = this.db.prepare('SELECT * FROM sources ORDER BY id').all() as Source[];
@@ -359,19 +368,33 @@ export class ManagedLogSpool {
             throw new Error('managed diagnostics: filesystem capacity; operator action required');
         }
     }
+    /** Called inside the writer transaction: payload and metadata seal together.
+     * Source status remains mutable and is exposed separately by status(). */
+    private sealSegment(s: Segment): string {
+        if (s.sealed && s.manifest !== null) return s.manifest;
+        const manifest = this.segmentManifest(s);
+        this.db.prepare('UPDATE segments SET sealed=1,manifest=? WHERE id=?').run(manifest, s.id);
+        return manifest;
+    }
+    private segmentManifest(s: Segment): string {
+        const source = this.db.prepare('SELECT * FROM sources WHERE id=?').get(s.source) as Source;
+        return JSON.stringify({
+            schemaVersion: 1, policyVersion: this.limits.version, redactionVersion: s.redaction, tenantPrivate: true, instance: this.instance,
+            ...JSON.parse(source.identity), sourceId: source.id, segment: s.id, utcDay: s.day,
+            collectionWindow: { start: s.start, end: s.end }, firstSequence: s.first, lastSequence: s.last,
+            compressedBytes: s.data.length, uncompressedBytes: s.raw, sha256: s.digest, encoding: 'gzip-jsonl',
+            droppedBytes: source.dropped, gaps: source.gaps, historyComplete: false, lastSuccessfulCollection: source.last_success,
+        });
+    }
+    private sealSegments(where: string, ...args: unknown[]): void {
+        const rows = this.db.prepare(`SELECT id FROM segments WHERE ${where}`).all(...args) as Array<{ id: number }>;
+        for (const row of rows) this.sealSegment(this.db.prepare('SELECT * FROM segments WHERE id=?').get(row.id) as Segment);
+    }
     exportOne(): { manifest: object; data: Buffer; id: number; digest: string } | null {
         return this.atomic(() => {
             const s = this.db.prepare('SELECT * FROM segments WHERE ack=0 ORDER BY id LIMIT 1').get() as Segment | undefined;
             if (!s) return null;
-            this.db.prepare('UPDATE segments SET sealed=1 WHERE id=?').run(s.id);
-            const source = this.db.prepare('SELECT * FROM sources WHERE id=?').get(s.source) as Source;
-            return { id: s.id, digest: s.digest, data: s.data, manifest: {
-                schemaVersion: 1, policyVersion: this.limits.version, redactionVersion: s.redaction, tenantPrivate: true, instance: this.instance,
-                ...JSON.parse(source.identity), sourceId: source.id, segment: s.id, utcDay: s.day,
-                collectionWindow: { start: s.start, end: s.end }, firstSequence: s.first, lastSequence: s.last,
-                compressedBytes: s.data.length, uncompressedBytes: s.raw, sha256: s.digest, encoding: 'gzip-jsonl',
-                droppedBytes: source.dropped, gaps: source.gaps, historyComplete: false, lastSuccessfulCollection: source.last_success,
-            } };
+            return { id: s.id, digest: s.digest, data: s.data, manifest: JSON.parse(this.sealSegment(s)) };
         });
     }
     acknowledge(id: number, sha256: string): void {
