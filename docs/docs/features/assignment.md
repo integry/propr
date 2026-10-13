@@ -86,7 +86,7 @@ Every option below is **off by default**.
 
 | Setting | Where | Values |
 |---|---|---|
-| Assignment gate (instance) | Settings → Automation → General configuration → **Follow-ups Only From Assigned Users**, MCP `update_execution_settings` (`followup_requires_assignment`), `propr setting update followup_requires_assignment <true\|false>` | on / off (default off) |
+| Assignment gate (instance) | Settings → Workflow & PR Rules → Repository defaults → **Follow-ups Only From Assigned Users**, MCP `update_execution_settings` (`followup_requires_assignment`), `propr setting update followup_requires_assignment <true\|false>` | on / off (default off) |
 | Automatic pull request assignment (repository) | Repositories → repository → Automation → **Assign the pull request when ProPR finishes**, MCP `update_repository_configuration` (`autoAssignPullRequests`), `propr repo add\|toggle owner/repo --auto-assign <on\|off>` | on / off (default off) |
 | Default assignee (repository) | The **Assignee** field under that option, MCP `update_repository_configuration` (`autoAssignDefaultAssignee`), `propr repo add\|toggle owner/repo --auto-assign-to <login\|none>` | A GitHub login, or empty for the source issue author (default empty) |
 | Review request (repository) | **Also request a review from the assignee** under that option, MCP `update_repository_configuration` (`autoAssignRequestReview`), `propr repo add\|toggle owner/repo --auto-assign-review <on\|off>` | on / off (default off) |

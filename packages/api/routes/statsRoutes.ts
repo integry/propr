@@ -5,7 +5,7 @@ import { timeApiStage } from '../apiPerformanceTiming.js';
 import { validateEnum, validateRepositoryFilter } from './validation.js';
 import { successRate as calculateSuccessRate } from './dashboardStatsQueries.js';
 import { readAnalyticsWindow, whereCreatedWithin, type AnalyticsWindow } from './analyticsWindow.js';
-import { loadModelUsage } from './analyticsModelUsage.js';
+import { executionTokenSums, loadModelUsage } from './analyticsModelUsage.js';
 import {
   loadCacheUsage,
   loadRecordedSpend,
@@ -255,16 +255,11 @@ export function createStatsRoutes(deps: StatsRoutesDeps) {
 
   /** Token, cost and model usage; a period bounds it by when each execution started. */
   async function loadOverviewUsage(analyticsWindow: AnalyticsWindow | null) {
-    // Token & Cost Usage from llm_execution_details and llm_executions
-    const usageStatsQuery = db('llm_execution_details as d')
-      .sum({
-        inputTokens: 'd.token_count_input',
-        outputTokens: 'd.token_count_output'
-      });
-    if (analyticsWindow) {
-      usageStatsQuery.join('llm_executions as e', 'e.execution_id', 'd.execution_id');
-      whereCreatedWithin(usageStatsQuery, 'e.start_time', analyticsWindow);
-    }
+    // Cache-inclusive token totals recorded on each execution
+    const tokens = executionTokenSums(db);
+    const usageStatsQuery = db('llm_executions as e')
+      .select(db.raw('? as ??', [tokens.input, 'inputTokens']), db.raw('? as ??', [tokens.output, 'outputTokens']));
+    whereCreatedWithin(usageStatsQuery, 'e.start_time', analyticsWindow);
     const usageStats = await usageStatsQuery.first() as unknown as UsageAggregation | undefined;
 
     // The same recorded spend the dashboard widget reports

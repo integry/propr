@@ -79,6 +79,7 @@ test('post-login refresh waits for the pending old-credential probe and analyzes
   await new Promise(resolve => setImmediate(resolve));
   credentials = 'logged-in';
   const refresh = check(config.id, true);
+  const concurrentRefresh = check(config.id, true);
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(credentialsUsed, ['expired']);
   finishes[0]({ success: false, response: '', error: 'Login expired' });
@@ -91,6 +92,7 @@ test('post-login refresh waits for the pending old-credential probe and analyzes
   assert.equal(finishes.length, 2);
   finishes[1]({ success: true, response: 'OK' });
   assert.equal((await refresh)?.status, 'ready');
+  assert.equal((await concurrentRefresh)?.status, 'ready');
   assert.equal((await sibling)?.status, 'ready');
 });
 

@@ -60,7 +60,7 @@ describe('AgentConfigModal', () => {
 
     const defaultOpenCodeModel = AGENT_MODELS.opencode[0];
     expect(screen.getByText(defaultOpenCodeModel.name)).toBeInTheDocument();
-    expect(screen.getByText(defaultOpenCodeModel.id)).toBeInTheDocument();
+    expect(screen.queryByText(defaultOpenCodeModel.id)).not.toBeInTheDocument();
     expect(screen.getByText(defaultOpenCodeModel.githubLabel)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Add Agent & Log In' }));
@@ -114,8 +114,8 @@ describe('AgentConfigModal', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'OpenCode' }));
 
-    expect(await screen.findByText('Opencode OpenAI GPT 5.5')).toBeInTheDocument();
-    expect(screen.getByText('opencode-openai/gpt-5.5')).toBeInTheDocument();
+    expect(await screen.findByText('Opencode OpenAI GPT-5.5')).toBeInTheDocument();
+    expect(screen.queryByText('opencode-openai/gpt-5.5')).not.toBeInTheDocument();
     expect(screen.getByText('llm-opencode~opencode-openai/gpt-5.5')).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('ID / Alias'), { target: { value: 'opencode2' } });
@@ -171,8 +171,8 @@ describe('AgentConfigModal', () => {
       />
     );
 
-    expect(await screen.findByText('Opencode OpenAI GPT 5.5')).toBeInTheDocument();
-    expect(screen.getByText('opencode-openai/gpt-5.5')).toBeInTheDocument();
+    expect(await screen.findByText('Opencode OpenAI GPT-5.5')).toBeInTheDocument();
+    expect(screen.queryByText('opencode-openai/gpt-5.5')).not.toBeInTheDocument();
   });
 
   it('saves a model-specific reasoning level for Codex agents', () => {

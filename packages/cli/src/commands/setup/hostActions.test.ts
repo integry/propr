@@ -236,11 +236,16 @@ test('repeat starts preserve an already-running managed IPv4 UI and its persiste
       }
     });
     sub.after(() => new Promise<void>(resolve => daemon.close(() => resolve())));
-    await new Promise<void>(resolve => daemon.listen(0, '127.0.0.1', resolve));
-    const daemonPort = (daemon.address() as { port: number }).port;
+    // TCP requests can claim the selected UI port as an ephemeral client port
+    // before the fake container binds it. Keep fixture traffic off loopback TCP.
+    const daemonSocket = join(root, 'docker.sock');
+    await new Promise<void>((resolve, reject) => {
+      daemon.once('error', reject);
+      daemon.listen(daemonSocket, resolve);
+    });
     writeFileSync(join(root, 'docker'), `#!${process.execPath}
 const http = require('node:http');
-const request = http.request({host:'127.0.0.1', port:${daemonPort}, method:'POST'}, response => {
+const request = http.request({socketPath:${JSON.stringify(daemonSocket)}, method:'POST'}, response => {
   let body = '';
   response.on('data', chunk => body += chunk);
   response.on('end', () => {

@@ -47,7 +47,7 @@ describe('AgentCard', () => {
     renderCard({ health: { agentId: agent.id, status: 'ready', model: 'probe' } });
     const ready = screen.getByText('Ready');
     expect(ready.closest('.coding-agent-header')).not.toBeNull();
-    expect(ready).toHaveAttribute('title', 'Checked with probe');
+    expect(ready).toHaveAttribute('title', 'Checked with Probe');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Collapse claude models' }));
     expect(ready).toBeVisible();
@@ -99,13 +99,13 @@ describe('AgentCard', () => {
     expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled();
   });
 
-  it('copies one short alias per model and exposes the canonical ID in its tooltip', async () => {
+  it('copies one short alias per model and uses the human-readable name in its tooltip', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText } });
     const callbacks = renderCard();
     const chip = screen.getByRole('button', { name: 'Copy opus55' });
     expect(chip).toHaveTextContent('opus55');
-    expect(chip).toHaveAttribute('title', expect.stringContaining('claude-opus-5-5'));
+    expect(chip).toHaveAttribute('title', expect.stringContaining('Claude Opus 5.5'));
     expect(screen.queryByText('claude-opus-5-5')).not.toBeInTheDocument();
     expect(screen.queryByText('ID / Alias')).not.toBeInTheDocument();
     expect(screen.queryByText('Context')).not.toBeInTheDocument();
@@ -119,13 +119,11 @@ describe('AgentCard', () => {
     expect(callbacks.onSelectModel).toHaveBeenCalledWith(agent.id, 'claude-opus-5-5');
   });
 
-  it('falls back to copying a custom model ID when no alias exists and reports clipboard failure', async () => {
-    const writeText = vi.fn().mockRejectedValue(new Error('Clipboard unavailable'));
-    vi.stubGlobal('navigator', { clipboard: { writeText } });
+  it('humanizes a custom model without exposing its ID as a copy alias', () => {
     renderCard({ agent: { ...agent, supportedModels: ['custom-model'] } });
-    fireEvent.click(screen.getByRole('button', { name: 'Copy custom-model' }));
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Could not copy custom-model'));
-    expect(writeText).toHaveBeenCalledWith('custom-model');
+    expect(screen.getByText('Custom Model')).toHaveAttribute('title', 'Custom Model');
+    expect(screen.queryByRole('button', { name: 'Copy custom-model' })).not.toBeInTheDocument();
+    expect(screen.queryByText('custom-model')).not.toBeInTheDocument();
   });
 
   it('folds a provider independently and retains its legacy-model disclosure state', () => {

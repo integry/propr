@@ -1,3 +1,4 @@
+import { formatModelName } from '../../utils/modelDisplay';
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { AgentConfig, chatWithAgents, ChatResult, ChatQuery } from '../../api/proprApi';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
@@ -61,7 +62,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
           agentId: agent.id,
           agentAlias: agent.alias,
           modelId: modelId,
-          modelName: modelInfo?.name || modelId
+          modelName: modelInfo?.name || formatModelName(modelId)
         });
       });
     });
@@ -72,7 +73,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
           syntheticConfigId: pool.id,
           agentAlias: pool.alias,
           modelId: model.id,
-          modelName: model.displayName || model.id,
+          modelName: model.displayName || formatModelName(model.id),
         });
       });
     });
@@ -223,7 +224,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                             ? <Layers3 className="h-3 w-3" aria-hidden="true" />
                             : <ProviderLogo provider={res.agentAlias} className="w-3 h-3" />}
                           <span className="flex-shrink-0">{res.virtualAgentAlias || res.agentAlias}</span>
-                          <span className="truncate text-gray-400">· {res.virtualModel || res.model}</span>
+                          <span className="truncate text-gray-400">· {formatModelName(res.virtualModel || res.model || '')}</span>
                         </div>
                         {res.physicalAgentAlias && (
                           <div className="mb-1 flex min-w-0 items-center gap-1 text-[10px] text-slate-500">

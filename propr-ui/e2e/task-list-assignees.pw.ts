@@ -248,6 +248,10 @@ test('390px the card shows assignees on its meta line and the filter shares the 
   expect(filterBox!.y).toBeGreaterThan(statusBox!.y + statusBox!.height);
   expect(filterBox!.x + filterBox!.width).toBeLessThanOrEqual(390);
   expect(await pageFits(page)).toBe(true);
+  expect(filterBox!.width).toBe(44);
+  expect(searchBox!.width).toBeGreaterThan(280);
+  await expect(page.locator('.task-assignee-filter-icon')).toBeVisible();
+  await expect(page.locator('.task-assignee-filter-label')).toBeHidden();
   await capture(page, 'tasks-assignees-390');
 
   const dialog = await openAssigneeFilter(page);
@@ -282,15 +286,15 @@ for (const width of [768, 1440, 1920]) {
       });
     });
     expect(fits).toBe(true);
-    // Where the toolbar is narrow, the repository picker collapses to an icon button of its own
-    // rather than a sliver whose overflowing button reads as a second border around the assignee filter.
+    // Narrow toolbars keep enough room for each selected value.
     const pickers = await list.evaluate(node => {
       const repo = node.querySelector('.task-repo-filter')!;
       const box = (element: Element) => element.getBoundingClientRect();
       const [wrapper, trigger] = [box(repo), box(repo.querySelector('button')!)];
       return { width: Math.round(wrapper.width), overflow: trigger.right > wrapper.right + 1, gap: box(node.querySelector('.task-assignee-filter')!).left - wrapper.right };
     });
-    if (width === 1440) expect(pickers.width).toBe(40);
+    expect(pickers.width).toBeGreaterThanOrEqual(128);
+    await expect(list.locator('.task-assignee-filter-label')).toBeVisible();
     expect(pickers.overflow).toBe(false);
     expect(pickers.gap).toBeGreaterThanOrEqual(7);
     expect(await pageFits(page)).toBe(true);

@@ -57,6 +57,28 @@ export interface ReviewOutcome {
   score: number | null;
   issueCount: number;
   reviewerFailed: boolean;
+  /** The finding titles listed after "issues found:", in the reviewer's order. */
+  findings: string[];
+}
+
+/** The "A; B" list after "N issues found:", up to the next " · " part of the recap. */
+function reviewFindingTitles(body: string): string[] {
+  const list = /\bissues? found:\s*(.*?)(?:\s+·\s+|$)/s.exec(body)?.[1] ?? '';
+  return list.split(/;\s*/).map(title => title.trim()).filter(Boolean);
+}
+
+/**
+ * A `path:line` reference a finding leads with, such as
+ * "packages/core/src/auth.ts:118 Clear expiry feedback" or
+ * "`src/a.ts:42`: Guard the empty page". The path needs a directory or a file
+ * extension, so prose such as "Note: …" is not read as a reference.
+ */
+const FINDING_REFERENCE = /^`?((?:[\w@.-]+\/)+[\w@.-]+|[\w@-]+(?:\.[\w-]+)*\.[A-Za-z0-9]+):(\d+(?:[-–]\d+)?)`?(?:\s*[:—–-]\s+|\s+|$)/;
+
+export function notificationFindingReference(text: string): { reference: string; text: string } | null {
+  const match = FINDING_REFERENCE.exec(text.trim());
+  if (!match) return null;
+  return { reference: `${match[1]}:${match[2]}`, text: text.trim().slice(match[0].length).trim() };
 }
 
 /**
@@ -64,8 +86,11 @@ export interface ReviewOutcome {
  * "Score 6/10 · 2 issues found: …" or "Scores 6/10, 8/10 · 1 issue found".
  */
 export function notificationReviewOutcome(notification: Notification): ReviewOutcome | null {
-  if (notification.kind !== 'review') return null;
-  const body = notification.body;
+  return notification.kind === 'review' ? reviewRecapOutcome(notification.body) : null;
+}
+
+/** The score and finding count in any text carrying a review recap, such as a review run's summary. */
+export function reviewRecapOutcome(body: string): ReviewOutcome {
   const scoreText = /\bScores? ((?:\d+(?:\.\d+)?\/10(?:, )?)+)/.exec(body)?.[1] ?? '';
   const scores = [...scoreText.matchAll(/(\d+(?:\.\d+)?)\/10/g)].map(match => Number(match[1]));
   const issueCount = Number(/\b(\d+) issues? found\b/.exec(body)?.[1] ?? 0);
@@ -73,6 +98,7 @@ export function notificationReviewOutcome(notification: Notification): ReviewOut
     score: scores.length > 0 ? Math.min(...scores) : null,
     issueCount,
     reviewerFailed: /\breviewers? failed\b/.test(body),
+    findings: reviewFindingTitles(body),
   };
 }
 
@@ -157,11 +183,17 @@ export interface NotificationFollowupCommand {
   commands: readonly string[];
 }
 
-/** A review whose reviewers all reported and found nothing, so there is nothing to /fix. */
-function isIssueFreeReview(notification: Notification): boolean {
-  const outcome = notificationReviewOutcome(notification);
-  return outcome !== null && !outcome.reviewerFailed && /\b0 issues found\b/.test(notification.body);
+/**
+ * A review recap whose reviewers all reported and found nothing, so there is
+ * nothing to /fix. The Inbox reads it from the notification and Tasks from the
+ * review run's summary, so both offer /fix on the same reviews.
+ */
+export function isIssueFreeReviewRecap(body: string): boolean {
+  return !reviewRecapOutcome(body).reviewerFailed && /\b0 issues found\b/.test(body);
 }
+
+const isIssueFreeReview = (notification: Notification): boolean =>
+  notification.kind === 'review' && isIssueFreeReviewRecap(notification.body);
 
 /**
  * The only buttons an Inbox card offers: the common next command after a

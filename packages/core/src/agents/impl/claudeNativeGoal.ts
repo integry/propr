@@ -708,7 +708,7 @@ export async function executeClaudeNativeGoal(
     const args = resolveExecutionArgs('docker', dockerArgs, options.taskId, ownership?.attemptGeneration);
     assertNativeLogAdmission(launch.diagnostics);
     const child = await spawnWithNetworkPolicy(args, (runArgs, launched) => {
-        const capture = launch.diagnostics ? prepareProviderCapture(launch.diagnostics, runArgs, launched?.environment, launched?.createArgs ?? args) : null;
+        const capture = launch.diagnostics ? prepareProviderCapture({ ...launch.diagnostics, attribution: { task: options.taskId, attempt: ownership?.attemptGeneration } }, runArgs, launched?.environment, launched?.createArgs ?? args) : null;
         const spawned = spawn('docker', runArgs, { stdio: ['pipe', 'pipe', 'pipe'], cwd: options.worktreePath });
         attachProviderCapture(spawned, capture);
         return spawned;

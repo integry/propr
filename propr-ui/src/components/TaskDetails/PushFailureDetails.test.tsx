@@ -26,6 +26,7 @@ describe('Push failure diagnosis on the task timeline', () => {
   for (const variant of ['rail', 'branch'] as const) {
     it(`shows the classification, unblock URL and recovery (${variant})`, () => {
       render(<TaskStatusTable variant={variant} history={[{ state: 'POST_PROCESSING', timestamp: at(1) }, failedPush]} />);
+      if (variant === 'branch') expect(screen.getByLabelText('Additional step details')).toBeInTheDocument();
       expect(screen.getByTestId('push-failure')).toHaveTextContent('Push rejected: Secret scanning push protection');
       expect(screen.getByRole('link', { name: unblockUrl })).toHaveAttribute('href', unblockUrl);
       expect(screen.getByTestId('push-failure-recovery')).toHaveTextContent('refs/propr/rescue/task-1');

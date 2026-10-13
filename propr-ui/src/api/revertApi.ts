@@ -5,7 +5,7 @@ import {
   supportsAgentTankModes,
   type AgentTankMode,
 } from '@propr/shared';
-import type { SummarizationSettings } from './proprTypes';
+import type { PostFollowupResponse, SummarizationSettings } from './proprTypes';
 
 export type { SummarizationSettings };
 
@@ -200,7 +200,7 @@ export const enableAgentTank = async (mode: AgentTankMode, url?: string): Promis
   return response.json();
 };
 
-export interface PostFollowupResponse { success: boolean; message: string; }
+export type { PostFollowupResponse };
 export const postTaskFollowup = async (taskId: string, body: string, target?: 'pull_request'): Promise<PostFollowupResponse> => {
   const response = await apiFetch(`${API_BASE_URL}/api/tasks/${encodeURIComponent(taskId)}/followup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(target ? { body, target } : { body }), credentials: 'include' });
   await handleApiResponse(response);

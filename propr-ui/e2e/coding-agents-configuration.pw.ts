@@ -122,7 +122,7 @@ for (const viewport of [
       has: page.getByRole('button', { name: /claude models$/ }),
     });
     const opusAlias = claudeCard.getByRole('button', { name: 'Copy opus55', exact: true });
-    await expect(opusAlias).toHaveAttribute('title', /claude-opus-5-5/);
+    await expect(opusAlias).toHaveAttribute('title', 'Claude Opus 5.5 — Click to copy opus55');
     const modelRow = opusAlias.locator('xpath=../..');
     await expect(modelRow.getByRole('button', { name: /^Copy / })).toHaveCount(1);
     await expect(modelRow).toHaveCSS('grid-template-rows', /^\d+(?:\.\d+)?px$/);
