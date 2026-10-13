@@ -1,5 +1,7 @@
 /** Real preload IPC and document reloads; HTTP/browser approval remain owned fixtures. */
-export const exercisePackagedCspReload = async ({ launch, pair, origin, observe, evidence }) => {
+export const exercisePackagedCspReload = async ({ launch, pair, origin, observe, evidence,
+  diagnostic = record => console.info('Packaged CSP reload diagnostics:', JSON.stringify(record)),
+}) => {
   let application = await launch();
   const name = 'CSP reload account';
   const policy = page => page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content');
@@ -9,6 +11,39 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
     const listener = frame => { if (frame === page.mainFrame()) count++; };
     page.on('framenavigated', listener);
     return { count: () => count, dispose: () => page.off('framenavigated', listener) };
+  };
+  // Connected alone can be a transient state before a queued native reload.
+  // Observe a bounded window, requiring both connection and policy to remain
+  // present. Only booleans and counts leave this scenario, never policy values.
+  const stableConnection = async (page, reloads, phase, baseline, maximumReloads) => {
+    let state;
+    try {
+      await connected(page);
+      for (let sample = 0; sample <= 20; sample++) {
+        // A permitted startup reload may briefly recreate the connected view.
+        // Saved selection has no reload budget and must stay connected throughout.
+        if (phase === 'restart' && sample > 0) await connected(page);
+        state = {
+          phase,
+          policyPresent: Boolean((await policy(page))?.includes(origin)),
+          reloadCount: reloads.count() - baseline,
+          connected: await page.getByRole('button', { name: `Connected: ${name}`, exact: true }).isVisible(),
+        };
+        if (!state.policyPresent) throw new Error('Connected account is missing its CSP policy');
+        if (state.reloadCount > maximumReloads) {
+          throw new Error(phase === 'saved-selection'
+            ? 'Saved-account selection entered a CSP reload loop'
+            : 'Restart exceeded its single startup policy reload');
+        }
+        if (!state.connected) throw new Error('Account did not remain Connected');
+        if (sample < 20) await page.waitForTimeout(100);
+      }
+      return state;
+    } finally {
+      diagnostic(state ?? { phase,
+        policyPresent: await policy(page).then(value => Boolean(value?.includes(origin))).catch(() => null),
+        reloadCount: reloads.count() - baseline, connected: false });
+    }
   };
   try {
     const initial = countReloads(application.page);
@@ -24,10 +59,9 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
     observe('restart');
     application = await launch(application.userData);
     const restarted = countReloads(application.page);
-    await connected(application.page);
-    if (!(await policy(application.page)).includes(origin) || restarted.count() !== 0) {
-      throw new Error('Restart did not reconnect with its persisted account policy');
-    }
+    // Restoring the active profile can replace the empty startup policy once.
+    // It must converge before testing saved selection with a separate budget.
+    const restart = await stableConnection(application.page, restarted, 'restart', 0, 1);
     // Deliberate native deselection and a new document put the saved account on
     // the chooser. Clicking it runs the production deselect/save/probe/activate sequence.
     await application.page.evaluate(() => window.proprDesktop.profiles.setActive(null));
@@ -36,8 +70,7 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
     const beforeSelection = restarted.count();
     observe('saved-selection');
     await application.page.locator('.desktop-profile-connect').filter({ hasText: name }).click();
-    await connected(application.page);
-    if (restarted.count() !== beforeSelection) throw new Error('Saved-account selection entered a CSP reload loop');
+    const selection = await stableConnection(application.page, restarted, 'saved-selection', beforeSelection, 0);
     observe('removal');
     // Scope-free profile removal goes through the same authenticated preload
     // and main-process handler as the profile manager.
@@ -53,7 +86,9 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
       return content && !content.includes(endpoint);
     }, origin);
     restarted.dispose();
-    evidence({ firstActivationReloads: 1, savedSelectionReloads: 0, restartConnected: true, removalNarrowed: true,
+    evidence({ firstActivationReloads: initial.count(), restartReloads: restart.reloadCount,
+      restartPolicyPresent: restart.policyPresent, savedSelectionReloads: selection.reloadCount,
+      savedSelectionPolicyPresent: selection.policyPresent, restartConnected: restart.connected, removalNarrowed: true,
       limitation: 'Owned HTTP/pairing fixture; does not provision Docker or complete external browser approval.' });
   } finally {
     await application.close();
