@@ -12,6 +12,7 @@ import {
   toProprOpenCodeExternalModelId,
   toProprOpenCodeModelId,
   type Agent,
+  type AgentConfig,
   type AgentRegistry,
   SyntheticAgent,
 } from '@propr/core';
@@ -212,6 +213,31 @@ async function executeChatQuery(
   }
 }
 
+export async function resolveHealthCheckImage(
+  config: AgentConfig,
+  registry = getAgentRegistry(),
+  imageAvailable = hasLocalDockerImage,
+): Promise<{ image?: string; error?: string }> {
+  // Inspect-only discovery must not join a pending worker build.
+  if (!registry.isImageRecoveryPending()) await registry.inspectAgentImageAvailability();
+  const image = registry.getAgentById(config.id)?.config.dockerImage;
+  if (image && await imageAvailable(image)) {
+    // Keep an available retained image serving while checking for a pruned base.
+    void registry.ensureInitialized().catch(() => {});
+    return { image };
+  }
+  const status = registry.getOperationalStatus().unifiedAgentImage;
+  if (image || status.status === 'unavailable' || registry.isImageRecoveryPending()) {
+    void registry.recoverImagesAndRefresh().catch(() => {});
+    return {
+      error: status.status === 'unavailable' && status.operatorActionRequired
+        ? `Agent image cannot be prepared: ${status.error}`
+        : `Agent image is being prepared by the worker. Check again in a few minutes.${status.status === 'unavailable' ? ` (${status.error})` : ''}`,
+    };
+  }
+  return { error: 'Agent is not registered yet. Check again shortly.' };
+}
+
 export function createAgentRoutes() {
   const router = Router();
   const checkAgentHealth = createAgentHealthCheck({
@@ -219,6 +245,7 @@ export function createAgentRoutes() {
     imageExists: agentDockerImageExists,
     prepareImage: enqueueAgentImagePreparation,
     createAgent: config => getAgentRegistry().createAgentFromConfig(config),
+    resolveExecutionImage: resolveHealthCheckImage,
   });
 
   router.post('/:agentId/health', requireManageAgents, async (req: Request, res: Response): Promise<void> => {

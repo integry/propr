@@ -1,3 +1,4 @@
+import { generatedPayloadStorage } from '../storage/generatedPayloads.js';
 import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
@@ -37,6 +38,11 @@ export async function cleanupWorktree(localRepoPath: string, worktreePath: strin
         retentionStrategy,
         retentionHours
     }, 'Cleaning up Git worktree...');
+
+    // Producer records are outside customer checkouts. Failed/salvage runs remain protected.
+    await generatedPayloadStorage().complete(worktreePath, success && !await isSalvageRetainedWorktree(worktreePath)).catch(error => {
+        logger.warn({ worktreePath, error: (error as Error).message }, 'Generated payload completion unavailable; retaining payloads');
+    });
 
     // The push salvage ladder kept this worktree because it holds the only copy of
     // commits a rejected push could not deliver; it overrides the retention strategy.

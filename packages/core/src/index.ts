@@ -630,3 +630,6 @@ export {
     type TaskAssignmentFilterMode,
     type TaskAssignmentFilterParseResult,
 } from '@propr/shared';
+
+export { GeneratedPayloadStorage, generatedPayloadStorage, GENERATED_PAYLOADS } from './storage/generatedPayloads.js';
+export { generateManagedDependencies } from './storage/managedDependencies.js';

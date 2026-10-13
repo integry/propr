@@ -363,3 +363,78 @@ test('sibling CLI edits invalidate effective targets across inspection, preparat
     assert.deepEqual(prepared, boundary === 'preparation' ? [oldImage] : [newImage]);
   }
 });
+test('probes run on the registry-resolved image and report an unavailable image without executing', async () => {
+  const images: Array<string | undefined> = [];
+  let resolved: { image?: string; error?: string } = { image: 'propr/runtime-agent:ready' };
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [{ ...config, dockerImage: 'propr/agent:bundle-base' }],
+    createAgent: agent => ({ analyze: async () => {
+      images.push(agent.dockerImage);
+      return { response: 'OK', success: true, modelUsed: 'gpt-6-luna', executionTimeMs: 1 } as AnalysisResult;
+    } }),
+    resolveExecutionImage: async () => resolved,
+  });
+  assert.equal((await check('codex'))?.status, 'ready');
+  assert.deepEqual(images, ['propr/runtime-agent:ready']);
+
+  resolved = { error: 'Agent image is being prepared by the worker. Check again in a few minutes.' };
+  const result = await check('codex', true);
+  assert.equal(result?.status, 'error');
+  assert.match(result?.error ?? '', /being prepared/);
+  assert.equal(images.length, 1);
+});
+
+
+test('health resolver verifies retained images through failed recovery, backoff and open circuits', async () => {
+  const { resolveHealthCheckImage } = await import('../routes/agentRoutes.js');
+  for (const failure of ['failed recovery', 'backoff', 'circuit', 'disk pressure']) {
+    let guards = 0;
+    let recoveries = 0;
+    const registry = {
+      isImageRecoveryPending: () => false,
+      inspectAgentImageAvailability: async () => {},
+      getAgentById: () => ({ config: { ...config, dockerImage: 'runtime:retained' } }),
+      getOperationalStatus: () => ({ unifiedAgentImage: {
+        status: 'unavailable', error: failure,
+        operatorActionRequired: failure === 'disk pressure',
+        circuitBreakerOpen: failure === 'circuit' || failure === 'disk pressure',
+        nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
+      } }),
+      ensureInitialized: async () => { guards++; },
+      recoverImagesAndRefresh: async () => { recoveries++; },
+    } as unknown as import('@propr/core').AgentRegistry;
+    let inspected = '';
+    const missing = await resolveHealthCheckImage(config, registry, async image => { inspected = image; return false; });
+    assert.equal(inspected, 'runtime:retained');
+    assert.equal(missing.image, undefined);
+    assert.match(missing.error ?? '', failure === 'disk pressure' ? /cannot be prepared/ : /being prepared/);
+    assert.equal(guards, 0);
+    assert.equal(recoveries, 1);
+    assert.deepEqual(await resolveHealthCheckImage(config, registry, async () => true), { image: 'runtime:retained' });
+    assert.equal(guards, 1);
+  }
+});
+
+test('health resolver returns during a pending rebuild and does not refresh unregistered agents per probe', async () => {
+  const { resolveHealthCheckImage } = await import('../routes/agentRoutes.js');
+  let pending = true;
+  let inspections = 0;
+  let recoveries = 0;
+  const registry = {
+    isImageRecoveryPending: () => pending,
+    inspectAgentImageAvailability: async () => { inspections++; },
+    getAgentById: () => undefined,
+    getOperationalStatus: () => ({ unifiedAgentImage: { status: 'ready' } }),
+    ensureInitialized: () => { throw new Error('Must not await initialization'); },
+    refresh: () => { throw new Error('Must not refresh for an unregistered agent'); },
+    recoverImagesAndRefresh: () => { recoveries++; return new Promise<void>(() => {}); },
+  } as unknown as import('@propr/core').AgentRegistry;
+  assert.match((await resolveHealthCheckImage(config, registry)).error ?? '', /being prepared/);
+  assert.equal(inspections, 0);
+  assert.equal(recoveries, 1);
+  pending = false;
+  for (let i = 0; i < 3; i++) {
+    assert.match((await resolveHealthCheckImage(config, registry)).error ?? '', /not registered/);
+  }
+  assert.equal(recoveries, 1);
+});

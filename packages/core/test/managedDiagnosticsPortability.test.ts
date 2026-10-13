@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { gunzipSync } from 'node:zlib';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { ManagedLogSpool, DiagnosticPolicyError, MANAGED_LOG_POLICY, digest, type ManagedLogPolicy } from '../src/diagnostics/managedLogSpool.js';
 import { collectProvider } from '../src/diagnostics/providerCollector.js';
@@ -164,7 +164,7 @@ test('policy-limit upgrade migrates explicitly, preserving instance, unacknowled
         assert.deepEqual(upgraded.cursor(identity), { inode: '1:2', offset: 20 });
         const first = upgraded.exportOne()!;
         assert.deepEqual([first.id, first.digest], [pending.id, pending.digest]);
-        assert.equal((first.manifest as { policyVersion: number }).policyVersion, 2);
+        assert.deepEqual(first, pending); // sealed manifests retain their original policy and metadata
         assert.equal((upgraded.status() as { instance: string; policyVersion: number }).policyVersion, 2);
         assert.equal((upgraded.status() as { instance: string }).instance, 'tenant-a');
         // Open segments are sealed: new records never extend a segment bound by v1.
@@ -372,7 +372,7 @@ test('pre-upgrade v1 segments are never extended and export as v1 across restart
         old.append(other, [JSON.stringify({ n: 10 })], 'jsonl', { credentials: [], now });
         old.close();
         const legacy = new Database(path.join(dir, 'spool.sqlite'));
-        legacy.exec('ALTER TABLE segments DROP COLUMN redaction');
+        legacy.exec('ALTER TABLE segments DROP COLUMN redaction; ALTER TABLE segments DROP COLUMN manifest');
         const before = legacy.prepare('SELECT id,sealed,digest,data,first,last FROM segments ORDER BY id').all() as Array<{ id: number; sealed: number; digest: string; data: Buffer }>;
         legacy.close();
         assert.deepEqual(before.map(s => s.sealed), [1, 0, 0]);
@@ -405,6 +405,64 @@ test('pre-upgrade v1 segments are never extended and export as v1 across restart
         }
         assert.deepEqual(exported.slice(3).map(e => [e.manifest.firstSequence, e.manifest.lastSequence]), [[3, 3], [2, 2]]);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('rollback extension and legacy sealing repair a stale provisional manifest on re-upgrade', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-diagnostics-rollback-'));
+    const dir = path.join(root, 'spool');
+    const identity = { provider: 'codex', agent: 'agent-a', source: 'stdout' };
+    const now = Date.parse('2026-10-12T12:00:00Z');
+    type Manifest = { segment: number; sha256: string; firstSequence: number; lastSequence: number; lastSuccessfulCollection: number };
+    let spool = new ManagedLogSpool(dir, 'tenant-a');
+    try {
+        assert.equal(spool.append(identity, ['{"n":1}'], 'jsonl', { credentials: [], now }), true);
+        spool.close();
+        // The old release extends and seals the row without knowing about the
+        // manifest column introduced by this head. Leave that column untouched.
+        const legacy = new Database(path.join(dir, 'spool.sqlite'));
+        let compressed: Buffer;
+        let row: { id: number; source: string; sealed: number; data: Buffer; manifest: string };
+        try {
+            row = legacy.prepare('SELECT * FROM segments').get() as typeof row;
+            assert.equal(row.sealed, 0);
+            const provisional = JSON.parse(row.manifest) as Manifest;
+            assert.equal(provisional.lastSequence, 1);
+            compressed = gzipSync(Buffer.concat([gunzipSync(row.data), Buffer.from('{"n":2}\n')]), { level: 6 });
+            legacy.transaction(() => {
+                legacy.prepare('UPDATE segments SET last=2,end=?,raw=?,digest=?,data=?,sealed=1 WHERE id=?')
+                    .run(now + 1000, gunzipSync(compressed).length, digest(compressed), compressed, row.id);
+                legacy.prepare('UPDATE sources SET next=3,last_success=? WHERE id=?').run(now + 1000, row.source);
+            })();
+            assert.notEqual(digest(compressed), provisional.sha256);
+            assert.equal((legacy.prepare('SELECT manifest FROM segments').get() as { manifest: string }).manifest, row.manifest);
+        } finally { legacy.close(); }
+
+        spool = new ManagedLogSpool(dir, 'tenant-a');
+        // Reopening repairs before another collection can alter source status.
+        assert.equal(spool.append(identity, [], 'jsonl', { credentials: [], now: now + 2000 }), true);
+        const exported = spool.exportOne()!;
+        const manifest = exported.manifest as Manifest;
+        assert.equal(exported.id, row.id);
+        assert.deepEqual(exported.data, compressed);
+        assert.equal(manifest.sha256, digest(exported.data));
+        assert.deepEqual([manifest.firstSequence, manifest.lastSequence], [1, 2]);
+        assert.equal(manifest.lastSuccessfulCollection, now + 1000);
+        assert.deepEqual(gunzipSync(exported.data).toString().trim().split('\n').map(line => JSON.parse(line).n), [1, 2]);
+        assert.deepEqual(spool.exportOne(), exported);
+        spool.close();
+        spool = new ManagedLogSpool(dir, 'tenant-a');
+        assert.deepEqual(spool.exportOne(), exported);
+        spool.acknowledge(manifest.segment, manifest.sha256);
+        assert.equal(spool.exportOne(), null);
+        // Acknowledgement releases the row so subsequent diagnostics still drain.
+        assert.equal(spool.append(identity, ['{"n":3}'], 'jsonl', { credentials: [], now: now + 3000 }), true);
+        const later = spool.exportOne()!;
+        const laterManifest = later.manifest as Manifest;
+        assert.equal(laterManifest.firstSequence, 3);
+        assert.equal(JSON.parse(gunzipSync(later.data).toString()).n, 3);
+        spool.acknowledge(laterManifest.segment, laterManifest.sha256);
+        assert.equal(spool.exportOne(), null);
+    } finally { spool.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('a newer stored policy with keys this release does not know refuses as a downgrade', () => {

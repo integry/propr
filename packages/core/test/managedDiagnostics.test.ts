@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { ManagedLogSpool, digest } from '../src/diagnostics/managedLogSpool.js';
 import { collectProvider } from '../src/diagnostics/providerCollector.js';
 import { PinnedDirectory } from '../src/diagnostics/privateDirectory.js';
@@ -282,6 +282,155 @@ test('concurrent process rotation, export and cursor CAS recover without duplica
         assert.equal(new Set(output.map(r => `${r.writer}:${r.n}`)).size, 24);
     } finally { f.close(); }
 });
+test('overlapping valid spool constructors retry initialization lock contention successfully', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'diagnostic-constructors-'));
+    const spoolRoot = path.join(root, 'spool');
+    const locked = path.join(root, 'locked'), contended = path.join(root, 'contended');
+    const prelude = `
+        import assert from 'node:assert/strict';
+        import fs from 'node:fs';
+        import { createRequire } from 'node:module';
+        import { ManagedLogSpool } from ${JSON.stringify(new URL('../src/diagnostics/managedLogSpool.ts', import.meta.url).href)};
+        const Sqlite = createRequire(import.meta.url)('better-sqlite3');
+        const exec = Sqlite.prototype.exec;
+        const root = ${JSON.stringify(spoolRoot)};
+        const locked = ${JSON.stringify(locked)}, contended = ${JSON.stringify(contended)};
+    `;
+    const children: ReturnType<typeof spawn>[] = [];
+    const run = (script: string) => {
+        const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', prelude + script],
+            { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 });
+        children.push(child);
+        return new Promise<{ code: number | null; stderr: string }>(resolve => {
+            let stderr = '';
+            child.stderr!.on('data', chunk => { stderr += chunk; });
+            child.on('error', error => { stderr += String(error); });
+            child.on('close', code => resolve({ code, stderr }));
+        });
+    };
+    const results: ReturnType<typeof run>[] = [];
+    try {
+        results.push(run(`
+            let held = false;
+            Sqlite.prototype.exec = function(sql) {
+                if (!held && sql.includes('CREATE TABLE IF NOT EXISTS settings')) {
+                    held = true;
+                    // Run the real constructor batch through BEGIN IMMEDIATE, then
+                    // retain its lock until the other constructor actually gets BUSY.
+                    const split = sql.indexOf('CREATE TABLE');
+                    exec.call(this, sql.slice(0, split));
+                    assert.equal(this.inTransaction, true);
+                    fs.writeFileSync(locked, 'locked');
+                    const deadline = Date.now() + 8_000;
+                    while (!fs.existsSync(contended)) {
+                        assert.ok(Date.now() < deadline, 'second constructor must encounter the held lock');
+                        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+                    }
+                    return exec.call(this, sql.slice(split));
+                }
+                return exec.call(this, sql);
+            };
+            const spool = new ManagedLogSpool(root, 'tenant-a');
+            assert.ok(held);
+            spool.close();
+        `));
+        const deadline = Date.now() + 10_000;
+        while (!fs.existsSync(locked)) {
+            assert.ok(Date.now() < deadline, 'first constructor must acquire the initialization lock');
+            await new Promise(resolve => setTimeout(resolve, 5));
+        }
+        results.push(run(`
+            let attempts = 0, busy = 0;
+            Sqlite.prototype.exec = function(sql) {
+                const initializing = sql.includes('CREATE TABLE IF NOT EXISTS settings');
+                if (initializing) attempts++;
+                try { return exec.call(this, sql); }
+                catch (error) {
+                    if (initializing && error.code === 'SQLITE_BUSY') {
+                        busy++;
+                        fs.writeFileSync(contended, 'busy');
+                    }
+                    throw error;
+                }
+            };
+            const spool = new ManagedLogSpool(root, 'tenant-a', {}, {openDeadline: Date.now() + 8_000});
+            assert.ok(busy >= 1, 'real SQLite contention must precede success');
+            assert.ok(attempts > busy, 'constructor must retry the failed initialization batch');
+            spool.append(${JSON.stringify(identity)}, ['INFO after constructor retry'], 'text', {credentials: []});
+            spool.assertCapacity();
+            spool.close();
+        `));
+        for (const result of await Promise.all(results)) assert.equal(result.code, 0, result.stderr);
+        const spool = new ManagedLogSpool(spoolRoot, 'tenant-a');
+        try {
+            assert.deepEqual(drain(spool).map(item => item.text.trim()), ['{"message":"INFO after constructor retry"}']);
+            assert.throws(() => new ManagedLogSpool(spoolRoot, 'tenant-b'), /mismatch/);
+            assert.throws(() => new ManagedLogSpool(spoolRoot, 'tenant-a', { sources: 4 }), /explicit versioned migration/);
+        } finally { spool.close(); }
+    } finally {
+        for (const child of children) if (child.exitCode === null) child.kill('SIGKILL');
+        await Promise.all(results);
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('spool constructor persistent contention exhausts its deadline and unrelated initialization errors fail immediately', () => {
+    const f = fixture();
+    try {
+        const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+            import assert from 'node:assert/strict';
+            import { createRequire } from 'node:module';
+            import { ManagedLogSpool } from ${JSON.stringify(new URL('../src/diagnostics/managedLogSpool.ts', import.meta.url).href)};
+            const Sqlite = createRequire(import.meta.url)('better-sqlite3');
+            const root = ${JSON.stringify(path.join(f.root, 'spool'))};
+            const holder = new Sqlite(root + '/spool.sqlite');
+            holder.exec('BEGIN IMMEDIATE');
+            const exec = Sqlite.prototype.exec, close = Sqlite.prototype.close;
+            let attempts = 0, closes = 0, waits = 0, lastWait = 0, clock = 1_000;
+            const deadline = clock + 50;
+            // Keep real SQLite contention, but advance a virtual clock for the
+            // retry backoff so deadline coverage needs no wall-clock threshold.
+            Date.now = () => clock;
+            Math.random = () => 0;
+            Atomics.wait = (_array, _index, _value, ms) => { waits++; lastWait = ms; clock += ms; return 'timed-out'; };
+            Sqlite.prototype.close = function() { closes++; return close.call(this); };
+            Sqlite.prototype.exec = function(sql) {
+                if (sql.includes('CREATE TABLE IF NOT EXISTS settings')) {
+                    attempts++;
+                    sql = sql.replace('busy_timeout=1000', 'busy_timeout=0');
+                }
+                return exec.call(this, sql);
+            };
+            assert.throws(() => new ManagedLogSpool(root, 'tenant-a', {}, {openDeadline: deadline}),
+                error => error.code === 'SQLITE_BUSY');
+            assert.ok(attempts > 1 && attempts <= 10, 'contention receives bounded retry attempts');
+            assert.equal(waits, attempts - 1);
+            assert.ok(clock < deadline, 'backoff never sleeps past the deadline');
+            assert.ok(clock + Math.min(lastWait * 2, 40) >= deadline, 'failure occurs only when the next retry exceeds the deadline');
+            assert.equal(closes, 1, 'failed constructor closes its connection');
+            assert.equal(holder.inTransaction, true, 'contention persisted through the last attempt');
+            holder.exec('ROLLBACK'); holder.close();
+
+            const failure = Object.assign(new Error('unrelated initialization failure'), {code: 'SQLITE_IOERR'});
+            attempts = closes = waits = 0;
+            Sqlite.prototype.exec = function(sql) {
+                if (sql.includes('CREATE TABLE IF NOT EXISTS settings')) { attempts++; throw failure; }
+                return exec.call(this, sql);
+            };
+            assert.throws(() => new ManagedLogSpool(root, 'tenant-a', {}, {openDeadline: clock + 10_000}),
+                error => error === failure);
+            assert.equal(attempts, 1);
+            assert.equal(waits, 0);
+            assert.equal(closes, 1);
+            Sqlite.prototype.exec = exec;
+            const recovered = new ManagedLogSpool(root, 'tenant-a');
+            recovered.assertCapacity(); recovered.close();
+        `], { encoding: 'utf8', timeout: 15_000 });
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(f.spool.exportOne(), null);
+    } finally { f.close(); }
+});
+
 test('file replacement, malicious spool roots and cross-instance access fail safe', () => {
     const f = fixture();
     try {

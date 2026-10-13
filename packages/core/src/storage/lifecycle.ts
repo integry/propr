@@ -105,7 +105,7 @@ export class StorageLifecycle {
   }
 
   /** A read claim covers the entire operation, including child Git and filesystem work. */
-  async use<T>(run: () => Promise<T>): Promise<T> {
+  async use<T>(run: () => Promise<T>, admission?: { filesystem: string; reserveBytes: number; taskBytes: number }): Promise<T> {
     const existing = this.context.getStore();
     if (existing?.active) {
       existing.users++;
@@ -119,13 +119,48 @@ export class StorageLifecycle {
     // Admission (and release) waits without a deadline; an abandoned gate still
     // requires explicit recovery, rather than failing an accepted worker job.
     await this.initialize();
-    await fs.writeFile(claim, '', { flag: 'wx' });
-    await this.exclusive(() => this.touch(), Infinity);
+    await fs.writeFile(claim, admission ? JSON.stringify({ reservedBytes: admission.taskBytes }) : '', { flag: 'wx' });
+    try {
+      await this.exclusive(async () => {
+        if (admission) await this.admit(admission);
+        await this.touch();
+      }, Infinity);
+    } catch (error) { await fs.unlink(claim); throw error; }
     const scope = { active: true, users: 1, claim };
     return this.context.run(scope, async () => {
       try { return await run(); }
       finally { await this.release(scope); }
     });
+  }
+
+  private async admit(admission: { filesystem: string; reserveBytes: number; taskBytes: number }): Promise<void> {
+    if (![admission.reserveBytes, admission.taskBytes].every(value => Number.isSafeInteger(value) && value > 0)) throw new Error('Invalid worktree admission reserve');
+    let reserved = 0;
+    for (const name of await fs.readdir(path.join(this.root, 'readers'))) {
+      const file = await fs.open(path.join(this.root, 'readers', name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const stat = await file.stat();
+        if (!stat.isFile() || stat.size > 1024) throw new StorageBusyError();
+        const value = await file.readFile('utf8');
+        if (value) {
+          const record = JSON.parse(value);
+          if (!Number.isSafeInteger(record.reservedBytes) || record.reservedBytes <= 0) throw new StorageBusyError();
+          reserved += record.reservedBytes;
+        }
+      } finally { await file.close(); }
+    }
+    let filesystem = path.resolve(admission.filesystem);
+    for (;;) {
+      try { await assertRealDirectory(filesystem); break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        const parent = path.dirname(filesystem);
+        if (parent === filesystem) throw error;
+        filesystem = parent;
+      }
+    }
+    const stat = await fs.statfs(filesystem);
+    if (stat.bavail * stat.bsize < admission.reserveBytes + reserved) throw new Error('Worktree disk pressure: admission reserve unavailable; data retained');
   }
 
   private async release(scope: { active: boolean; users: number; claim: string }): Promise<void> {

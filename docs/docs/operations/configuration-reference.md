@@ -147,9 +147,9 @@ Queue and worker behavior; see [Worker Runtime](../architecture/worker-runtime.m
 | `PROPR_AGENT_MCP_URL` | `$PROPR_INTERNAL_API_URL/api/mcp` | MCP endpoint handed to agent containers together with their run-scoped grant. Must be reachable from the agent containers' network. | Agent containers on a different network than the API. |
 | `GIT_CLONES_BASE_PATH` | `/tmp/git-processor/clones` | Where workers keep repository clones. | Optional. |
 | `GIT_WORKTREES_BASE_PATH` | `/tmp/git-processor/worktrees` | Where workers create per-job worktrees. | Optional. |
-| `PUSH_RESCUE_RETENTION_DAYS` | `14` | How long push-salvage rescue refs (`refs/propr/rescue/<taskId>--<timestamp>`, aged from the creation time in the name) and rescue bundles are kept before the daemon deletes them; also the retention of a worktree kept by the last salvage rung. `0` disables the automatic deletion. See [Maintenance → Rejected Pushes](./maintenance.md#rejected-pushes-and-the-salvage-ladder). | Optional. |
+| `PUSH_RESCUE_RETENTION_DAYS` | `14` | How long push-salvage rescue refs (`refs/propr/rescue/<taskId>--<timestamp>`, aged from the creation time in the name) and rescue bundles are kept before the daemon deletes them; retained worktrees are never age-deleted. `0` disables the automatic deletion. See [Maintenance → Rejected Pushes](./maintenance.md#rejected-pushes-and-the-salvage-ladder). | Optional. |
 | `PUSH_RESCUE_BUNDLE_DIR` | `<DATA_DIR>/rescue` (next to the SQLite database) | Durable directory for git bundles written when a rejected push cannot reach a rescue ref. Bundles are stored as `<dir>/<owner>/<repo>/<taskId>.bundle`. Must be visible to both the worker (which writes) and the daemon (which prunes). | Optional. |
-| `PUSH_RESCUE_WORKTREE_RECORD_DIR` | `<DATA_DIR>/rescue-worktrees` (next to the SQLite database) | Worker-controlled records of worktrees kept by the last salvage rung. Only these records keep a worktree past `WORKTREE_RETENTION_STRATEGY`; a `.retention-info.json` inside the worktree is informational, since repository contents could forge it. Must be visible to the worker and to whatever runs the expired-worktree cleanup. | Optional. |
+| `PUSH_RESCUE_WORKTREE_RECORD_DIR` | `<DATA_DIR>/rescue-worktrees` (next to the SQLite database) | Worker-controlled records of worktrees kept by the last salvage rung. These records protect salvage state independently of legacy `WORKTREE_RETENTION_STRATEGY`; all checkouts are retained; a `.retention-info.json` inside the worktree is informational, since repository contents could forge it. Must be visible to the worker and to whatever runs the expired-worktree cleanup. | Optional. |
 | `PUSH_RESCUE_SWEEP_INTERVAL_MS` | `21600000` (6 hours) | How often the daemon deletes expired rescue refs and bundles. | Optional tuning. |
 | `GIT_DEFAULT_BRANCH` | `main` | Default base branch for PRs. Per-repo overrides use `GIT_DEFAULT_BRANCH_<OWNER>_<REPO>` — see [Branch Configuration](../features/branch-config.md). | Optional. |
 | `GIT_SHALLOW_CLONE_DEPTH` | Empty (full clones) | Depth for shallow clones; leave empty to clone full history. | Optional. |
@@ -187,3 +187,14 @@ These variables are read from code but are not in `.env.example` — Agent Tank 
 | `PROPR_DOCS_DIR` | Bundled docs in the app image | Documentation root served to agents by the MCP docs tools. Override only to mount a different docs checkout; a version mismatch with the running API is reported as a warning. | Override only. |
 | `STAGING_ENV_FILE` | Placeholder | Path to a staging `.env` that provides base configuration for PR preview environments. Consumed by `docker-compose.yml` and `scripts/deploy-pr.sh`; the PR Preview workflow maps repository variables onto it. | Contributor PR preview deploys only. |
 | `STAGING_DB_PATH` | Placeholder | Optional staging database file for seeding PR preview environments. | Contributor PR preview deploys only. |
+
+### Worktree generated payload cleanup and admission
+
+Whole Git worktrees are retained regardless of the legacy retention strategy. The instance storage policy is disabled by default; reviewed enablement permits only proven generated payloads after at least 24 hours of durable actual inactivity. See [safe preview/execute and producer controls](./maintenance.md#repository-and-worktree-cleanup).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WORKTREE_ADMISSION_RESERVE_BYTES` | `2147483648` | Minimum free filesystem reserve required before worker admission. Positive safe integer; unknown capacity fails closed. |
+| `WORKTREE_TASK_BUDGET_BYTES` | `1073741824` | Additional capacity reservation per admitted task, shared through durable lifecycle claims. An estimate, not an enforced write quota. |
+
+Lifecycle claims are never stolen based on age. Crashed/unknown claims require investigation; failed/recovering/queued task authority prevents optional cleanup. Generated ownership records are kept under `<DATA_DIR>/storage-control/generated-payloads`. Old/unregistered dependency directories cannot be adopted merely by name, task completion or age.

@@ -1,3 +1,5 @@
+import { removeRegisteredCache } from './cacheRemoval.js';
+import { GeneratedPayloadStorage } from './generatedPayloads.js';
 import { StorageContractError, confirmationInvalid, instanceSelectionChanged, validatePreviewSelection, type CleanupPreviewArgs, type CleanupPreviewRequest, type CandidateExecution, type SavedPreview } from './cleanupRequest.js';
 import fs from 'node:fs/promises';
 import { DatabaseExports, type StorageAuthority } from './databaseExport.js';
@@ -43,6 +45,10 @@ export class InstanceStorageService {
   readonly generation = randomUUID();
   constructor(private readonly services: StorageServices) {
     if (services.databaseFile) this.exports = new DatabaseExports(path.resolve(services.databaseFile), path.join(this.root, 'exports'));
+  }
+  private payloads(): GeneratedPayloadStorage | undefined {
+    const root = this.services.roots.find(root => root.category === 'worktrees');
+    return root ? new GeneratedPayloadStorage(root.path, this.root, this.services.lifecycle) : undefined;
   }
   async capabilities() {
     return { version: 1 as const, instanceId: await this.initialize(), generation: this.exports?.generation ?? this.generation,
@@ -158,7 +164,9 @@ export class InstanceStorageService {
         this.observation = { version: 1, instanceId, observedAt: new Date().toISOString(), state: 'unknown', ownedBytes: null, categories: [], filesystems: [], scanning: false };
       }).finally(() => { this.scan = undefined; });
     }
-    return { ...(this.observation ?? { version: 1, instanceId, observedAt: null, state: 'unknown', ownedBytes: null, categories: [], filesystems: [] }), scanning: Boolean(this.scan) };
+    const generatedPayloads = await this.read<Record<string, unknown>>('generated-status.json').catch(error => { if (error.code === 'ENOENT') return { observedAt: null, reclaimableBytes: null, coverage: 'unknown: generated payloads have not been inspected; unregistered worktrees are protected' }; throw error; });
+    const lastGeneratedCleanup = await this.read<StorageCleanupResult>('last-generated-cleanup.json').catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    return { generatedPayloads: { ...generatedPayloads, lastCleanup: lastGeneratedCleanup }, ...(this.observation ?? { version: 1, instanceId, observedAt: null, state: 'unknown', ownedBytes: null, categories: [], filesystems: [] }), scanning: Boolean(this.scan) };
   }
   private async records(selectedIds?: string[]): Promise<CacheRecord[]> {
     const root = path.join(this.root, 'repositories');
@@ -209,42 +217,10 @@ export class InstanceStorageService {
     return (this.services.auditRepository ?? auditRepository)(directory, record.identity, `https://github.com/${record.owner}/${record.name}.git`, { signal, token: await this.services.remoteToken?.().catch(() => undefined), metadataFingerprint: record.metadataFingerprint });
   }
   private async removeCache(record: CacheRecord, fingerprint: string, signal: AbortSignal, authorize?: StorageAuthority): Promise<StorageProtection[]> {
-    const directory = resolveRepositoryClonePath(this.services.clonesRoot, record.owner, record.name);
-    await assertRealDirectory(this.services.clonesRoot);
-    await assertRealDirectory(path.dirname(directory));
-    const root = await fs.open(this.services.clonesRoot, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
-    const parent = await fs.open(path.dirname(directory), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
-    let quarantine: string | undefined;
-    try {
-      const source = `/proc/self/fd/${parent.fd}/${record.name}`;
-      const stat = await fs.lstat(source);
-      if (stat.isSymbolicLink() || stat.dev !== record.identity.device || stat.ino !== record.identity.inode) return ['unsafe_path'];
-      quarantine = await fs.mkdtemp(`/proc/self/fd/${root.fd}/.cleanup-`);
-      await fs.rename(source, `${quarantine}/repository`);
-      // Rename isolates the exact inode; a substituted source is retained, never followed.
-      // On interruption the quarantine remains intact and is never age-pruned.
-      const realQuarantine = await fs.realpath(`${quarantine}/repository`);
-      const final = await this.auditCache(realQuarantine, record, signal);
-      if (signal.aborted || final.reasons.length || final.fingerprint !== fingerprint) {
-        // Restore only when the original name is still absent; lifecycle peers cannot race
-        // here. If an external writer replaced it, retain both directories for recovery.
-        const occupied = await fs.lstat(source).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
-        if (!occupied) await fs.rename(`${quarantine}/repository`, source);
-        return signal.aborted ? ['busy'] : final.reasons.length ? final.reasons : ['changed'];
-      }
-      try { await authorize?.(); }
-      catch (error) {
-        const occupied = await fs.lstat(source).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
-        if (!occupied) await fs.rename(`${quarantine}/repository`, source);
-        throw error;
-      }
-      await fs.rm(`${quarantine}/repository`, { recursive: true });
-      await fs.unlink(path.join(this.root, 'repositories', `${record.id}.json`));
-      return [];
-    } finally {
-      if (quarantine) await fs.rmdir(quarantine).catch(() => undefined);
-      await parent.close(); await root.close();
-    }
+    return removeRegisteredCache(record, fingerprint, signal, {
+      clonesRoot: this.services.clonesRoot, root: this.root, authorize,
+      auditCache: (directory, cache, abortSignal) => this.auditCache(directory, cache, abortSignal),
+    });
   }
   private async unregisteredCandidates(registered: CacheRecord[]): Promise<StorageCandidate[]> {
     const candidates: StorageCandidate[] = [];
@@ -281,6 +257,14 @@ export class InstanceStorageService {
           Object.assign(fingerprints, evaluated.fingerprints);
           continue;
         }
+        if (category === 'worktrees' && this.payloads()) {
+          const policy = await this.policy();
+          const payloads = await this.payloads()!.preview(busy, policy.idleHours, signal, policy.enabled);
+          await this.write('generated-status.json', { observedAt: new Date().toISOString(), reclaimableBytes: payloads.reduce((sum, candidate) => sum + (candidate.protectedReasons.length ? 0 : candidate.estimatedBytes ?? 0), 0), candidates: payloads, coverage: 'partial: rotating batch; unregistered payloads and whole Git worktrees are protected; task byte budgets are admission estimates, not filesystem quotas' });
+          candidates.push(...payloads, { id: 'worktrees-coverage', category: 'worktrees', estimatedBytes: null, protectedReasons: ['unknown_ownership'] });
+          for (const candidate of payloads) if (!candidate.protectedReasons.length) fingerprints[candidate.id] = 'generated-v1';
+          continue;
+        }
         if (category !== 'repository_caches') {
           candidates.push({ id: category, category, estimatedBytes: null, protectedReasons: ['unsupported'] });
           continue;
@@ -297,7 +281,11 @@ export class InstanceStorageService {
       const confirmation = randomUUID();
       const preview: StorageCleanupPreview = {
         version: 1, instanceId, confirmation, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), categories, candidates,
-        impact: 'Repository caches are refetched on next use. Explicitly selected terminal task records and their database logs/history are permanently removed locally. Worktrees, filesystem logs, provider credentials, retained backups (60 days) and external services are unaffected. SQLite file size may not shrink.',
+        impact: 'Repository caches are refetched on next use. Explicitly selected terminal task records and their database logs/history are permanently removed locally. '
+          + (categories.includes('worktrees')
+            ? 'Only proven generated worktree payloads can be reclaimed. Git checkouts, registrations, private files and unregistered payloads are preserved. Empty generated roots remain. Interrupted payload removal can be partial; remaining data stays protected. '
+            : 'Worktrees, ')
+          + 'filesystem logs, provider credentials, retained backups (60 days) and external services are unaffected. SQLite file size may not shrink.',
       };
       await this.write(`preview-${confirmation}.json`, { actor, preview, fingerprints, useClock: await this.services.lifecycle.lastUse(), generation: this.generation } satisfies SavedPreview);
       await this.audit(actor, 'preview', { confirmation, categories, candidates });
@@ -319,6 +307,14 @@ export class InstanceStorageService {
     if (candidate.category === 'task_history' && this.services.taskHistory) {
       await authorize?.();
       return await this.services.taskHistory.erase(candidate.id, fingerprint) ? [] : ['changed'];
+    }
+    if (candidate.category === 'worktrees' && this.payloads()) {
+      const policy = await this.policy();
+      const clock = await this.services.lifecycle.lastUse();
+      if (!policy.enabled) return ['unsupported'];
+      if (!clock || Date.now() - clock < Math.max(24, policy.idleHours) * 3_600_000) return ['recent_use'];
+      if (await this.busy()) return ['busy'];
+      return this.payloads()!.remove(candidate.id, signal);
     }
     if (!record) return ['unknown_ownership'];
     const current = await this.evaluate(record, false, signal);
@@ -353,6 +349,7 @@ export class InstanceStorageService {
       // Results outlive confirmations and process generations for durable recovery.
       await fs.rename(path.join(this.root, `preview-${confirmation}.json`), path.join(this.root, `consumed-${confirmation}.json`));
       await this.write(`result-${confirmation}.json`, { actor, result });
+      if (saved.preview.categories.includes('worktrees')) await this.write('last-generated-cleanup.json', { ...result, at: new Date().toISOString() });
       await this.audit(actor, 'execute_started', { operationId: confirmation });
       if (actor === 'automatic') await this.validateAutomaticExecution();
       const busy = await this.busy();
@@ -369,10 +366,12 @@ export class InstanceStorageService {
         }
         if (reasons.length) result.retained.push({ id: candidate.id, reasons });
         await this.write(`result-${confirmation}.json`, { actor, result });
+        if (saved.preview.categories.includes('worktrees')) await this.write('last-generated-cleanup.json', { ...result, at: new Date().toISOString() });
       }
-      result.state = 'completed';
+      result.state = signal.aborted ? 'interrupted' : 'completed';
       await this.audit(actor, 'execute_completed', result);
       await this.write(`result-${confirmation}.json`, { actor, result });
+      if (saved.preview.categories.includes('worktrees')) await this.write('last-generated-cleanup.json', { ...result, at: new Date().toISOString() });
       this.observation = undefined; this.inventoryScan = undefined;
       return result;
     });
@@ -401,7 +400,7 @@ export class InstanceStorageService {
       });
       if (!due) return;
       const instanceId = await this.initialize();
-      const preview = await this.preview(instanceId, ['repository_caches'], 'automatic');
+      const preview = await this.preview(instanceId, ['repository_caches', 'worktrees'], 'automatic');
       // Policy may have changed during the remote observation. Recheck at execution too.
       const current = await this.policy();
       if (!current.enabled || Date.now() - (await this.services.lifecycle.lastUse() ?? Date.now()) < current.idleHours * 3_600_000) return;
