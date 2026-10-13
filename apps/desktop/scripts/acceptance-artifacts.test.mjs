@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { inflateRawSync } from 'node:zlib';
+import { runInNewContext } from 'node:vm';
 import {
   ACCEPTANCE_ARTIFACT_LEAF,
   ACCEPTANCE_JOURNEYS,
@@ -220,6 +221,70 @@ const summaryFor = () => ({
     connect: { confirmedRequests: 1, journeys: ['connect-confirmation'] },
   },
   redaction: 'Full raw surfaces were scanned; published logs retain only source, level, byte count, and digest.',
+});
+
+it('scopes the native socket service gate to the dashboard while CSP journeys also connect', async () => {
+  // Execute the runner's actual gate without launching Electron or capturing UI.
+  const source = await readFile(new URL('./run-packaged-acceptance.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('const observedServiceSummary = () => {');
+  const end = source.indexOf('\ntry {', start);
+  assert.ok(start >= 0 && end > start);
+  const journey = 'dashboard-profile-manager';
+  const { rest, socketIo } = summaryFor().services;
+  const handshake = socketIo.handshake;
+  const socketRecords = [journey, 'csp-reload-pairing', 'csp-reload-restart', 'csp-reload-saved-selection']
+    .flatMap(journey => [
+      { journey, event: 'connection', authenticated: true },
+      { journey, event: 'subscribe:queue:stats', authenticated: true,
+        genuineApplicationSubscription: true, direction: 'client-to-fixture' },
+      { journey, event: 'queue:stats:update', authenticated: true,
+        genuineApplicationEvent: true, direction: 'fixture-to-renderer' },
+    ]);
+  const context = {
+    socketRecords,
+    QUEUE_STATS_SUBSCRIBE_EVENT: 'subscribe:queue:stats',
+    QUEUE_STATS_UPDATE: 'queue:stats:update',
+    PAIRING_ID: 'fixture-pairing',
+    unique: values => [...new Set(values)],
+    requestRecords: [
+      { journey, method: 'GET', url: '/api/auth/user', hasAuthorization: true },
+      ...['', '/fixture-pairing/poll', '/fixture-pairing/activate'].map(suffix => ({
+        journey, method: 'POST', url: '/api/desktop/pairings' + suffix,
+      })),
+      { journey: 'connect-confirmation', method: 'GET', url: '/api/desktop/discovery' },
+    ],
+    mainHandshakeRecords: [{ ...handshake, journey, accepted: true,
+      scopeEqualsActive: true, originEqualsActive: true, bearerMainInjected: true }],
+    fixtureHandshakeRecords: [{ journey, accepted: true, scopeQueryPresent: true,
+      authorizationPresent: true, authorizationMatchesActivatedBearer: true }],
+    consoleRecords: [{ journey, text: '[SocketContext] Received queue stats update: {}' }],
+    rendererLifecycleRecords: [{ journey, ...handshake.rendererLifecycle }],
+    rendererCurrentUserRecords: ['request-issued', 'parsed-user-accepted', 'active-scope-accepted']
+      .map(phase => ({ journey, phase, activeScopePresent: true, scopeGeneration: 1, schemaAccepted: true })),
+    mainCurrentUserRecords: [{ journey, activeScopeGeneration: 1, accepted: true,
+      rendererBearerPresent: false, rendererCookiePresent: false, bearerMainInjected: true }],
+    fixtureCurrentUserRecords: [{ journey, source: 'renderer', requestArrived: true,
+      responseStatus: 200, classification: 'success' }],
+    currentUserValidationFailureCategory: () => rest.currentUserValidation.firstFailedPredicate,
+    socketHandshakeFailureCategory: () => 'none',
+  };
+  const summary = () => runInNewContext(source.slice(start, end) + '\nobservedServiceSummary()', { ...context });
+  const services = summary();
+  assert.equal(services.socketIo.authenticatedConnections, 1);
+  assert.equal(services.socketIo.events, 1);
+  assert.deepEqual(Array.from(services.socketIo.journeys), [journey]);
+  assert.equal(services.socketIo.handshake.mainAttempts, 1);
+  assert.equal(services.socketIo.handshake.fixtureAttempts, 1);
+
+  // Other journeys cannot mask missing dashboard evidence or excuse duplicates.
+  for (const event of ['connection', 'subscribe:queue:stats', 'queue:stats:update']) {
+    const index = socketRecords.findIndex(record => record.journey === journey && record.event === event);
+    const [record] = socketRecords.splice(index, 1);
+    assert.throws(summary, /service journeys were incomplete/, `missing ${event}`);
+    socketRecords.splice(index, 0, record, { ...record });
+    assert.throws(summary, /service journeys were incomplete/, `duplicate ${event}`);
+    socketRecords.splice(index + 1, 1);
+  }
 });
 
 const sanitizedLogFor = () => ({

@@ -1497,11 +1497,14 @@ const waitForAuthenticatedSocket = async journey => {
 const observedServiceSummary = () => {
   const restRequests = requestRecords.filter(record => record.method !== 'OPTIONS' && record.url.startsWith('/api/'));
   const authenticatedRequests = restRequests.filter(record => record.hasAuthorization);
-  const socketConnections = socketRecords.filter(record => record.event === 'connection' && record.authenticated);
-  const socketSubscriptions = socketRecords.filter(record => record.event === QUEUE_STATS_SUBSCRIBE_EVENT
+  // Match the dashboard handshake/lifecycle gate below. The CSP regression also
+  // makes genuine connections during pairing, restart, and saved selection.
+  const dashboardSocketRecords = socketRecords.filter(record => record.journey === 'dashboard-profile-manager');
+  const socketConnections = dashboardSocketRecords.filter(record => record.event === 'connection' && record.authenticated);
+  const socketSubscriptions = dashboardSocketRecords.filter(record => record.event === QUEUE_STATS_SUBSCRIBE_EVENT
     && record.authenticated && record.genuineApplicationSubscription === true
     && record.direction === 'client-to-fixture');
-  const socketEvents = socketRecords.filter(record => record.event === QUEUE_STATS_UPDATE
+  const socketEvents = dashboardSocketRecords.filter(record => record.event === QUEUE_STATS_UPDATE
     && record.authenticated && record.genuineApplicationEvent === true
     && record.direction === 'fixture-to-renderer');
   const mainHandshakes = mainHandshakeRecords.filter(record => record.journey === 'dashboard-profile-manager' && record.accepted);
@@ -1550,7 +1553,7 @@ const observedServiceSummary = () => {
     socketIo: {
       authenticatedConnections: socketConnections.length,
       events: socketEvents.length,
-      journeys: unique(socketRecords.map(record => record.journey)),
+      journeys: unique(dashboardSocketRecords.map(record => record.journey)),
       handshake: {
         mainAttempts: mainHandshakes.length,
         fixtureAttempts: fixtureHandshakes.length,
