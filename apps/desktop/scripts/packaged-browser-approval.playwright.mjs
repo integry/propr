@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { createBrowserApproval } from './packaged-browser-approval.mjs';
+import { createBrowserApproval, focusPairingControlWithKeyboard } from './packaged-browser-approval.mjs';
 
 const createFixture = async () => {
   let approval;
@@ -32,19 +32,30 @@ test('Playwright opens the fixture-owned approval URL and approves visibly with 
     fixture.approval.reset();
     await page.goto(fixture.approval.url());
     assert.equal(fixture.approval.approved(), false);
+    // Reproduce the installed login's mouse modality: programmatic focus alone
+    // does not activate :focus-visible after a mouse interaction.
+    const approve = page.getByRole('button', { name: 'Approve @acceptance-admin', exact: true });
+    await approve.evaluate(element => element.addEventListener('click', event => event.preventDefault(), { once: true }));
+    await approve.click();
+    await approve.focus();
+    assert.equal(await approve.evaluate(element => element.matches(':focus-visible')), false);
     for (const zoom of [1, 2]) {
       await page.evaluate(factor => { document.documentElement.style.zoom = String(factor); }, zoom);
       for (const button of await page.getByRole('button').all()) {
-        await button.focus();
+        await focusPairingControlWithKeyboard(button);
         const observed = await button.evaluate(element => {
           const rect = element.getBoundingClientRect();
-          return { focused: element === document.activeElement, outline: getComputedStyle(element).outlineStyle, rect: rect.toJSON(), width: innerWidth, height: innerHeight };
+          return { focused: element === document.activeElement, focusVisible: element.matches(':focus-visible'), outline: getComputedStyle(element).outlineStyle, rect: rect.toJSON(), width: innerWidth, height: innerHeight };
         });
-        assert.ok(observed.focused && observed.outline !== 'none'
+        assert.ok(observed.focused && observed.focusVisible && observed.outline !== 'none'
           && observed.rect.left >= -1 && observed.rect.right <= observed.width + 1 && observed.rect.top >= -1 && observed.rect.bottom <= observed.height + 1, JSON.stringify({ zoom, ...observed }));
       }
     }
-    await page.getByRole('button', { name: 'Approve @acceptance-admin', exact: true }).focus();
+    // A visible control removed from the tab order must not pass by forcing focus.
+    await page.locator('button[value="wrong-account"]').evaluate(element => { element.tabIndex = -1; });
+    await assert.rejects(focusPairingControlWithKeyboard(page.locator('button[value="wrong-account"]')), /not keyboard reachable/);
+    await page.locator('button[value="wrong-account"]').evaluate(element => { element.removeAttribute('tabindex'); });
+    await focusPairingControlWithKeyboard(page.getByRole('button', { name: 'Approve @acceptance-admin', exact: true }));
     await page.keyboard.press('Enter');
     await page.getByRole('heading', { name: 'Approval complete' }).waitFor();
     assert.equal(fixture.approval.approved(), true);
@@ -52,7 +63,7 @@ test('Playwright opens the fixture-owned approval URL and approves visibly with 
       fixture.approval.reset();
       await page.goto(fixture.approval.url());
       assert.equal(fixture.approval.approved(), false);
-      await page.locator(`button[value="${decision}"]`).focus();
+      await focusPairingControlWithKeyboard(page.locator(`button[value="${decision}"]`));
       await page.keyboard.press('Enter');
       await page.getByRole('heading', { name: 'Approval complete' }).waitFor();
       assert.equal(fixture.approval.status(), state);

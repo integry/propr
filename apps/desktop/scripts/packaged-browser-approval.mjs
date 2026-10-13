@@ -1,4 +1,14 @@
 // Fixture only: never imported by the production authentication path.
+// Exercise keyboard modality and the real tab order before checking :focus-visible.
+export const focusPairingControlWithKeyboard = async control => {
+  await control.waitFor({ state: 'visible' });
+  for (let tabs = 0; tabs < 40; tabs += 1) {
+    await control.page().keyboard.press('Tab');
+    if (await control.evaluate(element => element === document.activeElement)) return;
+  }
+  throw new Error('Pairing control is not keyboard reachable');
+};
+
 export const createBrowserApproval = (origin, path) => {
   let generation = 0;
   let nextLifetime = 60_000;

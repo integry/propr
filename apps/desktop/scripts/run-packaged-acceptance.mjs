@@ -1,4 +1,4 @@
-import { createBrowserApproval } from './packaged-browser-approval.mjs';
+import { createBrowserApproval, focusPairingControlWithKeyboard } from './packaged-browser-approval.mjs';
 import { SETUP_ACTIONS, prepareProductionSetup, reachSetupAction, activateSetupAction } from './packaged-acceptance-setup.mjs';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -908,11 +908,11 @@ const fillEndpoint = async (page, origin, name = 'Acceptance ProPR') => {
 
 const pairingEvidenceDirectory = join(outputDirectory, '../pairing-evidence');
 const assertVisibleKeyboardControl = async control => {
-  await control.focus();
+  await focusPairingControlWithKeyboard(control);
   if (!await control.evaluate(element => {
     const bounds = element.getBoundingClientRect();
     const style = getComputedStyle(element);
-    return element === document.activeElement && style.visibility === 'visible'
+    return element === document.activeElement && element.matches(':focus-visible') && style.visibility === 'visible'
       && style.display !== 'none' && !element.disabled && bounds.width > 0 && bounds.height > 0
       && bounds.left >= -1 && bounds.right <= innerWidth + 1 && bounds.top >= -1 && bounds.bottom <= innerHeight + 1
       && (style.outlineStyle !== 'none' || style.boxShadow !== 'none');
@@ -959,7 +959,7 @@ const approveInBrowser = async (page, origin, decision = 'approve') => {
     await approvalPage.getByRole('heading', { name: 'Approve desktop pairing' }).waitFor();
     if (installedRpm && activeJourney === 'installed-approved') await captureInstalledBrowserConfirmation(approvalPage);
     const button = approvalPage.locator(`button[value="${decision}"]`);
-    await button.focus();
+    await focusPairingControlWithKeyboard(button);
     if (!await button.evaluate(element => element === document.activeElement
       && getComputedStyle(element).outlineStyle !== 'none')) throw new Error('Approval keyboard focus is not visible');
     await approvalPage.keyboard.press('Enter');

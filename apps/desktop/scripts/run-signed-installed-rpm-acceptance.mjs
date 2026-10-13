@@ -52,6 +52,7 @@ export const runSignedInstalledRpmAcceptance = async ({ rpm, sourceRevision, sig
   const id = randomBytes(8).toString('hex');
   const name = `propr-signed-rpm-${id}`;
   const image = `propr-signed-rpm-acceptance:${id}`;
+  const network = `propr-signed-rpm-network-${id}`;
   const invocation = { name, label: `dev.propr.acceptance=${id}` };
   let evidence;
   try {
@@ -68,7 +69,10 @@ export const runSignedInstalledRpmAcceptance = async ({ rpm, sourceRevision, sig
       await cp(join(root, relative), target, { recursive: true });
     }
     await run('docker', ['build', '--platform=linux/amd64', '--tag', image, '--file', join(context, 'apps/desktop/scripts/signed-rpm-acceptance.Dockerfile'), context]);
-    await run('docker', ['run', '--rm', '--init', '--platform=linux/amd64', '--network=none', '--cap-add=SYS_ADMIN', '--cap-add=IPC_LOCK',
+    // Chromium needs an active interface for navigator.onLine, even though all
+    // fixtures use loopback. An internal bridge provides it without external egress.
+    await run('docker', ['network', 'create', '--driver=bridge', '--internal', '--label', invocation.label, network]);
+    await run('docker', ['run', '--rm', '--init', '--platform=linux/amd64', '--network', network, '--shm-size=1g', '--cap-add=SYS_ADMIN', '--cap-add=IPC_LOCK',
       '--name', name, '--label', invocation.label,
       '--mount', `type=bind,src=${rpm},dst=/input/preview.rpm,readonly`,
       '--mount', `type=bind,src=${join(directory, 'public.asc')},dst=/input/public.asc,readonly`,
@@ -88,8 +92,16 @@ export const runSignedInstalledRpmAcceptance = async ({ rpm, sourceRevision, sig
   } finally {
     try { await cleanupOwnedContainer('docker', invocation, run); }
     finally {
-      await run('docker', ['image', 'rm', image], { allowFailure: true, timeout: 30_000 });
-      await rm(directory, { recursive: true, force: true });
+      try {
+        const inspected = await run('docker', ['network', 'inspect', '--format', '{{ index .Labels "dev.propr.acceptance" }}', network], { allowFailure: true, timeout: 30_000 });
+        if (inspected.code === 0) {
+          if (inspected.stdout.trim() !== id) throw new Error('Signed RPM acceptance refused to remove a network it does not own');
+          await run('docker', ['network', 'rm', network], { timeout: 30_000 });
+        }
+      } finally {
+        try { await run('docker', ['image', 'rm', image], { allowFailure: true, timeout: 30_000 }); }
+        finally { await rm(directory, { recursive: true, force: true }); }
+      }
     }
   }
   await writeFile(join(resolve(outputDirectory), 'signed-rpm-acceptance.json'), JSON.stringify(evidence) + '\n', { flag: 'wx', mode: 0o600 });

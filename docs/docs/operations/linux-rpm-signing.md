@@ -164,12 +164,15 @@ restart without credentials. Rejection, a short monotonic approval deadline, and
 a different account must leave no usable persisted credential; wrong-account
 rollback cancels its provisional activation.
 
-The container runs with `--network=none`: only acceptance loopback services are
-reachable. Browser-page routing also rejects other origins. No stored GitHub
+The container runs on its own disposable Docker `--internal` bridge with no
+external egress. Its active interface keeps Chromium's `navigator.onLine` true
+while acceptance services remain on loopback. It uses `--shm-size=1g` for Electron
+screenshot capture. Browser-page routing also rejects other origins. No stored GitHub
 credentials, real OAuth, production instance, interactive installation, or live
 test account is needed. The existing full packaged visual/axe suite runs against
 this installed executable. Additional login and approval-page images check
-keyboard focus and visible controls at narrow desktop width and 200% layout zoom.
+keyboard focus and visible controls at narrow desktop width and 200% layout zoom,
+using actual Tab navigation before requiring a `:focus-visible` ring.
 Electron uses its measured web-frame zoom; the fixture browser page uses CSS
 layout zoom, labeled separately in `pairing-evidence/usability.json`. A narrow
 desktop window is not phone coverage.
@@ -197,8 +200,8 @@ uses `SYS_ADMIN` for Chromium sandbox namespaces and `IPC_LOCK` for the syntheti
 keyring inside that container. It retains no raw process output or credential
 material. Failed installation, sandbox/keyring limitations, failed tests, and
 interruption emit no passed evidence. The owned container and image are cleaned
-up. Image construction needs registry/package/dependency access; installed
-acceptance itself is offline.
+up along with its owned internal network. Image construction needs
+registry/package/dependency access; installed acceptance has no external egress.
 
 CI retains the bounded `signed-rpm-acceptance.json` as
 `propr-desktop-installed-signed-rpm-<signing-run-id>`, and visual/accessibility
