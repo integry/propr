@@ -6,6 +6,13 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { exercisePackagedCspReload, observeCspReloadRequestFailures, correlateExpectedCspReloadConsoleRecords, sanitizedCspReloadError, sanitizedCspReloadRequestFailure } from './packaged-acceptance-csp-reload.mjs';
 
+// The required renderer boundary job provisions matching Playwright Chromium.
+// Package/unit jobs exercise the fixtures without requiring a second browser.
+const realChromiumBoundary = process.env.PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY;
+if (realChromiumBoundary !== undefined && realChromiumBoundary !== '1') {
+  throw new Error('PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY must be unset or exactly "1"');
+}
+
 const origin = 'http://127.0.0.2:41731';
 const fixture = ({ activationReloads = 1, selectionReloads = 0, restartReloads = 0,
   activationPolicyPresent = true, activationConnected = true,
@@ -530,7 +537,10 @@ test('unknown or subframe native source contexts cannot borrow top-frame evidenc
   }
 });
 
-test('exact observer preserves native denied evidence across real Chromium navigation', { timeout: 30_000 }, async t => {
+test('exact observer preserves native denied evidence across real Chromium navigation', {
+  timeout: 30_000,
+  skip: realChromiumBoundary === undefined ? 'Required in the provisioned stock Chromium boundary job' : false,
+}, async t => {
   const apiRequests = [];
   const api = createServer((request, response) => {
     apiRequests.push(request.url);

@@ -175,6 +175,11 @@ jobs:
           PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY: '1'
         run: node --test --test-name-pattern='packaged acceptance renderer variants' apps/desktop/scripts/packaged-acceptance-renderer.test.mjs
 
+      - name: Require exact CSP observer regression across real Chromium navigation
+        env:
+          PROPR_DESKTOP_REAL_CHROMIUM_BOUNDARY: '1'
+        run: node --test apps/desktop/scripts/packaged-acceptance-csp-reload.test.mjs
+
   package:
     name: Validate unsigned ${{ matrix.platform }}-${{ matrix.arch }} package
     needs: [classify, validation-version, renderer-axe-boundary]
