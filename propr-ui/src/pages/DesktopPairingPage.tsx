@@ -6,9 +6,12 @@ import { API_BASE_URL } from '../api/apiClient';
 import { pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 import {
   approveDesktopPairing,
+  DesktopPairingUnavailableError,
   getDesktopPairingApproval,
   type DesktopPairingApproval,
 } from '../api/desktopAuth';
+
+const EXPIRED_MESSAGE = 'This pairing request was not found or has expired. Start pairing again from the desktop app.';
 
 const PAIRING_ID_PATTERN = /^dpr_[A-Za-z0-9_-]{22}$/;
 
@@ -76,13 +79,41 @@ const DesktopPairingPage = () => {
     return () => { cancelled = true; };
   }, [pairingId, userId]);
 
+  const expirePairing = () => {
+    setPairing(null);
+    setChangingAccount(false);
+    setError(EXPIRED_MESSAGE);
+  };
+
+  useEffect(() => {
+    if (!pairing || pairing.status !== 'pending') return;
+    const remaining = Date.parse(pairing.expiresAt) - Date.now();
+    if (remaining <= 0) {
+      setPairing(null);
+      setChangingAccount(false);
+      setError(EXPIRED_MESSAGE);
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      setPairing(null);
+      setChangingAccount(false);
+      setError(EXPIRED_MESSAGE);
+    }, remaining);
+    return () => window.clearTimeout(timeout);
+  }, [pairing]);
+
   const approve = async () => {
     if (!user || !pairing || pairing.pairingId !== pairingId || pairing.status !== 'pending' || changingAccount || approving || cancelled) return;
+    if (Date.parse(pairing.expiresAt) <= Date.now()) { expirePairing(); return; }
     setApproving(true);
     setError('');
     try {
       setPairing(await approveDesktopPairing(pairing.pairingId));
-    } catch {
+    } catch (error) {
+      if (error instanceof DesktopPairingUnavailableError || Date.parse(pairing.expiresAt) <= Date.now()) {
+        setPairing(null);
+        setChangingAccount(false);
+      }
       setError('The pairing request could not be approved. It may have expired; start pairing again from the desktop app.');
     } finally {
       setApproving(false);
@@ -90,13 +121,19 @@ const DesktopPairingPage = () => {
   };
 
   const changeAccount = async () => {
-    if (signingOut || approving || !PAIRING_ID_PATTERN.test(pairingId)) return;
+    if (signingOut || approving || !pairing || pairing.status !== 'pending' || cancelled || !PAIRING_ID_PATTERN.test(pairingId)) return;
+    if (Date.parse(pairing.expiresAt) <= Date.now()) { expirePairing(); return; }
     setSigningOut(true);
     setError('');
     try {
       // Keep the exact request and active hosted tunnel instead of following
       // logout's generic login redirect. A full reload clears the old identity.
       await signOutBrowserSession();
+      if (Date.parse(pairing.expiresAt) <= Date.now()) {
+        expirePairing();
+        setSigningOut(false);
+        return;
+      }
       window.location.href = loginPath;
     } catch {
       setError('Could not sign out of ProPR. Check your connection and try again. Desktop access has not been approved.');

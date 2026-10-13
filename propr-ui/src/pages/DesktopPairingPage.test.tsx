@@ -3,9 +3,10 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import DesktopPairingPage from './DesktopPairingPage';
 import { AuthProvider } from '../contexts/AuthContext';
-import { approveDesktopPairing, getDesktopPairingApproval } from '../api/desktopAuth';
+import { approveDesktopPairing, getDesktopPairingApproval, DesktopPairingUnavailableError } from '../api/desktopAuth';
 
-vi.mock('../api/desktopAuth', () => ({
+vi.mock('../api/desktopAuth', async importOriginal => ({
+  ...await importOriginal<typeof import('../api/desktopAuth')>(),
   approveDesktopPairing: vi.fn(),
   getDesktopPairingApproval: vi.fn(),
 }));
@@ -16,7 +17,7 @@ const pending = {
   clientName: 'Alice’s MacBook',
   status: 'pending' as const,
   createdAt: '2026-08-29T14:00:00.000Z',
-  expiresAt: '2026-08-29T14:10:00.000Z',
+  expiresAt: new Date(Date.now() + 600_000).toISOString(),
 };
 
 describe('DesktopPairingPage', () => {
@@ -109,6 +110,30 @@ describe('DesktopPairingPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/expired/);
     expect(screen.queryByRole('button', { name: 'Approve desktop' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Change GitHub account' })).not.toBeInTheDocument();
+  });
+
+  it('removes approval and account switching after an approval-time expiry rejection', async () => {
+    vi.mocked(getDesktopPairingApproval).mockResolvedValue(pending);
+    vi.mocked(approveDesktopPairing).mockRejectedValue(new DesktopPairingUnavailableError('Pairing request was not found or has expired'));
+    renderPending();
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve desktop' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/expired/);
+    expect(screen.queryByRole('button', { name: 'Approve desktop' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Change GitHub account' })).not.toBeInTheDocument();
+    expect(approveDesktopPairing).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows retry after a transient approval failure while the request is still pending', async () => {
+    vi.mocked(getDesktopPairingApproval).mockResolvedValue(pending);
+    vi.mocked(approveDesktopPairing).mockRejectedValueOnce(new Error('Network failed'))
+      .mockResolvedValueOnce({ ...pending, status: 'approved' });
+    renderPending();
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve desktop' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be approved/);
+    expect(screen.getByRole('button', { name: 'Change GitHub account' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve desktop' }));
+    expect(await screen.findByText('Desktop paired')).toBeInTheDocument();
+    expect(approveDesktopPairing).toHaveBeenCalledTimes(2);
   });
 
   it('rejects malformed URL identifiers without making an API request', () => {
