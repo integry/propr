@@ -230,8 +230,9 @@ test('repeat starts preserve an already-running managed IPv4 UI and its persiste
         }
         response.end(JSON.stringify({ stdout }));
       } catch (error) {
+        console.error(error);
         response.statusCode = 500;
-        response.end(String(error));
+        response.end('Fake Docker daemon request failed');
       }
     });
     sub.after(() => new Promise<void>(resolve => daemon.close(() => resolve())));
