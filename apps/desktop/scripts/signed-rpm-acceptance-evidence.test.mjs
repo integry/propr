@@ -73,7 +73,10 @@ test('signed RPM runner passes its host identity and keeps evidence directories 
 });
 
 const exerciseExport = async ({ rootful = false, partial = false }) => {
-  const directory = await mkdtemp(join(tmpdir(), 'signed-rpm-export-'));
+  // CI's TMPDIR has mode 0700 and cannot be traversed after switching UID.
+  // Only the distinct-UID fixture needs /tmp as its shared, traversable parent;
+  // source and exported evidence directories retain their private permissions.
+  const directory = await mkdtemp(join(rootful ? '/tmp' : tmpdir(), 'signed-rpm-export-'));
   const source = join(directory, 'source');
   const destination = join(directory, 'evidence');
   const uid = rootful ? 1001 : process.getuid();
@@ -159,6 +162,17 @@ test('private evidence export is readable and removable after success and partia
 test('rootful export returns UID-1000 private evidence to host UID 1001/GID 1002', {
   skip: process.platform !== 'linux' || process.getuid?.() !== 0 ? 'Requires Linux root for distinct-UID export/read/cleanup' : false,
 }, async () => {
-  await exerciseExport({ rootful: true });
-  await exerciseExport({ rootful: true, partial: true });
+  const privateTmpdir = await mkdtemp(join(tmpdir(), 'signed-rpm-private-tmp-'));
+  const previousTmpdir = process.env.TMPDIR;
+  try {
+    await chmod(privateTmpdir, 0o700);
+    process.env.TMPDIR = privateTmpdir;
+    await exerciseExport({ rootful: true });
+    await exerciseExport({ rootful: true, partial: true });
+    assert.equal((await stat(privateTmpdir)).mode & 0o777, 0o700);
+  } finally {
+    if (previousTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previousTmpdir;
+    await rm(privateTmpdir, { recursive: true, force: true });
+  }
 });
