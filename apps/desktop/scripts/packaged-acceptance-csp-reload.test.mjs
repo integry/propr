@@ -424,6 +424,51 @@ test('pre-network Audits denials correlate only to unique top-frame GET fetch at
     evidence: convergedEvidence, deniedRequests: f.records }), transitionErrors());
 });
 
+test('header and meta CSP reports for one fetch supply one denied-request record', async () => {
+  const f = await requestObserverFixture();
+  for (const path of ['/api/auth/user?proprDesktopScopeGeneration=1', '/api/auth/demo-mode']) {
+    const url = origin + path;
+    f.attempt(url);
+    f.issue(url);
+    f.issue(url);
+  }
+  assert.equal(f.records.length, 2);
+  assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records: transitionErrors(), origin,
+    evidence: convergedEvidence, deniedRequests: f.records }), transitionErrors());
+  const context = diagnosticContext(transitionErrors());
+  context.cspDeniedRequests = f.records;
+  const summary = runInNewContext(`${runnerDiagnosticFunctions}; rendererErrorAcceptanceSummary()`, context);
+  assert.equal(summary.expectedErrors, 6);
+  assert.equal(summary.unexpectedErrors, 0);
+  context.consoleRecords.push({ type: 'error', journey: 'csp-reload-pairing', text: 'Unexpected error' });
+  assert.equal(runInNewContext('rendererErrorAcceptanceSummary()', context).unexpectedErrors, 1);
+});
+
+test('distinct native denial locations and phases are not deduplicated', async () => {
+  for (const mode of ['location', 'phase']) {
+    const f = await requestObserverFixture();
+    const url = origin + '/api/auth/demo-mode';
+    f.attempt(url);
+    f.issue(url);
+    if (mode === 'phase') f.phase('csp-reload-restart');
+    f.issue(url, mode === 'location' ? { sourceCodeLocation: { scriptId: 'other', lineNumber: 1 } } : {});
+    assert.equal(f.records.length, 2, mode);
+  }
+});
+
+test('a repeated fetch after a denial invalidates the earlier unique-request evidence', async () => {
+  const f = await requestObserverFixture();
+  for (const path of ['/api/auth/user?proprDesktopScopeGeneration=1', '/api/auth/demo-mode']) {
+    const url = origin + path;
+    f.attempt(url);
+    f.issue(url);
+    f.attempt(url);
+    f.issue(url);
+  }
+  assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records: transitionErrors(), origin,
+    evidence: convergedEvidence, deniedRequests: f.records }), []);
+});
+
 test('missing, duplicate, wrong-method and cross-phase attempts cannot exempt CSP errors', async () => {
   for (const mode of ['missing', 'duplicate', 'POST', 'cross-phase']) {
     const f = await requestObserverFixture();

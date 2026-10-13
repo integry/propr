@@ -89,7 +89,14 @@ export const observeCspReloadRequestFailures = async ({ page, origin, pageId, jo
     if (attempt?.method !== 'GET' || typeof attempt.url !== 'string'
       || fixtureRequest(attempt.url, origin) === 'other') return;
     const previous = attempts.get(attempt.url);
-    attempts.set(attempt.url, { journey: journey(), count: (previous?.count ?? 0) + 1 });
+    // A later fetch makes this URL ambiguous, including evidence already emitted.
+    for (const record of previous?.denials.values() ?? []) {
+      record.mainFrame = false;
+      record.method = 'unknown';
+      record.resourceType = 'unknown';
+    }
+    attempts.set(attempt.url, { journey: journey(), count: (previous?.count ?? 0) + 1,
+      denials: new Map() });
   });
   session.on('Audits.issueAdded', ({ issue }) => {
     const denial = issue?.details?.contentSecurityPolicyIssueDetails;
@@ -98,11 +105,19 @@ export const observeCspReloadRequestFailures = async ({ page, origin, pageId, jo
       || denial.contentSecurityPolicyViolationType !== 'kURLViolation'
       || fixtureRequest(denial.blockedURL, origin) === 'other') return;
     const attempt = attempts.get(denial.blockedURL);
-    records.push({ scenario: 'csp-reload', pageId, mainFrame: attempt?.count === 1,
-      journey: attempt?.journey, failureJourney: journey(), url: denial.blockedURL,
+    const failureJourney = journey();
+    // The response header and meta policy produce identical Audits issues for
+    // one fetch. Deduplicate only within that invocation and failure phase,
+    // retaining distinct native details and every renderer console error.
+    const key = JSON.stringify({ failureJourney, denial });
+    if (attempt?.denials.has(key)) return;
+    const record = { scenario: 'csp-reload', pageId, mainFrame: attempt?.count === 1,
+      journey: attempt?.journey, failureJourney, url: denial.blockedURL,
       method: attempt?.count === 1 ? 'GET' : 'unknown',
       resourceType: attempt?.count === 1 ? 'fetch' : 'unknown',
-      errorText: 'net::ERR_BLOCKED_BY_CSP' });
+      errorText: 'net::ERR_BLOCKED_BY_CSP' };
+    records.push(record);
+    attempt?.denials.set(key, record);
   });
   await session.send('Audits.enable');
   const install = ({ marker, origin }) => {
