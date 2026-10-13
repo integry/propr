@@ -327,15 +327,20 @@ export async function prepareAdmittedAgent(args: string[], options: AdmissionOpt
     }
 }
 
+/** What the spawned `docker` command was derived from. `createArgs` are the
+ * final, post-network-policy create arguments, kept separate because admission
+ * replaces them with a container start command that carries none of them. */
+export interface SpawnedAgentLaunch { createArgs: readonly string[]; environment?: NodeJS.ProcessEnv }
+
 /** Native goal sessions use the same admission, retaining it until child close
  * and confirmed container removal. Network-policy setup remains outside this. */
-export async function spawnAdmittedAgent(args: string[], spawnChild: (args: string[]) => ChildProcess): Promise<ChildProcess> {
+export async function spawnAdmittedAgent(args: string[], spawnChild: (args: string[], launch: SpawnedAgentLaunch) => ChildProcess): Promise<ChildProcess> {
     const { getExecutionOwnershipContext } = await import('../claude/docker/dockerExecutionOwnership.js');
     const taskLabel = args.find(arg => arg.startsWith('propr.task.id='));
     const admission = await prepareAdmittedAgent(args, { signal: getExecutionOwnershipContext()?.signal, taskId: taskLabel?.slice('propr.task.id='.length) });
-    if (!admission) return spawnChild(args);
+    if (!admission) return spawnChild(args, { createArgs: args });
     let child: ChildProcess;
-    try { checkAdmissionAbort(admission.signal); child = spawnChild(admission.args); }
+    try { checkAdmissionAbort(admission.signal); child = spawnChild(admission.args, { createArgs: args, environment: admission.environment }); }
     catch (error) { await admission.finish(); throw error; }
     const stop = () => { child.kill('SIGKILL'); };
     admission.signal.addEventListener('abort', stop, { once: true });

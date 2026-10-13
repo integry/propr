@@ -57,7 +57,7 @@ export const runSignedInstalledRpmAcceptance = async ({ rpm, sourceRevision, sig
   let evidence;
   try {
     await writeFile(join(directory, 'public.asc'), identity.publicKey, { mode: 0o600 });
-    await mkdir(join(directory, 'evidence'));
+    await mkdir(join(directory, 'evidence'), { mode: 0o700 });
     // Send only test code and dependency manifests to Docker, never a host
     // checkout's profiles, signing bundle, environment files, or credentials.
     const context = join(directory, 'context');
@@ -77,6 +77,7 @@ export const runSignedInstalledRpmAcceptance = async ({ rpm, sourceRevision, sig
       '--mount', `type=bind,src=${rpm},dst=/input/preview.rpm,readonly`,
       '--mount', `type=bind,src=${join(directory, 'public.asc')},dst=/input/public.asc,readonly`,
       '--mount', `type=bind,src=${join(directory, 'evidence')},dst=/evidence`,
+      '--env', `PROPR_RPM_HOST_UID=${process.getuid()}`, '--env', `PROPR_RPM_HOST_GID=${process.getgid()}`,
       '--env', `PROPR_RPM_SHA256=${rpmSha256}`, '--env', `PROPR_RPM_FINGERPRINT=${identity.fingerprint}`, '--env', `PROPR_RPM_SOURCE_SHA=${sourceRevision}`, image]);
     if (await artifactDigest() !== rpmSha256) throw new Error('Signed RPM bytes changed during acceptance');
     const checks = JSON.parse(await readFile(join(directory, 'evidence/browser.json'), 'utf8'));
@@ -86,7 +87,7 @@ export const runSignedInstalledRpmAcceptance = async ({ rpm, sourceRevision, sig
         ['configuredKeyOnly', 'nativeSignature', 'zypperInstall', 'rpmVerify', 'installedPayload', 'sourceManifest'].includes(key) || checks[key] === true])) };
     validateSignedRpmAcceptanceEvidence(evidence, evidence);
     // Do not overwrite prior evidence or merge unrelated acceptance outputs.
-    await mkdir(resolve(outputDirectory));
+    await mkdir(resolve(outputDirectory), { mode: 0o700 });
     await cp(join(directory, 'evidence/pairing-evidence'), join(resolve(outputDirectory), 'pairing-evidence'), { recursive: true });
     await cp(join(directory, 'evidence/desktop-acceptance-artifacts'), join(resolve(outputDirectory), 'desktop-acceptance-artifacts'), { recursive: true });
   } finally {

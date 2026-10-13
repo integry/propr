@@ -198,6 +198,7 @@ export interface AgentConfig {
   configPath: string;
   supportedModels: string[];
   defaultModel?: string;
+  /** Values arrive redacted as `[REDACTED]`; sending the marker back keeps the stored value. */
   envVars?: Record<string, string>;
   modelCustomLabels?: Record<string, string>;
   modelReasoningLevels?: Record<string, ReasoningLevel>;
@@ -313,7 +314,13 @@ export interface TriggerReindexAllResponse {
 
 export interface PostFollowupResponse {
   success: boolean;
-  message: string;
+  message?: string;
+  /** `unknown` when the comment was posted but its queue submission could not be confirmed. */
+  state?: 'queued' | 'unknown';
+  posted?: boolean;
+  commentId?: number;
+  jobId?: string;
+  sourceTaskId?: string;
 }
 
 export interface UserRepoPreference {

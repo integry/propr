@@ -40,7 +40,11 @@ const unwrapWirePayload = (content: string): string => {
  */
 export const readableThoughtContent = (content: string | undefined): string | null => {
   if (!content) return null;
-  const unwrapped = unwrapWirePayload(content);
+  // Legacy display heuristic: provenance is absent, so a genuine opening "Result:"
+  // is also stripped. Retain this compatibility behavior until the wire layer
+  // distinguishes transport labels from authored prose; then remove this strip.
+  // Interior mentions and raw tool output retain their original meaning.
+  const unwrapped = unwrapWirePayload(content).replace(/^\s*(?:\*\*Result:\*\*|Result:)\s*/i, '');
   const text = unwrapped.trim();
   if (!text || INTERNAL_PLACEHOLDER.test(text)) return null;
   return unwrapped === content ? content : text;

@@ -226,6 +226,37 @@ test('fetchIssuesForRepo returns [] gracefully on API error', async () => {
     assert.deepStrictEqual(issues, []);
 });
 
+test('daemon inventory resolves Codex roots with the capture-time Codex resolver', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'daemon-diagnostic-codex-'));
+    try {
+        // The plain resolver would expand this against HOME; capture refuses a
+        // custom `~` Codex path in a container, so the inventory must too.
+        fs.mkdirSync(path.join(root, 'codex-b'));
+        const result = spawnSync(process.execPath, ['--experimental-test-module-mocks', '--import', 'tsx', '--input-type=module', '-e', `
+            import assert from 'node:assert/strict';
+            import { mock } from 'node:test';
+            mock.module('@propr/core', { namedExports: {
+                loadAgents: async () => [{ id: 'codex-b', type: 'codex', enabled: true, configPath: '~/codex-b' }],
+            } });
+            const { scheduleManagedDiagnostics } = await import('./src/daemon/managedDiagnostics.ts');
+            const { managedDiagnostics } = await import('./packages/core/src/diagnostics/managedLogRuntime.ts');
+            const { resolveProviderCredentialRoot } = await import('./packages/core/src/diagnostics/providerRoots.ts');
+            assert.deepEqual(resolveProviderCredentialRoot({ provider: 'codex', configPath: '~/codex-b' }), { reason: 'unmapped-default-root' });
+            const stop = scheduleManagedDiagnostics();
+            for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+            stop();
+            const sources = managedDiagnostics().status().sources.filter(s => s.agent === 'codex-b');
+            assert.deepEqual(sources.map(s => s.source), ['unmapped-native-state']);
+        `], { encoding: 'utf8', env: { ...process.env, HOME: root, PROPR_CONTAINERIZED: '1', CODEX_CONFIG_PATH: '', HOST_CODEX_DIR: '',
+            PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a', PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool') } });
+        assert.equal(result.status, 0, result.stderr);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('fetchIssuesForRepo is exported from @propr/core', () => {
     assert.strictEqual(typeof fetchIssuesForRepo, 'function');
 });
@@ -246,7 +277,6 @@ test('daemon diagnostic scheduling requires explicit policy and valid instance b
                         let loads = 0;
                         mock.module('@propr/core', { namedExports: {
                             loadAgents: async () => { loads++; return []; },
-                            resolveConfigPath: value => value,
                         } });
                         const { scheduleManagedDiagnostics } = await import('./src/daemon/managedDiagnostics.ts');
                         const { ManagedLogSpool } = await import('./packages/core/src/diagnostics/managedLogSpool.ts');

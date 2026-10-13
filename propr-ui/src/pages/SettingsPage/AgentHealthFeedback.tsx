@@ -14,9 +14,15 @@ export default function AgentHealthFeedback({ agent, health, onLogin, onRecheck,
 }) {
   const [showUsage, setShowUsage] = useState(false);
   const usageId = useId();
+  if (health.status === 'preparing') return (
+    <div role="status" className="mt-2 min-w-0 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+      <p className="font-medium">Preparing agent image…</p>
+      <p className="mt-1">The worker is preparing this agent. This can take several minutes. Keep the worker running; availability will be checked automatically when preparation finishes.</p>
+    </div>
+  );
   if (health.status !== 'error') return null;
   const rateLimited = health.errorCode === 'rate_limit';
-  const title = rateLimited ? 'Rate Limit Exceeded'
+  const title = health.errorCode === 'preparation_failed' ? 'Agent image preparation failed' : rateLimited ? 'Rate Limit Exceeded'
     : health.errorCode === 'auth_required' ? 'Authentication Expired'
       : 'Agent unavailable';
   return (

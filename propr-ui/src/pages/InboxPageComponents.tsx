@@ -1,5 +1,5 @@
 import { PreviewThumbnails } from '../components/PreviewMedia';
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { isNotificationPreviewEligible, type Notification } from '@propr/shared';
 import {
@@ -9,9 +9,9 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import NotificationActions from '../components/Inbox/NotificationActions';
 import { ReferenceChip } from '../components/TaskList/ReferenceChips';
 import { ListSkeleton } from '../components/ui/Skeleton';
+import { triageTaskId } from './Inbox/triageVerdict';
 import {
   formatRelativeTime,
   notificationDisplayTitle,
@@ -36,23 +36,39 @@ function DetailLink({
   className,
   children,
   onOpen,
+  onSelect,
+  current,
 }: {
   notification: Notification;
   label: string;
   className: string;
   children: React.ReactNode;
   onOpen: (id: string) => void;
+  /** Takes a plain click instead of navigating; modified and middle clicks still open the destination. */
+  onSelect?: (id: string) => void;
+  current?: boolean;
 }) {
   const href = notificationHref(notification);
-  const handleClick = () => onOpen(notification.id);
+  const handleClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (onSelect && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+      event.preventDefault();
+      onSelect(notification.id);
+      return;
+    }
+    onOpen(notification.id);
+  };
   if (/^https?:\/\//i.test(href)) {
     return (
-      <a href={href} target="_blank" rel="noopener noreferrer" onClick={handleClick} aria-label={label} className={className}>
+      <a href={href} target="_blank" rel="noopener noreferrer" onClick={handleClick} aria-label={label} aria-current={current ? 'true' : undefined} className={className}>
         {children}
       </a>
     );
   }
-  return <Link to={href} onClick={handleClick} aria-label={label} className={className}>{children}</Link>;
+  return (
+    <Link to={href} onClick={handleClick} aria-label={label} aria-current={current ? 'true' : undefined} className={className}>
+      {children}
+    </Link>
+  );
 }
 
 /** System rows have no better destination, so clicking expands the full message. */
@@ -169,20 +185,40 @@ const RepositoryName: React.FC<{ repository: string }> = ({ repository }) => {
 /*
  * Each row is one grid, so every element renders once and only moves between
  * layouts. Phones stack status, time and dismiss, the title and summary (two
- * lines each), then the PR chip and repository beside the commands. Desktop
+ * lines each), then the PR chip and repository beside the preview. Desktop
  * clusters status · chip · repository · time on the left above the title and
- * summary; the fixed-width right rail holds only the preview, commands and
- * dismiss, so every row's text ends on the same edge.
+ * summary; the fixed-width right rail holds only the preview and dismiss, so
+ * every row's text ends on the same edge. Rows carry no commands: those live
+ * in the triage verdict and on the run in Tasks.
  */
-const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_auto_auto] sm:grid-cols-[auto_minmax(0,auto)_minmax(0,1fr)_16rem_2rem]';
+const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_auto_auto] sm:grid-cols-[auto_minmax(0,auto)_minmax(0,1fr)_4rem_2rem]';
 const TEXT_SPAN = 'col-start-1 col-span-3 min-w-0 pl-[18px]';
 
-export const InboxCard: React.FC<{
+/** The row open in the verdict: a teal rule and a teal tint, so it reads at a glance beside the pane. */
+const SELECTED_ROW = 'bg-teal-50 shadow-[inset_4px_0_0_0_#0d9488]';
+
+/** The phone layout: every `sm:` class dropped, for rows in the narrow queue beside the triage verdict. */
+const phoneLayout = (classes: string): string => classes.split(/\s+/).filter(name => !name.startsWith('sm:')).join(' ');
+
+interface InboxCardProps {
   notification: Notification;
   onDismiss: (id: string) => Promise<void>;
   onOpen: (id: string) => void;
   mutationsEnabled: boolean;
-}> = ({ notification, onDismiss, onOpen, mutationsEnabled }) => {
+  /** The notification open in the triage pane beside the queue. */
+  selectedId?: string | null;
+  /**
+   * On wide screens a row backed by a task opens its verdict beside the queue
+   * on a plain click; rows without a task (plans, goals' GitHub links) still
+   * open their destination directly.
+   */
+  onSelect?: (id: string) => void;
+  /** Lays the row out as on phones, for the narrow queue beside an open verdict. */
+  compact?: boolean;
+}
+
+export const InboxCard: React.FC<InboxCardProps> = ({ notification, onDismiss, onOpen, mutationsEnabled, selectedId, onSelect, compact = false }) => {
+  const rowLayout = compact ? phoneLayout : (classes: string) => classes;
   const unread = notification.readAt === null;
   const canDismiss = mutationsEnabled && notification.actions.includes('dismiss');
   const [expanded, setExpanded] = useState(false);
@@ -191,11 +227,18 @@ export const InboxCard: React.FC<{
   const inPlace = expandsInPlace(notification);
   const reference = notificationReference(notification);
   const pullRequestUrl = notificationPullRequestUrl(notification);
-  // The title link stretches over the whole row; commands and dismiss sit above it.
+  // The title link stretches over the whole row; the chip and dismiss sit above it.
   const targetClass = 'text-left after:absolute after:inset-0 after:content-[""] focus:outline-none focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-teal-500';
   const title = notificationDisplayTitle(notification);
   // System rows are grouped under the System heading, so their titles are not headings.
   const Title = inPlace ? 'div' : 'h3';
+  const selected = selectedId === notification.id;
+  const selectsVerdict = onSelect && triageTaskId(notification) !== null ? onSelect : undefined;
+  // Keyboard steps through the queue can land below the fold of its own scroll pane.
+  const articleRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (selected) articleRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [selected]);
 
   return (
     <div
@@ -204,25 +247,28 @@ export const InboxCard: React.FC<{
       {...swipe.handlers}
     >
       <article
+        ref={articleRef}
         aria-label={notification.title}
         style={{ transform: `translate3d(${swipe.offset}px, 0, 0)` }}
-        className={`relative ${ROW_GRID} min-w-0 items-center bg-white py-2 pl-4 pr-4 transition-transform hover:bg-slate-50 sm:pl-6 ${
+        className={rowLayout(`relative ${ROW_GRID} min-w-0 items-center py-2 pl-4 pr-4 transition-transform sm:pl-6 ${
+          selected ? SELECTED_ROW : 'bg-white hover:bg-slate-50'
+        } ${
           swipe.dragging ? 'duration-0' : 'duration-200 ease-out'
-        }`}
+        }`)}
       >
         <span className="col-start-1 row-start-1 flex min-w-0 items-center gap-x-1.5 text-xs leading-5 text-slate-500">
           <StatusMark notification={notification} unread={unread} />
           <span className="min-w-0 truncate font-medium text-slate-700">{notificationKindLabel(notification)}</span>
         </span>
-        <span className={`col-start-2 row-start-1 flex items-center gap-x-1.5 justify-self-end whitespace-nowrap pl-3 text-xs leading-5 text-slate-500 sm:col-start-3 sm:mr-0 sm:justify-self-start sm:pl-1.5 ${canDismiss ? 'mr-3' : ''}`}>
-          <span className="hidden sm:inline"><Dot /></span>
+        <span className={rowLayout(`col-start-2 row-start-1 flex items-center gap-x-1.5 justify-self-end whitespace-nowrap pl-3 text-xs leading-5 text-slate-500 sm:col-start-3 sm:mr-0 sm:justify-self-start sm:pl-1.5 ${canDismiss ? 'mr-3' : ''}`)}>
+          <span className={rowLayout('hidden sm:inline')}><Dot /></span>
           <time dateTime={notification.occurredAt} title={new Date(notification.occurredAt).toLocaleString()}>
             {formatRelativeTime(notification.occurredAt)}
           </time>
         </span>
-        <Title className={`${TEXT_SPAN} row-start-2 mt-1 break-words text-sm leading-5 sm:mt-0.5 ${
+        <Title className={rowLayout(`${TEXT_SPAN} row-start-2 mt-1 break-words text-sm leading-5 sm:mt-0.5 ${
           expanded ? '' : 'line-clamp-2 sm:line-clamp-1'
-        } ${unread ? 'font-semibold text-slate-900' : 'font-medium text-slate-700'}`}>
+        } ${unread ? 'font-semibold text-slate-900' : 'font-medium text-slate-700'}`)}>
           {inPlace ? (
             <button
               type="button"
@@ -233,22 +279,29 @@ export const InboxCard: React.FC<{
               {title}
             </button>
           ) : (
-            <DetailLink notification={notification} onOpen={onOpen} label={notification.title} className={targetClass}>
+            <DetailLink
+              notification={notification}
+              onOpen={onOpen}
+              onSelect={selectsVerdict}
+              current={selected}
+              label={notification.title}
+              className={targetClass}
+            >
               {title}
             </DetailLink>
           )}
         </Title>
-        <p className={`${TEXT_SPAN} row-start-3 mt-0.5 break-words text-xs leading-4 text-slate-500 ${
+        <p className={rowLayout(`${TEXT_SPAN} row-start-3 mt-0.5 break-words text-xs leading-4 text-slate-500 ${
           expanded ? 'whitespace-pre-line' : 'line-clamp-2 sm:line-clamp-1'
-        }`}>
+        }`)}>
           {notification.body}
         </p>
-        {/* Phones keep the chip and commands on one line, truncating the repository if they must; desktop grids both cells. */}
-        <div className="col-start-1 col-span-3 row-start-4 mt-2 flex items-center gap-x-3 sm:contents">
-          <span className="flex min-w-0 items-center gap-x-1.5 pl-[18px] text-xs leading-5 text-slate-500 sm:col-start-2 sm:row-start-1 sm:pl-1.5">
+        {/* Phones keep the chip and preview on one line, truncating the repository if they must; desktop grids both cells. */}
+        <div className={rowLayout('col-start-1 col-span-3 row-start-4 mt-2 flex items-center gap-x-3 sm:contents')}>
+          <span className={rowLayout('flex min-w-0 items-center gap-x-1.5 pl-[18px] text-xs leading-5 text-slate-500 sm:col-start-2 sm:row-start-1 sm:pl-1.5')}>
             {reference && (
               <>
-                <span className="hidden sm:inline"><Dot /></span>
+                <span className={rowLayout('hidden sm:inline')}><Dot /></span>
                 {pullRequestUrl ? (
                   <a href={pullRequestUrl} target="_blank" rel="noopener noreferrer"
                     onClick={() => onOpen(notification.id)}
@@ -259,25 +312,20 @@ export const InboxCard: React.FC<{
                 ) : <span className="flex-none"><ReferenceChip title={reference.title}>{reference.label}</ReferenceChip></span>}
               </>
             )}
-            <span className="hidden sm:inline"><Dot /></span>
+            <span className={rowLayout('hidden sm:inline')}><Dot /></span>
             <RepositoryName repository={notificationRepository(notification)} />
           </span>
-          <div className="relative z-10 ml-auto flex flex-none items-center justify-end gap-2 empty:hidden sm:col-start-4 sm:row-span-3 sm:row-start-1 sm:ml-0">
+          <div className={rowLayout('relative z-10 ml-auto flex flex-none items-center justify-end gap-2 empty:hidden sm:col-start-4 sm:row-span-3 sm:row-start-1 sm:ml-0')}>
             {isNotificationPreviewEligible(notification) && (
               <PreviewThumbnails media={notification.previewMedia} limit={1} size="rail" />
             )}
-            <NotificationActions
-              notification={notification}
-              mutationsEnabled={mutationsEnabled}
-              onCommandSent={() => onDismiss(notification.id)}
-            />
           </div>
         </div>
         {canDismiss && (
           <button
             type="button"
             onClick={dismiss}
-            className="relative z-10 col-start-3 row-start-1 -my-1.5 -mr-2 flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 active:bg-slate-100 sm:col-start-5 sm:row-span-3 sm:row-start-1 sm:my-0 sm:mr-0 sm:h-6 sm:w-6 sm:justify-self-end sm:rounded sm:hover:bg-slate-100"
+            className={rowLayout('relative z-10 col-start-3 row-start-1 -my-1.5 -mr-2 flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 active:bg-slate-100 sm:col-start-5 sm:row-span-3 sm:row-start-1 sm:my-0 sm:mr-0 sm:h-6 sm:w-6 sm:justify-self-end sm:rounded sm:hover:bg-slate-100')}
             aria-label={`Dismiss ${notification.title}`}
             title="Dismiss"
           >
@@ -289,11 +337,8 @@ export const InboxCard: React.FC<{
   );
 };
 
-interface InboxListProps {
+interface InboxListProps extends Omit<InboxCardProps, 'notification'> {
   notifications: Notification[];
-  onDismiss: (id: string) => Promise<void>;
-  onOpen: (id: string) => void;
-  mutationsEnabled: boolean;
 }
 
 export const InboxList: React.FC<InboxListProps> = ({ notifications, ...cardProps }) => (

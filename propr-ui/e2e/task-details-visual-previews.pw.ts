@@ -139,8 +139,10 @@ test('collapses the scrolled mobile header into one line and keeps Files Changed
   const more = bar.getByRole('button', { name: 'More task actions' });
   await expect(more).toBeVisible();
   const moreBox = (await more.boundingBox())!;
+  // The compact overflow control reserves a 44px tap target.
   expect(moreBox.width).toBeGreaterThanOrEqual(44);
   expect(moreBox.height).toBeGreaterThanOrEqual(44);
+  expect(await more.evaluate(node => parseFloat(getComputedStyle(node).borderRadius))).toBeGreaterThan(0);
   await expect(bar.getByRole('button', { name: 'Follow Up' })).toHaveCount(0);
   // The title block's status badge has scrolled behind the bar, not through it.
   const badge = details.getByText('Completed', { exact: true }).first();
@@ -174,10 +176,13 @@ test('collapses the scrolled mobile header into one line and keeps Files Changed
   expect(Math.abs(alertBox.y - (movedHeading.y + movedHeading.height) - gapBefore)).toBeLessThanOrEqual(1);
   await expect(heading.locator('..')).toHaveCSS('position', 'static');
 
+  const scrollBeforeSheet = await details.evaluate(node => node.scrollTop);
   // The overflow rises as a bottom sheet of full-width rows, not a popover over the page.
   await more.click();
   const sheet = page.getByRole('dialog', { name: 'Task actions' });
   await expect(sheet).toBeVisible();
+  await expect(page.locator('body')).toHaveCSS('position', 'fixed');
+  await expect(details).toHaveCSS('overflow', 'hidden');
   // It slides up from below the screen, then rests on its bottom edge.
   await expect.poll(async () => {
     const box = (await sheet.boundingBox())!;
@@ -203,6 +208,8 @@ test('collapses the scrolled mobile header into one line and keeps Files Changed
   await sheet.getByRole('button', { name: 'Cancel' }).click();
   await expect(sheet).toBeHidden();
   await expect(more).toBeFocused();
+  await expect(details).toHaveCSS('overflow-y', 'auto');
+  expect(await details.evaluate(node => node.scrollTop)).toBe(scrollBeforeSheet);
   expect(await noHorizontalOverflow(page)).toBe(true);
 });
 

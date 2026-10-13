@@ -20,7 +20,9 @@ export const createBrowserApproval = (origin, path) => {
   let opened = false;
   let wrongAccount = false;
   const reset = () => { lifetime = nextLifetime; nextLifetime = 60_000; generation++; state = 'pending'; opened = false; wrongAccount = false; };
-  const url = () => `${origin}${path}?attempt=${generation}`;
+  // Bootstrap must satisfy the shared query-free pairing handoff contract.
+  // Bind the generation only after the browser follows that canonical URL.
+  const url = () => `${origin}${path}`;
   const handle = (request, response, bodyText) => {
     const target = new URL(request.url, origin);
     if (target.pathname !== path) return false;
@@ -30,7 +32,11 @@ export const createBrowserApproval = (origin, path) => {
       response.end(text);
       return true;
     };
-    if (state !== 'pending' || target.search !== `?attempt=${generation}`) return finish(409, 'Approval unavailable');
+    if (state !== 'pending') return finish(409, 'Approval unavailable');
+    if (request.method === 'GET' && !target.search) {
+      return finish(303, '', { Location: `${url()}?attempt=${generation}` });
+    }
+    if (target.search !== `?attempt=${generation}`) return finish(409, 'Approval unavailable');
     if (request.method === 'GET') {
       opened = true;
       return finish(200, `<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve desktop pairing</title>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ListPlus, Check, ChevronDown, ExternalLink } from 'lucide-react';
+import { ListPlus, Check, ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
 import { createTodo, getCategories, RepoTodoCategory } from '../api/repoTodosApi';
 import RepositorySelector, { RepoOption } from './RepositorySelector';
 import { getPlannerSettings, savePlannerSettings } from '../hooks/usePlannerSettings';
@@ -170,19 +170,33 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
         disabled={disabled}
         title={disabled ? 'Demo mode is read-only' : 'Quick add to-do'}
         className={layout === 'inline'
-          ? 'flex min-h-12 w-full items-center gap-3 rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed'
+          ? 'flex min-h-12 w-full items-center gap-3 px-4 py-3 text-left text-sm text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed'
           : 'flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed'}
         aria-label="Quick add to-do"
+        aria-expanded={layout === 'inline' ? isOpen : undefined}
       >
-        <ListPlus className="w-4 h-4" />
-        <span className={layout === 'inline' ? '' : 'hidden lg:inline'}>To-Do</span>
+        {layout === 'inline' ? (
+          // Matches the Create sheet's list rows: icon tile, label, chevron.
+          <>
+            <span className="flex h-8 w-8 flex-none items-center justify-center rounded-lg bg-primary-50 text-primary-700">
+              <ListPlus className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <span className="min-w-0 flex-1 truncate font-medium">Quick To-Do</span>
+            <ChevronRight className={`h-4 w-4 flex-none text-slate-400 transition-transform ${isOpen ? 'rotate-90' : ''}`} aria-hidden="true" />
+          </>
+        ) : (
+          <>
+            <ListPlus className="w-4 h-4" />
+            <span className="hidden lg:inline">To-Do</span>
+          </>
+        )}
       </button>
 
       {/* Popover */}
       {isOpen && (
         <div
           className={layout === 'inline'
-            ? 'mt-2 border border-slate-200 bg-white'
+            ? 'border-t border-slate-100 bg-slate-50'
             : 'desktop-toolbar-popover absolute right-0 top-full z-50 mt-1 w-[320px] min-w-[320px] border border-slate-200 bg-white shadow-xl'}
         >
           {showSuccess ? (

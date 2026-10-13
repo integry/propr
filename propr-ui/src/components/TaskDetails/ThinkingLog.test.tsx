@@ -35,3 +35,13 @@ describe('ThinkingLog summary', () => {
     expect(screen.queryByText('SUMMARY')).not.toBeInTheDocument();
   });
 });
+
+describe('ThinkingLog layout', () => {
+  it('stacks each entry in one column on a phone and keeps the gutter column from sm up', () => {
+    render(<ThinkingLog events={[{ type: 'thought', content: 'Implement the retry guard', timestamp: '2026-10-05T10:00:00Z' }]} streaming />);
+    const gutter = screen.getByText('ACTION').parentElement!.parentElement!;
+    expect(gutter).toHaveClass('sm:w-[100px]', 'sm:flex-col');
+    expect(gutter).not.toHaveClass('w-[100px]');
+    expect(gutter.parentElement).toHaveClass('flex-col', 'sm:flex-row');
+  });
+});

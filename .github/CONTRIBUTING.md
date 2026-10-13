@@ -6,7 +6,7 @@ Thanks for your interest in improving ProPR. Bug reports, documentation fixes an
 
 - **Report a bug or request a feature** in [GitHub Issues](https://github.com/integry/propr/issues). Include your ProPR version (`propr --version`), how you installed it, and the steps to reproduce.
 - **Ask a question or share feedback** in [Discord](https://discord.gg/5FjuaQBud).
-- **Influence direction** through the [roadmap](ROADMAP.md): every item links to a public issue, and pre-1.0 is when direction is cheapest to change.
+- **Influence direction** through the [roadmap](../docs/ROADMAP.md): every item links to a public issue, and pre-1.0 is when direction is cheapest to change.
 - **Report a security vulnerability privately** as described in [SECURITY.md](SECURITY.md). Please do not open a public issue for it.
 
 ## Development setup
@@ -90,4 +90,4 @@ Most pull requests in this repository are opened by ProPR itself, from branches 
 
 ## License
 
-ProPR is licensed under the [Apache License 2.0](LICENSE). Unless you state otherwise, contributions you submit are licensed under the same terms, as set out in section 5 of the license.
+ProPR is licensed under the [Apache License 2.0](../LICENSE). Unless you state otherwise, contributions you submit are licensed under the same terms, as set out in section 5 of the license.

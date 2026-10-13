@@ -6,18 +6,23 @@ const origin = 'http://127.0.0.2:41731';
 const fixture = () => {
   const approval = createBrowserApproval(origin, '/api/desktop/pairings/fixture/browser');
   approval.reset();
-  const request = (method, { url = approval.url(), headers = {}, body = '' } = {}) => {
+  let navigationUrl = `${approval.url()}?attempt=1`;
+  const request = (method, { url = navigationUrl, headers = {}, body = '' } = {}) => {
     const result = {};
     const response = { writeHead: (status, headers) => Object.assign(result, { status, headers }), end: html => { result.html = html; } };
     result.handled = approval.handle({ method, url, headers }, response, body);
     return result;
   };
   const open = () => {
+    const handoff = request('GET', { url: approval.url() });
+    assert.equal(handoff.status, 303);
+    assert.equal(handoff.headers['Set-Cookie'], undefined);
+    navigationUrl = handoff.headers.Location;
     const response = request('GET');
     assert.equal(response.status, 200);
     return response.headers['Set-Cookie'].split(';')[0];
   };
-  return { approval, request, open };
+  return { approval, request, open, navigationUrl: () => navigationUrl };
 };
 
 test('browser GET remains pending; explicit same-origin form approval unlocks activation', () => {
@@ -44,11 +49,16 @@ test('unopened, wrong-origin, missing-cookie, invalid and replayed approvals can
     assert.equal(f.request('POST', { headers: { origin, cookie }, body }).status, 400);
     assert.equal(f.approval.approved(), false);
   }
-  const staleUrl = f.approval.url();
+  const staleUrl = f.navigationUrl();
   f.approval.reset();
   assert.equal(f.request('GET', { url: staleUrl }).status, 409);
+  assert.equal(f.request('POST', { headers: { origin, cookie }, body: 'decision=approve' }).status, 409);
+  const currentCookie = f.open();
+  assert.equal(f.request('POST', { url: staleUrl, headers: { origin, cookie: currentCookie }, body: 'decision=approve' }).status, 409);
   assert.equal(f.request('POST', { headers: { origin, cookie }, body: 'decision=approve' }).status, 403);
+  assert.equal(f.request('POST', { url: f.approval.url(), headers: { origin, cookie: currentCookie }, body: 'decision=approve' }).status, 409);
   assert.equal(f.approval.approved(), false);
+  assert.equal(f.request('POST', { headers: { origin, cookie: currentCookie }, body: 'decision=approve' }).status, 200);
 });
 
 for (const [decision, status] of [['reject', 'rejected'], ['expire', 'expired'], ['wrong-account', 'approved']]) {

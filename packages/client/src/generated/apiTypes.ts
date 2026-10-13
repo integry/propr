@@ -205,7 +205,7 @@ export interface InstanceRepositoryInventory {
     name: string;
     category: "database_config" | "repository_caches" | "worktrees" | "salvage" | "logs_artifacts" | "provider_credentials" | "task_history";
     estimatedBytes: number | null;
-    protectedReasons: Array<"busy" | "unknown_use" | "recent_use" | "unknown_ownership" | "unsafe_path" | "private_work" | "worktrees" | "local_history" | "salvage" | "remote_unavailable" | "unknown_git_state" | "changed" | "unsupported">;
+    protectedReasons: Array<"partial_generated_cleanup" | "busy" | "unknown_use" | "recent_use" | "unknown_ownership" | "unsafe_path" | "private_work" | "worktrees" | "local_history" | "salvage" | "remote_unavailable" | "unknown_git_state" | "changed" | "unsupported">;
   }>;
 }
 
@@ -248,7 +248,7 @@ export interface InstanceStoragePreview {
     name?: string;
     category: "database_config" | "repository_caches" | "worktrees" | "salvage" | "logs_artifacts" | "provider_credentials" | "task_history";
     estimatedBytes: number | null;
-    protectedReasons: Array<"busy" | "unknown_use" | "recent_use" | "unknown_ownership" | "unsafe_path" | "private_work" | "worktrees" | "local_history" | "salvage" | "remote_unavailable" | "unknown_git_state" | "changed" | "unsupported">;
+    protectedReasons: Array<"partial_generated_cleanup" | "busy" | "unknown_use" | "recent_use" | "unknown_ownership" | "unsafe_path" | "private_work" | "worktrees" | "local_history" | "salvage" | "remote_unavailable" | "unknown_git_state" | "changed" | "unsupported">;
   }>;
 }
 
@@ -266,7 +266,7 @@ export interface InstanceStorageResult {
   deleted: string[];
   retained: Array<{
     id: string;
-    reasons: Array<"busy" | "unknown_use" | "recent_use" | "unknown_ownership" | "unsafe_path" | "private_work" | "worktrees" | "local_history" | "salvage" | "remote_unavailable" | "unknown_git_state" | "changed" | "unsupported">;
+    reasons: Array<"partial_generated_cleanup" | "busy" | "unknown_use" | "recent_use" | "unknown_ownership" | "unsafe_path" | "private_work" | "worktrees" | "local_history" | "salvage" | "remote_unavailable" | "unknown_git_state" | "changed" | "unsupported">;
   }>;
 }
 
@@ -277,6 +277,21 @@ export interface InstanceStorageUsage {
   state: "complete" | "partial" | "unknown" | "unsupported";
   scanning: boolean;
   ownedBytes: number | null;
+  /** Last bounded generated-payload proof, protected reasons and durable result. Observations may be stale or partial; unregistered worktrees remain protected. */
+  generatedPayloads?: {
+    observedAt: string | null;
+    reclaimableBytes: number | null;
+    coverage: string;
+    candidates?: Array<{
+      id: string;
+      category: "database_config" | "repository_caches" | "worktrees" | "salvage" | "logs_artifacts" | "provider_credentials" | "task_history";
+      estimatedBytes: number | null;
+      protectedReasons: Array<"partial_generated_cleanup" | "busy" | "unknown_use" | "recent_use" | "unknown_ownership" | "unsafe_path" | "private_work" | "worktrees" | "local_history" | "salvage" | "remote_unavailable" | "unknown_git_state" | "changed" | "unsupported">;
+    }>;
+    lastCleanup: {
+      [key: string]: unknown;
+    } | null;
+  };
   categories: Array<{
     category: "database_config" | "repository_caches" | "worktrees" | "salvage" | "logs_artifacts" | "provider_credentials" | "task_history";
     bytes: number | null;

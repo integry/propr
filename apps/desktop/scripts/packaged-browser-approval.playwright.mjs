@@ -20,6 +20,39 @@ const createFixture = async () => {
   return { origin, approval, close: () => new Promise(resolve => server.close(resolve)) };
 };
 
+test('canonical browser handoff binds navigation and rejects an old form even after the cookie is replaced', async () => {
+  const { chromium } = await import('playwright');
+  const fixture = await createFixture();
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    const stalePage = await context.newPage();
+    fixture.approval.reset();
+    const handoff = fixture.approval.url();
+    assert.equal(new URL(handoff).search, '');
+    await stalePage.goto(handoff);
+    const staleUrl = stalePage.url();
+    assert.equal(new URL(staleUrl).search, '?attempt=1');
+    fixture.approval.reset();
+    assert.equal(fixture.approval.url(), handoff);
+    const currentPage = await context.newPage();
+    await currentPage.goto(handoff);
+    assert.equal(new URL(currentPage.url()).search, '?attempt=2');
+    assert.equal((await context.cookies())[0].value, '2');
+    await stalePage.getByRole('button', { name: 'Approve @acceptance-admin', exact: true }).click();
+    await stalePage.getByText('Approval unavailable', { exact: true }).waitFor();
+    assert.equal(fixture.approval.approved(), false);
+    assert.equal((await context.request.get(staleUrl)).status(), 409);
+    await currentPage.getByRole('button', { name: 'Approve @acceptance-admin', exact: true }).click();
+    await currentPage.getByRole('heading', { name: 'Approval complete' }).waitFor();
+    assert.equal(fixture.approval.approved(), true);
+    assert.equal((await context.request.post(currentPage.url(), {
+      headers: { Origin: fixture.origin }, form: { decision: 'approve' },
+    })).status(), 409);
+  } finally { if (browser) await browser.close(); await fixture.close(); }
+});
+
 test('Playwright opens the fixture-owned approval URL and approves visibly with the keyboard at narrow width and 200% layout zoom', async () => {
   const { chromium } = await import('playwright');
   const fixture = await createFixture();

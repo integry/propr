@@ -62,7 +62,7 @@ const approveFixture = async (fixture, url, decision = 'approve') => {
   const opened = await fetch(url);
   assert.equal(opened.status, 200);
   const cookie = opened.headers.get('set-cookie').split(';')[0];
-  const response = await fetch(url, { method: 'POST', headers: { Origin: fixture.origin, Cookie: cookie }, body: `decision=${decision}` });
+  const response = await fetch(opened.url, { method: 'POST', headers: { Origin: fixture.origin, Cookie: cookie }, body: `decision=${decision}` });
   assert.equal(response.status, 200);
 };
 
@@ -307,6 +307,10 @@ test('HTTP fixture never supplies a provisional token or activation before expli
   const post = async (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   try {
     const start = await (await post(`${f.origin}/api/desktop/pairings`, {})).json();
+    assert.equal(new URL(start.approvalUrl).search, '');
+    assert.equal(shared.normalizeDesktopPairingApprovalUrl({
+      apiBaseUrl: f.origin, pairingId: start.pairingId, approvalUrl: start.approvalUrl,
+    }), start.approvalUrl);
     const base = `${f.origin}/api/desktop/pairings/${start.pairingId}`;
     for (const open of [false, true]) {
       if (open) await fetch(start.approvalUrl);

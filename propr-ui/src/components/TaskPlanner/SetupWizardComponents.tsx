@@ -2,7 +2,7 @@ import React, { useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Sparkles, ChevronDown, Check } from 'lucide-react';
 import { ProviderLogo } from '../ui/ProviderLogo';
-import { MODEL_INFO_MAP } from '../../config/modelDefinitions';
+import { formatModelName } from '../../utils/modelDisplay';
 import { useAgentsLoader } from './setupWizardHooks';
 import { useAnchoredPopover } from './useAnchoredPopover';
 import { useInstanceDefaultModel } from './useInstanceDefaultModel';
@@ -44,7 +44,7 @@ const splitModelValue = (value: string): { agent: string | null; model: string }
   return separator === -1 ? { agent: null, model: value } : { agent: value.slice(0, separator), model: value.slice(separator + 1) };
 };
 
-const modelDisplayName = (modelId: string) => MODEL_INFO_MAP[modelId]?.name || modelId;
+const modelDisplayName = (modelId: string) => formatModelName(modelId);
 
 interface ModelMenuOption {
   value: string;

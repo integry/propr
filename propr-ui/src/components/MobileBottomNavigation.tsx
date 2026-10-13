@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import {
   BookMarked,
   Bot,
-  ChevronDown,
-  ChevronUp,
+  ChartColumn,
+  ChevronRight,
   CircleCheck,
   CircleAlert,
   Cpu,
@@ -14,11 +14,13 @@ import {
   LogOut,
   MoreHorizontal,
   Plug,
+  Plus,
   ScrollText,
   Settings,
   Target,
   ShieldCheck,
-  X,
+  Workflow,
+  type LucideIcon,
 } from 'lucide-react';
 import type { HeaderStats } from '../hooks/useHeaderStats';
 import type { CurrentUser } from '../api/proprTypes';
@@ -26,7 +28,8 @@ import { userHasPermission } from '../contexts/AuthContext';
 import AgentTankSidebar from './AgentTankSidebar';
 import UserAvatar from './UserAvatar';
 import QuickAddTodo from './QuickAddTodo';
-import { getCreationActions } from './creationActions';
+import { creationActions } from './creationActions';
+import BottomSheet from './MobileBottomSheet';
 
 interface MobileBottomNavigationProps {
   user: CurrentUser | null;
@@ -36,50 +39,66 @@ interface MobileBottomNavigationProps {
   systemHealth: HeaderStats['systemHealth'];
 }
 
-const focusableSelector = [
-  'a[href]',
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'textarea:not([disabled])',
-  'details > summary',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
+type SheetId = 'create' | 'more' | 'usage';
 
 const pathMatches = (pathname: string, path: string): boolean =>
   pathname === path || pathname.startsWith(`${path}/`);
 
-const getNavigationState = (pathname: string) => {
-  const newTask = pathname === '/tasks/new';
+// The Create sheet lists the work an engineer starts most often first.
+const CREATE_ORDER = ['task', 'goal', 'plan', 'automation'] as const;
+const createItems = CREATE_ORDER.map(id => creationActions.find(action => action.id === id)!);
+
+const getNavigationState = (pathname: string, search: string) => {
+  const creating = createItems.some(action => `${pathname}${search}` === action.to);
   return {
-    inbox: pathMatches(pathname, '/inbox'),
     dashboard: pathname === '/',
-    newTask,
-    repositories: pathMatches(pathname, '/repositories') || pathMatches(pathname, '/summaries'),
-    more: (pathMatches(pathname, '/tasks') && !newTask) || pathMatches(pathname, '/plans') ||
-      (pathMatches(pathname, '/studio') && !newTask) ||
-      pathMatches(pathname, '/ai-agents') || pathMatches(pathname, '/llm-logs') ||
-      pathMatches(pathname, '/mcp-logs') ||
-      pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members') || pathMatches(pathname, '/goals'),
+    tasks: pathMatches(pathname, '/tasks') && pathname !== '/tasks/new',
+    creating,
+    inbox: pathMatches(pathname, '/inbox'),
+    more: !creating && (
+      pathMatches(pathname, '/goals') || pathMatches(pathname, '/plans') ||
+      (pathMatches(pathname, '/studio') && pathname !== '/studio/new') ||
+      (pathMatches(pathname, '/automations') && pathname !== '/automations/new') ||
+      pathMatches(pathname, '/repositories') || pathMatches(pathname, '/summaries') ||
+      pathMatches(pathname, '/analytics') || pathMatches(pathname, '/llm-logs') ||
+      pathMatches(pathname, '/mcp-logs') || pathMatches(pathname, '/ai-agents') ||
+      pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members')
+    ),
   };
 };
 
-const getMoreItems = (user: CurrentUser | null) => [
-  { label: 'Tasks', to: '/tasks', icon: ListTodo },
-  { label: 'Plans', to: '/plans', icon: ScrollText },
-  { label: 'Goals', to: '/goals', icon: Target },
-  ...(userHasPermission(user, 'instance.manage_agents')
-    ? [{ label: 'Coding Agents', to: '/ai-agents', icon: Bot }]
-    : []),
-  { label: 'LLM Log', to: '/llm-logs', icon: Cpu },
-  // Mirrors the sidebar's Logs group, including its operator-only entry.
-  ...(userHasPermission(user, 'instance.manage_settings')
-    ? [{ label: 'MCP Log', to: '/mcp-logs', icon: Plug }]
-    : []),
-  { label: 'Settings', to: '/settings', icon: Settings },
-  ...(userHasPermission(user, 'instance.manage_members')
-    ? [{ label: 'Access', to: '/admin/members', icon: ShieldCheck }]
-    : []),
-];
+interface MoreItem {
+  label: string;
+  to: string;
+  icon: LucideIcon;
+}
+
+// Destinations only: creation lives behind the Create tab. Names and gates
+// mirror the desktop sidebar so a page is called the same thing everywhere.
+const getMoreGroups = (user: CurrentUser | null) => ({
+  workspace: [
+    { label: 'Goals', to: '/goals', icon: Target },
+    { label: 'Plans', to: '/plans', icon: ScrollText },
+    { label: 'Automations', to: '/automations', icon: Workflow },
+    { label: 'Repositories', to: '/repositories', icon: BookMarked },
+  ] as MoreItem[],
+  telemetry: [
+    { label: 'Analytics', to: '/analytics', icon: ChartColumn },
+    { label: 'LLM Log', to: '/llm-logs', icon: Cpu },
+    ...(userHasPermission(user, 'instance.manage_settings')
+      ? [{ label: 'MCP Log', to: '/mcp-logs', icon: Plug }]
+      : []),
+  ] as MoreItem[],
+  configuration: [
+    ...(userHasPermission(user, 'instance.manage_agents')
+      ? [{ label: 'Coding Agents', to: '/ai-agents', icon: Bot }]
+      : []),
+    { label: 'Settings', to: '/settings', icon: Settings },
+    ...(userHasPermission(user, 'instance.manage_members')
+      ? [{ label: 'Access', to: '/admin/members', icon: ShieldCheck }]
+      : []),
+  ] as MoreItem[],
+});
 
 interface MobileNavLinkProps {
   to: string;
@@ -110,9 +129,9 @@ const MobileNavLink: React.FC<MobileNavLinkProps> = ({
     }`}
   >
     {/*
-      A fixed icon slot, the height of the New Task button's pill. Without one
-      the four icon-only items were 20px tall and New Task was 32px, so every
-      label on the bar sat on a different baseline from its neighbour's.
+      A fixed icon slot, the height of the Create button's pill. Without one
+      the icon-only items were 20px tall and the pill 32px, so every label on
+      the bar sat on a different baseline from its neighbour's.
     */}
     <span className="relative flex h-8 w-9 items-center justify-center">
       {icon}
@@ -120,6 +139,78 @@ const MobileNavLink: React.FC<MobileNavLinkProps> = ({
     </span>
     <span className="max-w-full truncate">{label}</span>
   </Link>
+);
+
+const listRowClassName = 'flex min-h-12 items-center gap-3 px-4 py-3 text-sm text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500';
+
+// More rows are a step tighter than the Create sheet's (44px, still a full
+// touch target) so the whole menu fits one screen without scrolling.
+const moreRowClassName = 'flex min-h-11 items-center gap-3 px-4 py-2.5 text-sm text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500';
+
+const sectionId = (title: string) => `mobile-more-${title.toLowerCase().replace(/[^a-z]+/g, '-')}`;
+const sectionHeadingClassName = 'px-4 pb-1 pt-3 text-[11px] font-bold uppercase tracking-wider text-slate-400';
+
+const ListSection: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+  <section aria-labelledby={sectionId(title)} className="border-t border-slate-100">
+    <h3 id={sectionId(title)} className={sectionHeadingClassName}>{title}</h3>
+    <ul className="divide-y divide-slate-100">{children}</ul>
+  </section>
+);
+
+// The workspace destinations are what More is opened for, so they lead the
+// sheet as one row of tiles rather than four list rows: always above the fold,
+// and visibly weightier than the logs and settings beneath them.
+const WorkspaceSection: React.FC<{ items: MoreItem[]; onNavigate: () => void }> = ({ items, onNavigate }) => (
+  <section aria-labelledby={sectionId('Workspace')}>
+    <h3 id={sectionId('Workspace')} className={sectionHeadingClassName}>Workspace</h3>
+    <ul className="grid grid-cols-4 gap-2 px-3 pb-3 pt-1">
+      {items.map(item => (
+        <li key={item.to} className="min-w-0">
+          <Link
+            to={item.to}
+            onClick={onNavigate}
+            className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl bg-slate-50 px-1 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+          >
+            <item.icon className="h-5 w-5 flex-none text-primary-700" aria-hidden="true" />
+            <span className="max-w-full truncate">{item.label}</span>
+          </Link>
+        </li>
+      ))}
+    </ul>
+  </section>
+);
+
+const MoreLink: React.FC<{ item: MoreItem; onNavigate: () => void }> = ({ item, onNavigate }) => (
+  <li>
+    <Link to={item.to} onClick={onNavigate} className={moreRowClassName}>
+      <item.icon className="h-5 w-5 flex-none text-slate-500" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate font-medium">{item.label}</span>
+      <ChevronRight className="h-4 w-4 flex-none text-slate-400" aria-hidden="true" />
+    </Link>
+  </li>
+);
+
+const ProfileRow: React.FC<{ user: CurrentUser; onLogout: () => void }> = ({ user, onLogout }) => (
+  <div className="flex items-center gap-3 px-4 py-2.5">
+    <UserAvatar
+      user={user}
+      className="flex h-9 w-9 flex-none items-center justify-center rounded-full border border-slate-200 object-cover text-xs font-bold"
+      fallbackClassName="bg-primary-100 text-primary-700"
+      decorative
+    />
+    <div className="min-w-0 flex-1">
+      <p className="truncate text-sm font-semibold text-slate-800">{user.displayName || user.username}</p>
+      <p className="truncate text-xs text-slate-500">@{user.username}</p>
+    </div>
+    <button
+      type="button"
+      onClick={onLogout}
+      className="inline-flex min-h-10 flex-none items-center gap-2 rounded-md px-3 text-sm font-medium text-slate-600 hover:bg-red-50 hover:text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+    >
+      <LogOut className="h-4 w-4" aria-hidden="true" />
+      Sign out
+    </button>
+  </div>
 );
 
 const HealthDetails: React.FC<{ systemHealth: HeaderStats['systemHealth'] }> = ({ systemHealth }) => {
@@ -132,8 +223,8 @@ const HealthDetails: React.FC<{ systemHealth: HeaderStats['systemHealth'] }> = (
   ];
 
   return (
-    <details className="group border-t border-slate-100">
-      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-4 py-3 text-sm text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 [&::-webkit-details-marker]:hidden">
+    <details className="group">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 px-4 py-2.5 text-sm text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 [&::-webkit-details-marker]:hidden">
         {systemHealth.isHealthy ? (
           <CircleCheck className="h-5 w-5 flex-none text-green-600" aria-hidden="true" />
         ) : (
@@ -143,8 +234,7 @@ const HealthDetails: React.FC<{ systemHealth: HeaderStats['systemHealth'] }> = (
         <span className={`ml-auto text-xs font-medium ${systemHealth.isHealthy ? 'text-green-700' : 'text-amber-700'}`}>
           {systemHealth.isHealthy ? 'Healthy' : 'Needs attention'}
         </span>
-        <ChevronDown className="h-4 w-4 text-slate-400 group-open:hidden" aria-hidden="true" />
-        <ChevronUp className="hidden h-4 w-4 text-slate-400 group-open:block" aria-hidden="true" />
+        <ChevronRight className="h-4 w-4 flex-none text-slate-400 transition-transform group-open:rotate-90" aria-hidden="true" />
       </summary>
       <div className="space-y-2 bg-slate-50 px-4 py-3">
         {rows.map(([label, status]) => (
@@ -166,162 +256,96 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
   systemHealth,
 }) => {
   const location = useLocation();
-  const navigate = useNavigate();
-  const [isMoreOpen, setIsMoreOpen] = useState(false);
+  const [openSheet, setOpenSheet] = useState<SheetId | null>(null);
+  const createButtonRef = useRef<HTMLButtonElement>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
-  const sheetRef = useRef<HTMLDivElement>(null);
 
-  const closeMore = useCallback((restoreFocus = true) => {
-    setIsMoreOpen(false);
-    if (restoreFocus) moreButtonRef.current?.focus();
+  const closeCreate = useCallback(() => {
+    setOpenSheet(null);
+    createButtonRef.current?.focus();
   }, []);
+  const closeMore = useCallback(() => {
+    setOpenSheet(null);
+    moreButtonRef.current?.focus();
+  }, []);
+  const backToMore = useCallback(() => setOpenSheet('more'), []);
+  // Following a link closes the sheet without pulling focus back to the bar.
+  const closeForNavigation = () => setOpenSheet(null);
+  const toggleSheet = (sheet: SheetId) => setOpenSheet(current => (current === sheet ? null : sheet));
 
   useEffect(() => {
-    setIsMoreOpen(false);
+    setOpenSheet(null);
   }, [location.pathname, location.search, location.hash]);
 
-  useEffect(() => {
-    if (!isMoreOpen) return;
+  const active = getNavigationState(location.pathname, location.search);
+  const groups = getMoreGroups(user);
+  const showUsage = isDemoMode || userHasPermission(user, 'instance.manage_agents');
 
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    const firstFocusable = sheetRef.current?.querySelector<HTMLElement>(focusableSelector);
-    firstFocusable?.focus();
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        closeMore();
-        return;
-      }
-      if (event.key !== 'Tab' || !sheetRef.current) return;
-
-      const focusable = Array.from(sheetRef.current.querySelectorAll<HTMLElement>(focusableSelector));
-      if (focusable.length === 0) {
-        event.preventDefault();
-        sheetRef.current.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [closeMore, isMoreOpen]);
-
-  const active = getNavigationState(location.pathname);
-  const { primary, secondary } = getCreationActions(location.pathname);
-  const isCreating = `${location.pathname}${location.search}` === primary.to;
-
-  const unreadBadge = unreadCount !== null && unreadCount > 0 ? (
+  const unread = unreadCount ?? 0;
+  const unreadBadge = unread > 0 ? (
     <span className="absolute right-0 top-0 inline-flex min-w-4 items-center justify-center rounded-full bg-primary-500 px-1 text-[9px] font-bold leading-4 text-white">
-      {unreadCount > 99 ? '99+' : unreadCount}
+      {unread > 99 ? '99+' : unread}
     </span>
   ) : undefined;
 
-  const moreItems = [...secondary, ...getMoreItems(user)];
-
   return (
     <>
-      {isMoreOpen && (
-        <div className="fixed inset-0 z-50 md:hidden">
-          <div
-            data-testid="mobile-more-backdrop"
-            className="absolute inset-0 h-full w-full cursor-default bg-slate-950/45"
-            onClick={() => closeMore()}
-            aria-hidden="true"
-          />
-          <div
-            ref={sheetRef}
-            id="mobile-more-sheet"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="mobile-more-title"
-            tabIndex={-1}
-            className="absolute inset-x-0 bottom-0 max-h-[min(80vh,38rem)] overflow-y-auto rounded-t-2xl bg-white pb-[env(safe-area-inset-bottom)] shadow-2xl"
-          >
-            <div className="sticky top-0 flex items-center border-b border-slate-200 bg-white px-4 py-3">
-              <h2 id="mobile-more-title" className="text-base font-semibold text-slate-900">More</h2>
-              <button
-                type="button"
-                onClick={() => closeMore()}
-                className="ml-auto rounded-md p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                aria-label="Close More menu"
-              >
-                <X className="h-5 w-5" aria-hidden="true" />
-              </button>
-            </div>
-
-            <nav aria-label="More navigation" className="grid grid-cols-2 gap-2 p-3">
-              <div className="col-span-2">
-                <QuickAddTodo layout="inline" disabled={isDemoMode} />
-              </div>
-              {moreItems.map(item => (
-                <Link
-                  key={item.to}
-                  to={item.to}
-                  aria-disabled={isDemoMode && 'id' in item ? true : undefined}
-                  onClick={event => {
-                    if (isDemoMode && 'id' in item) {
-                      event.preventDefault();
-                      return;
-                    }
-                    closeMore(false);
-                  }}
-                  className="flex min-h-12 items-center gap-3 rounded-lg border border-slate-200 px-3 py-2.5 text-sm font-medium text-slate-700 transition-colors aria-disabled:cursor-not-allowed aria-disabled:opacity-50 hover:border-slate-300 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                >
-                  <item.icon className="h-5 w-5 text-slate-500" aria-hidden="true" />
-                  {item.label}
-                </Link>
+      {openSheet === 'create' && (
+        <BottomSheet id="mobile-create-sheet" title="Create" closeLabel="Close Create menu" onClose={closeCreate}>
+          <nav aria-label="Create">
+            <ul className="divide-y divide-slate-100">
+              {createItems.map(action => (
+                <li key={action.id}>
+                  <Link to={action.to} onClick={closeForNavigation} className={listRowClassName}>
+                    <span className="flex h-8 w-8 flex-none items-center justify-center rounded-lg bg-primary-50 text-primary-700">
+                      <action.icon className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-medium">{action.label}</span>
+                    <ChevronRight className="h-4 w-4 flex-none text-slate-400" aria-hidden="true" />
+                  </Link>
+                </li>
               ))}
-            </nav>
+              <li>
+                <QuickAddTodo layout="inline" disabled={isDemoMode} />
+              </li>
+            </ul>
+          </nav>
+        </BottomSheet>
+      )}
 
-            <HealthDetails systemHealth={systemHealth} />
+      {openSheet === 'more' && (
+        <BottomSheet id="mobile-more-sheet" title="More" closeLabel="Close More menu" onClose={closeMore}>
+          {user && <ProfileRow user={user} onLogout={onLogout} />}
 
-            {(isDemoMode || userHasPermission(user, 'instance.manage_agents')) && (
-              <AgentTankSidebar
-                allowManualRefresh={!isDemoMode}
-                className="border-t border-slate-100"
-              />
-            )}
+          <nav aria-label="More navigation">
+            <WorkspaceSection items={groups.workspace} onNavigate={closeForNavigation} />
+            <ListSection title="Telemetry & system">
+              {groups.telemetry.map(item => <MoreLink key={item.to} item={item} onNavigate={closeForNavigation} />)}
+              <li><HealthDetails systemHealth={systemHealth} /></li>
+              {showUsage && (
+                <li className="empty:hidden">
+                  <AgentTankSidebar layout="summary" onOpenDetails={() => setOpenSheet('usage')} />
+                </li>
+              )}
+            </ListSection>
+            <ListSection title="Configuration">
+              {groups.configuration.map(item => <MoreLink key={item.to} item={item} onNavigate={closeForNavigation} />)}
+            </ListSection>
+          </nav>
+        </BottomSheet>
+      )}
 
-            {user && (
-              <div className="border-t border-slate-100 p-4">
-                <div className="flex items-center gap-3">
-                  <UserAvatar
-                    user={user}
-                    className="flex h-10 w-10 flex-none items-center justify-center rounded-full border border-slate-200 object-cover text-xs font-bold"
-                    fallbackClassName="bg-primary-100 text-primary-700"
-                    decorative
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-slate-800">{user.displayName || user.username}</p>
-                    <p className="truncate text-xs text-slate-500">@{user.username}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={onLogout}
-                    className="inline-flex min-h-10 items-center gap-2 rounded-md px-3 text-sm font-medium text-slate-600 hover:bg-red-50 hover:text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-                  >
-                    <LogOut className="h-4 w-4" aria-hidden="true" />
-                    Sign out
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+      {openSheet === 'usage' && (
+        <BottomSheet
+          id="mobile-usage-sheet"
+          title="API & quota usage"
+          closeLabel="Close usage"
+          onClose={closeMore}
+          onBack={backToMore}
+          backLabel="Back to More"
+        >
+          <AgentTankSidebar allowManualRefresh={!isDemoMode} expandAll />
+        </BottomSheet>
       )}
 
       <nav
@@ -329,64 +353,63 @@ const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
         className="mobile-bottom-navigation fixed inset-x-0 bottom-0 z-40 flex h-[calc(4rem+env(safe-area-inset-bottom))] border-t border-slate-200 bg-white/95 shadow-[0_-4px_16px_rgba(15,23,42,0.08)] backdrop-blur md:hidden"
       >
         <MobileNavLink
-          to="/inbox"
-          label="Inbox"
-          active={active.inbox}
-          accessibleLabel={unreadCount !== null && unreadCount > 0
-            ? `Inbox, ${unreadCount} unread notifications`
-            : 'Inbox'}
-          icon={<Inbox className="h-5 w-5" aria-hidden="true" />}
-          badge={unreadBadge}
-        />
-        {/*
-          The dashboard is a primary tab, named and drawn the way the sidebar
-          names and draws it. This slot used to be "Activity" under a pulse
-          icon — a name nothing else in the app uses, on a tab that opened
-          Tasks while the dashboard itself hid under More. Tasks is in More now.
-        */}
-        <MobileNavLink
           to="/"
           label="Dashboard"
           active={active.dashboard}
           icon={<LayoutDashboard className="h-5 w-5" aria-hidden="true" />}
         />
+        {/* Tasks and their agents' progress are what a phone is checked for;
+            Repositories, a configuration page, moved into More. */}
+        <MobileNavLink
+          to="/tasks"
+          label="Tasks"
+          active={active.tasks}
+          icon={<ListTodo className="h-5 w-5" aria-hidden="true" />}
+        />
         <button
+          ref={createButtonRef}
           type="button"
-          onClick={() => {
-            if (!isDemoMode) navigate(primary.to);
-          }}
+          onClick={() => toggleSheet('create')}
           disabled={isDemoMode}
-          aria-current={isCreating ? 'page' : undefined}
-          aria-label={isDemoMode ? `${primary.label} unavailable in demo mode` : primary.label}
+          aria-haspopup="dialog"
+          aria-expanded={openSheet === 'create'}
+          aria-controls="mobile-create-sheet"
+          aria-current={active.creating ? 'page' : undefined}
+          aria-label={isDemoMode ? 'Create unavailable in demo mode' : 'Create'}
           className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 disabled:text-slate-400 ${
-            isCreating ? 'text-primary-800' : 'text-primary-700'
+            active.creating || openSheet === 'create' ? 'text-primary-800' : 'text-primary-700'
           }`}
         >
           <span className={`flex h-8 w-9 items-center justify-center rounded-lg ${isDemoMode ? 'bg-slate-200' : 'bg-primary-600 text-white shadow-sm'}`}>
-            <primary.icon className="h-4 w-4" aria-hidden="true" />
+            <Plus className="h-5 w-5" aria-hidden="true" />
           </span>
-          {/* Centered flex children keep their intrinsic width unless constrained;
-              truncate alone cannot clip a label wider than its tab. */}
-          <span className="max-w-full truncate">{primary.label}</span>
+          <span className="max-w-full truncate">Create</span>
         </button>
         <MobileNavLink
-          to="/repositories"
-          label="Repositories"
-          active={active.repositories}
-          icon={<BookMarked className="h-5 w-5" aria-hidden="true" />}
+          to="/inbox"
+          label="Inbox"
+          active={active.inbox}
+          accessibleLabel={unread > 0
+            ? `Inbox, ${unread} unread notifications`
+            : 'Inbox'}
+          icon={<Inbox className="h-5 w-5" aria-hidden="true" />}
+          badge={unreadBadge}
         />
         <button
           ref={moreButtonRef}
           type="button"
-          onClick={() => setIsMoreOpen(open => !open)}
-          aria-expanded={isMoreOpen}
+          onClick={() => toggleSheet('more')}
+          aria-haspopup="dialog"
+          aria-expanded={openSheet === 'more'}
           aria-controls="mobile-more-sheet"
           aria-current={active.more ? 'page' : undefined}
           className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 ${
-            active.more || isMoreOpen ? 'text-primary-700' : 'text-slate-500 hover:text-slate-800'
+            active.more || openSheet === 'more' || openSheet === 'usage' ? 'text-primary-700' : 'text-slate-500 hover:text-slate-800'
           }`}
         >
-          <MoreHorizontal className="h-5 w-5" aria-hidden="true" />
+          <span className="flex h-8 w-9 items-center justify-center">
+            <MoreHorizontal className="h-5 w-5" aria-hidden="true" />
+          </span>
           <span>More</span>
         </button>
       </nav>

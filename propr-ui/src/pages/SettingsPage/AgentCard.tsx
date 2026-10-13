@@ -1,3 +1,4 @@
+import { formatModelName } from '../../utils/modelDisplay';
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, ChevronUp, LogIn, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
 import { isAgentLoginSupported } from '@propr/shared';
@@ -32,7 +33,7 @@ const AliasChip: React.FC<{ alias: string; modelId: string }> = ({ alias, modelI
         type="button"
         onClick={() => void handleCopy()}
         aria-label={`Copy ${alias}`}
-        title={`${modelId} — Click to copy ${alias}`}
+        title={`${formatModelName(modelId)} — Click to copy ${alias}`}
         className="max-w-full truncate rounded-sm border border-slate-200 bg-slate-100 px-1.5 py-0.5 align-middle font-mono text-[10px] leading-4 text-slate-700 transition-colors hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
       >
         {copyStatus === 'copied' ? 'Copied' : copyStatus === 'failed' ? 'Copy failed' : alias}
@@ -47,7 +48,7 @@ const AliasChip: React.FC<{ alias: string; modelId: string }> = ({ alias, modelI
 function getModelDisplayName(modelId: string, modelInfo: typeof MODEL_INFO_MAP[string] | undefined): string {
   if (modelInfo?.name) return modelInfo.name;
   const gptMatch = modelId.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
-  if (!gptMatch) return modelId;
+  if (!gptMatch) return formatModelName(modelId);
   const suffix = gptMatch[2]
     ? ` ${gptMatch[2].split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ')}`
     : '';
@@ -124,7 +125,7 @@ const ModelRow: React.FC<{
       )}
     </div>
 
-    <AliasChip alias={modelInfo?.shortAlias || modelId} modelId={modelId} />
+    {modelInfo?.shortAlias && <AliasChip alias={modelInfo.shortAlias} modelId={modelId} />}
   </div>
 );
 
@@ -164,6 +165,10 @@ interface AgentCardProps {
   onRecheck?: () => void;
 }
 
+function shouldShowLogin(agentType: AgentType, health?: AgentHealthState): boolean {
+  return isAgentLoginSupported(agentType) && !(health?.status === 'error' && health.errorCode === 'rate_limit');
+}
+
 const AgentHeaderStatus: React.FC<{ enabled: boolean; health?: AgentHealthState }> = ({ enabled, health }) => {
   if (!enabled || health?.status === 'disabled') return (
     <span role="status" className="inline-flex items-center gap-1 text-[11px] text-slate-400">
@@ -174,7 +179,7 @@ const AgentHeaderStatus: React.FC<{ enabled: boolean; health?: AgentHealthState 
   if (health?.status !== 'ready' && health?.status !== 'checking') return null;
   const ready = health.status === 'ready';
   return (
-    <span role="status" title={ready ? `Checked with ${health.model}` : 'Checking agent…'} className="inline-flex shrink-0 items-center gap-1 text-[11px] text-slate-500">
+    <span role="status" title={ready ? `Checked with ${formatModelName(health.model || '')}` : 'Checking agent…'} className="inline-flex shrink-0 items-center gap-1 text-[11px] text-slate-500">
       <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-500' : 'animate-pulse bg-slate-400'}`} />
       {ready ? 'Ready' : <><span aria-hidden="true">Checking…</span><span className="sr-only">Checking agent…</span></>}
     </span>
@@ -318,7 +323,7 @@ const AgentCard: React.FC<AgentCardProps> = ({
                 onKeyDown={handleMenuKeyDown}
                 className="absolute right-0 top-full z-20 mt-1 w-44 rounded-md border border-slate-200 bg-white p-1 shadow-lg"
               >
-                {isAgentLoginSupported(agent.type) && !(health?.status === 'error' && health.errorCode === 'rate_limit') && (
+                {shouldShowLogin(agent.type, health) && (
                   <button type="button" role="menuitem" disabled={readOnly} onClick={() => runAction(onLogin)} className="flex min-h-9 w-full items-center gap-2 rounded px-2 text-left text-xs text-slate-700 hover:bg-slate-50 focus:bg-slate-50 focus:outline-none disabled:cursor-not-allowed disabled:text-slate-300">
                     <LogIn className="h-3.5 w-3.5" aria-hidden="true" />Log in
                   </button>
@@ -342,7 +347,7 @@ const AgentCard: React.FC<AgentCardProps> = ({
         </div>
       </div>
 
-      {agent.enabled && health?.status === 'error' && (
+      {agent.enabled && (health?.status === 'error' || health?.status === 'preparing') && (
         <AgentHealthFeedback agent={agent} health={health} onLogin={onLogin} onRecheck={onRecheck} readOnly={readOnly} />
       )}
 

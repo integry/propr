@@ -245,8 +245,9 @@ async function startDockerCommand(
     }
 }
 
-function prepareExecutionCapture(options: DockerCommandOptions, args: string[], admission: AdmittedAgent | null) {
-    return prepareCommandCapture(options.diagnostics, admission?.args ?? args, { ...options.extraEnvVars, ...admission?.environment }, args);
+function prepareExecutionCapture(options: DockerCommandOptions, args: string[], admission: AdmittedAgent | null, attemptGeneration: string | undefined) {
+    const diagnostics = options.diagnostics && { ...options.diagnostics, attribution: { task: options.taskId, attempt: attemptGeneration } };
+    return prepareCommandCapture(diagnostics, admission?.args ?? args, { ...options.extraEnvVars, ...admission?.environment }, args);
 }
 
 function runDockerCommand(
@@ -256,7 +257,7 @@ function runDockerCommand(
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, extraEnvVars, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, model, costCapExempt } = options;
         const executionArgs = resolveExecutionArgs(command, withWorkflowExecutionDeadline(command, args, remainingMs), taskId, ownershipContext?.attemptGeneration);
-        const { capture, stdout: diagnosticStdout, stderr: diagnosticStderr } = prepareExecutionCapture(options, executionArgs, admission);
+        const { capture, stdout: diagnosticStdout, stderr: diagnosticStderr } = prepareExecutionCapture(options, executionArgs, admission, ownershipContext?.attemptGeneration);
         const executablePath = command;
         const namedContainer = command === 'docker' ? getDockerRunContainerName(executionArgs) : null;
         // Agent containers count toward their run's spend cap; reaching it stops

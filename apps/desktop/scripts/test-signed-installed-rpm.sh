@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+export_evidence() {
+  local source_directory=$1 evidence_directory=$2
+  [[ ${PROPR_RPM_HOST_UID:?} =~ ^[0-9]+$ && ${PROPR_RPM_HOST_GID:?} =~ ^[0-9]+$ ]]
+  # Read private acceptance-owned files as root, but create every exported entry
+  # as the invoking host identity. Even a failed/interrupted extraction leaves
+  # host-owned private directories that the host can remove. Never chown the bind
+  # mount to the fixed acceptance user or preserve archive ownership on export.
+  tar -C "$source_directory" -cf - desktop-acceptance-artifacts pairing-evidence browser.json |
+    setpriv --reuid="$PROPR_RPM_HOST_UID" --regid="$PROPR_RPM_HOST_GID" --clear-groups \
+      bash -euo pipefail -c 'umask 077; exec tar -C "$1" --no-same-owner --no-same-permissions -xf -' bash "$evidence_directory"
+}
+
 test "$(uname -m)" = x86_64
 rpm_file=/input/preview.rpm
 test "$(sha256sum "$rpm_file" | cut -d" " -f1)" = "$PROPR_RPM_SHA256"
@@ -38,8 +51,6 @@ validateDesktopRuntimeManifest(JSON.parse(readFileSync('/usr/lib/propr-desktop/r
   sourceRevision: process.env.PROPR_RPM_SOURCE_SHA, distribution: 'published',
 });
 NODE
-mkdir -p /evidence
-chown -R acceptance:acceptance /evidence
 # Fresh user, private Secret Service, no host home/keyring, no GitHub credentials.
 runuser -u acceptance -- env -i PATH="$PATH" HOME=/home/acceptance \
   PLAYWRIGHT_BROWSERS_PATH=/opt/playwright PROPR_DESKTOP_INSTALLED_RPM_ACCEPTANCE=1 \
@@ -56,7 +67,7 @@ runuser -u acceptance -- env -i PATH="$PATH" HOME=/home/acceptance \
     test -S /tmp/.X11-unix/X99
     node apps/desktop/scripts/run-packaged-acceptance.mjs
   '
-cp -a /tmp/desktop-acceptance-artifacts /tmp/pairing-evidence /tmp/browser.json /evidence/
+export_evidence /tmp /evidence
 # A post-launch verification detects package mutation during acceptance too.
 rpm -V propr-desktop > /tmp/verify
 ! test -s /tmp/verify

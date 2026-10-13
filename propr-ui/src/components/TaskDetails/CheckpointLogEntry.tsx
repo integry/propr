@@ -3,8 +3,8 @@ import { GitCommitHorizontal } from 'lucide-react';
 import type { ParsedGoalCheckpointOutput } from '@propr/shared';
 import { renderMarkdown } from './renderMarkdown';
 import type { CheckpointOutcome, PreparedThinkingLogEvent } from './checkpointLog';
+import { GUTTER_LABEL_ROW, LOG_ENTRY_GUTTER, LOG_ENTRY_GUTTER_DETAIL, LOG_ENTRY_ROW } from './logEntryLayout';
 
-const gutterLabelRow = 'flex min-h-[1.4219rem] items-center gap-1.5';
 
 const checkpointStateLabel = (outcome: CheckpointOutcome | undefined): string => {
   // The goal API exposes only its latest durable checkpoint. An unmatched declaration may be an
@@ -26,13 +26,13 @@ export const CheckpointLogEntry: React.FC<{
   if ('rejected' in declaration) {
     return (
       <div data-testid="goal-checkpoint-rejected-event" className="border-b border-slate-200 bg-slate-50/70 py-3 last:border-b-0">
-        <div className="flex items-start gap-3">
-          <div className="flex w-[100px] flex-shrink-0 flex-col items-start">
-            <div className={gutterLabelRow}>
+        <div className={LOG_ENTRY_ROW}>
+          <div className={LOG_ENTRY_GUTTER}>
+            <div className={GUTTER_LABEL_ROW}>
               <GitCommitHorizontal className="h-3 w-3 text-slate-500" />
               <span className="font-mono text-[11px] font-bold uppercase tracking-tighter text-slate-600">CHECKPOINT</span>
             </div>
-            {event.relativeTime && <span className="ml-[18px] mt-0.5 font-mono text-[10px] text-slate-500">{event.relativeTime}</span>}
+            {event.relativeTime && <span className={`font-mono text-[10px] text-slate-500 ${LOG_ENTRY_GUTTER_DETAIL}`}>{event.relativeTime}</span>}
           </div>
           <div className="min-w-0 flex-1 overflow-hidden border-l-2 border-slate-400 bg-white/70 px-3 py-2">
             {checkpoint.remainder && (
@@ -55,13 +55,13 @@ export const CheckpointLogEntry: React.FC<{
 
   return (
     <div data-testid="goal-checkpoint-event" className="border-b border-emerald-100 bg-emerald-50/40 py-3 last:border-b-0">
-      <div className="flex items-start gap-3">
-        <div className="flex w-[100px] flex-shrink-0 flex-col items-start">
-          <div className={gutterLabelRow}>
+      <div className={LOG_ENTRY_ROW}>
+        <div className={LOG_ENTRY_GUTTER}>
+          <div className={GUTTER_LABEL_ROW}>
             <GitCommitHorizontal className="h-3 w-3 text-emerald-600" />
             <span className="font-mono text-[11px] font-bold uppercase tracking-tighter text-emerald-700">CHECKPOINT</span>
           </div>
-          {event.relativeTime && <span className="ml-[18px] mt-0.5 font-mono text-[10px] text-slate-500">{event.relativeTime}</span>}
+          {event.relativeTime && <span className={`font-mono text-[10px] text-slate-500 ${LOG_ENTRY_GUTTER_DETAIL}`}>{event.relativeTime}</span>}
         </div>
         <div className="min-w-0 flex-1 overflow-hidden border-l-2 border-emerald-500 bg-white/70 px-3 py-2">
           {checkpoint.remainder && (

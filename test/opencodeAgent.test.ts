@@ -6,6 +6,7 @@ import path from 'node:path';
 import { getManagedAgentConfigPath } from '@propr/shared';
 import { OpenCodeAgent } from '../packages/core/src/agents/impl/OpenCodeAgent.js';
 import { buildOpenCodeDockerArgs, buildOpenCodePrompt, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, parseOpenCodeJsonl, parseOpenCodeStreamOutput, shouldForwardEnvVar, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { resolveProviderCredentialRoot } from '../packages/core/src/diagnostics/providerRoots.js';
 import { normalizeOpenCodeTimestamp } from '../packages/core/src/agents/impl/openCodeTimestamp.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import type { AgentConfig, TokenUsage } from '../packages/core/src/agents/types.js';
@@ -410,6 +411,23 @@ describe('OpenCodeAgent Docker args', () => {
         assert.ok(args.includes(`${dataPath}:/home/node/.local/share/opencode-source:rw`));
         assert.ok(args.includes('XDG_DATA_HOME=/tmp/propr-opencode-data'));
         assert.ok(args.includes('PROPR_EPHEMERAL_STATE=1'));
+        fs.rmSync(home, { recursive: true, force: true });
+    });
+
+    test('keeps the inferred data mount when the agent sets the reserved XDG_DATA_HOME, as diagnostics resolve it', () => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-home-'));
+        const configPath = path.join(home, '.config/opencode');
+        const dataPath = path.join(home, '.local/share/opencode');
+        fs.mkdirSync(dataPath, { recursive: true });
+        const agent = createAgent();
+        agent.config.configPath = configPath;
+        agent.config.envVars = { XDG_DATA_HOME: '/custom/data' };
+
+        const args = buildDockerArgs(agent, 'opencode-big-pickle');
+
+        assert.ok(args.includes(`${dataPath}:/home/node/.local/share/opencode-source:rw`));
+        assert.ok(!args.includes('XDG_DATA_HOME=/custom/data'));
+        assert.deepStrictEqual(resolveProviderCredentialRoot({ provider: 'opencode', configPath, credentials: agent.config.envVars }), { root: dataPath, basis: 'configured' });
         fs.rmSync(home, { recursive: true, force: true });
     });
 
