@@ -2,10 +2,10 @@ import { API_BASE_URL, apiFetch, handleApiResponse, shareInFlightApiRead } from 
 
 export interface AgentHealthResult {
   agentId: string;
-  status: 'ready' | 'error' | 'disabled';
+  status: 'ready' | 'error' | 'disabled' | 'preparing';
   model?: string;
   error?: string;
-  errorCode?: 'auth_required' | 'rate_limit' | 'unknown';
+  errorCode?: 'auth_required' | 'rate_limit' | 'unknown' | 'preparation_failed';
 }
 
 export function checkAgentHealth(agentId: string, configurationKey = agentId, fresh = false): Promise<AgentHealthResult> {

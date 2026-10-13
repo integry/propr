@@ -13,6 +13,7 @@ export function useAgentHealth(agents: AgentConfig[], paused: boolean) {
 
   useEffect(() => {
     let disposed = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
     const enabledAgents: AgentConfig[] = JSON.parse(configs);
     const currentRevisions: Record<string, number> = JSON.parse(revisionKey);
     const activeKeys = new Set<string>();
@@ -28,16 +29,28 @@ export function useAgentHealth(agents: AgentConfig[], paused: boolean) {
         }));
         requests.current.set(key, request);
       }
-      void request.then(result => {
-        if (!disposed) setResults(current => ({ ...current, [key]: result }));
-      });
+      const receive = (result: AgentHealthResult) => {
+        if (disposed) return;
+        setResults(current => ({ ...current, [key]: result }));
+        if (result.status === 'preparing') {
+          timers.push(setTimeout(() => {
+            if (disposed) return;
+            const next = checkAgentHealth(agent.id, key, false).catch((): AgentHealthResult => ({
+              agentId: agent.id, status: 'error', error: 'Could not refresh agent preparation. Check again.',
+            }));
+            requests.current.set(key, next);
+            void next.then(receive);
+          }, 2000));
+        }
+      };
+      void request.then(receive);
     }
     setResults(current => Object.fromEntries(Object.entries(current).filter(([key]) => activeKeys.has(key))));
     // Do not reuse checks after disabling, deleting, or editing an agent.
     for (const key of requests.current.keys()) {
       if (!activeKeys.has(key)) requests.current.delete(key);
     }
-    return () => { disposed = true; };
+    return () => { disposed = true; timers.forEach(clearTimeout); };
   }, [configs, revisionKey]);
 
   return {

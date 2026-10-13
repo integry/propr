@@ -1,3 +1,4 @@
+import { formatModelName } from '../../utils/modelDisplay';
 import { AgentConfig } from '../../api/proprApi';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import {
@@ -39,7 +40,7 @@ const RECOMMENDED_PR_REVIEW_ALIASES = ['opus55', 'fable51', 'sonnet55', 'astra',
 
 function formatFallbackModelName(modelId: string): string {
   const gptMatch = modelId.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
-  if (!gptMatch) return modelId;
+  if (!gptMatch) return formatModelName(modelId);
   const suffix = gptMatch[2]
     ? ` ${gptMatch[2].split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ')}`
     : '';
@@ -144,8 +145,8 @@ function buildSyntheticModel(agentType: AgentType, modelId: string): ModelInfo {
 
   return {
     id: modelId,
-    name: `${providerPrefix}${toTitleCase(rawName || modelId)}`,
-    shortName: toTitleCase(rawName || modelId),
+    name: `${providerPrefix}${formatModelName(rawName || modelId)}`,
+    shortName: formatModelName(rawName || modelId),
     shortAlias,
     githubLabel: buildSyntheticGithubLabel(agentType, modelId),
     contextWindow: '',

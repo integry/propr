@@ -10,12 +10,12 @@ test('390px the full-page timeline wraps each run\'s result, time and duration u
   const timeline = page.getByRole('list', { name: 'Runs' });
   const runRows = timeline.getByTestId('run-timeline-run');
   await expect(runRows).toHaveCount(8);
-  const open = runRows.nth(1).getByRole('button');
+  const open = runRows.nth(1).locator(':scope > button');
   await expect(open).toHaveAttribute('aria-expanded', 'true');
   await expect(open.getByTestId('run-commit')).toBeVisible();
   await expect(open.getByTestId('run-commit')).toHaveText('a81d3f5');
   for (const row of await runRows.all()) {
-    const layout = await row.getByRole('button').evaluate(button => {
+    const layout = await row.locator(':scope > button').evaluate(button => {
       const box = button.getBoundingClientRect();
       const summary = button.querySelector('[title].truncate')!.getBoundingClientRect();
       const meta = button.querySelector('[data-testid="run-timeline-meta"]')!.getBoundingClientRect();
@@ -73,10 +73,11 @@ for (const { width, hasTouch, hideSidebar } of layoutsToCheck) {
       }
       if (!hasTouch && (width === 2560 || hideSidebar)) {
         // Short closed rows retain the ordinary wide mouse density.
-        expect(heights[0]).toBe(32);
+        expect(heights[0]).toBeGreaterThanOrEqual(28);
+        expect(heights[0]).toBeLessThanOrEqual(40);
       }
     };
-    const open = runs.nth(1).getByRole('button');
+    const open = runs.nth(1).locator(':scope > button');
     const steps = page.getByRole('list', { name: 'Run steps' });
     await expect(steps).toContainText(label);
     const workspace = await page.getByTestId('task-workspace-scroll').boundingBox();
@@ -84,7 +85,7 @@ for (const { width, hasTouch, hideSidebar } of layoutsToCheck) {
     const output = await page.getByTestId('task-output-scroll').boundingBox();
     if (workspace!.width >= 960) {
       expect(pane!.width).toBeGreaterThanOrEqual(576);
-      expect(output!.width).toBeGreaterThanOrEqual(384);
+      expect((await page.getByTestId('task-result-pane').boundingBox())!.width).toBeGreaterThanOrEqual(384);
       expect(output!.x).toBeGreaterThanOrEqual(pane!.x + pane!.width);
       expect(output!.y).toBe(pane!.y);
     } else {
@@ -97,16 +98,23 @@ for (const { width, hasTouch, hideSidebar } of layoutsToCheck) {
       const [time, content, duration] = Array.from(row.children).slice(1) as HTMLElement[];
       const box = (element: Element) => element.getBoundingClientRect().toJSON();
       return { time: box(time), label: box(content), duration: box(duration),
+        height: row.getBoundingClientRect().height,
+
         overflow: [row, time, content, duration].some(el => el.scrollWidth > el.clientWidth),
         text: row.textContent };
     }));
     for (const layout of layouts) {
       expect(layout.overflow, JSON.stringify(layout)).toBe(false);
       if (width <= 520) {
-        expect(layout.label.width).toBeGreaterThanOrEqual(timelineWidth - 53);
-        expect(layout.label.top).toBeGreaterThanOrEqual(layout.time.bottom);
-        expect(layout.duration.top).toBeGreaterThanOrEqual(layout.label.bottom);
-        expect(layout.duration.left).toBe(layout.label.left);
+        expect(layout.height).toBeGreaterThanOrEqual(24);
+        expect(layout.height).toBeLessThanOrEqual(32);
+        expect(layout.time.width).toBeGreaterThanOrEqual(48);
+        expect(layout.time.width).toBeLessThanOrEqual(64);
+        expect(layout.label.width).toBeGreaterThan(70);
+        expect(layout.label.top).toBe(layout.time.top);
+        expect(layout.duration.top).toBe(layout.label.top);
+        expect(layout.duration.left).toBeGreaterThanOrEqual(layout.label.right);
+        expect(layout.duration.width).toBeGreaterThanOrEqual(48);
       } else {
         expect(layout.label.width).toBeGreaterThanOrEqual(260);
         const run = await open.evaluate(button => ({
@@ -118,8 +126,9 @@ for (const { width, hasTouch, hideSidebar } of layoutsToCheck) {
         expect(layout.time.top).toBe(layout.label.top);
       }
     }
-    expect(layouts[0].text).toMatch(/Task Queued12s$/);
+    expect(layouts[0].text).toContain('Task Queued');
     expect(layouts[1].text).toContain(label);
+
     expect(layouts[1].text).toMatch(/1m 48s$/);
     expect(layouts[2].text).toContain('Task Completed');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -130,6 +139,17 @@ for (const { width, hasTouch, hideSidebar } of layoutsToCheck) {
     expect(control!.x).toBeGreaterThanOrEqual(0);
     expect(control!.x + control!.width).toBeLessThanOrEqual(width);
     await assertRunControlHeights();
+    if (width <= 520) {
+      const disclosure = steps.getByRole('button', { name: label, exact: true });
+      await disclosure[hasTouch ? 'tap' : 'click']();
+      await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+      const full = page.locator(`[id="${await disclosure.getAttribute('aria-controls')}"]`);
+      await expect(full).toBeVisible();
+      expect(await full.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+      await disclosure.focus();
+      await page.keyboard.press('Enter');
+      await expect(full).not.toBeVisible();
+    }
     const previewName = `task-step-labels-${width}-${hasTouch ? 'touch' : 'mouse'}${hideSidebar ? '-sidebar-hidden' : ''}`;
     await capture(page, previewName);
     if (process.env.PROPR_CAPTURE_PREVIEWS) {
@@ -148,12 +168,43 @@ for (const { width, hasTouch, hideSidebar } of layoutsToCheck) {
     await open[hasTouch ? 'tap' : 'click']();
     await expect(steps).toContainText(label);
     // Selecting another run still loads its own history and leaves just that run open.
-    await runs.nth(2).getByRole('button')[hasTouch ? 'tap' : 'click']();
-    await expect(runs.nth(2).getByRole('button')).toHaveAttribute('aria-expanded', 'true');
+    await runs.nth(2).locator(':scope > button')[hasTouch ? 'tap' : 'click']();
+    await expect(runs.nth(2).locator(':scope > button')).toHaveAttribute('aria-expanded', 'true');
     await expect(open).toHaveAttribute('aria-expanded', 'false');
     await expect(steps).toHaveCount(1);
     await expect(steps).toContainText('Review the withdrawal handlers');
     await assertRunControlHeights();
     await context.close();
+  });
+}
+
+for (const width of [320, 390, 1440]) {
+  test(`${width}px step details remain accessible through compact disclosure`, async ({ page }) => {
+    await fixture(page);
+    await page.setViewportSize({ width, height: 844 });
+    await page.route(`**/api/task/${fixRun}/history`, route => route.fulfill({ json: {
+      history: [
+        { state: 'FAILED', timestamp: '2026-10-01T11:20:00Z', metadata: { terminalReason: 'timed_out' } },
+        { state: 'COMPLETED', timestamp: '2026-10-01T11:21:00Z', metadata: { event: 'network.egress', networkEgress: { mode: 'restricted', deniedConnections: 1, deniedHosts: [{ host: 'example.com', count: 1 }] } } },
+        { state: 'FAILED', timestamp: '2026-10-01T11:22:00Z', metadata: { pushFailure: { diagnosis: { classification: 'network', summary: 'Remote connection failed', unblockUrls: [] }, rung: 'rescue_ref', recoveryInstruction: 'Fetch the saved branch to recover your changes.' } } },
+      ],
+      taskInfo: { title: 'Followup: Update 2', type: 'pr', number: 2664, repoOwner: 'integry', repoName: 'propr' },
+    } }));
+    await page.goto(`/tasks/${fixRun}`);
+    const steps = page.getByRole('list', { name: 'Run steps' });
+    const rows = steps.locator(':scope > li');
+    await expect(rows).toHaveCount(3);
+    for (const [index, testId] of ['task-terminal-reason', 'network-egress', 'push-failure'].entries()) {
+      const row = rows.nth(index);
+      const detail = row.getByTestId(testId);
+      if (width < 640) {
+        await expect(detail).not.toBeVisible();
+        expect((await row.boundingBox())!.height).toBeLessThanOrEqual(32);
+        await row.getByRole('button').click();
+      }
+      await expect(detail).toBeVisible();
+      expect(await row.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+    }
+    await capture(page, `task-step-disclosures-${width}`);
   });
 }

@@ -72,7 +72,7 @@ const ModelRow: React.FC<{ row: ReviewScoreModelSummary }> = ({ row }) => {
   return (
     <tr className="border-b border-slate-100 last:border-b-0" data-testid="review-quality-row">
       <td className={`${CELL} min-w-0`}>
-        <span className={`block truncate font-medium ${row.implementer_model ? 'text-slate-800' : 'italic text-slate-500'}`} title={row.implementer_model ?? UNTRACKED_HINT}>
+        <span className={`block truncate font-medium ${row.implementer_model ? 'text-slate-800' : 'italic text-slate-500'}`} title={row.implementer_model ? label : UNTRACKED_HINT}>
           {label}
         </span>
       </td>

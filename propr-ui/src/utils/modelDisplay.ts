@@ -14,7 +14,7 @@ function toTitleCase(value: string): string {
 }
 
 export function formatGeminiModelVariant(modelId: string): string {
-  if (!modelId.startsWith(GEMINI_PREFIX)) return modelId;
+  if (!modelId.startsWith(GEMINI_PREFIX)) return formatModelName(modelId);
 
   return modelId
     .slice(GEMINI_PREFIX.length)
@@ -28,14 +28,14 @@ export function getModelDisplayName(modelId: string, options: ModelDisplayNameOp
   const modelInfo = MODEL_INFO_MAP[modelId];
 
   if (options.compactAntigravity && modelId.startsWith(ANTIGRAVITY_PREFIX)) {
-    return modelInfo?.name.replace(/^Antigravity\s+/i, '') || modelId.slice(ANTIGRAVITY_PREFIX.length);
+    return modelInfo?.name.replace(/^Antigravity\s+/i, '') || humanizeModelId(modelId.slice(ANTIGRAVITY_PREFIX.length));
   }
 
   if (options.compactGemini && modelId.startsWith(GEMINI_PREFIX)) {
     return modelInfo?.name.replace(/^Gemini\s+/i, '') || formatGeminiModelVariant(modelId);
   }
 
-  return modelInfo?.name || modelId;
+  return modelInfo?.name || formatModelName(modelId);
 }
 
 /** Families whose name is an acronym rather than a word. */
@@ -53,7 +53,7 @@ const UPPERCASE_MODEL_WORDS = new Set(['gpt', 'glm', 'llm']);
  * release date dropped.
  */
 export function humanizeModelId(modelId: string): string {
-  const parts = modelId.split('-').filter(Boolean);
+  const parts = modelId.split(/[-_\s:]+/).filter(Boolean);
   if (parts.length > 1 && /^\d{8}$/.test(parts[parts.length - 1])) parts.pop();
 
   const words: string[] = [];
@@ -70,7 +70,7 @@ export function humanizeModelId(modelId: string): string {
       words.push(isVersion ? part : toTitleCase(part));
     }
   }
-  return words.join(' ') || modelId;
+  return words.join(' ') || 'Unknown Model';
 }
 
 /**

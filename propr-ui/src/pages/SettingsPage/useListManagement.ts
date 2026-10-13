@@ -1,88 +1,58 @@
 import { useState, useCallback } from 'react';
-type SaveWhitelist = (whitelist: string[]) => void;
-type SavePrimaryLabels = (primaryLabels: string[]) => void;
-type SaveKeywords = (keywords: string[]) => void;
-type SaveIgnoreKeywords = (ignoreKeywords: string[]) => void;
+type SaveList = (items: string[]) => void;
+
+/**
+ * One tag list: the saved items plus the text still being typed. `add` takes
+ * every entry parsed from the field at once, so a pasted list becomes one
+ * updated list and one save. `minItems` keeps a required list from emptying.
+ */
+function useTagList(save: SaveList, minItems = 0) {
+  const [items, setItems] = useState<string[]>([]);
+  const [draft, setDraft] = useState('');
+
+  const add = useCallback((values: string[]) => {
+    const newItems = values.map(value => value.trim()).filter((value, index, all) =>
+      value && !items.includes(value) && all.indexOf(value) === index);
+    if (newItems.length === 0) return;
+    const newList = [...items, ...newItems];
+    setItems(newList);
+    save(newList);
+  }, [items, save]);
+
+  const remove = useCallback((item: string) => {
+    const newList = items.filter(i => i !== item);
+    if (newList.length < minItems) return;
+    setItems(newList);
+    save(newList);
+  }, [items, minItems, save]);
+
+  return { items, setItems, draft, setDraft, add, remove };
+}
 
 export function useListManagement(
-  saveWhitelist: SaveWhitelist,
-  savePrimaryLabels: SavePrimaryLabels,
-  saveKeywords: SaveKeywords,
-  saveIgnoreKeywords: SaveIgnoreKeywords
+  saveWhitelist: SaveList,
+  savePrimaryLabels: SaveList,
+  saveKeywords: SaveList,
+  saveIgnoreKeywords: SaveList
 ) {
-  const [whitelist, setWhitelist] = useState<string[]>([]);
-  const [newWhitelistItem, setNewWhitelistItem] = useState('');
-  const [primaryLabels, setPrimaryLabels] = useState<string[]>([]);
-  const [newPrimaryLabel, setNewPrimaryLabel] = useState('');
-  const [keywords, setKeywords] = useState<string[]>([]);
-  const [newKeyword, setNewKeyword] = useState('');
-  const [ignoreKeywords, setIgnoreKeywords] = useState<string[]>([]);
-  const [newIgnoreKeyword, setNewIgnoreKeyword] = useState('');
-
-  const addWhitelistItem = useCallback(() => {
-    if (!newWhitelistItem.trim() || whitelist.includes(newWhitelistItem.trim())) return;
-    const newList = [...whitelist, newWhitelistItem.trim()];
-    setWhitelist(newList);
-    setNewWhitelistItem('');
-    saveWhitelist(newList);
-  }, [newWhitelistItem, whitelist, saveWhitelist]);
-
-  const removeWhitelistItem = useCallback((item: string) => {
-    const newList = whitelist.filter(i => i !== item);
-    setWhitelist(newList);
-    saveWhitelist(newList);
-  }, [whitelist, saveWhitelist]);
-
-  const addPrimaryLabel = useCallback(() => {
-    if (!newPrimaryLabel.trim() || primaryLabels.includes(newPrimaryLabel.trim())) return;
-    const newList = [...primaryLabels, newPrimaryLabel.trim()];
-    setPrimaryLabels(newList);
-    setNewPrimaryLabel('');
-    savePrimaryLabels(newList);
-  }, [newPrimaryLabel, primaryLabels, savePrimaryLabels]);
-
-  const removePrimaryLabel = useCallback((item: string) => {
-    const newList = primaryLabels.filter(i => i !== item);
-    setPrimaryLabels(newList);
-    savePrimaryLabels(newList);
-  }, [primaryLabels, savePrimaryLabels]);
-
-  const addKeyword = useCallback(() => {
-    if (!newKeyword.trim() || keywords.includes(newKeyword.trim())) return;
-    const newList = [...keywords, newKeyword.trim()];
-    setKeywords(newList);
-    setNewKeyword('');
-    saveKeywords(newList);
-  }, [newKeyword, keywords, saveKeywords]);
-
-  const removeKeyword = useCallback((item: string) => {
-    const newList = keywords.filter(i => i !== item);
-    setKeywords(newList);
-    saveKeywords(newList);
-  }, [keywords, saveKeywords]);
-
-  const addIgnoreKeyword = useCallback(() => {
-    if (!newIgnoreKeyword.trim() || ignoreKeywords.includes(newIgnoreKeyword.trim())) return;
-    const newList = [...ignoreKeywords, newIgnoreKeyword.trim()];
-    setIgnoreKeywords(newList);
-    setNewIgnoreKeyword('');
-    saveIgnoreKeywords(newList);
-  }, [newIgnoreKeyword, ignoreKeywords, saveIgnoreKeywords]);
-
-  const removeIgnoreKeyword = useCallback((item: string) => {
-    const newList = ignoreKeywords.filter(i => i !== item);
-    setIgnoreKeywords(newList);
-    saveIgnoreKeywords(newList);
-  }, [ignoreKeywords, saveIgnoreKeywords]);
+  const whitelist = useTagList(saveWhitelist);
+  // The server rejects an empty primary label list, so the last label stays.
+  const primaryLabels = useTagList(savePrimaryLabels, 1);
+  const keywords = useTagList(saveKeywords);
+  const ignoreKeywords = useTagList(saveIgnoreKeywords);
 
   return {
-    whitelist, setWhitelist, newWhitelistItem, setNewWhitelistItem,
-    primaryLabels, setPrimaryLabels, newPrimaryLabel, setNewPrimaryLabel,
-    keywords, setKeywords, newKeyword, setNewKeyword,
-    ignoreKeywords, setIgnoreKeywords, newIgnoreKeyword, setNewIgnoreKeyword,
-    addWhitelistItem, removeWhitelistItem,
-    addPrimaryLabel, removePrimaryLabel,
-    addKeyword, removeKeyword,
-    addIgnoreKeyword, removeIgnoreKeyword,
+    whitelist: whitelist.items, setWhitelist: whitelist.setItems,
+    newWhitelistItem: whitelist.draft, setNewWhitelistItem: whitelist.setDraft,
+    primaryLabels: primaryLabels.items, setPrimaryLabels: primaryLabels.setItems,
+    newPrimaryLabel: primaryLabels.draft, setNewPrimaryLabel: primaryLabels.setDraft,
+    keywords: keywords.items, setKeywords: keywords.setItems,
+    newKeyword: keywords.draft, setNewKeyword: keywords.setDraft,
+    ignoreKeywords: ignoreKeywords.items, setIgnoreKeywords: ignoreKeywords.setItems,
+    newIgnoreKeyword: ignoreKeywords.draft, setNewIgnoreKeyword: ignoreKeywords.setDraft,
+    addWhitelistItems: whitelist.add, removeWhitelistItem: whitelist.remove,
+    addPrimaryLabels: primaryLabels.add, removePrimaryLabel: primaryLabels.remove,
+    addKeywords: keywords.add, removeKeyword: keywords.remove,
+    addIgnoreKeywords: ignoreKeywords.add, removeIgnoreKeyword: ignoreKeywords.remove,
   };
 }

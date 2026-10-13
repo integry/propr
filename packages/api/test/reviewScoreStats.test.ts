@@ -67,6 +67,8 @@ before(async () => {
     table.string('model_name');
     table.text('start_time');
     table.decimal('cost_usd', 10, 6);
+    table.integer('input_tokens');
+    table.integer('output_tokens');
   });
   await database.schema.createTable('llm_execution_details', table => {
     table.increments('detail_id');

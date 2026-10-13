@@ -206,7 +206,11 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
         autorun: options.autorun ?? true,
     };
 
-    const worker = new Worker<T, R>(queueName, job => repositoryStorageLifecycle.use(() => processorFunction(job)), workerOptions);
+    const worker = new Worker<T, R>(queueName, job => repositoryStorageLifecycle.use(() => processorFunction(job), {
+        filesystem: process.env.GIT_WORKTREES_BASE_PATH || '/tmp/git-processor/worktrees',
+        reserveBytes: Number(process.env.WORKTREE_ADMISSION_RESERVE_BYTES || 2 * 1024 ** 3),
+        taskBytes: Number(process.env.WORKTREE_TASK_BUDGET_BYTES || 1024 ** 3),
+    }), workerOptions);
 
     worker.on('completed', async (job: Job<T>, result: R) => {
         const duration = Date.now() - job.timestamp;

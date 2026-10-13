@@ -109,7 +109,7 @@ Back up:
 - The `propr-redis-data` Docker volume if you want queue state and sessions to survive a restore
 - Logs, if you need history
 
-Git clones and worktrees (under `/tmp/git-processor` by default) are a working area: clones are re-created on demand and worktrees are per-task, so they need no backup. Do not back up only `repos/` and `logs/` — they do not contain the application state. The runtime directory these paths live in is described in [Deployment → Runtime Directory Layout](./deployment.md#runtime-directory-layout).
+Git clones and worktrees (under `/tmp/git-processor` by default) can contain unpublished commits, stashes, ignored/private files and recovery state. Include these directories, their Git registrations, and salvage records/bundles in a recoverable backup; a remote clone alone is insufficient. Do not back up only `repos/` and `logs/` — they do not contain the application state. The runtime directory these paths live in is described in [Deployment → Runtime Directory Layout](./deployment.md#runtime-directory-layout).
 
 ## Repository And Worktree Cleanup
 
@@ -118,7 +118,30 @@ ProPR keeps Git state under `/tmp/git-processor` on the host. The launcher mount
 - `/tmp/git-processor/clones/` — cached clones, one per monitored repository (`GIT_CLONES_BASE_PATH`)
 - `/tmp/git-processor/worktrees/` — per-task worktrees (`GIT_WORKTREES_BASE_PATH`)
 
-Worktrees are removed automatically after each task finishes (controlled by `WORKTREE_RETENTION_STRATEGY`, default `always_delete`; failed-task worktrees may be retained briefly with a `.retention-info.json` marker for inspection). A worktree kept by the [push salvage ladder](#rejected-pushes-and-the-salvage-ladder) is retained regardless of the strategy — copy its commits out before deleting it. If disk usage grows from leftover state, stop the stack and delete stale entries under the worktrees directory; cached clones can also be deleted and are re-created on the next task for that repository.
+Worktrees are retained after completion. Cleanup may detach HEAD to free the task branch, but does not remove the checkout, branch history or worktree registration. `WORKTREE_RETENTION_STRATEGY=always_delete` is a legacy setting and does **not** authorize deletion; expiry and mtimes are never recovery proofs. Do not delete managed directories by hand to resolve disk pressure.
+
+The instance storage API provides supported dry-run and execute controls. Both require an authenticated instance administrator and, for POST, JSON plus `X-ProPR-Storage: 1`. Use your established instance API session:
+
+1. Read `GET /api/instance/storage/v1/capabilities` to obtain `instanceId`.
+2. Read `GET /api/instance/storage/v1/policy` and `GET /api/instance/storage/v1/usage`. Usage includes the latest bounded generated-payload inspection, reclaimable bytes, protected candidates, coverage gaps and last cleanup result. These observations may be stale or partial; unknown usage is not zero.
+3. Dry-run with `POST /api/instance/storage/v1/cleanup/preview`, body `{"instanceId":"…","categories":["worktrees"]}`. This does not delete data or enable policy.
+4. After separately reviewed policy enablement (`PUT /api/instance/storage/v1/policy`, body `{"instanceId":"…","enabled":true,"idleHours":24}`), repeat the preview and review candidates. Execute its short-lived confirmation with `POST /api/instance/storage/v1/cleanup/execute`, body `{"instanceId":"…","confirmation":"…"}`. Read `GET /api/instance/storage/v1/cleanup/operations/<confirmation>?instanceId=…` for its durable result. Confirmation is consumed before effects and cannot be replayed.
+
+Generated cleanup is opt-in, with a minimum **24 hours since actual last use** even for manual execution. The instance-wide durable use clock is deliberately conservative: any protected task/repository/read/queue activity resets it. Active readers, queued/failed/recovering tasks, unknown queue/database authority, and abandoned lifecycle claims prevent cleanup. Pressure never weakens these rules. Policy remains disabled by default; implementation does not enable it or clean live storage.
+
+Eligible payloads must be created empty by a trusted producer through `GeneratedPayloadStorage.generate`, with explicit regeneration semantics and a complete content fingerprint stored outside the checkout. Only `node_modules`, `.propr/cache`, `.propr/build`, and `.propr/test-cache` are allowlisted. Existing directories cannot be adopted. Producers must generate only refetchable/public or reproducible output, never copy secrets/customer inputs into these directories. Ordinary agent installs and historical worktrees remain protected because their origin is unknown.
+
+For newly provisioned managed worktrees, a supported optional producer is:
+
+```bash
+npx tsx scripts/generate-worktree-dependencies.ts /tmp/git-processor/worktrees/<owner>/<repo>/<task>
+```
+
+This refuses existing `node_modules`, requires an npm v2/v3 lockfile with integrity-pinned public registry dependencies, and runs `npm ci` with scripts and bin links disabled. It does not enable policy or mark an active task completed. Task lifecycle completion later marks generated records eligible; failed and salvage-retained runs remain protected. This producer is intentionally narrower than ordinary package installation.
+
+Each preview rotates through at most ten records, with bounded enumeration, a 100,000-entry/512 MiB payload proof budget and five-second filesystem proof window; API operations also have a 60-second deadline. Large or unreadable payloads remain protected. Fresh content, tracked-file, Git integrity, inode, link and mount proofs are required at execution. Only exact proven generated files are unlinked; empty payload roots and all Git/customer files remain. Partial interruption retains the record and fails closed on a subsequent changed fingerprint; obtain a fresh preview rather than replaying a confirmation. No whole-worktree deletion is implemented.
+
+Worker admission reserves 2 GiB free space plus 1 GiB per admitted task by default (including durable outstanding reservations). Configure `WORKTREE_ADMISSION_RESERVE_BYTES` and `WORKTREE_TASK_BUDGET_BYTES` for your workload. Insufficient/unknown capacity rejects new worker admission without deleting files. These are admission estimates, **not filesystem quotas**: provision filesystem/container write quotas for a hard ceiling on arbitrary task writes. Unregistered/oversized payloads, abandoned claims, non-Linux hosts and unrestricted task writers remain explicit coverage gaps; increase disk capacity or investigate protected data through supported recovery/backup procedures.
 
 ## Rejected Pushes And The Salvage Ladder
 
@@ -131,7 +154,7 @@ When the final push from a worktree fails — implementation runs, PR follow-ups
 
 The rung that succeeded is recorded on the task timeline, and the task fails with the push diagnosis — the rejection class, GitHub's unblock URL for push protection, and the exact recovery command — in the task detail view, `propr task get <task-id>` (`pushFailure` in `--json`) and the GitHub failure comment. See [Troubleshooting → A Push Was Rejected](./troubleshooting.md#a-push-was-rejected) for recovering each kind.
 
-**Retention.** The daemon deletes rescue refs created more than `PUSH_RESCUE_RETENTION_DAYS` (default 14) days ago — measured from the timestamp in the ref name, not from the commit dates — from every monitored repository, together with bundles of the same age, every `PUSH_RESCUE_SWEEP_INTERVAL_MS` (default 6 hours) and once at startup. Set the retention to `0` to keep them until you delete them yourself. A retained worktree is scheduled for cleanup after the same number of days through a record in `PUSH_RESCUE_WORKTREE_RECORD_DIR` (default `<DATA_DIR>/rescue-worktrees`); the `.retention-info.json` written into the worktree is informational and does not by itself keep a worktree. To delete one rescue ref by hand:
+**Retention.** The daemon deletes rescue refs created more than `PUSH_RESCUE_RETENTION_DAYS` (default 14) days ago — measured from the timestamp in the ref name, not from the commit dates — from every monitored repository, together with bundles of the same age, every `PUSH_RESCUE_SWEEP_INTERVAL_MS` (default 6 hours) and once at startup. Set the retention to `0` to keep them until you delete them yourself. Retained worktrees are not age-deleted. Their protection is recorded through a record in `PUSH_RESCUE_WORKTREE_RECORD_DIR` (default `<DATA_DIR>/rescue-worktrees`); the `.retention-info.json` written into the worktree is informational and does not by itself keep a worktree. To delete one rescue ref by hand:
 
 ```bash
 git push origin --delete refs/propr/rescue/<taskId>--<timestamp>

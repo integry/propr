@@ -78,7 +78,7 @@ export const SYSTEM_ROUTE_DOCS: Record<string, RouteDoc> = {
   },
   'POST /api/instance/storage/v1/cleanup/preview': {
     operationId: 'previewInstanceStorageCleanup',
-    summary: 'Preview an explicit instance/category selection; terminal task history requires explicit taskIds.',
+    summary: 'Preview an explicit instance/category selection; worktrees includes only proven generated payloads; terminal task history requires explicit taskIds.',
     description: 'Version 1 contract: docs/architecture/instance-storage-v1. Instance administrator required. Mutations require application/json and X-ProPR-Storage: 1. Offline/unknown usage is never zero.',
     tags: ['System'],
     requestBody: { schema: InstanceStoragePreviewRequest },

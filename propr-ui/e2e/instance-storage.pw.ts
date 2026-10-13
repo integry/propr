@@ -56,6 +56,8 @@ test('native self-hosted storage inventory, export and explicit cleanup confirma
     await section.screenshot({ path: path.join(directory, 'instance-storage-desktop.png') });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload();
+    // Phones open the linked category; search lives on the category list.
+    await page.getByRole('button', { name: 'Back to Settings' }).click();
     await page.getByPlaceholder('Search settings...').fill('database export');
     await section.getByRole('button', { name: 'Preview cache cleanup' }).click();
     const confirmation = section.getByRole('region', { name: 'Confirm repository cache cleanup' });

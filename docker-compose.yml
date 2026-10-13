@@ -23,8 +23,6 @@
 # For production deployments that only use a subset of agents, use the launcher
 # (docker/launcher/) which conditionally mounts only configured agent directories.
 # This compose file is intended for development environments.
-# If ~/.claude.json exists, also include docker-compose.claude.yml so agent
-# launchers can pass that account configuration into their sibling containers.
 services:
   redis:
     restart: unless-stopped
@@ -45,7 +43,7 @@ services:
     restart: unless-stopped
     build:
       context: .
-      dockerfile: Dockerfile.node
+      dockerfile: docker/Dockerfile.node
     init: true
     command: npm run daemon
     extra_hosts:
@@ -75,7 +73,7 @@ services:
     restart: unless-stopped
     build:
       context: .
-      dockerfile: Dockerfile.node
+      dockerfile: docker/Dockerfile.node
     init: true
     ulimits:
       nofile:
@@ -131,7 +129,7 @@ services:
     restart: unless-stopped
     build:
       context: .
-      dockerfile: Dockerfile.node
+      dockerfile: docker/Dockerfile.node
     init: true
     command: npm run indexing-worker
     extra_hosts:
@@ -191,7 +189,7 @@ services:
     restart: unless-stopped
     build:
       context: .
-      dockerfile: Dockerfile.node
+      dockerfile: docker/Dockerfile.node
     init: true
     ulimits:
       nofile:

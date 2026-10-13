@@ -1,3 +1,4 @@
+import { executeDockerCommand } from '../claude/docker/dockerExecutor.js';
 import logger from '../utils/logger.js';
 import { loadAgentRuntimePackageState } from './runtime/agentRuntimePackages.js';
 
@@ -39,5 +40,30 @@ export async function areAgentImagesAvailable(
     } catch (error) {
         logger.warn({ images, error: (error as Error).message }, 'Could not verify registered agent Docker images');
         return false;
+    }
+}
+
+export function inspectAgentImages(images: string[]): Promise<boolean> {
+    return areAgentImagesAvailable(images, () => executeDockerCommand('docker', [
+        'image', 'inspect', '--format', '{{.Id}}', ...images,
+    ], { timeout: 10000 }));
+}
+
+/** Tracks the base behind a derived execution image, independently of runtime packages. */
+export class UnifiedBaseImageState {
+    image: string | null = null;
+    private checkAfter = 0;
+
+    track(baseImage: string | undefined, executionImage: string | undefined): void {
+        this.image = baseImage && baseImage !== executionImage ? baseImage : null;
+        this.checkAfter = 0;
+    }
+
+    async isAvailable(): Promise<boolean> {
+        const image = this.image;
+        const now = Date.now();
+        if (!image || now < this.checkAfter) return true;
+        this.checkAfter = now + 30_000;
+        return inspectAgentImages([image]);
     }
 }

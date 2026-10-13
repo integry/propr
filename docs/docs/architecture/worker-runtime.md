@@ -23,7 +23,7 @@ npm run worker:dev
 For source-based Compose deployments, scale the worker service:
 
 ```bash
-docker-compose -f docker-compose.prod.yml up -d --scale worker=3
+docker compose up -d --scale worker=3
 ```
 
 Higher concurrency is not always better. Watch queue depth, model rate limits, repository size, and average task duration before increasing it.

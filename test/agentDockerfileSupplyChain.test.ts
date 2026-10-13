@@ -5,8 +5,7 @@ import test from 'node:test';
 const dockerfile = readFileSync(new URL('../Dockerfile.agent', import.meta.url), 'utf8');
 const buildScript = readFileSync(new URL('../scripts/build-images.sh', import.meta.url), 'utf8');
 const appDockerfiles = [
-  'Dockerfile',
-  'Dockerfile.node',
+  'docker/Dockerfile.node',
   'docker/Dockerfile.app.prod',
 ];
 

@@ -1,6 +1,6 @@
 import { GitHubAccountIdentity } from '../components/GitHubAccountIdentity';
 import { useCurrentUser } from '../contexts/AuthContext';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { API_BASE_URL } from '../api/apiClient';
 import { pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
@@ -57,13 +57,25 @@ const DesktopPairingPage = () => {
   const [changingAccount, setChangingAccount] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [cancelled, setCancelled] = useState(false);
+  const accountSwitchGeneration = useRef(0);
+  const approvalGeneration = useRef(0);
   const returnPath = pathWithActiveHostedTunnelFlow(`/desktop/pairing?pairing_id=${encodeURIComponent(pairingId)}`);
   const loginPath = pathWithActiveHostedTunnelFlow(`/login?logged_out=true&redirect_to=${encodeURIComponent(returnPath)}`);
 
+  useLayoutEffect(() => {
+    // Revoke old continuations at commit, before passive effects load the new
+    // request, and on unmount. A request/identity returning later is a new flow.
+    const generation = accountSwitchGeneration;
+    const approval = approvalGeneration;
+    return () => { generation.current++; approval.current++; };
+  }, [pairingId, userId]);
+
   useEffect(() => {
     setPairing(null);
+    setApproving(false);
     setError('');
     setChangingAccount(false);
+    setSigningOut(false);
     setCancelled(false);
     if (!PAIRING_ID_PATTERN.test(pairingId)) {
       setError('This desktop pairing link is invalid. Start pairing again from the desktop app.');
@@ -105,30 +117,37 @@ const DesktopPairingPage = () => {
   const approve = async () => {
     if (!user || !pairing || pairing.pairingId !== pairingId || pairing.status !== 'pending' || changingAccount || approving || cancelled) return;
     if (Date.parse(pairing.expiresAt) <= Date.now()) { expirePairing(); return; }
+    const generation = ++approvalGeneration.current;
     setApproving(true);
     setError('');
     try {
-      setPairing(await approveDesktopPairing(pairing.pairingId));
+      const result = await approveDesktopPairing(pairing.pairingId);
+      if (generation !== approvalGeneration.current) return;
+      setPairing(result);
+      setError('');
     } catch (error) {
+      if (generation !== approvalGeneration.current) return;
       if (error instanceof DesktopPairingUnavailableError || Date.parse(pairing.expiresAt) <= Date.now()) {
         setPairing(null);
         setChangingAccount(false);
       }
       setError('The pairing request could not be approved. It may have expired; start pairing again from the desktop app.');
     } finally {
-      setApproving(false);
+      if (generation === approvalGeneration.current) setApproving(false);
     }
   };
 
   const changeAccount = async () => {
-    if (signingOut || approving || !pairing || pairing.status !== 'pending' || cancelled || !PAIRING_ID_PATTERN.test(pairingId)) return;
+    if (signingOut || approving || !pairing || pairing.pairingId !== pairingId || pairing.status !== 'pending' || cancelled || !PAIRING_ID_PATTERN.test(pairingId)) return;
     if (Date.parse(pairing.expiresAt) <= Date.now()) { expirePairing(); return; }
+    const generation = ++accountSwitchGeneration.current;
     setSigningOut(true);
     setError('');
     try {
       // Keep the exact request and active hosted tunnel instead of following
       // logout's generic login redirect. A full reload clears the old identity.
       await signOutBrowserSession();
+      if (generation !== accountSwitchGeneration.current) return;
       if (Date.parse(pairing.expiresAt) <= Date.now()) {
         expirePairing();
         setSigningOut(false);
@@ -136,6 +155,7 @@ const DesktopPairingPage = () => {
       }
       window.location.href = loginPath;
     } catch {
+      if (generation !== accountSwitchGeneration.current) return;
       setError('Could not sign out of ProPR. Check your connection and try again. Desktop access has not been approved.');
       setSigningOut(false);
     }

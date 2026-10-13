@@ -31,6 +31,7 @@ import {
 } from "../utils/index.js";
 import { presentApiError } from "../utils/apiErrorPresentation.js";
 import { createAgentPoolCommand } from "./agentPoolCommands.js";
+import { redactAgentConfigsSecrets } from "@propr/shared";
 
 const AGENT_TYPE_LIST = AGENT_TYPES.join(", ");
 
@@ -157,7 +158,8 @@ Examples:
       try {
         const result = await listAgents();
 
-        if (printOutput(result, options.json ?? false)) {
+        // Never print env var values, even from a server that predates redaction.
+        if (printOutput({ ...result, agents: redactAgentConfigsSecrets(result.agents ?? []) }, options.json ?? false)) {
           return;
         }
 
@@ -347,7 +349,7 @@ Examples:
           });
 
           if (result.success) {
-            if (printOutput(result, options.json ?? false)) {
+            if (printOutput({ ...result, agents: redactAgentConfigsSecrets(result.agents ?? []) }, options.json ?? false)) {
               return;
             }
 

@@ -172,7 +172,7 @@ you turn it on.
 
 | Level | Where | Values |
 |---|---|---|
-| Instance default | Settings → Automation → **Auto-Resolve Merge Conflicts (default for repositories)**, MCP `update_execution_settings` (`auto_resolve_merge_conflicts`), `propr setting update auto_resolve_merge_conflicts <true\|false>` | on / off (default off) |
+| Instance default | Settings → Workflow & PR Rules → Repository defaults → **Auto-Resolve Merge Conflicts (default for repositories)**, MCP `update_execution_settings` (`auto_resolve_merge_conflicts`), `propr setting update auto_resolve_merge_conflicts <true\|false>` | on / off (default off) |
 | Repository override | Repositories → repository → Automation → **Auto-resolve merge conflicts**, MCP `update_repository_configuration` (`autoResolveMergeConflicts`), `propr repo add\|toggle owner/repo --auto-resolve-conflicts <on\|off\|inherit>` | Always / Never / Use instance default |
 
 The effective value is the repository override when one is set, otherwise the

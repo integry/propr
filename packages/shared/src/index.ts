@@ -161,6 +161,14 @@ export {
   type SyntheticReferenceValidationResult,
 } from './syntheticAgents.js';
 
+// Export agent configuration output redaction
+export {
+  REDACTED_AGENT_ENV_VALUE,
+  redactAgentConfigSecrets,
+  redactAgentConfigsSecrets,
+  restoreRedactedAgentEnvVars,
+} from './agentConfigRedaction.js';
+
 // Export user whitelist helpers
 export {
   getGithubUserWhitelist,
@@ -571,3 +579,4 @@ export * from './cronSchedule.js';
 export * from './assignment.js';
 
 export * from './instanceStorage.js';
+export * from './fleetData.js';

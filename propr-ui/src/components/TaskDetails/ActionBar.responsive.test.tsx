@@ -56,7 +56,6 @@ describe('TaskDetails mobile actions', () => {
         }}
         modelName="gpt-5.6-sol"
         prInfo={{ url: 'https://github.com/integry/propr/pull/1800', number: 1800 }}
-        mobileMetadataOnly
       />,
     );
 
@@ -124,7 +123,7 @@ describe('TaskDetails collapsed mobile header', () => {
     expect(screen.queryByRole('button', { name: 'Follow Up' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Prompt' })).toBeNull();
     const trigger = screen.getByRole('button', { name: 'More task actions' });
-    expect(trigger).toHaveClass('h-11', 'w-11', 'rounded-full');
+    expect(trigger).toHaveClass('h-11', 'w-11', 'rounded-md');
     fireEvent.click(trigger);
 
     const sheet = screen.getByRole('dialog', { name: 'Task actions' });
@@ -178,11 +177,11 @@ describe('TaskDetails collapsed mobile header', () => {
   });
 
   test('opens the full mobile summary\'s overflow as the same sheet', () => {
-    render(<ActionBar {...commonProps} currentStatus="COMPLETED" sheet />);
+    render(<ActionBar {...commonProps} currentStatus="COMPLETED" mobileSummary />);
 
     fireEvent.click(screen.getByRole('button', { name: 'More task actions' }));
     expect(screen.getByRole('dialog', { name: 'Task actions' })).toBeInTheDocument();
-    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Delete']);
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Prompt', 'Logs', 'Delete']);
   });
 
   test('reads as the pull request then the task title on one line', () => {

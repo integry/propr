@@ -1,3 +1,4 @@
+import { formatModelName } from '../../utils/modelDisplay';
 import React, { useMemo, useState, useEffect } from 'react';
 import type { InstanceCatalogAgent } from '@propr/shared';
 import { AgentModelPair } from '../../api/planIssuesApi';
@@ -81,7 +82,7 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
         pairs.push({
           agent_alias: agent.alias,
           model_name: modelId,
-          displayName: `${agent.alias} / ${modelInfo?.name || modelId}`
+          displayName: `${agent.alias} / ${modelInfo?.name || formatModelName(modelId)}`
         });
       });
     });
