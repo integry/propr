@@ -12,39 +12,40 @@ const exec = promisify(execFile);
 const signal = () => new AbortController().signal;
 function isNamespacePermissionDenied(error: unknown): boolean {
   const failure = error as { code?: number | string; stderr?: string; signal?: string };
-  // unshare can be denied before Node starts. Match only its complete uid_map
-  // diagnostic, so loader errors and assertion failures remain hard failures.
+  // unshare can be denied before Node starts, during namespace creation or
+  // uid_map setup. Match only complete diagnostics so loader errors and
+  // assertion failures remain hard failures.
   return failure.code === 1 && !failure.signal
-    && /^unshare: write failed \/proc\/self\/uid_map: (?:Operation not permitted|Permission denied)\n?$/.test(failure.stderr ?? '');
+    && /^unshare: (?:unshare failed|write failed \/proc\/self\/uid_map): (?:Operation not permitted|Permission denied)\n?$/.test(failure.stderr ?? '');
 }
-test('namespace skips require an explicit outer unshare uid_map permission denial', () => {
-  const stderr = 'unshare: write failed /proc/self/uid_map: Operation not permitted\n';
-  assert.equal(isNamespacePermissionDenied({ code: 1, stderr }), true);
-  assert.equal(isNamespacePermissionDenied({ code: 1, stderr: stderr.trimEnd() }), true);
-  assert.equal(isNamespacePermissionDenied({ code: 1, stderr: stderr.replace('Operation not permitted', 'Permission denied') }), true);
-  for (const failure of [
-    { code: 0, stderr },
-    { code: 2, stderr },
-    { code: 32, stderr },
-    { code: 'ENOENT', stderr },
-    { code: 'EACCES', stderr },
-    { code: 'EPERM', stderr },
-    { code: 1, stderr, signal: 'SIGTERM' },
-    { code: 1, stderr: '' },
-    { code: 1, stderr: stderr.replace('uid_map', 'gid_map') },
-    { code: 1, stderr: stderr.replace('Operation not permitted', 'Invalid argument') },
-    { code: 1, stderr: 'unshare: unshare failed: Operation not permitted\n' },
-    { code: 1, stderr: 'unshare: unshare failed: Permission denied\n' },
-    { code: 1, stderr: 'unshare: unshare failed: Invalid argument\n' },
-    { code: 1, stderr: 'unshare: failed to execute node: Permission denied\n' },
-    { code: 32, stderr: 'mount: permission denied\n' },
-    { code: 1, stderr: 'Error [ERR_MODULE_NOT_FOUND]: Cannot find package tsx\n' },
-    { code: 1, stderr: 'AssertionError [ERR_ASSERTION]: Operation not permitted\n' },
-    { code: 1, stderr: `AssertionError [ERR_ASSERTION]\n${stderr}` },
-    { code: 1, stderr: `${stderr}Error [ERR_MODULE_NOT_FOUND]: Cannot find package tsx\n` },
-    { code: 1, stderr: `${stderr}AssertionError [ERR_ASSERTION]\n` },
-    { code: 1, stderr: `${stderr}\n` },
-  ]) assert.equal(isNamespacePermissionDenied(failure), false, JSON.stringify(failure));
+test('namespace skips require an explicit outer unshare permission denial', () => {
+  for (const diagnostic of ['write failed /proc/self/uid_map', 'unshare failed']) {
+    const stderr = `unshare: ${diagnostic}: Operation not permitted\n`;
+    assert.equal(isNamespacePermissionDenied({ code: 1, stderr }), true);
+    assert.equal(isNamespacePermissionDenied({ code: 1, stderr: stderr.trimEnd() }), true);
+    assert.equal(isNamespacePermissionDenied({ code: 1, stderr: stderr.replace('Operation not permitted', 'Permission denied') }), true);
+    for (const failure of [
+      { code: 0, stderr },
+      { code: 2, stderr },
+      { code: 32, stderr },
+      { code: 'ENOENT', stderr },
+      { code: 'EACCES', stderr },
+      { code: 'EPERM', stderr },
+      { code: 1, stderr, signal: 'SIGTERM' },
+      { code: 1, stderr: '' },
+      { code: 1, stderr: 'unshare: write failed /proc/self/gid_map: Operation not permitted\n' },
+      { code: 1, stderr: stderr.replace('Operation not permitted', 'Invalid argument') },
+      { code: 1, stderr: 'unshare: unshare failed: Invalid argument\n' },
+      { code: 1, stderr: 'unshare: failed to execute node: Permission denied\n' },
+      { code: 32, stderr: 'mount: permission denied\n' },
+      { code: 1, stderr: 'Error [ERR_MODULE_NOT_FOUND]: Cannot find package tsx\n' },
+      { code: 1, stderr: 'AssertionError [ERR_ASSERTION]: Operation not permitted\n' },
+      { code: 1, stderr: `AssertionError [ERR_ASSERTION]\n${stderr}` },
+      { code: 1, stderr: `${stderr}Error [ERR_MODULE_NOT_FOUND]: Cannot find package tsx\n` },
+      { code: 1, stderr: `${stderr}AssertionError [ERR_ASSERTION]\n` },
+      { code: 1, stderr: `${stderr}\n` },
+    ]) assert.equal(isNamespacePermissionDenied(failure), false, JSON.stringify(failure));
+  }
 });
 async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-generated-test-'));

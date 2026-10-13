@@ -252,20 +252,63 @@ test('real application Pino hook exports redacted operational records', () => {
 test('concurrent process rotation, export and cursor CAS recover without duplicate committed records', async () => {
     const { spawn } = await import('node:child_process');
     const f = fixture();
+    const db = (f.spool as any).db;
+    let startupLocked = false;
+    const startupContended = new Set<string>();
     try {
         const modulePath = new URL('../src/diagnostics/managedLogSpool.ts', import.meta.url).href;
         const script = `import { ManagedLogSpool } from ${JSON.stringify(modulePath)};
+            import assert from 'node:assert/strict';
+            import { createRequire } from 'node:module';
+            const Sqlite = createRequire(import.meta.url)('better-sqlite3');
+            const exec = Sqlite.prototype.exec;
+            let initializationBusy = false;
+            Sqlite.prototype.exec = function(sql) {
+                try { return exec.call(this, sql); }
+                catch (error) {
+                    if (!initializationBusy && sql.includes('CREATE TABLE IF NOT EXISTS settings') && error.code === 'SQLITE_BUSY') {
+                        initializationBusy = true;
+                        // Signal the real failed SQLite call before the constructor's
+                        // synchronous retry consumes it and blocks an outer catch.
+                        process.send('initialization-busy');
+                    }
+                    throw error;
+                }
+            };
+            // Retry only expected append contention, with a deadline per operation.
+            async function retryBusy(operation) {
+                const deadline = Date.now() + 10000;
+                for (;;) {
+                    try { return operation(); }
+                    catch(e) {
+                        if(e.code !== 'SQLITE_BUSY' || Date.now() >= deadline) throw e;
+                        await new Promise(resolve => setTimeout(resolve, 10));
+                    }
+                }
+            }
             const spool = new ManagedLogSpool(${JSON.stringify(path.join(f.root, 'spool'))}, 'tenant-a');
             const identity = ${JSON.stringify(identity)};
-            for (let n=0;n<12;n++) { let done=false; while(!done) { try { spool.append(identity,[JSON.stringify({writer:process.env.WRITER,n})],'jsonl',{credentials:[]}); done=true; } catch(e) { if(e.code!=='SQLITE_BUSY') throw e; } } }
-            spool.close();`;
+            try {
+                assert.equal(initializationBusy, true, 'each writer must encounter real initialization contention');
+                for (let n=0;n<12;n++) await retryBusy(() => spool.append(identity,[JSON.stringify({writer:process.env.WRITER,n})],'jsonl',{credentials:[]}));
+            } finally { spool.close(); }`;
         const run = (writer: string) => new Promise<void>((resolve, reject) => {
-            const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env: { ...process.env, WRITER: writer }, stdio: ['ignore', 'ignore', 'pipe'] });
+            const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env: { ...process.env, WRITER: writer }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'], timeout: 15_000 });
+            child.on('message', message => {
+                if (message === 'initialization-busy') {
+                    startupContended.add(writer);
+                    if (startupLocked && startupContended.size === 2) { db.exec('ROLLBACK'); startupLocked = false; }
+                }
+            });
             let error = ''; child.stderr.on('data', chunk => { error += chunk; });
             child.on('error', reject); child.on('close', code => code === 0 ? resolve() : reject(new Error(error)));
         });
+        // Hold the lock until both writers report a real SQLite failure inside
+        // initialization; neither signal depends on exhausting constructor retries.
+        db.exec('BEGIN IMMEDIATE'); startupLocked = true;
         const exported: ReturnType<typeof drain> = [];
         const timer = setInterval(() => {
+            if (startupLocked) return;
             try {
                 const item = f.spool.exportOne();
                 if (item) {
@@ -274,13 +317,23 @@ test('concurrent process rotation, export and cursor CAS recover without duplica
                 }
             } catch (error) { if ((error as { code?: string }).code !== 'SQLITE_BUSY') throw error; }
         }, 30);
-        try { await Promise.all([run('a'), run('b')]); }
+        try {
+            // Let both processes exit before closing/removing their shared spool.
+            const results = await Promise.allSettled([run('a'), run('b')]);
+            for (const result of results) if (result.status === 'rejected') throw result.reason;
+        }
         finally { clearInterval(timer); }
+        assert.deepEqual([...startupContended].sort(), ['a', 'b']);
         exported.push(...drain(f.spool));
         const output = exported.flatMap(e => e.text.trim().split('\n').map(line => JSON.parse(line)));
         assert.equal(output.length, 24);
         assert.equal(new Set(output.map(r => `${r.writer}:${r.n}`)).size, 24);
-    } finally { f.close(); }
+        assert.deepEqual(output.map(r => `${r.writer}:${r.n}`).sort(),
+            ['a', 'b'].flatMap(writer => Array.from({ length: 12 }, (_, n) => `${writer}:${n}`)).sort());
+    } finally {
+        if (startupLocked) db.exec('ROLLBACK');
+        f.close();
+    }
 });
 test('overlapping valid spool constructors retry initialization lock contention successfully', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'diagnostic-constructors-'));

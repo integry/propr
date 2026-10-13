@@ -185,7 +185,7 @@ const PATH_RULES = [
         rule: 'documentation site',
     },
     {
-        pattern: /^(library_docs|media)\//,
+        pattern: /^media\//,
         surfaces: ['docs'],
         rule: 'reference material',
     },

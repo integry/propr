@@ -10,7 +10,10 @@ import type { PullRequestScoresResponse } from '../../api/taskStatsApi';
 import type { PullRequestOutcome } from './pullRequestScores';
 import { RUN_DURATION_COLUMN, RUN_LEAD_INSET_PHONE, RUN_NUMBER_COLUMN, RUN_SUMMARY_MIN_WIDTH, RUN_TAG_COLUMN, RUN_TIME_COLUMN } from './runTimelineColumns';
 
+export type RunRevealHistory = React.RefObject<{ group: string; selected: string } | null>;
+
 interface RunTimelineProps {
+  revealHistory?: RunRevealHistory;
   /** Every run of the task, oldest first. */
   runs: TaskRunEntry[];
   /** The run the pane shows: its steps hang under its row, and the panels below describe it. */
@@ -69,28 +72,35 @@ const RunResult: React.FC<{ run: TaskRunEntry; open: boolean }> = ({ run, open }
  * through the task's history. After the runs, the PR's review scores are a
  * milestone on the trunk; once the PR is merged or closed, that is the last entry.
  */
-/** Room left above the open run when the list scrolls to it, so the run before it stays in sight. */
-const SCROLL_CONTEXT_PX = 40;
-
-const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelectRun, children, reviewScores, outcome }) => {
+const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelectRun, children, reviewScores, outcome, revealHistory }) => {
   const [expanded, setExpanded] = useState(true);
-  const scrollRef = useRef<HTMLDivElement>(null);
+
   const selectedRef = useRef<HTMLLIElement>(null);
-
-  // A task with many runs opens on the one shown, not on its first run. Only
-  // the list scrolls: the page around it stays where it is.
+  const localHistory = useRef<{ group: string; selected: string } | null>(null);
+  const revealed = revealHistory ?? localHistory;
   useEffect(() => {
-    const list = scrollRef.current;
-    const run = selectedRef.current;
-    if (!list || !run) return;
-    const offset = run.getBoundingClientRect().top - list.getBoundingClientRect().top;
-    list.scrollTop = Math.max(0, list.scrollTop + offset - SCROLL_CONTEXT_PX);
-  }, [selectedTaskId]);
+    const group = runs[0]?.task.id;
+    if (!group || !selectedRef.current) return;
+    if (revealed.current?.group === group && revealed.current.selected === selectedTaskId) return;
+    const initialReveal = revealed.current?.group !== group;
+    revealed.current = { group, selected: selectedTaskId };
+    // Initial selection (including asynchronously loaded runs) preserves the task overview.
+    // Only subsequent run switches reveal their header.
+    if (initialReveal) return;
+    const row = selectedRef.current;
+    let scroller = row.parentElement;
+    while (scroller && !/auto|scroll/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    const bounds = scroller?.getBoundingClientRect();
+    const header = row.querySelector('button')?.getBoundingClientRect();
+    const margin = parseFloat(getComputedStyle(row).scrollMarginTop) || 0;
+    // The expanded steps can be taller than the viewport; only the header needs revealing.
+    if (bounds && header && header.top >= bounds.top + margin && header.bottom <= bounds.bottom) return;
+    row.scrollIntoView?.({ block: 'start' });
+  }, [runs, selectedTaskId, revealed]);
 
-  // Bounded on a desktop, so 50 runs scroll inside the timeline instead of pushing the files changed off the screen.
-  // A phone scrolls the page instead: every run stays in the page's flow, none hidden above a nested scroll.
+  // Every run expands in the shared task workspace, together with the changed files.
   return (
-    <div ref={scrollRef} data-testid="run-timeline-scroll" className="scrollbar-stealth pr-1 lg:max-h-[420px] lg:overflow-y-auto lg:overscroll-contain">
+    <div data-testid="run-timeline-scroll" className="pr-1">
       <ol aria-label="Runs" className="relative m-0 list-none p-0" data-testid="run-timeline">
         {/* The trunk paints above the rows, so an open run's tinted row and its steps never cut it. */}
         <span aria-hidden="true" data-testid="run-timeline-trunk" className="pointer-events-none absolute bottom-3 left-[7px] top-3 z-[1] w-0.5 bg-slate-300" />
@@ -101,7 +111,7 @@ const RunTimeline: React.FC<RunTimelineProps> = ({ runs, selectedTaskId, onSelec
           // A queued run has not started, so it has no runtime to count yet.
           const waiting = run.outcome === 'waiting';
           return (
-            <li key={run.task.id} ref={selected ? selectedRef : undefined} className="relative" data-testid="run-timeline-run">
+            <li ref={selected ? selectedRef : undefined} key={run.task.id} className="relative scroll-mt-14 sm:scroll-mt-[3.75rem]" data-testid="run-timeline-run">
               <button
                 type="button"
                 aria-current={selected || undefined}

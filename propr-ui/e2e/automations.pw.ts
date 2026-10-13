@@ -191,7 +191,7 @@ test('Run now confirms with a toast and opens the run under a breadcrumb', async
   await capture(page, 'automations-run-breadcrumb');
 });
 
-test.describe('contextual mobile creation navigation', () => {
+test.describe('mobile creation sheet', () => {
   test.use({ hasTouch: true });
 
   for (const width of [320, 390]) {
@@ -201,14 +201,18 @@ test.describe('contextual mobile creation navigation', () => {
       ['/plans', 'New Plan', '/studio/new'],
       ['/goals', 'New Goal', '/goals?new=1'],
     ]) {
-      test(`${label} stays within its tab and activates by touch at ${width}px`, async ({ page }) => {
+      test(`${label} opens from the Create sheet by touch at ${width}px`, async ({ page }) => {
         await page.setViewportSize({ width, height: 844 });
         await page.goto(route);
         const navigation = page.getByRole('navigation', { name: 'Primary navigation', exact: true });
-        const action = navigation.getByRole('button', { name: label, exact: true });
-        await expect(action).toBeVisible();
-        await expect(action).toHaveAccessibleName(label);
-        await action.tap();
+        const create = navigation.getByRole('button', { name: 'Create', exact: true });
+        await expect(create).toBeVisible();
+        await create.tap();
+        const sheet = page.getByRole('dialog', { name: 'Create' });
+        await expect(sheet.getByRole('link', { name: /^New / })).toHaveText(['New Task', 'New Goal', 'New Plan', 'New Automation']);
+        if (label === 'New Automation') await capture(page, `create-sheet-${width}`);
+        await sheet.getByRole('link', { name: label, exact: true }).tap();
+        await expect(sheet).toBeHidden();
         if (label === 'New Goal') {
           // Goals consumes ?new=1 after opening its creation dialog.
           const dialog = page.getByRole('dialog', { name: 'Start a goal' });
@@ -217,10 +221,10 @@ test.describe('contextual mobile creation navigation', () => {
           await expect(page).toHaveURL(/\/goals$/);
         } else {
           await expect(page).toHaveURL(url => `${url.pathname}${url.search}` === destination);
-          await expect(action).toHaveAttribute('aria-current', 'page');
+          await expect(create).toHaveAttribute('aria-current', 'page');
         }
         await expect(navigation.getByRole('link', { name: 'Dashboard', exact: true })).toBeVisible();
-        await expect(navigation.getByRole('link', { name: 'Repositories', exact: true })).toBeVisible();
+        await expect(navigation.getByRole('link', { name: 'Tasks', exact: true })).toBeVisible();
         if (label === 'New Automation') await capture(page, `automation-new-${width}`);
 
         const bounds = await navigation.evaluate(nav => Array.from(nav.children).map(tab => {
@@ -237,7 +241,7 @@ test.describe('contextual mobile creation navigation', () => {
             overflow: style.overflowX, ellipsis: style.textOverflow,
           };
         }));
-        expect(bounds.map(bound => bound.text)).toEqual(['Inbox', 'Dashboard', label, 'Repositories', 'More']);
+        expect(bounds.map(bound => bound.text)).toEqual(['Dashboard', 'Tasks', 'Create', 'Inbox', 'More']);
         for (const [index, bound] of bounds.entries()) {
           expect(bound.left, `${bound.text} left edge`).toBeGreaterThanOrEqual(bound.tabLeft);
           expect(bound.right, `${bound.text} right edge`).toBeLessThanOrEqual(bound.tabRight);

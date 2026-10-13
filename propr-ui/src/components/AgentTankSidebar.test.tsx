@@ -63,9 +63,13 @@ const usageResponse = (): AgentTankUsageResponse => ({
 });
 
 // The widget renders nothing until the first fetch resolves.
-async function renderSidebar(): Promise<HTMLElement> {
-  render(<AgentTankSidebar />);
+async function renderSidebarWith(element: React.ReactElement): Promise<HTMLElement> {
+  render(element);
   return (await screen.findByText('Usage')).closest('div')!.parentElement!;
+}
+
+async function renderSidebar(): Promise<HTMLElement> {
+  return renderSidebarWith(<AgentTankSidebar />);
 }
 
 function providerRow(name: string): HTMLElement {
@@ -121,7 +125,7 @@ describe('AgentTankSidebar Claude metrics', () => {
 // Agent Tank names Antigravity quotas after the window they cover, e.g.
 // "Gemini · Weekly Limit Remaining", and reports a countdown for the windows it
 // has started tracking (null for the rest).
-const antigravityResponse = (): AgentTankUsageResponse => ({
+const antigravityResponse = () => ({
   enabled: true,
   agents: {
     antigravity: {
@@ -136,7 +140,7 @@ const antigravityResponse = (): AgentTankUsageResponse => ({
       },
     },
   },
-});
+} satisfies AgentTankUsageResponse);
 
 describe('AgentTankSidebar Antigravity rows', () => {
   beforeEach(() => {
@@ -146,7 +150,8 @@ describe('AgentTankSidebar Antigravity rows', () => {
   it('groups the quota windows under their pool so every row reads in full', async () => {
     await renderSidebar();
 
-    fireEvent.click(providerRow('Antigravity'));
+    // A lone provider opens by default.
+    expect(providerRow('Antigravity')).toHaveAttribute('aria-expanded', 'true');
 
     expect(screen.getByText('Gemini')).toBeInTheDocument();
     expect(screen.getByText('Claude and GPT')).toBeInTheDocument();
@@ -160,10 +165,26 @@ describe('AgentTankSidebar Antigravity rows', () => {
     expect(labels).toEqual(['Gemini', 'Weekly', '5h', 'Claude and GPT', 'Weekly', '5h']);
   });
 
-  it('keeps the full window name and reset countdown in the tooltip', async () => {
+  it('formats raw model IDs while preserving friendly quota pool labels', async () => {
+    const response = antigravityResponse();
+    response.agents.antigravity.usage!.models!.push({
+      model: 'claude-sonnet-9-1-20990101', percentUsed: 7,
+    });
+    mockGetAgentTankUsage.mockResolvedValue(response);
     await renderSidebar();
 
-    fireEvent.click(providerRow('Antigravity'));
+    expect(providerRow('Antigravity')).toHaveAttribute('aria-expanded', 'true');
+
+    expect(screen.getByText('Claude and GPT')).toBeInTheDocument();
+    expect(screen.getByText('Claude Sonnet 9.1'))
+      .toHaveAttribute('title', 'Claude Sonnet 9.1');
+    expect(screen.queryByText('claude-sonnet-9-1-20990101')).not.toBeInTheDocument();
+    expect(response.agents.antigravity.usage!.models!.at(-1)?.model)
+      .toBe('claude-sonnet-9-1-20990101');
+  });
+
+  it('keeps the full window name and reset countdown in the tooltip', async () => {
+    await renderSidebar();
 
     expect(screen.getAllByText('Weekly')[0])
       .toHaveAttribute('title', 'Gemini · Weekly Limit · Resets in 136h 1m');
@@ -173,8 +194,6 @@ describe('AgentTankSidebar Antigravity rows', () => {
 
   it('keeps the full window name alone when Agent Tank reports no reset window', async () => {
     await renderSidebar();
-
-    fireEvent.click(providerRow('Antigravity'));
 
     expect(screen.getAllByText('Weekly')[1])
       .toHaveAttribute('title', 'Claude and GPT · Weekly Limit');
@@ -245,6 +264,53 @@ describe('AgentTankSidebar expansion persistence', () => {
     // The corrupt value is replaced, not rethrown, on the next toggle.
     fireEvent.click(providerRow('Claude'));
     expect(storedExpansion()).toEqual(['claude']);
+  });
+
+  it('opens a lone provider by default', async () => {
+    const { codex: _codex, ...agents } = usageResponse().agents!;
+    mockGetAgentTankUsage.mockResolvedValue({ enabled: true, agents });
+
+    await renderSidebar();
+
+    expect(providerRow('Claude')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Fable')).toBeInTheDocument();
+    // The default is only a default: collapsing it is saved and sticks.
+    fireEvent.click(providerRow('Claude'));
+    expect(providerRow('Claude')).toHaveAttribute('aria-expanded', 'false');
+    expect(storedExpansion()).toEqual([]);
+  });
+
+  it('opens every provider with expandAll until a preference is saved', async () => {
+    await renderSidebarWith(<AgentTankSidebar expandAll />);
+
+    expect(providerRow('Claude')).toHaveAttribute('aria-expanded', 'true');
+    expect(providerRow('Codex')).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.click(providerRow('Codex'));
+    expect(storedExpansion()).toEqual(['claude']);
+  });
+
+  it('follows the saved sidebar preference with expandAll', async () => {
+    window.localStorage.setItem(EXPANDED_AGENTS_STORAGE_KEY, JSON.stringify(['codex']));
+
+    await renderSidebarWith(<AgentTankSidebar expandAll />);
+
+    expect(providerRow('Claude')).toHaveAttribute('aria-expanded', 'false');
+    expect(providerRow('Codex')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('condenses usage to one drill-down row in the summary layout', async () => {
+    const onOpenDetails = vi.fn();
+    render(<AgentTankSidebar layout="summary" onOpenDetails={onOpenDetails} />);
+
+    const row = await screen.findByRole('button', { name: /API & quota usage/ });
+    expect(screen.getByTestId('usage-summary').textContent).toMatch(/^Claude \d+% · Codex \d+%$/);
+    // No metric rows and no refresh control: the details live behind the row.
+    expect(screen.queryByText('Session')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('Refresh usage')).not.toBeInTheDocument();
+
+    fireEvent.click(row);
+    expect(onOpenDetails).toHaveBeenCalledOnce();
   });
 
   it('keeps toggling when localStorage is unavailable', async () => {

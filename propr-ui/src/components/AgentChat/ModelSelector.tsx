@@ -215,7 +215,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] font-medium text-slate-800">{option.modelName}</span>
-                  <span className="block truncate font-mono text-[10px] text-slate-400">{option.agentAlias} · {option.modelId}</span>
+                  <span className="block truncate font-mono text-[10px] text-slate-400">{option.agentAlias}</span>
                 </span>
                 {isSelected && <Check className="h-4 w-4 flex-shrink-0 text-teal-600" aria-hidden="true" />}
               </button>

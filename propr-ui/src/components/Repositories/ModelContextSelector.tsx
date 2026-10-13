@@ -1,3 +1,4 @@
+import { formatModelName } from '../../utils/modelDisplay';
 import React from 'react';
 import { Cpu, Layers } from 'lucide-react';
 import { AGENT_MODELS, AGENT_DISPLAY, AGENT_DISPLAY_ORDER, MODEL_INFO_MAP, ModelInfo, AgentType } from '../../config/modelDefinitions';
@@ -145,7 +146,7 @@ const ModelContextSelector: React.FC<ModelContextSelectorProps> = ({
                 >
                   {agent.supportedModels.map(modelId => (
                     <option key={modelId} value={`${agent.alias}:${modelId}`}>
-                      {MODEL_INFO_MAP[modelId]?.shortName || modelId}
+                      {MODEL_INFO_MAP[modelId]?.shortName || formatModelName(modelId)}
                     </option>
                   ))}
                 </optgroup>

@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import type { RunRevealHistory } from './RunTimeline';
 import TaskStatusTable from './TaskStatusTable';
 import RunTimeline from './RunTimeline';
 import ExecutionRail from './ExecutionRail';
@@ -26,6 +27,7 @@ interface LeftPaneBodyProps {
    * the task's history: a row per run, this run's steps open under its row.
    */
   runs?: TaskRunEntry[];
+  revealHistory?: RunRevealHistory;
   /** Opens another run of the task in its place. */
   onSelectRun?: (taskId: string) => void;
 }
@@ -135,6 +137,7 @@ const LeftPaneBody: React.FC<LeftPaneBodyProps> = ({
   isTaskActive,
   onTodoHover,
   runs,
+  revealHistory,
   onSelectRun,
 }) => {
   const pr = taskPullRequest(taskInfo, prInfo);
@@ -161,7 +164,7 @@ const LeftPaneBody: React.FC<LeftPaneBodyProps> = ({
   return (
     <div className="p-3 lg:p-4 space-y-2">
       {timeline ? (
-        <RunTimeline runs={runs} selectedTaskId={taskId} onSelectRun={onSelectRun} reviewScores={reviewScores} outcome={outcome}>
+        <RunTimeline revealHistory={revealHistory} runs={runs} selectedTaskId={taskId} onSelectRun={onSelectRun} reviewScores={reviewScores} outcome={outcome}>
           <TaskStatusTable history={history} commandMode={taskInfo?.commandMode} variant="branch" />
           <div className="space-y-2 pl-6 pr-1 pt-1 empty:hidden">{runNotes}</div>
         </RunTimeline>

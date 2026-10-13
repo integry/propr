@@ -314,7 +314,13 @@ export interface TriggerReindexAllResponse {
 
 export interface PostFollowupResponse {
   success: boolean;
-  message: string;
+  message?: string;
+  /** `unknown` when the comment was posted but its queue submission could not be confirmed. */
+  state?: 'queued' | 'unknown';
+  posted?: boolean;
+  commentId?: number;
+  jobId?: string;
+  sourceTaskId?: string;
 }
 
 export interface UserRepoPreference {

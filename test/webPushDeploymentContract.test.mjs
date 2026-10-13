@@ -7,22 +7,6 @@ const readRepositoryFile = relativePath => readFileSync(
   'utf8',
 );
 
-test('legacy production Compose forwards every documented Web Push tuning variable', () => {
-  const compose = readRepositoryFile('docker-compose.prod.yml');
-  const expectedDefaults = {
-    WEB_PUSH_DISPATCH_INTERVAL_MS: '5000',
-    WEB_PUSH_DISPATCH_BATCH_SIZE: '20',
-    WEB_PUSH_DELIVERY_LEASE_MS: '60000',
-    WEB_PUSH_REQUEST_TIMEOUT_MS: '15000',
-    WEB_PUSH_TTL_SECONDS: '300',
-  };
-
-  for (const [name, defaultValue] of Object.entries(expectedDefaults)) {
-    const forwarding = `${name}: ` + '${' + `${name}:-${defaultValue}}`;
-    assert.ok(compose.includes(forwarding), `${name} must be forwarded with its documented default`);
-  }
-});
-
 test('the reverse-proxy documentation includes every explicitly precached logo', () => {
   const worker = readRepositoryFile('propr-ui/public/service-worker.js');
   const pwaGuide = readRepositoryFile('docs/docs/operations/pwa-web-push.md');

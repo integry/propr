@@ -111,7 +111,7 @@ This policy does not change staging: `.propr/previews` and `.propr/preview-src` 
 
 ## Managed Original Storage (Plus)
 
-**Settings → Integrations → Visual preview uploads** also shows managed preview
+**Settings → Integrations & MCP → Visual preview uploads** also shows managed preview
 storage availability. ProPR uses the existing Connect `account_status` Plus
 entitlement, a live routing connection, and Connect's storage-enabled status.
 Community installations, offline Connect connections, and relays without the

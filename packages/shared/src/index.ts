@@ -579,3 +579,4 @@ export * from './cronSchedule.js';
 export * from './assignment.js';
 
 export * from './instanceStorage.js';
+export * from './fleetData.js';

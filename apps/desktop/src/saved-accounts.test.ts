@@ -9,6 +9,9 @@ import { PROPR_API_COMPATIBILITY, PROPR_UI_COMPATIBILITY, DESKTOP_TRANSPORT_SCOP
 import { DesktopCredentialService } from './credential-service';
 import { ProfileStore } from './profile-store';
 import { readAccountResponse } from './account-response';
+import { registerIpcHandlers } from './ipc';
+import { IPC_CHANNELS } from './shared/contract';
+import { rendererPolicyOriginsForSelection } from './security';
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 const alice = { id: '101', username: 'alice', avatarUrl: 'https://avatars.githubusercontent.com/u/101' };
@@ -26,8 +29,8 @@ const fixture = async () => {
   const denied = new Set<string>();
   const requests = new Map<string, Record<string, unknown>>();
   const confirmations: unknown[] = [];
-  const service = new DesktopCredentialService({
-    profiles: store, clientName: 'Account tests', openPairingBrowser: async () => {},
+  const createService = (profiles = store) => new DesktopCredentialService({
+    profiles, clientName: 'Account tests', openPairingBrowser: async () => {},
     confirmAccount: async (account, origin) => { confirmations.push({ account, origin }); return confirming ? confirming() : confirmation; },
     fetch: async (input, init) => {
       const url = new URL(input.toString());
@@ -65,8 +68,9 @@ const fixture = async () => {
       throw new Error(`Unexpected test request: ${url.pathname}`);
     },
   });
+  const service = createService();
   const close = async () => { await service.dispose(); await store.close(); await rm(directory, { recursive: true, force: true }); };
-  return { store, service, directory, expired, denied, confirmations, close,
+  return { store, service, createService, directory, expired, denied, confirmations, close,
     user: (user: typeof alice | typeof bob) => { nextUser = user as typeof alice; },
     confirm: (value: boolean) => { confirmation = value; },
     holdConfirmation: (fn: () => Promise<boolean>) => { confirming = fn; },
@@ -74,6 +78,94 @@ const fixture = async () => {
 };
 const first = { id: 'alice-team', label: 'Team', apiBaseUrl: 'https://team.test' };
 const second = { ...first, id: 'bob-team' };
+
+test('paired local account survives packaged policy reload, saved selection, and app restart', async () => {
+  const f = await fixture();
+  const profile = { id: 'local', label: 'This computer', apiBaseUrl: 'http://localhost:4000' };
+  let store = f.store;
+  let credentials = f.service;
+  let origins: readonly string[] = [];
+  let reloads = 0;
+  const handlers = new Map<string, (...args: any[]) => Promise<any>>();
+  const event = { senderFrame: { url: 'propr-renderer://app/index.html' } };
+  const register = () => registerIpcHandlers({
+    app: {},
+    ipcMain: {
+      handle: (channel: string, handler: (...args: any[]) => Promise<any>) => handlers.set(channel, handler),
+      removeHandler: (channel: string) => handlers.delete(channel),
+    },
+    profiles: store, credentials, connectDiscovery: {}, lifecycle: {}, logger: { log() {} },
+    desktopSession: { clearStorageData: async () => {} },
+    packagedRendererUrl: event.senderFrame.url, openExternal: async () => {},
+    onRendererActiveProfileChanged: (origin: string | null | undefined) => {
+      const next = rendererPolicyOriginsForSelection(origins, origin);
+      if (JSON.stringify(next) !== JSON.stringify(origins)) reloads++;
+      origins = next;
+    },
+  } as unknown as Parameters<typeof registerIpcHandlers>[0]);
+  let ipc = register();
+  const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!(event, ...args);
+  const select = async () => {
+    const beforeReloads = reloads;
+    // Match the renderer's saved-account connect sequence, including its save
+    // between the ready probe and activation.
+    await invoke(IPC_CHANNELS.profilesSetActive, null);
+    assert.equal((await store.list()).activeProfileId, null);
+    assert.deepEqual(credentials.prepareRequest(`${profile.apiBaseUrl}/api/tasks`, {}, {
+      rendererOwned: true, resourceType: 'xhr',
+    }), { cancel: true });
+    const probe = await invoke(IPC_CHANNELS.connectionProbe, profile);
+    assert.equal(probe.status, 'ready');
+    await invoke(IPC_CHANNELS.profilesSave, profile);
+    assert.equal(reloads, beforeReloads, 'selection clearing and saving must not reload before activation');
+    const active = await invoke(IPC_CHANNELS.connectionActivate, probe.activationTicket);
+    assert.equal(active.profileId, profile.id);
+    assert.equal((await store.list()).activeProfileId, profile.id);
+    assert.equal(credentials.prepareRequest(`${profile.apiBaseUrl}/api/tasks`, {
+      [DESKTOP_TRANSPORT_SCOPE_HEADER]: active.transportScope,
+    }, { rendererOwned: true, resourceType: 'xhr' }).cancel, undefined);
+    return active;
+  };
+  try {
+    const admission = await invoke(IPC_CHANNELS.authenticationPairAdmit, profile.id);
+    assert.deepEqual(await invoke(IPC_CHANNELS.authenticationPair, profile, admission.operationId), { paired: true });
+    assert.equal((await store.list()).profiles[0].account?.username, 'alice');
+    await select();
+    assert.equal(reloads, 1, 'first local activation installs its document CSP');
+    // The policy reload automatically reconnects the durable active account.
+    await select();
+    assert.equal(reloads, 1, 'automatic reconnect must not enter a reload loop');
+    ipc.dispose();
+    await credentials.dispose();
+    await store.close();
+    store = new ProfileStore(f.directory, encryption);
+    credentials = f.createService(store);
+    const persisted = await store.list();
+    assert.equal(persisted.activeProfileId, profile.id);
+    origins = [persisted.profiles[0].apiBaseUrl];
+    ipc = register();
+    const restarted = await select();
+    assert.equal(reloads, 1, 'restart reconnect must keep the connected document');
+    await assert.rejects(invoke(IPC_CHANNELS.authLogout, {
+      profileId: restarted.profileId, transportScope: 'stale-scope',
+    }), /IPC_OPERATION_FAILED/);
+    assert.deepEqual(origins, [profile.apiBaseUrl], 'rejected logout must retain the current account policy');
+    await invoke(IPC_CHANNELS.authLogout, {
+      profileId: restarted.profileId, transportScope: restarted.transportScope,
+    });
+    assert.deepEqual(origins, [], 'committed logout must narrow the production policy');
+    assert.equal((await store.list()).activeProfileId, null);
+    assert.equal(await store.readCredential(profile.id), null);
+    assert.deepEqual(credentials.prepareRequest(`${profile.apiBaseUrl}/api/tasks`, {
+      [DESKTOP_TRANSPORT_SCOPE_HEADER]: restarted.transportScope,
+    }, { rendererOwned: true, resourceType: 'xhr' }), { cancel: true });
+  } finally {
+    ipc.dispose();
+    await credentials.dispose();
+    await store.close();
+    await f.close();
+  }
+});
 
 for (const origin of ['https://team.test', 'https://other.test']) {
   test(`two approved users switch and reload with isolated credentials: ${origin}`, async () => {

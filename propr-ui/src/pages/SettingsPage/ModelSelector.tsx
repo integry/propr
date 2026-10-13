@@ -89,7 +89,6 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
                     </span>
                   )}
                 </div>
-                <code className="text-xs text-gray-500">{model.id}</code>
                 <div className="text-xs text-blue-600 mt-0.5">
                   alias: {model.shortAlias}
                 </div>

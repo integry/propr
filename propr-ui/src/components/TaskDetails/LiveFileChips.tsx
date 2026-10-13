@@ -231,6 +231,12 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
             {sortedFiles.map(file => {
               const isSelected = selectedFilePath === file.path;
               const relativePath = file.path.slice(commonDirectory.length);
+              const basename = file.path.split('/').pop()!;
+              // Preserve short final extensions and known compounds, never an arbitrary dotted tail.
+              const suffix = basename.match(/\.(?:test|spec)\.[cm]?[jt]sx?$|\.d\.[cm]?ts$|\.tar\.(?:gz|bz2|xz)$|\.[^.]{1,8}$/)?.[0];
+              const extensionIndex = suffix && suffix.length < basename.length ? basename.length - suffix.length : -1;
+              const stem = extensionIndex < 0 ? basename : basename.slice(0, extensionIndex);
+              const extension = extensionIndex < 0 ? '' : basename.slice(extensionIndex);
               const parentDirectory = relativePath.split('/').slice(0, -1).map(part => `${part}/`).join('');
               return (
                 <button
@@ -241,9 +247,10 @@ const LiveFileChips: React.FC<LiveFileChipsProps> = ({ taskId, isActive, runNumb
                   title={file.path}
                 >
                   {getFileIcon(file.status)}
-                  <span className="min-w-0 flex-1 break-all">
-                    {parentDirectory && <span className="text-slate-400">{parentDirectory}</span>}
-                    <span className="text-slate-700">{file.path.split('/').pop()}</span>
+                  <span data-testid="changed-file-name" className="flex min-w-0 flex-1 whitespace-nowrap">
+                    {parentDirectory && <span className="min-w-0 shrink-[1000] truncate text-slate-400">{parentDirectory}</span>}
+                    <span className="min-w-0 truncate text-slate-700">{stem}</span>
+                    <span data-testid="changed-file-extension" className="max-w-[60%] shrink-0 truncate text-slate-700">{extension}</span>
                   </span>
                   {(file.linesAdded > 0 || file.linesRemoved > 0) && (
                     <span className="flex flex-shrink-0 items-center gap-1 text-[11px] tabular-nums">

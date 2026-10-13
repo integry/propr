@@ -40,6 +40,7 @@ export function createAgentHealthCheck(dependencies: {
   createAgent: (config: AgentConfig) => Pick<Agent, 'analyze'>;
   imageExists?: (image: string) => Promise<boolean>;
   prepareImage?: (image: string) => Promise<void>;
+
   // Saved configs name the base bundle tag; probes must run on the image the
   // registry resolved, so a missing image is reported instead of pulled.
   resolveExecutionImage?: (config: AgentConfig) => Promise<{ image?: string; error?: string }>;
@@ -69,6 +70,7 @@ export function createAgentHealthCheck(dependencies: {
     if (!config) return undefined;
     if (!config.enabled) return { agentId, status: 'disabled' };
     const key = JSON.stringify(config);
+    let preparationResult: AgentHealthResult | undefined;
     if (dependencies.imageExists && dependencies.prepareImage) {
       const image = config.dockerImage;
       try {
@@ -91,13 +93,17 @@ export function createAgentHealthCheck(dependencies: {
               state.failed = !await dependencies.imageExists!(image);
             }).catch(() => { state.failed = true; }).finally(() => { state.pending = false; });
           }
-          return preparation.failed
+          preparationResult = preparation.failed
             ? { agentId, status: 'error', errorCode: 'preparation_failed',
                 error: 'Agent image preparation failed. Check the worker status and available disk space, then check again.' }
             : { agentId, status: 'preparing' };
+          // A retained runtime can still serve while its base is rebuilt.
+          // Without registry resolution, the missing base is the execution image.
+          if (!dependencies.resolveExecutionImage) return preparationResult;
+        } else {
+          // A verified image can recover even after an earlier worker failure.
+          preparations.delete(image);
         }
-        // A verified image can recover even after an earlier worker failure.
-        preparations.delete(image);
       } catch {
         return { agentId, status: 'error', errorCode: 'preparation_failed',
           error: 'Could not verify the agent image. Check that Docker and the worker are running, then check again.' };
@@ -120,7 +126,9 @@ export function createAgentHealthCheck(dependencies: {
       if (!model) return { agentId, status: 'error', errorCode: 'unknown', error: 'No models configured. Edit this agent to add a model.' };
       try {
         const resolved = dependencies.resolveExecutionImage ? await dependencies.resolveExecutionImage(config) : { image: config.dockerImage };
-        if (!resolved.image) return { agentId, model, status: 'error', errorCode: 'unknown', error: redactSecrets(resolved.error || 'Agent image is unavailable.').slice(0, 2000) };
+        if (!resolved.image || (dependencies.resolveExecutionImage && dependencies.imageExists && !await dependencies.imageExists(resolved.image))) {
+          return preparationResult ?? { agentId, model, status: 'error', errorCode: 'unknown', error: redactSecrets(resolved.error || 'Agent image is unavailable.').slice(0, 2000) };
+        }
         const result = await dependencies.createAgent({ ...config, dockerImage: resolved.image }).analyze('Reply with only OK. Do not use tools.', {
           model,
           timeoutMs: 30_000,

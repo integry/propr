@@ -169,7 +169,7 @@ Managed originals require a live Connect routing connection, validated Plus
 `account_status` for the configured installation, and storage enabled by the
 server. The administrator-only `GET /api/config/preview-storage` endpoint returns
 an allowlisted status projection; it exposes no upload grants or credentials.
-The UI presents this under **Settings → Integrations → Visual preview uploads**.
+The UI presents this under **Settings → Integrations & MCP → Visual preview uploads**.
 
 - **Quota:** Connect reports effective `quotaBytes`, `usedBytes`, `reservedBytes`,
   and `maxObjectBytes`. V1 defaults are **25 GiB installation quota** and

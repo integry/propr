@@ -51,7 +51,7 @@ for (const [device, viewport] of Object.entries({
     test('adds another blank to-do in the same repository', async ({ page }) => {
       const submissions = await fixture(page);
       await page.goto('/inbox');
-      if (device !== 'desktop') await page.getByRole('button', { name: 'More', exact: true }).click();
+      if (device !== 'desktop') await page.getByRole('button', { name: 'Create', exact: true }).click();
       const trigger = page.getByRole('button', { name: 'Quick add to-do' }).filter({ visible: true });
       await trigger.click();
       const panel = trigger.locator('..').locator(':scope > div');

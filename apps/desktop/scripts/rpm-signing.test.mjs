@@ -1,3 +1,4 @@
+import { SIGNED_RPM_ACCEPTANCE_CHECKS } from './signed-rpm-acceptance-evidence.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -13,7 +14,7 @@ import { authAssets, aptAssets, signMetadata, verifyMetadata, verifyApt } from '
 import { createDesktopRuntimeManifest } from './desktop-runtime-manifest.mjs';
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-const tools = ['gpg', 'rpm', 'rpmsign', 'rpmkeys', 'rpmdb', 'rpmbuild', 'rpm2cpio', 'cpio', 'dpkg-deb', 'apt-get', 'gpgv'];
+const tools = ['gpg', 'rpm', 'rpmsign', 'rpmkeys', 'rpmdb', 'rpmbuild', 'rpm2cpio', 'cpio', 'dpkg-deb', 'apt-get', 'gpgv', 'python3'];
 const missing = tools.filter(tool => spawnSync('which', [tool], { stdio: 'ignore' }).status !== 0);
 if (process.env.PROPR_REQUIRE_RPM_TESTS === '1' && missing.length) throw new Error(`Missing required RPM test tools: ${missing}`);
 const run = (command, args, options = {}) => execFileSync(command, args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], ...options });
@@ -90,6 +91,12 @@ function github(sourceRevision) {
     const parsed = new URL(url);
     const path = parsed.pathname.replace('/repos/integry/propr', '');
     const method = options.method || 'GET';
+    if (path.startsWith('/actions/runs/12345/artifacts')) return json({ artifacts: state.acceptanceArchive ? [{
+      id: 42, name: 'propr-desktop-installed-signed-rpm-12345', expired: false, workflow_run: { id: 12345 },
+      size_in_bytes: state.acceptanceArchive.length, digest: `sha256:${sha256(state.acceptanceArchive)}`,
+    }] : [] });
+    if (path === '/actions/artifacts/42/zip') return new Response(state.acceptanceArchive);
+    if (path === '/actions/runs/12345') return json({ id: 12345, event: 'workflow_dispatch', path: '.github/workflows/desktop-linux-signed-preview.yml', head_branch: 'main', conclusion: 'success', repository: { full_name: 'integry/propr' } });
     if (path.startsWith('/git/ref/tags/')) return new Response('', { status: 404 });
     if (path.startsWith('/commits/')) return json({ sha: sourceRevision });
     if (path === '/releases' && method === 'GET') return json(state.release ? [state.release] : []);
@@ -350,7 +357,16 @@ exec ${quote(executable)} "$@"
   await assert.rejects(readLinuxPreviewBundle({ ...options, directory: signed,
     rpmIdentity: wrong.identity, sourceDirectory: repositoryRoot }), /identity|tool failed/);
   const remote = github(sourceRevision);
-  const publication = { ...options, directory: signed, rpmIdentity: correct.identity,
+  const acceptanceEvidence = { schemaVersion: 1, status: 'passed', target: 'linux-x64-rpm-opensuse',
+    sourceRevision, rpmSha256: manifest.artifacts.find(a => a.kind === 'rpm' && a.arch === 'x64').sha256,
+    fingerprint: correct.identity.fingerprint, signingRunId: '12345',
+    checks: Object.fromEntries(SIGNED_RPM_ACCEPTANCE_CHECKS.map(key => [key, true])) };
+  const authoritativeFile = join(root, 'signed-rpm-acceptance.json');
+  const authoritativeZip = join(root, 'acceptance.zip');
+  await writeFile(authoritativeFile, JSON.stringify(acceptanceEvidence));
+  run('python3', ['-c', 'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],"w",zipfile.ZIP_DEFLATED); z.write(sys.argv[2],"signed-rpm-acceptance.json"); z.close()', authoritativeZip, authoritativeFile]);
+  remote.acceptanceArchive = await readFile(authoritativeZip);
+  const publication = { ...options, acceptanceEvidence, signingRunId: '12345', directory: signed, rpmIdentity: correct.identity,
     sourceDirectory: repositoryRoot, token: 'disposable-test-token', fetchImpl: remote.fetchImpl };
   await stageLinuxPreviewDraft(publication);
   const signedTitle = `ProPR Desktop Linux preview ${version} (${sourceRevision.slice(0, 12)}) (authenticated DEB and RPM)`;
@@ -397,6 +413,21 @@ exec ${quote(executable)} "$@"
     assert.equal(remote.publications, 0);
     Object.assign(asset, saved);
   }
+  for (const evidence of [undefined, { ...acceptanceEvidence, status: 'failed' },
+    { ...acceptanceEvidence, sourceRevision: 'f'.repeat(40) }, { ...acceptanceEvidence, rpmSha256: '0'.repeat(64) },
+    { ...acceptanceEvidence, signingRunId: '9999' },
+    { ...acceptanceEvidence, checks: { ...acceptanceEvidence.checks, browserApproval: false } }]) {
+    await assert.rejects(publishLinuxPreviewDraft({ ...publication, acceptanceEvidence: evidence }), /acceptance evidence/);
+    assert.equal(remote.publications, 0);
+  }
+  await assert.rejects(publishLinuxPreviewDraft({ ...publication, fetchImpl: async (url, init) =>
+    new URL(url).pathname.endsWith('/actions/runs/12345') ? new Response(JSON.stringify({ id: 12345, conclusion: 'failure' })) : remote.fetchImpl(url, init) }), /successful trusted/);
+  assert.equal(remote.publications, 0);
+  const savedArchive = remote.acceptanceArchive;
+  remote.acceptanceArchive = undefined;
+  await assert.rejects(publishLinuxPreviewDraft(publication), /authoritative/);
+  assert.equal(remote.publications, 0);
+  remote.acceptanceArchive = savedArchive;
   await publishLinuxPreviewDraft(publication);
   assert.equal(remote.publications, 1);
 

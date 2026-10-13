@@ -310,7 +310,7 @@ Yes. A PR can start with one agent, get reviewed by another, and receive a follo
 <summary><strong>Does it work with GitLab or Bitbucket?</strong></summary>
 <br />
 
-No. ProPR is built on GitHub pull requests, review comments, status checks and comment commands. See the [roadmap](ROADMAP.md) for current direction.
+No. ProPR is built on GitHub pull requests, review comments, status checks and comment commands. See the [roadmap](docs/ROADMAP.md) for current direction.
 
 </details>
 
@@ -347,17 +347,17 @@ npm test               # run the test suite
 
 Log in to each agent you plan to run before starting it, so its credential directory holds real auth state.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the project structure, workspace scripts and pull request checklist, and the [source setup tutorial](https://docs.propr.dev/docs/tutorials/setup-source) for the full development flow.
+See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for the project structure, workspace scripts and pull request checklist, and the [source setup tutorial](https://docs.propr.dev/docs/tutorials/setup-source) for the full development flow.
 
 ## Contributing
 
-Contributions are welcome — bug reports, documentation fixes, and code. Start with [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues privately as described in [SECURITY.md](SECURITY.md).
+Contributions are welcome — bug reports, documentation fixes, and code. Start with [CONTRIBUTING.md](.github/CONTRIBUTING.md). Report security issues privately as described in [SECURITY.md](.github/SECURITY.md).
 
 ## Community
 
 - [Discord](https://discord.gg/5FjuaQBud) — questions, setup help and feedback
 - [GitHub Issues](https://github.com/integry/propr/issues) — bugs and feature requests
-- [Roadmap](ROADMAP.md) — where ProPR is heading, with a public issue behind each item
+- [Roadmap](docs/ROADMAP.md) — where ProPR is heading, with a public issue behind each item
 - [Changelog](CHANGELOG.md) — release history
 
 ## Status
@@ -370,7 +370,7 @@ Current boundaries, so you can tell quickly whether it fits:
 - **Self-hosted only.** There is no hosted ProPR. The optional [Connect](https://propr.dev/connect/) relay provides a shared GitHub App and forwards GitHub events to your instance; skip it by bringing your own GitHub App.
 - **Linux `amd64` hosts.** That is the native, recommended path. Apple Silicon macOS runs the published images under Docker Desktop emulation; native `arm64` images are not available yet.
 - **Desktop app is a release candidate.** Linux and macOS builds exist; Windows packaging is deferred.
-- **Pre-1.0.** Direction is cheapest to change now. The [roadmap](ROADMAP.md) lists what is planned and what is deliberately out of scope.
+- **Pre-1.0.** Direction is cheapest to change now. The [roadmap](docs/ROADMAP.md) lists what is planned and what is deliberately out of scope.
 
 ## License
 

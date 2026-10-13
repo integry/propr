@@ -5,6 +5,7 @@ import { useTaskSelection } from '../hooks/useTaskSelection';
 import { useOpenTaskGroup } from '../hooks/useOpenTaskGroup';
 import TaskList from '../components/TaskList';
 import TaskDetails from '../components/TaskDetails';
+import type { RunRevealHistory } from '../components/TaskDetails/RunTimeline';
 import TaskSplitWorkspace from '../components/TaskList/TaskSplitWorkspace';
 import { buildTaskRow, buildTaskRuns, taskPath } from '../components/TaskList/rowModel';
 import type { TaskGroup } from '../components/TaskList/types';
@@ -71,12 +72,16 @@ const TasksPage: React.FC = () => {
   const openGroup = useOpenTaskGroup(openTaskId, pageGroups);
   // The full page lists the task's runs in its timeline too, and moves between them by route.
   const routeRuns = useRouteTaskRuns(taskId ?? null);
+  const revealHistory: RunRevealHistory = useRef(null);
+  useEffect(() => {
+    if (!taskId) revealHistory.current = null;
+  }, [taskId]);
   const openRouteRun = useCallback((runTaskId: string) => navigate(taskPath(runTaskId)), [navigate]);
 
   // TaskDetails view should not be constrained by parent padding
   if (taskId) {
     // Keyed by run, so moving to another run drops the old run's live subscriptions and state.
-    return <TaskDetails key={taskId} runs={routeRuns} onSelectRun={openRouteRun} />;
+    return <TaskDetails key={taskId} revealHistory={revealHistory} runs={routeRuns} onSelectRun={openRouteRun} />;
   }
 
   return (

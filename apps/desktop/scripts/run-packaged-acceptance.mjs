@@ -1,10 +1,12 @@
+import { createBrowserApproval, focusPairingControlWithKeyboard } from './packaged-browser-approval.mjs';
+import { exercisePackagedCspReload, observeCspReloadRequestFailures, correlateExpectedCspReloadConsoleRecords, sanitizedCspReloadError, sanitizedCspReloadRequestFailure } from './packaged-acceptance-csp-reload.mjs';
 import { SETUP_ACTIONS, prepareProductionSetup, reachSetupAction, activateSetupAction } from './packaged-acceptance-setup.mjs';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { constants as fsConstants } from 'node:fs';
-import { access, lstat, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
@@ -18,6 +20,10 @@ import {
 } from '@propr/shared';
 import {
   ACCEPTANCE_JOURNEYS,
+  CSP_SOCKET_JOURNEYS,
+  INSTALLED_SOCKET_JOURNEYS,
+  validateSocketServiceSummary,
+  ACCEPTANCE_VARIANTS,
   ACCEPTANCE_PROFILE_PREFIX,
   ACCEPTANCE_SURFACES_PREFIX,
   acceptanceVariantsFor,
@@ -28,6 +34,7 @@ import {
   prepareAcceptanceArtifactDirectory,
   readPngDimensions,
   safeRemoveAcceptanceLeaf,
+  removeOwnedAcceptanceProfileSingletons,
   sanitizeAcceptanceTrace,
   scanAcceptancePaths,
   screenshotName,
@@ -55,7 +62,13 @@ if (process.platform !== 'linux' || process.arch !== 'x64') {
 }
 
 const outputDirectory = resolve(process.env.PROPR_DESKTOP_ACCEPTANCE_OUTPUT || defaultAcceptanceOutputDirectory());
-const binaryPath = resolve('out', 'propr-desktop-linux-x64', 'propr-desktop');
+const installedRpm = process.env.PROPR_DESKTOP_INSTALLED_RPM_ACCEPTANCE === '1';
+// Signed-RPM validation must always exercise the package-owned installed payload.
+// The explicit binary override remains available for provisioned native validation.
+const binaryPath = installedRpm ? '/usr/lib/propr-desktop/propr-desktop'
+  : process.env.PROPR_DESKTOP_ACCEPTANCE_BINARY
+    ? resolve(process.env.PROPR_DESKTOP_ACCEPTANCE_BINARY)
+    : resolve('out', 'propr-desktop-linux-x64', 'propr-desktop');
 const DEVICE_SECRET = 'D'.repeat(43);
 const INSTANCE_TOKEN = `propr_it_${'T'.repeat(43)}`;
 const ACTIVATION_TICKET = 'A'.repeat(43);
@@ -64,7 +77,10 @@ const RECEIPT = 'R'.repeat(22);
 const SENTINELS = [DEVICE_SECRET, INSTANCE_TOKEN, ACTIVATION_TICKET];
 const FIXED_MILLIS = PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS;
 const consoleRecords = [];
+let cspReloadEvidence;
 const pendingConsoleRecords = [];
+const cspDeniedRequests = [];
+let nextRendererPageId = 0;
 const pageErrorRecords = [];
 const processRecords = [];
 const requestRecords = [];
@@ -407,8 +423,9 @@ const createFixture = async (mode, fixedOrigin) => {
   let tokenActive = false;
   let tokenRevoked = false;
   let authChecks = 0;
+  const approval = createBrowserApproval(fixedOrigin, `/api/desktop/pairings/${PAIRING_ID}/browser`);
   const recordCurrentUserFixture = record => {
-    if (fixtureCurrentUserRecords.filter(item => item.journey === activeJourney).length >= 4) {
+    if (fixtureCurrentUserRecords.filter(item => item.journey === activeJourney).length >= (activeJourney.startsWith('csp-reload-') ? 12 : 4)) {
       currentUserEvidenceInvalid = true;
       return;
     }
@@ -431,6 +448,7 @@ const createFixture = async (mode, fixedOrigin) => {
       hasAuthorization: Boolean(request.headers.authorization),
       bodyBytes: Buffer.byteLength(bodyText),
     });
+    if (approval.handle(request, response, bodyText)) return;
     if (request.method === 'OPTIONS') return json(response, 204, {});
     if (request.url === '/api/desktop/discovery') {
       return json(response, 200, {
@@ -448,6 +466,7 @@ const createFixture = async (mode, fixedOrigin) => {
       });
     }
     if (request.method === 'POST' && request.url === '/api/desktop/pairings') {
+      approval.reset();
       binding = body;
       tokenActive = false;
       tokenRevoked = false;
@@ -455,12 +474,18 @@ const createFixture = async (mode, fixedOrigin) => {
       return json(response, 200, {
         pairingId: PAIRING_ID,
         deviceSecret: DEVICE_SECRET,
-        approvalUrl: `${fixedOrigin}/api/desktop/pairings/${PAIRING_ID}/browser`,
-        expiresAt: new Date(FIXED_MILLIS + 60_000).toISOString(),
+        approvalUrl: approval.url(),
+        expiresAt: new Date(FIXED_MILLIS + approval.lifetime()).toISOString(),
         interval: 1,
       });
     }
     if (request.method === 'POST' && request.url === `/api/desktop/pairings/${PAIRING_ID}/poll`) {
+      if (!binding || body.deviceSecret !== DEVICE_SECRET) return json(response, 403, { code: 'PAIRING_REJECTED' });
+      if (['rejected', 'cancelled'].includes(approval.status())) return json(response, 403, { code: 'PAIRING_REJECTED', error: 'Browser approval rejected' });
+      if (!approval.approved()) {
+        await new Promise(resolveValue => setTimeout(resolveValue, 25));
+        return json(response, 200, { status: 'pending', interval: 1 });
+      }
       return json(response, 200, {
         status: 'provisional', token: INSTANCE_TOKEN, tokenType: 'Bearer', activationTicket: ACTIVATION_TICKET,
         activationExpiresAt: new Date(FIXED_MILLIS + 60_000).toISOString(), instanceId: binding?.instanceId,
@@ -468,17 +493,24 @@ const createFixture = async (mode, fixedOrigin) => {
       });
     }
     if (request.method === 'POST' && request.url === `/api/desktop/pairings/${PAIRING_ID}/activate`) {
-      if (!binding || body.deviceSecret !== DEVICE_SECRET || body.activationTicket !== ACTIVATION_TICKET) {
+      if (!approval.approved() || !binding || body.deviceSecret !== DEVICE_SECRET || body.activationTicket !== ACTIVATION_TICKET) {
         return json(response, 400, { code: 'INVALID_ACTIVATION' });
       }
       tokenActive = true;
       return json(response, 200, { status: 'active', receipt: RECEIPT, activatedAt: FIXED_TIME, expiresAt: null });
     }
     if (request.method === 'POST' && request.url === `/api/desktop/pairings/${PAIRING_ID}/cancel`) {
+      if (!binding || body.deviceSecret !== DEVICE_SECRET || body.activationTicket !== ACTIVATION_TICKET) {
+        return json(response, 400, { code: 'INVALID_CANCELLATION' });
+      }
+      approval.cancel();
       tokenActive = false;
       return json(response, 200, { status: 'cancelled', cancelledAt: FIXED_TIME });
     }
     if (request.method === 'DELETE' && request.url === '/api/desktop/tokens/current') {
+      if (!tokenActive || request.headers.authorization !== `Bearer ${INSTANCE_TOKEN}` || request.headers.cookie) {
+        return json(response, 401, { code: 'INVALID_INSTANCE_TOKEN' });
+      }
       tokenActive = false;
       return json(response, 204, {});
     }
@@ -522,7 +554,7 @@ const createFixture = async (mode, fixedOrigin) => {
       }
       recordCurrentUserFixture(record);
       return json(response, 200, {
-        id: '2296', login: 'acceptance-admin', username: 'acceptance-admin', displayName: 'Acceptance Admin',
+        id: approval.wrongAccount() ? '2297' : '2296', login: approval.wrongAccount() ? 'other-admin' : 'acceptance-admin', username: approval.wrongAccount() ? 'other-admin' : 'acceptance-admin', displayName: 'Acceptance Admin',
         email: null, avatarUrl: null, role: 'admin',
         permissions: ['instance.manage_agents', 'instance.manage_members', 'instance.manage_runtime', 'instance.manage_settings'],
         authorizationSource: 'local',
@@ -700,7 +732,7 @@ const createFixture = async (mode, fixedOrigin) => {
     once(server, 'error').then(([error]) => { throw error; }),
   ]);
   const address = server.address();
-  fixtures.push({ server, io });
+  fixtures.push({ server, io, approval, origin: fixedOrigin });
   const observedOrigin = `http://${address.address}:${address.port}`;
   if (observedOrigin !== fixedOrigin) throw new Error(`Acceptance fixture origin changed: ${observedOrigin}`);
   return fixedOrigin;
@@ -784,23 +816,34 @@ const initializeRenderer = async page => {
     }
 };
 
-const launchApplication = async (scenario, initialDeepLink) => {
-  const userData = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
+const launchApplication = async (scenario, initialDeepLink, retainedProfile) => {
+  const userData = retainedProfile ?? await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
   let child;
   let childClosed;
   let browser;
   let cleaned = false;
   let output = '';
-  const cleanup = async () => {
+  // Installed lifecycles own their supplied profile and remove it in their finally.
+  // CSP recovery owns its profile here: preserve only the first close for restart,
+  // then remove it on the final close (including a failed restart launch).
+  const cleanup = async ({ preserveProfile = retainedProfile != null && scenario !== 'csp-reload' } = {}) => {
     if (cleaned) return;
     cleaned = true;
     const failures = [];
     if (browser) await browser.close().catch(error => failures.push(error));
-    if (child && childClosed) await terminateProcessTree(child, childClosed).catch(error => failures.push(error));
+    let stopped = !child;
+    if (child && childClosed) {
+      try {
+        await terminateProcessTree(child, childClosed);
+        if (child.exitCode === null && child.signalCode === null) throw new Error('Acceptance child has not stopped');
+        stopped = true;
+      } catch (error) { failures.push(error); }
+    }
+    if (stopped) await removeOwnedAcceptanceProfileSingletons(userData, { stoppedChildPid: child?.pid }).catch(error => failures.push(error));
     await scanAcceptancePaths([userData], SENTINELS).catch(error => failures.push(error));
     surfaces.push({ kind: 'packaged-process-output', journey: activeJourney, value: output });
     processRecords.push({ journey: activeJourney, source: 'packaged-process', level: 'combined', bytes: Buffer.byteLength(output), sha256: digest(output) });
-    await safeRemoveAcceptanceLeaf(userData, { kind: 'profile' }).catch(error => failures.push(error));
+    if (stopped && !preserveProfile) await safeRemoveAcceptanceLeaf(userData, { kind: 'profile' }).catch(error => failures.push(error));
     if (failures.length) throw new AggregateError(failures, 'Packaged acceptance cleanup failed');
   };
 
@@ -831,7 +874,10 @@ const launchApplication = async (scenario, initialDeepLink) => {
         remainder = lines.pop() || '';
         lines.forEach(line => {
           captureMainHandshakeEvidence(line, activeJourney);
-          captureMainCurrentUserEvidence(line, activeJourney);
+          // Existing current-user/lifecycle budgets describe one document. The
+          // reload and installed journeys have their own lifecycle assertions and keep
+          // raw process/console output and request-gate evidence for scanning.
+          if (scenario !== 'csp-reload' && !activeJourney.startsWith('installed-')) captureMainCurrentUserEvidence(line, activeJourney);
           captureNetworkPermissionEvidence(line, activeJourney);
         });
       };
@@ -847,31 +893,40 @@ const launchApplication = async (scenario, initialDeepLink) => {
       expectedUrlPrefix: DESKTOP_RENDERER_ORIGIN,
       timeoutMs: 15_000,
     });
+    const pageId = ++nextRendererPageId;
+    if (scenario === 'csp-reload') {
+      await observeCspReloadRequestFailures({ page, origin: readyOrigin, pageId,
+        journey: () => activeJourney, records: cspDeniedRequests });
+    }
     page.on('console', message => {
       const journey = activeJourney;
       // Lifecycle evidence is a single serialized renderer snapshot. Capture it
       // synchronously so its strict transition order does not depend on CDP
       // JSHandle resolution or page lifetime.
-      captureRendererLifecycleEvidence(message.text(), journey);
+      if (scenario !== 'csp-reload' && !journey.startsWith('installed-')) captureRendererLifecycleEvidence(message.text(), journey);
+      // Preserve the error and its phase before async JSHandle reads can outlive
+      // the document. Failed argument reads must not erase an error from the gate.
+      const record = {
+        journey,
+        pageId,
+        type: message.type(),
+        text: message.text(),
+        arguments: [],
+        location: message.location(),
+      };
+      consoleRecords.push(record);
       const pending = Promise.all(message.args().map(async argument => {
-        try { return await argument.jsonValue(); } catch { return { unserializable: argument.toString() }; }
+        try { return await argument.jsonValue(); } catch { return { unserializable: true }; }
       })).then(argumentsValue => {
-        const record = {
-          journey,
-          type: message.type(),
-          text: message.text(),
-          arguments: argumentsValue,
-          location: message.location(),
-        };
-        consoleRecords.push(record);
-        captureRendererCurrentUserEvidence(record.arguments, journey);
+        record.arguments = argumentsValue;
+        if (scenario !== 'csp-reload' && !journey.startsWith('installed-')) captureRendererCurrentUserEvidence(record.arguments, journey);
       });
       pendingConsoleRecords.push(pending);
     });
     page.on('pageerror', error => pageErrorRecords.push({ journey: activeJourney, name: error.name, message: error.message, stack: error.stack || '' }));
     await initializeRenderer(page);
-    boundaryJourneys.add(activeJourney);
-    return { context, page, close: cleanup };
+    if (ACCEPTANCE_JOURNEYS.includes(activeJourney)) boundaryJourneys.add(activeJourney);
+    return { context, page, userData, close: cleanup };
   } catch (error) {
     try { await cleanup(); } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], 'Packaged acceptance launch and cleanup failed');
@@ -887,10 +942,157 @@ const fillEndpoint = async (page, origin, name = 'Acceptance ProPR') => {
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
 };
 
+const pairingEvidenceDirectory = join(outputDirectory, '../pairing-evidence');
+const assertVisibleKeyboardControl = async control => {
+  await focusPairingControlWithKeyboard(control);
+  if (!await control.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return element === document.activeElement && element.matches(':focus-visible') && style.visibility === 'visible'
+      && style.display !== 'none' && !element.disabled && bounds.width > 0 && bounds.height > 0
+      && bounds.left >= -1 && bounds.right <= innerWidth + 1 && bounds.top >= -1 && bounds.bottom <= innerHeight + 1
+      && (style.outlineStyle !== 'none' || style.boxShadow !== 'none');
+  })) throw new Error('Pairing keyboard control is not visibly reachable');
+};
+const captureInstalledLogin = async page => {
+  await mkdir(pairingEvidenceDirectory, { recursive: true });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    for (const variant of ['narrow', 'zoom-200']) {
+      await configureElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS[variant]);
+      await assertVisibleKeyboardControl(page.getByRole('button', { name: 'Sign in in browser' }));
+      await writeFile(join(pairingEvidenceDirectory, `installed-login-${variant}.png`), await captureElectronRendererScreenshot(cdp));
+    }
+    await configureElectronRendererVariant(page, cdp, ACCEPTANCE_VARIANTS.standard);
+  } finally { await cdp.detach(); }
+};
+const captureInstalledBrowserConfirmation = async page => {
+  // CSS layout zoom belongs to this fixture browser page. Electron evidence above
+  // uses the authenticated web-frame bridge and measured desktop geometry.
+  for (const [variant, zoom] of [['narrow', 1], ['zoom-200', 2]]) {
+    await page.evaluate(factor => { document.documentElement.style.zoom = String(factor); }, zoom);
+    for (const control of await page.getByRole('button').all()) await assertVisibleKeyboardControl(control);
+    await assertVisibleKeyboardControl(page.getByRole('button', { name: 'Approve @acceptance-admin', exact: true }));
+    await page.screenshot({ path: join(pairingEvidenceDirectory, `browser-confirmation-${variant}.png`) });
+  }
+  await page.evaluate(() => { document.documentElement.style.zoom = '1'; });
+};
+
+const approveInBrowser = async (page, origin, decision = 'approve') => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext({ viewport: { width: 880, height: 620 } });
+    await context.route('**/*', route => new URL(route.request().url()).origin === origin
+      ? route.continue() : route.abort());
+    const approvalPage = await context.newPage();
+    if (installedRpm && activeJourney === 'installed-approved') await captureInstalledLogin(page);
+    const fixture = fixtures.find(candidate => candidate.origin === origin);
+    if (decision === 'expire') fixture.approval.setNextLifetime(2_000);
+    await page.getByRole('button', { name: 'Sign in in browser' }).click();
+    await waitForObserved(() => fixture.approval.status() === 'pending', 'server-created browser approval');
+    const approvalUrl = fixture.approval.url();
+    await approvalPage.goto(approvalUrl);
+    await approvalPage.getByRole('heading', { name: 'Approve desktop pairing' }).waitFor();
+    if (installedRpm && activeJourney === 'installed-approved') await captureInstalledBrowserConfirmation(approvalPage);
+    const button = approvalPage.locator(`button[value="${decision}"]`);
+    await focusPairingControlWithKeyboard(button);
+    if (!await button.evaluate(element => element === document.activeElement
+      && getComputedStyle(element).outlineStyle !== 'none')) throw new Error('Approval keyboard focus is not visible');
+    await approvalPage.keyboard.press('Enter');
+    await approvalPage.getByRole('heading', { name: 'Approval complete' }).waitFor();
+    if (fixture.approval.status() === 'pending') throw new Error('Browser approval did not transition');
+  } finally { await browser.close(); }
+};
+
 const pair = async (page, origin, name = 'Acceptance ProPR') => {
   await fillEndpoint(page, origin, name);
   await page.getByRole('button', { name: 'Sign in in browser' }).waitFor();
-  await page.getByRole('button', { name: 'Sign in in browser' }).click();
+  await approveInBrowser(page, origin);
+};
+
+const installedPairingLifecycle = async () => {
+  const checks = {};
+  const userData = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
+  let application;
+  const connected = page => page.getByRole('button', { name: 'Connected: Installed RPM' }).waitFor({ timeout: 15_000 });
+  try {
+    activeJourney = 'installed-approved';
+    application = await launchApplication('default', null, userData);
+    await pair(application.page, readyOrigin, 'Installed RPM');
+    await connected(application.page);
+    await application.page.getByText('@acceptance-admin', { exact: true }).first().waitFor();
+    await waitForAuthenticatedSocket(activeJourney);
+    const records = requestRecords.filter(record => record.journey === activeJourney);
+    if (!records.some(record => record.url.endsWith('/activate'))
+      || !fixtureCurrentUserRecords.some(record => record.journey === activeJourney
+        && record.source === 'renderer' && record.authorizationMatchesActivatedBearer && record.responseStatus === 200)) {
+      throw new Error('Installed RPM did not activate and authenticate the live renderer');
+    }
+    checks.browserApproval = checks.expectedAccount = checks.activation = checks.authenticatedUi = true;
+    await application.close(); application = null;
+    activeJourney = 'installed-restart';
+    application = await launchApplication('default', null, userData);
+    await connected(application.page);
+    await application.page.getByText('@acceptance-admin', { exact: true }).first().waitFor();
+    await waitForAuthenticatedSocket(activeJourney);
+    if (requestRecords.some(record => record.journey === activeJourney && record.url === '/api/desktop/pairings')) {
+      throw new Error('Installed RPM restart paired again instead of using the persisted credential');
+    }
+    checks.persistedCredential = true;
+    await application.page.getByRole('button', { name: 'Logout', exact: true }).click();
+    await waitForObserved(() => requestRecords.some(record => record.journey === activeJourney
+      && record.method === 'DELETE' && record.url === '/api/desktop/tokens/current'), 'logout revocation');
+    await application.close(); application = null;
+    activeJourney = 'installed-logged-out';
+    application = await launchApplication('default', null, userData);
+    await application.page.getByRole('button', { name: /Installed RPM/ }).first().click();
+    await application.page.getByRole('button', { name: 'Sign in in browser' }).waitFor({ timeout: 15_000 });
+    if (await application.page.getByRole('button', { name: 'Connected: Installed RPM' }).count()) throw new Error('Logout credential survived restart');
+    checks.logoutRevocation = true;
+    await application.close(); application = null;
+  } finally {
+    if (application) await application.close();
+    await safeRemoveAcceptanceLeaf(userData, { kind: 'profile' });
+  }
+  for (const [decision, check, message] of [
+    ['reject', 'rejection', /could not verify the pairing response/i],
+    ['expire', 'timeout', /browser approval expired/i],
+    ['wrong-account', 'wrongAccount', /cancelled|not confirmed/i],
+  ]) {
+    activeJourney = `installed-${decision}`;
+    const profile = await mkdtemp(join(tmpdir(), ACCEPTANCE_PROFILE_PREFIX));
+    let failedApp;
+    try {
+      failedApp = await launchApplication('default', null, profile);
+      await fillEndpoint(failedApp.page, readyOrigin, 'Rejected RPM');
+      await failedApp.page.getByRole('button', { name: 'Sign in in browser' }).waitFor();
+      await approveInBrowser(failedApp.page, readyOrigin, decision);
+      await failedApp.page.getByText(message).first().waitFor({ timeout: 15_000 });
+      if (await failedApp.page.getByRole('button', { name: 'Connected: Rejected RPM' }).count()) throw new Error('Failed approval authenticated the renderer');
+      if (decision !== 'wrong-account' && requestRecords.some(record => record.journey === activeJourney && record.url.endsWith('/activate'))) {
+        throw new Error('Rejected or expired browser approval activated a token');
+      }
+      if (decision === 'wrong-account') await waitForObserved(() => requestRecords.some(record => record.journey === activeJourney
+        && record.method === 'POST' && record.url.endsWith('/cancel')), 'wrong-account provisional cancellation');
+      await failedApp.close(); failedApp = null;
+      // Persisted storage must remain unauthenticated even after a process restart.
+      activeJourney = `installed-${decision}-restart`;
+      failedApp = await launchApplication('default', null, profile);
+      await failedApp.page.getByRole('heading', { name: 'Let’s set up this computer' }).waitFor();
+      checks[check] = true;
+    } finally {
+      if (failedApp) await failedApp.close();
+      await safeRemoveAcceptanceLeaf(profile, { kind: 'profile' });
+    }
+  }
+  // Existing packaged acceptance already measured real Electron zoom/window geometry,
+  // visible controls, focus and axe findings for login and endpoint confirmation.
+  checks.narrowWindow = checks.zoom200 = checks.keyboardFocus = true;
+  await scanAcceptancePaths([pairingEvidenceDirectory], SENTINELS);
+  await writeFile(join(pairingEvidenceDirectory, 'usability.json'), JSON.stringify({ schemaVersion: 1,
+    desktop: { variants: ['narrow', 'zoom-200'], zoomMechanism: 'electron-web-frame', phoneViewport: false },
+    browser: { viewport: { width: 880, height: 620 }, layoutZoom: [1, 2], keyboardControlsVisible: true } }) + '\n');
+  await writeFile(join(outputDirectory, '../browser.json'), JSON.stringify(checks) + '\n', { mode: 0o600 });
 };
 
 const liveRegionSnapshot = () => [...document.querySelectorAll('[aria-live], [role="status"], [role="alert"]')].map(element => ({
@@ -1176,7 +1378,8 @@ const settlePendingRendererConsoleCaptures = async () => {
 
 const boundedAcceptanceDiagnosticCount = records => Math.min(records.length, 9);
 
-const rendererConsoleErrorCategory = (record, expectedRevokedAuthorizationRecord) => {
+const rendererConsoleErrorCategory = (record, expectedRevokedAuthorizationRecord, expectedCspRecords) => {
+  if (expectedCspRecords.has(record)) return 'expectedCspPolicyTransition';
   if (record === expectedRevokedAuthorizationRecord) return 'expectedRevokedAuthorizationResponse';
   if (record.text.startsWith('Failed to refresh instance authorization:')
     || record.text.startsWith('Failed to synchronize instance authorization:')) return 'currentUserSync';
@@ -1202,7 +1405,11 @@ const rendererConsoleErrorCategoryCounts = (records, rendererPageErrors = []) =>
     rendererRecords: rendererCurrentUserRecords,
     revokedOrigin: FIXED_ACCEPTANCE_ORIGINS.revoked,
   });
+  const expectedCspRecords = new Set(correlateExpectedCspReloadConsoleRecords({
+    records, origin: readyOrigin, evidence: cspReloadEvidence, deniedRequests: cspDeniedRequests,
+  }));
   const counts = {
+    expectedCspPolicyTransition: 0,
     expectedRevokedAuthorizationResponse: 0,
     currentUserSync: 0,
     apiLoad: 0,
@@ -1213,7 +1420,7 @@ const rendererConsoleErrorCategoryCounts = (records, rendererPageErrors = []) =>
     pageError: boundedAcceptanceDiagnosticCount(rendererPageErrors),
   };
   for (const record of records) {
-    const category = rendererConsoleErrorCategory(record, expectedRevokedAuthorizationRecord);
+    const category = rendererConsoleErrorCategory(record, expectedRevokedAuthorizationRecord, expectedCspRecords);
     counts[category] = Math.min(counts[category] + 1, 9);
   }
   return counts;
@@ -1236,13 +1443,56 @@ const rendererErrorAcceptanceSummary = () => {
   const rendererConsoleErrors = consoleRecords.filter(record => record.type === 'error');
   const errorCategoryCounts = rendererConsoleErrorCategoryCounts(rendererConsoleErrors, pageErrorRecords);
   const errors = rendererConsoleErrors.length + pageErrorRecords.length;
-  const expectedErrors = errorCategoryCounts.expectedRevokedAuthorizationResponse;
+  const expectedErrors = errorCategoryCounts.expectedRevokedAuthorizationResponse
+    + errorCategoryCounts.expectedCspPolicyTransition;
   return {
     records: consoleRecords.length + pageErrorRecords.length,
     errors,
     expectedErrors,
     unexpectedErrors: errors - expectedErrors,
     errorCategoryCounts,
+  };
+};
+
+// Fixed labels only. Never serialize messages, locations, stacks or arguments.
+const sanitizedRendererErrorDiagnostics = () => {
+  const allowedJourneys = new Set([...ACCEPTANCE_JOURNEYS, 'startup',
+    'csp-reload-startup', 'csp-reload-pairing', 'csp-reload-restart', 'csp-reload-deselection',
+    'csp-reload-saved-selection', 'csp-reload-removal',
+    'installed-approved', 'installed-restart', 'installed-logged-out',
+    'installed-reject', 'installed-reject-restart', 'installed-expire', 'installed-expire-restart',
+    'installed-wrong-account', 'installed-wrong-account-restart']);
+  const expectedCsp = new Set(correlateExpectedCspReloadConsoleRecords({
+    records: consoleRecords, origin: readyOrigin, evidence: cspReloadEvidence,
+    deniedRequests: cspDeniedRequests,
+  }));
+  const expectedRevoked = correlateExpectedRevokedAuthorizationConsoleRecord({
+    consoleRecords, fixtureRecords: fixtureCurrentUserRecords,
+    rendererRecords: rendererCurrentUserRecords, revokedOrigin: FIXED_ACCEPTANCE_ORIGINS.revoked,
+  });
+  const errors = [
+    ...consoleRecords.filter(record => record.type === 'error').map(record => ({
+      phase: allowedJourneys.has(record.journey) ? record.journey : 'other',
+      source: 'renderer-console',
+      category: rendererConsoleErrorCategory(record, expectedRevoked, expectedCsp),
+      ...sanitizedCspReloadError(record, readyOrigin),
+    })),
+    ...pageErrorRecords.map(record => ({
+      phase: allowedJourneys.has(record.journey) ? record.journey : 'other',
+      source: 'renderer-page-error', category: 'pageError',
+      errorClass: ['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'Error'].includes(record.name)
+        ? record.name : 'other',
+      request: 'other', ownedFixtureOrigin: false,
+    })),
+  ];
+  return { schemaVersion: 1, ...rendererErrorAcceptanceSummary(), errorRecords: errors.slice(0, 64),
+    omittedErrors: Math.max(0, errors.length - 64),
+    requestFailures: cspDeniedRequests.slice(0, 32).map(record => ({
+      issuedPhase: allowedJourneys.has(record.journey) ? record.journey : 'other',
+      failurePhase: allowedJourneys.has(record.failureJourney) ? record.failureJourney : 'other',
+      ...sanitizedCspReloadRequestFailure(record, readyOrigin),
+    })),
+    omittedRequestFailures: Math.max(0, cspDeniedRequests.length - 32),
   };
 };
 
@@ -1339,7 +1589,8 @@ const rendererSurfacePhase = async page => {
 };
 
 const socketHandshakeFailureCategory = journey => {
-  const currentUserCategory = currentUserValidationFailureCategory(journey);
+  const currentUserCategory = INSTALLED_SOCKET_JOURNEYS.includes(journey)
+    ? 'none' : currentUserValidationFailureCategory(journey);
   if (currentUserCategory !== 'none') return currentUserCategory;
   const rejectedMain = mainHandshakeRecords.find(record => record.journey === journey && !record.accepted);
   if (rejectedMain) return `main-${rejectedMain.rejectionCategory}`;
@@ -1370,6 +1621,7 @@ const socketHandshakeFailureCategory = journey => {
   if (applicationEvents.length === 1 && rendererObservedApplicationEvents.length === 0) {
     return 'renderer-application-event-not-observed';
   }
+  if (INSTALLED_SOCKET_JOURNEYS.includes(journey)) return 'application-session-not-observed';
   const lifecycleCategory = rendererLifecycleCategory(journey);
   return lifecycleCategory === 'none'
     ? 'renderer-connect-invoked-upgrade-not-produced'
@@ -1414,11 +1666,16 @@ const waitForAuthenticatedSocket = async journey => {
       && record.genuineApplicationEvent === true && record.direction === 'fixture-to-renderer');
     const rendererObservedApplicationEvents = consoleRecords.filter(record => record.journey === journey
       && record.text.startsWith('[SocketContext] Received queue stats update:'));
-    const rendererLifecycle = rendererLifecycleCategory(journey);
+    // Installed scenarios do not capture ordered renderer lifecycle diagnostics.
+    const rendererLifecycle = INSTALLED_SOCKET_JOURNEYS.includes(journey)
+      ? 'none' : rendererLifecycleCategory(journey);
     if (mainAccepted.length === 1 && fixtureAccepted.length === 1
       && connected.length === 1 && applicationSubscriptions.length === 1
       && applicationEvents.length === 1 && rendererObservedApplicationEvents.length === 1
-      && rendererLifecycle === 'none') return;
+      && rendererLifecycle === 'none'
+      && mainHandshakeRecords.filter(record => record.journey === journey).length === 1
+      && fixtureHandshakeRecords.filter(record => record.journey === journey).length === 1
+      && socketRecords.filter(record => record.journey === journey).length === 3) return;
     const category = socketHandshakeFailureCategory(journey);
     if (category.startsWith('main-') || category.startsWith('fixture-') || category.startsWith('duplicate-')) {
       throw new Error(`Acceptance Socket.IO handshake failed: ${category}; current-user-phases=${JSON.stringify(currentUserPhaseSummary(journey))}; renderer-lifecycle=${JSON.stringify(rendererLifecycleDiagnosticSummary(journey))}; network-permissions=${JSON.stringify(networkPermissionSummary(journey))}`);
@@ -1433,21 +1690,68 @@ const waitForAuthenticatedSocket = async journey => {
 const observedServiceSummary = () => {
   const restRequests = requestRecords.filter(record => record.method !== 'OPTIONS' && record.url.startsWith('/api/'));
   const authenticatedRequests = restRequests.filter(record => record.hasAuthorization);
-  const socketConnections = socketRecords.filter(record => record.event === 'connection' && record.authenticated);
-  const socketSubscriptions = socketRecords.filter(record => record.event === QUEUE_STATS_SUBSCRIBE_EVENT
-    && record.authenticated && record.genuineApplicationSubscription === true
-    && record.direction === 'client-to-fixture');
-  const socketEvents = socketRecords.filter(record => record.event === QUEUE_STATS_UPDATE
-    && record.authenticated && record.genuineApplicationEvent === true
-    && record.direction === 'fixture-to-renderer');
-  const mainHandshakes = mainHandshakeRecords.filter(record => record.journey === 'dashboard-profile-manager' && record.accepted);
-  const fixtureHandshakes = fixtureHandshakeRecords.filter(record => record.journey === 'dashboard-profile-manager' && record.accepted);
-  const mainHandshake = mainHandshakes[0];
-  const fixtureHandshake = fixtureHandshakes[0];
-  const rendererObservedApplicationEvents = consoleRecords.filter(record => record.journey === 'dashboard-profile-manager'
-    && record.text.startsWith('[SocketContext] Received queue stats update:'));
-  const rendererLifecycle = rendererLifecycleRecords
-    .filter(record => record.journey === 'dashboard-profile-manager').at(-1);
+  const socketSessionSummary = journey => {
+    const journeySocketRecords = socketRecords.filter(record => record.journey === journey);
+    const socketConnections = journeySocketRecords.filter(record => record.event === 'connection' && record.authenticated);
+    const socketSubscriptions = journeySocketRecords.filter(record => record.event === QUEUE_STATS_SUBSCRIBE_EVENT
+      && record.authenticated && record.genuineApplicationSubscription === true
+      && record.direction === 'client-to-fixture');
+    const socketEvents = journeySocketRecords.filter(record => record.event === QUEUE_STATS_UPDATE
+      && record.authenticated && record.genuineApplicationEvent === true
+      && record.direction === 'fixture-to-renderer');
+    const mainHandshakes = mainHandshakeRecords.filter(record => record.journey === journey);
+    const fixtureHandshakes = fixtureHandshakeRecords.filter(record => record.journey === journey);
+    const mainHandshake = mainHandshakes[0];
+    const fixtureHandshake = fixtureHandshakes[0];
+    const rendererObservedApplicationEvents = consoleRecords.filter(record => record.journey === journey
+      && record.text.startsWith('[SocketContext] Received queue stats update:'));
+    const rendererLifecycle = rendererLifecycleRecords
+      .filter(record => record.journey === journey).at(-1);
+    const session = {
+      records: journeySocketRecords.length,
+      subscriptions: socketSubscriptions.length,
+      authenticatedConnections: socketConnections.length,
+      events: socketEvents.length,
+      journeys: unique(journeySocketRecords.map(record => record.journey)),
+      handshake: {
+        mainAttempts: mainHandshakes.length,
+        fixtureAttempts: fixtureHandshakes.length,
+        scopeQueryPresent: mainHandshake?.scopeQueryPresent === true && fixtureHandshake?.scopeQueryPresent === true,
+        scopeQueryCount: mainHandshake?.scopeQueryCount ?? 0,
+        scopeEqualsActivatedBinding: mainHandshake?.scopeEqualsActive === true,
+        activeBindingPresent: mainHandshake?.activeBindingPresent === true,
+        profileGenerationCurrent: mainHandshake?.profileGenerationCurrent === true,
+        originEqualsActivatedBinding: mainHandshake?.originEqualsActive === true,
+        path: mainHandshake?.path ?? 'other',
+        transport: mainHandshake?.transport ?? 'other',
+        resource: mainHandshake?.resource ?? 'other',
+        rendererBearerPresent: mainHandshake?.rendererBearerPresent ?? false,
+        rendererCookiePresent: mainHandshake?.rendererCookiePresent ?? false,
+        authorizationHeaderPresent: fixtureHandshake?.authorizationPresent ?? false,
+        authorizationHeaderExactlyMainInjected: mainHandshake?.bearerMainInjected === true
+          && fixtureHandshake?.authorizationMatchesActivatedBearer === true,
+        rendererObservedApplicationEvent: rendererObservedApplicationEvents.length === 1,
+        rendererLifecycle: rendererLifecycle ? {
+          phase: rendererLifecycle.phase,
+          profileActivationPublished: rendererLifecycle.profileActivationPublished,
+          socketProviderMounted: rendererLifecycle.socketProviderMounted,
+          providerDisabled: rendererLifecycle.providerDisabled,
+          disabledByDemoModeLoading: rendererLifecycle.disabledByDemoModeLoading,
+          disabledByDemoMode: rendererLifecycle.disabledByDemoMode,
+          disabledByCurrentUserLoading: rendererLifecycle.disabledByCurrentUserLoading,
+          disabledByCurrentUserAbsent: rendererLifecycle.disabledByCurrentUserAbsent,
+          desktopRuntime: rendererLifecycle.desktopRuntime,
+          connectionScope: rendererLifecycle.connectionScope,
+          socketConstructionInvocations: rendererLifecycle.socketConstructionInvocations,
+          socketConstructions: rendererLifecycle.socketConstructions,
+          connectInvocations: rendererLifecycle.connectInvocations,
+        } : null,
+        rejectionCategory: mainHandshake?.accepted === true && fixtureHandshake?.accepted === true
+          ? mainHandshake.rejectionCategory : 'unaccepted-handshake',
+      },
+    };
+    return session;
+  };
   const pairingStarted = requestRecords.filter(record => record.method === 'POST' && record.url === '/api/desktop/pairings');
   const pairingPolled = requestRecords.filter(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/poll`);
   const pairingActivated = requestRecords.filter(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/activate`);
@@ -1484,80 +1788,25 @@ const observedServiceSummary = () => {
       },
     },
     socketIo: {
-      authenticatedConnections: socketConnections.length,
-      events: socketEvents.length,
-      journeys: unique(socketRecords.map(record => record.journey)),
-      handshake: {
-        mainAttempts: mainHandshakes.length,
-        fixtureAttempts: fixtureHandshakes.length,
-        scopeQueryPresent: mainHandshake?.scopeQueryPresent === true && fixtureHandshake?.scopeQueryPresent === true,
-        scopeQueryCount: mainHandshake?.scopeQueryCount ?? 0,
-        scopeEqualsActivatedBinding: mainHandshake?.scopeEqualsActive === true,
-        activeBindingPresent: mainHandshake?.activeBindingPresent === true,
-        profileGenerationCurrent: mainHandshake?.profileGenerationCurrent === true,
-        originEqualsActivatedBinding: mainHandshake?.originEqualsActive === true,
-        path: mainHandshake?.path ?? 'other',
-        transport: mainHandshake?.transport ?? 'other',
-        resource: mainHandshake?.resource ?? 'other',
-        rendererBearerPresent: mainHandshake?.rendererBearerPresent ?? false,
-        rendererCookiePresent: mainHandshake?.rendererCookiePresent ?? false,
-        authorizationHeaderPresent: fixtureHandshake?.authorizationPresent ?? false,
-        authorizationHeaderExactlyMainInjected: mainHandshake?.bearerMainInjected === true
-          && fixtureHandshake?.authorizationMatchesActivatedBearer === true,
-        rendererObservedApplicationEvent: rendererObservedApplicationEvents.length === 1,
-        rendererLifecycle: rendererLifecycle ? {
-          phase: rendererLifecycle.phase,
-          profileActivationPublished: rendererLifecycle.profileActivationPublished,
-          socketProviderMounted: rendererLifecycle.socketProviderMounted,
-          providerDisabled: rendererLifecycle.providerDisabled,
-          disabledByDemoModeLoading: rendererLifecycle.disabledByDemoModeLoading,
-          disabledByDemoMode: rendererLifecycle.disabledByDemoMode,
-          disabledByCurrentUserLoading: rendererLifecycle.disabledByCurrentUserLoading,
-          disabledByCurrentUserAbsent: rendererLifecycle.disabledByCurrentUserAbsent,
-          desktopRuntime: rendererLifecycle.desktopRuntime,
-          connectionScope: rendererLifecycle.connectionScope,
-          socketConstructionInvocations: rendererLifecycle.socketConstructionInvocations,
-          socketConstructions: rendererLifecycle.socketConstructions,
-          connectInvocations: rendererLifecycle.connectInvocations,
-        } : null,
-        rejectionCategory: mainHandshake?.rejectionCategory ?? socketHandshakeFailureCategory('dashboard-profile-manager'),
-      },
+      ...socketSessionSummary('dashboard-profile-manager'),
+      cspSessions: CSP_SOCKET_JOURNEYS.map(socketSessionSummary),
+      mode: installedRpm ? 'installed-rpm' : 'packaged',
+      installedSessions: installedRpm ? INSTALLED_SOCKET_JOURNEYS.map(socketSessionSummary) : [],
+      // Count every unowned socket/upgrade record, including rejected attempts.
+      unexpectedRecords: [...socketRecords, ...mainHandshakeRecords, ...fixtureHandshakeRecords]
+        .filter(record => !['dashboard-profile-manager', ...CSP_SOCKET_JOURNEYS,
+          ...(installedRpm ? INSTALLED_SOCKET_JOURNEYS : [])].includes(record.journey)).length,
     },
     pairing: { started: pairingStarted.length, polled: pairingPolled.length, activated: pairingActivated.length, journeys: unique([...pairingStarted, ...pairingPolled, ...pairingActivated].map(record => record.journey)) },
     connect: { confirmedRequests: connectConfirmed.length, journeys: unique(connectConfirmed.map(record => record.journey)) },
   };
+  try {
+    validateSocketServiceSummary(services.socketIo, installedRpm ? 'installed-rpm' : 'packaged');
+  } catch {
+    throw new Error(`Acceptance packaged-renderer service journeys were incomplete: ${JSON.stringify(services)}`);
+  }
   if (services.rest.requestCount <= 0 || services.rest.authenticatedRequestCount <= 0
     || currentUserCategory !== 'none'
-    || services.socketIo.authenticatedConnections !== 1 || socketSubscriptions.length !== 1
-    || services.socketIo.events !== 1 || rendererObservedApplicationEvents.length !== 1
-    || services.socketIo.handshake.mainAttempts !== 1 || services.socketIo.handshake.fixtureAttempts !== 1
-    || !services.socketIo.handshake.scopeQueryPresent || services.socketIo.handshake.scopeQueryCount !== 1
-    || !services.socketIo.handshake.scopeEqualsActivatedBinding
-    || !services.socketIo.handshake.activeBindingPresent
-    || !services.socketIo.handshake.profileGenerationCurrent
-    || !services.socketIo.handshake.originEqualsActivatedBinding
-    || services.socketIo.handshake.path !== 'socket-io'
-    || services.socketIo.handshake.transport !== 'websocket'
-    || services.socketIo.handshake.resource !== 'websocket'
-    || services.socketIo.handshake.rendererBearerPresent
-    || services.socketIo.handshake.rendererCookiePresent
-    || !services.socketIo.handshake.authorizationHeaderPresent
-    || !services.socketIo.handshake.authorizationHeaderExactlyMainInjected
-    || !services.socketIo.handshake.rendererObservedApplicationEvent
-    || services.socketIo.handshake.rendererLifecycle?.phase !== 'socket-connect-invoked'
-    || services.socketIo.handshake.rendererLifecycle?.profileActivationPublished !== true
-    || services.socketIo.handshake.rendererLifecycle?.socketProviderMounted !== true
-    || services.socketIo.handshake.rendererLifecycle?.providerDisabled !== false
-    || services.socketIo.handshake.rendererLifecycle?.disabledByDemoModeLoading !== false
-    || services.socketIo.handshake.rendererLifecycle?.disabledByDemoMode !== false
-    || services.socketIo.handshake.rendererLifecycle?.disabledByCurrentUserLoading !== false
-    || services.socketIo.handshake.rendererLifecycle?.disabledByCurrentUserAbsent !== false
-    || services.socketIo.handshake.rendererLifecycle?.desktopRuntime !== true
-    || services.socketIo.handshake.rendererLifecycle?.connectionScope !== 'available'
-    || services.socketIo.handshake.rendererLifecycle?.socketConstructionInvocations !== 1
-    || services.socketIo.handshake.rendererLifecycle?.socketConstructions !== 1
-    || services.socketIo.handshake.rendererLifecycle?.connectInvocations !== 1
-    || services.socketIo.handshake.rejectionCategory !== 'none'
     || services.pairing.started <= 0 || services.pairing.polled <= 0 || services.pairing.activated <= 0
     || services.connect.confirmedRequests <= 0) {
     throw new Error(`Acceptance packaged-renderer service journeys were incomplete: ${JSON.stringify(services)}`);
@@ -1692,7 +1941,46 @@ try {
   });
 
   if (!traceWritten) throw new Error('Playwright trace was not produced');
-  await Promise.all(pendingConsoleRecords);
+  await settlePendingRendererConsoleCaptures();
+  activeJourney = 'csp-reload-pairing';
+  try {
+    await exercisePackagedCspReload({
+      launch: userData => launchApplication('csp-reload', null, userData),
+      pair, origin: readyOrigin,
+      observe: phase => { activeJourney = `csp-reload-${phase}`; },
+      evidence: result => {
+        cspReloadEvidence = result;
+        surfaces.push({ kind: 'native-csp-reload', ...result });
+      },
+    });
+    // Installed pairing must finish before error accounting and the final raw-surface scan.
+    if (installedRpm) await installedPairingLifecycle();
+  } finally {
+    // Captures can enqueue more captures while arguments resolve. Drain to
+    // quiescence after closing CSP/installed applications, even on assertion failure.
+    await settlePendingRendererConsoleCaptures();
+    const sanitizedLogRecords = [
+      ...consoleRecords.map(record => ({
+        journey: record.journey, source: 'renderer-console', level: record.type,
+        bytes: Buffer.byteLength(JSON.stringify(record)), sha256: digest(JSON.stringify(record)),
+      })),
+      ...pageErrorRecords.map(record => ({
+        journey: record.journey, source: 'renderer-page-error', level: 'error',
+        bytes: Buffer.byteLength(JSON.stringify(record)), sha256: digest(JSON.stringify(record)),
+      })),
+      ...processRecords,
+    ];
+    await writeFile(join(outputDirectory, 'sanitized-log.json'), `${JSON.stringify({
+      schemaVersion: 2, generatedAt: FIXED_TIME, mode: installedRpm ? 'installed-rpm' : 'packaged', records: sanitizedLogRecords,
+    }, null, 2)}\n`, { mode: 0o600 });
+    const diagnostics = sanitizedRendererErrorDiagnostics();
+    if (diagnostics.unexpectedErrors > 0) {
+      await writeFile(join(outputDirectory, 'sanitized-renderer-errors.json'),
+        `${JSON.stringify(diagnostics, null, 2)}\n`, { mode: 0o600 });
+    }
+    // Fixed-label evidence reaches native CI before any scenario/gate throw.
+    console.info('Packaged renderer error diagnostics:', JSON.stringify(diagnostics));
+  }
   if (rendererLifecycleInvalidStates.size > 0) {
     throw new Error(`Acceptance renderer lifecycle evidence was invalid: ${JSON.stringify(rendererLifecycleInvalidSummary())}`);
   }
@@ -1737,23 +2025,9 @@ try {
   };
   await writeFile(join(outputDirectory, 'sanitized-summary.json'), `${JSON.stringify(sanitizedSummary, null, 2)}\n`, { mode: 0o600 });
 
-  const sanitizedLogRecords = [
-    ...consoleRecords.map(record => ({
-      journey: record.journey, source: 'renderer-console', level: record.type,
-      bytes: Buffer.byteLength(JSON.stringify(record)), sha256: digest(JSON.stringify(record)),
-    })),
-    ...pageErrorRecords.map(record => ({
-      journey: record.journey, source: 'renderer-page-error', level: 'error',
-      bytes: Buffer.byteLength(JSON.stringify(record)), sha256: digest(JSON.stringify(record)),
-    })),
-    ...processRecords,
-  ];
-  await writeFile(join(outputDirectory, 'sanitized-log.json'), `${JSON.stringify({
-    schemaVersion: 1, generatedAt: FIXED_TIME, records: sanitizedLogRecords,
-  }, null, 2)}\n`, { mode: 0o600 });
-
   const scanRoot = await mkdtemp(join(tmpdir(), ACCEPTANCE_SURFACES_PREFIX));
   try {
+    surfaces.push({ kind: 'csp-request-failures', records: cspDeniedRequests });
     surfaces.push({ kind: 'renderer-console', records: consoleRecords });
     surfaces.push({ kind: 'renderer-page-errors', records: pageErrorRecords });
     surfaces.push({ kind: 'service-urls', records: requestRecords });

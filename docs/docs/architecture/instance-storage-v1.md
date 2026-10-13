@@ -202,7 +202,7 @@ unsupported-origin behavior, and generates focused transient preview evidence.
 
 ## Native instance data management (#3013)
 
-**Settings → Integrations → Instance data** is available to current instance
+**Settings → Integrations & MCP → Instance data** is available to current instance
 administrators with `instance.manage_settings` on self-hosted and Hosted deployments.
 No Fleet subscription, Connect session, Connect account ownership, repository assignment
 or installation membership establishes this authority. Connect may use the same instance

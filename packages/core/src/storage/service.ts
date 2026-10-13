@@ -3,11 +3,10 @@ import { GeneratedPayloadStorage } from './generatedPayloads.js';
 import { StorageContractError, confirmationInvalid, instanceSelectionChanged, validatePreviewSelection, type CleanupPreviewArgs, type CleanupPreviewRequest, type CandidateExecution, type SavedPreview } from './cleanupRequest.js';
 import fs from 'node:fs/promises';
 import { DatabaseExports, type StorageAuthority } from './databaseExport.js';
-import type { RepositoryStorageInventory } from '@propr/shared';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
-import { DEFAULT_STORAGE_POLICY, STORAGE_INSTANCE_CHANGED_CODE, type StoragePolicy, type StorageObservation, type StorageCleanupPreview, type StorageCleanupResult, type StorageCandidate, type StorageProtection } from '@propr/shared';
+import { DEFAULT_STORAGE_POLICY, STORAGE_INSTANCE_CHANGED_CODE, type RepositoryStorageInventory, type StoragePolicy, type StorageObservation, type StorageCleanupPreview, type StorageCleanupResult, type StorageCandidate, type StorageProtection } from '@propr/shared';
 import { StorageLifecycle, StorageBusyError, assertRealDirectory } from './lifecycle.js';
 import { observeStorage, type StorageRoot } from './observation.js';
 import { auditRepository } from './repositorySafety.js';
@@ -35,6 +34,7 @@ interface StorageServices {
 /** A single instance, with no caller-controlled roots, remote URLs or filesystem operations. */
 export class InstanceStorageService {
   private initialized?: Promise<string>;
+  private identityRoot?: { dev: number; ino: number };
   private observation?: StorageObservation;
   private scan?: Promise<void>;
   private sweeping = false;
@@ -53,6 +53,12 @@ export class InstanceStorageService {
   async capabilities() {
     return { version: 1 as const, instanceId: await this.initialize(), generation: this.exports?.generation ?? this.generation,
       features: ['repository_inventory', 'repository_cleanup', ...(this.exports ? ['database_export'] : [])] };
+  }
+  /** Internal authority must re-read durable identity, never trust the initialization cache. */
+  async revalidateIdentity(expected: string): Promise<void> {
+    await this.initialize();
+    const root = await fs.lstat(this.root);
+    if (!root.isDirectory() || root.isSymbolicLink() || root.dev !== this.identityRoot?.dev || root.ino !== this.identityRoot?.ino || await this.read<string>('instance.json') !== expected) throw instanceSelectionChanged();
   }
   async inventory(): Promise<RepositoryStorageInventory> {
     if (!this.inventoryScan || Date.now() - this.inventoryAt > 60_000) {
@@ -122,6 +128,8 @@ export class InstanceStorageService {
     this.initialized ??= this.services.lifecycle.use(async () => this.services.lifecycle.exclusive(async () => {
       await fs.mkdir(this.root, { recursive: true });
       await assertRealDirectory(this.root);
+      const identityRoot = await fs.lstat(this.root);
+      this.identityRoot = { dev: identityRoot.dev, ino: identityRoot.ino };
       let id: string;
       try { id = await this.read<string>('instance.json'); }
       catch (error) {
@@ -198,9 +206,7 @@ export class InstanceStorageService {
     }
     return records;
   }
-  private async busy(): Promise<boolean> {
-    return await this.services.lifecycle.busy() || await this.services.hasPendingTasks();
-  }
+  private async busy(): Promise<boolean> { return await this.services.lifecycle.busy() || await this.services.hasPendingTasks(); }
   private async audit(actor: string, action: string, detail: unknown): Promise<void> {
     const handle = await fs.open(path.join(this.root, 'audit.jsonl'), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
     try { await handle.writeFile(JSON.stringify({ at: new Date().toISOString(), actor, action, detail }) + '\n'); }
@@ -215,12 +221,6 @@ export class InstanceStorageService {
   private async auditCache(directory: string, record: CacheRecord, signal?: AbortSignal) {
     if (signal?.aborted) return { reasons: ['busy'] as StorageProtection[], bytes: null, fingerprint: null };
     return (this.services.auditRepository ?? auditRepository)(directory, record.identity, `https://github.com/${record.owner}/${record.name}.git`, { signal, token: await this.services.remoteToken?.().catch(() => undefined), metadataFingerprint: record.metadataFingerprint });
-  }
-  private async removeCache(record: CacheRecord, fingerprint: string, signal: AbortSignal, authorize?: StorageAuthority): Promise<StorageProtection[]> {
-    return removeRegisteredCache(record, fingerprint, signal, {
-      clonesRoot: this.services.clonesRoot, root: this.root, authorize,
-      auditCache: (directory, cache, abortSignal) => this.auditCache(directory, cache, abortSignal),
-    });
   }
   private async unregisteredCandidates(registered: CacheRecord[]): Promise<StorageCandidate[]> {
     const candidates: StorageCandidate[] = [];
@@ -322,7 +322,10 @@ export class InstanceStorageService {
     if (current.fingerprint !== fingerprint) return ['changed'];
     // The same cross-process barrier covers remote proof, final identity and removal.
     // No unchecked force/remove fallback exists elsewhere in the cache lifecycle.
-    return this.removeCache(record, fingerprint, signal, authorize);
+    return removeRegisteredCache(record, fingerprint, signal, {
+      clonesRoot: this.services.clonesRoot, root: this.root, authorize,
+      auditCache: (directory, cache, abortSignal) => this.auditCache(directory, cache, abortSignal),
+    });
   }
   private validateConfirmation(saved: SavedPreview, instanceId: string, actor: string): void {
     if (saved.generation !== this.generation) throw new StorageContractError(409, 'Instance generation changed', STORAGE_INSTANCE_CHANGED_CODE);

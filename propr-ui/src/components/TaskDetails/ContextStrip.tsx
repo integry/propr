@@ -1,3 +1,4 @@
+import { formatModelName } from '../../utils/modelDisplay';
 import React from 'react';
 import { TaskBudget, TaskInfo, TokenUsage, UsageMetricRecord } from './types';
 import { ExternalLink, GitPullRequest, GitCommit, Layers3 } from 'lucide-react';
@@ -26,6 +27,7 @@ const GitHubIcon: React.FC<{ size?: number; className?: string }> = ({ size = 14
 
 // Model name mapping for human-readable names
 const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  'claude-opus-5-5': 'Opus 5.5',
   'claude-opus-4-5-20251101': 'Opus 4.5',
   'claude-sonnet-4-20250514': 'Sonnet 4',
   'claude-3-5-sonnet-20241022': 'Sonnet 3.5',
@@ -36,7 +38,7 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
 };
 
 const getDisplayModelName = (modelId: string): string => {
-  return MODEL_DISPLAY_NAMES[modelId] || modelId;
+  return (MODEL_DISPLAY_NAMES[modelId] || formatModelName(modelId)).replace(/\s+/g, ' ').trim();
 };
 
 // Format token count for display (e.g., 1234 -> "1.2k", 1234567 -> "1.2M")
@@ -48,11 +50,8 @@ const formatTokenCount = (count: number | null | undefined): string => {
 };
 
 /**
- * Each domain is a cluster of chips set apart by whitespace; a hairline rule
- * stands between clusters. Chips carry their own boundaries, so no dot or
- * bullet separates them.
+ * Whitespace separates wrapping groups so no divider can lead a new line.
  */
-// Clusters are set apart by the strip's gap alone: a drawn divider would start the line whenever the strip wraps.
 const ContextGroup: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => {
   const items = React.Children.toArray(children);
   if (!items.length) return null;
@@ -114,19 +113,19 @@ const LinkedIssueChip: React.FC<{ taskInfo: TaskInfo }> = ({ taskInfo }) => {
 };
 
 // Model chip component
-const ModelChip: React.FC<{ modelName: string; duration?: number | null; synthetic?: boolean }> = ({ modelName, duration, synthetic }) => (
+const ModelChip: React.FC<{ modelName: string; duration?: number | null; synthetic?: boolean; compact?: boolean }> = ({ modelName, duration, synthetic, compact }) => (
   <>
     <span
-      className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-800"
-      title={modelName}
+      className="inline-flex min-w-0 items-center gap-1 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-800 [&>svg]:shrink-0"
+      title={getDisplayModelName(modelName)}
     >
       {synthetic
         ? <Layers3 className="h-3 w-3" aria-label="Synthetic pool" />
         : <ProviderLogo provider={modelName} className="w-3 h-3" />}
-      {getDisplayModelName(modelName)}
+      <span className={compact ? "truncate" : undefined}>{getDisplayModelName(modelName)}</span>
     </span>
     {duration !== null && duration !== undefined && (
-      <span className="text-gray-500 font-mono text-xs">{formatRelativeTime(duration)}</span>
+      <span className="shrink-0 text-gray-500 font-mono text-xs">{formatRelativeTime(duration)}</span>
     )}
   </>
 );
@@ -175,9 +174,6 @@ const TokenUsageChip: React.FC<{ tokenUsage: TokenUsage }> = ({ tokenUsage }) =>
     (tokenUsage.cache_creation_input_tokens ?? 0) +
     (tokenUsage.cache_read_input_tokens ?? 0);
   const outputTokens = tokenUsage.output_tokens ?? 0;
-  const hasTokens = inputTokens > 0 || outputTokens > 0;
-
-  if (!hasTokens) return null;
 
   return (
     <span
@@ -198,13 +194,14 @@ function findMetricRecord(records: UsageMetricRecord[], rawKey: string): UsageMe
 
 // Usage metrics chip component (Agent Tank tracking)
 const UsageMetricsChip: React.FC<{ usageMetricRecords: UsageMetricRecord[] }> = ({ usageMetricRecords }) => {
-  if (!usageMetricRecords || usageMetricRecords.length === 0) return null;
 
   // Find the session usage (most relevant for current task)
   const sessionRecord = findMetricRecord(usageMetricRecords, 'session');
   const weeklyRecord = findMetricRecord(usageMetricRecords, 'weeklyAll') || findMetricRecord(usageMetricRecords, 'weekly');
 
-  if (!sessionRecord && !weeklyRecord) return null;
+  if (usageMetricRecords.length === 0) {
+    return <span className="font-mono text-xs text-slate-500" title="Quota usage has not been reported">(no quota data)</span>;
+  }
 
   const sessionPct = sessionRecord?.metricValue ?? 0;
   const weeklyPct = weeklyRecord?.metricValue ?? 0;
@@ -214,18 +211,20 @@ const UsageMetricsChip: React.FC<{ usageMetricRecords: UsageMetricRecord[] }> = 
     .map(r => `${humanizeMetricKey(r.metricKey)}: ${r.metricValue.toFixed(1)}%`)
     .join(' | ');
 
-  // Only show if there's actual usage
-  if (sessionPct === 0 && weeklyPct === 0) return null;
+  if (!sessionRecord && !weeklyRecord) {
+    const first = usageMetricRecords[0];
+    return <span className="font-mono text-xs text-slate-500" title={tooltip}>({first.metricValue.toFixed(1)}% {humanizeMetricKey(first.metricKey)})</span>;
+  }
 
   // One quota reads `(0.4% quota)`, its kind in the tooltip; both name theirs.
-  const both = sessionPct > 0 && weeklyPct > 0;
+  const both = Boolean(sessionRecord && weeklyRecord);
   const tone = (pct: number) => pct > 25 ? 'text-amber-600 font-medium' : 'text-slate-500';
   return (
     <span className="font-mono text-xs text-slate-500" title={`Usage consumed: ${tooltip}`}>
       (
-      {sessionPct > 0 && <span className={tone(sessionPct)}>{sessionPct.toFixed(1)}% {both ? 'session' : 'quota'}</span>}
+      {sessionRecord && <span className={tone(sessionPct)}>{sessionPct.toFixed(1)}% {both ? 'session' : 'quota'}</span>}
       {both && ', '}
-      {weeklyPct > 0 && <span className={tone(weeklyPct)}>{weeklyPct.toFixed(1)}% {both ? 'weekly' : 'quota'}</span>}
+      {weeklyRecord && <span className={tone(weeklyPct)}>{weeklyPct.toFixed(1)}% {both ? 'weekly' : 'quota'}</span>}
       )
     </span>
   );
@@ -272,10 +271,6 @@ const TelemetryGroups: React.FC<{
   budget?: TaskBudget | null;
   lead?: React.ReactNode;
 }> = ({ modelName, duration, synthetic, tokenUsage, usageMetricRecords, budget, lead }) => {
-  const hasTokens = tokenUsage && Object.values(tokenUsage).some(value => (value ?? 0) > 0);
-  const hasQuota = usageMetricRecords?.some(record => record.metricValue > 0 &&
-    ['session', 'Session', 'weeklyAll', 'weekly', 'Weekly'].includes(record.metricKey));
-  const hasBudget = Boolean(budget && (budget.capUsd !== null || budget.spentUsd > 0));
   return (
     <>
       {lead && (
@@ -286,16 +281,19 @@ const TelemetryGroups: React.FC<{
       <ContextGroup label="Execution runtime">
         <ModelChip modelName={modelName} duration={duration} synthetic={synthetic} />
       </ContextGroup>
-      {(hasTokens || hasQuota || hasBudget) && (
-        <ContextGroup label="Consumption">
-          {hasTokens && <TokenUsageChip tokenUsage={tokenUsage} />}
-          {hasQuota && <UsageMetricsChip usageMetricRecords={usageMetricRecords!} />}
-          {hasBudget && <BudgetChip budget={budget!} />}
-        </ContextGroup>
-      )}
+      <ConsumptionGroup tokenUsage={tokenUsage} usageMetricRecords={usageMetricRecords} budget={budget} />
     </>
   );
 };
+
+/** Shared by desktop telemetry and the expanded mobile summary. */
+export const ConsumptionGroup: React.FC<Pick<ContextStripProps, 'tokenUsage' | 'usageMetricRecords' | 'budget'>> = ({ tokenUsage, usageMetricRecords, budget }) => (
+  <ContextGroup label="Consumption">
+    <TokenUsageChip tokenUsage={tokenUsage ?? {}} />
+    <UsageMetricsChip usageMetricRecords={usageMetricRecords ?? []} />
+    {budget && (budget.capUsd !== null || budget.spentUsd > 0) && <BudgetChip budget={budget} />}
+  </ContextGroup>
+);
 
 /** Where the task lives: repository, pull request, issue, commit, then who it is assigned to. */
 const GitGroup: React.FC<{
@@ -303,10 +301,9 @@ const GitGroup: React.FC<{
   prInfo?: { url?: string; number?: number };
   commitInfo?: { shortHash: string; url: string };
   assignment?: TaskAssignment;
-  showRepo: boolean;
-}> = ({ taskInfo, prInfo, commitInfo, assignment, showRepo }) => (
+}> = ({ taskInfo, prInfo, commitInfo, assignment }) => (
   <ContextGroup label="Git context">
-    {showRepo && taskInfo && <RepoLink taskInfo={taskInfo} />}
+    {taskInfo && <RepoLink taskInfo={taskInfo} />}
     {prInfo?.url && <PRInfoChip prInfo={prInfo} />}
     {Boolean(taskInfo?.number) && <IssuePRChip taskInfo={taskInfo!} />}
     {taskInfo?.type === 'pr-comment' && Boolean(taskInfo.issueNumber) && <LinkedIssueChip taskInfo={taskInfo} />}
@@ -356,6 +353,39 @@ const CompactTitleLine: React.FC<{ taskInfo: TaskInfo | null; prInfo?: { url?: s
   );
 };
 
+/** Mobile keeps repository and PR identity together, with secondary Git links beside it. */
+export const MobileGitContext: React.FC<Pick<ContextStripProps, 'taskInfo' | 'prInfo' | 'commitInfo'>> = ({ taskInfo, prInfo, commitInfo }) => {
+  if (!taskInfo) return null;
+  const repoUrl = `https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`;
+  const pr = prInfo?.url ? prInfo : taskInfo.type === 'pr-comment' && taskInfo.number
+    ? { url: `${repoUrl}/pull/${taskInfo.number}`, number: taskInfo.number } : null;
+  return (
+    <div role="group" aria-label="Git context" className="flex min-w-0 flex-wrap items-center gap-1 text-xs [&>a]:shrink-0 [&>span]:max-w-full [&>span]:flex-wrap">
+      <a href={pr?.url || repoUrl} target="_blank" rel="noopener noreferrer"
+        title={`${taskInfo.repoOwner}/${taskInfo.repoName}${pr ? ` PR #${pr.number}` : ''}`}
+        className="!shrink inline-flex min-w-0 items-center gap-1 rounded bg-green-50 px-1.5 py-0.5 text-green-700">
+        {pr ? <GitPullRequest size={12} className="shrink-0" /> : <GitHubIcon size={12} className="shrink-0" />}
+        <span className="truncate font-medium">{taskInfo.repoName}</span>
+        {pr && <span className="shrink-0 font-mono">#{pr.number}</span>}
+        <ExternalLink size={10} className="shrink-0 opacity-60" />
+      </a>
+      {Boolean(taskInfo.number) && (taskInfo.type !== 'pr-comment' || taskInfo.number !== pr?.number) && <IssuePRChip taskInfo={taskInfo} />}
+      <LinkedIssueChip taskInfo={taskInfo} />
+      {commitInfo && <CommitInfoChip commitInfo={commitInfo} />}
+      <AttemptLineage taskInfo={taskInfo} />
+    </div>
+  );
+};
+
+export const MobilePeopleRuntime: React.FC<Pick<ContextStripProps, 'assignment' | 'modelName' | 'duration' | 'synthetic'>> = ({ assignment, modelName, duration, synthetic }) => (
+  <div data-testid="task-mobile-people-runtime" className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+    {assignment?.taskId && <AssignmentControl assignment={assignment} dense />}
+    <div role="group" aria-label="Execution runtime" className="ml-auto flex min-w-0 max-w-full shrink-0 items-center gap-1 whitespace-nowrap [&>span]:text-[10px] [&>span]:leading-3">
+      <ModelChip modelName={modelName} duration={duration} synthetic={synthetic} compact />
+    </div>
+  </div>
+);
+
 interface ContextStripProps {
   taskInfo: TaskInfo | null;
   modelName: string;
@@ -367,10 +397,6 @@ interface ContextStripProps {
   /** Estimated spend against the run's spend cap. */
   budget?: TaskBudget | null;
   synthetic?: boolean;
-  /** Mobile only: Show only the repository name link */
-  mobileRepoOnly?: boolean;
-  /** Mobile only: Show only the metadata (PR, issue, model, etc.) without repo name */
-  mobileMetadataOnly?: boolean;
   /** Mobile only: the collapsed header's one line, the pull request then the task's title, truncated. */
   mobileCompact?: boolean;
   /**
@@ -394,8 +420,6 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   usageMetricRecords,
   budget,
   synthetic,
-  mobileRepoOnly,
-  mobileMetadataOnly,
   mobileCompact,
   part,
   lead,
@@ -403,31 +427,12 @@ const ContextStrip: React.FC<ContextStripProps> = ({
 }) => {
   if (mobileCompact) return <CompactTitleLine taskInfo={taskInfo} prInfo={prInfo} />;
 
-  // Mobile: Show only repo name
-  if (mobileRepoOnly) {
-    return (
-      <div className="flex items-center text-sm text-gray-600 min-w-0">
-        {taskInfo && (
-          <a
-            href={`https://github.com/${taskInfo.repoOwner}/${taskInfo.repoName}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex min-w-0 items-center gap-1 text-gray-700 hover:text-blue-600 transition-colors"
-          >
-            <GitHubIcon size={12} className="text-gray-500" />
-            <span className="font-medium truncate">{taskInfo.repoOwner}/{taskInfo.repoName}</span>
-          </a>
-        )}
-      </div>
-    );
-  }
-
   const showGit = part !== 'telemetry';
   const showTelemetry = part !== 'git';
   return (
     <div className={`flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-sm text-gray-600${part === 'git' ? '' : ' flex-1'}`}>
       {showGit && (
-        <GitGroup taskInfo={taskInfo} prInfo={prInfo} commitInfo={commitInfo} assignment={assignment} showRepo={!mobileMetadataOnly} />
+        <GitGroup taskInfo={taskInfo} prInfo={prInfo} commitInfo={commitInfo} assignment={assignment} />
       )}
       {showTelemetry && (
         <TelemetryGroups
