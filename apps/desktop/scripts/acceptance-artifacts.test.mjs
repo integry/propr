@@ -145,6 +145,7 @@ const summaryFor = () => ({
     expectedErrors: 0,
     unexpectedErrors: 0,
     errorCategoryCounts: {
+      expectedCspPolicyTransition: 0,
       expectedRevokedAuthorizationResponse: 0,
       currentUserSync: 0,
       apiLoad: 0,
@@ -228,7 +229,7 @@ const sanitizedLogFor = () => ({
     ...Array.from({ length: 3 }, (_, index) => ({
       journey: 'first-run-chooser', source: 'renderer-console', level: 'info', bytes: index, sha256: '5'.repeat(64),
     })),
-    ...ACCEPTANCE_JOURNEYS.map(journey => ({
+    ...[...ACCEPTANCE_JOURNEYS, 'csp-reload-pairing', 'csp-reload-removal'].map(journey => ({
       journey, source: 'packaged-process', level: 'combined', bytes: 0, sha256: '6'.repeat(64),
     })),
   ],
@@ -475,6 +476,29 @@ describe('packaged acceptance artifact contract', () => {
         }, evidence.sanitizedLog),
         /console summary is invalid/,
       );
+      assert.throws(() => validateAcceptanceEvidence(
+        evidence.accessibility, evidence.manifest, evidence.summary,
+        { ...evidence.sanitizedLog, records: evidence.sanitizedLog.records.filter(record => record.journey !== 'csp-reload-removal') },
+      ), /process log coverage is incomplete/);
+      const unknownPhaseLog = structuredClone(evidence.sanitizedLog);
+      unknownPhaseLog.records.at(-1).journey = 'csp-reload-unknown';
+      assert.throws(() => validateAcceptanceEvidence(
+        evidence.accessibility, evidence.manifest, evidence.summary, unknownPhaseLog,
+      ), /sanitized log record is invalid/);
+      const transitionSummary = structuredClone(evidence.summary);
+      Object.assign(transitionSummary.console, { records: 6, errors: 6, expectedErrors: 6 });
+      transitionSummary.console.errorCategoryCounts.expectedCspPolicyTransition = 6;
+      const transitionLog = { ...evidence.sanitizedLog, records: [...evidence.sanitizedLog.records.filter(record => record.source === 'packaged-process'), ...Array.from({ length: 6 }, () => ({
+        journey: 'csp-reload-pairing', source: 'renderer-console', level: 'error', bytes: 10, sha256: '5'.repeat(64),
+      }))] };
+      assert.doesNotThrow(() => validateAcceptanceEvidence(
+        evidence.accessibility, evidence.manifest, transitionSummary, transitionLog,
+      ));
+      Object.assign(transitionSummary.console, { records: 7, errors: 7, expectedErrors: 7 });
+      transitionSummary.console.errorCategoryCounts.expectedCspPolicyTransition = 7;
+      assert.throws(() => validateAcceptanceEvidence(
+        evidence.accessibility, evidence.manifest, transitionSummary, evidence.sanitizedLog,
+      ), /console summary is invalid/);
       for (const mutateHandshake of [
         handshake => { handshake.scopeQueryPresent = false; handshake.scopeQueryCount = 0; },
         handshake => { handshake.scopeQueryCount = 2; },

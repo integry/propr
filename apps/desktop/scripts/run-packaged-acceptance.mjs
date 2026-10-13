@@ -1,4 +1,4 @@
-import { exercisePackagedCspReload } from './packaged-acceptance-csp-reload.mjs';
+import { exercisePackagedCspReload, correlateExpectedCspReloadConsoleRecords } from './packaged-acceptance-csp-reload.mjs';
 import { SETUP_ACTIONS, prepareProductionSetup, reachSetupAction, activateSetupAction } from './packaged-acceptance-setup.mjs';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -68,6 +68,7 @@ const RECEIPT = 'R'.repeat(22);
 const SENTINELS = [DEVICE_SECRET, INSTANCE_TOKEN, ACTIVATION_TICKET];
 const FIXED_MILLIS = PACKAGED_ACCEPTANCE_EPOCH_MILLISECONDS;
 const consoleRecords = [];
+let cspReloadEvidence;
 const pendingConsoleRecords = [];
 const pageErrorRecords = [];
 const processRecords = [];
@@ -1183,7 +1184,8 @@ const settlePendingRendererConsoleCaptures = async () => {
 
 const boundedAcceptanceDiagnosticCount = records => Math.min(records.length, 9);
 
-const rendererConsoleErrorCategory = (record, expectedRevokedAuthorizationRecord) => {
+const rendererConsoleErrorCategory = (record, expectedRevokedAuthorizationRecord, expectedCspRecords) => {
+  if (expectedCspRecords.has(record)) return 'expectedCspPolicyTransition';
   if (record === expectedRevokedAuthorizationRecord) return 'expectedRevokedAuthorizationResponse';
   if (record.text.startsWith('Failed to refresh instance authorization:')
     || record.text.startsWith('Failed to synchronize instance authorization:')) return 'currentUserSync';
@@ -1209,7 +1211,11 @@ const rendererConsoleErrorCategoryCounts = (records, rendererPageErrors = []) =>
     rendererRecords: rendererCurrentUserRecords,
     revokedOrigin: FIXED_ACCEPTANCE_ORIGINS.revoked,
   });
+  const expectedCspRecords = new Set(correlateExpectedCspReloadConsoleRecords({
+    records, origin: readyOrigin, evidence: cspReloadEvidence,
+  }));
   const counts = {
+    expectedCspPolicyTransition: 0,
     expectedRevokedAuthorizationResponse: 0,
     currentUserSync: 0,
     apiLoad: 0,
@@ -1220,7 +1226,7 @@ const rendererConsoleErrorCategoryCounts = (records, rendererPageErrors = []) =>
     pageError: boundedAcceptanceDiagnosticCount(rendererPageErrors),
   };
   for (const record of records) {
-    const category = rendererConsoleErrorCategory(record, expectedRevokedAuthorizationRecord);
+    const category = rendererConsoleErrorCategory(record, expectedRevokedAuthorizationRecord, expectedCspRecords);
     counts[category] = Math.min(counts[category] + 1, 9);
   }
   return counts;
@@ -1243,7 +1249,8 @@ const rendererErrorAcceptanceSummary = () => {
   const rendererConsoleErrors = consoleRecords.filter(record => record.type === 'error');
   const errorCategoryCounts = rendererConsoleErrorCategoryCounts(rendererConsoleErrors, pageErrorRecords);
   const errors = rendererConsoleErrors.length + pageErrorRecords.length;
-  const expectedErrors = errorCategoryCounts.expectedRevokedAuthorizationResponse;
+  const expectedErrors = errorCategoryCounts.expectedRevokedAuthorizationResponse
+    + errorCategoryCounts.expectedCspPolicyTransition;
   return {
     records: consoleRecords.length + pageErrorRecords.length,
     errors,
@@ -1705,9 +1712,13 @@ try {
     launch: userData => launchApplication('csp-reload', null, userData),
     pair, origin: readyOrigin,
     observe: phase => { activeJourney = `csp-reload-${phase}`; },
-    evidence: result => surfaces.push({ kind: 'native-csp-reload', ...result }),
+    evidence: result => {
+      cspReloadEvidence = result;
+      surfaces.push({ kind: 'native-csp-reload', ...result });
+    },
   });
 
+  await Promise.all(pendingConsoleRecords);
   if (rendererLifecycleInvalidStates.size > 0) {
     throw new Error(`Acceptance renderer lifecycle evidence was invalid: ${JSON.stringify(rendererLifecycleInvalidSummary())}`);
   }

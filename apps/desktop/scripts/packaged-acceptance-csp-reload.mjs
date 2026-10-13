@@ -1,3 +1,37 @@
+// The old document deliberately fails closed while activation schedules its
+// replacement. Chromium emits two policy messages and one fetch message per
+// bootstrap request. Admit only these exact messages after the native scenario
+// proves convergence; unrelated errors and excess messages remain failures.
+export const correlateExpectedCspReloadConsoleRecords = ({ records, origin, evidence }) => {
+  if (!origin || evidence?.firstActivationReloads !== 1 || !evidence.firstActivationPolicyPresent
+    || !evidence.restartPolicyPresent || !evidence.restartConnected || evidence.restartReloads > 1
+    || evidence.savedSelectionReloads !== 0 || !evidence.savedSelectionPolicyPresent
+    || !evidence.removalNarrowed) return [];
+  const accepted = [];
+  const counts = new Map();
+  let generation;
+  for (const record of records) {
+    if (record.type !== 'error' || record.journey !== 'csp-reload-pairing') continue;
+    const policy = record.text.match(/^Connecting to '([^']+)' violates the following Content Security Policy directive: "connect-src 'self' https: wss:"\. The action has been blocked\.$/);
+    const fetch = record.text.match(/^Fetch API cannot load (\S+)\. Refused to connect because it violates the document's Content Security Policy\.$/);
+    const url = policy?.[1] ?? fetch?.[1];
+    if (!url?.startsWith(`${origin}/`)) continue;
+    const path = url.slice(origin.length);
+    const user = path.match(/^\/api\/auth\/user\?proprDesktopScopeGeneration=([1-9]\d*)$/);
+    if (!user && path !== '/api/auth/demo-mode') continue;
+    if (user) {
+      if (generation && generation !== user[1]) return [];
+      generation = user[1];
+    }
+    const key = `${user ? 'user' : 'demo'}:${policy ? 'policy' : 'fetch'}`;
+    const count = (counts.get(key) ?? 0) + 1;
+    if (count > (policy ? 2 : 1)) return [];
+    counts.set(key, count);
+    accepted.push(record);
+  }
+  return accepted;
+};
+
 /** Real preload IPC and document reloads; HTTP/browser approval remain owned fixtures. */
 export const exercisePackagedCspReload = async ({ launch, pair, origin, observe, evidence,
   diagnostic = record => console.info('Packaged CSP reload diagnostics:', JSON.stringify(record)),

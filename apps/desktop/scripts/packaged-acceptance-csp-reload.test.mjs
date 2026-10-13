@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { exercisePackagedCspReload } from './packaged-acceptance-csp-reload.mjs';
+import { exercisePackagedCspReload, correlateExpectedCspReloadConsoleRecords } from './packaged-acceptance-csp-reload.mjs';
 
 const origin = 'http://127.0.0.2:41731';
 const fixture = ({ activationReloads = 1, selectionReloads = 0, restartReloads = 0,
@@ -173,4 +174,73 @@ for (const [name, options, error, expected] of [
   assert.equal(JSON.stringify(f.diagnostics).includes(origin), false);
   assert.equal(f.closes.at(-1), undefined);
   assert.equal(f.results.length, 0);
+});
+
+const transitionErrors = () => ['/api/auth/user?proprDesktopScopeGeneration=1', '/api/auth/demo-mode'].flatMap(path => {
+  const url = `${origin}${path}`;
+  const policy = { type: 'error', journey: 'csp-reload-pairing',
+    text: `Connecting to '${url}' violates the following Content Security Policy directive: "connect-src 'self' https: wss:". The action has been blocked.` };
+  return [policy, { ...policy }, { ...policy,
+    text: `Fetch API cannot load ${url}. Refused to connect because it violates the document's Content Security Policy.` }];
+});
+const convergedEvidence = {
+  firstActivationReloads: 1, firstActivationPolicyPresent: true,
+  restartReloads: 0, restartPolicyPresent: true, restartConnected: true,
+  savedSelectionReloads: 0, savedSelectionPolicyPresent: true, removalNarrowed: true,
+};
+test('only bounded bootstrap CSP denials in a converged native activation are expected', () => {
+  const records = transitionErrors();
+  const correlate = (records, evidence = convergedEvidence) =>
+    correlateExpectedCspReloadConsoleRecords({ records, origin, evidence });
+  assert.deepEqual(correlate(records), records);
+  assert.deepEqual(correlate([]), []);
+  assert.deepEqual(correlate(records.slice(0, 3)), records.slice(0, 3));
+  for (const evidence of [undefined, { ...convergedEvidence, firstActivationReloads: 2 },
+    { ...convergedEvidence, firstActivationPolicyPresent: false },
+    { ...convergedEvidence, restartPolicyPresent: false },
+    { ...convergedEvidence, savedSelectionReloads: 1 },
+    { ...convergedEvidence, removalNarrowed: false }]) {
+    assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records, origin, evidence }), []);
+  }
+  assert.deepEqual(correlate([...records, records[0]]), []);
+  assert.deepEqual(correlate([...records, records[2]]), []);
+  assert.deepEqual(correlate([...records, { ...records[0], text: records[0].text.replace('Generation=1', 'Generation=2') }]), []);
+  for (const transform of [
+    record => ({ ...record, journey: 'csp-reload-restart' }),
+    record => ({ ...record, journey: 'csp-reload-saved-selection' }),
+    record => ({ ...record, journey: 'dashboard-profile-manager' }),
+    record => ({ ...record, text: record.text.replace(origin, 'http://127.0.0.3:41731') }),
+    record => ({ ...record, text: record.text.replace('/api/auth/user?proprDesktopScopeGeneration=1', '/api/tasks').replace('/api/auth/demo-mode', '/api/tasks') }),
+    record => ({ ...record, text: record.text + ' extra' }),
+  ]) assert.deepEqual(correlate(records.map(transform)), []);
+  const unrelated = { ...records[0], text: 'Unexpected renderer error' };
+  assert.deepEqual(correlate([...records, unrelated]), records);
+});
+
+test('runner totals expected transition denials while retaining unrelated console and page failures', () => {
+  const source = readFileSync(new URL('./run-packaged-acceptance.mjs', import.meta.url), 'utf8');
+  const functions = source.slice(source.indexOf('const boundedAcceptanceDiagnosticCount ='),
+    source.indexOf('const rendererLifecycleDiagnosticSummary ='));
+  const records = transitionErrors();
+  const summarize = (records, pageErrors = [], evidence = convergedEvidence) => runInNewContext(
+    `${functions}; rendererErrorAcceptanceSummary()`, {
+      consoleRecords: records, pageErrorRecords: pageErrors,
+      cspReloadEvidence: evidence, readyOrigin: origin,
+      correlateExpectedCspReloadConsoleRecords,
+      correlateExpectedRevokedAuthorizationConsoleRecord: () => undefined,
+      fixtureCurrentUserRecords: [], rendererCurrentUserRecords: [],
+      FIXED_ACCEPTANCE_ORIGINS: { revoked: 'http://127.0.0.3:41731' },
+    });
+  const summary = summarize(records);
+  assert.equal(summary.errors, 6);
+  assert.equal(summary.expectedErrors, 6);
+  assert.equal(summary.unexpectedErrors, 0);
+  assert.equal(summary.errorCategoryCounts.expectedCspPolicyTransition, 6);
+  const failure = summarize([...records, { type: 'error', journey: 'csp-reload-restart', text: 'Unexpected renderer error' }], [{}]);
+  assert.equal(failure.expectedErrors, 6);
+  assert.equal(failure.unexpectedErrors, 2);
+  assert.equal(failure.errorCategoryCounts.other, 1);
+  assert.equal(failure.errorCategoryCounts.pageError, 1);
+  assert.equal(summarize([...records, records[0]]).unexpectedErrors, 7);
+  assert.equal(summarize(records, [], {}).unexpectedErrors, 6);
 });
