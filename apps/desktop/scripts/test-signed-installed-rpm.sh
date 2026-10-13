@@ -23,7 +23,9 @@ assertRpmSignatures(readFileSync('/tmp/signature-check', 'utf8'), process.env.PR
 NODE
 test "$(rpm -qp --qf '%{ARCH}' "$rpm_file")" = x86_64
 # No repository access is necessary at runtime: dependencies are in the image.
-zypper --non-interactive --no-refresh --disable-repositories install "$rpm_file" > /tmp/install-log 2>&1
+# Disable configured repositories while leaving zypper's temporary local RPM cache usable.
+zypper --non-interactive modifyrepo --disable --all > /tmp/install-log 2>&1
+zypper --non-interactive --no-refresh install "$rpm_file" >> /tmp/install-log 2>&1
 rpm -V propr-desktop > /tmp/verify
 ! test -s /tmp/verify
 rpm -qp --dump "$rpm_file" > /tmp/artifact-dump
