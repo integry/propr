@@ -266,6 +266,8 @@ test('a foreign-owned file inside a supported root is an unsafe entry, not a UID
 });
 
 test('a foreign-owned directory inside a supported root is an unsafe entry, not a UID-alignment refusal', t => {
+    // Exercise ownership checks independently of shared-runner filesystem latency.
+    t.mock.method(performance, 'now', () => 0);
     const f = fixture();
     const fstat = fs.fstatSync, lstat = fs.lstatSync;
     try {

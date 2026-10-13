@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { configuredNativeLogRoots, inspectNativeLogRoot, nativeAdmissionReason, NATIVE_LOG_LIMITS } from '../src/diagnostics/nativeLogPolicy.js';
-import { ManagedLogSpool } from '../src/diagnostics/managedLogSpool.js';
+import { ManagedLogSpool, digest } from '../src/diagnostics/managedLogSpool.js';
 import { collectProvider } from '../src/diagnostics/providerCollector.js';
 
 function fixture() {
@@ -60,7 +60,9 @@ test('version-matched layouts distinguish disposable diagnostics from protected 
     } finally { f.close(); }
 });
 
-test('real active writer survives capacity refusal, daily boundary, collector/export and missing archive acknowledgement', () => {
+test('real active writer survives capacity refusal, daily boundary, collector/export and missing archive acknowledgement', t => {
+    // The daily boundary uses the explicit collection time, not a scan deadline.
+    t.mock.method(performance, 'now', () => 0);
     const f = fixture();
     const spool = new ManagedLogSpool(path.join(f.base, 'spool'), 'tenant-a');
     write(f.root, 'log/codex-tui.log', 'INFO first\n');
@@ -70,13 +72,20 @@ test('real active writer survives capacity refusal, daily boundary, collector/ex
     const writer = fs.openSync(path.join(f.root, 'log/codex-tui.log'), 'a');
     try {
         const now = Date.parse('2026-10-11T23:59:59Z');
-        collectProvider(spool, { ...f.input, credentials: [], credentialContextComplete: true }, now);
+        assert.equal(collectProvider(spool, { ...f.input, credentials: [], credentialContextComplete: true }, now), true);
         const first = spool.exportOne();
+        assert.ok(first);
         fs.writeSync(writer, 'INFO after midnight\n');
-        collectProvider(spool, { ...f.input, credentials: [], credentialContextComplete: true }, now + 2000);
+        assert.equal(collectProvider(spool, { ...f.input, credentials: [], credentialContextComplete: true }, now + 2000), true);
         const inventory = inspectNativeLogRoot(f.input);
         assert.match(nativeAdmissionReason([inventory], { ...limits, rootBytes: 1 })!, /capacity/);
-        assert.deepEqual(spool.exportOne(), first); // no acknowledgement, no eviction
+        // Directory order can export either the log or the unchanged session
+        // first. Only the log's source metadata advances after midnight;
+        // either unacknowledged segment must stay intact.
+        const logFirst = (first.manifest as { source: string }).source === digest('log/codex-tui.log');
+        assert.deepEqual(spool.exportOne(), { ...first, manifest: {
+            ...first.manifest, lastSuccessfulCollection: logFirst ? now + 2000 : now,
+        } });
         fs.writeSync(writer, 'INFO uninterrupted\n');
         assert.match(fs.readFileSync(path.join(f.root, 'log/codex-tui.log'), 'utf8'), /uninterrupted/);
         assert.equal(fs.readFileSync(path.join(f.root, 'sessions/2026/10/12/rollout-resume.jsonl'), 'utf8'), '{"session":"RESUME-CANARY"}\n');
