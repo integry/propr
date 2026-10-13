@@ -9,6 +9,7 @@ const readSource = relativePath => readFileSync(
 );
 
 const runnerSource = readSource('./run-packaged-acceptance.mjs');
+const artifactsSource = readSource('./acceptance-artifacts.mjs');
 const socketProviderSource = readSource('../../../propr-ui/src/contexts/SocketProvider.tsx');
 
 const sourceBetween = (source, startMarker, endMarker) => {
@@ -22,7 +23,7 @@ const sourceBetween = (source, startMarker, endMarker) => {
 const occurrences = (source, value) => source.split(value).length - 1;
 
 // Bound each contract to its own top-level function, independent of startup statements.
-const assertExactSocketCounts = source => {
+const assertExactSocketCounts = (source, validatorSource = artifactsSource) => {
   const waitSource = sourceBetween(
     source,
     'const waitForAuthenticatedSocket = async journey => {',
@@ -43,12 +44,18 @@ const assertExactSocketCounts = source => {
   assert.match(source, /if \(applicationEvents\.length > 1\) return 'duplicate-application-event';/);
   assert.match(source, /return 'application-subscription-not-observed';/);
   assert.match(source, /return 'renderer-application-event-not-observed';/);
-  assert.match(summarySource, /services\.socketIo\.authenticatedConnections !== 1/);
-  assert.match(summarySource, /services\.socketIo\.handshake\.mainAttempts !== 1/);
-  assert.match(summarySource, /services\.socketIo\.handshake\.fixtureAttempts !== 1/);
-  assert.match(summarySource, /socketSubscriptions\.length !== 1/);
-  assert.match(summarySource, /services\.socketIo\.events !== 1/);
-  assert.match(summarySource, /rendererObservedApplicationEvents\.length !== 1/);
+  assert.match(summarySource, /validateSocketServiceSummary\(services\.socketIo\)/);
+  assert.match(summarySource, /cspSessions: CSP_SOCKET_JOURNEYS\.map\(socketSessionSummary\)/);
+  assert.match(summarySource, /rendererObservedApplicationEvents\.length === 1/);
+  const sessionSource = sourceBetween(validatorSource, 'const validateSocketSession =', '\n};');
+  for (const predicate of [
+    'socketIo.authenticatedConnections !== 1', 'socketIo.subscriptions !== 1',
+    'socketIo.events !== 1', 'socketIo.records !== 3',
+    'handshake.mainAttempts !== 1', 'handshake.fixtureAttempts !== 1',
+    'handshake.rendererObservedApplicationEvent !== true',
+  ]) {
+    assert.ok(sessionSource.includes(predicate), `Missing count predicate: ${predicate}`);
+  }
   assert.doesNotMatch(waitSource, /applicationEvents\.length >= 1/);
 };
 
@@ -125,8 +132,8 @@ describe('packaged acceptance Socket.IO application synchronization', () => {
 
     assertExactSocketCounts(withStartupWork);
     assert.throws(
-      () => assertExactSocketCounts(withStartupWork.replace(
-        'services.socketIo.events !== 1', 'services.socketIo.events < 1',
+      () => assertExactSocketCounts(withStartupWork, artifactsSource.replace(
+        'socketIo.events !== 1', 'socketIo.events < 1',
       )),
       { code: 'ERR_ASSERTION' },
     );
@@ -140,17 +147,20 @@ describe('packaged acceptance Socket.IO application synchronization', () => {
       'applicationSubscriptions.length === 1',
       'applicationEvents.length === 1',
       'rendererObservedApplicationEvents.length === 1',
-      'services.socketIo.authenticatedConnections !== 1',
-      'socketSubscriptions.length !== 1',
-      'services.socketIo.events !== 1',
-      'rendererObservedApplicationEvents.length !== 1',
-      'services.socketIo.handshake.mainAttempts !== 1',
-      'services.socketIo.handshake.fixtureAttempts !== 1',
+      'socketIo.authenticatedConnections !== 1',
+      'socketIo.subscriptions !== 1',
+      'socketIo.events !== 1',
+      'handshake.mainAttempts !== 1',
+      'handshake.fixtureAttempts !== 1',
     ]) {
       const weakened = predicate.replace('=== 1', '>= 1').replace('!== 1', '< 1');
-      assert.ok(runnerSource.includes(predicate), `Missing count predicate: ${predicate}`);
+      const inRunner = runnerSource.includes(predicate);
+      assert.ok(inRunner || artifactsSource.includes(predicate), `Missing count predicate: ${predicate}`);
       assert.throws(
-        () => assertExactSocketCounts(runnerSource.replaceAll(predicate, weakened)),
+        () => assertExactSocketCounts(
+          inRunner ? runnerSource.replaceAll(predicate, weakened) : runnerSource,
+          inRunner ? artifactsSource : artifactsSource.replaceAll(predicate, weakened),
+        ),
         { code: 'ERR_ASSERTION' },
         `Must reject weakened count: ${predicate}`,
       );

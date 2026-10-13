@@ -552,6 +552,77 @@ const validateAccessibility = accessibility => {
   });
 };
 
+export const CSP_SOCKET_JOURNEYS = Object.freeze([
+  'csp-reload-pairing', 'csp-reload-restart', 'csp-reload-saved-selection',
+]);
+
+const validateSocketSession = (socketIo, journey) => {
+  assertExactKeys(socketIo, ['records', 'authenticatedConnections', 'subscriptions', 'events', 'journeys', 'handshake'], 'Acceptance Socket.IO session');
+  assertExactKeys(socketIo.handshake, [
+    'mainAttempts', 'fixtureAttempts', 'scopeQueryPresent', 'scopeQueryCount',
+    'scopeEqualsActivatedBinding', 'activeBindingPresent', 'profileGenerationCurrent',
+    'originEqualsActivatedBinding', 'path', 'transport', 'resource',
+    'rendererBearerPresent', 'rendererCookiePresent', 'authorizationHeaderPresent',
+    'authorizationHeaderExactlyMainInjected', 'rendererObservedApplicationEvent', 'rendererLifecycle',
+    'rejectionCategory',
+  ], 'Acceptance Socket.IO handshake summary');
+  const handshake = socketIo.handshake;
+  // CSP reload journeys intentionally do not collect the dashboard's ordered
+  // lifecycle snapshots across document replacement. Their handshake and
+  // application subscription/event evidence still have exact count checks.
+  const dashboard = journey === 'dashboard-profile-manager';
+  if (dashboard) {
+    assertExactKeys(handshake.rendererLifecycle, [
+      'phase', 'profileActivationPublished', 'socketProviderMounted', 'providerDisabled',
+      'disabledByDemoModeLoading', 'disabledByDemoMode',
+      'disabledByCurrentUserLoading', 'disabledByCurrentUserAbsent',
+      'desktopRuntime', 'connectionScope', 'socketConstructionInvocations', 'socketConstructions',
+      'connectInvocations',
+    ], 'Acceptance renderer Socket.IO lifecycle summary');
+  } else if (handshake.rendererLifecycle !== null) {
+    throw new Error('Acceptance claimed service journey was not observed');
+  }
+  if (socketIo.authenticatedConnections !== 1 || socketIo.events !== 1 || socketIo.subscriptions !== 1 || socketIo.records !== 3
+    || socketIo.journeys?.length !== 1 || socketIo.journeys[0] !== journey
+    || handshake.mainAttempts !== 1 || handshake.fixtureAttempts !== 1
+    || handshake.scopeQueryPresent !== true || handshake.scopeQueryCount !== 1
+    || handshake.scopeEqualsActivatedBinding !== true
+    || handshake.activeBindingPresent !== true || handshake.profileGenerationCurrent !== true
+    || handshake.originEqualsActivatedBinding !== true
+    || handshake.path !== 'socket-io' || handshake.transport !== 'websocket' || handshake.resource !== 'websocket'
+    || handshake.rendererBearerPresent !== false || handshake.rendererCookiePresent !== false
+    || handshake.authorizationHeaderPresent !== true || handshake.authorizationHeaderExactlyMainInjected !== true
+    || handshake.rendererObservedApplicationEvent !== true
+    || (dashboard && (
+      handshake.rendererLifecycle.phase !== 'socket-connect-invoked'
+      || handshake.rendererLifecycle.profileActivationPublished !== true
+      || handshake.rendererLifecycle.socketProviderMounted !== true
+      || handshake.rendererLifecycle.providerDisabled !== false
+      || handshake.rendererLifecycle.disabledByDemoModeLoading !== false
+      || handshake.rendererLifecycle.disabledByDemoMode !== false
+      || handshake.rendererLifecycle.disabledByCurrentUserLoading !== false
+      || handshake.rendererLifecycle.disabledByCurrentUserAbsent !== false
+      || handshake.rendererLifecycle.desktopRuntime !== true
+      || handshake.rendererLifecycle.connectionScope !== 'available'
+      || handshake.rendererLifecycle.socketConstructionInvocations !== 1
+      || handshake.rendererLifecycle.socketConstructions !== 1
+      || handshake.rendererLifecycle.connectInvocations !== 1))
+    || handshake.rejectionCategory !== 'none') {
+    throw new Error('Acceptance claimed service journey was not observed');
+  }
+};
+
+export const validateSocketServiceSummary = socketIo => {
+  const { cspSessions, unexpectedRecords, ...dashboard } = socketIo;
+  assertExactKeys(socketIo, ['records', 'authenticatedConnections', 'subscriptions', 'events', 'journeys', 'handshake', 'cspSessions', 'unexpectedRecords'], 'Acceptance Socket.IO summary');
+  validateSocketSession(dashboard, 'dashboard-profile-manager');
+  if (unexpectedRecords !== 0 || !Array.isArray(cspSessions)
+    || cspSessions.length !== CSP_SOCKET_JOURNEYS.length) {
+    throw new Error('Acceptance claimed service journey was not observed');
+  }
+  cspSessions.forEach((session, index) => validateSocketSession(session, CSP_SOCKET_JOURNEYS[index]));
+};
+
 const validateSummary = summary => {
   assertExactKeys(summary, ['schemaVersion', 'generatedAt', 'status', 'journeys', 'screenshots', 'boundary', 'console', 'services', 'redaction'], 'Acceptance summary');
   if (summary.schemaVersion !== 7 || summary.generatedAt !== FIXED_TIME || summary.status !== 'passed'
@@ -595,25 +666,9 @@ const validateSummary = summary => {
     'responseClassification', 'parsedUserSchemaAccepted', 'rendererActiveScopeAccepted',
     'firstFailedPredicate',
   ], 'Acceptance current-user validation summary');
-  assertExactKeys(socketIo, ['authenticatedConnections', 'events', 'journeys', 'handshake'], 'Acceptance Socket.IO summary');
+  validateSocketServiceSummary(socketIo);
   assertExactKeys(pairing, ['started', 'polled', 'activated', 'journeys'], 'Acceptance pairing summary');
   assertExactKeys(connect, ['confirmedRequests', 'journeys'], 'Acceptance Connect summary');
-  assertExactKeys(socketIo.handshake, [
-    'mainAttempts', 'fixtureAttempts', 'scopeQueryPresent', 'scopeQueryCount',
-    'scopeEqualsActivatedBinding', 'activeBindingPresent', 'profileGenerationCurrent',
-    'originEqualsActivatedBinding', 'path', 'transport', 'resource',
-    'rendererBearerPresent', 'rendererCookiePresent', 'authorizationHeaderPresent',
-    'authorizationHeaderExactlyMainInjected', 'rendererObservedApplicationEvent', 'rendererLifecycle',
-    'rejectionCategory',
-  ], 'Acceptance Socket.IO handshake summary');
-  const handshake = socketIo.handshake;
-  assertExactKeys(handshake.rendererLifecycle, [
-    'phase', 'profileActivationPublished', 'socketProviderMounted', 'providerDisabled',
-    'disabledByDemoModeLoading', 'disabledByDemoMode',
-    'disabledByCurrentUserLoading', 'disabledByCurrentUserAbsent',
-    'desktopRuntime', 'connectionScope', 'socketConstructionInvocations', 'socketConstructions',
-    'connectInvocations',
-  ], 'Acceptance renderer Socket.IO lifecycle summary');
   const currentUserValidation = rest.currentUserValidation;
   if (rest.requestCount <= 0 || rest.authenticatedRequestCount <= 0 || !rest.journeys.includes('dashboard-profile-manager')
     || currentUserValidation.correlation !== 'current-scope-user-validation'
@@ -629,30 +684,6 @@ const validateSummary = summary => {
     || currentUserValidation.parsedUserSchemaAccepted !== true
     || currentUserValidation.rendererActiveScopeAccepted !== true
     || currentUserValidation.firstFailedPredicate !== 'none'
-    || socketIo.authenticatedConnections !== 1 || socketIo.events <= 0 || !socketIo.journeys.includes('dashboard-profile-manager')
-    || handshake.mainAttempts !== 1 || handshake.fixtureAttempts !== 1
-    || handshake.scopeQueryPresent !== true || handshake.scopeQueryCount !== 1
-    || handshake.scopeEqualsActivatedBinding !== true
-    || handshake.activeBindingPresent !== true || handshake.profileGenerationCurrent !== true
-    || handshake.originEqualsActivatedBinding !== true
-    || handshake.path !== 'socket-io' || handshake.transport !== 'websocket' || handshake.resource !== 'websocket'
-    || handshake.rendererBearerPresent !== false || handshake.rendererCookiePresent !== false
-    || handshake.authorizationHeaderPresent !== true || handshake.authorizationHeaderExactlyMainInjected !== true
-    || handshake.rendererObservedApplicationEvent !== true
-    || handshake.rendererLifecycle.phase !== 'socket-connect-invoked'
-    || handshake.rendererLifecycle.profileActivationPublished !== true
-    || handshake.rendererLifecycle.socketProviderMounted !== true
-    || handshake.rendererLifecycle.providerDisabled !== false
-    || handshake.rendererLifecycle.disabledByDemoModeLoading !== false
-    || handshake.rendererLifecycle.disabledByDemoMode !== false
-    || handshake.rendererLifecycle.disabledByCurrentUserLoading !== false
-    || handshake.rendererLifecycle.disabledByCurrentUserAbsent !== false
-    || handshake.rendererLifecycle.desktopRuntime !== true
-    || handshake.rendererLifecycle.connectionScope !== 'available'
-    || handshake.rendererLifecycle.socketConstructionInvocations !== 1
-    || handshake.rendererLifecycle.socketConstructions !== 1
-    || handshake.rendererLifecycle.connectInvocations !== 1
-    || handshake.rejectionCategory !== 'none'
     || pairing.started <= 0 || pairing.polled <= 0 || pairing.activated <= 0 || !pairing.journeys.includes('dashboard-profile-manager')
     || connect.confirmedRequests <= 0 || connect.journeys.join('\n') !== 'connect-confirmation') {
     throw new Error('Acceptance claimed service journey was not observed');

@@ -10,6 +10,8 @@ import { runInNewContext } from 'node:vm';
 import {
   ACCEPTANCE_ARTIFACT_LEAF,
   ACCEPTANCE_JOURNEYS,
+  CSP_SOCKET_JOURNEYS,
+  validateSocketServiceSummary,
   ACCEPTANCE_REDACTION_PLACEHOLDER,
   acceptanceVariantsFor,
   validateSetupEvidence,
@@ -133,7 +135,8 @@ const accessibilityFor = () => ({
   },
 });
 
-const summaryFor = () => ({
+const summaryFor = () => {
+  const summary = {
   schemaVersion: 7,
   generatedAt: FIXED_TIME,
   status: 'passed',
@@ -179,6 +182,8 @@ const summaryFor = () => ({
       },
     },
     socketIo: {
+      records: 3,
+      subscriptions: 1,
       authenticatedConnections: 1,
       events: 1,
       journeys: ['dashboard-profile-manager'],
@@ -221,7 +226,14 @@ const summaryFor = () => ({
     connect: { confirmedRequests: 1, journeys: ['connect-confirmation'] },
   },
   redaction: 'Full raw surfaces were scanned; published logs retain only source, level, byte count, and digest.',
-});
+  };
+  summary.services.socketIo.cspSessions = CSP_SOCKET_JOURNEYS.map(journey => ({
+    ...structuredClone(summary.services.socketIo), journeys: [journey],
+    handshake: { ...structuredClone(summary.services.socketIo.handshake), rendererLifecycle: null },
+  }));
+  summary.services.socketIo.unexpectedRecords = 0;
+  return summary;
+};
 
 it('scopes the native socket service gate to the dashboard while CSP journeys also connect', async () => {
   // Execute the runner's actual gate without launching Electron or capturing UI.
@@ -230,9 +242,10 @@ it('scopes the native socket service gate to the dashboard while CSP journeys al
   const end = source.indexOf('\ntry {', start);
   assert.ok(start >= 0 && end > start);
   const journey = 'dashboard-profile-manager';
+  const journeys = [journey, ...CSP_SOCKET_JOURNEYS];
   const { rest, socketIo } = summaryFor().services;
   const handshake = socketIo.handshake;
-  const socketRecords = [journey, 'csp-reload-pairing', 'csp-reload-restart', 'csp-reload-saved-selection']
+  const socketRecords = journeys
     .flatMap(journey => [
       { journey, event: 'connection', authenticated: true },
       { journey, event: 'subscribe:queue:stats', authenticated: true,
@@ -242,6 +255,8 @@ it('scopes the native socket service gate to the dashboard while CSP journeys al
     ]);
   const context = {
     socketRecords,
+    CSP_SOCKET_JOURNEYS,
+    validateSocketServiceSummary,
     QUEUE_STATS_SUBSCRIBE_EVENT: 'subscribe:queue:stats',
     QUEUE_STATS_UPDATE: 'queue:stats:update',
     PAIRING_ID: 'fixture-pairing',
@@ -253,11 +268,11 @@ it('scopes the native socket service gate to the dashboard while CSP journeys al
       })),
       { journey: 'connect-confirmation', method: 'GET', url: '/api/desktop/discovery' },
     ],
-    mainHandshakeRecords: [{ ...handshake, journey, accepted: true,
-      scopeEqualsActive: true, originEqualsActive: true, bearerMainInjected: true }],
-    fixtureHandshakeRecords: [{ journey, accepted: true, scopeQueryPresent: true,
-      authorizationPresent: true, authorizationMatchesActivatedBearer: true }],
-    consoleRecords: [{ journey, text: '[SocketContext] Received queue stats update: {}' }],
+    mainHandshakeRecords: journeys.map(journey => ({ ...handshake, journey, accepted: true,
+      scopeEqualsActive: true, originEqualsActive: true, bearerMainInjected: true })),
+    fixtureHandshakeRecords: journeys.map(journey => ({ journey, accepted: true, scopeQueryPresent: true,
+      authorizationPresent: true, authorizationMatchesActivatedBearer: true })),
+    consoleRecords: journeys.map(journey => ({ journey, text: '[SocketContext] Received queue stats update: {}' })),
     rendererLifecycleRecords: [{ journey, ...handshake.rendererLifecycle }],
     rendererCurrentUserRecords: ['request-issued', 'parsed-user-accepted', 'active-scope-accepted']
       .map(phase => ({ journey, phase, activeScopePresent: true, scopeGeneration: 1, schemaAccepted: true })),
@@ -276,14 +291,97 @@ it('scopes the native socket service gate to the dashboard while CSP journeys al
   assert.equal(services.socketIo.handshake.mainAttempts, 1);
   assert.equal(services.socketIo.handshake.fixtureAttempts, 1);
 
-  // Other journeys cannot mask missing dashboard evidence or excuse duplicates.
-  for (const event of ['connection', 'subscribe:queue:stats', 'queue:stats:update']) {
-    const index = socketRecords.findIndex(record => record.journey === journey && record.event === event);
-    const [record] = socketRecords.splice(index, 1);
-    assert.throws(summary, /service journeys were incomplete/, `missing ${event}`);
-    socketRecords.splice(index, 0, record, { ...record });
-    assert.throws(summary, /service journeys were incomplete/, `duplicate ${event}`);
-    socketRecords.splice(index + 1, 1);
+  assert.equal(services.socketIo.cspSessions.length, 3);
+  validateSocketServiceSummary(services.socketIo);
+
+  // Every expected journey requires one complete session, independently.
+  for (const journey of journeys) {
+    for (const event of ['connection', 'subscribe:queue:stats', 'queue:stats:update']) {
+      const index = socketRecords.findIndex(record => record.journey === journey && record.event === event);
+      const [record] = socketRecords.splice(index, 1);
+      assert.throws(summary, /service journeys were incomplete/, `missing ${event}`);
+      socketRecords.splice(index, 0, record, { ...record });
+      assert.throws(summary, /service journeys were incomplete/, `duplicate ${event}`);
+      socketRecords.splice(index + 1, 1);
+      record.authenticated = false;
+      assert.throws(summary, /service journeys were incomplete/, `unauthorized ${journey} ${event}`);
+      record.authenticated = true;
+    }
+    for (const key of ['mainHandshakeRecords', 'fixtureHandshakeRecords', 'consoleRecords']) {
+      const records = context[key];
+      const index = records.findIndex(record => record.journey === journey);
+      const [record] = records.splice(index, 1);
+      assert.throws(summary, /service journeys were incomplete/, `missing ${journey} ${key}`);
+      records.splice(index, 0, record, { ...record });
+      assert.throws(summary, /service journeys were incomplete/, `duplicate ${journey} ${key}`);
+      records.splice(index + 1, 1);
+      if (key !== 'consoleRecords') {
+        record.accepted = false;
+        assert.throws(summary, /service journeys were incomplete/, `rejected ${journey} ${key}`);
+        record.accepted = true;
+      }
+    }
+  }
+  // An extra unauthenticated record in an owned journey cannot be filtered out.
+  for (const journey of journeys) {
+    socketRecords.push({ journey, event: 'connection', authenticated: false });
+    assert.throws(summary, /service journeys were incomplete/);
+    socketRecords.pop();
+    const main = context.mainHandshakeRecords.find(record => record.journey === journey);
+    const fixture = context.fixtureHandshakeRecords.find(record => record.journey === journey);
+    for (const [record, key, invalid] of [
+      [main, 'scopeQueryCount', 2], [main, 'scopeEqualsActive', false],
+      [main, 'activeBindingPresent', false], [main, 'profileGenerationCurrent', false],
+      [main, 'originEqualsActive', false], [main, 'path', 'other'],
+      [main, 'transport', 'other'], [main, 'resource', 'other'],
+      [main, 'rendererBearerPresent', true], [main, 'rendererCookiePresent', true],
+      [main, 'bearerMainInjected', false], [fixture, 'authorizationPresent', false],
+      [fixture, 'authorizationMatchesActivatedBearer', false],
+    ]) {
+      const original = record[key];
+      record[key] = invalid;
+      assert.throws(summary, /service journeys were incomplete/, `${journey} ${key}`);
+      record[key] = original;
+    }
+  }
+  for (const key of ['socketRecords', 'mainHandshakeRecords', 'fixtureHandshakeRecords']) {
+    for (const authenticated of [true, false]) {
+      context[key].push({ ...context[key][0], journey: 'unknown-session', authenticated, accepted: authenticated });
+      assert.throws(summary, /service journeys were incomplete/, `unknown ${key}`);
+      context[key].pop();
+    }
+  }
+});
+
+it('requires exact dashboard and CSP session counts in the sanitized service summary', () => {
+  const valid = summaryFor().services.socketIo;
+  assert.doesNotThrow(() => validateSocketServiceSummary(valid));
+  for (const index of [-1, 0, 1, 2]) {
+    for (const field of ['records', 'authenticatedConnections', 'subscriptions', 'events']) {
+      for (const delta of [-1, 1]) {
+        const summary = structuredClone(valid);
+        const session = index === -1 ? summary : summary.cspSessions[index];
+        session[field] += delta;
+        assert.throws(() => validateSocketServiceSummary(summary), /not observed/);
+      }
+    }
+    const summary = structuredClone(valid);
+    const session = index === -1 ? summary : summary.cspSessions[index];
+    session.journeys = ['unknown-session'];
+    assert.throws(() => validateSocketServiceSummary(summary), /not observed/);
+    session.handshake.authorizationHeaderExactlyMainInjected = false;
+    session.journeys = index === -1 ? ['dashboard-profile-manager'] : [CSP_SOCKET_JOURNEYS[index]];
+    assert.throws(() => validateSocketServiceSummary(summary), /not observed/);
+  }
+  for (const mutate of [
+    summary => summary.cspSessions.pop(),
+    summary => summary.cspSessions.push(structuredClone(summary.cspSessions[0])),
+    summary => { summary.cspSessions[1] = structuredClone(summary.cspSessions[0]); },
+    summary => { summary.unexpectedRecords = 1; },
+  ]) {
+    const summary = structuredClone(valid);
+    mutate(summary);
+    assert.throws(() => validateSocketServiceSummary(summary), /not observed/);
   }
 });
 

@@ -19,6 +19,8 @@ import {
 } from '@propr/shared';
 import {
   ACCEPTANCE_JOURNEYS,
+  CSP_SOCKET_JOURNEYS,
+  validateSocketServiceSummary,
   ACCEPTANCE_PROFILE_PREFIX,
   ACCEPTANCE_SURFACES_PREFIX,
   acceptanceVariantsFor,
@@ -1497,24 +1499,68 @@ const waitForAuthenticatedSocket = async journey => {
 const observedServiceSummary = () => {
   const restRequests = requestRecords.filter(record => record.method !== 'OPTIONS' && record.url.startsWith('/api/'));
   const authenticatedRequests = restRequests.filter(record => record.hasAuthorization);
-  // Match the dashboard handshake/lifecycle gate below. The CSP regression also
-  // makes genuine connections during pairing, restart, and saved selection.
-  const dashboardSocketRecords = socketRecords.filter(record => record.journey === 'dashboard-profile-manager');
-  const socketConnections = dashboardSocketRecords.filter(record => record.event === 'connection' && record.authenticated);
-  const socketSubscriptions = dashboardSocketRecords.filter(record => record.event === QUEUE_STATS_SUBSCRIBE_EVENT
-    && record.authenticated && record.genuineApplicationSubscription === true
-    && record.direction === 'client-to-fixture');
-  const socketEvents = dashboardSocketRecords.filter(record => record.event === QUEUE_STATS_UPDATE
-    && record.authenticated && record.genuineApplicationEvent === true
-    && record.direction === 'fixture-to-renderer');
-  const mainHandshakes = mainHandshakeRecords.filter(record => record.journey === 'dashboard-profile-manager' && record.accepted);
-  const fixtureHandshakes = fixtureHandshakeRecords.filter(record => record.journey === 'dashboard-profile-manager' && record.accepted);
-  const mainHandshake = mainHandshakes[0];
-  const fixtureHandshake = fixtureHandshakes[0];
-  const rendererObservedApplicationEvents = consoleRecords.filter(record => record.journey === 'dashboard-profile-manager'
-    && record.text.startsWith('[SocketContext] Received queue stats update:'));
-  const rendererLifecycle = rendererLifecycleRecords
-    .filter(record => record.journey === 'dashboard-profile-manager').at(-1);
+  const socketSessionSummary = journey => {
+    const journeySocketRecords = socketRecords.filter(record => record.journey === journey);
+    const socketConnections = journeySocketRecords.filter(record => record.event === 'connection' && record.authenticated);
+    const socketSubscriptions = journeySocketRecords.filter(record => record.event === QUEUE_STATS_SUBSCRIBE_EVENT
+      && record.authenticated && record.genuineApplicationSubscription === true
+      && record.direction === 'client-to-fixture');
+    const socketEvents = journeySocketRecords.filter(record => record.event === QUEUE_STATS_UPDATE
+      && record.authenticated && record.genuineApplicationEvent === true
+      && record.direction === 'fixture-to-renderer');
+    const mainHandshakes = mainHandshakeRecords.filter(record => record.journey === journey);
+    const fixtureHandshakes = fixtureHandshakeRecords.filter(record => record.journey === journey);
+    const mainHandshake = mainHandshakes[0];
+    const fixtureHandshake = fixtureHandshakes[0];
+    const rendererObservedApplicationEvents = consoleRecords.filter(record => record.journey === journey
+      && record.text.startsWith('[SocketContext] Received queue stats update:'));
+    const rendererLifecycle = rendererLifecycleRecords
+      .filter(record => record.journey === journey).at(-1);
+    const session = {
+      records: journeySocketRecords.length,
+      subscriptions: socketSubscriptions.length,
+      authenticatedConnections: socketConnections.length,
+      events: socketEvents.length,
+      journeys: unique(journeySocketRecords.map(record => record.journey)),
+      handshake: {
+        mainAttempts: mainHandshakes.length,
+        fixtureAttempts: fixtureHandshakes.length,
+        scopeQueryPresent: mainHandshake?.scopeQueryPresent === true && fixtureHandshake?.scopeQueryPresent === true,
+        scopeQueryCount: mainHandshake?.scopeQueryCount ?? 0,
+        scopeEqualsActivatedBinding: mainHandshake?.scopeEqualsActive === true,
+        activeBindingPresent: mainHandshake?.activeBindingPresent === true,
+        profileGenerationCurrent: mainHandshake?.profileGenerationCurrent === true,
+        originEqualsActivatedBinding: mainHandshake?.originEqualsActive === true,
+        path: mainHandshake?.path ?? 'other',
+        transport: mainHandshake?.transport ?? 'other',
+        resource: mainHandshake?.resource ?? 'other',
+        rendererBearerPresent: mainHandshake?.rendererBearerPresent ?? false,
+        rendererCookiePresent: mainHandshake?.rendererCookiePresent ?? false,
+        authorizationHeaderPresent: fixtureHandshake?.authorizationPresent ?? false,
+        authorizationHeaderExactlyMainInjected: mainHandshake?.bearerMainInjected === true
+          && fixtureHandshake?.authorizationMatchesActivatedBearer === true,
+        rendererObservedApplicationEvent: rendererObservedApplicationEvents.length === 1,
+        rendererLifecycle: rendererLifecycle ? {
+          phase: rendererLifecycle.phase,
+          profileActivationPublished: rendererLifecycle.profileActivationPublished,
+          socketProviderMounted: rendererLifecycle.socketProviderMounted,
+          providerDisabled: rendererLifecycle.providerDisabled,
+          disabledByDemoModeLoading: rendererLifecycle.disabledByDemoModeLoading,
+          disabledByDemoMode: rendererLifecycle.disabledByDemoMode,
+          disabledByCurrentUserLoading: rendererLifecycle.disabledByCurrentUserLoading,
+          disabledByCurrentUserAbsent: rendererLifecycle.disabledByCurrentUserAbsent,
+          desktopRuntime: rendererLifecycle.desktopRuntime,
+          connectionScope: rendererLifecycle.connectionScope,
+          socketConstructionInvocations: rendererLifecycle.socketConstructionInvocations,
+          socketConstructions: rendererLifecycle.socketConstructions,
+          connectInvocations: rendererLifecycle.connectInvocations,
+        } : null,
+        rejectionCategory: mainHandshake?.accepted === true && fixtureHandshake?.accepted === true
+          ? mainHandshake.rejectionCategory : 'unaccepted-handshake',
+      },
+    };
+    return session;
+  };
   const pairingStarted = requestRecords.filter(record => record.method === 'POST' && record.url === '/api/desktop/pairings');
   const pairingPolled = requestRecords.filter(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/poll`);
   const pairingActivated = requestRecords.filter(record => record.method === 'POST' && record.url === `/api/desktop/pairings/${PAIRING_ID}/activate`);
@@ -1551,80 +1597,22 @@ const observedServiceSummary = () => {
       },
     },
     socketIo: {
-      authenticatedConnections: socketConnections.length,
-      events: socketEvents.length,
-      journeys: unique(dashboardSocketRecords.map(record => record.journey)),
-      handshake: {
-        mainAttempts: mainHandshakes.length,
-        fixtureAttempts: fixtureHandshakes.length,
-        scopeQueryPresent: mainHandshake?.scopeQueryPresent === true && fixtureHandshake?.scopeQueryPresent === true,
-        scopeQueryCount: mainHandshake?.scopeQueryCount ?? 0,
-        scopeEqualsActivatedBinding: mainHandshake?.scopeEqualsActive === true,
-        activeBindingPresent: mainHandshake?.activeBindingPresent === true,
-        profileGenerationCurrent: mainHandshake?.profileGenerationCurrent === true,
-        originEqualsActivatedBinding: mainHandshake?.originEqualsActive === true,
-        path: mainHandshake?.path ?? 'other',
-        transport: mainHandshake?.transport ?? 'other',
-        resource: mainHandshake?.resource ?? 'other',
-        rendererBearerPresent: mainHandshake?.rendererBearerPresent ?? false,
-        rendererCookiePresent: mainHandshake?.rendererCookiePresent ?? false,
-        authorizationHeaderPresent: fixtureHandshake?.authorizationPresent ?? false,
-        authorizationHeaderExactlyMainInjected: mainHandshake?.bearerMainInjected === true
-          && fixtureHandshake?.authorizationMatchesActivatedBearer === true,
-        rendererObservedApplicationEvent: rendererObservedApplicationEvents.length === 1,
-        rendererLifecycle: rendererLifecycle ? {
-          phase: rendererLifecycle.phase,
-          profileActivationPublished: rendererLifecycle.profileActivationPublished,
-          socketProviderMounted: rendererLifecycle.socketProviderMounted,
-          providerDisabled: rendererLifecycle.providerDisabled,
-          disabledByDemoModeLoading: rendererLifecycle.disabledByDemoModeLoading,
-          disabledByDemoMode: rendererLifecycle.disabledByDemoMode,
-          disabledByCurrentUserLoading: rendererLifecycle.disabledByCurrentUserLoading,
-          disabledByCurrentUserAbsent: rendererLifecycle.disabledByCurrentUserAbsent,
-          desktopRuntime: rendererLifecycle.desktopRuntime,
-          connectionScope: rendererLifecycle.connectionScope,
-          socketConstructionInvocations: rendererLifecycle.socketConstructionInvocations,
-          socketConstructions: rendererLifecycle.socketConstructions,
-          connectInvocations: rendererLifecycle.connectInvocations,
-        } : null,
-        rejectionCategory: mainHandshake?.rejectionCategory ?? socketHandshakeFailureCategory('dashboard-profile-manager'),
-      },
+      ...socketSessionSummary('dashboard-profile-manager'),
+      cspSessions: CSP_SOCKET_JOURNEYS.map(socketSessionSummary),
+      // Count every unowned socket/upgrade record, including rejected attempts.
+      unexpectedRecords: [...socketRecords, ...mainHandshakeRecords, ...fixtureHandshakeRecords]
+        .filter(record => !['dashboard-profile-manager', ...CSP_SOCKET_JOURNEYS].includes(record.journey)).length,
     },
     pairing: { started: pairingStarted.length, polled: pairingPolled.length, activated: pairingActivated.length, journeys: unique([...pairingStarted, ...pairingPolled, ...pairingActivated].map(record => record.journey)) },
     connect: { confirmedRequests: connectConfirmed.length, journeys: unique(connectConfirmed.map(record => record.journey)) },
   };
+  try {
+    validateSocketServiceSummary(services.socketIo);
+  } catch {
+    throw new Error(`Acceptance packaged-renderer service journeys were incomplete: ${JSON.stringify(services)}`);
+  }
   if (services.rest.requestCount <= 0 || services.rest.authenticatedRequestCount <= 0
     || currentUserCategory !== 'none'
-    || services.socketIo.authenticatedConnections !== 1 || socketSubscriptions.length !== 1
-    || services.socketIo.events !== 1 || rendererObservedApplicationEvents.length !== 1
-    || services.socketIo.handshake.mainAttempts !== 1 || services.socketIo.handshake.fixtureAttempts !== 1
-    || !services.socketIo.handshake.scopeQueryPresent || services.socketIo.handshake.scopeQueryCount !== 1
-    || !services.socketIo.handshake.scopeEqualsActivatedBinding
-    || !services.socketIo.handshake.activeBindingPresent
-    || !services.socketIo.handshake.profileGenerationCurrent
-    || !services.socketIo.handshake.originEqualsActivatedBinding
-    || services.socketIo.handshake.path !== 'socket-io'
-    || services.socketIo.handshake.transport !== 'websocket'
-    || services.socketIo.handshake.resource !== 'websocket'
-    || services.socketIo.handshake.rendererBearerPresent
-    || services.socketIo.handshake.rendererCookiePresent
-    || !services.socketIo.handshake.authorizationHeaderPresent
-    || !services.socketIo.handshake.authorizationHeaderExactlyMainInjected
-    || !services.socketIo.handshake.rendererObservedApplicationEvent
-    || services.socketIo.handshake.rendererLifecycle?.phase !== 'socket-connect-invoked'
-    || services.socketIo.handshake.rendererLifecycle?.profileActivationPublished !== true
-    || services.socketIo.handshake.rendererLifecycle?.socketProviderMounted !== true
-    || services.socketIo.handshake.rendererLifecycle?.providerDisabled !== false
-    || services.socketIo.handshake.rendererLifecycle?.disabledByDemoModeLoading !== false
-    || services.socketIo.handshake.rendererLifecycle?.disabledByDemoMode !== false
-    || services.socketIo.handshake.rendererLifecycle?.disabledByCurrentUserLoading !== false
-    || services.socketIo.handshake.rendererLifecycle?.disabledByCurrentUserAbsent !== false
-    || services.socketIo.handshake.rendererLifecycle?.desktopRuntime !== true
-    || services.socketIo.handshake.rendererLifecycle?.connectionScope !== 'available'
-    || services.socketIo.handshake.rendererLifecycle?.socketConstructionInvocations !== 1
-    || services.socketIo.handshake.rendererLifecycle?.socketConstructions !== 1
-    || services.socketIo.handshake.rendererLifecycle?.connectInvocations !== 1
-    || services.socketIo.handshake.rejectionCategory !== 'none'
     || services.pairing.started <= 0 || services.pairing.polled <= 0 || services.pairing.activated <= 0
     || services.connect.confirmedRequests <= 0) {
     throw new Error(`Acceptance packaged-renderer service journeys were incomplete: ${JSON.stringify(services)}`);
