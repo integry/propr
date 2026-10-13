@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { PinnedDirectory } from './privateDirectory.js';
+import { segmentManifestMatches } from './segmentManifest.js';
 import { redactRecord, REDACTION_VERSION, type DiagnosticAttribution } from './redaction.js'; import { untilDeadline } from './providerOutputLedger.js';
 import type { NativeInventory } from './providerCollector.js';
 import type { NativeLogInventory, NativeLogRoot } from './nativeLogPolicy.js'; import type { CredentialRootRefusal } from './providerRoots.js';
@@ -103,9 +104,9 @@ export class ManagedLogSpool {
                         this.db.exec(`UPDATE sources SET diagnostic_bytes=coalesce(json_extract(native_inventory,'$.diagnosticBytes'),0)`);
                     }
                     this.bind(options.migrations ?? MANAGED_LOG_POLICY_MIGRATIONS);
-                    // Legacy sealed segments have no snapshot. Freeze their available
-                    // metadata once, before any subsequent collection can change it.
-                    this.sealSegments('sealed=1 AND manifest IS NULL');
+                    // Legacy writers may seal a row after extending its provisional
+                    // snapshot. Repair missing or stale snapshots before collection.
+                    this.sealSegments('sealed=1');
                 }); } catch (e) { if (this.db.inTransaction) this.db.exec('ROLLBACK'); throw e; } }, options.openDeadline ?? Date.now() + 10_000);
         } catch (e) { this.db?.close(); this.dir.close(); throw e; }
     }
@@ -358,8 +359,8 @@ export class ManagedLogSpool {
     /** Called inside the writer transaction: payload and metadata seal together.
      * Source status remains mutable and is exposed separately by status(). */
     private sealSegment(s: Segment): string {
-        if (s.sealed && s.manifest !== null) return s.manifest;
         const manifest = this.segmentManifest(s);
+        if (s.sealed && s.manifest !== null && segmentManifestMatches(s.manifest, manifest)) return s.manifest;
         this.db.prepare('UPDATE segments SET sealed=1,manifest=? WHERE id=?').run(manifest, s.id);
         return manifest;
     }
@@ -372,8 +373,7 @@ export class ManagedLogSpool {
             droppedBytes: source.dropped, gaps: source.gaps, historyComplete: false, lastSuccessfulCollection: source.last_success });
     }
     private sealSegments(where: string, ...args: unknown[]): void {
-        const rows = this.db.prepare(`SELECT id FROM segments WHERE ${where}`).all(...args) as Array<{ id: number }>;
-        for (const row of rows) this.sealSegment(this.db.prepare('SELECT * FROM segments WHERE id=?').get(row.id) as Segment);
+        for (const { id } of this.db.prepare(`SELECT id FROM segments WHERE ${where}`).all(...args) as Array<{ id: number }>) this.sealSegment(this.db.prepare('SELECT * FROM segments WHERE id=?').get(id) as Segment);
     }
     exportOne(): { manifest: object; data: Buffer; id: number; digest: string } | null {
         return this.atomic(() => {
