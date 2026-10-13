@@ -9,28 +9,40 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
   const countReloads = async page => {
     const session = await page.context().newCDPSession(page);
     let count = 0;
+    const sequence = [];
+    // Event types alone explain routing versus reloads without exposing URLs.
+    const record = type => { if (sequence.length < 32) sequence.push(type); };
     // Playwright framenavigated also fires for the Desktop HashRouter. CDP
     // frameNavigated reports new documents; hash/history changes use the
     // separate navigatedWithinDocument event and must not spend reload budgets.
-    const listener = ({ frame }) => { if (!frame.parentId) count++; };
+    const listener = ({ frame }) => {
+      if (!frame.parentId) { count++; record('document'); }
+    };
+    const { frameTree } = await session.send('Page.getFrameTree');
+    const routeListener = ({ frameId }) => {
+      if (frameId === frameTree.frame.id) record('same-document');
+    };
     session.on('Page.frameNavigated', listener);
+    session.on('Page.navigatedWithinDocument', routeListener);
     await session.send('Page.enable');
-    return { count: () => count, dispose: async () => {
+    return { count: () => count, sequence: () => [...sequence], dispose: async () => {
       session.off('Page.frameNavigated', listener);
+      session.off('Page.navigatedWithinDocument', routeListener);
       await session.detach();
     } };
   };
   // Connected alone can be a transient state before a queued native reload.
   // Observe a bounded window, requiring both connection and policy to remain
-  // present. Only booleans and counts leave this scenario, never policy values.
-  const stableConnection = async (page, reloads, phase, baseline, maximumReloads) => {
+  // present. Diagnostics contain only booleans, counts and event types.
+  const stableConnection = async (page, reloads, phase, baseline, maximumReloads, prepare = async () => {}) => {
     let state;
     try {
+      await prepare();
       await connected(page);
       for (let sample = 0; sample <= 20; sample++) {
         // A permitted startup reload may briefly recreate the connected view.
         // Saved selection has no reload budget and must stay connected throughout.
-        if (phase === 'restart' && sample > 0) await connected(page);
+        if (phase !== 'saved-selection' && sample > 0) await connected(page);
         state = {
           phase,
           policyPresent: Boolean((await policy(page))?.includes(origin)),
@@ -41,31 +53,32 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
         if (state.reloadCount > maximumReloads) {
           throw new Error(phase === 'saved-selection'
             ? 'Saved-account selection entered a CSP reload loop'
-            : 'Restart exceeded its single startup policy reload');
+            : phase === 'restart' ? 'Restart exceeded its single startup policy reload'
+              : 'First activation exceeded its single policy reload');
         }
         if (!state.connected) throw new Error('Account did not remain Connected');
         if (sample < 20) await page.waitForTimeout(100);
       }
+      if (phase === 'first-activation' && state.reloadCount !== 1) {
+        throw new Error('First activation must install the loopback policy with exactly one native reload');
+      }
       return state;
     } finally {
-      diagnostic(state ?? { phase,
-        policyPresent: await policy(page).then(value => Boolean(value?.includes(origin))).catch(() => null),
-        reloadCount: reloads.count() - baseline, connected: false });
+      diagnostic({ phase,
+        policyPresent: await policy(page).then(value => Boolean(value?.includes(origin))).catch(() => false),
+        reloadCount: reloads.count() - baseline,
+        connected: await page.getByRole('button', { name: `Connected: ${name}`, exact: true }).isVisible().catch(() => false),
+        ...(phase === 'first-activation' ? { navigationSequence: reloads.sequence() } : {}),
+      });
     }
   };
   try {
     const initial = await countReloads(application.page);
     if ((await policy(application.page)).includes(origin)) throw new Error('CSP reload fixture started with a pinned origin');
-    await pair(application.page, origin, name);
-    await application.page.waitForFunction(endpoint => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content')?.includes(endpoint), origin);
-    await connected(application.page);
-    const activation = { phase: 'first-activation',
-      policyPresent: Boolean((await policy(application.page))?.includes(origin)),
-      reloadCount: initial.count(), connected: true };
-    diagnostic(activation);
-    if (activation.reloadCount !== 1 || !activation.policyPresent) {
-      throw new Error('First activation must install the loopback policy with exactly one native reload');
-    }
+    const activation = await stableConnection(application.page, initial, 'first-activation', 0, 1, async () => {
+      await pair(application.page, origin, name);
+      await application.page.waitForFunction(endpoint => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content')?.includes(endpoint), origin, { timeout: 15_000 });
+    });
     await initial.dispose();
     await application.close({ preserveProfile: true });
     observe('restart');
@@ -98,7 +111,8 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
       return content && !content.includes(endpoint);
     }, origin);
     await restarted.dispose();
-    evidence({ firstActivationReloads: initial.count(), restartReloads: restart.reloadCount,
+    evidence({ firstActivationReloads: activation.reloadCount, firstActivationPolicyPresent: activation.policyPresent,
+      firstActivationNavigationSequence: initial.sequence(), restartReloads: restart.reloadCount,
       restartPolicyPresent: restart.policyPresent, savedSelectionReloads: selection.reloadCount,
       savedSelectionPolicyPresent: selection.policyPresent, restartConnected: restart.connected, removalNarrowed: true,
       limitation: 'Owned HTTP/pairing fixture; does not provision Docker or complete external browser approval.' });

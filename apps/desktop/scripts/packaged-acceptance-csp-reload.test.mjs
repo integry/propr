@@ -5,6 +5,7 @@ import { exercisePackagedCspReload } from './packaged-acceptance-csp-reload.mjs'
 
 const origin = 'http://127.0.0.2:41731';
 const fixture = ({ activationReloads = 1, selectionReloads = 0, restartReloads = 0,
+  activationPolicyPresent = true, activationConnected = true,
   restartPolicyPresent = true, delayedReloadPhase, disconnectPhase, pinned = false,
   routeChanges = false, subframeNavigations = false } = {}) => {
   const launches = [], closes = [], phases = [], results = [], diagnostics = [];
@@ -27,7 +28,10 @@ const fixture = ({ activationReloads = 1, selectionReloads = 0, restartReloads =
     const session = {
       on: (event, fn) => { if (!listeners.has(event)) listeners.set(event, new Set()); listeners.get(event).add(fn); },
       off: (event, fn) => listeners.get(event)?.delete(fn),
-      send: async method => { assert.equal(method, 'Page.enable'); },
+      send: async method => {
+        if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main' } } };
+        assert.equal(method, 'Page.enable');
+      },
       detach: async () => listeners.clear(),
     };
     const page = {
@@ -49,7 +53,7 @@ const fixture = ({ activationReloads = 1, selectionReloads = 0, restartReloads =
         if (name === 'Choose an account') assert.equal(selected, false);
       }, isVisible: async () => selected }),
       waitForTimeout: async () => {
-        const phase = phases.at(-1);
+        const phase = phases.at(-1) ?? 'first-activation';
         if (!delayed && delayedReloadPhase === phase) { delayed = true; navigate(); }
         if (disconnectPhase === phase) selected = false;
       },
@@ -68,10 +72,10 @@ const fixture = ({ activationReloads = 1, selectionReloads = 0, restartReloads =
     return { page, userData: 'owned-profile', close: async options => { retained = Boolean(options?.preserveProfile); closes.push(options); } };
   };
   const pair = async page => {
-    selected = true;
-    page.installPolicy();
+    selected = activationConnected;
+    if (activationPolicyPresent) page.installPolicy();
     for (let i = 0; i < activationReloads; i++) await page.reload();
-    if (routeChanges) page.navigateRoute();
+    for (let i = 0; i < Number(routeChanges); i++) page.navigateRoute();
     if (subframeNavigations) page.navigateSubframe();
   };
   return { launch, pair, origin, observe: phase => phases.push(phase), evidence: result => results.push(result),
@@ -88,7 +92,7 @@ test('native scenario restarts the same profile, selects through the UI, and rep
   assert.equal(f.results[0].restartReloads, 0);
   assert.equal(f.results[0].savedSelectionReloads, 0);
   assert.deepEqual(f.diagnostics, [
-    { phase: 'first-activation', policyPresent: true, reloadCount: 1, connected: true },
+    { phase: 'first-activation', policyPresent: true, reloadCount: 1, connected: true, navigationSequence: ['document'] },
     { phase: 'restart', policyPresent: true, reloadCount: 0, connected: true },
     { phase: 'saved-selection', policyPresent: true, reloadCount: 0, connected: true },
   ]);
@@ -98,6 +102,7 @@ test('hash routing and subframe navigation do not spend native document reload b
   const f = fixture({ routeChanges: true, subframeNavigations: true });
   await exercisePackagedCspReload(f);
   assert.equal(f.results[0].firstActivationReloads, 1);
+  assert.deepEqual(f.diagnostics[0].navigationSequence, ['document', 'same-document']);
   assert.equal(f.results[0].savedSelectionReloads, 0);
 });
 test('one startup reload converges without allowing saved selection to reload', async () => {
@@ -107,10 +112,38 @@ test('one startup reload converges without allowing saved selection to reload', 
   assert.equal(f.results[0].restartPolicyPresent, true);
   assert.equal(f.results[0].savedSelectionReloads, 0);
 });
+test('activation navigation diagnostics remain bounded during route churn', async () => {
+  const f = fixture({ routeChanges: 40 });
+  await exercisePackagedCspReload(f);
+  assert.equal(f.results[0].firstActivationReloads, 1);
+  assert.deepEqual(f.diagnostics[0].navigationSequence, ['document', ...Array(31).fill('same-document')]);
+});
 test('one delayed startup reload is counted during the convergence window', async () => {
   const f = fixture({ delayedReloadPhase: 'restart' });
   await exercisePackagedCspReload(f);
   assert.equal(f.results[0].restartReloads, 1);
+});
+test('one delayed first activation reload converges', async () => {
+  const f = fixture({ activationReloads: 0, delayedReloadPhase: 'first-activation' });
+  await exercisePackagedCspReload(f);
+  assert.equal(f.results[0].firstActivationReloads, 1);
+  assert.equal(f.results[0].firstActivationPolicyPresent, true);
+});
+for (const [name, options, count, policyPresent, connected, sequence] of [
+  ['no reload', { activationReloads: 0 }, 0, true, true, []],
+  ['multiple reloads', { activationReloads: 2 }, 2, true, true, ['document', 'document']],
+  ['late reload loop', { delayedReloadPhase: 'first-activation' }, 2, true, true, ['document', 'document']],
+  ['missing policy', { activationPolicyPresent: false }, 1, false, true, ['document']],
+  ['connection timeout', { activationConnected: false }, 1, true, false, ['document']],
+  ['late disconnection', { disconnectPhase: 'first-activation' }, 1, true, false, ['document']],
+]) test(`first activation reports sanitized diagnostics for ${name}`, async () => {
+  const f = fixture(options);
+  await assert.rejects(exercisePackagedCspReload(f));
+  assert.deepEqual(f.diagnostics, [{ phase: 'first-activation', policyPresent,
+    reloadCount: count, connected, navigationSequence: sequence }]);
+  assert.equal(JSON.stringify(f.diagnostics).includes(origin), false);
+  assert.equal(f.closes.at(-1), undefined);
+  assert.equal(f.results.length, 0);
 });
 for (const [name, options] of [
   ['pinned policy', { pinned: true }], ['missing activation reload', { activationReloads: 0 }],
@@ -118,7 +151,7 @@ for (const [name, options] of [
   ['chooser reload loop', { selectionReloads: 1 }],
 ]) test(`native scenario rejects ${name}`, async () => {
   const f = fixture(options);
-  await assert.rejects(exercisePackagedCspReload(f), /pinned|exactly one|reload loop/);
+  await assert.rejects(exercisePackagedCspReload(f), /pinned|exactly one|single policy reload|reload loop/);
   assert.equal(f.closes.at(-1), undefined);
   assert.equal(f.results.length, 0);
 });
