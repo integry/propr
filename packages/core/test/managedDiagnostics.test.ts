@@ -252,20 +252,45 @@ test('real application Pino hook exports redacted operational records', () => {
 test('concurrent process rotation, export and cursor CAS recover without duplicate committed records', async () => {
     const { spawn } = await import('node:child_process');
     const f = fixture();
+    const db = (f.spool as any).db;
+    let startupLocked = false, startupRetried = false;
     try {
         const modulePath = new URL('../src/diagnostics/managedLogSpool.ts', import.meta.url).href;
         const script = `import { ManagedLogSpool } from ${JSON.stringify(modulePath)};
-            const spool = new ManagedLogSpool(${JSON.stringify(path.join(f.root, 'spool'))}, 'tenant-a');
+            // Initialization also takes a write lock and can race the exporter.
+            // Retry only expected contention, with a deadline for each operation.
+            async function retryBusy(operation, onBusy = () => {}) {
+                const deadline = Date.now() + 10000;
+                for (;;) {
+                    try { return operation(); }
+                    catch(e) {
+                        if(e.code !== 'SQLITE_BUSY' || Date.now() >= deadline) throw e;
+                        onBusy();
+                        await new Promise(resolve => setTimeout(resolve, 10));
+                    }
+                }
+            }
+            const spool = await retryBusy(() => new ManagedLogSpool(${JSON.stringify(path.join(f.root, 'spool'))}, 'tenant-a'), () => process.send('initialization-busy'));
             const identity = ${JSON.stringify(identity)};
-            for (let n=0;n<12;n++) { let done=false; while(!done) { try { spool.append(identity,[JSON.stringify({writer:process.env.WRITER,n})],'jsonl',{credentials:[]}); done=true; } catch(e) { if(e.code!=='SQLITE_BUSY') throw e; } } }
-            spool.close();`;
+            try {
+                for (let n=0;n<12;n++) await retryBusy(() => spool.append(identity,[JSON.stringify({writer:process.env.WRITER,n})],'jsonl',{credentials:[]}));
+            } finally { spool.close(); }`;
         const run = (writer: string) => new Promise<void>((resolve, reject) => {
-            const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env: { ...process.env, WRITER: writer }, stdio: ['ignore', 'ignore', 'pipe'] });
+            const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env: { ...process.env, WRITER: writer }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+            child.on('message', message => {
+                if (message === 'initialization-busy') {
+                    startupRetried = true;
+                    if (startupLocked) { db.exec('ROLLBACK'); startupLocked = false; }
+                }
+            });
             let error = ''; child.stderr.on('data', chunk => { error += chunk; });
             child.on('error', reject); child.on('close', code => code === 0 ? resolve() : reject(new Error(error)));
         });
+        // Force startup contention, rather than depending on exporter timing.
+        db.exec('BEGIN IMMEDIATE'); startupLocked = true;
         const exported: ReturnType<typeof drain> = [];
         const timer = setInterval(() => {
+            if (startupLocked) return;
             try {
                 const item = f.spool.exportOne();
                 if (item) {
@@ -274,13 +299,21 @@ test('concurrent process rotation, export and cursor CAS recover without duplica
                 }
             } catch (error) { if ((error as { code?: string }).code !== 'SQLITE_BUSY') throw error; }
         }, 30);
-        try { await Promise.all([run('a'), run('b')]); }
+        try {
+            // Let both processes exit before closing/removing their shared spool.
+            const results = await Promise.allSettled([run('a'), run('b')]);
+            for (const result of results) if (result.status === 'rejected') throw result.reason;
+        }
         finally { clearInterval(timer); }
+        assert.equal(startupRetried, true);
         exported.push(...drain(f.spool));
         const output = exported.flatMap(e => e.text.trim().split('\n').map(line => JSON.parse(line)));
         assert.equal(output.length, 24);
         assert.equal(new Set(output.map(r => `${r.writer}:${r.n}`)).size, 24);
-    } finally { f.close(); }
+    } finally {
+        if (startupLocked) db.exec('ROLLBACK');
+        f.close();
+    }
 });
 test('file replacement, malicious spool roots and cross-instance access fail safe', () => {
     const f = fixture();
