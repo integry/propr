@@ -199,11 +199,11 @@ type LauncherState = ReturnType<typeof useNewTaskLauncher>;
 
 function TaskRoutingOptions({ agentAlias, setAgent, model, setModel, catalog, selection, invalidRouting, locked, isDemoMode }: LauncherState) {
   const [optionsOpen, setOptionsOpen] = useState(invalidRouting);
-  return <details className="border-y border-slate-200 py-4" open={invalidRouting || undefined} onToggle={event => setOptionsOpen(event.currentTarget.open)}>
+  return <details className="min-w-0 [overflow-wrap:anywhere] border-y border-slate-200 py-4" open={invalidRouting || undefined} onToggle={event => setOptionsOpen(event.currentTarget.open)}>
     <summary className="cursor-pointer text-sm font-medium text-slate-700">Advanced Options {!optionsOpen && <span className="ml-2 font-normal text-slate-500">{agentAlias || 'Default agent'} · {model || 'Default model'}</span>}</summary>
-    <fieldset disabled={locked || isDemoMode} className="mt-4 grid gap-4 disabled:opacity-60 sm:grid-cols-2">
-      <label className="text-sm text-slate-700">Agent<select aria-label="Agent" value={agentAlias} onChange={event => { setAgent(event.target.value); setModel(''); }} className="mt-1 w-full rounded border border-slate-300 p-2"><option value="">Instance default</option>{invalidRouting && !selection && <option value={agentAlias}>{agentAlias} (unavailable)</option>}{catalog?.agents.map(agent => <option key={agent.alias} value={agent.alias}>{agent.alias}</option>)}</select></label>
-      <label className="text-sm text-slate-700">Model<select aria-label="Model" value={model} disabled={!agentAlias} onChange={event => setModel(event.target.value)} className="mt-1 w-full rounded border border-slate-300 p-2"><option value="">Agent default</option>{model && !selection?.supportedModels.includes(model) && <option value={model}>{model} (unavailable)</option>}{selection?.supportedModels.map(model => <option key={model}>{model}</option>)}</select></label>
+    <fieldset disabled={locked || isDemoMode} className="mt-4 grid min-w-0 grid-cols-1 gap-4 disabled:opacity-60 sm:grid-cols-2">
+      <label className="min-w-0 text-sm text-slate-700">Agent<select aria-describedby={agentAlias ? 'task-agent-selection' : undefined} aria-label="Agent" value={agentAlias} onChange={event => { setAgent(event.target.value); setModel(''); }} className="mt-1 min-h-11 w-full min-w-0 max-w-full rounded border border-slate-300 p-2"><option value="">Instance default</option>{invalidRouting && !selection && <option value={agentAlias}>{agentAlias} (unavailable)</option>}{catalog?.agents.map(agent => <option key={agent.alias} value={agent.alias}>{agent.alias}</option>)}</select>{agentAlias && <span id="task-agent-selection" className="mt-1 block text-xs text-slate-500">{agentAlias}</span>}</label>
+      <label className="min-w-0 text-sm text-slate-700">Model<select aria-describedby={model ? 'task-model-selection' : undefined} aria-label="Model" value={model} disabled={!agentAlias} onChange={event => setModel(event.target.value)} className="mt-1 min-h-11 w-full min-w-0 max-w-full rounded border border-slate-300 p-2"><option value="">Agent default</option>{model && !selection?.supportedModels.includes(model) && <option value={model}>{model} (unavailable)</option>}{selection?.supportedModels.map(model => <option key={model}>{model}</option>)}</select>{model && <span id="task-model-selection" className="mt-1 block text-xs text-slate-500">{model}</span>}</label>
     </fieldset>
     <p className="mt-3 text-xs text-slate-500">Base branch and automatic review settings follow the repository’s issue workflow.</p>
   </details>;
@@ -243,7 +243,7 @@ function TaskSubmissionFeedback({ busy, result, snapshot, error, invalidRouting 
 
   return <>
     {invalidRouting && <p role="alert" className="text-sm text-red-700">The saved agent or model is unavailable. Choose a supported selection in Advanced Options.</p>}
-    {notice && style && <div role={notice.tone === 'info' ? 'status' : 'alert'} className={`flex gap-3 break-words rounded-md border p-4 text-sm ${style.box}`}>
+    {notice && style && <div role={notice.tone === 'info' ? 'status' : 'alert'} className={`flex min-w-0 gap-3 [overflow-wrap:anywhere] rounded-md border p-4 text-sm ${style.box}`}>
       {Icon && <Icon aria-hidden="true" size={18} className="mt-0.5 flex-none" />}
       <div className="min-w-0">
         {notice.title && <p className="font-semibold">{notice.title}</p>}
@@ -295,18 +295,19 @@ function NewTaskLauncher({ scope }: { scope: string }) {
 
   return <CreationDialog title="New task" icon={Zap} description="Describe the change you want. Run task creates an issue and starts implementation."
     closeLabel="Close task creation" onClose={() => void requestClose()} busy={launcher.busy || processingFiles}>
-    <form className="flex min-h-0 flex-col" onChange={() => setDirty(true)} onSubmit={event => { event.preventDefault(); void run(); }}>
-      <div className="min-h-0 overflow-y-auto px-5 py-5 sm:px-7 space-y-5">
+    <form className="flex min-h-0 min-w-0 flex-col" onChange={() => setDirty(true)} onSubmit={event => { event.preventDefault(); void run(); }}>
+      <div className="min-h-0 min-w-0 [overflow-wrap:anywhere] overflow-y-auto px-5 py-5 sm:px-7 space-y-5">
     {!snapshot && !launcher.planDraft && launcher.recoverable.length > 0 && <section aria-label="Unresolved submissions" className="mt-6 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-slate-700">
       <h2 className="font-semibold">Unresolved submissions</h2>
       <p className="mt-1">Reopen a previous request to check its status and finish starting the task.</p>
-      <ul className="mt-3 space-y-3">{launcher.recoverable.map(value => <li key={value.key} className="flex items-center justify-between gap-3">
+      <ul className="mt-3 space-y-3">{launcher.recoverable.map(value => <li key={value.key} className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0"><p className="font-medium">{value.payload.repository}</p><p className="truncate">{value.payload.instruction}</p></div>
         <button type="button" disabled={!launcher.ready || launcher.busy || processingFiles || isDemoMode} onClick={() => void launcher.reopen(value.key)} className={`${button} shrink-0 border-slate-300 bg-white`}>Reopen submission</button>
       </li>)}</ul>
     </section>}
-      <fieldset disabled={locked || isDemoMode} className="space-y-5 disabled:opacity-60">
-        <div><label className="mb-2 block text-sm font-medium text-slate-700">Repository</label><RepositorySelector repos={repoOptions} selectedRepo={repository} onRepoChange={value => { setDirty(true); setRepository(value); }} disabled={locked || isDemoMode} placeholder="Select a repository" /></div>
+      {/* Fieldsets default to min-inline-size: min-content, even inside a scrollable flex body. */}
+      <fieldset disabled={locked || isDemoMode} className="min-w-0 space-y-5 disabled:opacity-60">
+        <div><label className="mb-2 block text-sm font-medium text-slate-700">Repository</label><RepositorySelector repos={repoOptions} selectedRepo={repository} onRepoChange={value => { setDirty(true); setRepository(value); }} disabled={locked || isDemoMode} placeholder="Select a repository" className="[&_button]:min-h-11" />{repository && <p className="mt-1 text-xs text-slate-500">{repository}</p>}</div>
         <div><label htmlFor="task-instruction" className="mb-2 block text-sm font-medium text-slate-700">Prompt</label>
           <div className="rounded-md border border-slate-200 focus-within:border-teal-500 focus-within:ring-1 focus-within:ring-teal-500">
           <TextareaAutosize id="task-instruction" required maxLength={50000} value={instruction} onChange={event => setInstruction(event.target.value)} onPaste={event => {
@@ -318,7 +319,7 @@ function NewTaskLauncher({ scope }: { scope: string }) {
             setProcessingFiles(true);
             void Promise.all(incoming.map(resizeImage)).then(processed => setFiles(current => [...current, ...processed]))
               .catch(() => setError('Could not process pasted images.')).finally(() => setProcessingFiles(false));
-          }} minRows={6} maxRows={16} placeholder="Fix the invoice date format…" className="block w-full resize-none rounded-t-md border-none p-3 text-sm leading-6 focus:outline-none focus:ring-0" />
+          }} minRows={6} maxRows={16} placeholder="Fix the invoice date format…" className="block w-full min-w-0 max-w-full resize-none rounded-t-md border-none p-3 text-sm leading-6 focus:outline-none focus:ring-0" />
           <GoalAttachmentInput docked files={files} onFilesSelected={() => setDirty(true)} onChange={next => { setDirty(true); setFiles(next); }} onError={setError} onProcessingChange={setProcessingFiles} disabled={locked || processingFiles || isDemoMode} />
           </div>
         </div>
