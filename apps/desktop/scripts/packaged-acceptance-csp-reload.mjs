@@ -82,20 +82,40 @@ export const observeCspReloadRequestFailures = async ({ page, origin, pageId, jo
   const marker = '[propr-acceptance-csp-fetch]';
   const attempts = new Map();
   const session = await page.context().newCDPSession(page);
-  page.on('console', message => {
-    if (message.type() !== 'debug' || !message.text().startsWith(marker)) return;
+  const contexts = new Map();
+  const scripts = new Map();
+  const { frameTree } = await session.send('Page.getFrameTree');
+  session.on('Runtime.executionContextCreated', ({ context }) => {
+    // uniqueId survives numeric context-ID reuse across document replacements.
+    contexts.set(context.id, { id: context.uniqueId,
+      mainFrame: context.auxData?.isDefault === true && context.auxData.frameId === frameTree.frame.id });
+  });
+  session.on('Runtime.executionContextDestroyed', ({ executionContextId }) => contexts.delete(executionContextId));
+  session.on('Runtime.executionContextsCleared', () => contexts.clear());
+  session.on('Debugger.scriptParsed', ({ scriptId, executionContextId }) => {
+    // Retain the originating context for delayed old-document native issues.
+    scripts.set(scriptId, contexts.get(executionContextId));
+  });
+  const attemptKey = (contextId, phase, url) => JSON.stringify([contextId, phase, url]);
+  session.on('Runtime.consoleAPICalled', message => {
+    const text = message.args?.[0]?.value;
+    const context = contexts.get(message.executionContextId);
+    if (message.type !== 'debug' || typeof text !== 'string' || !text.startsWith(marker)
+      || !context?.id || !context.mainFrame) return;
     let attempt;
-    try { attempt = JSON.parse(message.text().slice(marker.length)); } catch { return; }
+    try { attempt = JSON.parse(text.slice(marker.length)); } catch { return; }
     if (attempt?.method !== 'GET' || typeof attempt.url !== 'string'
       || fixtureRequest(attempt.url, origin) === 'other') return;
-    const previous = attempts.get(attempt.url);
-    // A later fetch makes this URL ambiguous, including evidence already emitted.
+    const phase = journey();
+    const key = attemptKey(context.id, phase, attempt.url);
+    const previous = attempts.get(key);
+    // Only a repeated fetch in this document and phase makes its URL ambiguous.
     for (const record of previous?.denials.values() ?? []) {
       record.mainFrame = false;
       record.method = 'unknown';
       record.resourceType = 'unknown';
     }
-    attempts.set(attempt.url, { journey: journey(), count: (previous?.count ?? 0) + 1,
+    attempts.set(key, { journey: phase, count: (previous?.count ?? 0) + 1,
       denials: new Map() });
   });
   session.on('Audits.issueAdded', ({ issue }) => {
@@ -104,12 +124,14 @@ export const observeCspReloadRequestFailures = async ({ page, origin, pageId, jo
       || denial.violatedDirective !== 'connect-src'
       || denial.contentSecurityPolicyViolationType !== 'kURLViolation'
       || fixtureRequest(denial.blockedURL, origin) === 'other') return;
-    const attempt = attempts.get(denial.blockedURL);
     const failureJourney = journey();
+    const context = scripts.get(denial.sourceCodeLocation?.scriptId);
+    const attempt = context?.id && context.mainFrame
+      ? attempts.get(attemptKey(context.id, failureJourney, denial.blockedURL)) : undefined;
     // The response header and meta policy produce identical Audits issues for
     // one fetch. Deduplicate only within that invocation and failure phase,
     // retaining distinct native details and every renderer console error.
-    const key = JSON.stringify({ failureJourney, denial });
+    const key = JSON.stringify({ contextId: context?.id, failureJourney, denial });
     if (attempt?.denials.has(key)) return;
     const record = { scenario: 'csp-reload', pageId, mainFrame: attempt?.count === 1,
       journey: attempt?.journey, failureJourney, url: denial.blockedURL,
@@ -119,6 +141,8 @@ export const observeCspReloadRequestFailures = async ({ page, origin, pageId, jo
     records.push(record);
     attempt?.denials.set(key, record);
   });
+  await session.send('Runtime.enable');
+  await session.send('Debugger.enable');
   await session.send('Audits.enable');
   const install = ({ marker, origin }) => {
     if (window !== window.top) return;

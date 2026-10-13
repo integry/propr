@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createServer } from 'node:http';
+import { chromium } from 'playwright';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { exercisePackagedCspReload, observeCspReloadRequestFailures, correlateExpectedCspReloadConsoleRecords, sanitizedCspReloadError, sanitizedCspReloadRequestFailure } from './packaged-acceptance-csp-reload.mjs';
@@ -392,23 +394,41 @@ const requestObserverFixture = async () => {
   const page = {
     context: () => ({ newCDPSession: async () => ({
       on: (event, callback) => listeners.set(event, callback),
-      send: async command => assert.equal(command, 'Audits.enable'),
+      send: async command => {
+        if (command === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main' } } };
+        assert.ok(['Runtime.enable', 'Debugger.enable', 'Audits.enable'].includes(command));
+      },
     }) }),
     on: (event, callback) => listeners.set(event, callback),
     addInitScript: async (...args) => scripts.push(args),
     evaluate: async (...args) => scripts.push(args),
   };
   await observeCspReloadRequestFailures({ page, origin, pageId: 1, journey: () => phase, records });
-  const attempt = (url, method = 'GET') => listeners.get('console')({
-    type: () => 'debug', text: () => `[propr-acceptance-csp-fetch]${JSON.stringify({ url, method })}`,
+  let contextId = 1, scriptId;
+  const document = (id, frameId = 'main', uniqueId = `document-${id}`) => {
+    contextId = id;
+    listeners.get('Runtime.executionContextCreated')({ context: {
+      id, uniqueId, auxData: { isDefault: true, frameId },
+    } });
+    scriptId = `script-${uniqueId}`;
+    listeners.get('Debugger.scriptParsed')({ scriptId, executionContextId: id });
+  };
+  document(1);
+  const attempt = (url, method = 'GET') => listeners.get('Runtime.consoleAPICalled')({
+    type: 'debug', executionContextId: contextId,
+    args: [{ value: `[propr-acceptance-csp-fetch]${JSON.stringify({ url, method })}` }],
   });
   const issue = (url, change = {}) => listeners.get('Audits.issueAdded')({ issue: {
     code: 'ContentSecurityPolicyIssue', details: { contentSecurityPolicyIssueDetails: {
       blockedURL: url, violatedDirective: 'connect-src', isReportOnly: false,
-      contentSecurityPolicyViolationType: 'kURLViolation', ...change,
+      contentSecurityPolicyViolationType: 'kURLViolation',
+      sourceCodeLocation: { scriptId, lineNumber: 1 }, ...change,
     } },
   } });
-  return { records, scripts, attempt, issue, phase: value => { phase = value; } };
+  return { records, scripts, attempt, issue, document,
+    clear: () => listeners.get('Runtime.executionContextsCleared')(),
+    destroy: () => listeners.get('Runtime.executionContextDestroyed')({ executionContextId: contextId }),
+    phase: value => { phase = value; } };
 };
 
 test('pre-network Audits denials correlate only to unique top-frame GET fetch attempts', async () => {
@@ -454,6 +474,126 @@ test('distinct native denial locations and phases are not deduplicated', async (
     f.issue(url, mode === 'location' ? { sourceCodeLocation: { scriptId: 'other', lineNumber: 1 } } : {});
     assert.equal(f.records.length, 2, mode);
   }
+});
+
+test('replacement-document fetches preserve earlier unique denials and cannot deduplicate them', async () => {
+  const f = await requestObserverFixture();
+  const url = origin + '/api/auth/demo-mode';
+  f.attempt(url);
+  f.issue(url);
+  const earlier = { ...f.records[0] };
+  f.document(2);
+  f.attempt(url); // The replacement document may allow this URL.
+  assert.deepEqual(f.records[0], earlier);
+  f.issue(url);
+  f.issue(url);
+  assert.equal(f.records.length, 2);
+  assert.equal(f.records[1].mainFrame, true);
+  f.attempt(url); // Ambiguity in the replacement affects only that document.
+  assert.deepEqual(f.records[0], earlier);
+  assert.equal(f.records[1].mainFrame, false);
+});
+
+test('context-ID reuse and late old-document issues retain their originating evidence', async () => {
+  for (const lifecycle of ['clear', 'destroy']) {
+    const f = await requestObserverFixture();
+    const url = origin + '/api/auth/demo-mode';
+    f.attempt(url);
+    f.issue(url);
+    const earlier = { ...f.records[0] };
+    f[lifecycle]();
+    f.document(1, 'main', 'replacement'); // Chromium may reuse the numeric ID.
+    f.attempt(url);
+    f.issue(url);
+    f.issue(url, { sourceCodeLocation: { scriptId: 'script-document-1', lineNumber: 1 } });
+    assert.equal(f.records.length, 2, lifecycle); // Duplicate old-document issue.
+    assert.deepEqual(f.records[0], earlier, lifecycle);
+    assert.equal(f.records[1].mainFrame, true, lifecycle);
+  }
+});
+
+test('unknown or subframe native source contexts cannot borrow top-frame evidence', async () => {
+  for (const mode of ['missing-source', 'unknown-script', 'subframe']) {
+    const f = await requestObserverFixture();
+    const url = origin + '/api/auth/demo-mode';
+    f.attempt(url);
+    if (mode === 'subframe') {
+      f.document(2, 'child');
+      f.attempt(url);
+      f.issue(url);
+    } else {
+      f.issue(url, { sourceCodeLocation: mode === 'missing-source' ? undefined : { scriptId: 'unknown' } });
+    }
+    assert.equal(f.records.length, 1, mode);
+    assert.equal(f.records[0].mainFrame, false, mode);
+    assert.equal(f.records[0].method, 'unknown', mode);
+  }
+});
+
+test('exact observer preserves native denied evidence across real Chromium navigation', { timeout: 30_000 }, async t => {
+  const apiRequests = [];
+  const api = createServer((request, response) => {
+    apiRequests.push(request.url);
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.end('{}');
+  });
+  const document = createServer((request, response) => {
+    const policy = `connect-src 'self' https: wss:${request.url === '/allowed' ? ` ${fixtureOrigin}` : ''}`;
+    response.setHeader('Content-Security-Policy', policy);
+    response.setHeader('Content-Type', 'text/html');
+    // Native header/meta duplicate issues must still count as a single denial.
+    response.end(`<meta http-equiv="Content-Security-Policy" content="${policy}"><title>CSP fixture</title>`);
+  });
+  const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const close = server => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  await listen(api);
+  t.after(() => close(api));
+  const fixtureOrigin = `http://127.0.0.1:${api.address().port}`;
+  await listen(document);
+  t.after(() => close(document));
+  const documentOrigin = `http://127.0.0.1:${document.address().port}`;
+  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+  t.after(() => browser.close());
+  t.diagnostic(`Chromium ${browser.version()}`);
+  const page = await browser.newPage();
+  await page.goto(documentOrigin + '/denied');
+  const records = [], errors = [];
+  page.on('console', message => {
+    if (message.type() === 'error') errors.push({ type: 'error', text: message.text(),
+      journey: 'csp-reload-pairing', pageId: 1 });
+  });
+  await observeCspReloadRequestFailures({ page, origin: fixtureOrigin, pageId: 1,
+    journey: () => 'csp-reload-pairing', records });
+  const fetchEndpoints = () => page.evaluate(async endpoint => Promise.all([
+    '/api/auth/user?proprDesktopScopeGeneration=1', '/api/auth/demo-mode',
+  ].map(async path => {
+    try { return (await fetch(endpoint + path)).ok; } catch { return false; }
+  })), fixtureOrigin);
+  assert.deepEqual(await fetchEndpoints(), [false, false]);
+  assert.equal(records.length, 2);
+  assert.equal(apiRequests.length, 0);
+  const earlier = structuredClone(records);
+  assert.ok(earlier.every(record => record.mainFrame && record.method === 'GET' && record.resourceType === 'fetch'));
+  const expected = correlateExpectedCspReloadConsoleRecords({ records: errors, origin: fixtureOrigin,
+    evidence: convergedEvidence, deniedRequests: records });
+  assert.equal(errors.length, 6);
+  assert.deepEqual(expected, errors);
+  await page.goto(documentOrigin + '/allowed');
+  assert.deepEqual(await fetchEndpoints(), [true, true]);
+  assert.equal(apiRequests.length, 2);
+  assert.deepEqual(records, earlier);
+  assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records: errors, origin: fixtureOrigin,
+    evidence: convergedEvidence, deniedRequests: records }), expected);
+  // New-document native denials remain distinct, and repetition there fails closed.
+  await page.goto(documentOrigin + '/denied');
+  assert.deepEqual(await fetchEndpoints(), [false, false]);
+  assert.equal(records.length, 4);
+  assert.ok(records.slice(2).every(record => record.mainFrame));
+  assert.deepEqual(await fetchEndpoints(), [false, false]);
+  assert.ok(records.slice(2).every(record => !record.mainFrame && record.method === 'unknown'));
+  assert.deepEqual(records.slice(0, 2), earlier);
+  assert.deepEqual(correlateExpectedCspReloadConsoleRecords({ records: errors, origin: fixtureOrigin,
+    evidence: convergedEvidence, deniedRequests: records }), []);
 });
 
 test('a repeated fetch after a denial invalidates the earlier unique-request evidence', async () => {
