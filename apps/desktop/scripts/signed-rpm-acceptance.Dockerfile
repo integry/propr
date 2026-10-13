@@ -7,7 +7,7 @@ COPY --from=node /usr/local/lib/node_modules/npm/ /usr/local/lib/node_modules/np
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 RUN zypper --non-interactive install --no-recommends \
-    rpm cpio gpg2 dbus-1 gnome-keyring libsecret-1-0 xorg-x11-server-Xvfb \
+    rpm cpio gpg2 dbus-1 dbus-1-daemon gnome-keyring libsecret-1-0 xorg-x11-server-Xvfb \
     xauth xdg-utils liberation-fonts gtk3 libgtk-3-0 libnotify4 at-spi2-core \
     libdrm2 libxcb1 libgbm1 mozilla-nss libasound2 \
     libXss1 libXtst6 tar gzip shadow util-linux tesseract-ocr tesseract-ocr-traineddata-eng && zypper clean --all
