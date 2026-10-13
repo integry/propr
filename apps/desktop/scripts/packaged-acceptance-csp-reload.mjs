@@ -6,11 +6,19 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
   const name = 'CSP reload account';
   const policy = page => page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content');
   const connected = page => page.getByRole('button', { name: `Connected: ${name}`, exact: true }).waitFor({ timeout: 15_000 });
-  const countReloads = page => {
+  const countReloads = async page => {
+    const session = await page.context().newCDPSession(page);
     let count = 0;
-    const listener = frame => { if (frame === page.mainFrame()) count++; };
-    page.on('framenavigated', listener);
-    return { count: () => count, dispose: () => page.off('framenavigated', listener) };
+    // Playwright framenavigated also fires for the Desktop HashRouter. CDP
+    // frameNavigated reports new documents; hash/history changes use the
+    // separate navigatedWithinDocument event and must not spend reload budgets.
+    const listener = ({ frame }) => { if (!frame.parentId) count++; };
+    session.on('Page.frameNavigated', listener);
+    await session.send('Page.enable');
+    return { count: () => count, dispose: async () => {
+      session.off('Page.frameNavigated', listener);
+      await session.detach();
+    } };
   };
   // Connected alone can be a transient state before a queued native reload.
   // Observe a bounded window, requiring both connection and policy to remain
@@ -46,19 +54,23 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
     }
   };
   try {
-    const initial = countReloads(application.page);
+    const initial = await countReloads(application.page);
     if ((await policy(application.page)).includes(origin)) throw new Error('CSP reload fixture started with a pinned origin');
     await pair(application.page, origin, name);
     await application.page.waitForFunction(endpoint => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content')?.includes(endpoint), origin);
     await connected(application.page);
-    if (initial.count() !== 1 || !(await policy(application.page)).includes(origin)) {
+    const activation = { phase: 'first-activation',
+      policyPresent: Boolean((await policy(application.page))?.includes(origin)),
+      reloadCount: initial.count(), connected: true };
+    diagnostic(activation);
+    if (activation.reloadCount !== 1 || !activation.policyPresent) {
       throw new Error('First activation must install the loopback policy with exactly one native reload');
     }
-    initial.dispose();
+    await initial.dispose();
     await application.close({ preserveProfile: true });
     observe('restart');
     application = await launch(application.userData);
-    const restarted = countReloads(application.page);
+    const restarted = await countReloads(application.page);
     // Restoring the active profile can replace the empty startup policy once.
     // It must converge before testing saved selection with a separate budget.
     const restart = await stableConnection(application.page, restarted, 'restart', 0, 1);
@@ -85,7 +97,7 @@ export const exercisePackagedCspReload = async ({ launch, pair, origin, observe,
       const content = document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content');
       return content && !content.includes(endpoint);
     }, origin);
-    restarted.dispose();
+    await restarted.dispose();
     evidence({ firstActivationReloads: initial.count(), restartReloads: restart.reloadCount,
       restartPolicyPresent: restart.policyPresent, savedSelectionReloads: selection.reloadCount,
       savedSelectionPolicyPresent: selection.policyPresent, restartConnected: restart.connected, removalNarrowed: true,

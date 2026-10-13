@@ -5,23 +5,41 @@ import { exercisePackagedCspReload } from './packaged-acceptance-csp-reload.mjs'
 
 const origin = 'http://127.0.0.2:41731';
 const fixture = ({ activationReloads = 1, selectionReloads = 0, restartReloads = 0,
-  restartPolicyPresent = true, delayedReloadPhase, disconnectPhase, pinned = false } = {}) => {
+  restartPolicyPresent = true, delayedReloadPhase, disconnectPhase, pinned = false,
+  routeChanges = false, subframeNavigations = false } = {}) => {
   const launches = [], closes = [], phases = [], results = [], diagnostics = [];
   let selected = false;
   let retained = false;
   const launch = async existing => {
-    const listeners = new Set();
+    const listeners = new Map();
     let content = (existing && restartPolicyPresent) || pinned ? origin : "connect-src 'self'";
     let restored = false;
     let delayed = false;
-    const navigate = () => { for (const listener of listeners) listener(page.mainFrame()); };
+    const emit = (event, payload) => { for (const listener of listeners.get(event) ?? []) listener(payload); };
+    const navigate = () => {
+      emit('framenavigated', page.mainFrame());
+      emit('Page.frameNavigated', { frame: { id: 'main' } });
+    };
+    const navigateRoute = () => {
+      emit('framenavigated', page.mainFrame());
+      emit('Page.navigatedWithinDocument', { frameId: 'main' });
+    };
+    const session = {
+      on: (event, fn) => { if (!listeners.has(event)) listeners.set(event, new Set()); listeners.get(event).add(fn); },
+      off: (event, fn) => listeners.get(event)?.delete(fn),
+      send: async method => { assert.equal(method, 'Page.enable'); },
+      detach: async () => listeners.clear(),
+    };
     const page = {
       mainFrame: () => page,
       installPolicy: () => { content = origin; },
-      on: (_event, fn) => listeners.add(fn), off: (_event, fn) => listeners.delete(fn),
+      context: () => ({ newCDPSession: async target => { assert.equal(target, page); return session; } }),
+      on: session.on, off: session.off,
+      navigateRoute,
+      navigateSubframe: () => emit('Page.frameNavigated', { frame: { id: 'child', parentId: 'main' } }),
       locator: selector => selector.startsWith('meta')
         ? { getAttribute: async () => content }
-        : { filter: () => ({ click: async () => { selected = true; for (let i = 0; i < selectionReloads; i++) navigate(); } }) },
+        : { filter: () => ({ click: async () => { selected = true; if (routeChanges) navigateRoute(); for (let i = 0; i < selectionReloads; i++) navigate(); } }) },
       getByRole: (_role, { name }) => ({ waitFor: async () => {
         if (existing && !restored && name.startsWith('Connected:')) {
           restored = true;
@@ -53,6 +71,8 @@ const fixture = ({ activationReloads = 1, selectionReloads = 0, restartReloads =
     selected = true;
     page.installPolicy();
     for (let i = 0; i < activationReloads; i++) await page.reload();
+    if (routeChanges) page.navigateRoute();
+    if (subframeNavigations) page.navigateSubframe();
   };
   return { launch, pair, origin, observe: phase => phases.push(phase), evidence: result => results.push(result),
     diagnostic: record => diagnostics.push(record), launches, closes, phases, results, diagnostics };
@@ -68,10 +88,17 @@ test('native scenario restarts the same profile, selects through the UI, and rep
   assert.equal(f.results[0].restartReloads, 0);
   assert.equal(f.results[0].savedSelectionReloads, 0);
   assert.deepEqual(f.diagnostics, [
+    { phase: 'first-activation', policyPresent: true, reloadCount: 1, connected: true },
     { phase: 'restart', policyPresent: true, reloadCount: 0, connected: true },
     { phase: 'saved-selection', policyPresent: true, reloadCount: 0, connected: true },
   ]);
   assert.match(f.results[0].limitation, /fixture/);
+});
+test('hash routing and subframe navigation do not spend native document reload budgets', async () => {
+  const f = fixture({ routeChanges: true, subframeNavigations: true });
+  await exercisePackagedCspReload(f);
+  assert.equal(f.results[0].firstActivationReloads, 1);
+  assert.equal(f.results[0].savedSelectionReloads, 0);
 });
 test('one startup reload converges without allowing saved selection to reload', async () => {
   const f = fixture({ restartReloads: 1 });
@@ -86,7 +113,8 @@ test('one delayed startup reload is counted during the convergence window', asyn
   assert.equal(f.results[0].restartReloads, 1);
 });
 for (const [name, options] of [
-  ['pinned policy', { pinned: true }], ['duplicate activation reload', { activationReloads: 2 }],
+  ['pinned policy', { pinned: true }], ['missing activation reload', { activationReloads: 0 }],
+  ['duplicate activation reload', { activationReloads: 2 }],
   ['chooser reload loop', { selectionReloads: 1 }],
 ]) test(`native scenario rejects ${name}`, async () => {
   const f = fixture(options);
