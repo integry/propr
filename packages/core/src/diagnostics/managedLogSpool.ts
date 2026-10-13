@@ -164,9 +164,7 @@ export class ManagedLogSpool {
         }
         return source;
     }
-    private gap(source: Source, bytes: number, reason: string): void {
-        this.db.prepare('UPDATE sources SET dropped=dropped+?,gaps=gaps+1,reason=?,inventory_complete=0 WHERE id=?').run(bytes, reason, source.id);
-    }
+    private gap(source: Source, bytes: number, reason: string): void { this.db.prepare('UPDATE sources SET dropped=dropped+?,gaps=gaps+1,reason=?,inventory_complete=0 WHERE id=?').run(bytes, reason, source.id); }
     /** `standing`: a limitation re-observed on every pass (e.g. the daemon's 30s
      * inventory) records one durable gap when it begins or changes, not per pass. */
     report(identity: LogIdentity, reason: 'buffer-capacity' | 'unsafe-source' | 'ownership-unsupported' | 'scan-limit' | 'source-replaced' | 'capture-interrupted' | 'protected-native-state' | 'ownership-unverified' | 'storage-unavailable' | `credential-root:${CredentialRootRefusal | 'missing'}`, bytes = 0, options: { standing?: boolean } = {}): void {
@@ -235,6 +233,8 @@ export class ManagedLogSpool {
             this.prune(Date.now());
         });
     }
+    /** Changes whenever another connection commits: progress, not a stalled spool. */
+    dataVersion(): number { return (this.db.prepare('PRAGMA data_version').get() as { data_version: number }).data_version; }
     cursor(identity: LogIdentity): Cursor {
         const existing = this.db.prepare('SELECT cursor FROM sources WHERE id=?').get(digest(JSON.stringify(identity))) as { cursor: string } | undefined;
         return existing ? JSON.parse(existing.cursor) as Cursor : this.atomic(() => JSON.parse(this.source(identity).cursor) as Cursor);

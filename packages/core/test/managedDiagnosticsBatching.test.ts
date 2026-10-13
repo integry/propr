@@ -28,6 +28,9 @@ const prelude = `
     };
     const sources = () => db.status().sources;
     const tick = ms => new Promise(resolve => setTimeout(resolve, ms));
+    /** Waits for an observable outcome instead of guessing retry timing. */
+    const until = async (done, ms = 15_000) => { for (const end = Date.now() + ms; !done() && Date.now() < end;) await tick(25); };
+    const source = name => sources().find(s => s.source === name);
     const identity = source => ({ provider: 'claude', agent: 'batch', source });`;
 function environment(root: string) {
     return { ...process.env, PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a', PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool') };
@@ -87,19 +90,30 @@ test('a full buffer flushes synchronously at the spool batch bound', withRoot(ro
 
 test('transient storage errors retry a timer batch; persistent errors become exact durable gaps', withRoot(root => {
     const result = run(root, `
-        let failures = 1;
-        db.append = (...args) => { appends.n++; if (failures-- > 0) throw new Error('SQLITE_BUSY'); return append(...args); };
+        const busy = () => Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+        let failures = 3;
+        db.append = (...args) => { appends.n++; if (failures-- > 0) throw busy(); return append(...args); };
         const contended = runtime.captureProviderOutput(identity('contended'), []);
         contended.write('INFO survives contention\\n');
-        await tick(runtime.PROVIDER_OUTPUT_FLUSH_MS * 6);
+        await until(() => source('contended').lastSuccessfulCollection);
         contended.close();
         failures = Infinity;
+        db.append = (...args) => { appends.n++; if (failures-- > 0) throw Object.assign(new Error('disk full'), { code: 'SQLITE_FULL' }); return append(...args); };
         const failing = runtime.captureProviderOutput(identity('enospc'), []);
         failing.write('INFO lost-a\\nINFO lost-b\\n');
-        await tick(runtime.PROVIDER_OUTPUT_FLUSH_MS * 10);
+        await until(() => source('enospc').reason === 'storage-unavailable');
         failures = 0;
         failing.write('INFO after-repair\\n');
         failing.close();
+        // Contention past its bound is accounted exactly, too.
+        runtime.providerOutputRetry.contentionMs = 100;
+        failures = Infinity;
+        db.append = (...args) => { appends.n++; if (failures-- > 0) throw busy(); return append(...args); };
+        const starved = runtime.captureProviderOutput(identity('starved'), []);
+        starved.write('INFO starved\\n');
+        await until(() => source('starved').reason === 'storage-unavailable');
+        failures = 0;
+        starved.close();
         const status = Object.fromEntries(sources().filter(s => s.agent === 'batch').map(s => [s.source, { gaps: s.gaps, dropped: s.droppedBytes, reason: s.reason }]));
         console.log(JSON.stringify({ records: exported().map(r => r.message), status }));
     `);
@@ -107,6 +121,82 @@ test('transient storage errors retry a timer batch; persistent errors become exa
     assert.deepEqual(result.status.contended, { gaps: 1, dropped: 0, reason: 'capture-interrupted' }, 'a retried batch is not a gap');
     // Two records of 11 bytes plus their newlines, reported before later records.
     assert.deepEqual(result.status.enospc, { gaps: 2, dropped: 24, reason: 'storage-unavailable' });
+    assert.deepEqual(result.status.starved, { gaps: 2, dropped: 13, reason: 'storage-unavailable' });
+}));
+
+test('a failed close keeps exact loss accounting until the spool records it', withRoot(root => {
+    const result = run(root, `
+        const report = db.report.bind(db);
+        let storage = false;
+        db.append = (...args) => { appends.n++; if (!storage) throw Object.assign(new Error('disk full'), { code: 'SQLITE_FULL' }); return append(...args); };
+        db.report = (...args) => { if (!storage && args[1] === 'storage-unavailable') throw Object.assign(new Error('disk full'), { code: 'SQLITE_FULL' }); return report(...args); };
+        const capture = runtime.captureProviderOutput(identity('closed'), []);
+        capture.write('INFO first\\nINFO tail');
+        capture.close();
+        // Close retries, then owes the exact bytes; the gap report itself keeps
+        // failing, so nothing may be forgotten while storage is unavailable.
+        await tick(runtime.PROVIDER_OUTPUT_FLUSH_MS * 30);
+        const whileFailing = sources().find(s => s.source === 'closed');
+        storage = true;
+        await until(() => source('closed').gaps === 2);
+        const after = sources().find(s => s.source === 'closed');
+        console.log(JSON.stringify({ whileFailing: [whileFailing.gaps, whileFailing.droppedBytes], after: [after.gaps, after.droppedBytes, after.reason], records: exported().length }));
+    `);
+    assert.deepEqual(result.whileFailing, [1, 0], 'only the capture boundary while storage is down');
+    // "INFO first\n" (11) + "INFO tail" with its record terminator (10).
+    assert.deepEqual(result.after, [2, 21, 'storage-unavailable']);
+    assert.equal(result.records, 0);
+}));
+
+test('a contended close is retried and drained on exit; owed loss is reported on exit', withRoot(root => {
+    const result = run(root, `
+        let busy = 2;
+        db.append = (...args) => { appends.n++; if (busy-- > 0) throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }); return append(...args); };
+        const capture = runtime.captureProviderOutput(identity('retried'), []);
+        capture.write('INFO kept\\n');
+        capture.close();
+        const afterClose = exported().length;
+        await until(() => source('retried').lastSuccessfulCollection);
+        console.log(JSON.stringify({ afterClose, records: exported().map(r => r.message), gaps: sources().find(s => s.source === 'retried').gaps }));
+    `);
+    assert.deepEqual(result, { afterClose: 0, records: ['INFO kept'], gaps: 1 });
+    // Storage that only recovers at exit: the exit drain records the exact loss.
+    const exited = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', prelude + `
+        const report = db.report.bind(db);
+        let storage = false;
+        db.append = () => { throw Object.assign(new Error('disk full'), { code: 'SQLITE_FULL' }); };
+        db.report = (...args) => { if (!storage && args[1] === 'storage-unavailable') throw new Error('disk full'); return report(...args); };
+        const capture = runtime.captureProviderOutput(identity('exit-owed'), []);
+        capture.write('INFO lost\\n');
+        capture.close();
+        await tick(runtime.PROVIDER_OUTPUT_FLUSH_MS * 20);
+        storage = true;
+        process.exit(0);
+    `], { cwd: repository, encoding: 'utf8', timeout: 30000, env: environment(root) });
+    assert.equal(exited.status, 0, exited.stderr);
+    const spool = new ManagedLogSpool(path.join(root, 'spool'), 'tenant-a');
+    try {
+        const owed = (spool.status() as { sources: Array<{ source: string; gaps: number; droppedBytes: number; reason: string }> }).sources.find(s => s.source === 'exit-owed')!;
+        assert.deepEqual([owed.gaps, owed.droppedBytes, owed.reason], [2, 10, 'storage-unavailable']);
+    } finally { spool.close(); }
+}));
+
+test('a contended capture start never throws and records its boundary before any record', withRoot(root => {
+    const result = run(root, `
+        const report = db.report.bind(db);
+        let busy = 3;
+        db.report = (...args) => { if (busy-- > 0) throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }); return report(...args); };
+        const capture = runtime.captureProviderOutput(identity('started'), []);
+        const atStart = source('started') ?? null;
+        capture.write('INFO after boundary\\n');
+        await until(() => source('started')?.lastSuccessfulCollection);
+        capture.close();
+        const { gaps, reason } = source('started');
+        console.log(JSON.stringify({ atStart, gaps, reason, records: exported().map(r => r.message) }));
+    `);
+    assert.equal(result.atStart, null);
+    assert.deepEqual([result.gaps, result.reason], [1, 'capture-interrupted']);
+    assert.deepEqual(result.records, ['INFO after boundary']);
 }));
 
 test('buffered records flush on process exit without close', withRoot(root => {
@@ -128,7 +218,13 @@ test('buffered records flush on process exit without close', withRoot(root => {
 
 test('concurrent chatty providers across worker processes avoid self-inflicted storage gaps', withRoot(async root => {
     const worker = (n: number) => new Promise<{ status: number | null; stdout: string; stderr: string }>(resolve => {
-        const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', prelude + `
+        // Like a real worker, the spool is first opened by the captures themselves.
+        const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+            import { ManagedLogSpool } from './packages/core/src/diagnostics/managedLogSpool.ts';
+            import * as runtime from './packages/core/src/diagnostics/managedLogRuntime.ts';
+            const appends = { n: 0 }, append = ManagedLogSpool.prototype.append;
+            ManagedLogSpool.prototype.append = function (...args) { appends.n++; return append.apply(this, args); };
+            const tick = ms => new Promise(resolve => setTimeout(resolve, ms));
             const captures = ['stdout', 'stderr'].map(source => runtime.captureProviderOutput({ provider: 'claude', agent: 'worker-${n}', source }, [], { task: 'task-${n}' }));
             for (let i = 0; i < 3000; i++) { captures[i % 2].write('INFO worker ${n} line ' + i + '\\n'); if (i % 100 === 0) await tick(1); }
             for (const capture of captures) capture.close();
@@ -151,6 +247,41 @@ test('concurrent chatty providers across worker processes avoid self-inflicted s
         const sources = (spool.status() as { sources: Array<{ agent: string; reason: string | null; gaps: number }> }).sources.filter(s => s.agent.startsWith('worker-'));
         assert.equal(sources.length, 8);
         for (const source of sources) assert.deepEqual([source.reason, source.gaps], ['capture-interrupted', 1]);
+        // Contention is absorbed, not converted into loss: every line is durable.
+        let records = 0;
+        for (let item; (item = spool.exportOne());) {
+            records += gunzipSync(item.data).toString().trim().split('\n').length;
+            spool.acknowledge(item.id, item.digest);
+        }
+        assert.equal(records, 4 * 3000);
+    } finally { spool.close(); }
+}));
+
+test('capture start neither blocks on nor fails under another worker\'s write lock', withRoot(root => {
+    new ManagedLogSpool(path.join(root, 'spool'), 'tenant-a').close();
+    const spawned = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+        import { createRequire } from 'node:module';
+        import * as runtime from './packages/core/src/diagnostics/managedLogRuntime.ts';
+        const holder = new (createRequire(import.meta.url)('better-sqlite3'))(process.env.PROPR_DIAGNOSTIC_ROOT + '/spool.sqlite');
+        holder.exec('BEGIN IMMEDIATE');
+        const started = Date.now();
+        const capture = runtime.captureProviderOutput({ provider: 'claude', agent: 'batch', source: 'locked' }, [], { task: 'task-locked' });
+        capture.write('INFO while locked\\n');
+        const startMs = Date.now() - started;
+        await new Promise(resolve => setTimeout(resolve, 1_500));
+        holder.exec('COMMIT'); holder.close();
+        capture.close();
+        console.log(JSON.stringify({ startMs }));
+    `], { cwd: repository, encoding: 'utf8', timeout: 30000, env: environment(root) });
+    assert.equal(spawned.status, 0, spawned.stderr);
+    assert.ok(JSON.parse(spawned.stdout).startMs < 1_500, 'bounded by one lock attempt');
+    const spool = new ManagedLogSpool(path.join(root, 'spool'), 'tenant-a');
+    try {
+        const source = (spool.status() as { sources: Array<{ source: string; gaps: number; reason: string }> }).sources.find(s => s.source === 'locked')!;
+        assert.deepEqual([source.gaps, source.reason], [1, 'capture-interrupted']);
+        const item = spool.exportOne()!;
+        assert.deepEqual(gunzipSync(item.data).toString().trim().split('\n').map(line => JSON.parse(line)),
+            [{ message: 'INFO while locked', attribution: { task: 'task-locked' } }]);
     } finally { spool.close(); }
 }));
 
