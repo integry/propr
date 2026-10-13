@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { closeConnection, shutdownQueue, type AgentConfig, type AnalysisResult } from '@propr/core';
+import { closeConnection, computeContentHash, generateAgentBundleImageTag, getAgentCliVersionMatrix, shutdownQueue, type AgentConfig, type AnalysisResult } from '@propr/core';
 import { agentHealthModel, createAgentHealthCheck } from '../services/agentHealthCheck.js';
 
 const config: AgentConfig = {
@@ -183,8 +183,8 @@ test('absent exact image shares worker preparation and probes only after verifie
   let probes = 0;
   const check = createAgentHealthCheck({
     loadAgents: async () => [config, { ...config, id: 'sibling' }],
-    imageExists: async image => { assert.equal(image, config.dockerImage); return ready; },
-    prepareImage: async image => { assert.equal(image, config.dockerImage); preparations++; await new Promise<void>(resolve => { finish = resolve; }); },
+    imageExists: async image => { assert.equal(image, bundleImage([config])); return ready; },
+    prepareImage: async image => { assert.equal(image, bundleImage([config])); preparations++; await new Promise<void>(resolve => { finish = resolve; }); },
     createAgent: () => ({ analyze: async () => { probes++; return { success: true, response: 'OK' }; } }),
   });
   const results = await Promise.all([check(config.id), check(config.id), check('sibling', true)]);
@@ -225,12 +225,12 @@ test('preparation completion cannot mark edited, disabled or deleted configurati
     const images: string[] = [];
     const check = createAgentHealthCheck({
       loadAgents: async () => configured,
-      imageExists: async image => image === config.dockerImage && prepared,
+      imageExists: async image => image === bundleImage([config]) && prepared,
       prepareImage: async () => {},
       createAgent: agent => ({ analyze: async () => { images.push(agent.dockerImage); return { success: true, response: 'OK' }; } }),
     });
     assert.equal((await check(config.id))?.status, 'preparing');
-    configured = change === 'delete' ? [] : [{ ...config, ...(change === 'disable' ? { enabled: false } : { dockerImage: 'propr/agent:edited' }) }];
+    configured = change === 'delete' ? [] : [{ ...config, ...(change === 'disable' ? { enabled: false } : { cliVersionResolved: '9.9.9' }) }];
     prepared = true;
     assert.equal((await check(config.id))?.status, change === 'edit' ? 'preparing' : change === 'disable' ? 'disabled' : undefined);
     assert.deepEqual(images, []);
@@ -251,4 +251,115 @@ test('all shared probe callers reload configuration before returning readiness',
   finish({ success: true, response: 'OK' });
   assert.equal((await initial)?.status, 'disabled');
   assert.equal((await sibling)?.status, 'disabled');
+});
+
+function bundleImage(agents: AgentConfig[]): string {
+  return generateAgentBundleImageTag(getAgentCliVersionMatrix(agents), computeContentHash());
+}
+
+test('stale persisted image A prepares and automatically probes the current bundle B', async () => {
+  const currentImage = bundleImage([config]);
+  assert.notEqual(currentImage, config.dockerImage);
+  const available = new Set<string>();
+  const prepared: string[] = [];
+  const verified: string[] = [];
+  const probed: string[] = [];
+  let finish!: () => void;
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [config],
+    imageExists: async image => { verified.push(image); return available.has(image); },
+    prepareImage: async image => {
+      prepared.push(image);
+      await new Promise<void>(resolve => { finish = resolve; });
+      available.add(currentImage); // Worker resolves today's bundle, never persisted A.
+    },
+    createAgent: agent => ({ analyze: async () => {
+      probed.push(agent.dockerImage);
+      return { success: true, response: 'OK' };
+    } }),
+  });
+  assert.equal((await check(config.id))?.status, 'preparing');
+  assert.equal((await check(config.id))?.status, 'preparing');
+  assert.deepEqual(prepared, [currentImage]);
+  assert.deepEqual(probed, []);
+  finish();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await check(config.id))?.status, 'ready');
+  assert.deepEqual(probed, [currentImage]);
+  assert.ok(verified.every(image => image === currentImage));
+  assert.equal(config.dockerImage, 'propr/agent:test'); // Resolution never mutates saved config.
+});
+
+test('an existing stale image cannot bypass preparation of the effective bundle', async () => {
+  const currentImage = bundleImage([config]);
+  const prepared: string[] = [];
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [config],
+    imageExists: async image => image === config.dockerImage,
+    prepareImage: async image => { prepared.push(image); },
+    createAgent: () => { throw new Error('Must not probe stale image'); },
+  });
+  assert.equal((await check(config.id))?.status, 'preparing');
+  assert.deepEqual(prepared, [currentImage]);
+});
+
+test('sibling CLI edits invalidate effective targets across inspection, preparation and shared probes', async () => {
+  for (const boundary of ['inspection-ready', 'inspection-missing', 'preparation', 'probe'] as const) {
+    const sibling: AgentConfig = { ...config, id: 'claude', type: 'claude' };
+    let configured = [config, sibling];
+    const oldImage = bundleImage(configured);
+    const edited = [config, { ...sibling, cliVersionType: 'specific' as const, cliVersion: '9.9.9', cliVersionResolved: '9.9.9' }];
+    const newImage = bundleImage(edited);
+    assert.notEqual(newImage, oldImage);
+    const available = new Set(boundary === 'preparation' || boundary === 'inspection-missing' ? [] : [oldImage]);
+    const prepared: string[] = [];
+    const probed: string[] = [];
+    let finish!: () => void;
+    let inspecting = true;
+    const check = createAgentHealthCheck({
+      loadAgents: async () => configured,
+      imageExists: async image => {
+        const exists = available.has(image);
+        if (boundary.startsWith('inspection') && inspecting) {
+          inspecting = false;
+          configured = edited;
+        }
+        return exists;
+      },
+      prepareImage: async image => {
+        prepared.push(image);
+        if (boundary === 'preparation' && image === oldImage) {
+          await new Promise<void>(resolve => { finish = resolve; });
+          available.add(newImage); // Worker saw the edit before executing the request.
+        } else available.add(image);
+      },
+      createAgent: agent => ({ analyze: async () => {
+        probed.push(agent.dockerImage);
+        if (boundary === 'probe' && agent.dockerImage === oldImage) {
+          await new Promise<void>(resolve => { finish = resolve; });
+        }
+        return { success: true, response: 'OK' };
+      } }),
+    });
+    if (boundary === 'probe') {
+      const initial = check(config.id);
+      const shared = check(config.id);
+      await new Promise(resolve => setImmediate(resolve));
+      configured = edited;
+      finish();
+      const results = await Promise.all([initial, shared]);
+      assert.ok(results.every(result => result?.status === 'preparing' || result?.status === 'ready'));
+    } else {
+      assert.equal((await check(config.id))?.status, 'preparing');
+      if (boundary === 'preparation') {
+        configured = edited;
+        finish();
+      }
+    }
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await check(config.id))?.status, 'ready');
+    assert.equal(probed.at(-1), newImage);
+    if (boundary !== 'probe') assert.ok(!probed.includes(oldImage));
+    assert.deepEqual(prepared, boundary === 'preparation' ? [oldImage] : [newImage]);
+  }
 });
