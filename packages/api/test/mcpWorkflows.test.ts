@@ -23,11 +23,26 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
   process.env.DATA_DIR = root;
   process.env.DB_FILENAME = path.join(root, 'propr.sqlite');
   process.env.NODE_ENV = 'test';
-  const core = await import('@propr/core');
+  const redisValues = new Map<string, string>();
+  const queueRedis = {
+    get: async (key: string) => redisValues.get(key) ?? null,
+    set: async (key: string, value: string, ...options: Array<string | number>) => {
+      if (options.includes('NX') && redisValues.has(key)) return null;
+      redisValues.set(key, value);
+      return 'OK';
+    },
+    setex: async (key: string, _ttl: number, value: string) => { redisValues.set(key, value); return 'OK'; },
+  };
   const issueJobs: Array<{ name: string; data: Record<string, unknown> }> = [];
   let queueFailure = false;
   const queueStates = new Map<string, string>();
-  const issueQueue = { getJobs: async () => [], getJob: async (id: string) => queueStates.has(id) ? { getState: async () => queueStates.get(id) } : undefined, add: async (name: string, data: Record<string, unknown>, options?: { jobId?: string }) => { if (queueFailure) throw new Error('Queue connection lost after write'); issueJobs.push({ name, data }); if (options?.jobId) queueStates.set(options.jobId, 'waiting'); return { id: options?.jobId || String(issueJobs.length) }; } };
+  const issueQueue = { client: Promise.resolve(queueRedis), getJobs: async () => [], getJob: async (id: string) => queueStates.has(id) ? { getState: async () => queueStates.get(id) } : undefined, add: async (name: string, data: Record<string, unknown>, options?: { jobId?: string }) => { if (queueFailure) throw new Error('Queue connection lost after write'); issueJobs.push({ name, data }); if (options?.jobId) queueStates.set(options.jobId, 'waiting'); return { id: options?.jobId || String(issueJobs.length) }; } };
+  // The shared dispatcher imports the queue directly, bypassing the core barrel mock.
+  const queueModule = await import('../../core/src/queue/taskQueue.js');
+  const queueBoundary = await mock.module('../../core/src/queue/taskQueue.js', {
+    namedExports: { ...queueModule, issueQueue, getIssueQueue: async () => issueQueue },
+  });
+  const core = await import('@propr/core');
   const cacheReads: string[] = [];
   const cancellationRequests = new Map<string, { requestedBy: string; reason: unknown }>();
   let githubBoundary: unknown;
@@ -114,7 +129,6 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
       scopes: [...scopes], github, grant: { id: 'workflow-grant', ownerId: '123', clientId: 'fixture-client', clientName: 'Fixture', instanceId: config.instanceId, resource: config.resource, scopes: [...scopes], repositories: ['acme/repo'], createdAt: Date.now(), expiresAt: Date.now() + 60000, revoked: false, membershipSource: 'local' } } as McpPrincipal;
     let stopGoalImmediately = true;
     const jobs: Array<Record<string, unknown>> = [];
-    const redisValues = new Map<string, string>();
     const pendingComments = new Map<string, string[]>();
     const liveOutputRedis = withLiveOutputReads({ get: async (key: string) => redisValues.get(key) ?? null });
     const evalRedis = async (script: string, options: number | { keys: string[]; arguments: string[] }, key = '') => {
@@ -238,6 +252,16 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         assert.equal(followup.result.continuation.taskId, nextTask);
         assert.equal(followup.result.continuation.sourceTaskId, taskId);
         assert.notEqual(nextTask, taskId);
+        const postedBody = comments.at(-1)!;
+        const registration = /<!-- propr-api-followup:([a-f0-9-]{36}) -->$/.exec(postedBody);
+        assert.ok(registration, 'API follow-ups register the posted comment');
+        assert.deepEqual(JSON.parse(redisValues.get(`api-followup:${registration[1]}`)!), {
+          owner: 'acme', repo: 'repo', prNumber: issueNumber, body: postedBody,
+        });
+        const followupJob = issueJobs.at(-1)!;
+        assert.equal(followupJob.name, 'processPullRequestComment');
+        assert.equal(followupJob.data.userId, principal.user.id);
+        assert.equal((followupJob.data.comments as UnprocessedComment[])[0].body, 'Please cover transient errors');
         await db('tasks').insert({ task_id: nextTask, repository, issue_number: issueNumber, task_type: 'pr-comment' });
         await db('task_history').insert({ task_id: nextTask, state: 'processing' });
         assert.equal((await call('get_operation', { operationId: followup.operationId })).state, 'running');
@@ -433,7 +457,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
     }
   } finally {
     stubs.forEach(stub => stub.mock.restore());
-    redisBoundary.restore(); boundary.restore();
+    redisBoundary.restore(); boundary.restore(); queueBoundary.restore();
     if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())); }
     await Promise.all(attachmentDirectories.map(directory => rm(directory, { recursive: true, force: true })));
     await core.closeConnection(); await core.closeEventPublisher(); await rm(root, { recursive: true, force: true });
