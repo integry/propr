@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync,
+  appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync,
   statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
 import { createServer as createSocketServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { after, before, describe, test } from 'node:test';
+import { agentBuildContextSources } from '../scripts/lib/agent-build-context.mjs';
 
 // The preview smoke reuses the bounded desktop cleanup helper; its refusal
 // boundary (symlink, replaced root, owner, mode, base and name shape) is covered
@@ -22,6 +23,7 @@ const revision = 'c'.repeat(40);
 const compatibility = '2026-06-27';
 const version = '9.9.9-preview-smoke';
 const label = 'dev.propr.preview-runtime-smoke';
+const bridge = 'scripts/extension-stdio-bridge.mjs';
 const unsupported = process.platform === 'win32';
 // Root bypasses the permission bits used to emulate a container-owned subtree.
 const hostCannotRemovePrivateSubtree = !unsupported && process.getuid?.() !== 0;
@@ -45,9 +47,16 @@ function makeWorkspace() {
   const bin = join(root, 'bin');
   const state = join(root, 'docker-state');
   const tmp = join(root, 'tmp');
-  for (const directory of [bin, state, tmp]) mkdirSync(directory);
+  // The fake app image's /usr/src/app: Dockerfile.agent and every build-context
+  // source it names, copied from this checkout as docker/Dockerfile.app.prod does.
+  const appContext = join(root, 'app-context');
+  for (const directory of [bin, state, tmp, appContext]) mkdirSync(directory);
+  for (const file of ['Dockerfile.agent', ...agentBuildContextSources(readFileSync('Dockerfile.agent', 'utf8'))]) {
+    mkdirSync(dirname(join(appContext, file)), { recursive: true });
+    copyFileSync(file, join(appContext, file));
+  }
   writeFileSync(join(bin, 'docker'), `#!/bin/sh\nexec "${process.execPath}" "${fakeDocker}" "$@"\n`, { mode: 0o755 });
-  return { root, bin, state, tmp };
+  return { root, bin, state, tmp, appContext };
 }
 
 function forceRemove(path) {
@@ -117,17 +126,31 @@ describe('preview runtime smoke cleanup lifecycle', { skip: unsupported }, () =>
       SMOKE_TEST_SCRIPT: smokeScript, PATH: `${workspace.bin}:${process.env.PATH}`,
       RUNNER_TEMP: workspace.tmp, TMPDIR: workspace.tmp, SOURCE_REVISION: revision, EXPECTED_VERSION: version,
       EXPECTED_COMPATIBILITY: compatibility, APP_IMAGE: `propr/app:${revision}`, UI_IMAGE: `propr/ui:${revision}`, FAKE_DOCKER_STATE: workspace.state,
-      FAKE_API_PORT: String(port), DOCKER_HOST: `unix://${socketPath}`, ...env,
+      FAKE_API_PORT: String(port), DOCKER_HOST: `unix://${socketPath}`, FAKE_DOCKER_APP_CONTEXT: workspace.appContext, ...env,
     }).finally(() => new Promise((resolvePromise) => socket.close(resolvePromise)));
     assert.equal(readFileSync(join(otherRun, 'data', 'keep.txt'), 'utf8'), 'other run');
     const state = JSON.parse(readFileSync(join(workspace.state, 'state.json'), 'utf8'));
-    assert.deepEqual(state, unrelated, 'every owned container and network is removed; unrelated ones remain');
+    assert.deepEqual(state, unrelated, 'every owned container, network and check image is removed; unrelated ones remain');
     return result;
   }
 
+  function dockerCalls(workspace) {
+    return readFileSync(join(workspace.state, 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  }
+
   function cleanupCalls(workspace) {
-    return readFileSync(join(workspace.state, 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
-      .filter((call) => call[0] === 'run' && call.includes('--mount'));
+    return dockerCalls(workspace).filter((call) => call[0] === 'run' && call.includes('--mount'));
+  }
+
+  // A smoke that the agent build-context check stops: nonzero, before any
+  // network or service exists, with the check image and owned data removed.
+  function assertStoppedBeforeServices(workspace, result) {
+    assert.notEqual(result.code, 0);
+    assert.doesNotMatch(result.stdout, /Preview runtime smoke passed/);
+    assert.doesNotMatch(result.stderr, /did not remove every owned resource/);
+    assert.equal(dockerCalls(workspace).some((call) => call[0] === 'network' && call[1] === 'create'), false);
+    assert.deepEqual(previewRoots(workspace.tmp), ['propr-preview-runtime-smoke.Other1']);
+    assert.deepEqual(readdirSync(workspace.tmp).filter((name) => name.startsWith('propr-agent-build-context.')), []);
   }
 
   test('returns success only after removing container-owned private data', async (t) => {
@@ -140,6 +163,14 @@ describe('preview runtime smoke cleanup lifecycle', { skip: unsupported }, () =>
     assert.match(result.stdout, /ships all \d+ Dockerfile\.agent build-context files, identical to the checkout/);
     assert.match(result.stdout, /resolves every Dockerfile\.agent build-context COPY/);
     assert.deepEqual(previewRoots(workspace.tmp), ['propr-preview-runtime-smoke.Other1']);
+    // The scratch COPY build runs the app image's own docker CLI against
+    // /usr/src/app with only the engine socket mounted and no network.
+    const builds = dockerCalls(workspace).filter((call) => call[0] === 'run' && call.includes('build'));
+    assert.equal(builds.length, 1);
+    assert.deepEqual(builds[0].filter((_, index) => builds[0][index - 1] === '-v'), [`${workspace.root}/docker.sock:/var/run/docker.sock`]);
+    assert.equal(builds[0][builds[0].indexOf('--network') + 1], 'none');
+    assert.equal(builds[0][builds[0].indexOf('--entrypoint') + 1], 'docker');
+    assert.equal(builds[0].at(-1), '/usr/src/app');
 
     const cleanups = cleanupCalls(workspace);
     assert.equal(cleanups.length, hostCannotRemovePrivateSubtree ? 1 : 0);
@@ -186,13 +217,45 @@ describe('preview runtime smoke cleanup lifecycle', { skip: unsupported }, () =>
     const workspace = makeWorkspace();
     t.after(() => forceRemove(workspace.root));
     apiCompatibility = compatibility;
-    const result = await runSmoke(workspace, { FAKE_DOCKER_AGENT_CONTEXT: 'missing' });
-    assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /is missing Dockerfile\.agent build-context files under \/usr\/src\/app:\n {2}scripts\/extension-stdio-bridge\.mjs/);
-    assert.doesNotMatch(result.stdout, /Preview runtime smoke passed/);
-    const calls = readFileSync(join(workspace.state, 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    assert.equal(calls.some((call) => call[0] === 'network' && call[1] === 'create'), false);
-    assert.deepEqual(previewRoots(workspace.tmp), ['propr-preview-runtime-smoke.Other1']);
+    rmSync(join(workspace.appContext, bridge));
+    const result = await runSmoke(workspace);
+    assert.match(result.stderr, /is missing Dockerfile\.agent build-context files under \/usr\/src\/app:\n {2}scripts\/extension-stdio-bridge\.mjs\n/);
+    assertStoppedBeforeServices(workspace, result);
+  });
+
+  test('fails before starting any service when an agent build-context file differs from the checkout', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    apiCompatibility = compatibility;
+    appendFileSync(join(workspace.appContext, bridge), '// stale build\n');
+    const result = await runSmoke(workspace);
+    assert.match(result.stderr, /Dockerfile\.agent build-context files differ from this checkout/);
+    assert.match(result.stderr, /^\+[0-9a-f]{64} {2}scripts\/extension-stdio-bridge\.mjs$/m);
+    assert.doesNotMatch(result.stdout, /ships all \d+ Dockerfile\.agent build-context files/);
+    assertStoppedBeforeServices(workspace, result);
+  });
+
+  test('fails before starting any service when the app image ships a different Dockerfile.agent', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    apiCompatibility = compatibility;
+    appendFileSync(join(workspace.appContext, 'Dockerfile.agent'), 'COPY scripts/extra.sh /opt/propr/\n');
+    const result = await runSmoke(workspace);
+    assert.match(result.stderr, /ships a Dockerfile\.agent that differs from this checkout/);
+    assertStoppedBeforeServices(workspace, result);
+  });
+
+  test('fails before starting any service when the worker-style build cannot resolve a shipped source', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    apiCompatibility = compatibility;
+    // Present and identical, so only Docker resolving the context catches it.
+    writeFileSync(join(workspace.appContext, '.dockerignore'), `${bridge}\n`);
+    const result = await runSmoke(workspace);
+    assert.match(result.stdout, /ships all \d+ Dockerfile\.agent build-context files, identical to the checkout/);
+    assert.match(result.stderr, /excluded by \.dockerignore: stat scripts\/extension-stdio-bridge\.mjs/);
+    assert.doesNotMatch(result.stdout, /resolves every Dockerfile\.agent build-context COPY/);
+    assertStoppedBeforeServices(workspace, result);
   });
 
   test('fails a passing smoke when generated data cannot be removed', { skip: !hostCannotRemovePrivateSubtree }, async (t) => {

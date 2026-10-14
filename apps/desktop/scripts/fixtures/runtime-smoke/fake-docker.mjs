@@ -3,10 +3,14 @@
 // create a private directory the host user cannot traverse (as root:root 0700
 // would be on a real rootful host); the cleanup container emulates root's DAC
 // override within its single bind mount.  The app image's /usr/src/app is the
-// checkout itself, as for an image built from it.  Every invocation is appended to FAKE_DOCKER_STATE/calls.
+// host directory FAKE_DOCKER_APP_CONTEXT, so the agent build-context check reads,
+// hashes and builds from real files a test can omit, alter or .dockerignore.
+// Every invocation is appended to FAKE_DOCKER_STATE/calls.
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import {
+  appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
 
 const stateDir = process.env.FAKE_DOCKER_STATE;
 const statePath = join(stateDir, 'state.json');
@@ -55,12 +59,58 @@ function privilegedEmpty(directory) {
   }
 }
 
-const repoRoot = resolve(import.meta.dirname, '../../../../..');
 const entrypoint = args.includes('--entrypoint') ? args[args.indexOf('--entrypoint') + 1] : undefined;
 
+// Maps a path inside the app image's /usr/src/app to its host stand-in.
+function appContextPath(path) {
+  const root = process.env.FAKE_DOCKER_APP_CONTEXT;
+  if (!root) fail('FAKE_DOCKER_APP_CONTEXT must name the app image /usr/src/app stand-in');
+  const relative = path.replace(/^\/usr\/src\/app(?:\/|$)/, '');
+  if (relative === path && path.startsWith('/')) fail(`fake app image has no ${path}`);
+  return join(root, relative);
+}
+const isFile = (path) => existsSync(path) && statSync(path).isFile();
+
+// `docker build -f - -t <tag> /usr/src/app` from inside the app image: a
+// FROM-scratch Dockerfile whose local COPY sources must exist in the context
+// and must not be excluded by its .dockerignore, as the real engine enforces.
+function buildFromAppImage() {
+  const buildArgs = args.slice(args.indexOf('build') + 1);
+  const valueOf = (flag) => buildArgs[buildArgs.indexOf(flag) + 1];
+  const socketMount = option('-v').find((volume) => volume.endsWith(':/var/run/docker.sock'));
+  if (!socketMount || !statSync(socketMount.split(':')[0]).isSocket()) fail('Cannot connect to the Docker daemon');
+  if (valueOf('-f') !== '-' || !valueOf('-t') || buildArgs.at(-1) !== '/usr/src/app') {
+    fail(`unsupported fake docker build: ${buildArgs.join(' ')}`);
+  }
+  const context = appContextPath(buildArgs.at(-1));
+  const ignorePath = join(context, '.dockerignore');
+  const ignored = new Set(isFile(ignorePath)
+    ? readFileSync(ignorePath, 'utf8').split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'))
+    : []);
+  const lines = readFileSync(0, 'utf8').trim().split('\n');
+  if (lines[0] !== 'FROM scratch') fail(`fake docker build only models FROM scratch, got: ${lines[0]}`);
+  lines.slice(1).forEach((line, index) => {
+    const words = line.split(/\s+/);
+    if (words[0] !== 'COPY') fail(`fake docker build only models COPY, got: ${line}`);
+    for (const source of words.slice(1, -1)) {
+      if (ignored.has(source) || !isFile(join(context, source))) {
+        fail(`ERROR: failed to solve: failed to compute cache key: "/${source}": not found\n`
+          + `COPY failed (step ${index + 2}): file not found in build context or excluded by .dockerignore: stat ${source}: file does not exist`);
+      }
+    }
+  });
+  state.images = { ...state.images, [valueOf('-t')]: {} };
+  save();
+}
+
 const [command, subcommand] = args;
-if (command === 'image' && (subcommand === 'inspect' || subcommand === 'rm')) process.exit(0);
-if (command === 'network' && subcommand === 'create') {
+if (command === 'image' && subcommand === 'inspect') process.exit(0);
+if (command === 'image' && subcommand === 'rm') {
+  // Built check images are tracked so a test can prove none is left behind.
+  for (const tag of args.slice(2).filter((arg) => !arg.startsWith('-'))) delete state.images?.[tag];
+  if (state.images && Object.keys(state.images).length === 0) delete state.images;
+  save();
+} else if (command === 'network' && subcommand === 'create') {
   state.networks[args.at(-1)] = { labels: parseLabels() };
   save();
 } else if (command === 'network' && subcommand === 'inspect') {
@@ -92,20 +142,24 @@ if (command === 'network' && subcommand === 'create') {
   // unloadable nested sharp tree in the app image.
   if (process.env.FAKE_DOCKER_SHARP === 'fail') fail("Error: Cannot find module 'sharp'");
   process.stdout.write('fake sharp check passed\n');
-} else if (command === 'run' && entrypoint === 'cat' && args.at(-1) === '/usr/src/app/Dockerfile.agent') {
-  // The shared agent build-context check reads the image's Dockerfile.agent.
-  process.stdout.write(readFileSync(join(repoRoot, 'Dockerfile.agent')));
-} else if (command === 'run' && entrypoint === 'sh' && args.includes('/usr/src/app')) {
-  // Its presence probe: FAKE_DOCKER_AGENT_CONTEXT=missing emulates an app
-  // image that omits the extension bridge from the agent build context.
-  if (process.env.FAKE_DOCKER_AGENT_CONTEXT === 'missing') process.stdout.write('scripts/extension-stdio-bridge.mjs\n');
-} else if (command === 'run' && entrypoint === 'sha256sum') {
+} else if (command === 'run' && entrypoint === 'cat') {
+  // The agent build-context check reads the image's own Dockerfile.agent.
+  const path = appContextPath(args.at(-1));
+  if (!isFile(path)) fail(`cat: ${args.at(-1)}: No such file or directory`);
+  process.stdout.write(readFileSync(path));
+} else if (command === 'run' && entrypoint === 'sh' && option('--workdir')[0] === '/usr/src/app') {
+  // Its presence probe: `sh -c '<list missing>' sh <file>...` in /usr/src/app.
+  for (const file of args.slice(args.indexOf('-c') + 3)) {
+    if (!isFile(appContextPath(file))) process.stdout.write(`${file}\n`);
+  }
+} else if (command === 'run' && entrypoint === 'sha256sum' && option('--workdir')[0] === '/usr/src/app') {
   for (const file of args.slice(args.indexOf('--') + 1)) {
-    process.stdout.write(`${createHash('sha256').update(readFileSync(join(repoRoot, file))).digest('hex')}  ${file}\n`);
+    const path = appContextPath(file);
+    if (!isFile(path)) fail(`sha256sum: ${file}: No such file or directory`);
+    process.stdout.write(`${createHash('sha256').update(readFileSync(path)).digest('hex')}  ${file}\n`);
   }
 } else if (command === 'run' && entrypoint === 'docker' && args.includes('build')) {
-  // The worker-style COPY build from /usr/src/app succeeds for a complete context.
-  readFileSync(0);
+  buildFromAppImage();
 } else if (command === 'run') {
   // One-shot `--rm` runs (preview migrations) leave no container behind.
   const name = option('--name')[0];
