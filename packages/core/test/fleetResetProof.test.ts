@@ -8,8 +8,10 @@ import { request } from 'node:http';
 import { canonicalFleetJson as canonical } from '../../shared/src/fleetData.js';
 import { FLEET_RESET_CONTRACT as contract, FLEET_RESET_AUDIENCE as audience, FLEET_RESET_CATEGORIES, FLEET_RESET_SCHEMA, fleetResetSignedReceiptSchema, type FleetResetAssertion } from '../../shared/src/fleetReset.js';
 import { FleetResetProofPlane, resetContractPin as contractPin, resetHash, resetRequestMac, verifyResetReceipt } from '../src/fleet/resetProof.js';
-import { listenFleetData, refusePublicFleetData } from '../../api/fleetDataListener.js';
+import { listenFleetData, refusePublicFleetData, startConfiguredFleetData } from '../../api/fleetDataListener.js';
 import type { FleetDataPlane } from '../src/fleet/dataPlane.js';
+import { InstanceStorageService } from '../src/storage/service.js';
+import { StorageLifecycle } from '../src/storage/lifecycle.js';
 import { verifyReceipt, verifyRequest } from '../../../docs/contracts/fleet-reset-v1/verify.mjs';
 
 async function fixture(t: any) {
@@ -203,4 +205,84 @@ test('absent reset plane refuses the private action even with a valid reset gran
   const response = await http(listener.address()!, f.make());
   assert.equal(response.status, 403); assert.equal(response.cache, 'no-store');
   assert.deepEqual(JSON.parse(response.body), { error: 'fleet_reset_unavailable' });
+});
+
+test('configured startup provisions reset only with valid dedicated authority and credentials', async t => {
+  // Exercise the production provisioning branch, real storage identity, reset
+  // plane and Unix listener. Cases run serially because startup reads process.env.
+  for (const scenario of ['absent', 'valid', 'bad-pin', 'malformed', 'unsafe-mode', 'missing-secret', 'wrong-secret', 'export-secret'] as const) {
+    await t.test(scenario, async t => {
+      const f = await fixture(t);
+      const dataDir = path.join(f.root, 'configured');
+      const dataRoot = path.join(dataDir, 'fleet-data-control');
+      const resetRoot = path.join(dataDir, 'fleet-reset-control');
+      await fs.mkdir(dataRoot, { recursive: true, mode: 0o700 });
+      const exportSecret = 'SEPARATE-EXPORT-TEST-KEY-NOT-RESET-AUTHORITY';
+      await fs.writeFile(path.join(dataRoot, 'authority.json'), JSON.stringify({
+        hostedInstanceId: f.binding.instanceId, placementGeneration: 'placement-1',
+        scope: 'hosted_customer_data', secretSha256: resetHash(exportSecret),
+      }), { mode: 0o600 });
+      if (scenario !== 'absent') {
+        await fs.mkdir(resetRoot, { mode: 0o700 });
+        await fs.writeFile(path.join(resetRoot, 'authority.json'), scenario === 'malformed' ? '{' : JSON.stringify({
+          ...f.authority, ...(scenario === 'bad-pin' ? { contractPin: '0'.repeat(64) } : {}),
+        }), { mode: scenario === 'unsafe-mode' ? 0o644 : 0o600 });
+      }
+      const environment = {
+        DATA_DIR: dataDir,
+        PROPR_FLEET_CONTROL_SECRET: exportSecret,
+        PROPR_FLEET_RESET_SECRET: scenario === 'missing-secret' ? undefined
+          : scenario === 'wrong-secret' ? 'WRONG-RESET-TEST-CREDENTIAL-AT-STARTUP'
+          : scenario === 'export-secret' ? exportSecret : f.secret,
+      };
+      const previous = Object.fromEntries(Object.keys(environment).map(key => [key, process.env[key]]));
+      f.defer(async () => {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      });
+      for (const [key, value] of Object.entries(environment)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      const storage = new InstanceStorageService({
+        lifecycle: new StorageLifecycle(path.join(dataDir, 'storage-control')),
+        clonesRoot: path.join(dataDir, 'clones'), roots: [], hasPendingTasks: async () => false,
+      });
+      const start = () => startConfiguredFleetData(storage, async () => ({ role: 'admin', permissions: ['instance.manage_settings'], source: 'local' }));
+      if (scenario !== 'absent' && scenario !== 'valid') {
+        await assert.rejects(start(), /^Error: Configured Fleet reset authority unavailable$/);
+        assert.equal((await fs.readdir(dataRoot)).some(name => name.endsWith('.sock')), false);
+        assert.deepEqual(await fs.readdir(resetRoot), ['authority.json']);
+        return;
+      }
+      const listener = await start();
+      assert.ok(listener);
+      f.defer(() => listener.shutdown());
+      const now = Math.floor(Date.now() / 1000);
+      const raw = f.make('reset.prove', { issuedAt: now, expiresAt: now + 30 });
+      const response = await http(listener.address()!, raw);
+      assert.equal(response.cache, 'no-store');
+      if (scenario === 'absent') {
+        assert.equal(response.status, 403);
+        assert.deepEqual(JSON.parse(response.body), { error: 'fleet_reset_unavailable' });
+        await assert.rejects(fs.lstat(resetRoot), { code: 'ENOENT' });
+      } else {
+        assert.equal(response.status, 200);
+        const receipt = verifyResetReceipt(JSON.parse(response.body), raw, f.secret);
+        assert.deepEqual(receipt.binding, f.binding);
+        assert.equal(receipt.proofRequestId, JSON.parse(raw).assertion.requestId);
+        assert.equal(receipt.evidence.bootstrapAllowed, false);
+        assert.ok((await fs.readdir(resetRoot)).includes(`proof-${f.binding.resetOperationId}.json`));
+        const denied = await http(listener.address()!, f.make('reset.receipt', { issuedAt: now, expiresAt: now + 30 }, exportSecret));
+        assert.equal(denied.status, 403);
+        assert.equal(denied.cache, 'no-store');
+      }
+      assert.ok(!response.body.includes(f.secret));
+      assert.ok(!response.body.includes(exportSecret));
+      await listener.shutdown();
+      assert.equal((await fs.readdir(dataRoot)).some(name => name.endsWith('.sock')), false);
+    });
+  }
 });
