@@ -119,6 +119,7 @@ export class NativeResetRuntime {
       const identity = tree === null ? null : await fs.lstat(root).then(s => ({ dev: s.dev, ino: s.ino }));
       await this.effect(`erase-${category}`, { identity, tree }, async () => {
         if (tree === null) return;
+        const entriesByName = new Map(tree.map(entry => [entry.name, entry]));
         await this.tenant.check();
         const current = await fs.lstat(root);
         if (current.dev !== identity!.dev || current.ino !== identity!.ino || !same(await inventory(root, this.options.tenantRoot), tree)) resetUnavailable();
@@ -139,7 +140,7 @@ export class NativeResetRuntime {
               for (const part of parts) {
                 relative = relative ? path.join(relative, part) : part;
                 const next = await fs.open(`/proc/self/fd/${parent.fd}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-                parents.push(next); const stat = await next.stat(); const expected = tree.find(e => e.name === relative);
+                parents.push(next); const stat = await next.stat(); const expected = entriesByName.get(relative);
                 if (!expected || stat.dev !== expected.dev || stat.ino !== expected.ino || await mountId(next) !== tenantMount) resetUnavailable();
                 parent = next;
               }

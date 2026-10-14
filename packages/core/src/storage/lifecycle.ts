@@ -107,7 +107,12 @@ export class StorageLifecycle {
 
   /** A read claim covers the entire operation, including child Git and filesystem work. */
   async use<T>(run: () => Promise<T>, admission?: { filesystem: string; reserveBytes: number; taskBytes: number }): Promise<T> {
-    assertConfiguredResetGeneration();
+    // Every invocation owns a lease, including detached nested work. Cover
+    // admission and claim cleanup too: both mutate predecessor filesystem state.
+    return withResetGeneration('storage-work', () => this.useClaim(run, admission));
+  }
+
+  private async useClaim<T>(run: () => Promise<T>, admission?: { filesystem: string; reserveBytes: number; taskBytes: number }): Promise<T> {
     const existing = this.context.getStore();
     if (existing?.active) {
       existing.users++;
@@ -130,8 +135,11 @@ export class StorageLifecycle {
     } catch (error) { await fs.unlink(claim); throw error; }
     const scope = { active: true, users: 1, claim };
     return this.context.run(scope, async () => {
-      try { return await withResetGeneration('storage-work', run); }
-      finally { await this.release(scope); }
+      try {
+        // Admission can wait on the storage gate while reset seals the generation.
+        assertConfiguredResetGeneration();
+        return await run();
+      } finally { await this.release(scope); }
     });
   }
 

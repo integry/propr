@@ -794,3 +794,128 @@ test('unavailable mount identity fails closed before deletion', async t => {
   assert.equal(f.fence.effect('erase-database'), undefined);
   assert.deepEqual(await treeSnapshot(f.tenantRoot), before);
 });
+
+test('configured storage leases cover admission, detached descendants and final claim cleanup before native erasure', { timeout: 15_000 }, async t => {
+  const { StorageLifecycle } = await import('../src/storage/lifecycle.js');
+  const { configuredResetFence } = await import('../src/fleet/resetFence.js');
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.controlRoot, 'process-identity.json'), canonicalFleetJson(f.binding.predecessor), { mode: 0o600 });
+  const previous = process.env.PROPR_FLEET_RESET_RUNTIME_ROOT;
+  process.env.PROPR_FLEET_RESET_RUNTIME_ROOT = f.controlRoot;
+  const managed = configuredResetFence()!;
+  t.after(() => {
+    managed.fence.close();
+    if (previous === undefined) delete process.env.PROPR_FLEET_RESET_RUNTIME_ROOT;
+    else process.env.PROPR_FLEET_RESET_RUNTIME_ROOT = previous;
+  });
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => { resolve = done; });
+    return { promise, resolve };
+  };
+  const lifecycle = new StorageLifecycle(path.join(f.tenantRoot, 'repositories_worktrees_caches', 'lifecycle'));
+  const admission = deferred();
+  const initialize = lifecycle.initialize.bind(lifecycle);
+  const initializing = t.mock.method(lifecycle, 'initialize', async () => {
+    assert.equal(f.fence.idle(), false, 'admission filesystem work owns a lease');
+    await admission.promise;
+    await initialize();
+  });
+  const admitted = lifecycle.use(async () => {});
+  assert.equal(f.fence.idle(), false);
+  admission.resolve(); await admitted; initializing.mock.restore();
+  assert.equal(f.fence.idle(), true);
+  await assert.rejects(lifecycle.use(async () => { throw new Error('callback failed'); }), /callback failed/);
+  assert.equal(f.fence.idle(), true);
+  assert.equal(await lifecycle.busy(), false);
+
+  const write = deferred(); const fail = deferred();
+  let child!: Promise<unknown>; let grandchild!: Promise<unknown>;
+  const outcome = (promise: Promise<void>) => promise.then(() => undefined, error => error);
+  await lifecycle.use(async () => {
+    child = outcome(lifecycle.use(async () => {
+      grandchild = outcome(lifecycle.use(async () => {
+        await write.promise;
+        await assert.rejects(lifecycle.use(async () => assert.fail('late admission executed')), /fleet_reset_unavailable/);
+        await fs.writeFile(path.join(f.tenantRoot, 'repositories_worktrees_caches', 'late-write'), 'predecessor');
+      }));
+      await fail.promise;
+      throw new Error('nested failed');
+    }));
+  });
+  assert.equal(await lifecycle.busy(), true);
+  assert.equal(f.fence.idle(), false, 'returning parent must not release descendant leases');
+  const reset = f.native.execute(f.binding);
+  // Observe reset reaching the production queue drain, with storage still held.
+  while (!f.calls.includes('revoke:queue')) await new Promise(resolve => setTimeout(resolve, 1));
+  assert.equal(f.fence.effect('erase-database'), undefined);
+  assert.equal(f.fence.idle(), false);
+  fail.resolve(); assert.match(String(await child), /nested failed/);
+  assert.equal(f.fence.idle(), false, 'failed child must not release grandchild lease');
+
+  const cleanup = deferred(); const gateEntered = deferred();
+  const gate = lifecycle.exclusive(async () => { gateEntered.resolve(); await cleanup.promise; });
+  await gateEntered.promise;
+  const cleanupStarted = deferred();
+  const exclusive = lifecycle.exclusive.bind(lifecycle);
+  t.mock.method(lifecycle, 'exclusive', (...args: Parameters<typeof lifecycle.exclusive>) => {
+    cleanupStarted.resolve();
+    return exclusive(...args);
+  });
+  write.resolve();
+  // The final release decrements users before waiting for the real filesystem gate.
+  await cleanupStarted.promise;
+  assert.equal(await lifecycle.busy(), true);
+  assert.equal(f.fence.idle(), false, 'claim cleanup must retain its reset lease across awaits');
+  assert.equal(f.fence.effect('erase-database'), undefined);
+  cleanup.resolve(); await gate;
+  assert.match(String(await grandchild), /fleet_reset_unavailable/);
+  assert.equal((await reset).state, 'complete');
+  assert.equal(f.fence.idle(), true);
+  await assert.rejects(fs.stat(lifecycle.root), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(path.join(f.tenantRoot, 'repositories_worktrees_caches', 'late-write')), { code: 'ENOENT' });
+});
+
+test('indexed deletion inventory handles repeated ancestor basenames in separate branches', async t => {
+  const f = await fixture(t);
+  for (const branch of ['left', 'right']) {
+    const directory = path.join(f.tenantRoot, 'repositories_worktrees_caches', branch, 'shared', 'nested');
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, 'private'), branch);
+  }
+  assert.equal((await f.native.execute(f.binding)).state, 'complete');
+  await assert.rejects(fs.stat(path.join(f.tenantRoot, 'repositories_worktrees_caches')), { code: 'ENOENT' });
+});
+
+test('storage admission waiting on a gate retains its lease and refuses its callback after sealing', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.controlRoot, 'process-identity.json'), canonicalFleetJson(f.binding.predecessor), { mode: 0o600 });
+  // Isolate the process-global configured fence from other fixture identities.
+  const script = `
+    import assert from 'node:assert/strict';
+    import { StorageLifecycle } from './packages/core/src/storage/lifecycle.ts';
+    import { configuredResetFence } from './packages/core/src/fleet/resetFence.ts';
+    const { fence } = configuredResetFence();
+    const lifecycle = new StorageLifecycle(process.env.TEST_STORAGE_ROOT);
+    let work;
+    await lifecycle.exclusive(async () => {
+      let entered;
+      const waiting = new Promise(resolve => { entered = resolve; });
+      const exclusive = lifecycle.exclusive.bind(lifecycle);
+      lifecycle.exclusive = (...args) => { entered(); return exclusive(...args); };
+      work = assert.rejects(lifecycle.use(async () => assert.fail('sealed callback executed')), /fleet_reset_unavailable/);
+      await waiting;
+      assert.equal(await lifecycle.busy(), true);
+      fence.seal(JSON.parse(process.env.TEST_RESET_BINDING));
+      assert.equal(fence.idle(), false);
+    });
+    await work;
+    assert.equal(await lifecycle.busy(), false);
+    assert.equal(fence.idle(), true);
+    fence.close();
+  `;
+  await promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+    timeout: 15_000, env: { ...process.env, PROPR_FLEET_RESET_RUNTIME_ROOT: f.controlRoot,
+      TEST_STORAGE_ROOT: path.join(f.tenantRoot, 'repositories_worktrees_caches', 'lifecycle'), TEST_RESET_BINDING: JSON.stringify(f.binding) },
+  });
+});
