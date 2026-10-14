@@ -98,6 +98,8 @@ export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetE
   await removeStaleSockets(plane);
   const active = new Set<Promise<void>>();
   let stopping = false;
+  const isSupportedPath = (url: string | undefined) =>
+    url === '/v1/invoke' || Boolean(extensions && url === '/extensions/v1/invoke') || Boolean(reset && url === FLEET_RESET_PATH);
   const server = createServer((req, res) => {
     if (stopping) { res.destroy(); return; }
     const work = handle(req, res);
@@ -108,7 +110,7 @@ export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetE
     res.setHeader('Cache-Control', 'no-store');
     let timer: NodeJS.Timeout | undefined;
     try {
-      if (req.method !== 'POST' || (req.url !== '/v1/invoke' && !(extensions && req.url === '/extensions/v1/invoke') && !(reset && req.url === FLEET_RESET_PATH)) || req.headers['content-type'] !== 'application/json' || req.headers['content-encoding']) throw new Error();
+      if (req.method !== 'POST' || !isSupportedPath(req.url) || req.headers['content-type'] !== 'application/json' || req.headers['content-encoding']) throw new Error();
       const parts: Buffer[] = []; let length = 0;
       timer = setTimeout(() => req.destroy(), 5000);
       for await (const part of req) {
@@ -230,12 +232,11 @@ export async function startConfiguredFleetData(storage: InstanceStorageService, 
   // Reset uses separately provisioned authority and a dedicated secret. It is
   // absent by default; the export/extension secret cannot authorize reset.
   const resetRoot = path.join(path.dirname(root), 'fleet-reset-control');
-  let reset: FleetResetProofPlane | undefined;
   try { await fs.lstat(path.join(resetRoot, 'authority.json')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     return listenFleetData(plane, store ? new FleetExtensionPlane(plane, store) : undefined);
   }
-  reset = new FleetResetProofPlane(resetRoot);
+  const reset = new FleetResetProofPlane(resetRoot);
   try { await reset.initialize(); }
   catch { throw new Error('Configured Fleet reset authority unavailable'); }
   return listenFleetData(plane, store ? new FleetExtensionPlane(plane, store) : undefined, reset);
