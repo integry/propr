@@ -167,8 +167,8 @@ export class NativeResetRuntime {
     const first = await this.observe();
     await this.checkpoint('second-proof');
     const second = await this.observe();
-    if (!same(first, second)) resetUnavailable();
-    this.fence.complete('operation', { observation: hash(second) });
+    if (first.active || second.active || !same(first, second)) resetUnavailable();
+    this.fence.complete('operation', { observation: hash({ external: second.external, successor: second.successor, tree: second.tree }) });
     return this.terminal(second);
   }
   private successorRoot() { return path.join(this.options.tenantRoot, 'successor'); }
@@ -186,21 +186,28 @@ export class NativeResetRuntime {
     finally { db.close(); }
     await fs.chmod(path.join(root, 'propr.sqlite'), 0o600); await syncDirectory(root);
   }
-  private async observeSuccessor() {
+  private successorActive() {
+    const control = new ResetGenerationFence(path.join(this.options.controlRoot, 'successor-control'), 'readonly');
+    try { return control.successorActive(this.options.binding); }
+    finally { control.close(); }
+  }
+  private async observeSuccessor(active = false, sampling = false) {
     const root = this.successorRoot();
-    if (!same((await fs.readdir(root)).sort(), ['config.json', 'identity.json', 'propr.sqlite'])) resetUnavailable();
+    let empty = active || same((await fs.readdir(root)).sort(), ['config.json', 'identity.json', 'propr.sqlite']);
     const files = new FleetFiles(root); await files.initialize();
-    if (!same(JSON.parse(await files.read('identity.json')), this.options.binding.successor) || !same(JSON.parse(await files.read('config.json')), {})) resetUnavailable();
-    // Boot a real, independent SQLite connection. It contains no customer rows,
-    // credentials, pending work, migration replay or on-boot tasks.
+    if (!same(JSON.parse(await files.read('identity.json')), this.options.binding.successor)) resetUnavailable();
+    if (!active && empty) empty = same(JSON.parse(await files.read('config.json')), {});
+    // Before activation, prove the staged database has no application tables.
+    // Afterwards, continue checking its exact identity through a fresh connection.
     const stat = await fs.lstat(path.join(root, 'propr.sqlite'));
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) resetUnavailable();
     const db = openResetDatabase(path.join(root, 'propr.sqlite'), 'readonly');
     try {
-      if (!same(db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all(), [{ name: 'reset_identity' }]) ||
-        !same(db.prepare('SELECT identity FROM reset_identity').all(), [{ identity: canonicalFleetJson(this.options.binding.successor) }])) resetUnavailable();
+      if (!active) empty &&= same(db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all(), [{ name: 'reset_identity' }]);
+      if (!same(db.prepare('SELECT identity FROM reset_identity').all(), [{ identity: canonicalFleetJson(this.options.binding.successor) }])) resetUnavailable();
     } finally { db.close(); }
     // Test the actual authority and work admissions, not receipt booleans.
+    const controlStat = await fs.lstat(path.join(this.options.controlRoot, 'successor-control', 'generation.sqlite'));
     const booted = new ResetGenerationFence(path.join(this.options.controlRoot, 'successor-control'), 'readonly');
     let refused = false;
     try {
@@ -209,20 +216,44 @@ export class NativeResetRuntime {
     }
     finally { booted.close(); }
     if (!refused || !this.fence.revoked(this.options.binding)) resetUnavailable();
-    return { identity: this.options.binding.successor, controlIdentity: this.options.binding.successor, empty: true, predecessorRefused: true, dev: stat.dev, ino: stat.ino };
+    if (!empty && !sampling) resetUnavailable();
+    // Active samples retain the staged proof projection, not a claim that the
+    // running application still has empty data. Its original digest is retained.
+    return { identity: this.options.binding.successor, controlIdentity: this.options.binding.successor, empty, predecessorRefused: true, controlDev: controlStat.dev, controlIno: controlStat.ino, dev: stat.dev, ino: stat.ino };
   }
-  private async observe() {
+  private async observePredecessor() {
     await this.files.check(); await this.checkRoot(true);
     const binding = this.options.binding;
     if (!this.fence.sealed(binding) || !this.fence.idle() || !await this.options.resources.observeClosed()) resetUnavailable();
     for (const category of FLEET_RESET_CATEGORIES) if (!await absent(path.join(this.options.tenantRoot, category))) resetUnavailable();
+  }
+  private async observe() {
+    await this.observePredecessor();
+    const binding = this.options.binding;
     const external = [];
     for (const adapter of this.options.adapters) external.push(checkedObservation(await adapter.observe(binding), binding));
-    return { external, successor: await this.observeSuccessor(), tree: await inventory(this.options.tenantRoot) };
+    await this.observePredecessor();
+    // Activation can occur while an external service or filesystem read yields.
+    // Only resample the successor portion; predecessor/external failures above
+    // are never caught or relaxed. Activation is monotonic for this sample.
+    let active = this.successorActive();
+    for (;;) {
+      const successor = await this.observeSuccessor(active, true);
+      const refreshed = this.successorActive();
+      if (active && !refreshed) resetUnavailable();
+      if (!active && refreshed) { active = true; continue; }
+      if (!successor.empty) resetUnavailable();
+      // Active application contents are mutable, including transient WAL files.
+      // The predecessor locations and exact database/control identity remain
+      // checked; only the staged successor's inventory is immutable evidence.
+      const tree = active ? [] : await inventory(this.options.tenantRoot);
+      if (!active && this.successorActive()) { active = true; continue; }
+      return { external, successor, tree, active };
+    }
   }
-  private terminal(observation: unknown): FleetResetEvidence {
-    return { state: 'complete', categories: Object.fromEntries(FLEET_RESET_CATEGORIES.map(k => [k, 'erased'])) as any,
-      predecessorFenced: true, successorIsolated: true, bootstrapAllowed: true, reason: 'stable_native_proof', observationDigest: hash(observation) };
+  private terminal(observation: { external: unknown; successor: unknown; tree: unknown }): Extract<FleetResetEvidence, { state: 'complete' }> {
+    return { state: 'complete', categories: Object.fromEntries(FLEET_RESET_CATEGORIES.map(k => [k, 'erased'])) as Extract<FleetResetEvidence, { state: 'complete' }>['categories'],
+      predecessorFenced: true, successorIsolated: true, bootstrapAllowed: true, reason: 'stable_native_proof', observationDigest: hash({ external: observation.external, successor: observation.successor, tree: observation.tree }) };
   }
   /** Read-only reconciliation. All intents must already be complete; unknown or
    * partial effects stay fenced. Never retries external or destructive calls. */
@@ -233,10 +264,25 @@ export class NativeResetRuntime {
       const effect = this.fence.effect(name); if (!effect) resetUnavailable();
       if (!same(JSON.parse(effect!.intent).binding, binding)) resetUnavailable();
     }
-    const first = await this.observe(); const second = await this.observe();
+    let first = await this.observe(); let second = await this.observe();
+    if (!first.active && second.active) { first = second; second = await this.observe(); }
     if (!same(first, second)) resetUnavailable();
     const operation = this.fence.effect('operation');
-    if (!operation || (operation.result && operation.result !== canonicalFleetJson({ observation: hash(second) }))) resetUnavailable();
+    if (!operation || !same(JSON.parse(operation.intent).binding, binding)) resetUnavailable();
+    if (second.active) {
+      // The immutable erasure proof predates legitimate successor writes.
+      // Activation cannot manufacture missing proof or release other obligations.
+      const digest = operation!.result && JSON.parse(operation!.result).observation;
+      if (typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)) resetUnavailable();
+      for (const name of required) {
+        const result = this.fence.effect(name)!.result;
+        const adapterIndex = this.options.adapters.findIndex(a => name === `stop-${a.name}`);
+        const expected = adapterIndex >= 0 ? second.external[adapterIndex] : name === 'successor' ? second.successor : true;
+        if (!result || result !== canonicalFleetJson(expected)) resetUnavailable();
+      }
+      return { ...this.terminal(second), observationDigest: digest };
+    }
+    if (operation!.result && operation!.result !== canonicalFleetJson({ observation: hash({ external: second.external, successor: second.successor, tree: second.tree }) })) resetUnavailable();
     // Lost acknowledgements can be reconciled only from current terminal
     // observations. Partial effects are never retried, even after process death.
     for (const name of required) {
@@ -244,7 +290,7 @@ export class NativeResetRuntime {
       const adapterIndex = this.options.adapters.findIndex(a => name === `stop-${a.name}`);
       this.fence.complete(name, adapterIndex >= 0 ? second.external[adapterIndex] : name === 'successor' ? second.successor : true);
     }
-    this.fence.complete('operation', { observation: hash(second) });
+    this.fence.complete('operation', { observation: hash({ external: second.external, successor: second.successor, tree: second.tree }) });
     return this.terminal(second);
   }
   /** Only the successor's new identity can receive a bootstrap authority, after

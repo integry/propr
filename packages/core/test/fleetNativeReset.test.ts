@@ -21,7 +21,7 @@ import { verifyReceipt } from '../../../docs/contracts/fleet-reset-v1/verify.mjs
 
 async function fixture(t: any, checkpoint?: (phase: string) => Promise<void>, localWorkers = true) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-reset-'));
-  const tenantRoot = path.join(root, 'tenant'); const controlRoot = path.join(root, 'control');
+  const tenantRoot = path.join(root, 'tenant'); const controlRoot = path.join(root, 'fleet-reset-control');
   await fs.mkdir(tenantRoot, { mode: 0o700 }); await fs.mkdir(controlRoot, { mode: 0o700 });
   const binding: FleetResetBinding = { resetOperationId: randomUUID(), resetRequestDigest: 'a'.repeat(64), resetAction: 'instance.reset', instanceId: 'disposable',
     runtimeBuildDigest: 'b'.repeat(64), predecessor: { generation: 2, stateScope: 'initial', storageId: randomUUID(), runtimeId: randomUUID() },
@@ -696,7 +696,8 @@ for (const kind of ['tmpfs', 'bind-root', 'bind-directory', 'bind-file']) {
 
 test('staged successor boots the actual API, migrates and loads empty application configuration in a fresh process', async t => {
   const f = await fixture(t);
-  assert.equal((await f.native.execute(f.binding)).state, 'complete');
+  const completed = (await f.invoke(f.make())).body.receipt.evidence;
+  assert.equal(completed.state, 'complete');
   await f.native.bootstrapSuccessor(f.binding);
   const successor = path.join(f.tenantRoot, 'successor');
   const control = path.join(f.controlRoot, 'successor-control');
@@ -757,6 +758,34 @@ test('staged successor boots the actual API, migrates and loads empty applicatio
       TEST_SUCCESSOR_CONFIG: path.join(successor, 'config.json'), TEST_SUCCESSOR_IDENTITY: canonicalFleetJson(f.binding.successor) },
   }).catch(error => { throw new Error(`${error.message}\n${error.stdout}\n${error.stderr}`); });
   assert.match(result.stdout, /SUCCESSOR_APPLICATION_BOOT_VERIFIED/);
+  await fs.writeFile(path.join(successor, 'config.json'), JSON.stringify({ configured: true }));
+  await fs.writeFile(path.join(successor, 'application-data'), 'legitimate successor writes');
+  const receipt = (await f.invoke(f.make('reset.receipt'))).body.receipt;
+  assert.equal(receipt.evidence.state, 'complete');
+  assert.equal(receipt.evidence.observationDigest, completed.observationDigest);
+  const restarted = new NativeResetRuntime(f.options); await restarted.initialize();
+  try { assert.deepEqual(await restarted.reconcile(f.binding), completed); }
+  finally { restarted.close(); }
+  await f.stopListener();
+  await provisionConfigured(t, f);
+  t.mock.method(globalThis, 'fetch', async (url: URL) => {
+    const parts = url.pathname.split('/'); assert.equal(parts.pop(), 'observe');
+    const name = parts.pop()!;
+    const row = f.remote.prepare('SELECT * FROM service WHERE name=?').get(name);
+    return new Response(JSON.stringify({ binding: JSON.parse(row.binding), revision: `${name}:${row.revision}`,
+      refused: true, remaining: row.remaining, connections: row.connections }));
+  });
+  const recovery = await startFleetResetRecovery();
+  try {
+    const raw = f.make('reset.receipt');
+    const response = await new Promise<any>((resolve, reject) => {
+      const req = request({ socketPath: recovery.address()!, path: '/reset/v1/invoke', method: 'POST', headers: { 'content-type': 'application/json' } }, res => {
+        let bytes = ''; res.on('data', chunk => { bytes += chunk; });
+        res.on('end', () => resolve(JSON.parse(bytes)));
+      }); req.on('error', reject); req.end(raw);
+    });
+    assert.deepEqual(verifyResetReceipt(response, raw, f.secret).evidence, completed);
+  } finally { await recovery.shutdown(); }
 });
 
 for (const kind of ['root', 'parent', 'file']) {
@@ -918,4 +947,266 @@ test('storage admission waiting on a gate retains its lease and refuses its call
     timeout: 15_000, env: { ...process.env, PROPR_FLEET_RESET_RUNTIME_ROOT: f.controlRoot,
       TEST_STORAGE_ROOT: path.join(f.tenantRoot, 'repositories_worktrees_caches', 'lifecycle'), TEST_RESET_BINDING: JSON.stringify(f.binding) },
   });
+});
+
+for (const scenario of ['intent-only', 'lost-response', 'awaited-activation', 'second-observation-activation', 'second-observation-activation-with-predecessor', 'awaited-activation-invalid-external']) {
+  test(`terminal receipts use durable activation: ${scenario}`, async t => {
+    const f = await fixture(t);
+    const completed = (await f.invoke(f.make())).body.receipt.evidence;
+    const activate = async () => {
+      f.fence.intent('bootstrap', { binding: f.binding });
+      if (scenario !== 'intent-only') {
+        const control = new ResetGenerationFence(path.join(f.controlRoot, 'successor-control'), 'existing');
+        try { control.activateSuccessor(f.binding); } finally { control.close(); }
+      }
+      const db = openResetDatabase(path.join(f.tenantRoot, 'successor', 'propr.sqlite'), 'existing');
+      try { db.exec('CREATE TABLE customer(value TEXT); INSERT INTO customer VALUES (\'new\');'); } finally { db.close(); }
+    };
+    if (scenario.includes('activation')) {
+      const adapter = f.options.adapters[0]; const observe = adapter.observe.bind(adapter);
+      let remaining = scenario.startsWith('second-observation') ? 2 : 1;
+      adapter.observe = async binding => {
+        const result = await observe(binding);
+        if (--remaining === 0) {
+          await activate();
+          if (scenario.endsWith('with-predecessor')) await fs.mkdir(path.join(f.tenantRoot, 'database'));
+        }
+        return scenario === 'awaited-activation-invalid-external' ? undefined : result;
+      };
+    } else await activate();
+    if (scenario === 'lost-response') await f.native.reconcile(f.binding);
+    const receipt = (await f.invoke(f.make('reset.receipt'))).body.receipt;
+    assert.equal(receipt.evidence.state, ['intent-only', 'awaited-activation-invalid-external', 'second-observation-activation-with-predecessor'].includes(scenario) ? 'recovery_required' : 'complete');
+    if (!['intent-only', 'awaited-activation-invalid-external', 'second-observation-activation-with-predecessor'].includes(scenario)) assert.equal(receipt.evidence.observationDigest, completed.observationDigest);
+    await assert.rejects(f.native.bootstrapSuccessor(f.binding));
+  });
+}
+
+for (const tamper of ['identity-file', 'database-identity', 'database-replaced', 'control-identity', 'control-fence', 'control-replaced', 'control-missing', 'predecessor-identity', 'predecessor-data', 'external', 'incomplete-effect', 'incomplete-operation']) {
+  test(`activated successor receipt fails closed on ${tamper}`, async t => {
+    const f = await fixture(t);
+    assert.equal((await f.invoke(f.make())).body.receipt.evidence.state, 'complete'); await f.native.bootstrapSuccessor(f.binding);
+    const successor = path.join(f.tenantRoot, 'successor');
+    const control = path.join(f.controlRoot, 'successor-control', 'generation.sqlite');
+    const mutate = (file: string, sql: string) => { const db = openResetDatabase(file, 'existing'); try { db.exec(sql); } finally { db.close(); } };
+    const replace = async (file: string) => { await fs.copyFile(file, file + '.replacement'); await fs.rename(file + '.replacement', file); };
+    switch (tamper) {
+      case 'identity-file': await fs.writeFile(path.join(successor, 'identity.json'), '{}'); break;
+      case 'database-identity': mutate(path.join(successor, 'propr.sqlite'), 'DELETE FROM reset_identity'); break;
+      case 'database-replaced': await replace(path.join(successor, 'propr.sqlite')); break;
+      case 'control-identity': mutate(control, "UPDATE identity SET identity='{}'"); break;
+      case 'control-fence': mutate(control, "UPDATE identity SET fence='{}'"); break;
+      case 'control-replaced': await replace(control); break;
+      case 'control-missing': await fs.unlink(control); break;
+      case 'predecessor-identity': mutate(path.join(f.controlRoot, 'generation.sqlite'), "UPDATE identity SET identity='{}'"); break;
+      case 'predecessor-data': await fs.mkdir(path.join(f.tenantRoot, 'database')); break;
+      case 'external': f.drift(); break;
+      case 'incomplete-effect': mutate(path.join(f.controlRoot, 'generation.sqlite'), "UPDATE effects SET result=NULL WHERE name='erase-database'"); break;
+      case 'incomplete-operation': mutate(path.join(f.controlRoot, 'generation.sqlite'), "UPDATE effects SET result=NULL WHERE name='operation'"); break;
+    }
+    assert.equal((await f.invoke(f.make('reset.receipt'))).body.receipt.evidence.state, 'recovery_required');
+  });
+}
+
+for (const preapplied of [false, true]) {
+  test(`assembled non-demo API reset drains startup leases and resources (launcher migrations: ${preapplied})`, async t => {
+    const f = await fixture(t);
+    await f.stopListener();
+    await f.options.resources.close();
+    await fs.writeFile(path.join(f.controlRoot, 'process-identity.json'), canonicalFleetJson(f.binding.predecessor), { mode: 0o600 });
+    await fs.writeFile(path.join(f.controlRoot, 'native.json'), JSON.stringify({ binding: f.binding, tenantRoot: f.tenantRoot,
+      services: { queue: 'https://queue.invalid', sessions: 'https://sessions.invalid', tunnel_bootstrap: 'https://tunnel.invalid' } }), { mode: 0o600 });
+    const dataControl = path.join(f.root, 'fleet-data-control');
+    await fs.mkdir(dataControl, { mode: 0o700 });
+    await fs.writeFile(path.join(dataControl, 'authority.json'), JSON.stringify({ hostedInstanceId: 'disposable', placementGeneration: 'test', scope: 'hosted_customer_data', secretSha256: resetHash(f.secret) }), { mode: 0o600 });
+    const script = `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs/promises';
+      import { mock } from 'node:test';
+      import { EventEmitter } from 'node:events';
+      import { request } from 'node:http';
+      const calls = [];
+      class Redis extends EventEmitter {
+        isOpen = false; status = 'ready';
+        constructor() { super(); }
+        async connect() { this.isOpen = true; }
+        duplicate() { return new Redis(); }
+        async quit() { calls.push('redis:quit'); this.isOpen = false; }
+        destroy() { calls.push('browser:closed'); this.isOpen = false; }
+        disconnect() { this.isOpen = false; }
+        async subscribe() {} async unsubscribe() {} async psubscribe() {} async punsubscribe() {}
+        async get() { return null; } async set() { return 'OK'; }
+        async hgetall() { return {}; } async hget() { return null; }
+        async smembers() { return []; } async scan() { return ['0', []]; }
+        async keys() { return []; } async publish() { return 0; }
+        async del() { return 0; } async eval() { return 0; }
+      }
+      class Queue extends EventEmitter {
+        constructor(name, opts) { super(); this.name = name; this.opts = opts; }
+        async setGlobalConcurrency() {}
+        async pause() { calls.push(this.name + ':pause'); }
+        async drain(delayed) { assert.equal(delayed, true); calls.push(this.name + ':drain'); }
+        async close() { calls.push(this.name + ':close'); }
+        async getJobs() { return []; } async getJobCounts() { return {}; }
+        async getWaitingCount() { return 0; } async getCompletedCount() { return 0; }
+        async getFailedCount() { return 0; } async getDelayedCount() { return 0; }
+      }
+      await mock.module('ioredis/built/Redis.js', { namedExports: { default: Redis } });
+      const bull = await import('bullmq');
+      await mock.module('bullmq', { namedExports: { ...bull, Queue, QueueEvents: Queue } });
+      await mock.module('redis', { namedExports: { createClient: () => new Redis() } });
+
+      // Only the provisioned external service transport is replaced. Native
+      // adapters, the API resource closures, listener and SQLite remain real.
+      const binding = JSON.parse(process.env.TEST_RESET_BINDING);
+      const revoked = new Set();
+      globalThis.fetch = async (url, options) => {
+        const parsed = new URL(url);
+        assert.ok(['queue.invalid', 'sessions.invalid', 'tunnel.invalid'].includes(parsed.hostname), String(url));
+        assert.deepEqual(JSON.parse(options.body).binding, binding);
+        const [, , , service, action] = parsed.pathname.split('/');
+        if (action === 'revoke') { revoked.add(service); calls.push('revoke:' + service); }
+        assert.ok(revoked.has(service));
+        return new Response(JSON.stringify({ binding, revision: service + ':1', refused: true, remaining: 0, connections: 0 }));
+      };
+      let releaseSocket, enteredSocket;
+      const gate = new Promise(resolve => { releaseSocket = resolve; });
+      const entered = new Promise(resolve => { enteredSocket = resolve; });
+      const { Server } = await import('socket.io');
+      const close = Server.prototype.close;
+      Server.prototype.close = function(callback) {
+        calls.push('socket:closing'); enteredSocket();
+        gate.then(() => close.call(this, error => { calls.push('socket:closed'); callback(error); }));
+        return this;
+      };
+      const core = await import('@propr/core');
+      const destroy = core.db.client.destroy.bind(core.db.client);
+      core.db.client.destroy = async () => { calls.push('database:closing'); await destroy(); calls.push('database:closed'); };
+      let ready;
+      const started = new Promise(resolve => { ready = resolve; });
+      const log = console.log;
+      console.log = (...args) => { log(...args); if (args.join(' ').includes('Dashboard API server running at')) ready(); };
+      await import('./packages/api/server.ts');
+      await Promise.race([started, new Promise((_, reject) => setTimeout(() => reject(new Error('API startup timed out')), 30_000))]);
+      const { configuredResetFence, openResetDatabase } = await import('./packages/core/src/fleet/resetFence.ts');
+      const managed = configuredResetFence();
+      const controlDb = openResetDatabase(process.env.PROPR_FLEET_RESET_RUNTIME_ROOT + '/generation.sqlite', 'readonly');
+      const leases = () => controlDb.prepare('SELECT * FROM leases').all();
+      assert.deepEqual(leases(), [], 'startup must not leak database-query leases');
+      assert.ok((await core.db('knex_migrations').count('* as count'))[0].count > 0);
+      // Exercise schema, raw, error and nested transaction paths through Knex.
+      await core.db.schema.hasTable('system_configs');
+      await core.db.transaction(async trx => { await trx.raw('SELECT 1'); await trx.transaction(async nested => nested.raw('SELECT 2')); });
+      await assert.rejects(core.db.raw('SELECT * FROM missing_disposable_table'));
+      const streamRows = query => new Promise((resolve, reject) => {
+        const stream = query.stream(); stream.on('error', reject); stream.on('end', resolve); stream.resume();
+      });
+      await streamRows(core.db('customer').select('*'));
+      await assert.rejects(streamRows(core.db('missing_disposable_table').select('*')));
+      assert.deepEqual(leases(), []);
+      // A held driver response must retain its own lease, even when another
+      // query settles. The original driver and retry implementation still run.
+      const client = core.db.client;
+      const query = client._query;
+      let releaseQuery, enteredQuery, heldConnection;
+      const held = new Promise(resolve => { releaseQuery = resolve; });
+      const admitted = new Promise(resolve => { enteredQuery = resolve; });
+      client._query = async function(connection, obj) {
+        const result = await query.call(this, connection, obj);
+        if (obj.sql === 'SELECT 987654') { heldConnection = connection; enteredQuery(); await held; }
+        return result;
+      };
+      const active = core.db.raw('SELECT 987654').then(() => undefined);
+      await admitted;
+      assert.equal(leases().filter(row => row.kind === 'database-query').length, 1);
+      await client.query(heldConnection, { sql: 'SELECT 123456' });
+      await assert.rejects(client.query(heldConnection, { sql: 'SELECT * FROM missing_disposable_table' }));
+      assert.equal(leases().filter(row => row.kind === 'database-query').length, 1, 'other completions cannot release active query');
+      releaseQuery(); await active; client._query = query;
+      assert.deepEqual(leases(), []);
+      const socketPath = process.env.TEST_DATA_CONTROL + '/' + (await fs.readdir(process.env.TEST_DATA_CONTROL)).find(name => name.endsWith('.sock'));
+      const invoke = body => new Promise((resolve, reject) => {
+        const req = request({ socketPath, path: '/reset/v1/invoke', method: 'POST', headers: { 'content-type': 'application/json' } }, res => {
+          let bytes = ''; res.on('data', chunk => { bytes += chunk; }); res.on('end', () => resolve(JSON.parse(bytes)));
+        }); req.on('error', reject); req.end(body);
+      });
+      const payload = JSON.parse(process.env.TEST_RESET_REQUEST);
+      payload.assertion.issuedAt = Math.floor(Date.now() / 1000); payload.assertion.expiresAt = payload.assertion.issuedAt + 30;
+      const { resetRequestMac } = await import('./packages/core/src/fleet/resetProof.ts');
+      payload.mac = resetRequestMac(payload.assertion, process.env.PROPR_FLEET_RESET_SECRET);
+      const pending = invoke(JSON.stringify(payload));
+      await Promise.race([entered, pending.then(result => { throw new Error('reset ended before Socket.IO close: ' + JSON.stringify(result)); }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Socket.IO close not reached: ' + calls.join(','))), 40_000))]);
+      // Hold long enough to cross background polling / asynchronous close turns.
+      await new Promise(resolve => setTimeout(resolve, 250));
+      assert.ok(!calls.includes('database:closing'));
+      await fs.stat(process.env.DB_FILENAME);
+      const live = openResetDatabase(process.env.DB_FILENAME, 'readonly');
+      assert.equal(live.prepare('SELECT count(*) AS n FROM customer').get().n, 1); live.close();
+      assert.throws(() => managed.fence.assert(binding.predecessor));
+      await assert.rejects(core.db.raw('SELECT 1'), /fleet_reset_unavailable/);
+      await assert.rejects(streamRows(core.db('customer').select('*')), /fleet_reset_unavailable/);
+      releaseSocket();
+      const response = await pending;
+      assert.equal(response.receipt.evidence.state, 'complete', JSON.stringify(response));
+      const index = name => { assert.ok(calls.includes(name), name + ': ' + calls.join(',')); return calls.indexOf(name); };
+      for (const name of ['github-issue-processor', 'agent-runtime-build']) {
+        assert.ok(index(name + ':pause') < index(name + ':drain'));
+        assert.ok(index(name + ':drain') < index(name + ':close'));
+        assert.ok(index(name + ':close') < index('socket:closing'));
+      }
+      assert.ok(index('socket:closed') < index('browser:closed'));
+      assert.ok(index('browser:closed') < index('database:closing'));
+      assert.ok(index('database:closing') < index('database:closed'));
+      await assert.rejects(fs.stat(process.env.DB_FILENAME), { code: 'ENOENT' });
+      assert.deepEqual(await fs.readdir(process.env.TEST_TENANT_ROOT), ['successor']);
+      const successor = openResetDatabase(process.env.TEST_TENANT_ROOT + '/successor/propr.sqlite', 'readonly');
+      assert.deepEqual(successor.prepare("SELECT name FROM sqlite_master WHERE type='table'").all(), [{ name: 'reset_identity' }]);
+      successor.close(); controlDb.close();
+      console.log('ASSEMBLED_RESET_VERIFIED'); process.exit(0);
+    `;
+    // Workers inherit the same disposable transport injection before importing
+    // Core. No Redis connection in any API thread can escape to a real service.
+    const preload = path.join(process.cwd(), `.native-reset-transports-${randomUUID()}.mjs`);
+    t.after(() => fs.rm(preload, { force: true }));
+    const split = script.indexOf('      // Only the provisioned');
+    await fs.writeFile(preload, script.slice(0, split) + '\nglobalThis.resetTestCalls = calls;\n');
+    const applicationScript = `import assert from 'node:assert/strict'; import fs from 'node:fs/promises'; import { request } from 'node:http'; const calls = globalThis.resetTestCalls;\n` + script.slice(split);
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (key.startsWith('PROPR_FLEET_') || key.startsWith('GITHUB_') || key.startsWith('GH_') || key.startsWith('REDIS_')) delete env[key];
+    const childOptions = {
+      cwd: process.cwd(), timeout: 180_000, killSignal: 'SIGKILL' as const, maxBuffer: 4 * 1024 * 1024,
+      env: { ...env, NODE_ENV: 'production', PROPR_DEMO_MODE: 'false', MCP_ENABLED: 'false', PROPR_ADMIN_USERS: 'disposable',
+        PROPR_MIGRATIONS_PREAPPLIED: preapplied ? '1' : '', PROPR_API_DISABLE_AUTOSTART: '', DASHBOARD_API_PORT: '0', DASHBOARD_API_HOST: '127.0.0.1',
+        FRONTEND_URL: 'http://localhost:3000', SESSION_SECRET: 'disposable-session-secret-long-enough-123456789',
+        PROPR_GH_RELAY_URL: 'https://github-relay.invalid', PROPR_GH_RELAY_TOKEN: 'disposable', GH_OAUTH_CLIENT_ID: 'disposable', GH_OAUTH_CLIENT_SECRET: 'disposable', GH_OAUTH_CALLBACK_URL: 'http://localhost/callback',
+        DOCKER_HOST: 'tcp://127.0.0.1:9', REDIS_HOST: '127.0.0.1', REDIS_PORT: '9', REDIS_URL: 'redis://127.0.0.1:9', DASHBOARD_OUTCOME_PROJECTION: 'legacy',
+        HOME: path.join(f.tenantRoot, 'provider_sessions'), DATA_DIR: f.root, DB_FILENAME: path.join(f.tenantRoot, 'database', 'propr.sqlite'),
+        GIT_CLONES_BASE_PATH: path.join(f.tenantRoot, 'repositories_worktrees_caches', 'clones'), GIT_WORKTREES_BASE_PATH: path.join(f.tenantRoot, 'repositories_worktrees_caches', 'worktrees'),
+        PROPR_FLEET_RESET_RUNTIME_ROOT: f.controlRoot, PROPR_FLEET_RESET_SECRET: f.secret, PROPR_FLEET_CONTROL_SECRET: f.secret,
+        PROPR_FLEET_RESET_SERVICE_SECRET: 'disposable-external-service-secret-long-enough',
+        TEST_RESET_BINDING: JSON.stringify(f.binding), TEST_RESET_REQUEST: f.make(), TEST_DATA_CONTROL: dataControl, TEST_TENANT_ROOT: f.tenantRoot },
+    };
+    const args = ['--experimental-test-module-mocks', '--import', 'tsx', '--import', preload, '--input-type=module', '-e'];
+    const run = (source: string, options = childOptions) => promisify(execFile)(process.execPath, [...args, source], options)
+      .catch(error => { throw new Error(`${error.message}\n${error.stdout}\n${error.stderr}`); });
+    if (preapplied) {
+      await run(`const { runMigrations, closeConnection } = await import('@propr/core'); await runMigrations(); await closeConnection(); process.exit(0);`,
+        { ...childOptions, env: { ...childOptions.env, PROPR_MIGRATIONS_PREAPPLIED: '' } });
+    }
+    const result = await run(applicationScript);
+    assert.match(result.stdout, /ASSEMBLED_RESET_VERIFIED/);
+  });
+}
+
+
+test('activation cannot manufacture an initial completed erasure proof', async t => {
+  const f = await fixture(t, async phase => {
+    if (phase !== 'first-proof') return;
+    const control = new ResetGenerationFence(path.join(f.controlRoot, 'successor-control'), 'existing');
+    try { control.activateSuccessor(f.binding); } finally { control.close(); }
+  });
+  assert.equal((await f.invoke(f.make())).body.receipt.evidence.state, 'recovery_required');
+  assert.equal(f.fence.effect('operation')!.result, null);
+  assert.equal((await f.invoke(f.make('reset.receipt'))).body.receipt.evidence.state, 'recovery_required');
 });

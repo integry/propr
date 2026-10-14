@@ -1,5 +1,6 @@
 import { assertConfiguredResetGeneration, configuredResetFence } from '../fleet/resetFence.js';
 import knex, { Knex } from 'knex';
+import type { Readable } from 'node:stream';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -136,20 +137,30 @@ try {
 
     assertConfiguredResetGeneration();
     db = knex(config);
-    const resetQueries = new Map<string, () => void>();
-    db.on('query', (query: { __knexQueryUid: string }) => {
-        const managed = configuredResetFence();
-        if (managed) resetQueries.set(query.__knexQueryUid, managed.fence.acquire(managed.identity, 'database-query'));
-    });
-    const finishResetQuery = (query: { __knexQueryUid: string }) => {
-        resetQueries.get(query.__knexQueryUid)?.(); resetQueries.delete(query.__knexQueryUid);
-    };
-    db.on('query-response', (_response, query) => finishResetQuery(query));
-    db.on('query-error', (_error, query) => finishResetQuery(query));
-
-    // A locked database is contention, not a failure: retry every query rather
-    // than surfacing SQLITE_BUSY to callers.
+    // Knex schema queries can omit __knexQueryUid, and BEGIN/COMMIT bypass
+    // Runner's query-response event altogether. Correlate by invocation instead
+    // of event IDs. Transaction clients inherit this prototype and config.
     installSqliteRetry(db);
+    const client = db.client;
+    const prototype = client.constructor.prototype;
+    const managedConfig = client.config;
+    for (const method of ['query', 'stream'] as const) {
+        const run = prototype[method];
+        prototype[method] = async function (...args: unknown[]) {
+            const managed = this.config === managedConfig ? configuredResetFence() : undefined;
+            let release: (() => void) | undefined;
+            try { release = managed?.fence.acquire(managed.identity, 'database-query'); }
+            catch (error) {
+                // Knex assumes errors after stream connection acquisition have
+                // already reached the stream. Refusal must also close it so the
+                // caller observes the error and Knex releases the connection.
+                if (method === 'stream') (args[2] as Readable).destroy(error as Error);
+                throw error;
+            }
+            try { return await run.apply(this, args); }
+            finally { release?.(); }
+        };
+    }
 
     // Test connection
     db.raw('SELECT 1')

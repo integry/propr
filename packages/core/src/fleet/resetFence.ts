@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { canonicalFleetJson, fleetResetIdentitySchema, type FleetResetBinding } from '@propr/shared';
 
-interface Statement { run(...args: unknown[]): unknown; get(...args: unknown[]): any; all(...args: unknown[]): any[] }
+interface Statement { run(...args: unknown[]): unknown; get(...args: unknown[]): Record<string, string | number | null>; all(...args: unknown[]): Record<string, string | number | null>[] }
 interface Database { exec(sql: string): void; prepare(sql: string): Statement; close(): void }
 
 export type ResetIdentity = FleetResetBinding['predecessor'];
@@ -59,10 +59,14 @@ export class ResetGenerationFence {
   }
   /** Positive control proof; both staged and activated successors retain identity. */
   assertSuccessor(binding: FleetResetBinding) {
+    this.successorActive(binding);
+    return binding.successor;
+  }
+  successorActive(binding: FleetResetBinding): boolean {
     const row = this.db.prepare('SELECT * FROM identity WHERE singleton=1').get();
     if (row?.identity !== canonicalFleetJson(binding.successor) ||
       (row.fence !== null && row.fence !== canonicalFleetJson(binding))) resetUnavailable();
-    return binding.successor;
+    return row.fence === null;
   }
   async waitForIdle(binding: FleetResetBinding, timeoutMs = 30_000) {
     const deadline = performance.now() + timeoutMs;
@@ -101,7 +105,7 @@ export class ResetGenerationFence {
   }
   sealed(binding: FleetResetBinding) {
     const row = this.db.prepare('SELECT * FROM identity WHERE singleton=1').get();
-    return row?.fence === canonicalFleetJson(binding);
+    return row?.identity === canonicalFleetJson(binding.predecessor) && row.fence === canonicalFleetJson(binding);
   }
   idle() { return this.db.prepare('SELECT count(*) AS n FROM leases').get().n === 0; }
   issue(identity: ResetIdentity, kind: string) {
@@ -128,7 +132,7 @@ export class ResetGenerationFence {
       this.db.prepare('INSERT INTO effects VALUES (?, ?, NULL)').run(name, bytes); return true;
     });
   }
-  effect(name: string): { intent: string; result: string | null } | undefined { return this.db.prepare('SELECT * FROM effects WHERE name=?').get(name); }
+  effect(name: string): { intent: string; result: string | null } | undefined { return this.db.prepare('SELECT * FROM effects WHERE name=?').get(name) as { intent: string; result: string | null } | undefined; }
   complete(name: string, result: unknown) {
     const bytes = canonicalFleetJson(result);
     this.transaction(() => {
