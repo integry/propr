@@ -1,3 +1,4 @@
+import { watchResetGeneration } from '../packages/core/src/fleet/resetFence.js';
 import 'dotenv/config';
 import { scheduleManagedDiagnostics } from './daemon/managedDiagnostics.js';
 import { reconcileTaskIntentsSafely } from './daemon/taskIntentReconciliation.js';
@@ -478,9 +479,10 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         await heartbeatRedis.quit();
         await redisClient.quit();
         await shutdownQueue();
-        process.exit(0);
+        if (signal !== 'fleet-reset') process.exit(0);
     };
 
+    watchResetGeneration(() => shutdown('fleet-reset'));
     process.on('SIGINT', () => { void shutdown('SIGINT'); });
     process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 }

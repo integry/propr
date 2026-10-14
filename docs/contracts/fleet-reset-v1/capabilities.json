@@ -4,7 +4,7 @@
   "destructiveEffects": false,
   "terminalProof": false,
   "successorBootstrap": false,
-  "nativeCoverage": "unavailable",
-  "qualification": "not-qualified",
-  "reason": "No complete native guest reset owner exists; every category remains unproven."
+  "nativeCoverage": "opt-in-native-adapters",
+  "qualification": "disposable-local-integration",
+  "reason": "Hosted enablement remains off. Terminal proof requires provisioned native ownership, closed Core resources and stable external generation refusal; unavailable proof remains recovery_required."
 }

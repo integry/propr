@@ -55,11 +55,14 @@ export function verifyReceipt(value, rawRequest, secret, contractPin, expectedBi
       && (r.proofRequestId === null || uuid(r.proofRequestId)) && r.evidenceDigest === digest(r.evidence)
       && digest(r.binding) === digest(expectedBinding) && integer(r.observedAt) && r.observedAt <= now
       && r.observedAt >= a.issuedAt && r.expiresAt === a.expiresAt);
-    exact(r.evidence, ['state', 'categories', 'predecessorFenced', 'successorIsolated', 'bootstrapAllowed', 'reason']);
+    exact(r.evidence, ['state', 'categories', 'predecessorFenced', 'successorIsolated', 'bootstrapAllowed', 'reason', ...(r.evidence.state === 'complete' ? ['observationDigest'] : [])]);
     exact(r.evidence.categories, [...categories]);
-    check(r.evidence.state === 'recovery_required' && categories.every(k => r.evidence.categories[k] === 'unproven')
+    check((r.evidence.state === 'recovery_required' && categories.every(k => r.evidence.categories[k] === 'unproven')
       && r.evidence.predecessorFenced === false && r.evidence.successorIsolated === false && r.evidence.bootstrapAllowed === false
-      && ['native_coverage_unavailable', 'interrupted_or_corrupt'].includes(r.evidence.reason));
+      && ['native_coverage_unavailable', 'interrupted_or_corrupt'].includes(r.evidence.reason))
+      || (r.evidence.state === 'complete' && categories.every(k => r.evidence.categories[k] === 'erased')
+        && r.evidence.predecessorFenced === true && r.evidence.successorIsolated === true && r.evidence.bootstrapAllowed === true
+        && r.evidence.reason === 'stable_native_proof' && hash(r.evidence.observationDigest)));
     verifyMac(r, value.mac, secret, 'receipt'); return r;
   } catch { throw new Error('fleet_reset_unavailable'); }
 }

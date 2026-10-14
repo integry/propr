@@ -1,3 +1,4 @@
+import { watchResetGeneration } from '../packages/core/src/fleet/resetFence.js';
 import { preventWithdrawnJob } from '@propr/core';
 import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
 import { startUsageTipsSelectionRunner } from './usageTipsSelectionRunner.js';
@@ -427,6 +428,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         await heartbeatRedis.quit();
     };
 
+    watchResetGeneration(close);
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         process.on(signal, async () => {
             logger.info(`Worker received ${signal}, shutting down gracefully...`);

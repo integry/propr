@@ -16,11 +16,12 @@ const binding = {
 };
 const evidence = { state: 'recovery_required', categories: Object.fromEntries(FLEET_RESET_CATEGORIES.map(k => [k, 'unproven'])),
   predecessorFenced: false, successorIsolated: false, bootstrapAllowed: false, reason: 'native_coverage_unavailable' };
-const fixtures = ['reset.prove', 'reset.receipt'].map((action, index) => {
+const fixtures = ['reset.prove', 'reset.receipt', 'reset.prove', 'reset.receipt'].map((action, index) => {
+  const observed = index < 2 ? evidence : { state: 'complete', categories: Object.fromEntries(FLEET_RESET_CATEGORIES.map(k => [k, 'erased'])), predecessorFenced: true, successorIsolated: true, bootstrapAllowed: true, reason: 'stable_native_proof', observationDigest: 'c'.repeat(64) };
   const assertion = { contract, contractPin, audience, binding, action, requestId: id(10 + index), nonce: String(index + 1).padStart(64, '0'), issuedAt: 1791892800, expiresAt: 1791892830 };
   const request = canonical({ assertion, mac: sign(assertion, 'request') });
   const receipt = { contract, contractPin, audience, binding, action, requestId: assertion.requestId, requestDigest: hash(request),
-    proofRequestId: id(10), evidenceDigest: hash(canonical(evidence)), observedAt: assertion.issuedAt, expiresAt: assertion.expiresAt, evidence };
+    proofRequestId: id(10), evidenceDigest: hash(canonical(observed)), observedAt: assertion.issuedAt, expiresAt: assertion.expiresAt, evidence: observed };
   const response = canonical({ receipt, mac: sign(receipt, 'receipt') });
   return { action, request, requestSha256: hash(request), response, responseSha256: hash(response) };
 });
@@ -28,7 +29,7 @@ const artifacts = {
   'schema.json': FLEET_RESET_SCHEMA,
   'fixtures.json': JSON.stringify({ contractPin, testSecret, now: 1791892800, binding, fixtures }, null, 2) + '\n',
   'capabilities.json': JSON.stringify({ contract, public: false, destructiveEffects: false, terminalProof: false, successorBootstrap: false,
-    nativeCoverage: 'unavailable', qualification: 'not-qualified', reason: 'No complete native guest reset owner exists; every category remains unproven.' }, null, 2) + '\n',
+    nativeCoverage: 'opt-in-native-adapters', qualification: 'disposable-local-integration', reason: 'Hosted enablement remains off. Terminal proof requires provisioned native ownership, closed Core resources and stable external generation refusal; unavailable proof remains recovery_required.' }, null, 2) + '\n',
   'verify.mjs': await readFile(new URL('verify.mjs', root), 'utf8'),
 };
 const pin = JSON.stringify({ contract, contractPin, files: Object.fromEntries(Object.entries(artifacts).map(([name, bytes]) => [name, hash(bytes)])) }, null, 2) + '\n';

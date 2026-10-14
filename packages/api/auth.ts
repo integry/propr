@@ -1,3 +1,4 @@
+import { assertConfiguredResetGeneration } from '../core/src/fleet/resetFence.js';
 /* eslint-disable max-lines -- browser, GitHub bearer, instance-token, Socket.IO, and preview auth share one policy boundary */
 import passport from 'passport';
 import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
@@ -435,6 +436,7 @@ export async function authenticateSocketRequest(
     req: Request,
     dependencies: SocketAuthenticationDependencies = defaultSocketAuthenticationDependencies,
 ): Promise<SocketPrincipal> {
+    assertConfiguredResetGeneration();
     if (req.isAuthenticated?.() && req.user) {
         if (req.user.githubAuthInvalid) {
             throw new SocketAuthenticationError('GITHUB_REAUTH_REQUIRED', 'GitHub authentication expired');

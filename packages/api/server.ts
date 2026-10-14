@@ -1,3 +1,7 @@
+import path from 'node:path';
+import { configuredNativeReset } from '../core/src/fleet/configuredReset.js';
+import { storageControlRoot } from '../core/src/storage/lifecycle.js';
+import { assertConfiguredResetGeneration } from '../core/src/fleet/resetFence.js';
 import { ExtensionProfileStore } from '../core/src/extensions/extensionProfileStore.js';
 import { createExtensionProfileRoutes } from './routes/extensionProfileRoutes.js';
 import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataListener.js';
@@ -187,6 +191,10 @@ const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentE
 
 export const app = express();
 app.use(refusePublicFleetData);
+app.use((_req, res, next) => {
+  try { assertConfiguredResetGeneration(); next(); }
+  catch { res.status(503).json({ error: 'instance_generation_unavailable' }); }
+});
 const PORT = Number(process.env.DASHBOARD_API_PORT || 4000);
 const HOST = resolveApiListenHost();
 
@@ -432,7 +440,24 @@ export function setupRoutes(): void {
   const storageService = createDefaultStorageService();
   const storageRoutes = createInstanceStorageRoutes(storageService);
   // Management-only Unix transport; no customer/tunnel route is registered.
-  fleetDataListener = demoMode ? Promise.resolve(undefined) : startConfiguredFleetData(storageService, (actorId, database) => resolveDurableInstanceAuthorization(String(actorId), database), new ExtensionProfileStore(db));
+  fleetDataListener = demoMode ? Promise.resolve(undefined) : (async () => {
+    const nativeReset = await configuredNativeReset(path.join(path.dirname(storageControlRoot()), 'fleet-reset-control'), {
+      queues: [taskQueue, runtimeBuildQueue], connections: [redisClient],
+      sessions: [{ close: () => agentLoginSessionManager.close() }],
+      close: async () => {
+        if (desktopPairingCleanupTimer) clearInterval(desktopPairingCleanupTimer);
+        await dashboardReads?.close();
+        await notificationBackground?.close();
+        await visualPreviewOAuthRefreshScheduler?.close();
+        await configReloadSubscription?.close();
+        await closeUltrafixStateRedis();
+        await closeSocketService();
+        await getIoRedisClient().quit();
+        await db.destroy();
+      },
+    });
+    return startConfiguredFleetData(storageService, (actorId, database) => resolveDurableInstanceAuthorization(String(actorId), database), new ExtensionProfileStore(db), nativeReset);
+  })();
   // Background work is bounded/coalesced; no startup deletion or live-data scan.
   const storageSweep = setInterval(() => {
     void storageService.sweep().catch(() => undefined);

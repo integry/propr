@@ -1,3 +1,4 @@
+import { assertConfiguredResetGeneration, configuredResetFence } from '../fleet/resetFence.js';
 import knex, { Knex } from 'knex';
 import path from 'path';
 import fs from 'fs';
@@ -133,7 +134,18 @@ try {
     // Ensure data directory exists
     ensureDataDirectory(dbFilename);
 
+    assertConfiguredResetGeneration();
     db = knex(config);
+    const resetQueries = new Map<string, () => void>();
+    db.on('query', (query: { __knexQueryUid: string }) => {
+        const managed = configuredResetFence();
+        if (managed) resetQueries.set(query.__knexQueryUid, managed.fence.acquire(managed.identity, 'database-query'));
+    });
+    const finishResetQuery = (query: { __knexQueryUid: string }) => {
+        resetQueries.get(query.__knexQueryUid)?.(); resetQueries.delete(query.__knexQueryUid);
+    };
+    db.on('query-response', (_response, query) => finishResetQuery(query));
+    db.on('query-error', (_error, query) => finishResetQuery(query));
 
     // A locked database is contention, not a failure: retry every query rather
     // than surfacing SQLITE_BUSY to callers.

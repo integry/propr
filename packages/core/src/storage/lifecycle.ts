@@ -1,3 +1,4 @@
+import { withResetGeneration, assertConfiguredResetGeneration } from '../fleet/resetFence.js';
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
@@ -106,6 +107,7 @@ export class StorageLifecycle {
 
   /** A read claim covers the entire operation, including child Git and filesystem work. */
   async use<T>(run: () => Promise<T>, admission?: { filesystem: string; reserveBytes: number; taskBytes: number }): Promise<T> {
+    assertConfiguredResetGeneration();
     const existing = this.context.getStore();
     if (existing?.active) {
       existing.users++;
@@ -128,7 +130,7 @@ export class StorageLifecycle {
     } catch (error) { await fs.unlink(claim); throw error; }
     const scope = { active: true, users: 1, claim };
     return this.context.run(scope, async () => {
-      try { return await run(); }
+      try { return await withResetGeneration('storage-work', run); }
       finally { await this.release(scope); }
     });
   }

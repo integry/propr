@@ -1,3 +1,4 @@
+import type { NativeResetRuntime } from '../core/src/fleet/nativeReset.js';
 import { FLEET_EXTENSION_LIMITS, FLEET_RESET_PATH, FLEET_RESET_LIMITS } from '@propr/shared';
 import { FleetResetProofPlane } from '../core/src/fleet/resetProof.js';
 import { FleetExtensionPlane } from '../core/src/fleet/extensions.js';
@@ -21,7 +22,7 @@ const REVALIDATE_MS = 250;
 export const fleetTransferDeadline = (size: number) => Math.min(158_000, 30_000 + Math.ceil(size / (4 * 1024 ** 2) * 1000));
 export interface FleetDataListener { address(): string | null; shutdown(): Promise<void> }
 
-async function unlinkSocket(plane: FleetDataPlane, socket: string, expected: Pick<Stats, 'dev' | 'ino'>) {
+async function unlinkSocket(plane: Pick<FleetDataPlane, 'files'>, socket: string, expected: Pick<Stats, 'dev' | 'ino'>) {
   await plane.files.check();
   const current = await fs.lstat(socket).catch(error => {
     if (error.code === 'ENOENT') return undefined;
@@ -32,7 +33,7 @@ async function unlinkSocket(plane: FleetDataPlane, socket: string, expected: Pic
   await fs.unlink(socket);
 }
 
-async function removeStaleSockets(plane: FleetDataPlane) {
+async function removeStaleSockets(plane: Pick<FleetDataPlane, 'files'>) {
   await plane.files.check();
   for (const name of await fs.readdir(plane.files.root)) {
     if (!/^data-[0-9a-f-]{36}\.sock$/.test(name)) continue;
@@ -92,14 +93,20 @@ export const refusePublicFleetData: RequestHandler = (req, res, next) => {
 };
 
 /** Separate Unix listener only. Never mount this handler on Express or the tunnel. */
-export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetExtensionPlane, reset?: FleetResetProofPlane): Promise<FleetDataListener> {
+interface FleetListenerPlane {
+  files: FleetDataPlane['files'];
+  runtime(): Promise<{ runtimeGeneration: string }>;
+  invoke?: FleetDataPlane['invoke'];
+  stream?: FleetDataPlane['stream'];
+}
+export async function listenFleetData(plane: FleetListenerPlane, extensions?: FleetExtensionPlane, reset?: FleetResetProofPlane): Promise<FleetDataListener> {
   const runtime = await plane.runtime();
   const socket = path.join(plane.files.root, `data-${runtime.runtimeGeneration}.sock`);
   await removeStaleSockets(plane);
   const active = new Set<Promise<void>>();
   let stopping = false;
   const isSupportedPath = (url: string | undefined) =>
-    url === '/v1/invoke' || Boolean(extensions && url === '/extensions/v1/invoke') || Boolean(reset && url === FLEET_RESET_PATH);
+    Boolean(plane.invoke && plane.stream && url === '/v1/invoke') || Boolean(extensions && url === '/extensions/v1/invoke') || Boolean(reset && url === FLEET_RESET_PATH);
   const server = createServer((req, res) => {
     if (stopping) { res.destroy(); return; }
     const work = handle(req, res);
@@ -129,7 +136,7 @@ export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetE
         if (Buffer.byteLength(body) > FLEET_EXTENSION_LIMITS.responseBytes) throw new Error();
         res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(body);
       } else if (parseEnvelope(raw).request.action === 'artifact.stream') {
-        await plane.stream(raw, async (download, authorize) => {
+        await plane.stream!(raw, async (download, authorize) => {
           await authorize();
           const size = download.status.sizeBytes!;
           res.writeHead(200, { 'Content-Type': 'application/vnd.sqlite3', 'Content-Length': size, 'X-Content-Type-Options': 'nosniff' });
@@ -172,7 +179,7 @@ export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetE
           if (sent !== size) throw new Error();
         });
       } else {
-        const result = await plane.invoke(raw);
+        const result = await plane.invoke!(raw);
         const body = JSON.stringify(result);
         if (Buffer.byteLength(body) > 32768) throw new Error();
         res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(body);
@@ -223,7 +230,7 @@ export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetE
 }
 
 /** Provisioning is Fleet's job. Missing authority does not create or enable controls. */
-export async function startConfiguredFleetData(storage: InstanceStorageService, authorizeActor: FleetActorAuthorization, store?: ExtensionProfileStore): Promise<FleetDataListener | undefined> {
+export async function startConfiguredFleetData(storage: InstanceStorageService, authorizeActor: FleetActorAuthorization, store?: ExtensionProfileStore, nativeReset?: NativeResetRuntime): Promise<FleetDataListener | undefined> {
   const root = path.join(path.dirname(storageControlRoot()), 'fleet-data-control');
   try { await fs.lstat(path.join(root, 'authority.json')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
@@ -236,8 +243,18 @@ export async function startConfiguredFleetData(storage: InstanceStorageService, 
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     return listenFleetData(plane, store ? new FleetExtensionPlane(plane, store) : undefined);
   }
-  const reset = new FleetResetProofPlane(resetRoot);
+  const reset = new FleetResetProofPlane(resetRoot, undefined, undefined, nativeReset);
   try { await reset.initialize(); }
   catch { throw new Error('Configured Fleet reset authority unavailable'); }
   return listenFleetData(plane, store ? new FleetExtensionPlane(plane, store) : undefined, reset);
+}
+
+/** Restart entry point that does not open customer SQLite, queues, sessions or
+ * on-boot tasks. It can observe an interrupted reset even when Core admission is
+ * permanently fenced. Fleet chooses when to replace the application process. */
+export async function listenFleetResetRecovery(root: string, native: NativeResetRuntime): Promise<FleetDataListener> {
+  const reset = new FleetResetProofPlane(root, undefined, undefined, native, true);
+  await reset.initialize();
+  const authority = JSON.parse(await reset.files.read('authority.json'));
+  return listenFleetData({ files: reset.files, runtime: async () => ({ runtimeGeneration: authority.binding.predecessor.runtimeId }) }, undefined, reset);
 }

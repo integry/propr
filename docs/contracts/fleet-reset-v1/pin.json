@@ -1,10 +1,10 @@
 {
   "contract": "propr.fleet-reset.v1",
-  "contractPin": "fc49d0addf38ded2ae607f0abc55042e5a694ce087236c3614659728353235b1",
+  "contractPin": "f3e880d1ed2d50e129de73a374a4e2e1e36bd7784e4f46787798c82a0c591af8",
   "files": {
-    "schema.json": "fc49d0addf38ded2ae607f0abc55042e5a694ce087236c3614659728353235b1",
-    "fixtures.json": "5a4cefea171e3f0d0e69320f405be1a6133b6547c19fba9e384e1d2c8bf3240f",
-    "capabilities.json": "02e0db85879c00033dae1efc36b7bb8655cbf81775508660e0d9d841de19ba5c",
-    "verify.mjs": "129561da06c6c8cc2da99c2983142f5542927729e97054d79ad8c5983956e5f5"
+    "schema.json": "f3e880d1ed2d50e129de73a374a4e2e1e36bd7784e4f46787798c82a0c591af8",
+    "fixtures.json": "750cec191df63bd5ce94771f2c7494b5d6988cbd1fea8967df29d375bfb45707",
+    "capabilities.json": "b8c49489585cc2ccc46c4fde6160474683d3e9121643fbbd804898ababed31e7",
+    "verify.mjs": "04b0afe037ddca61b815dad4c1f93e336a2d8550689e4e5b5f8519c47bd9c1db"
   }
 }

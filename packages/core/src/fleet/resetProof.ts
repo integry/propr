@@ -1,3 +1,4 @@
+import { NativeResetRuntime } from './nativeReset.js';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs/promises';
 import { z } from 'zod';
@@ -34,15 +35,15 @@ const proofSchema = z.strictObject({
   binding: fleetResetBindingSchema, proofRequestId: fleetResetEnvelopeSchema.shape.assertion.shape.requestId,
   evidence: fleetResetEvidenceSchema, evidenceDigest: z.string().regex(/^[0-9a-f]{64}$/),
 });
-const unavailable = (reason: FleetResetEvidence['reason']): FleetResetEvidence => ({
+const unavailable = (reason: 'native_coverage_unavailable' | 'interrupted_or_corrupt'): FleetResetEvidence => ({
   state: 'recovery_required',
-  categories: Object.fromEntries(FLEET_RESET_CATEGORIES.map(category => [category, 'unproven'])) as FleetResetEvidence['categories'],
+  categories: Object.fromEntries(FLEET_RESET_CATEGORIES.map(category => [category, 'unproven'])) as Extract<FleetResetEvidence, { state: 'recovery_required' }>['categories'],
   predecessorFenced: false, successorIsolated: false, bootstrapAllowed: false, reason,
 });
 
 /** Dedicated private authority; deliberately independent of the export/extension key.
- * No injected executor, deletion callback, or caller-produced evidence is trusted.
- * Current builds can only persist refusal evidence, never certify native erasure.
+ * Only the native state machine can produce terminal evidence. Missing native
+ * adapters preserve the original refusal-only behavior.
  */
 export class FleetResetProofPlane {
   readonly files: FleetFiles;
@@ -51,7 +52,8 @@ export class FleetResetProofPlane {
   private stopped = false;
   private tail: Promise<unknown> = Promise.resolve();
   constructor(root: string, private readonly secret: () => string | undefined = () => process.env.PROPR_FLEET_RESET_SECRET,
-    private readonly now: () => number = () => Math.floor(Date.now() / 1000)) {
+    private readonly now: () => number = () => Math.floor(Date.now() / 1000),
+    private readonly native?: NativeResetRuntime, private readonly receiptOnly = false) {
     this.files = new FleetFiles(root);
   }
   async initialize() {
@@ -60,6 +62,7 @@ export class FleetResetProofPlane {
     const authority = authoritySchema.parse(JSON.parse(this.authorityBytes));
     this.binding = authority.binding;
     await this.authority();
+    await this.native?.initialize();
   }
   shutdown() { this.stopped = true; }
   private async authority() {
@@ -101,10 +104,31 @@ export class FleetResetProofPlane {
       await this.files.create(name, {
         binding: a.binding, proofRequestId: a.requestId, evidence, evidenceDigest: digest(evidence),
       });
+      if (this.native) {
+        try {
+          const terminal = await this.native.execute(a.binding);
+          await this.files.create(`terminal-${a.binding.resetOperationId}.json`, {
+            binding: a.binding, proofRequestId: a.requestId, evidence: terminal, evidenceDigest: digest(terminal),
+          });
+        } catch { /* The permanent claim and generation fence survive uncertainty. */ }
+      }
     }
     try {
       const record = proofSchema.parse(JSON.parse(await this.files.read(name)));
       if (digest(record.binding) !== digest(a.binding) || record.evidenceDigest !== digest(record.evidence)) refuse();
+      if (this.native) {
+        try {
+          const evidence = await this.native.reconcile(a.binding);
+          // Recovery reads never redispatch reset. Terminal observations must
+          // still match the originally durable proof when one exists.
+          try {
+            const terminal = proofSchema.parse(JSON.parse(await this.files.read(`terminal-${a.binding.resetOperationId}.json`)));
+            if (digest(terminal.binding) !== digest(a.binding) || terminal.proofRequestId !== record.proofRequestId ||
+              terminal.evidenceDigest !== digest(evidence) || digest(terminal.evidence) !== digest(evidence)) refuse();
+          } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+          return { proofRequestId: record.proofRequestId, evidence };
+        } catch { return { proofRequestId: record.proofRequestId, evidence: unavailable('interrupted_or_corrupt') }; }
+      }
       return { proofRequestId: record.proofRequestId, evidence: record.evidence };
     } catch {
       // Missing/torn records are uncertainty, never absence proof. Do not repair,
@@ -118,6 +142,7 @@ export class FleetResetProofPlane {
     const work = this.tail.then(async () => {
       try {
         const a = await this.authenticate(raw);
+        if (this.receiptOnly && a.action !== 'reset.receipt') refuse();
         await this.claim(a);
         const result = await this.evidence(a);
         // Recheck credentials, binding and expiry after every awaited operation.

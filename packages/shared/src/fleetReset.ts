@@ -41,15 +41,22 @@ export type FleetResetBinding = z.infer<typeof fleetResetBindingSchema>;
 export type FleetResetAssertion = z.infer<typeof fleetResetAssertionSchema>;
 export type FleetResetEnvelope = z.infer<typeof fleetResetEnvelopeSchema>;
 
-/** No success variant until native runtime coverage has been implemented and qualified.
- * In particular, a caller cannot turn executor booleans into guest proof. */
-export const fleetResetEvidenceSchema = z.strictObject({
+/** Recovery and terminal variants cannot mix partial category proofs. */
+const recoveryEvidenceSchema = z.strictObject({
   state: z.literal('recovery_required'),
   categories: z.strictObject(Object.fromEntries(FLEET_RESET_CATEGORIES.map(category =>
     [category, z.literal('unproven')])) as Record<typeof FLEET_RESET_CATEGORIES[number], z.ZodLiteral<'unproven'>>),
   predecessorFenced: z.literal(false), successorIsolated: z.literal(false), bootstrapAllowed: z.literal(false),
   reason: z.enum(['native_coverage_unavailable', 'interrupted_or_corrupt']),
 });
+const terminalEvidenceSchema = z.strictObject({
+  state: z.literal('complete'),
+  categories: z.strictObject(Object.fromEntries(FLEET_RESET_CATEGORIES.map(category =>
+    [category, z.literal('erased')])) as Record<typeof FLEET_RESET_CATEGORIES[number], z.ZodLiteral<'erased'>>),
+  predecessorFenced: z.literal(true), successorIsolated: z.literal(true), bootstrapAllowed: z.literal(true),
+  reason: z.literal('stable_native_proof'), observationDigest: hash,
+});
+export const fleetResetEvidenceSchema = z.discriminatedUnion('state', [recoveryEvidenceSchema, terminalEvidenceSchema]);
 export const fleetResetReceiptSchema = z.strictObject({
   contract: z.literal(FLEET_RESET_CONTRACT), contractPin: hash,
   audience: z.literal(FLEET_RESET_AUDIENCE), binding: fleetResetBindingSchema,
@@ -68,5 +75,5 @@ export const FLEET_RESET_SCHEMA = canonicalFleetJson({
   request: z.toJSONSchema(fleetResetEnvelopeSchema),
   receipt: z.toJSONSchema(fleetResetSignedReceiptSchema),
   succession: 'successor.generation=predecessor.generation+1; successor.stateScope=reset:resetOperationId; distinct scopes, runtimeIds, storageIds',
-  capabilities: { public: false, destructiveEffects: false, terminalProof: false, successorBootstrap: false },
+  capabilities: { public: false, destructiveEffects: true, terminalProof: true, successorBootstrap: true },
 });
