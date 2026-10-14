@@ -5,6 +5,7 @@ import {
   statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
+import { createServer as createSocketServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, before, describe, test } from 'node:test';
@@ -107,12 +108,17 @@ describe('preview runtime smoke cleanup lifecycle', { skip: unsupported }, () =>
     const otherRun = join(workspace.tmp, 'propr-preview-runtime-smoke.Other1');
     mkdirSync(join(otherRun, 'data'), { recursive: true, mode: 0o700 });
     writeFileSync(join(otherRun, 'data', 'keep.txt'), 'other run');
+    // The agent build-context check mounts the engine socket into its build
+    // container; a listening socket stands in for the fake engine's.
+    const socket = createSocketServer();
+    const socketPath = join(workspace.root, 'docker.sock');
+    await new Promise((resolvePromise) => socket.listen(socketPath, resolvePromise));
     const result = await bash('exec bash "$SMOKE_TEST_SCRIPT"', [], {
       SMOKE_TEST_SCRIPT: smokeScript, PATH: `${workspace.bin}:${process.env.PATH}`,
       RUNNER_TEMP: workspace.tmp, TMPDIR: workspace.tmp, SOURCE_REVISION: revision, EXPECTED_VERSION: version,
       EXPECTED_COMPATIBILITY: compatibility, APP_IMAGE: `propr/app:${revision}`, UI_IMAGE: `propr/ui:${revision}`, FAKE_DOCKER_STATE: workspace.state,
-      FAKE_API_PORT: String(port), ...env,
-    });
+      FAKE_API_PORT: String(port), DOCKER_HOST: `unix://${socketPath}`, ...env,
+    }).finally(() => new Promise((resolvePromise) => socket.close(resolvePromise)));
     assert.equal(readFileSync(join(otherRun, 'data', 'keep.txt'), 'utf8'), 'other run');
     const state = JSON.parse(readFileSync(join(workspace.state, 'state.json'), 'utf8'));
     assert.deepEqual(state, unrelated, 'every owned container and network is removed; unrelated ones remain');
@@ -131,6 +137,8 @@ describe('preview runtime smoke cleanup lifecycle', { skip: unsupported }, () =>
     const result = await runSmoke(workspace);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /Preview runtime smoke passed for propr\/app:c{40} and propr\/ui:c{40}/);
+    assert.match(result.stdout, /ships all \d+ Dockerfile\.agent build-context files, identical to the checkout/);
+    assert.match(result.stdout, /resolves every Dockerfile\.agent build-context COPY/);
     assert.deepEqual(previewRoots(workspace.tmp), ['propr-preview-runtime-smoke.Other1']);
 
     const cleanups = cleanupCalls(workspace);
@@ -169,6 +177,19 @@ describe('preview runtime smoke cleanup lifecycle', { skip: unsupported }, () =>
     assert.match(result.stderr, /Cannot find module 'sharp'/);
     assert.doesNotMatch(result.stdout, /Preview runtime smoke passed/);
     assert.doesNotMatch(result.stderr, /did not remove every owned resource/);
+    const calls = readFileSync(join(workspace.state, 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(calls.some((call) => call[0] === 'network' && call[1] === 'create'), false);
+    assert.deepEqual(previewRoots(workspace.tmp), ['propr-preview-runtime-smoke.Other1']);
+  });
+
+  test('fails before starting any service when the app image lacks an agent build-context file', async (t) => {
+    const workspace = makeWorkspace();
+    t.after(() => forceRemove(workspace.root));
+    apiCompatibility = compatibility;
+    const result = await runSmoke(workspace, { FAKE_DOCKER_AGENT_CONTEXT: 'missing' });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /is missing Dockerfile\.agent build-context files under \/usr\/src\/app:\n {2}scripts\/extension-stdio-bridge\.mjs/);
+    assert.doesNotMatch(result.stdout, /Preview runtime smoke passed/);
     const calls = readFileSync(join(workspace.state, 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     assert.equal(calls.some((call) => call[0] === 'network' && call[1] === 'create'), false);
     assert.deepEqual(previewRoots(workspace.tmp), ['propr-preview-runtime-smoke.Other1']);

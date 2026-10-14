@@ -2,9 +2,11 @@
 // runtime smoke regressions.  Containers that bind-mount the smoke data root
 // create a private directory the host user cannot traverse (as root:root 0700
 // would be on a real rootful host); the cleanup container emulates root's DAC
-// override within its single bind mount.  Every invocation is appended to FAKE_DOCKER_STATE/calls.
+// override within its single bind mount.  The app image's /usr/src/app is the
+// checkout itself, as for an image built from it.  Every invocation is appended to FAKE_DOCKER_STATE/calls.
+import { createHash } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const stateDir = process.env.FAKE_DOCKER_STATE;
 const statePath = join(stateDir, 'state.json');
@@ -53,8 +55,11 @@ function privilegedEmpty(directory) {
   }
 }
 
+const repoRoot = resolve(import.meta.dirname, '../../../../..');
+const entrypoint = args.includes('--entrypoint') ? args[args.indexOf('--entrypoint') + 1] : undefined;
+
 const [command, subcommand] = args;
-if (command === 'image' && subcommand === 'inspect') process.exit(0);
+if (command === 'image' && (subcommand === 'inspect' || subcommand === 'rm')) process.exit(0);
 if (command === 'network' && subcommand === 'create') {
   state.networks[args.at(-1)] = { labels: parseLabels() };
   save();
@@ -87,6 +92,20 @@ if (command === 'network' && subcommand === 'create') {
   // unloadable nested sharp tree in the app image.
   if (process.env.FAKE_DOCKER_SHARP === 'fail') fail("Error: Cannot find module 'sharp'");
   process.stdout.write('fake sharp check passed\n');
+} else if (command === 'run' && entrypoint === 'cat' && args.at(-1) === '/usr/src/app/Dockerfile.agent') {
+  // The shared agent build-context check reads the image's Dockerfile.agent.
+  process.stdout.write(readFileSync(join(repoRoot, 'Dockerfile.agent')));
+} else if (command === 'run' && entrypoint === 'sh' && args.includes('/usr/src/app')) {
+  // Its presence probe: FAKE_DOCKER_AGENT_CONTEXT=missing emulates an app
+  // image that omits the extension bridge from the agent build context.
+  if (process.env.FAKE_DOCKER_AGENT_CONTEXT === 'missing') process.stdout.write('scripts/extension-stdio-bridge.mjs\n');
+} else if (command === 'run' && entrypoint === 'sha256sum') {
+  for (const file of args.slice(args.indexOf('--') + 1)) {
+    process.stdout.write(`${createHash('sha256').update(readFileSync(join(repoRoot, file))).digest('hex')}  ${file}\n`);
+  }
+} else if (command === 'run' && entrypoint === 'docker' && args.includes('build')) {
+  // The worker-style COPY build from /usr/src/app succeeds for a complete context.
+  readFileSync(0);
 } else if (command === 'run') {
   // One-shot `--rm` runs (preview migrations) leave no container behind.
   const name = option('--name')[0];
