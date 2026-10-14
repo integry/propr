@@ -1,4 +1,6 @@
 import { FLEET_EXTENSION_LIMITS } from '@propr/shared';
+import { FLEET_RESET_PATH, FLEET_RESET_LIMITS } from '../shared/src/fleetReset.js';
+import { FleetResetProofPlane } from '../core/src/fleet/resetProof.js';
 import { FleetExtensionPlane } from '../core/src/fleet/extensions.js';
 import type { ExtensionProfileStore } from '../core/src/extensions/extensionProfileStore.js';
 import type { RequestHandler } from 'express';
@@ -86,12 +88,12 @@ async function bindUnix(socket: string): Promise<{ server: UnixServer; identity:
 
 /** Explicit refusal on the customer listener, also used by tunnel ingress. */
 export const refusePublicFleetData: RequestHandler = (req, res, next) => {
-  if (req.path !== '/v1/invoke' && req.path !== '/extensions/v1/invoke') { next(); return; }
-  res.set('Cache-Control', 'no-store').status(404).json({ error: req.path === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable' });
+  if (req.path !== '/v1/invoke' && req.path !== '/extensions/v1/invoke' && req.path !== FLEET_RESET_PATH) { next(); return; }
+  res.set('Cache-Control', 'no-store').status(404).json({ error: req.path === FLEET_RESET_PATH ? 'fleet_reset_unavailable' : req.path === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable' });
 };
 
 /** Separate Unix listener only. Never mount this handler on Express or the tunnel. */
-export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetExtensionPlane): Promise<FleetDataListener> {
+export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetExtensionPlane, reset?: FleetResetProofPlane): Promise<FleetDataListener> {
   const runtime = await plane.runtime();
   const socket = path.join(plane.files.root, `data-${runtime.runtimeGeneration}.sock`);
   await removeStaleSockets(plane);
@@ -107,7 +109,7 @@ export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetE
     res.setHeader('Cache-Control', 'no-store');
     let timer: NodeJS.Timeout | undefined;
     try {
-      if (req.method !== 'POST' || (req.url !== '/v1/invoke' && !(extensions && req.url === '/extensions/v1/invoke')) || req.headers['content-type'] !== 'application/json' || req.headers['content-encoding']) throw new Error();
+      if (req.method !== 'POST' || (req.url !== '/v1/invoke' && !(extensions && req.url === '/extensions/v1/invoke') && !(reset && req.url === FLEET_RESET_PATH)) || req.headers['content-type'] !== 'application/json' || req.headers['content-encoding']) throw new Error();
       const parts: Buffer[] = []; let length = 0;
       timer = setTimeout(() => req.destroy(), 5000);
       for await (const part of req) {
@@ -117,7 +119,11 @@ export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetE
       }
       clearTimeout(timer);
       const raw = Buffer.concat(parts).toString('utf8');
-      if (req.url === '/extensions/v1/invoke') {
+      if (req.url === FLEET_RESET_PATH) {
+        const body = JSON.stringify(await reset!.invoke(raw));
+        if (Buffer.byteLength(body) > FLEET_RESET_LIMITS.responseBytes) throw new Error();
+        res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(body);
+      } else if (req.url === '/extensions/v1/invoke') {
         const body = JSON.stringify(await extensions!.invoke(raw));
         if (Buffer.byteLength(body) > FLEET_EXTENSION_LIMITS.responseBytes) throw new Error();
         res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(body);
@@ -172,7 +178,7 @@ export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetE
       }
     } catch {
       if (res.headersSent) res.destroy();
-      else { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: req.url === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable' })); }
+      else { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: req.url === FLEET_RESET_PATH ? 'fleet_reset_unavailable' : req.url === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable' })); }
     } finally { clearTimeout(timer); }
   };
   server.requestTimeout = 10_000;
@@ -193,7 +199,7 @@ export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetE
   server.emit('listening');
   let shutdown: Promise<void> | undefined;
   const close = () => shutdown ??= (async () => {
-    stopping = true; extensions?.shutdown();
+    stopping = true; extensions?.shutdown(); reset?.shutdown();
     // Unlink only our captured inode in the unchanged private management root.
     // The transferred descriptor has no libuv bind pathname to auto-unlink.
     let cleanupError: unknown;
@@ -222,5 +228,16 @@ export async function startConfiguredFleetData(storage: InstanceStorageService, 
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
   const plane = new FleetDataPlane(storage, root, undefined, authorizeActor);
   await plane.initialize();
-  return listenFleetData(plane, store ? new FleetExtensionPlane(plane, store) : undefined);
+  // Reset uses separately provisioned authority and a dedicated secret. It is
+  // absent by default; the export/extension secret cannot authorize reset.
+  const resetRoot = path.join(path.dirname(root), 'fleet-reset-control');
+  let reset: FleetResetProofPlane | undefined;
+  try { await fs.lstat(path.join(resetRoot, 'authority.json')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return listenFleetData(plane, store ? new FleetExtensionPlane(plane, store) : undefined);
+  }
+  reset = new FleetResetProofPlane(resetRoot);
+  try { await reset.initialize(); }
+  catch { throw new Error('Configured Fleet reset authority unavailable'); }
+  return listenFleetData(plane, store ? new FleetExtensionPlane(plane, store) : undefined, reset);
 }

@@ -1,0 +1,40 @@
+{
+  "contractPin": "fc49d0addf38ded2ae607f0abc55042e5a694ce087236c3614659728353235b1",
+  "testSecret": "PUBLIC-RESET-FIXTURE-KEY-NOT-FOR-PRODUCTION",
+  "now": 1791892800,
+  "binding": {
+    "resetOperationId": "00000000-0000-4000-8000-000000000001",
+    "resetRequestDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "resetAction": "instance.reset",
+    "instanceId": "fixture-instance",
+    "predecessor": {
+      "generation": 1,
+      "stateScope": "initial",
+      "runtimeId": "00000000-0000-4000-8000-000000000002",
+      "storageId": "00000000-0000-4000-8000-000000000003"
+    },
+    "successor": {
+      "generation": 2,
+      "stateScope": "reset:00000000-0000-4000-8000-000000000001",
+      "runtimeId": "00000000-0000-4000-8000-000000000004",
+      "storageId": "00000000-0000-4000-8000-000000000005"
+    },
+    "runtimeBuildDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "fixtures": [
+    {
+      "action": "reset.prove",
+      "request": "{\"assertion\":{\"action\":\"reset.prove\",\"audience\":\"fleet-reset-coordinator\",\"binding\":{\"instanceId\":\"fixture-instance\",\"predecessor\":{\"generation\":1,\"runtimeId\":\"00000000-0000-4000-8000-000000000002\",\"stateScope\":\"initial\",\"storageId\":\"00000000-0000-4000-8000-000000000003\"},\"resetAction\":\"instance.reset\",\"resetOperationId\":\"00000000-0000-4000-8000-000000000001\",\"resetRequestDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeBuildDigest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"successor\":{\"generation\":2,\"runtimeId\":\"00000000-0000-4000-8000-000000000004\",\"stateScope\":\"reset:00000000-0000-4000-8000-000000000001\",\"storageId\":\"00000000-0000-4000-8000-000000000005\"}},\"contract\":\"propr.fleet-reset.v1\",\"contractPin\":\"fc49d0addf38ded2ae607f0abc55042e5a694ce087236c3614659728353235b1\",\"expiresAt\":1791892830,\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"requestId\":\"00000000-0000-4000-8000-000000000010\"},\"mac\":\"67d4f7213973ff7c2e97a6ed08768bf282fdafe5fc263c45d164bc2048bb3c13\"}",
+      "requestSha256": "5e04e8f7d9501544788d5cdae6c83a82111d921d66e8b95d9d7c1d24ec2e7d30",
+      "response": "{\"mac\":\"d35332df494e5651a521ddc0de9204a2f7df70c636fae491ab3e88d7e1f396f6\",\"receipt\":{\"action\":\"reset.prove\",\"audience\":\"fleet-reset-coordinator\",\"binding\":{\"instanceId\":\"fixture-instance\",\"predecessor\":{\"generation\":1,\"runtimeId\":\"00000000-0000-4000-8000-000000000002\",\"stateScope\":\"initial\",\"storageId\":\"00000000-0000-4000-8000-000000000003\"},\"resetAction\":\"instance.reset\",\"resetOperationId\":\"00000000-0000-4000-8000-000000000001\",\"resetRequestDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeBuildDigest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"successor\":{\"generation\":2,\"runtimeId\":\"00000000-0000-4000-8000-000000000004\",\"stateScope\":\"reset:00000000-0000-4000-8000-000000000001\",\"storageId\":\"00000000-0000-4000-8000-000000000005\"}},\"contract\":\"propr.fleet-reset.v1\",\"contractPin\":\"fc49d0addf38ded2ae607f0abc55042e5a694ce087236c3614659728353235b1\",\"evidence\":{\"bootstrapAllowed\":false,\"categories\":{\"active_tasks\":\"unproven\",\"configuration\":\"unproven\",\"database\":\"unproven\",\"diagnostic_logs\":\"unproven\",\"provider_sessions\":\"unproven\",\"queued_tasks\":\"unproven\",\"repositories_worktrees_caches\":\"unproven\",\"tunnel_bootstrap\":\"unproven\",\"unpublished_results\":\"unproven\"},\"predecessorFenced\":false,\"reason\":\"native_coverage_unavailable\",\"state\":\"recovery_required\",\"successorIsolated\":false},\"evidenceDigest\":\"93ad9260357f3bc5bcafe61517a55ab9dc317f94c5fb7fc6bb5a87851d677a1c\",\"expiresAt\":1791892830,\"observedAt\":1791892800,\"proofRequestId\":\"00000000-0000-4000-8000-000000000010\",\"requestDigest\":\"5e04e8f7d9501544788d5cdae6c83a82111d921d66e8b95d9d7c1d24ec2e7d30\",\"requestId\":\"00000000-0000-4000-8000-000000000010\"}}",
+      "responseSha256": "183525abda57a8ec856aa30ac315f443c0ce55ff558ffbc7299ea3242e873692"
+    },
+    {
+      "action": "reset.receipt",
+      "request": "{\"assertion\":{\"action\":\"reset.receipt\",\"audience\":\"fleet-reset-coordinator\",\"binding\":{\"instanceId\":\"fixture-instance\",\"predecessor\":{\"generation\":1,\"runtimeId\":\"00000000-0000-4000-8000-000000000002\",\"stateScope\":\"initial\",\"storageId\":\"00000000-0000-4000-8000-000000000003\"},\"resetAction\":\"instance.reset\",\"resetOperationId\":\"00000000-0000-4000-8000-000000000001\",\"resetRequestDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeBuildDigest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"successor\":{\"generation\":2,\"runtimeId\":\"00000000-0000-4000-8000-000000000004\",\"stateScope\":\"reset:00000000-0000-4000-8000-000000000001\",\"storageId\":\"00000000-0000-4000-8000-000000000005\"}},\"contract\":\"propr.fleet-reset.v1\",\"contractPin\":\"fc49d0addf38ded2ae607f0abc55042e5a694ce087236c3614659728353235b1\",\"expiresAt\":1791892830,\"issuedAt\":1791892800,\"nonce\":\"0000000000000000000000000000000000000000000000000000000000000002\",\"requestId\":\"00000000-0000-4000-8000-000000000011\"},\"mac\":\"fd3a481ccfb1e64516375be27403dbe7882131ad440e7406fd3ed5e254ca9b81\"}",
+      "requestSha256": "a42864c9aa84e7853dc84e01c402673d20e0cff8a32ea61a608ef4c5d1d6feed",
+      "response": "{\"mac\":\"e22a67984933d61ab2add251cc9e06becc8d5d6c7e14e304f5054f5256f25bf6\",\"receipt\":{\"action\":\"reset.receipt\",\"audience\":\"fleet-reset-coordinator\",\"binding\":{\"instanceId\":\"fixture-instance\",\"predecessor\":{\"generation\":1,\"runtimeId\":\"00000000-0000-4000-8000-000000000002\",\"stateScope\":\"initial\",\"storageId\":\"00000000-0000-4000-8000-000000000003\"},\"resetAction\":\"instance.reset\",\"resetOperationId\":\"00000000-0000-4000-8000-000000000001\",\"resetRequestDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runtimeBuildDigest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"successor\":{\"generation\":2,\"runtimeId\":\"00000000-0000-4000-8000-000000000004\",\"stateScope\":\"reset:00000000-0000-4000-8000-000000000001\",\"storageId\":\"00000000-0000-4000-8000-000000000005\"}},\"contract\":\"propr.fleet-reset.v1\",\"contractPin\":\"fc49d0addf38ded2ae607f0abc55042e5a694ce087236c3614659728353235b1\",\"evidence\":{\"bootstrapAllowed\":false,\"categories\":{\"active_tasks\":\"unproven\",\"configuration\":\"unproven\",\"database\":\"unproven\",\"diagnostic_logs\":\"unproven\",\"provider_sessions\":\"unproven\",\"queued_tasks\":\"unproven\",\"repositories_worktrees_caches\":\"unproven\",\"tunnel_bootstrap\":\"unproven\",\"unpublished_results\":\"unproven\"},\"predecessorFenced\":false,\"reason\":\"native_coverage_unavailable\",\"state\":\"recovery_required\",\"successorIsolated\":false},\"evidenceDigest\":\"93ad9260357f3bc5bcafe61517a55ab9dc317f94c5fb7fc6bb5a87851d677a1c\",\"expiresAt\":1791892830,\"observedAt\":1791892800,\"proofRequestId\":\"00000000-0000-4000-8000-000000000010\",\"requestDigest\":\"a42864c9aa84e7853dc84e01c402673d20e0cff8a32ea61a608ef4c5d1d6feed\",\"requestId\":\"00000000-0000-4000-8000-000000000011\"}}",
+      "responseSha256": "23935b1b640416b04741874b4faa59a7c526c57ae4ab25df496028ab7844ddaf"
+    }
+  ]
+}

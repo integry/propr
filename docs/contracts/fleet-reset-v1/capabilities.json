@@ -1,0 +1,10 @@
+{
+  "contract": "propr.fleet-reset.v1",
+  "public": false,
+  "destructiveEffects": false,
+  "terminalProof": false,
+  "successorBootstrap": false,
+  "nativeCoverage": "unavailable",
+  "qualification": "not-qualified",
+  "reason": "No complete native guest reset owner exists; every category remains unproven."
+}
