@@ -48,11 +48,14 @@ export async function configuredNativeReset(root: string, resources?: Configured
   key();
   const fence = new ResetGenerationFence(root);
   const external = (name: keyof typeof provision.services) => new HttpResetBoundary(provision.services[name], key, name);
-  let closed = !resources && fence.effect('close-resources')?.result === 'true';
-  return new NativeResetRuntime({ tenantRoot: tenant, controlRoot: root, binding: provision.binding,
-    adapters: [new ResetQueueAdapter(fence, [], resources?.queues ?? [], resources?.connections ?? [], external('queue')),
-      new ResetAuthorityAdapter('sessions', fence, resources?.sessions ?? [], external('sessions')),
-      new ResetAuthorityAdapter('tunnel_bootstrap', fence, [], external('tunnel_bootstrap'))],
-    resources: { close: async () => { if (!resources) resetUnavailable(); await resources!.close(); closed = true; }, observeClosed: async () => closed && fence.idle() },
-  });
+  try {
+    let closed = !resources && fence.effect('close-resources')?.result === 'true';
+    return new NativeResetRuntime({ tenantRoot: tenant, controlRoot: root, binding: provision.binding,
+      closeAdapters: () => fence.close(),
+      adapters: [new ResetQueueAdapter(fence, [], resources?.queues ?? [], resources?.connections ?? [], external('queue')),
+        new ResetAuthorityAdapter('sessions', fence, resources?.sessions ?? [], external('sessions')),
+        new ResetAuthorityAdapter('tunnel_bootstrap', fence, [], external('tunnel_bootstrap'))],
+      resources: { close: async () => { if (!resources) resetUnavailable(); await resources!.close(); closed = true; }, observeClosed: async () => closed && fence.idle() },
+    });
+  } catch (error) { fence.close(); throw error; }
 }

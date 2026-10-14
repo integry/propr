@@ -10,8 +10,12 @@ export async function startFleetResetRecovery() {
   if (!root) throw new Error('fleet_reset_unavailable');
   const native = await configuredNativeReset(root);
   if (!native) throw new Error('fleet_reset_unavailable');
-  const listener = await listenFleetResetRecovery(root, native);
-  return { address: listener.address, shutdown: async () => { await listener.shutdown(); native.close(); } };
+  try {
+    const listener = await listenFleetResetRecovery(root, native);
+    return { address: listener.address, shutdown: async () => {
+      try { await listener.shutdown(); } finally { native.close(); }
+    } };
+  } catch (error) { native.close(); throw error; }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const listener = await startFleetResetRecovery();

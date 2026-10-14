@@ -452,6 +452,7 @@ export function setupRoutes(): void {
         await configReloadSubscription?.close();
         await closeUltrafixStateRedis();
         await closeSocketService();
+        await socketAuthMiddleware.close();
         await getIoRedisClient().quit();
         await db.destroy();
       },
@@ -786,6 +787,7 @@ async function start(): Promise<void> {
           { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },
+          { name: 'browser sessions', close: () => socketAuthMiddleware.close() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }
         );
       }

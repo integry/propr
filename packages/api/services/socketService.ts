@@ -98,6 +98,7 @@ export class SocketService {
   private io: SocketIOServer;
   private subscriber: InstanceType<typeof Redis>;
   private isSubscribed = false;
+  private subscriptionReady: Promise<void>;
   private shellBroadcaster: ShellActivityBroadcaster | null = null;
   private queueBroadcaster: QueueBroadcaster | null = null;
   private activityBroadcaster: ActivityBroadcaster | null = null;
@@ -145,7 +146,7 @@ export class SocketService {
     });
 
     this.setupConnectionHandlers();
-    this.setupRedisSubscription();
+    this.subscriptionReady = this.setupRedisSubscription();
   }
 
   /**
@@ -553,25 +554,30 @@ export class SocketService {
 
   /** Clean up resources on shutdown */
   async close(): Promise<void> {
-    try {
-      this.shellBroadcaster?.close();
-      if (this.queueBroadcaster) {
-        await this.queueBroadcaster.close();
-        this.queueBroadcaster = null;
-      }
-
-      await this.taskWatcherManager.closeAll();
-
+    const errors: unknown[] = [];
+    const attempt = async (close: () => unknown) => {
+      try { await close(); } catch (error) { errors.push(error); }
+    };
+    await attempt(() => this.shellBroadcaster?.close());
+    await attempt(async () => {
+      await this.queueBroadcaster?.close();
+      this.queueBroadcaster = null;
+    });
+    await attempt(() => this.taskWatcherManager.closeAll());
+    // Wait for startup subscription before deciding whether unsubscribe is needed.
+    await attempt(() => this.subscriptionReady);
+    await attempt(async () => {
       if (this.isSubscribed) {
         await this.subscriber.unsubscribe();
         this.isSubscribed = false;
       }
-      await this.subscriber.quit();
-      await this.io.close();
-      console.log('[SocketService] Closed all connections');
-    } catch (error) {
-      console.error('[SocketService] Error during cleanup:', error);
-    }
+    });
+    await attempt(() => this.subscriber.quit());
+    // Socket.IO returns the server, not a promise. Its callback confirms closure.
+    await attempt(() => new Promise<void>((resolve, reject) => {
+      this.io.close(error => error ? reject(error) : resolve());
+    }));
+    if (errors.length) throw new AggregateError(errors, 'Socket service shutdown failed');
   }
 }
 

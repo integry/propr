@@ -521,3 +521,67 @@ test('recovery cold start never loads application services or opens customer SQL
     { cwd: process.cwd(), env: { ...process.env, TEST_TENANT_ROOT: f.tenantRoot }, timeout: 30_000 });
   assert.deepEqual(await treeSnapshot(f.tenantRoot), before);
 });
+
+test('configured reset owns both fence handles and closes the adapter handle on construction failure', async t => {
+  const f = await fixture(t); const provision = await provisionConfigured(t, f);
+  const closed: ResetGenerationFence[] = [];
+  const original = ResetGenerationFence.prototype.close;
+  t.mock.method(ResetGenerationFence.prototype, 'close', function(this: ResetGenerationFence) {
+    closed.push(this); return original.call(this);
+  });
+  for (let i = 0; i < 3; i++) {
+    const native = (await configuredNativeReset(f.controlRoot))!;
+    const before = closed.length;
+    native.close();
+    assert.equal(closed.length - before, 2);
+    assert.notEqual(closed[before], closed[before + 1]);
+    for (const fence of closed.slice(before)) assert.throws(() => fence.idle());
+  }
+  await fs.writeFile(path.join(f.controlRoot, 'native.json'), JSON.stringify({ ...provision, tenantRoot: f.controlRoot }));
+  process.env.DB_FILENAME = path.join(f.controlRoot, 'database', 'propr.sqlite');
+  process.env.GIT_CLONES_BASE_PATH = path.join(f.controlRoot, 'repositories_worktrees_caches', 'clones');
+  process.env.GIT_WORKTREES_BASE_PATH = path.join(f.controlRoot, 'repositories_worktrees_caches', 'worktrees');
+  process.env.HOME = path.join(f.controlRoot, 'provider_sessions');
+  const before = closed.length;
+  await assert.rejects(configuredNativeReset(f.controlRoot));
+  assert.equal(closed.length - before, 1);
+});
+
+test('configured reset cannot acknowledge a failed local resource shutdown', async t => {
+  const f = await fixture(t); await provisionConfigured(t, f);
+  const failure = new Error('socket/session shutdown failed');
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+    binding: f.binding, revision: 'closed', refused: true, remaining: 0, connections: 0,
+  })));
+  const before = await treeSnapshot(f.tenantRoot);
+  const native = (await configuredNativeReset(f.controlRoot, {
+    queues: [], connections: [], sessions: [], close: async () => { throw failure; },
+  }))!;
+  t.after(() => native.close());
+  const resources = (native as any).options.resources;
+  assert.equal(await resources.observeClosed(), false);
+  await native.initialize();
+  await assert.rejects(native.execute(f.binding), error => error === failure);
+  assert.equal(await resources.observeClosed(), false);
+  assert.equal(native.fence.effect('close-resources')?.result, null);
+  assert.equal(native.fence.effect('erase-database'), undefined);
+  assert.deepEqual(await treeSnapshot(f.tenantRoot), before);
+});
+
+test('recovery startup failure and listener shutdown release both owned control handles', async t => {
+  const f = await fixture(t); await provisionConfigured(t, f); await f.stopListener();
+  const closed: ResetGenerationFence[] = [];
+  const original = ResetGenerationFence.prototype.close;
+  t.mock.method(ResetGenerationFence.prototype, 'close', function(this: ResetGenerationFence) {
+    closed.push(this); return original.call(this);
+  });
+  process.env.PROPR_FLEET_RESET_SECRET = 'wrong-reset-secret';
+  await assert.rejects(startFleetResetRecovery());
+  assert.equal(closed.length, 2);
+  process.env.PROPR_FLEET_RESET_SECRET = f.secret;
+  const recovery = await startFleetResetRecovery();
+  await recovery.shutdown();
+  assert.equal(closed.length, 4);
+  assert.equal(new Set(closed).size, 4);
+  for (const fence of closed) assert.throws(() => fence.idle());
+});

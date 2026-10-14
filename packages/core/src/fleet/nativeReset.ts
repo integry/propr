@@ -41,6 +41,8 @@ export interface NativeResetOptions {
   adapters: readonly ResetAdapter[];
   /** Close Core's database, log writers and non-queue background services. */
   resources: { close(): Promise<void>; observeClosed(): Promise<boolean> };
+  /** Release separately owned adapter control handles. */
+  closeAdapters?: () => void;
   /** Fault injection only; called after durable transitions. */
   checkpoint?: (phase: string) => Promise<void>;
 }
@@ -231,5 +233,5 @@ export class NativeResetRuntime {
       return successor.issue(binding.successor, 'bootstrap');
     } finally { successor.close(); }
   }
-  close() { this.fence.close(); }
+  close() { try { this.fence.close(); } finally { this.options.closeAdapters?.(); } }
 }

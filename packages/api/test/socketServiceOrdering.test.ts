@@ -315,3 +315,60 @@ test('relays both notification publisher formats only to their recipients', () =
   assert.deepEqual(notifications[1].payload.recipientIds, ['bob']);
   assert.deepEqual(notifications[2].payload.recipientIds, ['carol']);
 });
+
+test('socket shutdown attempts all resources after watcher rejection and waits for Socket.IO callback', async () => {
+  const service = Object.create(SocketService.prototype) as SocketService;
+  const events: string[] = [];
+  let confirm!: (error?: Error) => void;
+  const failure = new Error('watcher close failed');
+  Object.assign(service, {
+    shellBroadcaster: { close: () => events.push('shell') },
+    queueBroadcaster: { close: async () => events.push('queue') },
+    taskWatcherManager: { closeAll: async () => { events.push('watchers'); throw failure; } },
+    subscriptionReady: Promise.resolve(), isSubscribed: true,
+    subscriber: { unsubscribe: async () => events.push('unsubscribe'), quit: async () => events.push('quit') },
+    io: { close: (callback: typeof confirm) => { events.push('io'); confirm = callback; return {}; } },
+  });
+  let settled = false;
+  const closing = service.close();
+  const rejected = assert.rejects(closing, (error: AggregateError) => {
+    assert.deepEqual(error.errors, [failure]); return true;
+  }).then(() => { settled = true; });
+  while (!confirm) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events, ['shell', 'queue', 'watchers', 'unsubscribe', 'quit', 'io']);
+  assert.equal(settled, false);
+  confirm(); await rejected;
+});
+
+test('socket shutdown propagates subscriber and Socket.IO failures together', async () => {
+  const service = Object.create(SocketService.prototype) as SocketService;
+  const failure = new Error('subscriber quit'); const ioFailure = new Error('io close');
+  Object.assign(service, {
+    taskWatcherManager: { closeAll: async () => {} },
+    subscriptionReady: Promise.resolve(), isSubscribed: false,
+    subscriber: { quit: async () => { throw failure; } },
+    io: { close: (callback: (error: Error) => void) => callback(ioFailure) },
+  });
+  await assert.rejects(service.close(), (error: AggregateError) => {
+    assert.deepEqual(error.errors, [failure, ioFailure]); return true;
+  });
+});
+
+test('socket shutdown waits for an outstanding Redis subscription before unsubscribing', async () => {
+  const service = Object.create(SocketService.prototype) as SocketService;
+  const events: string[] = [];
+  let subscribed!: () => void;
+  const subscriptionReady = new Promise<void>(resolve => { subscribed = () => {
+    Object.assign(service, { isSubscribed: true }); resolve();
+  }; });
+  Object.assign(service, {
+    taskWatcherManager: { closeAll: async () => {} }, subscriptionReady, isSubscribed: false,
+    subscriber: { unsubscribe: async () => events.push('unsubscribe'), quit: async () => events.push('quit') },
+    io: { close: (callback: () => void) => { events.push('io'); callback(); } },
+  });
+  const closing = service.close();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events, []);
+  subscribed(); await closing;
+  assert.deepEqual(events, ['unsubscribe', 'quit', 'io']);
+});

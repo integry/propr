@@ -60,6 +60,8 @@ export class TaskWatcherManager {
   private io: SocketIOServer;
   private taskWatchers: Map<string, TaskWatcherInfo> = new Map();
   private deps: TaskWatcherDeps | null = null;
+  private closing = false;
+  private pendingStarts = new Set<Promise<void>>();
   /** Poll cadence while a file-creation watcher waits for late Redis output. */
   private redisFallbackPollMs = 2000;
 
@@ -78,6 +80,14 @@ export class TaskWatcherManager {
    * Start watching a task's log for changes (file-based for Claude, Redis-based for agents that stream to Redis)
    */
   async startTaskWatcher(taskId: string): Promise<void> {
+    if (this.closing) return;
+    const starting = this.createTaskWatcher(taskId);
+    this.pendingStarts.add(starting);
+    try { await starting; } finally { this.pendingStarts.delete(starting); }
+  }
+
+  private async createTaskWatcher(taskId: string): Promise<void> {
+    if (this.closing) return;
     // Check if already watching
     const existing = this.taskWatchers.get(taskId);
     if (existing) {
@@ -147,6 +157,7 @@ export class TaskWatcherManager {
         return;
       }
 
+      if (this.closing) return;
       // Watch the directory for the file to be created
       // Use polling to avoid EMFILE errors when directory has many files
       const watcher = chokidar.watch(dirPath, {
@@ -197,6 +208,11 @@ export class TaskWatcherManager {
       return;
     }
 
+    // Read before acquiring a watcher, then recheck shutdown authority.
+    const stats = await fs.stat(conversationPath);
+    if (this.closing) return;
+    const initialSize = stats.size;
+
     // File exists - watch it directly for changes
     // Use polling to avoid EMFILE errors
     const watcher = chokidar.watch(conversationPath, {
@@ -209,10 +225,6 @@ export class TaskWatcherManager {
         pollInterval: 50
       }
     });
-
-    // Track initial file size
-    const stats = await fs.stat(conversationPath);
-    const initialSize = stats.size;
 
     watcher.on('change', async () => {
       // Debounce and send update
@@ -252,6 +264,7 @@ export class TaskWatcherManager {
       clearInterval(existing.redisPollingInterval);
     }
 
+    if (this.closing) return;
     // Create a new watcher for the file itself
     // Use polling to avoid EMFILE errors
     const watcher = chokidar.watch(conversationPath, {
@@ -427,6 +440,7 @@ export class TaskWatcherManager {
    * Start Redis-based watcher for agents that stream output to Redis
    */
   private async startRedisWatcher(taskId: string, subscriberCount = 1): Promise<void> {
+    if (this.closing) return;
     console.log(`[TaskWatcher] Starting Redis watcher for task ${taskId}`);
 
     // Poll Redis every 2 seconds for output changes
@@ -615,15 +629,16 @@ export class TaskWatcherManager {
    * Close all task watchers
    */
   async closeAll(): Promise<void> {
+    this.closing = true;
+    await Promise.allSettled([...this.pendingStarts]);
+    const errors: unknown[] = [];
     for (const [taskId, watcher] of this.taskWatchers) {
-      if (watcher.watcher) {
-        await watcher.watcher.close();
-      }
-      if (watcher.redisPollingInterval) {
-        clearInterval(watcher.redisPollingInterval);
-      }
-      console.log(`[TaskWatcher] Closed watcher for task ${taskId}`);
+      if (watcher.redisPollingInterval) clearInterval(watcher.redisPollingInterval);
+      try {
+        await watcher.watcher?.close();
+        this.taskWatchers.delete(taskId);
+      } catch (error) { errors.push(error); }
     }
-    this.taskWatchers.clear();
+    if (errors.length) throw new AggregateError(errors, 'Task watcher shutdown failed');
   }
 }

@@ -151,3 +151,30 @@ describe('TaskWatcherManager', () => {
     await manager.closeAll();
   });
 });
+
+test('shutdown attempts every watcher and retains failed closure evidence', async () => {
+  const manager = new TaskWatcherManager(createIo());
+  const internals = manager as any;
+  const closed: string[] = [];
+  const failure = new Error('watcher failure');
+  internals.taskWatchers.set('failed', { watcher: { close: async () => { closed.push('failed'); throw failure; } } });
+  internals.taskWatchers.set('other', { watcher: { close: async () => { closed.push('other'); } } });
+  await assert.rejects(manager.closeAll(), (error: AggregateError) => {
+    assert.deepEqual(error.errors, [failure]); return true;
+  });
+  assert.deepEqual(closed, ['failed', 'other']);
+  assert.deepEqual([...internals.taskWatchers.keys()], ['failed']);
+});
+
+test('shutdown revokes watcher creation across a pending session lookup', async () => {
+  const manager = new TaskWatcherManager(createIo());
+  let resume!: (value: undefined) => void;
+  (manager as any).findSessionIdForTask = () => new Promise(resolve => { resume = resolve; });
+  const starting = manager.startTaskWatcher('pending');
+  const closing = manager.closeAll();
+  resume(undefined);
+  await starting; await closing;
+  assert.equal((manager as any).taskWatchers.size, 0);
+  await manager.startTaskWatcher('late');
+  assert.equal((manager as any).taskWatchers.size, 0);
+});

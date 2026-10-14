@@ -1,5 +1,5 @@
 import type session from 'express-session';
-import type { Request, Response } from 'express';
+import type { Request, Response, RequestHandler } from 'express';
 import { isProprLoopbackHostname, normalizeProprApiOrigin } from '@propr/shared';
 import { getDefaultRedirectUrl } from './authRedirect.js';
 import { isUserWhitelisted } from './userWhitelist.js';
@@ -68,4 +68,62 @@ export function completeAuthenticatedSession(req: Request, res: Response): void 
         if (err) console.error('Session save error:', err);
         res.redirect(finalRedirect);
     });
+}
+
+/** Owns HTTP/Engine.IO admission and every asynchronous session-store operation. */
+export class BrowserSessionLifecycle {
+    private stopping = false;
+    private storeClosed = false;
+    private requests = 0;
+    private operations = new Set<Promise<unknown>>();
+    private drained?: () => void;
+    private closing?: Promise<void>;
+
+    readonly middleware: RequestHandler = (req, res, next) => {
+        if (this.stopping) { res.statusCode = 503; res.end(); return; }
+        // Engine.IO WebSocket upgrades use a response shim without events.
+        const completion = typeof res.once === 'function' ? res : req.socket;
+        this.requests++;
+        let released = false;
+        const release = () => {
+            if (released) return;
+            released = true;
+            completion.off('finish', release); completion.off('close', release);
+            if (--this.requests === 0) this.drained?.();
+        };
+        completion.once('finish', release); completion.once('close', release);
+        next();
+    };
+
+    trackStore(store: session.Store): void {
+        // RedisStore methods settle only after their Redis work and callback.
+        for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 'all'] as const) {
+            const target = store as unknown as Record<string, (...args: any[]) => Promise<unknown>>;
+            const original = target[name].bind(store);
+            target[name] = (...args: any[]) => {
+                if (this.storeClosed) {
+                    const error = new Error('Browser sessions are closed');
+                    const callback = args.at(-1);
+                    if (typeof callback === 'function') { callback(error); return Promise.resolve(); }
+                    return Promise.reject(error);
+                }
+                const operation = Promise.resolve().then(() => original(...args));
+                this.operations.add(operation);
+                void operation.finally(() => this.operations.delete(operation)).catch(() => {});
+                return operation;
+            };
+        }
+    }
+
+    close(disconnect: () => Promise<void>): Promise<void> {
+        this.stopping = true;
+        return this.closing ??= (async () => {
+            if (this.requests) await new Promise<void>(resolve => { this.drained = resolve; });
+            // No await between draining admissions and revoking store authority.
+            // Aborted responses may still have callbacks: those cannot start Redis work.
+            this.storeClosed = true;
+            await Promise.allSettled([...this.operations]);
+            await disconnect();
+        })();
+    }
 }

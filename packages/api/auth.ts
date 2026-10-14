@@ -1,3 +1,4 @@
+import { BrowserSessionLifecycle } from './authSession.js';
 import { assertConfiguredResetGeneration } from '../core/src/fleet/resetFence.js';
 /* eslint-disable max-lines -- browser, GitHub bearer, instance-token, Socket.IO, and preview auth share one policy boundary */
 import passport from 'passport';
@@ -56,6 +57,7 @@ export type { GitHubUser } from './authTypes.js';
 export interface SocketAuthMiddlewareBundle {
     /** Express-compatible middleware that must run on the Engine.IO handshake. */
     engineMiddleware: RequestHandler[];
+    close(): Promise<void>;
 }
 
 export interface SocketPrincipal {
@@ -251,6 +253,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         if (sessionSecretError) throw new Error(sessionSecretError);
     }
     const engineMiddleware: RequestHandler[] = [];
+    let close = async () => {};
 
     // Keep OAuth starts and callbacks bounded independently from the general
     // API quota. Session checks, logout, and auth metadata remain covered by
@@ -267,10 +270,18 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         redisClient.on('error', (err) => {
             console.error('Session Redis Client Error', err);
         });
-        redisClient.connect().catch(console.error);
+        const connecting = redisClient.connect().catch(error => { console.error(error); });
+        const lifecycle = new BrowserSessionLifecycle();
+        close = () => lifecycle.close(async () => {
+            // Destroy also cancels an in-progress connect/reconnect. Store work is drained.
+            if (redisClient.isOpen) redisClient.destroy();
+            await connecting;
+            if (redisClient.isOpen) throw new Error('Browser session Redis remained open');
+        });
 
         // Use Redis store for sessions to share across subdomains
         const redisStore = new RedisStore({ client: redisClient, prefix: 'propr:session:' });
+        lifecycle.trackStore(redisStore);
 
         const cookieDomain = getSessionCookieDomain();
         const sessionMiddleware = session({
@@ -290,10 +301,12 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         const passportInitializeMiddleware = passport.initialize();
         const passportSessionMiddleware = passport.session();
         engineMiddleware.push(
+            lifecycle.middleware,
             sessionMiddleware,
             passportInitializeMiddleware,
             passportSessionMiddleware,
         );
+        app.use(lifecycle.middleware);
         app.use(sessionMiddleware);
         app.use(passportInitializeMiddleware);
         app.use(passportSessionMiddleware);
@@ -422,7 +435,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         res.json({ demoMode: demoModeAtStartup });
     });
 
-    return { engineMiddleware };
+    return { engineMiddleware, close };
 }
 
 /**

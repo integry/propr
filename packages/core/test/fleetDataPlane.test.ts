@@ -692,7 +692,10 @@ test('configured startup rejects a live overlapping listener and succeeds after 
   const next = await f.restart();
   const nextRuntime = await next.runtime();
   assert.notEqual(nextRuntime.runtimeGeneration, f.runtime.runtimeGeneration);
-  await assert.rejects(startConfiguredFleetData(next.storage, f.authorizeActor), /Fleet listener already active/);
+  let nativeCloses = 0;
+  const ownedNative = { close: () => { nativeCloses++; } } as unknown as Parameters<typeof startConfiguredFleetData>[3];
+  await assert.rejects(startConfiguredFleetData(next.storage, f.authorizeActor, undefined, ownedNative), /Fleet listener already active/);
+  assert.equal(nativeCloses, 1, 'failed configured startup releases the native runtime');
   const preserved = await fs.lstat(oldSocket);
   assert.equal(preserved.dev, oldIdentity.dev);
   assert.equal(preserved.ino, oldIdentity.ino);
@@ -700,7 +703,7 @@ test('configured startup rejects a live overlapping listener and succeeds after 
   // The old listener still accepts connections, but its generation is fenced.
   assert.equal((await f.http(f.sign({ action: 'repositories.list' }))).status, 403);
   await f.server.shutdown();
-  const listener = await startConfiguredFleetData(next.storage, f.authorizeActor);
+  const listener = await startConfiguredFleetData(next.storage, f.authorizeActor, undefined, ownedNative);
   assert.ok(listener);
   t.after(() => listener.shutdown());
   assert.notEqual(listener.address(), oldSocket);
@@ -714,6 +717,7 @@ test('configured startup rejects a live overlapping listener and succeeds after 
   });
   assert.equal(response, 200);
   await listener.shutdown();
+  assert.equal(nativeCloses, 2, 'configured listener shutdown releases the native runtime');
 
   // Production must propagate that rejection before opening readiness/customer HTTP.
   const source = await fs.readFile(path.resolve('packages/api/server.ts'), 'utf8');

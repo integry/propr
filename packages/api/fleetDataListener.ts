@@ -231,6 +231,16 @@ export async function listenFleetData(plane: FleetListenerPlane, extensions?: Fl
 
 /** Provisioning is Fleet's job. Missing authority does not create or enable controls. */
 export async function startConfiguredFleetData(storage: InstanceStorageService, authorizeActor: FleetActorAuthorization, store?: ExtensionProfileStore, nativeReset?: NativeResetRuntime): Promise<FleetDataListener | undefined> {
+  try {
+    const listener = await openConfiguredFleetData(storage, authorizeActor, store, nativeReset);
+    if (!listener) { nativeReset?.close(); return; }
+    return { address: listener.address, shutdown: async () => {
+      try { await listener.shutdown(); } finally { nativeReset?.close(); }
+    } };
+  } catch (error) { nativeReset?.close(); throw error; }
+}
+
+async function openConfiguredFleetData(storage: InstanceStorageService, authorizeActor: FleetActorAuthorization, store?: ExtensionProfileStore, nativeReset?: NativeResetRuntime): Promise<FleetDataListener | undefined> {
   const root = path.join(path.dirname(storageControlRoot()), 'fleet-data-control');
   try { await fs.lstat(path.join(root, 'authority.json')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
