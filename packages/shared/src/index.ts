@@ -582,3 +582,4 @@ export * from './instanceStorage.js';
 export * from './fleetData.js';
 
 export * from './extensionProfiles.js';
+export * from './fleetExtensions.js';

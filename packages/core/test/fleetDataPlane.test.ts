@@ -291,9 +291,13 @@ test('signed requests are refused on customer TCP listener and forwarded tunnel 
   t.after(async () => { await Promise.all([customer, tunnel].map(server => new Promise<void>(resolve => server.close(() => resolve())))); });
   const raw = f.sign({ action: 'repositories.list' });
   for (const server of [customer, tunnel]) {
-    const url = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}/v1/invoke`;
-    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Role': 'admin', 'X-Forwarded-For': '127.0.0.1', Authorization: `Bearer ${f.secret}` }, body: raw });
-    assert.equal(response.status, 404);
+    for (const route of ['/v1/invoke', '/extensions/v1/invoke']) {
+      const url = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}${route}`;
+      const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Role': 'admin', 'X-Forwarded-For': '127.0.0.1', Authorization: `Bearer ${f.secret}` }, body: raw });
+      assert.equal(response.status, 404);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.deepEqual(await response.json(), { error: route === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable' });
+    }
   }
   // Refusal on TCP never consumed this grant. Only the private listener can.
   assert.equal((await f.http(raw)).status, 200);
@@ -712,7 +716,7 @@ test('configured startup rejects a live overlapping listener and succeeds after 
 
   // Production must propagate that rejection before opening readiness/customer HTTP.
   const source = await fs.readFile(path.resolve('packages/api/server.ts'), 'utf8');
-  assert.match(source, /fleetDataListener = demoMode \? Promise.resolve\(undefined\) : startConfiguredFleetData\(storageService, actorId => resolveDurableInstanceAuthorization\(String\(actorId\)\)\);/);
+  assert.match(source, /fleetDataListener = demoMode \? Promise.resolve\(undefined\) : startConfiguredFleetData\(storageService, \(actorId, database\) => resolveDurableInstanceAuthorization\(String\(actorId\), database\), new ExtensionProfileStore\(db\)\);/);
   const setup = source.indexOf('    setupRoutes();');
   const gate = source.indexOf('try { await fleetDataListener; }', setup);
   assert.ok(gate > setup && gate < source.indexOf('httpServer.listen(PORT'));

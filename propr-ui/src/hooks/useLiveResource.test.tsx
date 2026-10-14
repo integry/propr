@@ -18,6 +18,7 @@ type Listener<T> = (payload: T) => void;
 const socket = vi.hoisted(() => {
   const activity = new Set<Listener<unknown>>();
   const goal = new Set<Listener<unknown>>();
+  const task = new Set<Listener<unknown>>();
   const notification = new Set<Listener<unknown>>();
   const usage = new Set<Listener<unknown>>();
   const snapshot = new Set<Listener<unknown>>();
@@ -26,7 +27,7 @@ const socket = vi.hoisted(() => {
     return () => { registry.delete(callback as Listener<unknown>); };
   };
   return {
-    listeners: { activity, goal, notification, usage, snapshot },
+    listeners: { activity, goal, task, notification, usage, snapshot },
     // One object identity for every render: the real provider also hands out
     // stable callbacks, and an unstable one would hide subscription churn.
     value: {
@@ -37,6 +38,9 @@ const socket = vi.hoisted(() => {
       unsubscribeFromActivity: vi.fn(),
       onActivityUpdate: register(activity),
       onGoalUpdate: register(goal),
+      onTaskUpdate: register(task),
+      subscribeToTask: vi.fn(),
+      unsubscribeFromTask: vi.fn(),
       onNotificationUpdate: register(notification),
       onUsageUpdate: register(usage),
     },
@@ -79,11 +83,56 @@ function deferred<T>() {
 }
 
 describe('useLiveResource', () => {
+  it('coalesces own terminal task and goal events while ignoring other tasks and progress', async () => {
+    const read = vi.fn().mockResolvedValue({ resultState: null });
+    const view = renderHook(() => useLiveResource({ read, interest: { goals: true, taskId: 'goal-task-1' } }));
+    await flush();
+    const emitTask = (taskId: string, state: string) => act(() => {
+      socket.listeners.task.forEach(listener => listener({ taskId, state }));
+    });
+    emitTask('other-task', 'completed');
+    emitTask('goal-task-1', 'claude_execution');
+    await advance(200);
+    expect(read).toHaveBeenCalledTimes(1);
+    for (const state of ['completed', 'failed', 'cancelled']) {
+      emitTask('goal-task-1', state);
+      act(() => socket.listeners.goal.forEach(listener => listener({ repository: 'acme/app' })));
+    }
+    await advance(100);
+    expect(read).toHaveBeenCalledTimes(2);
+    view.unmount();
+    expect(socket.listeners.task.size).toBe(0);
+  });
+
+  it('owns only the enabled current task room and re-subscribes on reconnect', async () => {
+    const read = vi.fn().mockResolvedValue({});
+    const view = renderHook(({ taskId, disabled }) => useLiveResource({
+      read, scopeKey: taskId, interest: { taskId }, disabled,
+    }), { initialProps: { taskId: 'goal-1', disabled: false } });
+    await flush();
+    expect(socket.value.subscribeToTask).toHaveBeenLastCalledWith('goal-1');
+    view.rerender({ taskId: 'goal-2', disabled: false });
+    expect(socket.value.unsubscribeFromTask).toHaveBeenLastCalledWith('goal-1');
+    expect(socket.value.subscribeToTask).toHaveBeenLastCalledWith('goal-2');
+    socket.value.isConnected = false;
+    view.rerender({ taskId: 'goal-2', disabled: false });
+    expect(socket.value.unsubscribeFromTask).toHaveBeenLastCalledWith('goal-2');
+    socket.value.isConnected = true;
+    view.rerender({ taskId: 'goal-2', disabled: false });
+    expect(socket.value.subscribeToTask).toHaveBeenCalledTimes(3);
+    view.rerender({ taskId: 'goal-2', disabled: true });
+    expect(socket.value.unsubscribeFromTask).toHaveBeenCalledTimes(3);
+    view.unmount();
+    expect(socket.value.unsubscribeFromTask).toHaveBeenCalledTimes(3);
+  });
+
   beforeEach(() => {
     vi.useFakeTimers();
     setVisibility('visible');
     socket.value.isConnected = true;
     socket.value.shellSnapshots = false;
+    socket.value.subscribeToTask.mockClear();
+    socket.value.unsubscribeFromTask.mockClear();
     socket.value.subscribeToActivity.mockClear();
     socket.value.unsubscribeFromActivity.mockClear();
     Object.values(socket.listeners).forEach(registry => registry.clear());

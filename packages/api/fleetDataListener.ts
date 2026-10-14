@@ -1,3 +1,6 @@
+import { FLEET_EXTENSION_LIMITS } from '@propr/shared';
+import { FleetExtensionPlane } from '../core/src/fleet/extensions.js';
+import type { ExtensionProfileStore } from '../core/src/extensions/extensionProfileStore.js';
 import type { RequestHandler } from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -83,12 +86,12 @@ async function bindUnix(socket: string): Promise<{ server: UnixServer; identity:
 
 /** Explicit refusal on the customer listener, also used by tunnel ingress. */
 export const refusePublicFleetData: RequestHandler = (req, res, next) => {
-  if (req.path !== '/v1/invoke') { next(); return; }
-  res.set('Cache-Control', 'no-store').status(404).json({ error: 'fleet_data_unavailable' });
+  if (req.path !== '/v1/invoke' && req.path !== '/extensions/v1/invoke') { next(); return; }
+  res.set('Cache-Control', 'no-store').status(404).json({ error: req.path === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable' });
 };
 
 /** Separate Unix listener only. Never mount this handler on Express or the tunnel. */
-export async function listenFleetData(plane: FleetDataPlane): Promise<FleetDataListener> {
+export async function listenFleetData(plane: FleetDataPlane, extensions?: FleetExtensionPlane): Promise<FleetDataListener> {
   const runtime = await plane.runtime();
   const socket = path.join(plane.files.root, `data-${runtime.runtimeGeneration}.sock`);
   await removeStaleSockets(plane);
@@ -104,17 +107,21 @@ export async function listenFleetData(plane: FleetDataPlane): Promise<FleetDataL
     res.setHeader('Cache-Control', 'no-store');
     let timer: NodeJS.Timeout | undefined;
     try {
-      if (req.method !== 'POST' || req.url !== '/v1/invoke' || req.headers['content-type'] !== 'application/json' || req.headers['content-encoding']) throw new Error();
+      if (req.method !== 'POST' || (req.url !== '/v1/invoke' && !(extensions && req.url === '/extensions/v1/invoke')) || req.headers['content-type'] !== 'application/json' || req.headers['content-encoding']) throw new Error();
       const parts: Buffer[] = []; let length = 0;
       timer = setTimeout(() => req.destroy(), 5000);
       for await (const part of req) {
         const bytes = Buffer.from(part); length += bytes.length;
-        if (length > 8192) throw new Error();
+        if (length > (req.url === '/extensions/v1/invoke' ? FLEET_EXTENSION_LIMITS.requestBytes : 8192)) throw new Error();
         parts.push(bytes);
       }
       clearTimeout(timer);
       const raw = Buffer.concat(parts).toString('utf8');
-      if (parseEnvelope(raw).request.action === 'artifact.stream') {
+      if (req.url === '/extensions/v1/invoke') {
+        const body = JSON.stringify(await extensions!.invoke(raw));
+        if (Buffer.byteLength(body) > FLEET_EXTENSION_LIMITS.responseBytes) throw new Error();
+        res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(body);
+      } else if (parseEnvelope(raw).request.action === 'artifact.stream') {
         await plane.stream(raw, async (download, authorize) => {
           await authorize();
           const size = download.status.sizeBytes!;
@@ -165,7 +172,7 @@ export async function listenFleetData(plane: FleetDataPlane): Promise<FleetDataL
       }
     } catch {
       if (res.headersSent) res.destroy();
-      else { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end('{"error":"fleet_data_unavailable"}'); }
+      else { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: req.url === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable' })); }
     } finally { clearTimeout(timer); }
   };
   server.requestTimeout = 10_000;
@@ -186,7 +193,7 @@ export async function listenFleetData(plane: FleetDataPlane): Promise<FleetDataL
   server.emit('listening');
   let shutdown: Promise<void> | undefined;
   const close = () => shutdown ??= (async () => {
-    stopping = true;
+    stopping = true; extensions?.shutdown();
     // Unlink only our captured inode in the unchanged private management root.
     // The transferred descriptor has no libuv bind pathname to auto-unlink.
     let cleanupError: unknown;
@@ -209,11 +216,11 @@ export async function listenFleetData(plane: FleetDataPlane): Promise<FleetDataL
 }
 
 /** Provisioning is Fleet's job. Missing authority does not create or enable controls. */
-export async function startConfiguredFleetData(storage: InstanceStorageService, authorizeActor: FleetActorAuthorization): Promise<FleetDataListener | undefined> {
+export async function startConfiguredFleetData(storage: InstanceStorageService, authorizeActor: FleetActorAuthorization, store?: ExtensionProfileStore): Promise<FleetDataListener | undefined> {
   const root = path.join(path.dirname(storageControlRoot()), 'fleet-data-control');
   try { await fs.lstat(path.join(root, 'authority.json')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
   const plane = new FleetDataPlane(storage, root, undefined, authorizeActor);
   await plane.initialize();
-  return listenFleetData(plane);
+  return listenFleetData(plane, store ? new FleetExtensionPlane(plane, store) : undefined);
 }

@@ -24,6 +24,8 @@ interface AgentModelSelectorProps {
   onMultiConfirm?: () => void;
   /** Automatically open the multi-select dropdown when switching to multi mode */
   autoOpenMultiDropdown?: boolean;
+  /** Keep multi-model choices in the layout of an enclosing scrollable dialog. */
+  inlineMultiDropdown?: boolean;
   /** Label for an agent option; defaults to its alias. */
   formatAgentLabel?: (agent: InstanceCatalogAgent) => string;
   /** Text of the empty agent option; defaults to "Select Agent". */
@@ -49,6 +51,7 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
   onMultiModelChange,
   onMultiConfirm,
   autoOpenMultiDropdown = false,
+  inlineMultiDropdown = false,
   formatAgentLabel,
   agentPlaceholder,
   agentPlaceholderProvider,
@@ -148,6 +151,7 @@ export const AgentModelSelector: React.FC<AgentModelSelectorProps> = ({
   if (isMulti) {
     return (
       <MultiSelectMode
+        inlineDropdown={inlineMultiDropdown}
         compact={compact}
         disabled={disabled}
         className={className}

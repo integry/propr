@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef, useSyncExternalStore } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { Socket } from '@propr/client';
 import { DESKTOP_TRANSPORT_SCOPE_QUERY, TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
@@ -278,18 +278,27 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({
     socketConfigurationKey,
   ]);
 
-  const subscribeToTask = useCallback((taskId: string) => {
-    if (socket && isConnected) {
-      socket.emit('subscribe:task', taskId);
-      console.log(`[SocketContext] Subscribed to task: ${taskId}`);
-    }
-  }, [socket, isConnected]);
-
-  const unsubscribeFromTask = useCallback((taskId: string) => {
-    if (socket && isConnected) {
-      socket.emit('unsubscribe:task', taskId);
-      console.log(`[SocketContext] Unsubscribed from task: ${taskId}`);
-    }
+  // Counts belong to this connection scope. Consumers re-run their effects on
+  // reconnect/profile changes; an old cleanup cannot release a new connection.
+  const { subscribeToTask, unsubscribeFromTask } = useMemo(() => {
+    const counts = new Map<string, number>();
+    return {
+      subscribeToTask: (taskId: string) => {
+        if (!socket || !isConnected) return;
+        const count = counts.get(taskId) ?? 0;
+        counts.set(taskId, count + 1);
+        if (count === 0) socket.emit('subscribe:task', taskId);
+      },
+      unsubscribeFromTask: (taskId: string) => {
+        const count = counts.get(taskId) ?? 0;
+        if (count === 0) return;
+        if (count > 1) counts.set(taskId, count - 1);
+        else {
+          counts.delete(taskId);
+          if (socket?.connected) socket.emit('unsubscribe:task', taskId);
+        }
+      },
+    };
   }, [socket, isConnected]);
 
   const subscribeToDraft = useCallback((draftId: string) => {

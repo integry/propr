@@ -674,6 +674,10 @@ jobs:
           # if that output is not present. @propr/client needs no build: the UI
           # vite config aliases it to the workspace source.
           test -f packages/shared/dist/index.js || npm run build -w @propr/shared
+          # Goal lifecycle regressions import the real API socket service,
+          # which requires @propr/core's compiled package entry point. CLI
+          # packaging does not build core, and Run Checks happens later.
+          npm run build -w @propr/core
           npm run test:browser --workspace=propr-ui
 
       - name: Run Checks

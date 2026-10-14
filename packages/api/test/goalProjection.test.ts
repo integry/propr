@@ -349,3 +349,42 @@ test('goal projection normalizes SQLite timestamps to UTC ISO strings', async ()
     await database.destroy();
   }
 });
+
+for (const timezone of ['UTC', 'Europe/London']) {
+  test(`goal and checkpoint UTC projection agrees with mixed ISO times in ${timezone}`, async () => {
+    const originalTimezone = process.env.TZ;
+    process.env.TZ = timezone;
+    const database = await inputProjectionDatabase();
+    try {
+      await database.schema.createTable('goal_checkpoints', table => {
+        for (const column of ['checkpoint_id', 'goal_id', 'owner_id', 'state', 'created_at', 'completed_at']) table.text(column);
+      });
+      await database('goal_checkpoints').insert({ checkpoint_id: 'final', goal_id: inputGoalRow.goal_id,
+        owner_id: inputGoalRow.owner_id, state: 'completed',
+        created_at: '2026-10-14 01:01:54', completed_at: '2026-10-14 01:02:14' });
+      const projected = await serializeGoal(database, emptyRedis, { ...inputGoalRow,
+        launch_strategy: 'direct', result_state: 'completed',
+        created_at: '2026-10-14 01:01:10', started_at: '2026-10-14 01:01:12',
+        updated_at: '2026-10-14 01:02:18', completed_at: '2026-10-14T01:02:18.000Z',
+        paused_at: '2026-10-14 01:01:30', paused_ms: 2_000,
+        last_checkpoint_at: '2026-10-14 01:02:14',
+      });
+      assert.equal(projected.createdAt, '2026-10-14T01:01:10Z');
+      assert.equal(projected.updatedAt, '2026-10-14T01:02:18Z');
+      assert.equal(projected.startedAt, '2026-10-14T01:01:12Z');
+      assert.equal(projected.pausedAt, '2026-10-14T01:01:30Z');
+      assert.equal(projected.completedAt, '2026-10-14T01:02:18.000Z');
+      assert.equal(projected.checkpoint?.lastAt, '2026-10-14T01:02:14Z');
+      assert.equal(projected.checkpoint?.latest?.createdAt, '2026-10-14T01:01:54Z');
+      assert.equal(projected.checkpoint?.latest?.completedAt, '2026-10-14T01:02:14Z');
+      assert.equal(projected.elapsedMs, 66_000);
+      assert.equal(projected.activeMs, 64_000);
+      const localized = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: '2-digit', minute: '2-digit' });
+      assert.equal(localized.format(new Date(projected.startedAt!)), timezone === 'UTC' ? '01:01' : '02:01');
+    } finally {
+      if (originalTimezone === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTimezone;
+      await database.destroy();
+    }
+  });
+}

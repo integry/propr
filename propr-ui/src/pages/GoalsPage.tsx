@@ -832,7 +832,9 @@ function GoalDetails({ goalId }: { goalId: string }) {
   const goalResource = useLiveResource({
     read: signal => getGoal(goalId, { signal }),
     scopeKey: `goal::${goalId}`,
-    interest: { domains: ['goal', 'task'], goals: true, repository: goal?.repository },
+    // Goal notifications are best effort. Final task settlement also invalidates
+    // this read directly; both streams coalesce and neither supplies UI state.
+    interest: { domains: ['goal', 'task'], goals: true, taskId: goal?.taskId, repository: goal?.repository },
   });
   useEffect(() => {
     // Another goal's data is not this goal's data, so the console says it is

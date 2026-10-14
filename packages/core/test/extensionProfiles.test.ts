@@ -30,6 +30,20 @@ async function fixture() {
   return { database, store: new ExtensionProfileStore(database, { SYSTEM_TASK_SECRET: 'synthetic-private-custody-test-key' }) };
 }
 
+test('native save preserves null creates and refuses malformed expected selections without mutations', async t => {
+  const { database, store } = await fixture(); t.after(() => database.destroy());
+  const profile = await store.save('1', input(), {}, null);
+  assert.equal(profile.revision, 1);
+  assert.deepEqual(await store.list('1'), [profile]);
+  const profiles = await database('extension_profiles').select('*');
+  const revisions = await database('extension_profile_revisions').select('*');
+  for (const expected of [{}, { instanceId: profile.instanceId, revision: 3 }, { guard: 1 }, { preflight: 1 }, { expected: select(profile) }]) {
+    await assert.rejects(store.save('1', input(), {}, expected as any), /Invalid extension selection/);
+    assert.deepEqual(await database('extension_profiles').select('*'), profiles);
+    assert.deepEqual(await database('extension_profile_revisions').select('*'), revisions);
+  }
+});
+
 test('native durable instance-admin CRUD, encrypted custody, revision fencing and immutable running grants without Connect', async t => {
   const { database, store } = await fixture(); t.after(() => database.destroy());
   for (const actor of ['2', '4', 'bootstrap', '']) await assert.rejects(store.list(actor), /durable instance administrator/);

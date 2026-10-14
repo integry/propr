@@ -182,7 +182,7 @@ async function saveProviderResult(
     return { finalPr: validated.finalPr };
 }
 
-async function finalizeGoal(
+export async function finalizeGoal(
     job: GoalJobData,
     resultState: 'completed' | 'failed',
     failureReason?: string,

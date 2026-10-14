@@ -8,29 +8,36 @@ export interface PopoverPosition {
   bottom?: number;
   right: number;
   maxHeight: number;
+  maxWidth: number;
 }
 
 /**
  * Places a fixed popover below its trigger, flipping above when the content does not fit
  * below and there is more room above. Whichever side is chosen bounds the height, so the
- * popover scrolls internally instead of running off-screen.
+ * popover scrolls internally instead of running off-screen. The measured border-box width
+ * keeps the preferred right alignment unless it would cross either horizontal viewport margin.
  */
 export function computePopoverPosition(
   trigger: Pick<DOMRect, 'top' | 'bottom' | 'right'>,
   contentHeight: number,
   viewport: { width: number; height: number },
+  contentWidth = 0,
 ): PopoverPosition {
-  const right = Math.max(VIEWPORT_MARGIN, viewport.width - trigger.right);
+  const maxWidth = Math.max(0, viewport.width - 2 * VIEWPORT_MARGIN);
+  const right = Math.max(VIEWPORT_MARGIN, Math.min(
+    viewport.width - trigger.right,
+    viewport.width - VIEWPORT_MARGIN - Math.min(contentWidth, maxWidth),
+  ));
   const spaceBelow = Math.max(0, viewport.height - trigger.bottom - GAP - VIEWPORT_MARGIN);
   const spaceAbove = Math.max(0, trigger.top - GAP - VIEWPORT_MARGIN);
   if (contentHeight <= spaceBelow || spaceBelow >= spaceAbove) {
-    return { top: trigger.bottom + GAP, right, maxHeight: spaceBelow };
+    return { top: trigger.bottom + GAP, right, maxWidth, maxHeight: spaceBelow };
   }
-  return { bottom: viewport.height - trigger.top + GAP, right, maxHeight: spaceAbove };
+  return { bottom: viewport.height - trigger.top + GAP, right, maxWidth, maxHeight: spaceAbove };
 }
 
 const isSamePosition = (left: PopoverPosition, right: PopoverPosition) =>
-  left.top === right.top && left.bottom === right.bottom && left.right === right.right && left.maxHeight === right.maxHeight;
+  left.top === right.top && left.bottom === right.bottom && left.right === right.right && left.maxHeight === right.maxHeight && left.maxWidth === right.maxWidth;
 
 const isOutsideViewport = (rect: DOMRect) => rect.bottom < 0 || rect.top > window.innerHeight;
 
@@ -45,7 +52,7 @@ export interface ClosePopoverOptions {
 }
 
 /**
- * Open state, viewport-aware placement and dismissal (outside click, Escape, resize) for a
+ * Open state, viewport-aware placement and dismissal (outside click, Escape) for a
  * popover portalled with fixed coordinates. Scrolling a container that holds the trigger keeps
  * the popover anchored to it, and only closes it once the trigger has scrolled out of view.
  */
@@ -66,10 +73,10 @@ export function useAnchoredPopover<TContainer extends HTMLElement = HTMLDivEleme
       containerRef.current?.querySelector<HTMLElement>('button, [tabindex]')?.focus();
     }
   }, []);
-  const place = useCallback((contentHeight: number) => {
+  const place = useCallback((contentHeight: number, contentWidth = 0) => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return null;
-    return computePopoverPosition(rect, contentHeight, { width: window.innerWidth, height: window.innerHeight });
+    return computePopoverPosition(rect, contentHeight, { width: window.innerWidth, height: window.innerHeight }, contentWidth);
   }, []);
   const toggle = useCallback(() => {
     if (open) { close(); return; }
@@ -79,19 +86,20 @@ export function useAnchoredPopover<TContainer extends HTMLElement = HTMLDivEleme
   const reposition = useCallback(() => {
     const popover = popoverRef.current;
     if (!popover) return;
-    const next = place(popover.scrollHeight);
+    const next = place(popover.scrollHeight, popover.getBoundingClientRect().width);
     if (!next) return;
     setPosition(previous => (previous === null || isSamePosition(previous, next) ? previous : next));
   }, [place]);
 
-  // Once the content has rendered, its natural height decides whether it fits below or flips
-  // above; content that grows later (e.g. switching to multi-model) is placed again.
+  // Measure after rendering to contain the width and decide whether to flip above.
+  // Observe the border box as well as the contents for wrapping and mode changes.
   useLayoutEffect(() => {
     const popover = popoverRef.current;
     if (!open || !popover) return;
     reposition();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(reposition);
+    observer.observe(popover);
     Array.from(popover.children).forEach(child => observer.observe(child));
     return () => observer.disconnect();
   }, [open, reposition]);
@@ -108,7 +116,7 @@ export function useAnchoredPopover<TContainer extends HTMLElement = HTMLDivEleme
       if (!containerRef.current?.contains(target) && !popoverRef.current?.contains(target)) close();
     };
     const handleKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') close({ restoreFocus: true }); };
-    const handleResize = () => close();
+    const handleResize = () => reposition();
     const handleScroll = (event: Event) => {
       const target = event.target as Node;
       const trigger = containerRef.current;

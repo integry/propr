@@ -95,8 +95,9 @@ test('signed RPM runner passes its host identity and keeps evidence directories 
 });
 
 const exerciseExport = async ({ rootful = false, partial = false }) => {
-  // The distinct host UID must traverse the parent. CI's TMPDIR can be 0700
-  // and owned by root; use Linux's shared /tmp for this root-only fixture.
+  // The distinct host UID must be able to traverse the fixture's ancestors.
+  // CI's TMPDIR can be private to root; keep the Linux rootful fixture directly
+  // under /tmp without changing permissions on the runner's private directory.
   const directory = await mkdtemp(join(rootful ? '/tmp' : tmpdir(), 'signed-rpm-export-'));
   const source = join(directory, 'source');
   const destination = join(directory, 'evidence');

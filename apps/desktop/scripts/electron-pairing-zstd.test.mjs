@@ -22,14 +22,60 @@ const fixture = resolve(dirname(fileURLToPath(import.meta.url)), 'electron-pairi
 // download in `before` draws on the same ceiling, so the two launches are
 // budgeted to fit under it together rather than each assuming the whole file.
 // A launch the runner has to retry can therefore reach the test timeout rather
-// than the runner's own message; it only retries a fixture that reported
-// nothing at all, which is a crash rather than a spent budget.
+// than the runner's own message. The same ceiling also bounds a fresh launch
+// when the first session never reaches the server; it does not grant another
+// full test timeout.
 const stallBudgetMs = 45_000;
 const stallTestTimeoutMs = 105_000;
 // A launch also pays Electron's start-up and the four decoded requests, and
 // must outlast the budget so the probe is never killed mid-report.
 const fixtureAttempts = 2;
 const launchTimeout = budgetMs => budgetMs + 15_000;
+
+const runPairingFixture = options => runElectronFixture({
+  ...options,
+  // A session that never became ready measured no compression behavior. A
+  // fresh Electron process recovered immediately in the failing CI run.
+  // Do not retry reports from a ready session: their pairing assertions must
+  // still expose protocol/decoding regressions. The runner retains the last
+  // failed readiness report so a persistent outage also fails the test.
+  rejectReport: report => report.readiness?.ready === false
+    && `never reached the loopback server: ${JSON.stringify(report.readiness)}`,
+});
+
+describe('Electron pairing readiness recovery', () => {
+  for (const [name, reports, expectedAttempts] of [
+    ['relaunches a session that never became ready', [
+      { readiness: { ready: false, attempts: 3, elapsedMs: 45_257 } },
+      { readiness: { ready: true }, valid: { kind: 'success' } },
+    ], 2],
+    ['preserves persistent readiness failure', [
+      { readiness: { ready: false } },
+      { readiness: { ready: false } },
+    ], 2],
+    ['does not retry compression failures after readiness', [
+      { readiness: { ready: true }, valid: { kind: 'invalid_response' } },
+    ], 1],
+  ]) {
+    it(name, async () => {
+      let attempts = 0;
+      const report = await runPairingFixture({
+        attempts: fixtureAttempts,
+        electronArguments: [],
+        name: 'Electron zstd fixture',
+        setup: { electronExecutable: 'unused' },
+        timeout: launchTimeout(stallBudgetMs),
+        runAttempt: async () => ({
+          code: 0,
+          stdout: JSON.stringify(reports[attempts++]),
+          stderr: '',
+        }),
+      });
+      assert.equal(attempts, expectedAttempts);
+      assert.deepEqual(report, reports.at(-1));
+    });
+  }
+});
 
 const expectedValue = { status: 'approved', transport: 'native-electron-zstd' };
 const compressed = zstdCompressSync(Buffer.from(JSON.stringify(expectedValue)));
@@ -89,7 +135,7 @@ describe('Electron pairing response compression', () => {
     try {
       const address = server.address();
       assert.ok(address && typeof address === 'object');
-      const report = await runElectronFixture({
+      const report = await runPairingFixture({
         attempts: fixtureAttempts,
         diagnostic: message => context.diagnostic(message),
         electronArguments: [

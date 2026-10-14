@@ -102,6 +102,7 @@ export const AgentOverrideChip: React.FC<AgentOverrideChipProps> = ({
             onModelChange={(model) => onModelChange(issueNumber, model)}
             disabled={disabled}
             compact
+            inlineMultiDropdown
             isMulti={isMultiMode}
             onMultiToggle={handleMultiToggle}
             selectedModels={selectedModels}

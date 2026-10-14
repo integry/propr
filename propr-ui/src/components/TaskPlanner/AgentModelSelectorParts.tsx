@@ -67,6 +67,7 @@ const SelectedModelsChips: React.FC<SelectedModelsChipsProps> = ({ selectedModel
 );
 
 interface MultiSelectModeProps {
+  inlineDropdown?: boolean;
   compact: boolean;
   disabled: boolean;
   className: string;
@@ -80,6 +81,7 @@ interface MultiSelectModeProps {
 }
 
 export const MultiSelectMode: React.FC<MultiSelectModeProps> = ({
+  inlineDropdown = false,
   compact,
   disabled,
   className,
@@ -92,7 +94,7 @@ export const MultiSelectMode: React.FC<MultiSelectModeProps> = ({
   onConfirm
 }) => (
   <div className={`flex min-w-0 flex-wrap items-center gap-2 ${className}`}>
-    <div className="relative flex-shrink-0">
+    <div className="relative max-w-full flex-shrink-0">
       <button
         onClick={() => !disabled && setMultiDropdownOpen(!multiDropdownOpen)}
         disabled={disabled}
@@ -115,11 +117,11 @@ export const MultiSelectMode: React.FC<MultiSelectModeProps> = ({
 
       {multiDropdownOpen && (
         <>
-          <div
+          {!inlineDropdown && <div
             className="fixed inset-0 z-10"
             onClick={() => setMultiDropdownOpen(false)}
-          />
-          <div className="absolute z-20 mt-1 right-0 w-64 bg-white border border-gray-200 rounded-lg shadow-lg flex flex-col">
+          />}
+          <div className={`${inlineDropdown ? 'relative max-w-full' : 'absolute right-0'} z-20 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg flex flex-col`}>
             <div className="p-2 border-b border-gray-100 flex-shrink-0">
               <button
                 onClick={onBackToSingle}

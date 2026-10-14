@@ -15,6 +15,7 @@ import { useSocket } from './useSocket';
 type Handler = (value?: unknown) => void;
 const sockets = vi.hoisted(() => [] as Array<{
   handlers: Map<string, Handler>;
+  connected: boolean;
   connect: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
   emit: ReturnType<typeof vi.fn>;
@@ -25,6 +26,7 @@ const connectSocketMock = vi.hoisted(() => vi.fn(() => {
   const handlers = new Map<string, Handler>();
   const socket = {
     handlers,
+    connected: true,
     connect: vi.fn(),
     disconnect: vi.fn(),
     emit: vi.fn(),
@@ -306,6 +308,38 @@ describe('SocketProvider', () => {
     // Room bookkeeping must never cost a connection: a surface whose identity
     // changed per render would rebuild the Manager on every one of them.
     expect(connectSocketMock).toHaveBeenCalledOnce();
+  });
+
+  it('shares task lifecycle ownership and scopes cleanup across reconnect and profile changes', () => {
+    const Consumer = ({ taskId }: { taskId: string }) => {
+      const { subscribeToTask, unsubscribeFromTask, isConnected } = useSocket();
+      useEffect(() => {
+        if (!isConnected) return;
+        subscribeToTask(taskId);
+        return () => unsubscribeFromTask(taskId);
+      }, [taskId, isConnected, subscribeToTask, unsubscribeFromTask]);
+      return null;
+    };
+    state.scope = scope('profile-a', 'AAAAAAAAAAAAAAAAAAAAAA');
+    const view = render(<SocketProvider><Consumer taskId="goal-1" /><Consumer taskId="goal-1" /></SocketProvider>);
+    act(() => sockets[0].handlers.get('connect')?.());
+    expect(sockets[0].emit.mock.calls.filter(([event]) => event === 'subscribe:task')).toEqual([['subscribe:task', 'goal-1']]);
+    view.rerender(<SocketProvider><Consumer taskId="goal-1" /></SocketProvider>);
+    expect(sockets[0].emit).not.toHaveBeenCalledWith('unsubscribe:task', 'goal-1');
+    sockets[0].connected = false;
+    act(() => sockets[0].handlers.get('disconnect')?.('transport close'));
+    sockets[0].connected = true;
+    act(() => sockets[0].handlers.get('connect')?.());
+    expect(sockets[0].emit.mock.calls.filter(([event]) => event === 'subscribe:task')).toHaveLength(2);
+    view.rerender(<SocketProvider><Consumer taskId="goal-2" /></SocketProvider>);
+    expect(sockets[0].emit).toHaveBeenCalledWith('unsubscribe:task', 'goal-1');
+    expect(sockets[0].emit).toHaveBeenCalledWith('subscribe:task', 'goal-2');
+    publish(scope('profile-b', 'BBBBBBBBBBBBBBBBBBBBBB'));
+    act(() => sockets[1].handlers.get('connect')?.());
+    expect(sockets[1].emit).toHaveBeenCalledWith('subscribe:task', 'goal-2');
+    expect(sockets[1].emit).not.toHaveBeenCalledWith('unsubscribe:task', 'goal-2');
+    view.unmount();
+    expect(sockets[1].emit).toHaveBeenCalledWith('unsubscribe:task', 'goal-2');
   });
 
   it('negotiates direct snapshots without recreating the connection', () => {

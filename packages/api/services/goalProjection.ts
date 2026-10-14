@@ -198,8 +198,8 @@ function checkpointProjection(
       exclude: parseCheckpointPaths(latestCheckpoint.exclude_paths),
       summary: latestCheckpoint.summary,
       error: latestCheckpoint.error,
-      createdAt: latestCheckpoint.created_at,
-      completedAt: latestCheckpoint.completed_at,
+      createdAt: isoTimestamp(latestCheckpoint.created_at as string | Date | number | null),
+      completedAt: isoTimestamp(latestCheckpoint.completed_at as string | Date | number | null),
     } : null,
   };
 }
@@ -245,7 +245,17 @@ export async function serializeGoal(
   source: GoalProjectionRow,
   options: SerializeGoalOptions = {},
 ) {
-  const row = source;
+  // Normalize before both duration arithmetic and serialization. SQLite UTC datetimes
+  // must not be interpreted in the API process's or the browser's local timezone.
+  const row = {
+    ...source,
+    created_at: isoTimestamp(source.created_at)!,
+    updated_at: isoTimestamp(source.updated_at)!,
+    started_at: isoTimestamp(source.started_at),
+    paused_at: isoTimestamp(source.paused_at),
+    completed_at: isoTimestamp(source.completed_at),
+    last_checkpoint_at: isoTimestamp(source.last_checkpoint_at),
+  };
   const includeInputs = options.includeInputs !== false;
   const inputs = includeInputs ? await loadGoalInputs(db, row.goal_id, row.owner_id) : [];
   const live = await projectTaskLiveDetails(redis, db, row.current_task_id, { sessionId: row.session_id });

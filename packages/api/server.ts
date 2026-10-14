@@ -1,3 +1,4 @@
+import { ExtensionProfileStore } from '../core/src/extensions/extensionProfileStore.js';
 import { createExtensionProfileRoutes } from './routes/extensionProfileRoutes.js';
 import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataListener.js';
 import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
@@ -431,7 +432,7 @@ export function setupRoutes(): void {
   const storageService = createDefaultStorageService();
   const storageRoutes = createInstanceStorageRoutes(storageService);
   // Management-only Unix transport; no customer/tunnel route is registered.
-  fleetDataListener = demoMode ? Promise.resolve(undefined) : startConfiguredFleetData(storageService, actorId => resolveDurableInstanceAuthorization(String(actorId)));
+  fleetDataListener = demoMode ? Promise.resolve(undefined) : startConfiguredFleetData(storageService, (actorId, database) => resolveDurableInstanceAuthorization(String(actorId), database), new ExtensionProfileStore(db));
   // Background work is bounded/coalesced; no startup deletion or live-data scan.
   const storageSweep = setInterval(() => {
     void storageService.sweep().catch(() => undefined);

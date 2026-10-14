@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { useParams, Link, useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { replaceUiPathInPlace } from '../config/runtimeMode';
 import { useDraft } from '../hooks/useDraft';
 import { useGenerationPolling } from '../hooks/useGenerationPolling';
 import SetupWizard from '../components/TaskPlanner/SetupWizard';
@@ -396,7 +397,7 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
   const handleDraftCreatedInPlace = useCallback((draft: PlannerDraft) => {
     setInPlaceDraft(draft);
     // Update URL without triggering navigation - this keeps the component mounted
-    window.history.replaceState(null, '', `/studio/${draft.draft_id}`);
+    replaceUiPathInPlace(`/studio/${draft.draft_id}`);
   }, []);
 
   // Determine the effective draft ID for useDraft

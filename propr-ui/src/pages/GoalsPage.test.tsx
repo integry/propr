@@ -108,6 +108,32 @@ describe('GoalsPage', () => {
     vi.mocked(goalsApi.requestGoalModel).mockResolvedValue({ goal: { ...goal, requestedModel: 'gpt-5.6-luna' } });
   });
 
+  it.each(['goal', 'task'] as const)('refreshes a completing goal after a stale in-flight read via %s', async stream => {
+    socket.isConnected = true;
+    const stale = deferred<{ goal: goalsApi.Goal }>();
+    const terminal = { ...goal, launchStrategy: 'direct' as const, resultState: 'completed' as const,
+      taskState: 'completed', finalPr: { number: 8, url: 'https://github.com/acme/web/pull/8' } };
+    vi.mocked(goalsApi.getGoal).mockResolvedValueOnce({ goal }).mockReturnValueOnce(stale.promise)
+      .mockResolvedValue({ goal: terminal });
+    render(<MemoryRouter initialEntries={['/goals/goal-1']}><Routes><Route path="/goals/:goalId" element={<GoalsPage />} /></Routes></MemoryRouter>);
+    await screen.findByRole('button', { name: 'Pause' });
+    const emit = () => socket.onGoalUpdate.mock.calls.forEach(([handler]) => handler?.({
+      goalId: goal.id, repository: goal.repository, state: 'completed',
+    } as never));
+    act(emit);
+    await waitFor(() => expect(goalsApi.getGoal).toHaveBeenCalledTimes(2));
+    if (stream === 'goal') act(emit);
+    else act(() => socket.onTaskUpdate.mock.calls.forEach(([handler]) => handler?.({
+      taskId: goal.taskId, state: 'completed', previousState: 'claude_execution',
+    } as never)));
+    await act(async () => stale.resolve({ goal }));
+    await screen.findByText('Completed', { exact: true });
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Correction or follow-up')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Open draft PR/ })).toHaveAttribute('href', terminal.finalPr.url);
+  });
+
   it('defers the initial Goals list read in a background tab', async () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     const view = render(<MemoryRouter><GoalsPage /></MemoryRouter>);

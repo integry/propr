@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
+import { goalLifecycleServer } from './goalLifecycleServer.mjs';
 
 const timestamp = '2026-09-10T00:00:00.000Z';
 
@@ -286,5 +287,107 @@ for (const [device, viewport] of Object.entries({ desktop: { width: 1440, height
     expect(request.postData()).toContain('dashboard-requirements.txt');
     await expect(dialog.getByRole('alert')).toBeVisible();
     await expect(prompt).toHaveValue('Ship the customer analytics dashboard with accessible filters and responsive charts.');
+  });
+}
+
+
+for (const timezoneId of ['UTC', 'Europe/London']) {
+  test.describe(`completed goal in ${timezoneId}`, () => {
+    test.use({ timezoneId });
+    for (const viewport of [{ width: 880, height: 620 }, { width: 390, height: 844 }]) {
+      test(`settles without reload and renders minute offsets at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const server = await goalLifecycleServer();
+        try {
+          let denied = false;
+          const deliveredTasks: string[] = [];
+          await page.routeWebSocket('**/socket.io/**', socket => {
+            const upstream = new WebSocket(server.url);
+            const pending: Array<string | Buffer> = [];
+            socket.onMessage(message => {
+              if (upstream.readyState === WebSocket.OPEN) upstream.send(message);
+              else pending.push(message);
+            });
+            upstream.addEventListener('open', () => pending.splice(0).forEach(frame => upstream.send(frame)));
+            upstream.addEventListener('message', ({ data }) => {
+              const frame = String(data);
+              if (frame.startsWith('40')) {
+                upstream.send('42["subscribe:task","goal-unrelated"]');
+              }
+              if (frame.startsWith('42')) {
+                const [event, payload] = JSON.parse(frame.slice(2));
+                if (event === 'task:update') deliveredTasks.push(payload.taskId);
+              }
+              if (frame.includes('subscription:error') && frame.includes('FORBIDDEN')) denied = true;
+              socket.send(frame);
+            });
+            socket.onClose(() => upstream.close());
+            upstream.addEventListener('close', () => socket.close());
+          });
+          await page.route('**/api/auth/user', route => route.fulfill({ json: {
+            id: 'user-1', login: 'operator', username: 'operator', displayName: 'Goal owner',
+            email: null, avatarUrl: null, role: 'member', permissions: [], authorizationSource: 'managed',
+          } }));
+          let completedReads = 0;
+          await page.route('**/api/goals/goal-1', async route => {
+            const row = await server.read();
+            const complete = row.result_state === 'completed';
+            if (complete) completedReads += 1;
+            return route.fulfill({ json: { goal: {
+              ...goal, title: 'Add the requested four-line Markdown file', launchStrategy: 'direct',
+              objective: 'Add exactly the requested four lines to notes.md and open a draft PR.',
+              initialPrompt: 'Add exactly the requested four lines to notes.md and open a draft PR.',
+              requestedModel: 'gpt-6-astra', effectiveModel: 'gpt-6-astra',
+              resultState: complete ? 'completed' : null, taskState: complete ? 'completed' : 'claude_execution',
+              startedAt: '2026-10-14T01:01:12Z', createdAt: '2026-10-14T01:01:10Z',
+              completedAt: complete ? '2026-10-14T01:02:18Z' : null, elapsedMs: 66_000, activeMs: 66_000,
+              finalPr: complete ? { number: row.final_pr_number, url: 'https://github.com/acme/web/pull/8' } : null,
+              artifactStats: { issues: 0, openIssues: 0, pullRequests: 1, openPullRequests: 1 },
+              liveSummary: { ...goal.liveSummary, todos: [], currentTask: null },
+            } } });
+          });
+          await page.route('**/api/task/goal-task-1/live-details', route => route.fulfill({ json: {
+            events: [
+              { id: 'checkpoint', type: 'thought', content: JSON.stringify({ checkpointReady: true, message: 'docs: add four requested lines', include: ['notes.md'], summary: 'Added the requested four-line Markdown file.' }), timestamp: '2026-10-14T01:01:54Z' },
+              { id: 'summary', type: 'thought', content: 'Created draft PR #8 with the four requested lines.', timestamp: '2026-10-14T01:02:14Z' },
+            ], todos: [], currentTask: null, tokenUsage: null,
+          } }));
+          await page.goto('/goals/goal-1');
+          await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
+          await expect.poll(() => server.rooms()).toContain('task:goal-task-1');
+          expect(server.rooms()).not.toContain('instance:operational');
+          await expect.poll(() => denied).toBe(true);
+          expect(server.rooms()).not.toContain('task:goal-unrelated');
+          const reconnectRead = page.waitForResponse(response => new URL(response.url()).pathname === '/api/goals/goal-1');
+          server.reconnect();
+          await expect.poll(() => server.requests.filter(event => event === 'subscribe:task:goal-task-1').length).toBe(2);
+          await expect.poll(() => server.rooms()).toContain('task:goal-task-1');
+          await reconnectRead;
+          // Drain the 100ms reconnect/activity-ready coalescing window so a
+          // pending recovery read cannot masquerade as terminal invalidation.
+          await page.waitForTimeout(250);
+          await server.settle();
+          await expect(page.getByText('Completed', { exact: true })).toBeVisible();
+          expect(completedReads).toBeGreaterThan(0);
+          expect(deliveredTasks).toEqual(['goal-task-1']);
+          await expect(page.getByRole('button', { name: 'Pause', exact: true })).toHaveCount(0);
+          await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toHaveCount(0);
+          await expect(page.getByLabel('Correction or follow-up')).toHaveCount(0);
+          await expect(page.getByRole('link', { name: /Open draft PR/ })).toHaveAttribute('href', 'https://github.com/acme/web/pull/8');
+          await expect(page.getByText('42s', { exact: true })).toBeVisible();
+          await expect(page.getByText('1m 2s', { exact: true })).toBeVisible();
+          await expect(page.getByTitle('Elapsed time')).toHaveText('1m 6s');
+          expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+          if (process.env.PROPR_CAPTURE_PREVIEWS && timezoneId === 'Europe/London') {
+            await page.locator('summary').filter({ hasText: 'Goal description' }).click();
+            await mkdir('../.propr/previews', { recursive: true });
+            await page.screenshot({ path: `../.propr/previews/completed-goal-${viewport.width}.png`, fullPage: true, animations: 'disabled' });
+          }
+          await page.getByRole('link', { name: '← All goals' }).click();
+          await expect.poll(() => server.requests).toContain('unsubscribe:task:goal-task-1');
+          await expect.poll(() => server.rooms()).not.toContain('task:goal-task-1');
+        } finally { await server.close(); }
+      });
+    }
   });
 }

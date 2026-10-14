@@ -87,6 +87,20 @@ test('extension HTTP boundary requires fresh durable administration, preflight J
   const saved = await fetch(base + '/profiles', { method: 'POST', headers, body: JSON.stringify({ input, secrets: { synthetic: sentinel } }) });
   assert.equal(saved.status, 200); const text = await saved.text(); assert.ok(!text.includes(sentinel));
   const profile = JSON.parse(text).profile;
+  const nullSaved = await fetch(base + '/profiles', { method: 'POST', headers, body: JSON.stringify({ input, secrets: {}, expected: null }) });
+  assert.equal(nullSaved.status, 200);
+  const nullProfile = (await nullSaved.json()).profile;
+  assert.equal(nullProfile.revision, 1);
+  assert.notEqual(nullProfile.profileId, profile.profileId);
+  const profileRows = await database('extension_profiles').select('*');
+  const revisionRows = await database('extension_profile_revisions').select('*');
+  for (const expected of [{}, { instanceId: profile.instanceId, revision: 3 }, { guard: 1 }, { preflight: 1 }, { expected: { instanceId: profile.instanceId, profileId: profile.profileId, revision: profile.revision } }]) {
+    const refused = await fetch(base + '/profiles', { method: 'POST', headers, body: JSON.stringify({ input, secrets: {}, expected }) });
+    assert.equal(refused.status, 400);
+    assert.deepEqual(await refused.json(), { error: 'Invalid extension selection' });
+    assert.deepEqual(await database('extension_profiles').select('*'), profileRows);
+    assert.deepEqual(await database('extension_profile_revisions').select('*'), revisionRows);
+  }
   const publicText = await fetch(base + '/profiles', { headers }).then(r => r.text()); assert.ok(!publicText.includes(sentinel)); assert.ok(!publicText.includes('secrets_encrypted'));
   const catalogInput = { ...input, mcpServers: [{ kind: 'catalog', name: 'operator', catalogId: entry.id, digest: operatorCatalogDigest(entry), enabled: true, tools: ['lookup'], capability: entry.capability }] };
   const catalogSaved = await fetch(base + '/profiles', { method: 'POST', headers, body: JSON.stringify({ input: catalogInput }) });

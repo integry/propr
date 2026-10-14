@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, mock, test } from 'node:test';
-import { executePreparedGoal, processGoalJob } from '../src/jobs/processGoalJob.ts';
+import { executePreparedGoal, finalizeGoal, processGoalJob } from '../src/jobs/processGoalJob.ts';
 import type { GoalJobData } from '../packages/core/src/goalExports.ts';
 import type { AgentTaskOptions } from '../packages/core/src/agents/types.ts';
 import { assertProviderIdentityMatches } from '../src/jobs/goalAttemptState.ts';
@@ -387,4 +387,66 @@ test('resumed providers cannot replace the persisted session or conversation ide
     () => assertProviderIdentityMatches(persisted, 'session-1', 'conversation-2'),
     /instead of persisted conversation/,
   );
+});
+
+
+test('direct completion publishes committed terminal state and final PR before backing task settlement', async () => {
+  const { db, getEventPublisher } = await import('@propr/core');
+  const data: GoalJobData = { goalId: 'goal-publication', taskId: 'goal-task-publication',
+    repoOwner: 'acme', repoName: 'repo', generation: 1, claimId: 'claim-publication' };
+  const goal = { goal_id: data.goalId, owner_id: 'owner', owner_login: 'operator', repository: 'acme/repo',
+    objective: 'Add four lines of Markdown', launch_strategy: 'direct', initial_prompt: 'Add four lines of Markdown',
+    agent_id: 'codex', agent_alias: 'codex', agent_type: 'codex', requested_model: 'gpt-6-astra',
+    desired_state: 'running', result_state: null, current_task_id: data.taskId,
+    run_generation: 1, run_claim: data.claimId, branch_name: 'goal/four-lines', base_branch: 'main' };
+  await db('goals').insert(goal);
+  const reads: Array<{ result_state: string; final_pr_number: number; completed_at: string }> = [];
+  const publication = mock.method(getEventPublisher(), 'publishGoalUpdate', async () => {
+    // Read at publication, not after the worker returns: reproduces the console's earliest read.
+    reads.push(await db('goals').where({ goal_id: data.goalId }).first());
+    return true;
+  });
+  const load = () => db('goals').where({ goal_id: data.goalId }).first();
+  let settled = false;
+  try {
+    assert.equal(await finalizeGoal({ ...data, claimId: 'obsolete' }, 'completed'), false);
+    assert.equal(reads.length, 0, 'fenced workers must not publish');
+    const outcome = await processGoalJob({ data } as never, {
+      claim: load,
+      withHeartbeat: async (_job: unknown, operation: () => Promise<unknown>) => operation(),
+      prepare: async () => ({ ready: true, value: { goal, agent: {}, githubToken: '',
+        worktree: { worktreePath: '/tmp/test-goal', branchName: goal.branch_name }, pendingInput: null } }),
+      execute: async () => ({ success: true, modelUsed: 'gpt-6-astra', executionTimeMs: 66_000,
+        logs: '', modifiedFiles: ['notes.md'], summary: 'Added the requested four lines.' }),
+      result: {
+        loadGoal: load, fencedGoal: load, acknowledgeInput: async () => {}, recordMetrics: async () => {},
+        handleStopped: async () => null, scheduleFurtherWork: async () => null,
+        publishCheckpoint: async () => {},
+        saveProviderResult: async () => {
+          await db('goals').where({ goal_id: data.goalId }).update({ final_pr_number: 8,
+            final_pr_url: 'https://github.com/acme/repo/pull/8' });
+          return { finalPr: { number: 8, url: 'https://github.com/acme/repo/pull/8' } };
+        },
+        finalizeGoal, updatePullRequestDescription: async () => {}, labelPullRequest: async () => {},
+        stateManager: () => ({ markTaskCompleted: async () => {
+          assert.equal(reads.length, 1);
+          assert.equal((await load()).result_state, 'completed');
+          settled = true;
+          return { state: 'completed' };
+        } }),
+        markTaskReconciled: async () => { assert.equal(settled, true); },
+      },
+    } as never);
+    assert.equal(outcome.status, 'complete');
+    assert.equal(settled, true);
+    assert.equal(reads.length, 1);
+    assert.equal(reads[0].result_state, 'completed');
+    assert.equal(reads[0].final_pr_number, 8);
+    assert.ok(reads[0].completed_at);
+    assert.equal(await finalizeGoal(data, 'completed'), false);
+    assert.equal(reads.length, 1, 'idempotent finalization must not republish');
+  } finally {
+    publication.mock.restore();
+    await db('goals').where({ goal_id: data.goalId }).delete();
+  }
 });
