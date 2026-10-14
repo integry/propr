@@ -70,6 +70,11 @@ docker image inspect "$APP_IMAGE" "$UI_IMAGE" >/dev/null
 # create/resize/pixels) from every shipped importer on this native platform
 # before any service starts, so a missing nested tree never reaches packaging.
 "$REPO_ROOT/scripts/smoke-check-app-sharp.sh" "$APP_IMAGE"
+# The worker must be able to build the configured unified agent bundle from
+# this exact image's /usr/src/app, so every agent-bundle build input ships there.
+# Only that check's build container sees the Docker socket; the worker below
+# still runs without one.
+"$REPO_ROOT/scripts/smoke-check-app-agent-build-context.sh" "$APP_IMAGE"
 mkdir -p "$SMOKE_ROOT/data" "$SMOKE_ROOT/logs"
 chmod 700 "$SMOKE_ROOT/data" "$SMOKE_ROOT/logs"
 openssl genrsa -out "$SMOKE_ROOT/data/gh-app.pem" 2048 2>/dev/null

@@ -118,6 +118,8 @@ COPY --from=builder /build/docs/mcp.md /build/docs/mcp-coverage.md /build/docs/m
 
 # Unified agent image build context. The API builds custom CLI version bundles
 # through the mounted Docker socket, using /usr/src/app as the Docker context.
+# Every local COPY source of Dockerfile.agent must be listed here; see
+# scripts/smoke-check-app-agent-build-context.sh, which checks the built image.
 COPY Dockerfile.agent ./Dockerfile.agent
 COPY scripts/agent-entrypoint.sh ./scripts/agent-entrypoint.sh
 COPY scripts/agent-tank-runtime.mjs ./scripts/agent-tank-runtime.mjs
@@ -130,6 +132,7 @@ COPY scripts/opencode-run.sh ./scripts/opencode-run.sh
 COPY scripts/vibe-entrypoint.sh ./scripts/vibe-entrypoint.sh
 COPY scripts/vibe-prompt-file-runner.py ./scripts/vibe-prompt-file-runner.py
 COPY scripts/gh-wrapper.sh ./scripts/gh-wrapper.sh
+COPY scripts/extension-stdio-bridge.mjs ./scripts/extension-stdio-bridge.mjs
 COPY NOTICE ./NOTICE
 COPY THIRD_PARTY_LICENSES.md ./THIRD_PARTY_LICENSES.md
 

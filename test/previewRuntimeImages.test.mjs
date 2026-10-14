@@ -330,8 +330,26 @@ describe('preview runtime artifact and immutable publication scope', () => {
     assert.doesNotMatch(sharpCheck, /npm (?:install|i |ci)|--privileged|docker\.sock/);
   });
 
+  test('checks the exact app image is a complete agent-bundle build context before any service starts', () => {
+    const contextCheck = readFileSync('scripts/smoke-check-app-agent-build-context.sh', 'utf8');
+    const generalSmoke = readFileSync('scripts/smoke-test-images.sh', 'utf8');
+    const check = smoke.indexOf('"$REPO_ROOT/scripts/smoke-check-app-agent-build-context.sh" "$APP_IMAGE"');
+    assert.ok(check !== -1, 'the preview smoke must call the shared agent build-context check');
+    assert.ok(smoke.indexOf('docker image inspect "$APP_IMAGE"') < check);
+    assert.ok(check < smoke.indexOf('docker network create'), 'the build-context check must precede service startup');
+    assert.match(generalSmoke, /"\$REPO_ROOT\/scripts\/smoke-check-app-agent-build-context\.sh" "\$APP_TAG"/);
+    // The check reads the Dockerfile.agent shipped in the image, compares its
+    // inputs to the checkout, and lets the image's own docker CLI build from
+    // /usr/src/app exactly as the worker does.
+    assert.match(contextCheck, /--entrypoint cat "\$APP_IMAGE" "\$APP_CONTEXT\/Dockerfile\.agent"/);
+    assert.match(contextCheck, /APP_CONTEXT=\/usr\/src\/app/);
+    assert.match(contextCheck, /sha256sum/);
+    assert.match(contextCheck, /--entrypoint docker "\$APP_IMAGE" \\\n\s+build -q -f - -t "\$CHECK_TAG" "\$APP_CONTEXT"/);
+    assert.doesNotMatch(contextCheck, /--privileged|_API_KEY|_TOKEN|\.config|\.codex|\.claude/);
+  });
+
   test('shell entry points are syntactically executable', () => {
-    for (const path of ['scripts/build-images.sh', 'scripts/smoke-check-app-sharp.sh', 'scripts/smoke-test-preview-runtime-images.sh']) {
+    for (const path of ['scripts/build-images.sh', 'scripts/smoke-check-app-sharp.sh', 'scripts/smoke-check-app-agent-build-context.sh', 'scripts/smoke-test-preview-runtime-images.sh']) {
       const result = spawnSync('bash', ['-n', path], { encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr);
     }

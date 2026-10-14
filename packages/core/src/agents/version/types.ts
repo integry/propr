@@ -64,6 +64,7 @@ export const AGENT_BUNDLE_CONTENT_FILES = [
     'scripts/vibe-entrypoint.sh',
     'scripts/vibe-prompt-file-runner.py',
     'scripts/gh-wrapper.sh',
+    'scripts/extension-stdio-bridge.mjs',
     'NOTICE',
     'THIRD_PARTY_LICENSES.md'
 ] as const;
