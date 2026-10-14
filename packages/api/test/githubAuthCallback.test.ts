@@ -13,6 +13,18 @@ import { configureApiProxyTrust } from '../requestRateLimits.js';
 // OAuth state store, Passport session manager and express-session middleware.
 // No deployed Redis, GitHub credentials, or backend jobs are involved.
 const store = new session.MemoryStore();
+// RedisStore exposes ids() in addition to MemoryStore's session methods.
+// Keep the fixture compatible with production session lifecycle tracking.
+Object.assign(store, {
+  async ids(callback?: (error: Error | null, ids?: string[]) => void) {
+    const sessions = await new Promise<Record<string, session.SessionData>>((resolve, reject) => {
+      store.all((error, values) => error ? reject(error) : resolve(values as Record<string, session.SessionData>));
+    });
+    const ids = Object.keys(sessions);
+    if (callback) callback(null, ids);
+    else return ids;
+  },
+});
 await mock.module('connect-redis', {
   namedExports: {
     RedisStore: function RedisStore() { return store; },
