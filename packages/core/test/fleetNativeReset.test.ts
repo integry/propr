@@ -1,4 +1,9 @@
 import test from 'node:test';
+import ts from 'typescript';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { configuredNativeReset } from '../src/fleet/configuredReset.js';
+import { startFleetResetRecovery } from '../../api/fleetResetRecovery.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -79,7 +84,7 @@ async function fixture(t: any, checkpoint?: (phase: string) => Promise<void>, lo
   });
   t.after(async () => { await listener.shutdown(); native.close(); fence.close(); if (!closed) db.close(); remote.close(); await fs.rm(root, { recursive: true, force: true }); });
   return { root, tenantRoot, controlRoot, binding, fence, native, options, plane, sessions, tunnel, credentials, make, invoke, calls, secret,
-    missing: () => { missing = true; }, drift: () => { drift = true; }, remote };
+    stopListener: listener.shutdown, missing: () => { missing = true; }, drift: () => { drift = true; }, remote };
 }
 
 test('native reset through real Unix listener erases real SQLite/files, closes resources and boots isolated successor', async t => {
@@ -253,4 +258,266 @@ test('successor control proof accepts exact staged and activated identities', as
   assert.equal((await f.invoke(f.make())).body.receipt.evidence.state, 'complete');
   await f.native.bootstrapSuccessor(f.binding);
   assert.equal((await f.invoke(f.make('reset.receipt'))).body.receipt.evidence.state, 'complete');
+});
+
+// Provision only disposable fixtures; startup itself must never create authority.
+async function provisionConfigured(t: test.TestContext, f: Awaited<ReturnType<typeof fixture>>) {
+  const env = {
+    PROPR_FLEET_RESET_RUNTIME_ROOT: f.controlRoot,
+    PROPR_FLEET_RESET_SERVICE_SECRET: 'DISPOSABLE-SERVICE-SECRET-DO-NOT-USE-LIVE',
+    PROPR_FLEET_RESET_SECRET: f.secret,
+    DB_FILENAME: path.join(f.tenantRoot, 'database', 'propr.sqlite'),
+    GIT_CLONES_BASE_PATH: path.join(f.tenantRoot, 'repositories_worktrees_caches', 'clones'),
+    GIT_WORKTREES_BASE_PATH: path.join(f.tenantRoot, 'repositories_worktrees_caches', 'worktrees'),
+    HOME: path.join(f.tenantRoot, 'provider_sessions'),
+  };
+  for (const [key, value] of Object.entries(env)) {
+    const previous = process.env[key]; process.env[key] = value;
+    t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  }
+  const provision = { binding: f.binding, tenantRoot: f.tenantRoot,
+    services: { queue: 'https://queue.invalid', sessions: 'https://sessions.invalid', tunnel_bootstrap: 'https://tunnel.invalid' } };
+  await fs.writeFile(path.join(f.controlRoot, 'native.json'), JSON.stringify(provision), { mode: 0o600 });
+  return provision;
+}
+
+async function treeSnapshot(root: string): Promise<unknown> {
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  return Promise.all(entries.sort((a, b) => a.name.localeCompare(b.name)).map(async entry => [entry.name,
+    entry.isDirectory() ? await treeSnapshot(path.join(root, entry.name)) : await fs.readFile(path.join(root, entry.name))]));
+}
+
+test('configured native reset is disabled without provisioning and creates nothing', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'unprovisioned-reset-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  assert.equal(await configuredNativeReset(path.join(root, 'missing')), undefined);
+  assert.deepEqual(await fs.readdir(root), []);
+  assert.equal(await configuredNativeReset(root), undefined);
+  assert.deepEqual(await fs.readdir(root), []);
+  const previous = process.env.PROPR_FLEET_RESET_RUNTIME_ROOT;
+  t.after(() => { if (previous === undefined) delete process.env.PROPR_FLEET_RESET_RUNTIME_ROOT; else process.env.PROPR_FLEET_RESET_RUNTIME_ROOT = previous; });
+  delete process.env.PROPR_FLEET_RESET_RUNTIME_ROOT;
+  await assert.rejects(startFleetResetRecovery(), /fleet_reset_unavailable/);
+  process.env.PROPR_FLEET_RESET_RUNTIME_ROOT = root;
+  await assert.rejects(startFleetResetRecovery(), /fleet_reset_unavailable/);
+  assert.deepEqual(await fs.readdir(root), []);
+});
+
+for (const scenario of ['valid', 'malformed-json', 'malformed-binding', 'mismatched-binding', 'missing-authority',
+  'missing-runtime-root', 'wrong-runtime-root', 'DB_FILENAME', 'GIT_CLONES_BASE_PATH', 'GIT_WORKTREES_BASE_PATH', 'HOME',
+  'missing-service-secret', 'short-service-secret', 'overlapping-root']) {
+  test(`configured native reset validates provisioning: ${scenario}`, async t => {
+    const f = await fixture(t); const provision = await provisionConfigured(t, f);
+    const file = path.join(f.controlRoot, 'native.json');
+    if (scenario === 'malformed-json') await fs.writeFile(file, '{');
+    if (scenario === 'malformed-binding') await fs.writeFile(file, JSON.stringify({ ...provision, binding: {} }));
+    if (scenario === 'mismatched-binding') await fs.writeFile(file, JSON.stringify({ ...provision, binding: { ...f.binding, runtimeBuildDigest: 'c'.repeat(64) } }));
+    if (scenario === 'missing-authority') await fs.unlink(path.join(f.controlRoot, 'authority.json'));
+    if (scenario === 'missing-runtime-root') delete process.env.PROPR_FLEET_RESET_RUNTIME_ROOT;
+    if (scenario === 'wrong-runtime-root') process.env.PROPR_FLEET_RESET_RUNTIME_ROOT = f.tenantRoot;
+    if (['DB_FILENAME', 'GIT_CLONES_BASE_PATH', 'GIT_WORKTREES_BASE_PATH', 'HOME'].includes(scenario)) process.env[scenario] = f.root;
+    if (scenario === 'missing-service-secret') delete process.env.PROPR_FLEET_RESET_SERVICE_SECRET;
+    if (scenario === 'short-service-secret') process.env.PROPR_FLEET_RESET_SERVICE_SECRET = 'short';
+    if (scenario === 'overlapping-root') {
+      await fs.writeFile(file, JSON.stringify({ ...provision, tenantRoot: f.controlRoot }));
+      process.env.DB_FILENAME = path.join(f.controlRoot, 'database', 'propr.sqlite');
+      process.env.GIT_CLONES_BASE_PATH = path.join(f.controlRoot, 'repositories_worktrees_caches', 'clones');
+      process.env.GIT_WORKTREES_BASE_PATH = path.join(f.controlRoot, 'repositories_worktrees_caches', 'worktrees');
+      process.env.HOME = path.join(f.controlRoot, 'provider_sessions');
+    }
+    const before = await treeSnapshot(f.tenantRoot);
+    const authority = await fs.readFile(path.join(f.controlRoot, 'authority.json')).catch(() => undefined);
+    const configuration = await fs.readFile(file);
+    if (scenario === 'valid') {
+      const native = await configuredNativeReset(f.controlRoot); assert.ok(native); await native.initialize(); native.close();
+    } else {
+      await assert.rejects(configuredNativeReset(f.controlRoot));
+      await assert.rejects(startFleetResetRecovery());
+    }
+    assert.deepEqual(await fs.readFile(file), configuration);
+    assert.deepEqual(await treeSnapshot(f.tenantRoot), before);
+    assert.deepEqual(await fs.readFile(path.join(f.controlRoot, 'authority.json')).catch(() => undefined), authority);
+  });
+}
+
+for (const scenario of ['unstarted', 'terminal', 'interrupted', 'missing-successor', 'corrupt-successor', 'wrong-reset-secret']) {
+  test(`configured recovery is receipt-only: ${scenario}`, async t => {
+    const f = await fixture(t, scenario === 'interrupted' ? async phase => {
+      if (phase === 'close-resources:intent') throw new Error('power loss');
+    } : undefined);
+    if (scenario !== 'unstarted') {
+      const result = await f.invoke(f.make());
+      assert.equal(result.body.receipt.evidence.state, scenario === 'interrupted' ? 'recovery_required' : 'complete');
+    }
+    await provisionConfigured(t, f);
+    await f.stopListener();
+    const successor = path.join(f.controlRoot, 'successor-control', 'generation.sqlite');
+    if (scenario === 'missing-successor') await fs.unlink(successor);
+    if (scenario === 'corrupt-successor') await fs.writeFile(successor, 'corrupt');
+    const controlBefore = await fs.readFile(successor).catch(() => undefined);
+    const tenantBefore = await treeSnapshot(f.tenantRoot); const callsBefore = [...f.calls];
+    const observations: string[] = [];
+    // Inject only the external HTTP boundary; persisted remote service state and
+    // all startup, adapters, reconciliation, SQLite and Unix I/O stay real.
+    t.mock.method(globalThis, 'fetch', async (input: URL, init: RequestInit) => {
+      const parts = input.pathname.split('/'); const action = parts.pop(); const name = parts.pop()!;
+      assert.equal(action, 'observe'); observations.push(name);
+      assert.equal(init.headers && (init.headers as Record<string, string>).authorization, `Bearer ${process.env.PROPR_FLEET_RESET_SERVICE_SECRET}`);
+      assert.deepEqual(JSON.parse(init.body as string), { binding: f.binding });
+      const row = f.remote.prepare('SELECT * FROM service WHERE name=?').get(name);
+      return new Response(JSON.stringify({ binding: JSON.parse(row.binding), revision: `${name}:${row.revision}`,
+        refused: true, remaining: row.remaining, connections: row.connections }));
+    });
+    if (scenario === 'wrong-reset-secret') {
+      process.env.PROPR_FLEET_RESET_SECRET = 'WRONG-DISPOSABLE-SECRET-DO-NOT-USE-LIVE';
+      await assert.rejects(startFleetResetRecovery());
+    } else {
+      const recovery = await startFleetResetRecovery(); t.after(() => recovery.shutdown());
+      const invoke = (body: string) => new Promise<any>((resolve, reject) => {
+        const req = request({ socketPath: recovery.address()!, path: '/reset/v1/invoke', method: 'POST', headers: { 'content-type': 'application/json' } }, res => {
+          let bytes = ''; res.on('data', chunk => { bytes += chunk; });
+          res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(bytes) }));
+        }); req.on('error', reject); req.end(body);
+      });
+      assert.equal((await invoke(f.make('reset.prove'))).status, 403);
+      if (scenario === 'unstarted') {
+        assert.equal(f.fence.effect('operation'), undefined);
+        await assert.rejects(fs.stat(path.join(f.controlRoot, `proof-${f.binding.resetOperationId}.json`)), { code: 'ENOENT' });
+      }
+      for (let i = 0; i < 2; i++) {
+        const raw = f.make('reset.receipt'); const response = await invoke(raw);
+        assert.equal(response.status, 200);
+        const receipt = verifyResetReceipt(response.body, raw, f.secret);
+        assert.equal(receipt.evidence.state, scenario === 'terminal' ? 'complete' : 'recovery_required');
+        assert.equal(receipt.evidence.bootstrapAllowed, scenario === 'terminal');
+      }
+      if (scenario === 'terminal') assert.ok(observations.length >= 12);
+      await recovery.shutdown();
+    }
+    assert.deepEqual(f.calls, callsBefore);
+    assert.deepEqual(await treeSnapshot(f.tenantRoot), tenantBefore);
+    assert.deepEqual(await fs.readFile(successor).catch(() => undefined), controlBefore);
+  });
+}
+
+for (const participant of ['worker', 'daemon']) for (const failure of [false, true]) {
+  test(`${participant} production shutdown shares reset/signal/caller closure and ${failure ? 'retains' : 'releases'} its lease`, async t => {
+    const f = await fixture(t);
+    const source = await fs.readFile(path.resolve(`src/${participant}.ts`), 'utf8');
+    const tree = ts.createSourceFile(`${participant}.ts`, source, ts.ScriptTarget.Latest, true);
+    let block: ts.Block | undefined; let start = -1;
+    const visit = (node: ts.Node) => {
+      if (ts.isBlock(node)) {
+        const index = node.statements.findIndex(statement => ts.isVariableStatement(statement) &&
+          statement.declarationList.declarations.some(d => d.name.getText(tree) === 'close' &&
+            d.initializer && ts.isCallExpression(d.initializer) && d.initializer.expression.getText(tree) === 'watchResetGeneration'));
+        if (index >= 0) { assert.equal(block, undefined); block = node; start = index; }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(tree); assert.ok(block);
+    // Compile the actual production closure AND signal registrations, with only
+    // external resource handles injected. No copied/synthetic shutdown helper.
+    const statements = block!.statements.slice(start);
+    if (participant === 'worker') assert.ok(statements.some(s => ts.isReturnStatement(s) &&
+      s.expression && ts.isObjectLiteralExpression(s.expression) && s.expression.properties.some(p =>
+        ts.isShorthandPropertyAssignment(p) && p.name.text === 'close')));
+    const code = ts.transpile(statements.map(s => s.getText(tree)).join('\n'));
+    const calls: string[] = []; const signals = new Map<string, () => unknown>();
+    let finish!: () => void; const pending = new Promise<void>(resolve => { finish = resolve; });
+    const gate = participant === 'worker' ? 'usageTipsRunner.close' : 'stopAgentRunSweeps';
+    const operation = (name: string) => async () => {
+      calls.push(name);
+      if (name === gate) { await pending; if (failure) throw new Error('disposable closure failure'); }
+    };
+    const scope: Record<string, unknown> = {
+      watchResetGeneration: (close: () => Promise<void>) => watchResetGeneration(close, { fence: f.fence, identity: f.binding.predecessor }),
+      clearInterval: () => {}, logger: { info: () => {} },
+      process: { on: (signal: string, callback: () => unknown) => signals.set(signal, callback), exit: () => calls.push('exit') },
+      workerId: 'disposable-worker',
+    };
+    for (const name of ['heartbeatInterval', 'intervalId', 'configReloadInterval', 'draftContextSweepInterval',
+      'pushRescueSweepInterval', 'ultrafixResumeSweepInterval', 'epicMergeProgressRetryInterval', 'mergeConflictSweepInterval']) scope[name] = 1;
+    const handles = participant === 'worker'
+      ? ['agentImageWatchdog.close', 'usageTipsRunner.close', 'taskStateRecovery.close', 'worker.close', 'egressProxySweeper.close',
+        'attachedTaskStateFinalizers.close', 'runtimeBuildWorker.close', 'agentImagePreparationWorker.close',
+        'agentImagePreparationQueue.close', 'heartbeatRedis.srem', 'heartbeatRedis.hdel', 'subscriberRedis.quit', 'heartbeatRedis.quit']
+      : ['routingService.stop', 'routingStatusPublisher.stop', 'subscriberRedis.quit', 'heartbeatRedis.quit', 'redisClient.quit'];
+    for (const name of handles) {
+      const [object, method] = name.split('.');
+      const resource = (scope[object] ??= {}) as Record<string, unknown>; resource[method] = operation(name);
+    }
+    for (const name of ['closeStateManager', 'closeAgentImageBuildLock', 'stopManagedDiagnostics', 'stopAgentRunSweeps', 'shutdownQueue']) scope[name] = operation(name);
+    const result = new Function(...Object.keys(scope), `${code}\nreturn close;`)(...Object.values(scope));
+    const close: () => Promise<void> = participant === 'worker' ? result.close : result;
+    assert.deepEqual([...signals.keys()].sort(), ['SIGINT', 'SIGTERM']);
+    assert.equal(f.fence.idle(), false);
+    // Let the real 100ms generation watcher initiate closure first.
+    f.fence.seal(f.binding);
+    const deadline = Date.now() + 2000;
+    while (!calls.includes(gate) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(calls.includes(gate));
+    const first = close(); assert.equal(close(), first);
+    assert.equal(f.fence.idle(), false);
+    // Success also exercises both installed signal handlers. A failure uses the
+    // public close promise so the daemon's void signal handler cannot create an
+    // intentional unhandled rejection in the test runner.
+    const signalResults = failure ? [] : [...signals.values()].map(callback => callback());
+    finish();
+    if (failure) {
+      await assert.rejects(first, /disposable closure failure/);
+      await assert.rejects(close(), /disposable closure failure/);
+      assert.equal(f.fence.idle(), false);
+    } else {
+      await first; await Promise.all(signalResults);
+      assert.equal(f.fence.idle(), true);
+      for (const name of handles) assert.equal(calls.filter(call => call === name).length, 1, name);
+      assert.equal(calls.filter(call => call === 'exit').length, 2);
+    }
+    assert.equal(calls.filter(call => call === gate).length, 1);
+  });
+}
+
+
+test('recovery cold start never loads application services or opens customer SQLite', async t => {
+  const f = await fixture(t); await provisionConfigured(t, f);
+  await f.stopListener();
+  const before = await treeSnapshot(f.tenantRoot);
+  // A fresh process prevents already-cached modules from hiding startup effects.
+  // The load tripwires fail even if application initialization swallows errors.
+  const script = `
+    import assert from 'node:assert/strict';
+    import Module, { registerHooks } from 'node:module';
+    import path from 'node:path';
+    const forbidden = [];
+    const opened = [];
+    const original = Module._load;
+    Module._load = function(name, ...args) {
+      const value = original.call(this, name, ...args);
+      if (name !== 'better-sqlite3') return value;
+      return new Proxy(value, { construct(target, args) {
+        opened.push(path.resolve(args[0]));
+        assert.ok(!path.resolve(args[0]).startsWith(process.env.TEST_TENANT_ROOT + path.sep), 'customer SQLite opened');
+        return Reflect.construct(target, args);
+      }});
+    };
+    registerHooks({ load(url, context, next) {
+      if (/\\/(?:bullmq|ioredis|redis|knex|express-session)\\//.test(url) ||
+          /\\/(?:server|worker|daemon)\\.(?:ts|js)$/.test(url) ||
+          /\\/(?:db\\/connection|queue\\/taskQueue)\\.(?:ts|js)$/.test(url)) {
+        forbidden.push(url); throw new Error('application service imported: ' + url);
+      }
+      return next(url, context);
+    }});
+    const { startFleetResetRecovery } = await import('./packages/api/fleetResetRecovery.ts');
+    const listener = await startFleetResetRecovery();
+    assert.ok(listener.address());
+    await listener.shutdown();
+    assert.deepEqual(forbidden, []);
+    assert.ok(opened.length > 0, 'real control SQLite must be opened');
+    assert.ok(opened.every(file => file.startsWith(process.env.PROPR_FLEET_RESET_RUNTIME_ROOT + path.sep)));
+  `;
+  await promisify(execFile)(process.execPath, ['--import', 'tsx', '--experimental-test-module-mocks', '--input-type=module', '-e', script],
+    { cwd: process.cwd(), env: { ...process.env, TEST_TENANT_ROOT: f.tenantRoot }, timeout: 30_000 });
+  assert.deepEqual(await treeSnapshot(f.tenantRoot), before);
 });

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import ts from 'typescript';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -716,7 +717,53 @@ test('configured startup rejects a live overlapping listener and succeeds after 
 
   // Production must propagate that rejection before opening readiness/customer HTTP.
   const source = await fs.readFile(path.resolve('packages/api/server.ts'), 'utf8');
-  assert.match(source, /fleetDataListener = demoMode \? Promise.resolve\(undefined\) : startConfiguredFleetData\(storageService, \(actorId, database\) => resolveDurableInstanceAuthorization\(String\(actorId\), database\), new ExtensionProfileStore\(db\)\);/);
+  // Execute the actual startup expression with capability sentinels. This catches
+  // dropped awaits, accidental exposure and reset construction in demo mode.
+  const tree = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true);
+  let startup: ts.BinaryExpression | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isBinaryExpression(node) && node.left.getText(tree) === 'fleetDataListener' &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken) startup = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  assert.ok(startup);
+  const code = ts.transpile(`return ${startup!.right.getText(tree)};`);
+  const native = Object.freeze({ capability: 'private-reset' });
+  const storage = {}; const database = {}; const profiles = {};
+  const run = (demoMode: boolean, configured: unknown, failure?: Error) => {
+    const calls: string[] = [];
+    const execute = new Function('demoMode', 'configuredNativeReset', 'path', 'storageControlRoot',
+      'taskQueue', 'runtimeBuildQueue', 'redisClient', 'startConfiguredFleetData', 'storageService',
+      'resolveDurableInstanceAuthorization', 'ExtensionProfileStore', 'db', code);
+    const result = execute(demoMode, async (root: string, resources: any) => {
+      calls.push('native');
+      assert.equal(root, '/private/fleet-reset-control');
+      assert.equal(typeof resources.close, 'function');
+      await Promise.resolve();
+      if (failure) throw failure;
+      return configured;
+    }, path, () => '/private/storage-control', {}, {}, {},
+    (actualStorage: unknown, authorize: Function, store: unknown, reset: unknown) => {
+      calls.push('listener'); assert.equal(actualStorage, storage);
+      assert.equal(authorize(123, database), 'authorized');
+      assert.equal(store, profiles); assert.equal(reset, configured);
+      return 'listener';
+    }, storage, (actor: string, db: unknown) => {
+      assert.equal(actor, '123'); assert.equal(db, database); return 'authorized';
+    }, function (db: unknown) { assert.equal(db, database); return profiles; }, database);
+    return { result, calls };
+  };
+  for (const configured of [native, undefined]) {
+    const runResult = run(false, configured);
+    assert.equal(await runResult.result, 'listener');
+    assert.deepEqual(runResult.calls, ['native', 'listener']);
+  }
+  const demo = run(true, native); assert.equal(await demo.result, undefined); assert.deepEqual(demo.calls, []);
+  const failure = new Error('invalid provisioning'); const failed = run(false, native, failure);
+  await assert.rejects(failed.result, error => error === failure); assert.deepEqual(failed.calls, ['native']);
+  // The local capability has exactly one consumer, the private listener.
+  assert.equal((source.match(/\bnativeReset\b/g) ?? []).length, 2);
   const setup = source.indexOf('    setupRoutes();');
   const gate = source.indexOf('try { await fleetDataListener; }', setup);
   assert.ok(gate > setup && gate < source.indexOf('httpServer.listen(PORT'));
