@@ -1,5 +1,4 @@
-import { FLEET_EXTENSION_LIMITS } from '@propr/shared';
-import { FLEET_RESET_PATH, FLEET_RESET_LIMITS } from '../shared/src/fleetReset.js';
+import { FLEET_EXTENSION_LIMITS, FLEET_RESET_PATH, FLEET_RESET_LIMITS } from '@propr/shared';
 import { FleetResetProofPlane } from '../core/src/fleet/resetProof.js';
 import { FleetExtensionPlane } from '../core/src/fleet/extensions.js';
 import type { ExtensionProfileStore } from '../core/src/extensions/extensionProfileStore.js';
