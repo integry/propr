@@ -135,6 +135,93 @@ for (const phase of ['operation:intent', ...effects.flatMap(e => ['intent', 'eff
   });
 }
 
+for (const adapter of ['queue', 'sessions', 'tunnel_bootstrap']) {
+  for (const interrupted of [false, true]) {
+    test(`stable revision advance after stop refuses ${adapter} proof (interrupted: ${interrupted})`, async t => {
+      const f = await fixture(t, async phase => {
+        if (phase === `stop-${adapter}:complete`) {
+          f.remote.prepare('UPDATE service SET revision=revision+1 WHERE name=?').run(adapter);
+        }
+        if (interrupted && phase === 'successor:effect') throw new Error('lost successor acknowledgement');
+      });
+      const result = await f.invoke(f.make());
+      assert.equal(result.body.receipt.evidence.state, 'recovery_required');
+      assert.equal(JSON.parse(f.fence.effect(`stop-${adapter}`)!.result!).revision, `${adapter}:1`);
+      assert.equal(f.fence.effect('operation')!.result, null);
+      const before = [...f.calls];
+      const restart = new NativeResetRuntime({ ...f.options, checkpoint: undefined });
+      await restart.initialize();
+      try {
+        await assert.rejects(restart.reconcile(f.binding));
+        await assert.rejects(restart.bootstrapSuccessor(f.binding));
+      } finally { restart.close(); }
+      assert.equal((await f.invoke(f.make('reset.receipt'))).body.receipt.evidence.state, 'recovery_required');
+      assert.equal(f.fence.effect('operation')!.result, null);
+      // Validate all completed results before repairing even a missing successor acknowledgement.
+      if (interrupted) assert.equal(f.fence.effect('successor')!.result, null);
+      assert.equal(f.fence.effect('bootstrap'), undefined);
+      assert.deepEqual(f.calls, before);
+    });
+  }
+}
+
+for (const name of effects) {
+  test(`staged reconciliation rejects mismatched completed ${name} result`, async t => {
+    const f = await fixture(t);
+    await f.native.execute(f.binding);
+    const db = openResetDatabase(path.join(f.controlRoot, 'generation.sqlite'), 'existing');
+    try { db.prepare('UPDATE effects SET result=? WHERE name=?').run('{}', name); }
+    finally { db.close(); }
+    await assert.rejects(f.native.reconcile(f.binding));
+    await assert.rejects(f.native.bootstrapSuccessor(f.binding));
+  });
+}
+
+test('interrupted staged recovery fills only missing acknowledgements and preserves activated receipts', async t => {
+  const f = await fixture(t, async phase => {
+    if (phase === 'successor:effect') throw new Error('lost acknowledgement');
+  });
+  await assert.rejects(f.native.execute(f.binding));
+  assert.equal(f.fence.effect('successor')!.result, null);
+  assert.equal(f.fence.effect('operation')!.result, null);
+  const before = [...f.calls];
+  const restart = new NativeResetRuntime({ ...f.options, checkpoint: undefined });
+  await restart.initialize();
+  try {
+    const completed = await restart.reconcile(f.binding);
+    assert.equal(completed.state, 'complete');
+    await restart.bootstrapSuccessor(f.binding);
+    assert.deepEqual(await restart.reconcile(f.binding), completed);
+    assert.equal(f.fence.effect('bootstrap')!.result, null);
+  } finally { restart.close(); }
+  assert.deepEqual(f.calls, before);
+});
+
+for (const intent of ['missing', 'corrupt', 'wrong-binding', 'extra-field']) {
+  test(`active successor without exact bootstrap intent refuses receipts: ${intent}`, async t => {
+    const f = await fixture(t);
+    await f.native.execute(f.binding);
+    const operation = f.fence.effect('operation')!.result;
+    if (intent !== 'missing') {
+      f.fence.intent('bootstrap', intent === 'wrong-binding'
+        ? { binding: { ...f.binding, resetOperationId: randomUUID() } }
+        : { binding: f.binding, extra: true });
+      if (intent === 'corrupt') {
+        const db = openResetDatabase(path.join(f.controlRoot, 'generation.sqlite'), 'existing');
+        try { db.prepare("UPDATE effects SET intent=? WHERE name='bootstrap'").run('{'); }
+        finally { db.close(); }
+      }
+    }
+    const control = new ResetGenerationFence(path.join(f.controlRoot, 'successor-control'), 'existing');
+    try { control.activateSuccessor(f.binding); } finally { control.close(); }
+    await assert.rejects(f.native.reconcile(f.binding));
+    await assert.rejects(f.native.bootstrapSuccessor(f.binding));
+    assert.equal((await f.invoke(f.make('reset.receipt'))).body.receipt.evidence.state, 'recovery_required');
+    assert.equal(f.fence.effect('operation')!.result, operation);
+    if (intent === 'missing') assert.equal(f.fence.effect('bootstrap'), undefined);
+  });
+}
+
 test('unknown private leftovers and symlinked state are not deleted or certified', async t => {
   for (const kind of ['unknown', 'symlink']) await t.test(kind, async t => {
     const f = await fixture(t);
@@ -952,7 +1039,8 @@ test('storage admission waiting on a gate retains its lease and refuses its call
 for (const scenario of ['intent-only', 'lost-response', 'awaited-activation', 'second-observation-activation', 'second-observation-activation-with-predecessor', 'awaited-activation-invalid-external']) {
   test(`terminal receipts use durable activation: ${scenario}`, async t => {
     const f = await fixture(t);
-    const completed = (await f.invoke(f.make())).body.receipt.evidence;
+    const completedReceipt = (await f.invoke(f.make())).body.receipt;
+    const completed = completedReceipt.evidence;
     const activate = async () => {
       f.fence.intent('bootstrap', { binding: f.binding });
       if (scenario !== 'intent-only') {
@@ -974,7 +1062,14 @@ for (const scenario of ['intent-only', 'lost-response', 'awaited-activation', 's
         return scenario === 'awaited-activation-invalid-external' ? undefined : result;
       };
     } else await activate();
-    if (scenario === 'lost-response') await f.native.reconcile(f.binding);
+    if (scenario === 'lost-response') {
+      assert.equal(f.fence.effect('bootstrap')!.result, null);
+      const restart = new NativeResetRuntime(f.options); await restart.initialize();
+      try { assert.deepEqual(await restart.reconcile(f.binding), completed); } finally { restart.close(); }
+      for (let i = 0; i < 2; i++) {
+        assert.equal((await f.invoke(f.make('reset.receipt'))).body.receipt.evidenceDigest, completedReceipt.evidenceDigest);
+      }
+    }
     const receipt = (await f.invoke(f.make('reset.receipt'))).body.receipt;
     assert.equal(receipt.evidence.state, ['intent-only', 'awaited-activation-invalid-external', 'second-observation-activation-with-predecessor'].includes(scenario) ? 'recovery_required' : 'complete');
     if (!['intent-only', 'awaited-activation-invalid-external', 'second-observation-activation-with-predecessor'].includes(scenario)) assert.equal(receipt.evidence.observationDigest, completed.observationDigest);

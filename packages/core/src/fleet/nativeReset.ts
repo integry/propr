@@ -9,6 +9,7 @@ import { checkedObservation, type ResetAdapter } from './resetAdapters.js';
 
 const hash = (value: unknown) => createHash('sha256').update(canonicalFleetJson(value)).digest('hex');
 const same = (a: unknown, b: unknown) => canonicalFleetJson(a) === canonicalFleetJson(b);
+const requiredEffects = ['fence', 'stop-queue', 'stop-sessions', 'stop-tunnel_bootstrap', 'close-resources', ...FLEET_RESET_CATEGORIES.map(k => `erase-${k}`), 'successor'];
 async function syncDirectory(root: string) {
   const fd = await fs.open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try { await fd.sync(); } finally { await fd.close(); }
@@ -168,6 +169,7 @@ export class NativeResetRuntime {
     await this.checkpoint('second-proof');
     const second = await this.observe();
     if (first.active || second.active || !same(first, second)) resetUnavailable();
+    this.validateEffectResults(second, false);
     this.fence.complete('operation', { observation: hash({ external: second.external, successor: second.successor, tree: second.tree }) });
     return this.terminal(second);
   }
@@ -255,12 +257,25 @@ export class NativeResetRuntime {
     return { state: 'complete', categories: Object.fromEntries(FLEET_RESET_CATEGORIES.map(k => [k, 'erased'])) as Extract<FleetResetEvidence, { state: 'complete' }>['categories'],
       predecessorFenced: true, successorIsolated: true, bootstrapAllowed: true, reason: 'stable_native_proof', observationDigest: hash({ external: observation.external, successor: observation.successor, tree: observation.tree }) };
   }
+  /** Validate every durable acknowledgement before filling any missing one.
+   * Stable samples must agree with prior effects, not just with each other. */
+  private validateEffectResults(observation: Awaited<ReturnType<NativeResetRuntime['observe']>>, allowMissing: boolean) {
+    const missing: { name: string; expected: unknown }[] = [];
+    for (const name of requiredEffects) {
+      const effect = this.fence.effect(name);
+      if (!effect || !same(JSON.parse(effect.intent).binding, this.options.binding)) resetUnavailable();
+      const adapterIndex = this.options.adapters.findIndex(a => name === `stop-${a.name}`);
+      const expected = adapterIndex >= 0 ? observation.external[adapterIndex] : name === 'successor' ? observation.successor : true;
+      if (effect!.result === null && allowMissing) missing.push({ name, expected });
+      else if (effect!.result !== canonicalFleetJson(expected)) resetUnavailable();
+    }
+    return missing;
+  }
   /** Read-only reconciliation. All intents must already be complete; unknown or
    * partial effects stay fenced. Never retries external or destructive calls. */
   async reconcile(binding: FleetResetBinding): Promise<FleetResetEvidence> {
     if (!same(binding, this.options.binding)) resetUnavailable();
-    const required = ['fence', 'stop-queue', 'stop-sessions', 'stop-tunnel_bootstrap', 'close-resources', ...FLEET_RESET_CATEGORIES.map(k => `erase-${k}`), 'successor'];
-    for (const name of required) {
+    for (const name of requiredEffects) {
       const effect = this.fence.effect(name); if (!effect) resetUnavailable();
       if (!same(JSON.parse(effect!.intent).binding, binding)) resetUnavailable();
     }
@@ -269,27 +284,20 @@ export class NativeResetRuntime {
     if (!same(first, second)) resetUnavailable();
     const operation = this.fence.effect('operation');
     if (!operation || !same(JSON.parse(operation.intent).binding, binding)) resetUnavailable();
+    const missing = this.validateEffectResults(second, !second.active);
     if (second.active) {
+      const bootstrap = this.fence.effect('bootstrap');
+      if (!bootstrap || bootstrap.intent !== canonicalFleetJson({ binding })) resetUnavailable();
       // The immutable erasure proof predates legitimate successor writes.
       // Activation cannot manufacture missing proof or release other obligations.
       const digest = operation!.result && JSON.parse(operation!.result).observation;
       if (typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)) resetUnavailable();
-      for (const name of required) {
-        const result = this.fence.effect(name)!.result;
-        const adapterIndex = this.options.adapters.findIndex(a => name === `stop-${a.name}`);
-        const expected = adapterIndex >= 0 ? second.external[adapterIndex] : name === 'successor' ? second.successor : true;
-        if (!result || result !== canonicalFleetJson(expected)) resetUnavailable();
-      }
       return { ...this.terminal(second), observationDigest: digest };
     }
     if (operation!.result && operation!.result !== canonicalFleetJson({ observation: hash({ external: second.external, successor: second.successor, tree: second.tree }) })) resetUnavailable();
     // Lost acknowledgements can be reconciled only from current terminal
     // observations. Partial effects are never retried, even after process death.
-    for (const name of required) {
-      if (this.fence.effect(name)!.result) continue;
-      const adapterIndex = this.options.adapters.findIndex(a => name === `stop-${a.name}`);
-      this.fence.complete(name, adapterIndex >= 0 ? second.external[adapterIndex] : name === 'successor' ? second.successor : true);
-    }
+    for (const { name, expected } of missing) this.fence.complete(name, expected);
     this.fence.complete('operation', { observation: hash({ external: second.external, successor: second.successor, tree: second.tree }) });
     return this.terminal(second);
   }
