@@ -2,6 +2,7 @@ import { deleteTaskRecords } from '../../core/src/storage/taskHistoryControl.js'
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
 import { Queue } from 'bullmq';
+import type { Redis } from 'ioredis';
 import { issueQueue, getAuthenticatedOctokit, generateCorrelationId, logger, syncTaskAssignees, dispatchPostedFollowup } from '@propr/core';
 import { ACTIVE_TASK_LIFECYCLE_STATES, parseTaskAssignmentFilter } from '@propr/shared';
 import { getTasksFromDb, type TaskQuery } from './taskHelpers.js';
@@ -422,7 +423,8 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
             user: { login: commentAuthor, type: commentResponse.data.user?.type },
           },
         }, generateCorrelationId(), {
-          redisClient: await issueQueue.client,
+          // taskQueue constructs this client with ioredis; BullMQ exposes only IRedisClient.
+          redisClient: await issueQueue.client as unknown as Redis,
           PR_FOLLOWUP_TRIGGER_KEYWORDS: (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS ?? '').split(',').map(k => k.trim()).filter(Boolean),
           MODEL_LABEL_PATTERN: process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
           jobId,
