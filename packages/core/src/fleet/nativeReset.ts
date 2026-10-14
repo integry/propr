@@ -17,21 +17,37 @@ async function absent(file: string) {
   try { await fs.lstat(file); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true; throw error; }
 }
 interface Entry { name: string; dev: number; ino: number; size: number; mtime: number; directory: boolean }
-/** Reject links, devices, mount crossings and unknown top-level categories.
- * Files within each explicitly owned category are tenant-private, including logs. */
-async function inventory(root: string): Promise<Entry[]> {
-  const entries: Entry[] = []; const top = await fs.lstat(root);
-  if (!top.isDirectory() || top.isSymbolicLink()) resetUnavailable();
-  async function walk(dir: string) {
-    for (const name of (await fs.readdir(dir)).sort()) {
-      const file = path.join(dir, name); const stat = await fs.lstat(file);
-      if (stat.isSymbolicLink() || stat.dev !== top.dev || (!stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))) resetUnavailable();
-      entries.push({ name: path.relative(root, file), dev: stat.dev, ino: stat.ino, size: stat.size, mtime: stat.mtimeMs, directory: stat.isDirectory() });
-      if (entries.length > 100000) resetUnavailable();
-      if (stat.isDirectory()) await walk(file);
+async function mountId(handle: Awaited<ReturnType<typeof fs.open>>): Promise<string> {
+  // st_dev cannot distinguish a same-filesystem bind mount. fdinfo identifies
+  // the mount actually pinned by this descriptor in our Linux mount namespace.
+  const info = await fs.readFile(`/proc/self/fdinfo/${handle.fd}`, 'utf8');
+  const id = /^mnt_id:\s+(\d+)$/m.exec(info)?.[1];
+  if (!id) resetUnavailable();
+  return id!;
+}
+/** Reject links, devices and mounts before traversing their pinned contents. */
+async function inventory(root: string, boundaryRoot = root): Promise<Entry[]> {
+  const boundary = await fs.open(boundaryRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const mount = await mountId(boundary);
+    const entries: Entry[] = [];
+    async function walk(file: string, relative: string) {
+      const stat = await fs.lstat(file);
+      if (stat.isSymbolicLink() || (!stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))) resetUnavailable();
+      const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const pinned = await handle.stat();
+        if (pinned.dev !== stat.dev || pinned.ino !== stat.ino || await mountId(handle) !== mount) resetUnavailable();
+        if (relative) entries.push({ name: relative, dev: stat.dev, ino: stat.ino, size: stat.size, mtime: stat.mtimeMs, directory: stat.isDirectory() });
+        else if (!stat.isDirectory()) resetUnavailable();
+        if (entries.length > 100000) resetUnavailable();
+        if (stat.isDirectory()) for (const name of (await fs.readdir(`/proc/self/fd/${handle.fd}`)).sort()) {
+          await walk(`/proc/self/fd/${handle.fd}/${name}`, relative ? path.join(relative, name) : name);
+        }
+      } finally { await handle.close(); }
     }
-  }
-  await walk(root); return entries;
+    await walk(root, ''); return entries;
+  } finally { await boundary.close(); }
 }
 export interface NativeResetOptions {
   /** Provisioned, exclusive tenant root; never derived from a request path. */
@@ -95,21 +111,25 @@ export class NativeResetRuntime {
     await this.effect('close-resources', {}, () => this.options.resources.close(), () => this.options.resources.observeClosed());
     if (!this.fence.idle()) resetUnavailable();
     await this.checkRoot(false);
+    // Refuse any mounted category or descendant before erasing any category.
+    await inventory(this.options.tenantRoot);
     for (const category of FLEET_RESET_CATEGORIES) {
       const root = path.join(this.options.tenantRoot, category);
-      const tree = await absent(root) ? null : await inventory(root);
+      const tree = await absent(root) ? null : await inventory(root, this.options.tenantRoot);
       const identity = tree === null ? null : await fs.lstat(root).then(s => ({ dev: s.dev, ino: s.ino }));
       await this.effect(`erase-${category}`, { identity, tree }, async () => {
         if (tree === null) return;
         await this.tenant.check();
         const current = await fs.lstat(root);
-        if (current.dev !== identity!.dev || current.ino !== identity!.ino || !same(await inventory(root), tree)) resetUnavailable();
+        if (current.dev !== identity!.dev || current.ino !== identity!.ino || !same(await inventory(root, this.options.tenantRoot), tree)) resetUnavailable();
         // Walk from pinned directory descriptors. Parent symlink substitution
         // cannot redirect an unlink into a sibling or external retained backup.
+        const tenantHandle = await fs.open(this.options.tenantRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        const tenantMount = await mountId(tenantHandle).finally(() => tenantHandle.close());
         const rootHandle = await fs.open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
         try {
           const pinned = await rootHandle.stat();
-          if (pinned.dev !== identity!.dev || pinned.ino !== identity!.ino) resetUnavailable();
+          if (pinned.dev !== identity!.dev || pinned.ino !== identity!.ino || await mountId(rootHandle) !== tenantMount) resetUnavailable();
           for (const entry of [...tree].reverse()) {
             const parts = entry.name.split(path.sep); const leaf = parts.pop()!;
             const parents: Awaited<ReturnType<typeof fs.open>>[] = [];
@@ -120,13 +140,18 @@ export class NativeResetRuntime {
                 relative = relative ? path.join(relative, part) : part;
                 const next = await fs.open(`/proc/self/fd/${parent.fd}/${part}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
                 parents.push(next); const stat = await next.stat(); const expected = tree.find(e => e.name === relative);
-                if (!expected || stat.dev !== expected.dev || stat.ino !== expected.ino) resetUnavailable();
+                if (!expected || stat.dev !== expected.dev || stat.ino !== expected.ino || await mountId(next) !== tenantMount) resetUnavailable();
                 parent = next;
               }
               const file = `/proc/self/fd/${parent.fd}/${leaf}`; const stat = await fs.lstat(file);
               if (stat.ino !== entry.ino || stat.dev !== entry.dev || stat.isSymbolicLink() ||
                 (!entry.directory && (stat.size !== entry.size || stat.mtimeMs !== entry.mtime || stat.nlink !== 1))) resetUnavailable();
-              if (entry.directory) await fs.rmdir(file); else await fs.unlink(file);
+              const leafHandle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+              try {
+                const pinnedLeaf = await leafHandle.stat();
+                if (pinnedLeaf.dev !== entry.dev || pinnedLeaf.ino !== entry.ino || await mountId(leafHandle) !== tenantMount) resetUnavailable();
+                if (entry.directory) await fs.rmdir(file); else await fs.unlink(file);
+              } finally { await leafHandle.close(); }
               await parent.sync();
             } finally { for (const parent of parents.reverse()) await parent.close(); }
           }

@@ -13,7 +13,7 @@ import { request } from 'node:http';
 import { canonicalFleetJson, FLEET_RESET_CATEGORIES, FLEET_RESET_CONTRACT, FLEET_RESET_AUDIENCE, type FleetResetBinding } from '@propr/shared';
 import { NativeResetRuntime } from '../src/fleet/nativeReset.js';
 import { ResetGenerationFence, openResetDatabase, watchResetGeneration } from '../src/fleet/resetFence.js';
-import { ResetQueueAdapter, ResetAuthorityAdapter, type ResetExternalBoundary, type ResetObservation } from '../src/fleet/resetAdapters.js';
+import { HttpResetBoundary, ResetQueueAdapter, ResetAuthorityAdapter, type ResetExternalBoundary, type ResetObservation } from '../src/fleet/resetAdapters.js';
 import { FleetResetProofPlane, resetHash, resetContractPin, resetRequestMac, verifyResetReceipt } from '../src/fleet/resetProof.js';
 import { listenFleetData } from '../../api/fleetDataListener.js';
 import type { FleetDataPlane } from '../src/fleet/dataPlane.js';
@@ -584,4 +584,213 @@ test('recovery startup failure and listener shutdown release both owned control 
   assert.equal(closed.length, 4);
   assert.equal(new Set(closed).size, 4);
   for (const fence of closed) assert.throws(() => fence.idle());
+});
+
+
+for (const action of ['observe', 'revoke'] as const) {
+  test(`HTTP reset ${action} enforces byte limit while streaming and cancels overflow`, async t => {
+    const f = await fixture(t);
+    for (const singleChunk of [false, true]) {
+      let reads = 0; let cancelled = false;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) { reads++; controller.enqueue(Buffer.alloc(singleChunk ? 16385 : 4096, 32)); },
+        cancel() { cancelled = true; },
+      }, { highWaterMark: 0 });
+      const boundary = new HttpResetBoundary('https://fixture.invalid', () => 'disposable', 'queue',
+        (async () => new Response(stream)) as typeof fetch);
+      await assert.rejects(boundary[action](f.binding), /fleet_reset_unavailable/);
+      assert.equal(cancelled, true);
+      assert.equal(reads, singleChunk ? 1 : 5);
+      assert.equal(stream.locked, false);
+    }
+  });
+}
+
+test('HTTP reset accepts an exact-limit UTF-8 response split across chunks and rejects broken streams', async t => {
+  const f = await fixture(t);
+  const observation = { binding: f.binding, revision: 'queue:1', refused: true, remaining: 0, connections: 0, extra: 'é' };
+  const json = Buffer.from(JSON.stringify(observation));
+  const bytes = Buffer.concat([json, Buffer.alloc(16384 - json.length, 32)]);
+  let offset = 0;
+  const stream = new ReadableStream<Uint8Array>({ pull(controller) {
+    if (offset === bytes.length) controller.close();
+    else controller.enqueue(bytes.subarray(offset, ++offset));
+  } });
+  const boundary = new HttpResetBoundary('https://fixture.invalid', () => 'disposable', 'queue',
+    (async () => new Response(stream)) as typeof fetch);
+  assert.deepEqual(await boundary.observe(f.binding), observation);
+  assert.equal(stream.locked, false);
+  const broken = new ReadableStream<Uint8Array>({ pull(controller) { controller.error(new Error('broken transport')); } });
+  const failure = new HttpResetBoundary('https://fixture.invalid', () => 'disposable', 'queue',
+    (async () => new Response(broken)) as typeof fetch);
+  await assert.rejects(failure.observe(f.binding), /broken transport/);
+  assert.equal(broken.locked, false);
+});
+
+// Deterministic coverage on unprivileged runners: simulate only the kernel's
+// mount ID observation, leaving inventory, descriptor traversal and I/O real.
+for (const category of FLEET_RESET_CATEGORIES) for (const nested of [false, true]) {
+  test(`mount boundary preflight preserves all categories: ${category} ${nested ? 'descendant' : 'root'}`, async t => {
+    const f = await fixture(t);
+    const target = path.join(f.tenantRoot, category, ...(nested ? ['private'] : []));
+    const before = await treeSnapshot(f.tenantRoot);
+    const readFile = fs.readFile;
+    t.mock.method(fs, 'readFile', async function(file: any, ...args: any[]) {
+      const value = await (readFile as any)(file, ...args);
+      const fd = /^\/proc\/self\/fdinfo\/(\d+)$/.exec(String(file))?.[1];
+      if (fd && await fs.readlink(`/proc/self/fd/${fd}`) === target) return String(value).replace(/^mnt_id:.*$/m, 'mnt_id:\t999999999');
+      return value;
+    });
+    await assert.rejects(f.native.execute(f.binding), /fleet_reset_unavailable/);
+    assert.deepEqual(await treeSnapshot(f.tenantRoot), before);
+    assert.equal(f.fence.effect('erase-database'), undefined);
+  });
+}
+
+test('mount introduced after erase intent is refused before deleting category contents', async t => {
+  let mounted = false;
+  const f = await fixture(t, async phase => { if (phase === 'erase-database:intent') mounted = true; });
+  const before = await treeSnapshot(f.tenantRoot);
+  const readFile = fs.readFile;
+  t.mock.method(fs, 'readFile', async function(file: any, ...args: any[]) {
+    const value = await (readFile as any)(file, ...args);
+    const fd = /^\/proc\/self\/fdinfo\/(\d+)$/.exec(String(file))?.[1];
+    if (mounted && fd && await fs.readlink(`/proc/self/fd/${fd}`) === path.join(f.tenantRoot, 'database')) {
+      return String(value).replace(/^mnt_id:.*$/m, 'mnt_id:\t999999999');
+    }
+    return value;
+  });
+  await assert.rejects(f.native.execute(f.binding), /fleet_reset_unavailable/);
+  assert.equal(f.fence.effect('erase-database')?.result, null);
+  assert.deepEqual(await treeSnapshot(f.tenantRoot), before);
+});
+
+// Run on Linux CI with CAP_SYS_ADMIN in an isolated mount namespace:
+// PROPR_TEST_REQUIRE_MOUNTS=1 unshare --mount --propagation private node --import tsx --test --test-name-pattern='real mounted' packages/core/test/fleetNativeReset.test.ts
+for (const kind of ['tmpfs', 'bind-root', 'bind-directory', 'bind-file']) {
+  test(`real mounted ${kind} retains external contents before any deletion`, async t => {
+    const f = await fixture(t);
+    const external = path.join(f.root, 'external'); await fs.mkdir(external);
+    await fs.writeFile(path.join(external, 'retained'), 'external retained data');
+    const category = path.join(f.tenantRoot, 'repositories_worktrees_caches');
+    const target = kind === 'bind-directory' ? path.join(category, 'nested') : kind === 'bind-file' ? path.join(category, 'private') : category;
+    if (kind === 'bind-directory') await fs.mkdir(target);
+    const run = promisify(execFile);
+    try {
+      await run('mount', kind === 'tmpfs' ? ['-t', 'tmpfs', 'tmpfs', target] : ['--bind', kind === 'bind-file' ? path.join(external, 'retained') : external, target]);
+    } catch (error) {
+      if (process.env.PROPR_TEST_REQUIRE_MOUNTS === '1' || !/permission denied|operation not permitted|must be superuser|ENOENT/i.test(String(error))) throw error;
+      t.skip('requires Linux mount capability; set PROPR_TEST_REQUIRE_MOUNTS=1 in privileged integration CI'); return;
+    }
+    try {
+      if (kind === 'tmpfs') await fs.writeFile(path.join(target, 'retained'), 'external retained data');
+      const before = await treeSnapshot(f.tenantRoot);
+      await assert.rejects(f.native.execute(f.binding), /fleet_reset_unavailable/);
+      assert.deepEqual(await treeSnapshot(f.tenantRoot), before);
+      assert.equal(await fs.readFile(kind === 'bind-file' ? target : path.join(target, 'retained'), 'utf8'), 'external retained data');
+      assert.equal(f.fence.effect('erase-database'), undefined);
+    } finally { await run('umount', [target]); }
+    assert.equal(await fs.readFile(path.join(external, 'retained'), 'utf8'), 'external retained data');
+  });
+}
+
+test('staged successor boots the actual API, migrates and loads empty application configuration in a fresh process', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.native.execute(f.binding)).state, 'complete');
+  await f.native.bootstrapSuccessor(f.binding);
+  const successor = path.join(f.tenantRoot, 'successor');
+  const control = path.join(f.controlRoot, 'successor-control');
+  // Fleet's replacement launcher supplies process identity after activation.
+  await fs.writeFile(path.join(control, 'process-identity.json'), canonicalFleetJson(f.binding.successor), { mode: 0o600 });
+  const before = openResetDatabase(path.join(successor, 'propr.sqlite'), 'readonly');
+  try { assert.deepEqual(before.prepare("SELECT name FROM sqlite_master WHERE type='table'").all(), [{ name: 'reset_identity' }]); }
+  finally { before.close(); }
+  const script = `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs/promises';
+    const binding = JSON.parse(process.env.TEST_RESET_BINDING);
+    let ready;
+    const started = new Promise(resolve => { ready = resolve; });
+    const log = console.log;
+    console.log = (...args) => {
+      log(...args);
+      if (args.join(' ').includes('Dashboard API server running at')) ready();
+    };
+    await import('./packages/api/server.ts');
+    await started;
+    const { db, closeConnection, loadMonitoredReposStrict, getConfig } = await import('@propr/core');
+    assert.equal(db.client.config.connection.filename, process.env.DB_FILENAME);
+    assert.deepEqual(await loadMonitoredReposStrict(), []);
+    assert.deepEqual(await getConfig('repos_to_monitor', []), []);
+    assert.deepEqual(JSON.parse(await fs.readFile(process.env.TEST_SUCCESSOR_CONFIG, 'utf8')), {});
+    assert.ok((await db('knex_migrations').count('* as count'))[0].count > 0);
+    assert.deepEqual(await db('reset_identity').select('identity'), [{ identity: process.env.TEST_SUCCESSOR_IDENTITY }]);
+    // These are the durable inputs to task, plan, goal and reindex recovery.
+    // A schema-only SQLite check cannot establish that migrations leave them empty.
+    for (const table of ['tasks', 'task_history', 'task_drafts', 'plan_issues', 'goals', 'goal_inputs',
+      'goal_checkpoints', 'task_submissions', 'repositories', 'github_user_grants', 'visual_preview_oauth_credentials']) {
+      assert.equal((await db(table).count('* as count'))[0].count, 0, table);
+    }
+    const { configuredResetFence } = await import('./packages/core/src/fleet/resetFence.ts');
+    const managed = configuredResetFence();
+    assert.deepEqual(managed.identity, binding.successor);
+    await assert.rejects(managed.fence.use(binding.predecessor, 'future-on-boot', async () => assert.fail('predecessor work executed')));
+    // The next boot has no pending migration replay either.
+    assert.deepEqual((await db.migrate.list())[1], []);
+    await closeConnection();
+    console.log('SUCCESSOR_APPLICATION_BOOT_VERIFIED');
+    process.exit(0);
+  `;
+  // Use the API's existing in-memory demo infrastructure: real server startup,
+  // routes, SQLite and migrations, without Redis/Docker/provider services. Demo
+  // skips execution processors; the durable work inputs are asserted above.
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith('PROPR_FLEET_') || key.startsWith('GITHUB_')) delete env[key];
+  const result = await promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+    cwd: process.cwd(), timeout: 180_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024,
+    env: { ...env, NODE_ENV: 'production', PROPR_DEMO_MODE: 'true', MCP_ENABLED: 'false',
+      PROPR_MIGRATIONS_PREAPPLIED: '', PROPR_API_DISABLE_AUTOSTART: '', DASHBOARD_API_PORT: '0',
+      DASHBOARD_API_HOST: '127.0.0.1', FRONTEND_URL: 'http://localhost:3000',
+      SESSION_SECRET: 'disposable-successor-session-secret-long-enough-123456789',
+      HOME: successor, DATA_DIR: successor, DB_FILENAME: path.join(successor, 'propr.sqlite'),
+      PROPR_FLEET_RESET_RUNTIME_ROOT: control, TEST_RESET_BINDING: JSON.stringify(f.binding),
+      TEST_SUCCESSOR_CONFIG: path.join(successor, 'config.json'), TEST_SUCCESSOR_IDENTITY: canonicalFleetJson(f.binding.successor) },
+  }).catch(error => { throw new Error(`${error.message}\n${error.stdout}\n${error.stderr}`); });
+  assert.match(result.stdout, /SUCCESSOR_APPLICATION_BOOT_VERIFIED/);
+});
+
+for (const kind of ['root', 'parent', 'file']) {
+  test(`deletion rechecks the pinned ${kind} mount after inventory awaits`, async t => {
+    const f = await fixture(t);
+    const root = path.join(f.tenantRoot, 'database');
+    const directory = path.join(root, 'zz-nested'); await fs.mkdir(directory);
+    const file = path.join(directory, 'retained'); await fs.writeFile(file, 'retained');
+    const target = kind === 'root' ? root : kind === 'parent' ? directory : file;
+    const before = await treeSnapshot(root);
+    const readFile = fs.readFile; let observations = 0;
+    t.mock.method(fs, 'readFile', async function(name: any, ...args: any[]) {
+      const value = await (readFile as any)(name, ...args);
+      const fd = /^\/proc\/self\/fdinfo\/(\d+)$/.exec(String(name))?.[1];
+      if (fd && await fs.readlink(`/proc/self/fd/${fd}`) === target && ++observations > 3) {
+        return String(value).replace(/^mnt_id:.*$/m, 'mnt_id:\t999999999');
+      }
+      return value;
+    });
+    await assert.rejects(f.native.execute(f.binding), /fleet_reset_unavailable/);
+    assert.equal(observations, 4);
+    assert.equal(f.fence.effect('erase-database')?.result, null);
+    assert.deepEqual(await treeSnapshot(root), before);
+  });
+}
+
+test('unavailable mount identity fails closed before deletion', async t => {
+  const f = await fixture(t); const before = await treeSnapshot(f.tenantRoot);
+  const readFile = fs.readFile;
+  t.mock.method(fs, 'readFile', async function(name: any, ...args: any[]) {
+    if (String(name).startsWith('/proc/self/fdinfo/')) return 'ino: 1\n';
+    return (readFile as any)(name, ...args);
+  });
+  await assert.rejects(f.native.execute(f.binding), /fleet_reset_unavailable/);
+  assert.equal(f.fence.effect('erase-database'), undefined);
+  assert.deepEqual(await treeSnapshot(f.tenantRoot), before);
 });

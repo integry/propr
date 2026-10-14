@@ -99,9 +99,22 @@ export class HttpResetBoundary implements ResetExternalBoundary {
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.secret()}` },
       body: canonicalFleetJson({ binding }),
     });
-    if (!response.ok) resetUnavailable();
-    const bytes = await response.text(); if (Buffer.byteLength(bytes) > 16384) resetUnavailable();
-    return JSON.parse(bytes);
+    if (!response.ok) { await response.body?.cancel(); resetUnavailable(); }
+    if (!response.body) resetUnavailable();
+    const reader = response.body!.getReader();
+    const chunks: Uint8Array[] = []; let size = 0; let ended = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { ended = true; break; }
+        size += value.byteLength;
+        if (size > 16384) resetUnavailable();
+        chunks.push(value);
+      }
+      return JSON.parse(Buffer.concat(chunks, size).toString('utf8'));
+    } finally {
+      try { if (!ended) await reader.cancel(); } finally { reader.releaseLock(); }
+    }
   }
   async revoke(binding: FleetResetBinding) { await this.call('revoke', binding); }
   async observe(binding: FleetResetBinding) { return checkedObservation(await this.call('observe', binding), binding); }

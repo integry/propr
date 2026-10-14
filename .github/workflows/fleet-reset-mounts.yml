@@ -1,0 +1,37 @@
+name: Fleet reset mount boundaries
+
+on:
+  pull_request:
+    paths:
+      - 'packages/core/src/fleet/**'
+      - 'packages/core/test/fleetNativeReset.test.ts'
+      - 'packages/shared/src/fleetReset.ts'
+      - '.github/workflows/fleet-reset-mounts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mount-boundaries:
+    # Hosted Linux provides sudo/mount; rootless application runners do not.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @propr/shared
+      - name: Refuse tmpfs and bind mounts before deletion
+        # Keep disposable mounts private, including if a test crashes. Required
+        # mode turns missing privilege/tooling into a failure rather than a skip.
+        run: |
+          sudo env NODE_ENV=test PROPR_TEST_REQUIRE_MOUNTS=1 \
+            unshare --mount --propagation private "$(command -v node)" \
+            --import tsx --experimental-test-module-mocks --test \
+            --test-name-pattern='real mounted' packages/core/test/fleetNativeReset.test.ts
