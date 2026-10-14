@@ -95,7 +95,10 @@ test('signed RPM runner passes its host identity and keeps evidence directories 
 });
 
 const exerciseExport = async ({ rootful = false, partial = false }) => {
-  const directory = await mkdtemp(join(tmpdir(), 'signed-rpm-export-'));
+  // A distinct host UID must traverse the parent too. CI's TMPDIR may be
+  // root-owned mode 0700, so use Linux's shared temporary parent for this
+  // root-only identity-switching fixture; all evidence remains private below it.
+  const directory = await mkdtemp(join(rootful ? '/tmp' : tmpdir(), 'signed-rpm-export-'));
   const source = join(directory, 'source');
   const destination = join(directory, 'evidence');
   const uid = rootful ? 1001 : process.getuid();
