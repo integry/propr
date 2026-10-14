@@ -96,7 +96,7 @@ export class BrowserSessionLifecycle {
     };
 
     trackStore(store: session.Store): void {
-        // RedisStore methods settle only after their Redis work and callback.
+        // Stores may complete through callbacks, promises, or both.
         for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 'all'] as const) {
             const target = store as unknown as Record<string, (...args: any[]) => Promise<unknown>>;
             // Store extensions are optional (MemoryStore, for example, has no ids).
@@ -109,10 +109,23 @@ export class BrowserSessionLifecycle {
                     if (typeof callback === 'function') { callback(error); return Promise.resolve(); }
                     return Promise.reject(error);
                 }
-                const operation = Promise.resolve().then(() => original(...args));
+                const callback = args.at(-1);
+                let callbackDone: Promise<void> | undefined;
+                if (typeof callback === 'function') {
+                    callbackDone = new Promise<void>(resolve => {
+                        args[args.length - 1] = function (this: unknown, ...results: any[]) {
+                            try { return callback.apply(this, results); }
+                            finally { resolve(); }
+                        };
+                    });
+                }
+                const result = Promise.resolve().then(() => original(...args));
+                // Keep the caller's result independent of the drain obligation:
+                // a dual API can settle its promise before invoking its callback.
+                const operation = Promise.allSettled(callbackDone ? [result, callbackDone] : [result]);
                 this.operations.add(operation);
-                void operation.finally(() => this.operations.delete(operation)).catch(() => {});
-                return operation;
+                void operation.then(() => this.operations.delete(operation));
+                return result;
             };
         }
     }

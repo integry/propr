@@ -126,3 +126,160 @@ for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 
         assert.deepEqual(events, ['started', 'callback', 'disconnect']);
     });
 }
+
+const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve));
+
+for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 'all']) {
+    test(`callback-only ${name} drains after an admitted response aborts`, async () => {
+        const lifecycle = new BrowserSessionLifecycle();
+        const events: string[] = [];
+        const data = { cookie: {}, marker: 'saved' };
+        const args = ['clear', 'length', 'ids', 'all'].includes(name) ? []
+            : ['set', 'touch'].includes(name) ? ['session', data] : ['session'];
+        const callbackReceiver = {};
+        const callbackResult = {};
+        const callbackError = new Error('persistence failed');
+        let complete!: (...results: unknown[]) => unknown;
+        const store = {
+            [name]: function (...received: any[]) {
+                assert.equal(this, store);
+                complete = received.pop();
+                assert.deepEqual(received, args);
+                events.push('write');
+                return undefined;
+            },
+        };
+        lifecycle.trackStore(store as unknown as session.Store);
+        const response = new EventEmitter();
+        lifecycle.middleware({} as any, response as any, () => events.push('admitted'));
+        const result = store[name](...args, function (this: unknown, ...results: unknown[]) {
+            assert.equal(this, callbackReceiver);
+            assert.deepEqual(results, [callbackError, data, 'extra']);
+            events.push('callback');
+            return callbackResult;
+        });
+        await result; // Returning undefined from the store is not completion evidence.
+        const closing = lifecycle.close(async () => { events.push('disconnect'); });
+        response.emit('close');
+        response.emit('finish'); // Request release must remain idempotent.
+        await nextTurn();
+        assert.deepEqual(events, ['admitted', 'write']);
+        let refusals = 0;
+        await store[name](...args, (error: Error) => {
+            assert.match(error.message, /Browser sessions are closed/);
+            refusals++;
+        });
+        assert.equal(refusals, 1);
+        await assert.rejects(Promise.resolve(store[name](...args)), /Browser sessions are closed/);
+        assert.equal(complete.call(callbackReceiver, callbackError, data, 'extra'), callbackResult);
+        await closing;
+        assert.deepEqual(events, ['admitted', 'write', 'callback', 'disconnect']);
+        await lifecycle.close(async () => assert.fail('disconnected twice'));
+    });
+}
+
+for (const callbackFirst of [false, true]) {
+    for (const rejects of [false, true]) {
+        test(`dual store waits for both signals: callbackFirst=${callbackFirst}, rejects=${rejects}`, async () => {
+            const lifecycle = new BrowserSessionLifecycle();
+            const work = deferred();
+            const value = { result: 'promise result' };
+            const failure = new Error('promise failure');
+            let complete!: () => void;
+            let callbacks = 0;
+            let disconnects = 0;
+            const store = {
+                set(_id: string, _data: unknown, callback: () => void) {
+                    assert.equal(this, store);
+                    complete = callback;
+                    return work.promise.then(() => {
+                        if (rejects) throw failure;
+                        return value;
+                    });
+                },
+            };
+            lifecycle.trackStore(store as unknown as session.Store);
+            const result = store.set('session', {}, () => { callbacks++; });
+            const checked = rejects ? assert.rejects(result, error => error === failure)
+                : result.then(actual => { assert.equal(actual, value); });
+            const closing = lifecycle.close(async () => { disconnects++; });
+            await nextTurn();
+            if (callbackFirst) {
+                complete();
+                complete(); // Repeated callbacks must not release the promise obligation.
+            } else {
+                work.resolve();
+                await checked; // The caller receives its result before the callback.
+            }
+            await nextTurn();
+            assert.equal(disconnects, 0);
+            if (callbackFirst) work.resolve();
+            else complete();
+            await checked;
+            await closing;
+            assert.equal(callbacks, callbackFirst ? 2 : 1);
+            assert.equal(disconnects, 1);
+            await lifecycle.close(async () => assert.fail('disconnected twice'));
+        });
+    }
+}
+
+for (const rejects of [false, true]) {
+    test(`promise-only store preserves settlement: rejects=${rejects}`, async () => {
+        const lifecycle = new BrowserSessionLifecycle();
+        const work = deferred();
+        const value = {};
+        const failure = new Error('write failed');
+        let disconnected = false;
+        const store = { set: () => work.promise.then(() => {
+            if (rejects) throw failure;
+            return value;
+        }) };
+        lifecycle.trackStore(store as unknown as session.Store);
+        const result = store.set();
+        const checked = rejects ? assert.rejects(result, error => error === failure)
+            : result.then(actual => { assert.equal(actual, value); });
+        const closing = lifecycle.close(async () => { disconnected = true; });
+        await nextTurn();
+        assert.equal(disconnected, false);
+        work.resolve();
+        await checked;
+        await closing;
+        assert.equal(disconnected, true);
+    });
+}
+
+test('callback throws propagate and still release a callback-only operation', async () => {
+    const lifecycle = new BrowserSessionLifecycle();
+    const failure = new Error('callback failed');
+    let complete!: () => void;
+    const store = { set(callback: () => void) { complete = callback; } };
+    lifecycle.trackStore(store as unknown as session.Store);
+    await store.set(() => { throw failure; });
+    const closing = lifecycle.close(async () => {});
+    assert.throws(() => complete(), error => error === failure);
+    await closing;
+});
+
+test('synchronous callbacks preserve their return value and cannot release another write', async () => {
+    const lifecycle = new BrowserSessionLifecycle();
+    const value = {};
+    let complete!: () => void;
+    let disconnected = false;
+    const store = {
+        set(id: string, callback: () => unknown) {
+            if (id === 'deferred') { complete = callback; return undefined; }
+            return callback();
+        },
+    };
+    lifecycle.trackStore(store as unknown as session.Store);
+    await store.set('deferred', () => {});
+    assert.equal(await store.set('synchronous', () => value), value);
+    const closing = lifecycle.close(async () => { disconnected = true; });
+    await nextTurn();
+    assert.equal(disconnected, false);
+    complete();
+    complete();
+    await closing;
+    assert.equal(disconnected, true);
+});
