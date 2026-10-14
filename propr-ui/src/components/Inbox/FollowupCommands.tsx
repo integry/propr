@@ -44,6 +44,12 @@ function reconciliation(response: PostFollowupResponse): FollowupReconciliation 
 const reconciliationHandles = ({ commentId, jobId }: FollowupReconciliation): string =>
   [commentId !== undefined && `comment ${commentId}`, jobId && `job ${jobId}`].filter(Boolean).join(', ');
 
+function successMessage(response: PostFollowupResponse | undefined, command: string, prNumber: number): string {
+  const actions: Partial<Record<NonNullable<PostFollowupResponse['state']>, string>> = { batched: 'Batched', handled: 'Handled', queued: 'Queued' };
+  const action = response?.state ? actions[response.state] : undefined;
+  return action ? `${action} ${command} for PR #${prNumber}.` : `Sent ${command} to PR #${prNumber}.`;
+}
+
 /**
  * The follow-up commands for one run's pull request. A command in flight or
  * already sent is shared by every card showing the run, so neither a second
@@ -110,6 +116,11 @@ export const FollowupCommands: React.FC<FollowupCommandsProps> = ({
       });
       return;
     }
+    if (response?.state === 'refused' || response?.state === 'failed') {
+      settleFollowup(taskId, false);
+      addToast({ type: 'error', message: `${command} for PR #${prNumber} was ${response.state}. ${response.message ?? ''}`.trim() });
+      return;
+    }
     // Posted, but the queue may not have it: keep the handles and the notification, and leave a retry possible.
     if (response?.success === false) {
       const handles = reconciliation(response);
@@ -122,7 +133,7 @@ export const FollowupCommands: React.FC<FollowupCommandsProps> = ({
       return;
     }
     settleFollowup(taskId, true);
-    addToast({ type: 'success', message: `Sent ${command} to PR #${prNumber}.` });
+    addToast({ type: 'success', message: successMessage(response, command, prNumber) });
     await onCommandSent?.();
   };
 

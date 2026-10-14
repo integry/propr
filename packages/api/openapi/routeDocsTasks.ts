@@ -109,7 +109,7 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
     pathParams: { taskId: TASK_ID },
     requestBody: { schema: TaskFollowupRequest },
     responses: {
-      202: { description: 'The comment was posted and the run queued (or the queue outcome is unknown).', schema: TaskFollowupResult },
+      202: { description: 'The comment was posted; the outcome distinguishes queued, batched, handled, refused, failed and unknown submissions.', schema: TaskFollowupResult },
       400: { description: 'The comment body or target is invalid.' },
       404: { description: 'Task not found.' },
     },

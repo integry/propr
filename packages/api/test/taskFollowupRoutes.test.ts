@@ -27,7 +27,11 @@ const redis = {
   get: async (key: string) => claims.get(key) ?? null,
   setex: async (key: string, _ttl: number, value: string) => { claims.set(key, value); },
   del: async (key: string) => { claims.delete(key); },
-  eval: async () => 1,
+  eval: async (script: string, _count: number, key: string, token: string) => {
+    if (claims.get(key) !== token) return 0;
+    if (script.includes("redis.call('DEL'")) claims.delete(key);
+    return 1;
+  },
   rpush: mock.fn(async (...args: [string, string]) => { assert.equal(args.length, 2); return 1; }),
   expire: async () => 1,
 };
@@ -72,20 +76,32 @@ await mock.module('../../core/src/auth/githubAuth.js', {
 const labels = await import('../../core/src/utils/github/labelOperations.js');
 const updateLabels = mock.fn(async (_context: unknown, removed: string[], added: string[]) => ({ success: true, removed, added, errors: [] }));
 await mock.module('../../core/src/utils/github/labelOperations.js', { namedExports: { ...labels, safeUpdateLabels: updateLabels } });
+const registryModule = await import('../../core/src/agents/AgentRegistry.js');
+await mock.module('../../core/src/agents/AgentRegistry.js', {
+  namedExports: { ...registryModule, AgentRegistry: class {
+    static getInstance() { return { ensureInitialized: async () => {}, getAllAgents: () => [] }; }
+  } },
+});
 const { setUltrafixDeps, processCommentEvent } = await import('../../core/src/webhook/commentEventHandler.js');
 const invalidate = mock.fn(async () => ({ workEpoch: 8, hadAutomaticWork: true }));
-const startLoop = mock.fn(async (_redis: unknown, _options: Parameters<UltrafixDeps['startLoop']>[1], pending: boolean) => ({ state: {}, initialAction: pending ? 'fix' as const : 'review' as const }));
+let startLoopFails = false;
+const clearState = mock.fn(async () => true);
+const startLoop = mock.fn(async (_redis: unknown, _options: Parameters<UltrafixDeps['startLoop']>[1], pending: boolean) => {
+  if (startLoopFails) throw new Error('startLoop failed');
+  return { state: {}, initialAction: pending ? 'fix' as const : 'review' as const };
+});
 let pendingReview = false;
 setUltrafixDeps({
   loadUltrafixRatingGoal: async () => 9, loadUltrafixMaxCycles: async () => 5,
   loadUltrafixPauseSeconds: async () => 60, loadPrReviewModel: async () => 'gpt-5',
-  startLoop, clearStateIfCurrent: async () => true, hasAutomaticWork: async () => false,
+  startLoop, clearStateIfCurrent: clearState, hasAutomaticWork: async () => false,
   reserveAutomaticWork: async () => 8, invalidateAutomaticWork: invalidate,
   getPendingReviewState: async () => ({ hasPendingReview: pendingReview }),
 });
 beforeEach(() => {
+  startLoopFails = false;
   claims.clear(); existingJobs = []; queueFails = false; pendingReview = false; webhookFirst = false; acceptBeforeFailure = false; acceptedJobs.clear();
-  for (const fn of [add, request, invalidate, startLoop, updateLabels, redis.rpush]) fn.mock.resetCalls();
+  for (const fn of [add, request, invalidate, startLoop, clearState, updateLabels, redis.rpush]) fn.mock.resetCalls();
 });
 
 const { closeConnection } = await import('@propr/core');
@@ -254,7 +270,7 @@ for (const command of ['/review', '/fix', '/ultrafix']) {
 test('review batched behind manual work preserves command metadata', async () => {
   existingJobs = [{ name: 'processPullRequestComment', data: { repoOwner: 'integry', repoName: 'propr', pullRequestNumber: 7, commandMode: 'fix' } }];
   const result = await postFollowup({ body: '/review gpt-5\nCheck errors', target: 'pull_request' }, 'completed-task');
-  assert.equal(result.json.state, 'queued');
+  assert.equal(result.json.state, 'batched');
   assert.equal(result.json.jobId, undefined, 'do not return a nonexistent job ID for a batched command');
   assert.equal(add.mock.callCount(), 0);
   assert.equal(redis.rpush.mock.callCount(), 1);
@@ -273,7 +289,10 @@ test('bare desktop /review queues a dedicated review with an empty instruction b
 });
 
 test('/switch uses shared label side effects without queuing an implementation', async () => {
-  await postFollowup({ body: '/switch claude-sonnet-4-6', target: 'pull_request' }, 'completed-task');
+  const result = await postFollowup({ body: '/switch claude-sonnet-4-6', target: 'pull_request' }, 'completed-task');
+  assert.equal(result.json.state, 'handled');
+  assert.equal(result.json.success, true);
+  assert.equal(result.json.jobId, undefined);
   assert.equal(add.mock.callCount(), 0);
   assert.deepEqual(updateLabels.mock.calls[0].arguments.slice(1), [[], ['llm-claude-sonnet-4-6']]);
 });
@@ -336,4 +355,41 @@ test('registered markers are bound to body, repository and configured author', a
     assert.deepEqual(result, { status: 'ignored', reason: 'filtered_author' });
   }
   assert.equal(add.mock.callCount(), 1);
+});
+
+for (const body of ['/switch', '/switch nonexistent-model', '/use', '/use nonexistent-model']) {
+  test(`${body} is refused without a queue receipt or label changes`, async () => {
+    const result = await postFollowup({ body, target: 'pull_request' }, 'completed-task');
+    assert.equal(result.json.state, 'refused');
+    assert.equal(result.json.success, false);
+    assert.equal(result.json.posted, true);
+    assert.equal(result.json.commentId, 6157569382);
+    assert.equal(result.json.jobId, undefined);
+    assert.equal(add.mock.callCount(), 0);
+    assert.equal(updateLabels.mock.callCount(), 0);
+  });
+}
+
+for (const first of [false, true]) {
+  test(`pre-enqueue startLoop failure is reported after rollback, webhook first=${first}`, async () => {
+    webhookFirst = first;
+    startLoopFails = true;
+    const result = await postFollowup({ body: '/ultrafix', target: 'pull_request' }, 'completed-task');
+    assert.equal(result.json.state, 'failed');
+    assert.equal(result.json.success, false);
+    assert.equal(result.json.jobId, undefined);
+    assert.equal(add.mock.callCount(), 0);
+    assert.equal(clearState.mock.callCount(), 1);
+    assert.deepEqual(updateLabels.mock.calls[1].arguments.slice(1), [['ultrafix'], []]);
+    const postedBody = request.mock.calls[0].arguments[1].body!;
+    await deliverWebhook(postedBody);
+    assert.equal(startLoop.mock.callCount(), 1);
+  });
+}
+
+test('webhook startLoop failure still rethrows after rollback', async () => {
+  startLoopFails = true;
+  await assert.rejects(deliverWebhook('/ultrafix'), /startLoop failed/);
+  assert.equal(clearState.mock.callCount(), 1);
+  assert.equal(add.mock.callCount(), 0);
 });

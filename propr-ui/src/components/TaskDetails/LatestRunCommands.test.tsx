@@ -169,8 +169,27 @@ describe('LatestRunCommands', () => {
 
     vi.mocked(postTaskFollowup).mockResolvedValueOnce({ success: true, state: 'queued' });
     fireEvent.click(fix);
-    expect(await screen.findByText('Sent /fix to PR #3065.')).toBeInTheDocument();
+    expect(await screen.findByText('Queued /fix for PR #3065.')).toBeInTheDocument();
     expect(postTaskFollowup).toHaveBeenCalledTimes(2);
     expect(screen.getByRole('button', { name: 'Send /fix to PR #3065' })).toBeDisabled();
   });
+  test.each(['refused', 'failed'] as const)('shows %s as an error and permits correction', async state => {
+    stillNewest();
+    vi.mocked(postTaskFollowup).mockResolvedValueOnce({ success: false, state, message: 'Command could not be handled.' });
+    renderCommands('run-2');
+    fireEvent.click(screen.getByRole('button', { name: 'Send /fix to PR #3065' }));
+    expect(await screen.findByText(`/fix for PR #3065 was ${state}. Command could not be handled.`)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send /fix to PR #3065' })).toBeEnabled();
+    expect(screen.queryByText(/may not have been queued/)).not.toBeInTheDocument();
+  });
+
+  test.each(['batched', 'handled'] as const)('shows successful %s without claiming a new queue job', async state => {
+    stillNewest();
+    vi.mocked(postTaskFollowup).mockResolvedValueOnce({ success: true, state });
+    renderCommands('run-2');
+    fireEvent.click(screen.getByRole('button', { name: 'Send /fix to PR #3065' }));
+    expect(await screen.findByText(`${state === 'batched' ? 'Batched' : 'Handled'} /fix for PR #3065.`)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send /fix to PR #3065' })).toBeDisabled();
+  });
+
 });

@@ -373,12 +373,12 @@ export interface TaskFollowupRequest {
 /** Result of posting a follow-up comment. `state: unknown` means inspect the job before retrying. */
 export interface TaskFollowupResult {
   success: boolean;
-  state: "queued" | "unknown";
+  state: "queued" | "batched" | "handled" | "refused" | "failed" | "unknown";
   posted: boolean;
   commentId: number;
-  jobId: string;
+  jobId?: string;
   sourceTaskId: string;
-  /** Present when the queue submission could not be confirmed. */
+  /** Explains a refusal, failure, or uncertain submission. */
   message?: string;
 }
 

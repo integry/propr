@@ -28,6 +28,7 @@ export interface HandleMergeCommandOptions {
     commentId?: number;
     redisClient: unknown;
     correlationId: string;
+    onSubmissionAttempt?: (jobId: string) => void;
 }
 
 /**
@@ -79,6 +80,7 @@ export async function handleMergeCommand(
 
     const jobId = `merge-conflict-${owner}-${repoName}-${prNumber}-${Date.now()}`;
     const queue = await getIssueQueue();
+    options.onSubmissionAttempt?.(jobId);
     await queue.add('processMergeConflict', jobData, { jobId });
 
     log.info({

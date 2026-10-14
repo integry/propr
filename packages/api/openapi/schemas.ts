@@ -235,12 +235,12 @@ export const TaskFollowupRequest = component('TaskFollowupRequest', z.object({
 
 export const TaskFollowupResult = component('TaskFollowupResult', z.object({
   success: z.boolean(),
-  state: z.enum(['queued', 'unknown']),
+  state: z.enum(['queued', 'batched', 'handled', 'refused', 'failed', 'unknown']),
   posted: z.boolean(),
   commentId: z.number().int(),
-  jobId: z.string(),
+  jobId: z.string().optional(),
   sourceTaskId: z.string(),
-  message: z.string().optional().describe('Present when the queue submission could not be confirmed.'),
+  message: z.string().optional().describe('Explains a refusal, failure, or uncertain submission.'),
 }), 'Result of posting a follow-up comment. `state: unknown` means inspect the job before retrying.');
 
 export const TaskSubject = component('TaskSubject', z.object({

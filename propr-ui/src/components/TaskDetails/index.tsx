@@ -260,10 +260,12 @@ const TaskDetails: React.FC<TaskDetailsProps> = ({ taskId: taskIdProp, embedded 
     if (!taskId) {
       throw new Error('Task ID is required');
     }
-    await postTaskFollowup(taskId, body);
+    const result = await postTaskFollowup(taskId, body);
+    if (!result.success) throw new Error(
+      [result.message ?? 'Follow-up was not confirmed.', result.commentId && `Comment ${result.commentId}.`, result.jobId && `Job ${result.jobId}.`].filter(Boolean).join(' '));
     addToast({
       type: 'success',
-      message: 'Follow-up comment posted successfully'
+      message: result.state === 'batched' ? 'Follow-up added to the pending batch' : result.state === 'handled' ? 'Command handled successfully' : 'Follow-up queued successfully'
     });
   }, [taskId, addToast]);
 

@@ -155,7 +155,7 @@ await mock.module('../packages/core/src/utils/commentFilters.js', {
 });
 
 // Mock safeUpdateLabels — capture calls for assertions
-const mockSafeUpdateLabels = mock.fn(async () => {});
+const mockSafeUpdateLabels = mock.fn(async (_context: unknown, removed: string[], added: string[]) => ({ success: true, removed, added, errors: [] }));
 await mock.module('../packages/core/src/utils/github/labelOperations.js', {
     namedExports: {
         safeRemoveLabel: mock.fn(async () => true),

@@ -82,6 +82,17 @@ async function followupBranch(
   }
 }
 
+function failedFollowupOutcome(submissionAttempted: boolean, jobId?: string) {
+  return {
+    success: false,
+    state: submissionAttempted ? 'unknown' : 'failed',
+    jobId,
+    message: submissionAttempted
+      ? 'Comment posted, but submission could not be confirmed. Inspect the comment and any job receipt before retrying.'
+      : 'Comment posted, but the command failed before submission.',
+  };
+}
+
 export function createTaskRoutes(deps: TaskRoutesDeps) {
   const { db, taskQueue } = deps;
 
@@ -420,9 +431,11 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
       const branchName = await followupBranch(task, targetsPullRequest, octokit, { owner: repoOwner, repo: repoName, issueNumber });
 
       const jobId = `pr-comments-batch-${repoOwner}-${repoName}-${issueNumber}-${Date.now()}-${commentId}`;
-      let dispatchedJobId: string | undefined;
+      let outcome;
+      let submissionAttempted = false;
+      let attemptedJobId: string | undefined;
       try {
-        dispatchedJobId = await dispatchPostedFollowup({
+        outcome = await dispatchPostedFollowup({
           owner: repoOwner, repo: repoName, prNumber: issueNumber, userId: String(userId), branchName,
           comment: {
             id: commentId, body: body.trim(),
@@ -436,16 +449,17 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
           PR_FOLLOWUP_TRIGGER_KEYWORDS: (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS ?? '').split(',').map(k => k.trim()).filter(Boolean),
           MODEL_LABEL_PATTERN: process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
           jobId,
+          onSubmissionAttempt: id => { submissionAttempted = true; attemptedJobId = id; },
         });
       } catch (queueErr) {
         // Redis may have accepted the job before the connection failed. A posted
         // comment is not evidence of a successful submission; retain both handles.
-        console.warn(`[followup] Queue submission uncertain: ${(queueErr as Error).message}`);
-        res.status(202).json({ success: false, state: 'unknown', posted: true, commentId, jobId,
-          sourceTaskId: taskId, message: 'Comment posted, but queue submission could not be confirmed. Inspect this job before retrying.' });
+        console.warn(`[followup] Command dispatch failed: ${(queueErr as Error).message}`);
+        res.status(202).json({ ...failedFollowupOutcome(submissionAttempted, attemptedJobId),
+          posted: true, commentId, sourceTaskId: taskId });
         return;
       }
-      res.status(202).json({ success: true, state: 'queued', posted: true, commentId, jobId: dispatchedJobId, sourceTaskId: taskId });
+      res.status(202).json({ success: ['queued', 'batched', 'handled'].includes(outcome.state), ...outcome, posted: true, commentId, sourceTaskId: taskId });
     } catch (error) {
       console.error('Error posting follow-up comment:', error);
       res.status(500).json({ error: 'Failed to post follow-up comment' });

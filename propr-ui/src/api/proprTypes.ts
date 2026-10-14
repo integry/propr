@@ -316,7 +316,7 @@ export interface PostFollowupResponse {
   success: boolean;
   message?: string;
   /** `unknown` when the comment was posted but its queue submission could not be confirmed. */
-  state?: 'queued' | 'unknown';
+  state?: 'queued' | 'batched' | 'handled' | 'refused' | 'failed' | 'unknown';
   posted?: boolean;
   commentId?: number;
   jobId?: string;

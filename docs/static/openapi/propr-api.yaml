@@ -7363,7 +7363,7 @@ paths:
               $ref: "#/components/schemas/TaskFollowupRequest"
       responses:
         "202":
-          description: The comment was posted and the run queued (or the queue outcome is unknown).
+          description: The comment was posted; the outcome distinguishes queued, batched, handled, refused, failed and unknown submissions.
           content:
             application/json:
               schema:
@@ -8929,6 +8929,10 @@ components:
           type: string
           enum:
             - queued
+            - batched
+            - handled
+            - refused
+            - failed
             - unknown
         posted:
           type: boolean
@@ -8939,14 +8943,13 @@ components:
         sourceTaskId:
           type: string
         message:
-          description: Present when the queue submission could not be confirmed.
+          description: Explains a refusal, failure, or uncertain submission.
           type: string
       required:
         - success
         - state
         - posted
         - commentId
-        - jobId
         - sourceTaskId
       additionalProperties: false
       description: "Result of posting a follow-up comment. `state: unknown` means inspect the job before retrying."
