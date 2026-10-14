@@ -10,7 +10,7 @@ import { getPendingPrCommentsKey } from '../utils/constants.js';
 import { withRetry } from '../utils/retryHandler.js';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { withUltrafixLabelTransition } from '../utils/ultrafixLabelTransition.js';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
 import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels, modelLabelPrefix } from './commentEventHelpers.js';
@@ -481,6 +481,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<stri
     let initialAction: 'review' | 'fix' = 'review';
     let labelIntroduced = false;
     let jobId: string | undefined;
+    let enqueueAttempted = false;
 
     // The reserved epoch fences older queued, deferred, and in-flight automatic
     // continuations. State commit and rollback are both conditional on ownership.
@@ -542,6 +543,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<stri
             : { mode: 'fix', commandLine: '', bodyInstructions: commandMeta.instructions, instructions: commandMeta.instructions };
 
         // 8. Enqueue the first step with ultrafix metadata
+        enqueueAttempted = true;
         jobId = await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
             jobId: config.jobId,
             payload,
@@ -554,6 +556,9 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<stri
             ultrafixMeta: loopMeta,
         });
     } catch (error) {
+        // API queue errors have uncertain acceptance; preserve the loop and label
+        // for the possibly accepted job and return its receipt to the caller.
+        if (config.jobId && enqueueAttempted) throw error;
         correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed before job enqueue, rolling back');
         try {
             let labelRemoved = false;
@@ -757,13 +762,34 @@ async function processSlashCommandComment(opts: SlashCommentOptions): Promise<De
     return acceptedCommentDisposition(comment.id, commentSeatConsumed(commentAuthor, comment.user.type ?? null, configuredBotUsernames));
 }
 
+/** Register before posting: GitHub can deliver the webhook before POST returns. */
+export async function prepareApiFollowup(
+    redis: Redis, context: RepoContext, body: string,
+): Promise<string> {
+    const token = randomUUID();
+    const postedBody = `${body}\n\n<!-- propr-api-followup:${token} -->`;
+    await redis.setex(`api-followup:${token}`, 604800, JSON.stringify({ ...context, body: postedBody }));
+    return postedBody;
+}
+
+async function isRegisteredApiFollowup(
+    redis: Redis, context: RepoContext, comment: PRComment, configuredBots: Set<string>,
+): Promise<boolean> {
+    if (!configuredBots.has(comment.user.login)) return false;
+    const token = /\n\n<!-- propr-api-followup:([a-f0-9-]{36}) -->$/.exec(comment.body)?.[1];
+    if (!token) return false;
+    const registered = await redis.get(`api-followup:${token}`);
+    return registered === JSON.stringify({ ...context, body: comment.body });
+}
+
 /**
  * Dispatch a comment already authorized and posted by the API. Keep webhook
  * author/trigger filters at the webhook boundary; never impersonate a human to
  * make a bot-authored API comment pass those filters.
  *
- * The same atomic claim prevents a bot /ultrafix webhook racing this request
- * from starting a second loop. Retain the claim on failure: queue acceptance
+ * Pre-post registration keeps matching bot webhooks from claiming API work.
+ * The atomic claim prevents repeated API dispatch from starting a second loop.
+ * Retain the claim on failure: queue acceptance
  * may be uncertain, and the API returns the receipt for inspection. An absent
  * job ID means the command was batched, handled without a job, or already claimed.
  */
@@ -805,6 +831,11 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
     const commentAuthor = rawComment.user.login;
     const parsedCommand = parseSlashCommand(rawComment.body);
     const configuredBotUsernames = getSystemBotUsernames();
+    // Only a server-registered, exact submission from a configured bot defers
+    // intake. A marker alone never authorizes work or bypasses author filters.
+    if (await isRegisteredApiFollowup(redisClient, { owner, repo, prNumber }, rawComment, configuredBotUsernames)) {
+        return { status: 'ignored', reason: 'duplicate_delivery' };
+    }
     const isSystemUltrafixComment = parsedCommand?.command === 'ultrafix'
         && (
             configuredBotUsernames.has(commentAuthor)

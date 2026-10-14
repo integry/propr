@@ -1,3 +1,4 @@
+import { prepareApiFollowup } from '../../core/src/webhook/commentEventHandler.js';
 import { deleteTaskRecords } from '../../core/src/storage/taskHistoryControl.js';
 import { Request, Response } from 'express';
 import { Knex } from 'knex';
@@ -63,6 +64,22 @@ function parseAssignmentQuery(req: Request, task: string): { ok: true; query: As
       ...(sync ? { syncAssignees: (taskId: string) => syncTaskAssignees(taskId) } : {}),
     },
   };
+}
+
+async function followupBranch(
+  task: TaskRecord, targetsPullRequest: boolean, octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
+  context: { owner: string; repo: string; issueNumber: number },
+): Promise<string | undefined> {
+  if (!targetsPullRequest && !isPullRequestTask(task)) return undefined;
+  try {
+    const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+      owner: context.owner, repo: context.repo, pull_number: context.issueNumber,
+    });
+    return data.head.ref;
+  } catch (error) {
+    console.warn(`[followup] Could not fetch PR branch: ${(error as Error).message}`);
+    return undefined;
+  }
 }
 
 export function createTaskRoutes(deps: TaskRoutesDeps) {
@@ -382,13 +399,17 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
+      // Reserve API ownership before GitHub can emit the comment webhook.
+      const redisClient = await issueQueue.client as unknown as Redis;
+      const postedBody = await prepareApiFollowup(redisClient, { owner: repoOwner, repo: repoName, prNumber: issueNumber }, body.trim());
+
       // Post comment to GitHub
       const octokit = await getAuthenticatedOctokit();
       const commentResponse = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner,
         repo: repoName,
         issue_number: issueNumber,
-        body: body.trim()
+        body: postedBody
       });
 
       const commentId = commentResponse.data.id;
@@ -396,20 +417,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
 
       console.log(`[followup] Posted follow-up comment (ID: ${commentId}) to ${repoOwner}/${repoName}#${issueNumber}`);
 
-      // Get branch name for PR-based tasks
-      let branchName: string | undefined;
-      if (targetsPullRequest || isPullRequestTask(task)) {
-        try {
-          const { data: prData } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-            owner: repoOwner,
-            repo: repoName,
-            pull_number: issueNumber
-          });
-          branchName = prData.head.ref;
-        } catch (branchErr) {
-          console.warn(`[followup] Could not fetch PR branch: ${(branchErr as Error).message}`);
-        }
-      }
+      const branchName = await followupBranch(task, targetsPullRequest, octokit, { owner: repoOwner, repo: repoName, issueNumber });
 
       const jobId = `pr-comments-batch-${repoOwner}-${repoName}-${issueNumber}-${Date.now()}-${commentId}`;
       let dispatchedJobId: string | undefined;
@@ -424,7 +432,7 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
           },
         }, generateCorrelationId(), {
           // taskQueue constructs this client with ioredis; BullMQ exposes only IRedisClient.
-          redisClient: await issueQueue.client as unknown as Redis,
+          redisClient,
           PR_FOLLOWUP_TRIGGER_KEYWORDS: (process.env.PR_FOLLOWUP_TRIGGER_KEYWORDS ?? '').split(',').map(k => k.trim()).filter(Boolean),
           MODEL_LABEL_PATTERN: process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
           jobId,
