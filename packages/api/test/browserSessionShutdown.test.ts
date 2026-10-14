@@ -130,6 +130,44 @@ for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 
 const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve));
 
 for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 'all']) {
+    test(`synchronous ${name} failure before callback releases shutdown exactly once`, { timeout: 2_000 }, async () => {
+        const lifecycle = new BrowserSessionLifecycle();
+        const failure = new Error('synchronous store failure');
+        const data = { cookie: {} };
+        const args = ['clear', 'length', 'ids', 'all'].includes(name) ? []
+            : ['set', 'touch'].includes(name) ? ['session', data] : ['session'];
+        let invocations = 0;
+        let callbacks = 0;
+        let disconnects = 0;
+        const store = {
+            [name]: function (...received: any[]) {
+                assert.equal(this, store);
+                assert.equal(typeof received.pop(), 'function');
+                assert.deepEqual(received, args);
+                invocations++;
+                throw failure;
+            },
+        };
+        lifecycle.trackStore(store as unknown as session.Store);
+        const response = new EventEmitter();
+        lifecycle.middleware({} as any, response as any, () => {});
+        const result = store[name](...args, () => { callbacks++; });
+        const closing = lifecycle.close(async () => { disconnects++; });
+        const repeatedClose = lifecycle.close(async () => assert.fail('disconnected twice'));
+        assert.equal(repeatedClose, closing);
+        response.emit('close');
+        response.emit('finish');
+        await assert.rejects(Promise.resolve(result), error => error === failure);
+        await closing;
+        await repeatedClose;
+        await lifecycle.close(async () => assert.fail('disconnected twice'));
+        assert.equal(invocations, 1);
+        assert.equal(callbacks, 0);
+        assert.equal(disconnects, 1);
+    });
+}
+
+for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 'all']) {
     test(`callback-only ${name} drains after an admitted response aborts`, async () => {
         const lifecycle = new BrowserSessionLifecycle();
         const events: string[] = [];

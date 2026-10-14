@@ -111,15 +111,25 @@ export class BrowserSessionLifecycle {
                 }
                 const callback = args.at(-1);
                 let callbackDone: Promise<void> | undefined;
+                let settleCallback: (() => void) | undefined;
                 if (typeof callback === 'function') {
                     callbackDone = new Promise<void>(resolve => {
+                        settleCallback = resolve;
                         args[args.length - 1] = function (this: unknown, ...results: any[]) {
                             try { return callback.apply(this, results); }
                             finally { resolve(); }
                         };
                     });
                 }
-                const result = Promise.resolve().then(() => original(...args));
+                const result = Promise.resolve().then(() => {
+                    try { return original(...args); }
+                    catch (error) {
+                        // Invocation failed before returning work: no callback is owed.
+                        // A returned promise's rejection must still wait for its callback.
+                        settleCallback?.();
+                        throw error;
+                    }
+                });
                 // Keep the caller's result independent of the drain obligation:
                 // a dual API can settle its promise before invoking its callback.
                 const operation = Promise.allSettled(callbackDone ? [result, callbackDone] : [result]);
