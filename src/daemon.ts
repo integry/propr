@@ -455,8 +455,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     routingService = intakeStartup.routingService;
     routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
-    const shutdown = async (signal: string): Promise<void> => {
-        logger.info(`Received ${signal}, shutting down gracefully...`);
+    const close = watchResetGeneration(async (): Promise<void> => {
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
@@ -479,10 +478,12 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         await heartbeatRedis.quit();
         await redisClient.quit();
         await shutdownQueue();
-        if (signal !== 'fleet-reset') process.exit(0);
+    });
+    const shutdown = async (signal: string): Promise<void> => {
+        logger.info(`Received ${signal}, shutting down gracefully...`);
+        await close();
+        process.exit(0);
     };
-
-    watchResetGeneration(() => shutdown('fleet-reset'));
     process.on('SIGINT', () => { void shutdown('SIGINT'); });
     process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 }

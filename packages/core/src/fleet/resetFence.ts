@@ -9,10 +9,10 @@ interface Database { exec(sql: string): void; prepare(sql: string): Statement; c
 
 export type ResetIdentity = FleetResetBinding['predecessor'];
 export const resetUnavailable = (): never => { throw new Error('fleet_reset_unavailable'); };
-export function openResetDatabase(file: string): Database {
-  const Sqlite = createRequire(import.meta.url)('better-sqlite3') as new (file: string) => Database;
-  const db = new Sqlite(file);
-  db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
+export function openResetDatabase(file: string, mode: 'create' | 'existing' | 'readonly' = 'create'): Database {
+  const Sqlite = createRequire(import.meta.url)('better-sqlite3') as new (file: string, options: { fileMustExist: boolean; readonly: boolean }) => Database;
+  const db = new Sqlite(file, { fileMustExist: mode !== 'create', readonly: mode === 'readonly' });
+  if (mode !== 'readonly') db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
   return db;
 }
 
@@ -21,7 +21,7 @@ export function openResetDatabase(file: string): Database {
  * The control root is provisioned outside all tenant state and retained by reset. */
 export class ResetGenerationFence {
   private readonly db: Database;
-  constructor(readonly root: string) {
+  constructor(readonly root: string, mode: 'create' | 'existing' | 'readonly' = 'create') {
     let current = path.resolve(root);
     for (;;) {
       const s = fs.lstatSync(current);
@@ -31,7 +31,8 @@ export class ResetGenerationFence {
     }
     const file = path.join(root, 'generation.sqlite');
     if (fs.existsSync(file)) { const s = fs.lstatSync(file); if (!s.isFile() || s.isSymbolicLink() || s.nlink !== 1) resetUnavailable(); }
-    this.db = openResetDatabase(file);
+    this.db = openResetDatabase(file, mode);
+    if (mode !== 'create') return;
     fs.chmodSync(file, 0o600);
     this.db.exec(`CREATE TABLE IF NOT EXISTS identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), identity TEXT NOT NULL, fence TEXT);
       CREATE TABLE IF NOT EXISTS leases (id TEXT PRIMARY KEY, identity TEXT NOT NULL, kind TEXT NOT NULL);
@@ -55,6 +56,22 @@ export class ResetGenerationFence {
       if (row?.identity !== canonicalFleetJson(binding.successor) || row.fence !== canonicalFleetJson(binding)) resetUnavailable();
       this.db.prepare('UPDATE identity SET fence=NULL WHERE singleton=1').run();
     });
+  }
+  /** Positive control proof; both staged and activated successors retain identity. */
+  assertSuccessor(binding: FleetResetBinding) {
+    const row = this.db.prepare('SELECT * FROM identity WHERE singleton=1').get();
+    if (row?.identity !== canonicalFleetJson(binding.successor) ||
+      (row.fence !== null && row.fence !== canonicalFleetJson(binding))) resetUnavailable();
+    return binding.successor;
+  }
+  async waitForIdle(binding: FleetResetBinding, timeoutMs = 30_000) {
+    const deadline = performance.now() + timeoutMs;
+    for (;;) {
+      if (!this.sealed(binding)) resetUnavailable();
+      if (this.idle()) return;
+      if (performance.now() >= deadline) resetUnavailable();
+      await new Promise(resolve => setTimeout(resolve, Math.min(25, Math.max(1, deadline - performance.now()))));
+    }
   }
   acquire(identity: ResetIdentity, kind: string) {
     const id = randomUUID();
@@ -129,7 +146,7 @@ export function configuredResetFence() {
   if (!root) return undefined;
   if (!configured) {
     const identity = fleetResetIdentitySchema.parse(JSON.parse(fs.readFileSync(path.join(root, 'process-identity.json'), 'utf8')));
-    const fence = new ResetGenerationFence(root); fence.assert(identity); configured = { fence, identity };
+    const fence = new ResetGenerationFence(root, 'existing'); fence.assert(identity); configured = { fence, identity };
   }
   return configured;
 }
@@ -138,18 +155,29 @@ export async function withResetGeneration<T>(kind: string, fn: () => Promise<T>)
   const c = configuredResetFence(); return c ? c.fence.use(c.identity, kind, fn) : fn();
 }
 
-/** Core-owned graceful shutdown on a durable fence. Failed shutdown retains its
- * participant lease, so terminal proof cannot mistake a timeout for closure. */
-export function watchResetGeneration(close: () => Promise<void>): () => void {
-  const managed = configuredResetFence(); if (!managed) return () => {};
+/**
+ * Return the single graceful shutdown shared by signals, callers and reset.
+ * Only successful closure releases the durable participant lease. A rejected
+ * close is retained, including on repeated shutdown requests.
+ */
+export function watchResetGeneration(close: () => Promise<void>, managed = configuredResetFence()): () => Promise<void> {
+  if (!managed) return close;
   const release = managed.fence.acquire(managed.identity, 'process-resources');
-  const timer = setInterval(() => {
-    try { managed.fence.assert(managed.identity); }
-    catch {
-      clearInterval(timer);
-      void close().then(release, () => { /* Durable lease intentionally retained. */ });
+  let closing: Promise<void> | undefined;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const shutdown = () => {
+    if (!closing) {
+      if (timer) clearInterval(timer);
+      closing = Promise.resolve().then(close).then(() => { release?.(); });
     }
-  }, 100);
-  timer.unref();
-  return () => { clearInterval(timer); release(); };
+    return closing;
+  };
+  if (managed) {
+    timer = setInterval(() => {
+      try { managed.fence.assert(managed.identity); }
+      catch { void shutdown().catch(() => { /* Durable lease intentionally retained. */ }); }
+    }, 100);
+    timer.unref();
+  }
+  return shutdown;
 }

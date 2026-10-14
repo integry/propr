@@ -167,18 +167,21 @@ export class NativeResetRuntime {
     // credentials, pending work, migration replay or on-boot tasks.
     const stat = await fs.lstat(path.join(root, 'propr.sqlite'));
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) resetUnavailable();
-    const db = openResetDatabase(path.join(root, 'propr.sqlite'));
+    const db = openResetDatabase(path.join(root, 'propr.sqlite'), 'readonly');
     try {
       if (!same(db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all(), [{ name: 'reset_identity' }]) ||
         !same(db.prepare('SELECT identity FROM reset_identity').all(), [{ identity: canonicalFleetJson(this.options.binding.successor) }])) resetUnavailable();
     } finally { db.close(); }
     // Test the actual authority and work admissions, not receipt booleans.
-    const booted = new ResetGenerationFence(path.join(this.options.controlRoot, 'successor-control'));
+    const booted = new ResetGenerationFence(path.join(this.options.controlRoot, 'successor-control'), 'readonly');
     let refused = false;
-    try { booted.assert(this.options.binding.predecessor); } catch { refused = true; }
+    try {
+      booted.assertSuccessor(this.options.binding);
+      try { booted.assert(this.options.binding.predecessor); } catch { refused = true; }
+    }
     finally { booted.close(); }
     if (!refused || !this.fence.revoked(this.options.binding)) resetUnavailable();
-    return { identity: this.options.binding.successor, empty: true, predecessorRefused: true, dev: stat.dev, ino: stat.ino };
+    return { identity: this.options.binding.successor, controlIdentity: this.options.binding.successor, empty: true, predecessorRefused: true, dev: stat.dev, ino: stat.ino };
   }
   private async observe() {
     await this.files.check(); await this.checkRoot(true);
@@ -220,7 +223,7 @@ export class NativeResetRuntime {
    * the two stable proofs. Old reset credentials are not bootstrap credentials. */
   async bootstrapSuccessor(binding: FleetResetBinding) {
     await this.reconcile(binding);
-    const successor = new ResetGenerationFence(path.join(this.options.controlRoot, 'successor-control'));
+    const successor = new ResetGenerationFence(path.join(this.options.controlRoot, 'successor-control'), 'existing');
     try {
       // Intent before authority activation; a lost response burns this grant.
       if (!this.fence.intent('bootstrap', { binding })) resetUnavailable();

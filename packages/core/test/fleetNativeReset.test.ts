@@ -7,14 +7,14 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { request } from 'node:http';
 import { canonicalFleetJson, FLEET_RESET_CATEGORIES, FLEET_RESET_CONTRACT, FLEET_RESET_AUDIENCE, type FleetResetBinding } from '@propr/shared';
 import { NativeResetRuntime } from '../src/fleet/nativeReset.js';
-import { ResetGenerationFence, openResetDatabase } from '../src/fleet/resetFence.js';
+import { ResetGenerationFence, openResetDatabase, watchResetGeneration } from '../src/fleet/resetFence.js';
 import { ResetQueueAdapter, ResetAuthorityAdapter, type ResetExternalBoundary, type ResetObservation } from '../src/fleet/resetAdapters.js';
 import { FleetResetProofPlane, resetHash, resetContractPin, resetRequestMac, verifyResetReceipt } from '../src/fleet/resetProof.js';
 import { listenFleetData } from '../../api/fleetDataListener.js';
 import type { FleetDataPlane } from '../src/fleet/dataPlane.js';
 import { verifyReceipt } from '../../../docs/contracts/fleet-reset-v1/verify.mjs';
 
-async function fixture(t: any, checkpoint?: (phase: string) => Promise<void>) {
+async function fixture(t: any, checkpoint?: (phase: string) => Promise<void>, localWorkers = true) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-reset-'));
   const tenantRoot = path.join(root, 'tenant'); const controlRoot = path.join(root, 'control');
   await fs.mkdir(tenantRoot, { mode: 0o700 }); await fs.mkdir(controlRoot, { mode: 0o700 });
@@ -49,9 +49,9 @@ async function fixture(t: any, checkpoint?: (phase: string) => Promise<void>) {
       return { binding: JSON.parse(row.binding), revision: `${name}:${row.revision}`, refused: true, remaining: row.remaining, connections: row.connections } as ResetObservation;
     },
   });
-  const queue = new ResetQueueAdapter(fence, [{ pause: async () => { calls.push('worker:pause'); }, close: async () => { calls.push('worker:close'); } }],
+  const queue = new ResetQueueAdapter(fence, localWorkers ? [{ pause: async () => { calls.push('worker:pause'); }, close: async () => { calls.push('worker:close'); } }] : [],
     [{ pause: async () => { calls.push('queue:pause'); }, drain: async delayed => { assert.equal(delayed, true); calls.push('queue:drain'); }, close: async () => { calls.push('queue:close'); } }],
-    [{ quit: async () => { calls.push('redis:quit'); } }], boundary('queue'));
+    [{ quit: async () => { calls.push('redis:quit'); } }], boundary('queue'), 1_000);
   const sessions = new ResetAuthorityAdapter('sessions', fence, [{ close: async () => { calls.push('sessions:close'); } }], boundary('sessions'));
   const tunnel = new ResetAuthorityAdapter('tunnel_bootstrap', fence, [{ close: async () => { calls.push('tunnel:close'); } }], boundary('tunnel_bootstrap'));
   const credentials = {
@@ -164,4 +164,93 @@ test('late private files after first proof defeat second stable terminal proof',
   let tenant = '';
   const f = await fixture(t, async phase => { if (phase === 'second-proof') await fs.writeFile(path.join(tenant, 'late-result'), 'private'); }); tenant = f.tenantRoot;
   const result = await f.invoke(f.make()); assert.equal(result.body.receipt.evidence.state, 'recovery_required');
+});
+
+
+test('graceful participant replacement releases leases only after shared closure succeeds', async t => {
+  const f = await fixture(t);
+  const managed = { fence: f.fence, identity: f.binding.predecessor };
+  let finish!: () => void;
+  const pending = new Promise<void>(resolve => { finish = resolve; });
+  let calls = 0;
+  const close = watchResetGeneration(async () => { calls++; await pending; }, managed);
+  const first = close();
+  assert.equal(close(), first);
+  assert.equal(f.fence.idle(), false);
+  finish(); await first;
+  assert.equal(calls, 1);
+  assert.equal(f.fence.idle(), true);
+  const restarted = new ResetGenerationFence(f.controlRoot, 'existing');
+  try {
+    const replacement = watchResetGeneration(async () => {}, { fence: restarted, identity: f.binding.predecessor });
+    await replacement();
+    assert.equal(restarted.idle(), true);
+  } finally { restarted.close(); }
+  assert.equal((await f.invoke(f.make())).body.receipt.evidence.state, 'complete');
+});
+
+test('failed participant closure retains the lease across concurrent and later shutdown requests', async t => {
+  const f = await fixture(t);
+  let calls = 0;
+  const close = watchResetGeneration(async () => { calls++; throw new Error('closure failed'); },
+    { fence: f.fence, identity: f.binding.predecessor });
+  const first = close();
+  assert.equal(close(), first);
+  await assert.rejects(first);
+  await assert.rejects(close());
+  assert.equal(calls, 1);
+  assert.equal(f.fence.idle(), false);
+  assert.equal((await f.invoke(f.make())).body.receipt.evidence.state, 'recovery_required');
+  assert.equal(f.fence.effect('erase-database'), undefined);
+});
+
+test('queue quiescence without local worker handles waits for managed closure after external revocation', async t => {
+  const f = await fixture(t, undefined, false);
+  let closed = false;
+  const close = watchResetGeneration(async () => {
+    assert.ok(f.calls.includes('revoke:queue'));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(f.fence.idle(), false);
+    closed = true;
+  }, { fence: f.fence, identity: f.binding.predecessor });
+  const result = await f.invoke(f.make());
+  await close();
+  assert.equal(closed, true);
+  assert.equal(result.body.receipt.evidence.state, 'complete');
+  assert.equal((await f.invoke(f.make('reset.receipt'))).body.receipt.evidence.state, 'complete');
+});
+
+test('successor control loss or corruption refuses receipts and bootstrap without provisioning', async t => {
+  for (const scenario of ['missing-file', 'missing-table', 'missing-row', 'wrong-identity', 'wrong-fence', 'corrupt-file']) {
+    await t.test(scenario, async t => {
+      const f = await fixture(t);
+      assert.equal((await f.invoke(f.make())).body.receipt.evidence.state, 'complete');
+      const file = path.join(f.controlRoot, 'successor-control', 'generation.sqlite');
+      if (scenario === 'missing-file') await fs.unlink(file);
+      else if (scenario === 'corrupt-file') await fs.writeFile(file, 'not sqlite');
+      else {
+        const db = openResetDatabase(file);
+        try {
+          if (scenario === 'missing-table') db.exec('DROP TABLE identity');
+          if (scenario === 'missing-row') db.exec('DELETE FROM identity');
+          if (scenario === 'wrong-identity') db.prepare('UPDATE identity SET identity=?').run(canonicalFleetJson(f.binding.predecessor));
+          if (scenario === 'wrong-fence') db.prepare('UPDATE identity SET fence=?').run('{}');
+        } finally { db.close(); }
+      }
+      const before = scenario === 'missing-file' ? undefined : await fs.readFile(file);
+      const result = await f.invoke(f.make('reset.receipt'));
+      assert.equal(result.body.receipt.evidence.state, 'recovery_required');
+      assert.equal(result.body.receipt.evidence.bootstrapAllowed, false);
+      await assert.rejects(f.native.bootstrapSuccessor(f.binding));
+      if (before) assert.deepEqual(await fs.readFile(file), before);
+      else await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+    });
+  }
+});
+
+test('successor control proof accepts exact staged and activated identities', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.invoke(f.make())).body.receipt.evidence.state, 'complete');
+  await f.native.bootstrapSuccessor(f.binding);
+  assert.equal((await f.invoke(f.make('reset.receipt'))).body.receipt.evidence.state, 'complete');
 });

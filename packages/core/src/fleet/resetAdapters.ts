@@ -36,7 +36,7 @@ export class ResetQueueAdapter implements ResetAdapter {
     private readonly workers: readonly { pause(doNotWaitActive?: boolean): Promise<void>; close(): Promise<void> }[],
     private readonly queues: readonly { pause(): Promise<void>; drain(delayed?: boolean): Promise<void>; close(): Promise<void> }[],
     private readonly connections: readonly { quit(): Promise<unknown> }[],
-    private readonly external: ResetExternalBoundary) {}
+    private readonly external: ResetExternalBoundary, private readonly quiescenceTimeoutMs = 30_000) {}
   async stop(binding: FleetResetBinding) {
     if (!this.fence.sealed(binding)) resetUnavailable();
     // Fence first, then wait for running jobs. Delayed/repeat/future jobs are
@@ -47,12 +47,17 @@ export class ResetQueueAdapter implements ResetAdapter {
     for (const queue of this.queues) { await queue.drain(true); await queue.close(); }
     for (const connection of this.connections) await connection.quit();
     await this.external.revoke(binding);
+    // External revocation can finish before other Core processes finish their
+    // asynchronous shutdown. Wait for their durable leases before recording proof.
+    await this.fence.waitForIdle(binding, this.quiescenceTimeoutMs);
     this.closed = true;
   }
   async observe(binding: FleetResetBinding) {
     // On restart, external proof must include closure of all predecessor owners.
     if (!this.fence.sealed(binding) || !this.fence.idle()) return;
-    return this.external.observe(binding);
+    const observation = await this.external.observe(binding);
+    if (!this.fence.sealed(binding) || !this.fence.idle()) return;
+    return observation;
   }
   get locallyClosed() { return this.closed; }
 }
