@@ -99,6 +99,8 @@ export class BrowserSessionLifecycle {
         // RedisStore methods settle only after their Redis work and callback.
         for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 'all'] as const) {
             const target = store as unknown as Record<string, (...args: any[]) => Promise<unknown>>;
+            // Store extensions are optional (MemoryStore, for example, has no ids).
+            if (typeof target[name] !== 'function') continue;
             const original = target[name].bind(store);
             target[name] = (...args: any[]) => {
                 if (this.storeClosed) {

@@ -4,6 +4,7 @@ import { closeConnection } from '@propr/core';
 after(() => closeConnection());
 import { EventEmitter } from 'node:events';
 import { RedisStore } from 'connect-redis';
+import session from 'express-session';
 import { BrowserSessionLifecycle } from '../authSession.js';
 
 function deferred() {
@@ -64,3 +65,64 @@ test('Engine.IO upgrade response shim drains when its socket closes', async () =
         assert.equal(disconnected, true);
     } finally { client.disconnect(); io.close(); }
 });
+
+
+test('ordinary MemoryStore retains its optional methods and callback results', async () => {
+    const lifecycle = new BrowserSessionLifecycle();
+    const store = new session.MemoryStore();
+    lifecycle.trackStore(store);
+    assert.equal('ids' in store, false);
+    const data = { cookie: { maxAge: 60_000 }, marker: 'saved' } as unknown as session.SessionData;
+    await new Promise<void>((resolve, reject) => {
+        store.set('session', data, error => error ? reject(error) : resolve());
+    });
+    const saved = await new Promise<session.SessionData | null | undefined>((resolve, reject) => {
+        store.get('session', (error, value) => error ? reject(error) : resolve(value));
+    });
+    assert.deepEqual(saved, data);
+    await lifecycle.close(async () => {});
+    await new Promise<void>(resolve => {
+        store.set('late', data, error => {
+            assert.match(error.message, /Browser sessions are closed/);
+            resolve();
+        });
+    });
+    assert.equal('ids' in store, false);
+});
+
+for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 'all']) {
+    test(`partial store ${name} preserves receiver, callbacks, promises and shutdown fencing`, async () => {
+        const lifecycle = new BrowserSessionLifecycle();
+        const work = deferred();
+        const events: string[] = [];
+        const result = { session: 'value' };
+        const store = {
+            [name]: async function (key: string, callback?: (error: null, value: typeof result) => void) {
+                assert.equal(this, store);
+                assert.equal(key, 'session');
+                events.push('started');
+                await work.promise;
+                callback?.(null, result);
+                return result;
+            },
+        };
+        // Non-callable extensions must also remain untouched.
+        Object.defineProperty(store, 'length' === name ? 'ids' : 'length', { value: null });
+        const keys = Reflect.ownKeys(store);
+        lifecycle.trackStore(store as unknown as session.Store);
+        assert.deepEqual(Reflect.ownKeys(store), keys);
+        const operation = store[name]('session', (error, value) => {
+            assert.equal(error, null);
+            assert.equal(value, result);
+            events.push('callback');
+        });
+        const closing = lifecycle.close(async () => { events.push('disconnect'); });
+        await Promise.resolve();
+        assert.deepEqual(events, ['started']);
+        await assert.rejects(store[name]('late'), /Browser sessions are closed/);
+        work.resolve();
+        assert.equal(await operation, result);
+        await closing;
+        assert.deepEqual(events, ['started', 'callback', 'disconnect']);
+    });
+}

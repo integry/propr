@@ -28,18 +28,6 @@ Object.assign(process.env, environment);
 // Replace Redis transport only. Production setupAuth, Passport serialization,
 // session regeneration, cookie settings and per-request authorization all run.
 const store = new session.MemoryStore();
-// RedisStore exposes ids() in addition to MemoryStore's session methods.
-// Keep the fixture compatible with production session lifecycle tracking.
-Object.assign(store, {
-  async ids(callback?: (error: Error | null, ids?: string[]) => void) {
-    const sessions = await new Promise<Record<string, session.SessionData>>((resolve, reject) => {
-      store.all((error, values) => error ? reject(error) : resolve(values as Record<string, session.SessionData>));
-    });
-    const ids = Object.keys(sessions);
-    if (callback) callback(null, ids);
-    else return ids;
-  },
-});
 await mock.module('connect-redis', { namedExports: { RedisStore: function () { return store; } } });
 await mock.module('redis', { namedExports: { createClient: () => ({ on() {}, async connect() {} }) } });
 const { InstanceStorageService } = await import('../../core/src/storage/service.js');
