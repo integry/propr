@@ -5,9 +5,9 @@ import {
   FLEET_RESET_CONTRACT, FLEET_RESET_AUDIENCE, FLEET_RESET_SCHEMA,
   FLEET_RESET_CATEGORIES, FLEET_RESET_LIMITS, fleetResetBindingSchema,
   fleetResetEnvelopeSchema, fleetResetEvidenceSchema, fleetResetSignedReceiptSchema,
+  canonicalFleetJson,
   type FleetResetAssertion, type FleetResetBinding, type FleetResetEvidence, type FleetResetReceipt,
-} from '../../../shared/src/fleetReset.js';
-import { canonicalFleetJson } from '../../../shared/src/fleetData.js';
+} from '@propr/shared';
 import { FleetFiles } from './files.js';
 
 export const resetHash = (value: string) => createHash('sha256').update(value).digest('hex');
