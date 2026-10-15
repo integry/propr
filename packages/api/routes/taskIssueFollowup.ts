@@ -13,6 +13,8 @@ export interface IssueFollowupDeps {
   enqueueIssue?: typeof enqueueIssueImplementationJob;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Retries recording a trigger write's outcome after this request returns, until `attempt` reports it recorded. */
+  retryLater?: (attempt: () => Promise<boolean>) => void;
 }
 
 export interface IssueFollowupInput {
@@ -40,6 +42,8 @@ type Octokit = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 
 // Bounds the wait for the retry second when the database clock runs ahead.
 const MAX_ADMISSION_WAIT_MS = 2000;
+// How an outcome that could not be recorded is retried: the first pause, the longest, and for how long.
+const OUTCOME_RETRY = { firstMs: 5000, maxMs: 5 * 60 * 1000, forMs: 24 * 60 * 60 * 1000 };
 
 const refused = (status: number, error: string): FollowupResult => ({ status, body: { error } });
 
@@ -127,13 +131,6 @@ async function addTrigger(octokit: Octokit, input: IssueFollowupInput, publicati
 
 interface Publication { request: IssueRetryRequest; trigger: string; triggers: string[] }
 
-/** Re-applies the trigger; undefined when GitHub may have applied it without confirming. */
-async function reapplyTrigger(context: Parameters<typeof safeRemoveLabel>[0] & { octokit: Octokit }, input: IssueFollowupInput, present: boolean, publication: Publication): Promise<boolean | undefined> {
-  // A failed removal publishes no trigger event, so nothing can start from it.
-  if (present && !await safeRemoveLabel(context, publication.trigger)) return false;
-  return addTrigger(context.octokit, input, publication);
-}
-
 /** The trigger history, whose latest event is the one after which the request's own trigger is the first its identity labels. */
 async function triggerBaseline(octokit: Octokit, input: IssueFollowupInput, triggers: string[]): Promise<{ events: TriggerLabelEvent[]; afterEventId: string | null } | null> {
   try {
@@ -182,18 +179,82 @@ async function claimRetry(
   return refused(409, `An earlier retry of issue #${input.issueNumber} may still start. Inspect the issue and try again in a few minutes.`);
 }
 
+/** Retries `attempt` with growing pauses, without holding the process open, until it succeeds or a day has passed. */
+function retryInBackground(attempt: () => Promise<boolean>): void {
+  const deadline = Date.now() + OUTCOME_RETRY.forMs;
+  const schedule = (pause: number) => {
+    setTimeout(() => {
+      void attempt().then(done => {
+        if (!done && Date.now() + pause < deadline) schedule(Math.min(pause * 2, OUTCOME_RETRY.maxMs));
+      });
+    }, pause).unref();
+  };
+  schedule(OUTCOME_RETRY.firstMs);
+}
+
 /**
  * Records the trigger write's outcome for recovery: `possible` once it was
  * applied or may still be, or a refusal, which published no trigger of the
- * request and releases it. Without the record the outcome stays unknown, and
- * recovery defers the request's trigger rather than run it with or without
- * the request.
+ * request and releases it. Until it is recorded the outcome is unknown, and
+ * recovery defers the request's trigger rather than run it with or without the
+ * request; so an outcome that cannot be recorded now is retried after the
+ * response, and false is returned.
  */
-async function recordTriggerOutcome(db: Knex, request: IssueRetryRequest, { applied, now }: { applied: boolean | undefined; now: number }): Promise<void> {
+async function recordTriggerOutcome(db: Knex, deps: IssueFollowupDeps, request: IssueRetryRequest, applied: boolean | undefined): Promise<boolean> {
   const publication = applied === false ? 'refused' : 'possible';
-  await recordIssueRetryPublication(db, request, publication, now).catch((error: Error) => {
-    console.warn(`[followup] Could not record the retry trigger as ${publication}: ${error.message}`);
+  const record = async () => {
+    try {
+      await recordIssueRetryPublication(db, request, publication, clock(deps)());
+      return true;
+    } catch (error) {
+      console.warn(`[followup] Could not record the retry trigger of #${request.id} as ${publication}: ${(error as Error).message}`);
+      return false;
+    }
+  };
+  if (await record()) return true;
+  (deps.retryLater ?? retryInBackground)(record);
+  return false;
+}
+
+/**
+ * Readies the trigger write: removes a present trigger, which publishes no
+ * trigger event, then records the request with its comment just before the
+ * write. Its publication window opens then, not when it was reserved, so time
+ * spent posting it does not make its own trigger look like another's; the
+ * read-back and dispatch match the trigger against the same recorded window.
+ * Null when the trigger must not be written.
+ */
+async function beginPublication(
+  db: Knex, deps: IssueFollowupDeps, context: Parameters<typeof safeRemoveLabel>[0],
+  { reservation, posted, present, trigger }: { reservation: IssueRetryRequest; posted: Pick<IssueRetryRequest, 'commentId' | 'actorId'>; present: boolean; trigger: string },
+): Promise<IssueRetryRequest | null> {
+  if (present && !await safeRemoveLabel(context, trigger)) return null;
+  return beginIssueRetryPublication(db, reservation, posted, clock(deps)()).catch((error: Error) => {
+    console.warn(`[followup] Could not record the retry request: ${error.message}`);
+    return null;
   });
+}
+
+/**
+ * Queues the run of a request whose trigger GitHub confirmed. The job is
+ * queued only then, so while the outcome is unrecorded it is also the evidence
+ * its dispatch records it from. Null once it is queued with its outcome recorded.
+ */
+async function submitRetry(
+  deps: IssueFollowupDeps, job: Parameters<typeof enqueueIssueImplementationJob>[0], recorded: boolean,
+  unconfirmed: (message: string) => FollowupResult,
+): Promise<FollowupResult | null> {
+  try {
+    await (deps.enqueueIssue ?? enqueueIssueImplementationJob)(job);
+  } catch (error) {
+    // The queue may have accepted the job before failing; the trigger label
+    // stays for polling, and the held request lets that recovery run it once
+    // its outcome is recorded.
+    console.warn(`[followup] Issue retry dispatch failed: ${(error as Error).message}`);
+    return unconfirmed('Comment posted, but submission could not be confirmed. Inspect the comment and any job receipt before retrying.');
+  }
+  if (recorded) return null;
+  return unconfirmed(`Comment posted and the retry submitted, but its '${job.triggeringLabel}' label could not be recorded yet, so it starts once that record is saved. Inspect issue #${job.issueNumber} before retrying.`);
 }
 
 async function checkRetryable(db: Knex, input: IssueFollowupInput): Promise<FollowupResult | null> {
@@ -287,14 +348,9 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   const notStarted = (): FollowupResult => ({ status: 202, body: { success: false, state: 'failed', ...posted,
     message: `Comment posted, but the retry could not be started. Make sure issue #${issueNumber} has the '${trigger}' label, then try again.` } });
 
-  // The request is recorded with its comment before its trigger is written,
-  // or the trigger is not written at all.
-  const retryRequest: IssueRetryRequest = { ...reservation, commentId, actorId, publication: 'pending' };
-  const publishing = await beginIssueRetryPublication(db, reservation, { commentId, actorId }, clock(deps)()).catch((error: Error) => {
-    console.warn(`[followup] Could not record the retry request: ${error.message}`);
-    return false;
-  });
-  if (!publishing) {
+  const context = { octokit, owner, repo, issueNumber, logger: logger.withCorrelation(correlationId) };
+  const retryRequest = await beginPublication(db, deps, context, { reservation, posted: { commentId, actorId }, present: labels.includes(trigger), trigger });
+  if (!retryRequest) {
     await abandon();
     return notStarted();
   }
@@ -302,9 +358,8 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   const jobId = `issue-${owner}-${repo}-${issueNumber}`;
   const unconfirmed = (message: string): FollowupResult => ({ status: 202, body: { success: false, state: 'unknown', jobId, ...posted, message } });
 
-  const context = { octokit, owner, repo, issueNumber, logger: logger.withCorrelation(correlationId) };
-  const applied = await reapplyTrigger(context, input, labels.includes(trigger), { request: retryRequest, trigger, triggers });
-  await recordTriggerOutcome(db, retryRequest, { applied, now: clock(deps)() });
+  const applied = await addTrigger(octokit, input, { request: retryRequest, trigger, triggers });
+  const recorded = await recordTriggerOutcome(db, deps, retryRequest, applied);
   if (applied === undefined) {
     // GitHub may have applied the trigger or may still apply it, and its
     // relabel delivery or polling recovers the run; the held request keeps
@@ -317,13 +372,7 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
     return notStarted();
   }
 
-  try {
-    await (deps.enqueueIssue ?? enqueueIssueImplementationJob)({ owner, repo, issueNumber, userId, retryRequesterId: userId, retryCommentId: commentId, triggeringLabel: trigger, correlationId });
-  } catch (error) {
-    // The queue may have accepted the job before failing; the trigger label
-    // stays for polling, and the held request lets that recovery run it.
-    console.warn(`[followup] Issue retry dispatch failed: ${(error as Error).message}`);
-    return unconfirmed('Comment posted, but submission could not be confirmed. Inspect the comment and any job receipt before retrying.');
-  }
-  return { status: 202, body: { success: true, state: 'queued', jobId, ...posted, message: `Retry queued on issue #${issueNumber}.` } };
+  const job = { owner, repo, issueNumber, userId, retryRequesterId: userId, retryCommentId: commentId, triggeringLabel: trigger, correlationId };
+  const submitted = await submitRetry(deps, job, recorded, unconfirmed);
+  return submitted ?? { status: 202, body: { success: true, state: 'queued', jobId, ...posted, message: `Retry queued on issue #${issueNumber}.` } };
 }

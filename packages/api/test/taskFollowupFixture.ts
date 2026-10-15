@@ -31,8 +31,12 @@ export const state = {
   // Whether Redis scripts fail, as during a Redis connection failure, and a hook run as GitHub
   // receives the trigger add, before it answers.
   redisFails: false, onLabelAdd: undefined as undefined | (() => void | Promise<void>),
-  // Whether a dispatch fails to record that it consumed a retry request.
-  consumeFails: false,
+  // Whether a dispatch fails to record that it consumed a retry request, or the trigger write its job confirms.
+  consumeFails: false, confirmFails: false,
+  // A hook run while GitHub creates a posted comment, before it answers.
+  onCommentPost: undefined as undefined | (() => void | Promise<void>),
+  // Outcome records the route left to retry after responding; a test runs them.
+  outcomeRetries: [] as Array<() => Promise<boolean>>,
   // The ID GitHub gives the next posted comment; every post gets its own.
   nextCommentId: FIRST_COMMENT_ID,
   // GitHub's clock and the issue timeline it stamps label events on, to the second.
@@ -91,8 +95,9 @@ export async function deliverWebhook(body: string, login = 'propr-dev[bot]', rep
     redisClient: redis as unknown as Redis, PR_FOLLOWUP_TRIGGER_KEYWORDS: [],
   });
 }
-const request = mock.fn(async (route: string, options: { body?: string }) => {
+const request = mock.fn(async (route: string, options: { body?: string; issue_number?: number }) => {
   if (route.startsWith('POST') && route.endsWith('/comments') && state.commentPostError) throw state.commentPostError;
+  if (route.startsWith('POST') && route.endsWith('/comments')) await state.onCommentPost?.();
   if (state.webhookFirst && options.body?.includes('<!-- propr-api-followup:')) await deliverWebhook(options.body);
   if (route.startsWith('POST') && route.endsWith('/comments')) return { data: {
     id: state.nextCommentId++, body: options.body, user: { id: APP_ACTOR_ID, login: 'propr-dev[bot]', type: 'Bot' },
@@ -173,7 +178,8 @@ beforeEach(async () => {
   state.nextCommentId = FIRST_COMMENT_ID;
   state.startLoopFails = false; state.prState = 'open'; state.commentPostError = undefined;
   state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
-  state.labelAdd = 'ok'; state.timelineReadFails = false; state.delayedLabels = []; state.redisFails = false; state.onLabelAdd = undefined; state.consumeFails = false;
+  state.labelAdd = 'ok'; state.timelineReadFails = false; state.delayedLabels = []; state.redisFails = false; state.onLabelAdd = undefined;
+  state.consumeFails = false; state.confirmFails = false; state.onCommentPost = undefined; state.outcomeRetries = [];
   state.now = Date.parse('2026-10-15T10:00:00.700Z'); state.sleeps = [];
   state.timeline = [{ id: 1, event: 'labeled', created_at: '2026-10-15T09:59:00Z', label: { name: 'AI' }, actor: { id: HUMAN_ACTOR_ID } }];
   claims.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();
@@ -230,7 +236,7 @@ after(async () => {
   else process.env.DB_FILENAME = originalDbFilename;
 });
 
-export async function postFollowup(body: Record<string, unknown>, taskId = 'task-without-pr'): Promise<{ status: number; json: Record<string, unknown> }> {
+export async function postFollowup(body: Record<string, unknown>, taskId = 'task-without-pr', userId = 'user-1'): Promise<{ status: number; json: Record<string, unknown> }> {
   const result = { status: 200, json: {} as Record<string, unknown> };
   const response = {
     status(code: number) { result.status = code; return this; },
@@ -239,10 +245,11 @@ export async function postFollowup(body: Record<string, unknown>, taskId = 'task
   await createTaskRoutes({
     db: database, processingLabels: async () => ['AI'],
     now: () => state.now, sleep: async ms => { state.sleeps.push(ms); state.now += ms; },
+    retryLater: attempt => { state.outcomeRetries.push(attempt); },
   }).postFollowup({
     params: { taskId },
     body,
-    user: { id: 'user-1' },
+    user: { id: userId },
   } as unknown as Request, response);
   return result;
 }

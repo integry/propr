@@ -12,7 +12,9 @@ import { loadPrimaryProcessingLabels } from '../config/configManager.js';
  *
  * A request belongs only to the trigger it published: the first trigger the
  * route's GitHub identity labels after `afterEventId` (the latest trigger
- * event before the request), within the publication window of `requestedAt`.
+ * event before the request), within the publication window that opens at
+ * `publishedAt`, when its trigger write begins. `requestedAt` only times the
+ * reservation, which expires unless publication begins within that window.
  *
  * A request is `reserved` until its trigger write is attempted, then `pending`
  * until the route records the write's outcome: `possible` (applied, or not
@@ -25,6 +27,8 @@ export interface IssueRetryRequest {
   requesterId: string;
   commentId: number | null;
   requestedAt: number;
+  /** When its trigger write began, which opens its publication window; null while reserved. */
+  publishedAt: number | null;
   afterEventId: string | null;
   actorId: number | null;
   publication: 'reserved' | 'pending' | 'possible' | 'refused';
@@ -71,13 +75,14 @@ const owedIssue = (issue: IssueKey) => `${issue.repoOwner}/${issue.repoName}#${i
 
 interface RequestRow {
   id: number; requester_id: string; comment_id: number | string | null; requested_at: number | string;
-  after_event_id: string | null; actor_id: number | string | null; publication: string;
+  published_at: number | string | null; after_event_id: string | null; actor_id: number | string | null; publication: string;
 }
 
 function parseRow(row: RequestRow): IssueRetryRequest {
   const publication = ['reserved', 'pending', 'possible', 'refused'].includes(row.publication) ? row.publication as IssueRetryRequest['publication'] : 'pending';
   return {
     id: Number(row.id), requesterId: row.requester_id, requestedAt: Number(row.requested_at),
+    publishedAt: row.published_at === null ? null : Number(row.published_at),
     commentId: row.comment_id === null ? null : Number(row.comment_id),
     afterEventId: row.after_event_id, actorId: row.actor_id === null ? null : Number(row.actor_id), publication,
   };
@@ -96,6 +101,9 @@ export async function triggerLabelEvents(octokit: Octokit, issue: IssueKey, trig
   return events;
 }
 
+/** Whether a trigger write of the request may still land at `time`, or while reserved, whether its write may still begin. */
+const windowOpen = (request: IssueRetryRequest, time: number) => time <= (request.publishedAt ?? request.requestedAt) + PUBLICATION_WINDOW_MS;
+
 /**
  * The trigger event the request published: null when it has none, or
  * undefined when its baseline is gone from the history, so none can be told
@@ -106,7 +114,7 @@ export function retryRequestTrigger(request: IssueRetryRequest, events: TriggerL
   if (start === 0 && request.afterEventId !== null) return undefined;
   const published = events.slice(start).find(event => request.actorId === null || event.actor?.id === request.actorId);
   const publishedAt = Date.parse(published?.created_at ?? '');
-  if (!published?.id || !Number.isFinite(publishedAt) || publishedAt > request.requestedAt + PUBLICATION_WINDOW_MS) return null;
+  if (!published?.id || !Number.isFinite(publishedAt) || !windowOpen(request, publishedAt)) return null;
   return String(published.id);
 }
 
@@ -118,11 +126,10 @@ export function retryRequestTrigger(request: IssueRetryRequest, events: TriggerL
  */
 function mayBeOwed(request: IssueRetryRequest, { events, now, consumedEventId }: TriggerHistory): boolean {
   if (request.publication === 'refused') return false;
-  const windowOpen = now <= request.requestedAt + PUBLICATION_WINDOW_MS;
-  if (request.publication === 'reserved') return windowOpen;
+  if (request.publication === 'reserved') return windowOpen(request, now);
   const own = retryRequestTrigger(request, events);
   if (own === undefined) return true;
-  if (own === null) return windowOpen;
+  if (own === null) return windowOpen(request, now);
   const consumed = consumedEventId ? events.findIndex(event => String(event.id) === consumedEventId) : -1;
   // Dispatch only runs past a request's admitted trigger by running the request.
   return consumed < events.findIndex(event => String(event.id) === own);
@@ -159,20 +166,23 @@ export async function reserveIssueRetryRequest(
       requester_id: request.requesterId, requested_at: request.requestedAt, after_event_id: request.afterEventId,
       publication: 'reserved', recorded_at: history.now,
     }) as number[];
-    return { ...request, id: Number(id), commentId: null, actorId: null, publication: 'reserved' as const };
+    return { ...request, id: Number(id), commentId: null, actorId: null, publishedAt: null, publication: 'reserved' as const };
   });
 }
 
 /**
- * Records the posted request just before its trigger is written. False when
- * the reservation was released meanwhile, so the trigger must not be written.
+ * Records the posted request just before its trigger is written, opening its
+ * publication window at `now` however long posting it took. The pending
+ * request, carrying that window, is what the write's read-back and dispatch
+ * match its trigger by. Null when the reservation was released meanwhile, so
+ * the trigger must not be written.
  */
 export async function beginIssueRetryPublication(
   database: Knex, request: IssueRetryRequest, posted: Pick<IssueRetryRequest, 'commentId' | 'actorId'>, now = Date.now(),
-): Promise<boolean> {
+): Promise<IssueRetryRequest | null> {
   const updated = await database(TABLE).where({ id: request.id, publication: 'reserved' }).whereNotNull('owed_issue')
-    .update({ comment_id: posted.commentId, actor_id: posted.actorId, publication: 'pending', recorded_at: now });
-  return Number(updated) === 1;
+    .update({ comment_id: posted.commentId, actor_id: posted.actorId, published_at: now, publication: 'pending', recorded_at: now });
+  return Number(updated) === 1 ? { ...request, ...posted, publishedAt: now, publication: 'pending' } : null;
 }
 
 /** Releases a reservation whose trigger was never written. */
@@ -183,7 +193,8 @@ export async function releaseIssueRetryReservation(database: Knex, request: Issu
 /**
  * Records the outcome of the request's trigger write: `possible` lets recovery
  * adopt it, and a refusal, which published no trigger of the request, releases
- * it whoever else labels the issue.
+ * it whoever else labels the issue. Recording it again, or after it was
+ * released, changes nothing.
  */
 export async function recordIssueRetryPublication(
   database: Knex, request: Pick<IssueRetryRequest, 'id'>, publication: 'possible' | 'refused', now = Date.now(),
@@ -246,5 +257,5 @@ function owedRun(
   const own = retryRequestTrigger(request, events);
   if (own === undefined) return 'defer';
   if (own !== null && admissible.has(own)) return request.publication === 'possible' ? own : 'defer';
-  return own === null && now <= request.requestedAt + PUBLICATION_WINDOW_MS ? 'defer' : null;
+  return own === null && windowOpen(request, now) ? 'defer' : null;
 }

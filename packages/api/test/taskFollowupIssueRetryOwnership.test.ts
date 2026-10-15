@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { state, claims, add, postFollowup, database, applyLabels, landDelayedLabels, APP_ACTOR_ID, HUMAN_ACTOR_ID, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
-import { openRequests, routes, postedComments, relabelWebhook, dispatchQueued, promptFor } from './taskFollowupIssueDispatch.js';
-
-const { insertTaskSubmission } = await import('../../core/src/services/taskSubmissionService.js');
+import { openRequests, routes, postedComments, dispatchQueued, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch, dedupKey } from './taskFollowupIssueDispatch.js';
 
 // A recorded retry request belongs only to the trigger it published: a later,
 // independent trigger must not adopt it, a trigger write that may still land
@@ -11,48 +9,20 @@ const { insertTaskSubmission } = await import('../../core/src/services/taskSubmi
 // outcome is unknown defers its trigger however long that takes, and an issue
 // owes at most one request at a time.
 
-const dedupKey = 'issue:dedup:integry:propr:14';
 const routings = [['a submission-backed', true], ['an issue-only', false]] as const;
 const submissionRow = async () => database('task_submissions').where({ issue_number: 14 }).first('retry_event_id') as Promise<{ retry_event_id: string | null }>;
 const unreconciled = { status: 'skipped', reason: 'retry_request_unreconciled', issueNumber: 14 };
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Takes the durable request records offline, as when the database is unavailable, until the returned restore runs. */
-async function takeRecordsOffline() {
-  await database.schema.renameTable('issue_retry_request_states', 'issue_retry_request_states_offline');
-  return async () => { await database.schema.renameTable('issue_retry_request_states_offline', 'issue_retry_request_states'); };
-}
-
-/** Runs `body` on issue 14 with or without a submission whose initial run was dispatched and failed. */
-async function onIssue(backed: boolean, key: string, body: () => Promise<void>) {
-  const row = backed ? await insertTaskSubmission(database, { user_id: 'submitter', submission_key: key,
-    payload_hash: 'hash', repository: 'integry/propr', payload: '{}', attachments: '[]' }) : null;
-  try {
-    if (row) await database('task_submissions').where({ id: row.id }).update({ issue_number: 14, task_id: 'failed-issue-task', dispatch_complete: true });
-    await body();
-  } finally {
-    if (row) await database('task_submissions').where({ id: row.id }).delete();
-  }
-}
-
 /** A later trigger is delivered after the shared window and dispatched; it must not carry any request. */
-async function assertIndependentRun(backed: boolean, index: number) {
-  claims.delete(dedupKey);
-  assert.notEqual((await relabelWebhook()).status, 'ignored');
-  const { dispatched, children } = await dispatchQueued(index);
+async function assertIndependentRun(backed: boolean) {
+  const { dispatched, children } = await deliverAndDispatch();
   assert.equal(dispatched.status, 'dispatched');
   const [{ data: child }] = children;
   assert.equal(child.retryCommentId, undefined, 'no request\'s instructions are exempted into the new run');
   assert.equal(child.retryRequesterId, undefined);
   if (backed) assert.equal(child.userId, 'submitter', 'the new run belongs to the submitter');
   else assert.notEqual(child.userId, 'user-1', 'the new run does not belong to the requester');
-}
-
-/** Delivers the issue's relabel after the shared window and dispatches it. */
-async function deliverAndDispatch(index: number) {
-  claims.delete(dedupKey);
-  assert.notEqual((await relabelWebhook()).status, 'ignored');
-  return dispatchQueued(index);
 }
 
 for (const [routing, backed] of routings) {
@@ -73,7 +43,7 @@ for (const [routing, backed] of routings) {
       // GitHub finishes the accepted write; its relabel is delivered after the shared window.
       state.now += 5000;
       landDelayedLabels();
-      const { dispatched, children } = await deliverAndDispatch(0);
+      const { dispatched, children } = await deliverAndDispatch();
       assert.equal(dispatched.status, 'dispatched');
       const [{ data: child }] = children;
       assert.equal(child.userId, 'user-1', 'the late trigger runs for the requester');
@@ -94,13 +64,13 @@ for (const [routing, backed] of routings) {
 
       // The person's trigger is delivered while the request's write may still land.
       state.now += 31_000;
-      assert.deepEqual((await deliverAndDispatch(0)).dispatched, unreconciled, 'it is neither run with the request nor consumed past it');
+      assert.deepEqual((await deliverAndDispatch()).dispatched, unreconciled, 'it is neither run with the request nor consumed past it');
       if (backed) assert.equal((await submissionRow()).retry_event_id, null);
 
       state.now += 5000;
       landDelayedLabels();
       const own = state.timeline.at(-1)!.id;
-      const { dispatched, children } = await deliverAndDispatch(1);
+      const { dispatched, children } = await deliverAndDispatch();
       assert.equal(dispatched.status, 'dispatched');
       const [{ jobId, data: child }] = children;
       if (backed) assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${own}`);
@@ -126,7 +96,7 @@ for (const [routing, backed] of routings) {
       state.labelAdd = 'ok';
 
       // The person's own trigger runs without the refused request.
-      await assertIndependentRun(backed, 0);
+      await assertIndependentRun(backed);
     });
   });
 
@@ -151,7 +121,7 @@ for (const [routing, backed] of routings) {
       // Within the request's lifetime the app's own identity triggers the issue again.
       state.now += 60_000;
       applyLabels(['AI'], APP_ACTOR_ID);
-      await assertIndependentRun(backed, 1);
+      await assertIndependentRun(backed);
 
       // The submission consumed the request's trigger, so a new request is not held back by it.
       state.now += 60_000;
@@ -186,17 +156,17 @@ for (const [routing, backed] of routings) {
         applyLabels(['AI'], actorId);
         if (actorId === APP_ACTOR_ID && delay < 10 * 60_000) {
           // Nothing tells the app's trigger from the request's own late write: neither runs.
-          assert.deepEqual((await deliverAndDispatch(0)).dispatched, unreconciled);
+          assert.deepEqual((await deliverAndDispatch()).dispatched, unreconciled);
           return;
         }
         if (actorId === HUMAN_ACTOR_ID) {
           // The person's trigger waits until the request's own write can no longer land, then runs without it.
-          assert.deepEqual((await deliverAndDispatch(0)).dispatched, unreconciled);
+          assert.deepEqual((await deliverAndDispatch()).dispatched, unreconciled);
           state.now += 10 * 60_000;
-          await assertIndependentRun(backed, 1);
+          await assertIndependentRun(backed);
           return;
         }
-        await assertIndependentRun(backed, 0);
+        await assertIndependentRun(backed);
       });
     });
   }
@@ -224,7 +194,7 @@ for (const [routing, backed] of routings) {
       // The first request's write lands late and its relabel is delivered.
       state.now += 5000;
       landDelayedLabels();
-      const { dispatched, children } = await deliverAndDispatch(0);
+      const { dispatched, children } = await deliverAndDispatch();
       assert.equal(dispatched.status, 'dispatched');
       const [{ data: child }] = children;
       assert.equal(child.userId, 'user-1', 'the late trigger runs for the earlier requester');
@@ -261,7 +231,7 @@ for (const [routing, backed] of routings) {
       // The shared window has passed and nothing is queued, but the first request is owed a run.
       state.now += 31_000;
       claims.delete(dedupKey);
-      const refused = await postFollowup({ body: 'Second instructions' }, 'failed-issue-task');
+      const refused = await postFollowup({ body: 'Second instructions' }, 'failed-issue-task', 'user-2');
       assert.equal(refused.status, 409);
       assert.match(String(refused.json.error), /earlier retry .* may still start/);
       assert.equal(postedComments().length, 1, 'the second request posts nothing');
@@ -269,28 +239,33 @@ for (const [routing, backed] of routings) {
       assert.equal(claims.has(dedupKey), false);
       assert.deepEqual((await openRequests()).map(held => held.comment_id), [FIRST_COMMENT_ID]);
 
-      // Recovery runs the first request on its own trigger.
-      const recovered = await deliverAndDispatch(0);
+      // Recovery runs the first request on its own trigger, from the relabel's job rather than the failed enqueue's.
+      const recovered = await deliverAndDispatch();
       assert.equal(recovered.dispatched.status, 'dispatched');
       const [{ jobId: firstJob, data: firstChild }] = recovered.children;
       if (backed) assert.equal(firstJob, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${firstTrigger}`);
       assert.equal(firstChild.userId, 'user-1');
+      assert.equal(firstChild.retryRequesterId, 'user-1');
       assert.equal(firstChild.retryCommentId, FIRST_COMMENT_ID);
       assert.match(await promptFor(firstChild), /First instructions/);
       assert.deepEqual(await openRequests(), []);
 
-      // The run failed; the second follow-up is now accepted and runs on its own trigger.
+      // The run failed; the second follow-up, from another user, is now accepted and runs on its own trigger.
       state.now += 60_000;
       claims.delete(dedupKey);
-      const second = await postFollowup({ body: 'Second instructions' }, 'failed-issue-task');
+      const second = await postFollowup({ body: 'Second instructions' }, 'failed-issue-task', 'user-2');
       assert.equal(second.json.state, 'queued');
       assert.equal(second.json.commentId, FIRST_COMMENT_ID + 1);
       const secondTrigger = state.timeline.at(-1)!.id;
-      const { dispatched, children } = await dispatchQueued(1);
+      const secondJob = add.mock.callCount() - 1;
+      const [, queued] = add.mock.calls[secondJob].arguments as unknown as [string, { retryCommentId?: number; retryRequesterId?: string }];
+      assert.deepEqual([queued.retryCommentId, queued.retryRequesterId], [FIRST_COMMENT_ID + 1, 'user-2'], 'the second request\'s own job is dispatched');
+      const { dispatched, children } = await dispatchQueued(secondJob);
       assert.equal(dispatched.status, 'dispatched');
       const [{ jobId, data: child }] = children;
       if (backed) assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${secondTrigger}`);
-      assert.equal(child.userId, 'user-1');
+      assert.equal(child.userId, 'user-2');
+      assert.equal(child.retryRequesterId, 'user-2');
       assert.equal(child.retryCommentId, FIRST_COMMENT_ID + 1);
       const prompt = await promptFor(child);
       assert.match(prompt, /Second instructions/);
@@ -320,10 +295,9 @@ for (const [routing, backed] of routings) {
         // independent one if GitHub refused it; nothing tells which.
         state.now += 5000;
         if (write === 'refused') applyLabels(['AI'], APP_ACTOR_ID); else landDelayedLabels();
-        let index = 0;
         for (const elapsed of [0, DAY_MS + 60_000, 8 * DAY_MS]) {
           state.now += elapsed;
-          const { dispatched, children } = await deliverAndDispatch(index++);
+          const { dispatched, children } = await deliverAndDispatch();
           assert.deepEqual(dispatched, unreconciled, 'neither with nor without the request, however late');
           assert.equal(children.length, 0);
         }
@@ -366,7 +340,7 @@ for (const [routing, backed] of routings) {
       assert.equal((await submissionRow()).retry_event_id, String(independent), 'the run consumes the trigger it was dispatched past');
 
       // The independent trigger's own delivery starts no second run, with or without the request.
-      assert.deepEqual((await deliverAndDispatch(1)).dispatched, { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: 14 });
+      assert.deepEqual((await deliverAndDispatch()).dispatched, { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: 14 });
     });
   });
 
@@ -382,7 +356,7 @@ for (const [routing, backed] of routings) {
       state.now += 60_000;
       applyLabels(['AI'], HUMAN_ACTOR_ID);
       const independent = state.timeline.at(-1)!.id;
-      const { dispatched, children } = await deliverAndDispatch(1);
+      const { dispatched, children } = await deliverAndDispatch();
       assert.equal(dispatched.status, 'dispatched');
       const [{ jobId, data: child }] = children;
       if (backed) assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${own}`);

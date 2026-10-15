@@ -128,6 +128,7 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
       400: { description: 'The comment body or target is invalid, or a pull request command was sent for a task without a pull request.' },
       404: { description: 'Task not found.' },
       409: { description: 'The issue cannot be retried: the run has not failed, the issue is closed or done, a run is already queued, or an earlier retry may still start.' },
+      502: { description: 'The issue\'s label history could not be read from GitHub, so the retry could not be tied to its trigger and nothing was posted.' },
       503: { description: 'The issue retry could not be recorded, so nothing was posted.' },
     },
   },

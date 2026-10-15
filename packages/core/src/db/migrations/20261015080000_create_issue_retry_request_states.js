@@ -18,7 +18,10 @@ export async function up(knex) {
     // Set once the request is posted, before its trigger is written.
     table.bigInteger('comment_id').nullable().unique();
     table.bigInteger('actor_id').nullable();
+    // When the request reserved the issue, which times the reservation only.
     table.bigInteger('requested_at').notNullable();
+    // When its trigger write began, which opens the window its trigger can land in.
+    table.bigInteger('published_at').nullable();
     table.string('after_event_id').nullable();
     // 'reserved' before the trigger write, 'pending' while its outcome is unknown, then 'possible' or 'refused'.
     table.string('publication', 16).notNullable();

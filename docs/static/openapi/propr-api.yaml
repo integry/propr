@@ -7718,6 +7718,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LegacyError"
+        "502":
+          description: The issue's label history could not be read from GitHub, so the retry could not be tied to its trigger and nothing was posted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         "503":
           description: The issue retry could not be recorded, so nothing was posted.
           content:
