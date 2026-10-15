@@ -1,3 +1,5 @@
+import { ExtensionAuthorityV2Plane } from '../core/src/fleet/extensionAuthorityV2.js';
+import { EXTENSION_AUTHORITY_V2_PATH, EXTENSION_AUTHORITY_V2_LIMITS } from '@propr/shared';
 import { ExtensionAuthorityProofPlane } from '../core/src/fleet/extensionAuthorityProof.js';
 import { canonicalFleetJson, EXTENSION_AUTHORITY_PATH } from '@propr/shared';
 import type { NativeResetRuntime } from '../core/src/fleet/nativeReset.js';
@@ -90,9 +92,35 @@ async function bindUnix(socket: string): Promise<{ server: UnixServer; identity:
 
 /** Explicit refusal on the customer listener, also used by tunnel ingress. */
 export const refusePublicFleetData: RequestHandler = (req, res, next) => {
-  if (req.path !== '/v1/invoke' && req.path !== '/extensions/v1/invoke' && req.path !== FLEET_RESET_PATH && req.path !== EXTENSION_AUTHORITY_PATH) { next(); return; }
-  res.set('Cache-Control', 'no-store').status(404).json({ error: req.path === EXTENSION_AUTHORITY_PATH ? 'extension_authority_unavailable' : req.path === FLEET_RESET_PATH ? 'fleet_reset_unavailable' : req.path === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable' });
+  if (req.path !== '/v1/invoke' && req.path !== '/extensions/v1/invoke' && req.path !== FLEET_RESET_PATH && req.path !== EXTENSION_AUTHORITY_PATH && req.path !== EXTENSION_AUTHORITY_V2_PATH) { next(); return; }
+  res.set('Cache-Control', 'no-store').status(404).json({ error: (req.path === EXTENSION_AUTHORITY_PATH || req.path === EXTENSION_AUTHORITY_V2_PATH) ? 'extension_authority_unavailable' : req.path === FLEET_RESET_PATH ? 'fleet_reset_unavailable' : req.path === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable' });
 };
+
+function requestByteLimit(url: string | undefined) {
+  return url === EXTENSION_AUTHORITY_V2_PATH ? EXTENSION_AUTHORITY_V2_LIMITS.requestBytes
+    : url === '/extensions/v1/invoke' ? FLEET_EXTENSION_LIMITS.requestBytes : 8192;
+}
+
+function refusalCode(url: string | undefined) {
+  return (url === EXTENSION_AUTHORITY_PATH || url === EXTENSION_AUTHORITY_V2_PATH) ? 'extension_authority_unavailable'
+    : url === FLEET_RESET_PATH ? 'fleet_reset_unavailable'
+      : url === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable';
+}
+
+async function readRequestBytes(req: import('node:http').IncomingMessage): Promise<Buffer> {
+  const parts: Buffer[] = []; let length = 0;
+  for await (const part of req) {
+    const bytes = Buffer.from(part); length += bytes.length;
+    if (length > requestByteLimit(req.url)) throw new Error();
+    parts.push(bytes);
+  }
+  return Buffer.concat(parts);
+}
+
+function decodeRequestBytes(url: string | undefined, bytes: Buffer): string {
+  return url === EXTENSION_AUTHORITY_V2_PATH
+    ? new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) : bytes.toString('utf8');
+}
 
 /** Separate Unix listener only. Never mount this handler on Express or the tunnel. */
 interface FleetListenerPlane {
@@ -102,6 +130,7 @@ interface FleetListenerPlane {
   stream?: FleetDataPlane['stream'];
 }
 export async function listenFleetData(plane: FleetListenerPlane, extensions?: FleetExtensionPlane, reset?: FleetResetProofPlane): Promise<FleetDataListener> {
+  const dualProof = extensions ? new ExtensionAuthorityV2Plane(extensions) : undefined;
   const proof = extensions ? new ExtensionAuthorityProofPlane(extensions) : undefined;
   const runtime = await plane.runtime();
   const socket = path.join(plane.files.root, `data-${runtime.runtimeGeneration}.sock`);
@@ -109,7 +138,7 @@ export async function listenFleetData(plane: FleetListenerPlane, extensions?: Fl
   const active = new Set<Promise<void>>();
   let stopping = false;
   const isSupportedPath = (url: string | undefined) =>
-    Boolean(plane.invoke && plane.stream && url === '/v1/invoke') || Boolean(extensions && url === '/extensions/v1/invoke') || Boolean(reset && url === FLEET_RESET_PATH) || Boolean(proof && url === EXTENSION_AUTHORITY_PATH);
+    Boolean(plane.invoke && plane.stream && url === '/v1/invoke') || Boolean(extensions && url === '/extensions/v1/invoke') || Boolean(reset && url === FLEET_RESET_PATH) || Boolean(proof && url === EXTENSION_AUTHORITY_PATH) || Boolean(dualProof && url === EXTENSION_AUTHORITY_V2_PATH);
   const server = createServer((req, res) => {
     if (stopping) { res.destroy(); return; }
     const work = handle(req, res);
@@ -121,16 +150,15 @@ export async function listenFleetData(plane: FleetListenerPlane, extensions?: Fl
     let timer: NodeJS.Timeout | undefined;
     try {
       if (req.method !== 'POST' || !isSupportedPath(req.url) || req.headers['content-type'] !== 'application/json' || req.headers['content-encoding']) throw new Error();
-      const parts: Buffer[] = []; let length = 0;
       timer = setTimeout(() => req.destroy(), 5000);
-      for await (const part of req) {
-        const bytes = Buffer.from(part); length += bytes.length;
-        if (length > (req.url === '/extensions/v1/invoke' ? FLEET_EXTENSION_LIMITS.requestBytes : 8192)) throw new Error();
-        parts.push(bytes);
-      }
+      const bytes = await readRequestBytes(req);
       clearTimeout(timer);
-      const raw = Buffer.concat(parts).toString('utf8');
-      if (req.url === EXTENSION_AUTHORITY_PATH) {
+      const raw = decodeRequestBytes(req.url, bytes);
+      if (req.url === EXTENSION_AUTHORITY_V2_PATH) {
+        await dualProof!.invoke(raw, response => {
+          res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(canonicalFleetJson(response));
+        });
+      } else if (req.url === EXTENSION_AUTHORITY_PATH) {
         await proof!.invoke(raw, response => {
           res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(canonicalFleetJson(response));
         });
@@ -193,7 +221,7 @@ export async function listenFleetData(plane: FleetListenerPlane, extensions?: Fl
       }
     } catch {
       if (res.headersSent) res.destroy();
-      else { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: req.url === EXTENSION_AUTHORITY_PATH ? 'extension_authority_unavailable' : req.url === FLEET_RESET_PATH ? 'fleet_reset_unavailable' : req.url === '/extensions/v1/invoke' ? 'fleet_extensions_unavailable' : 'fleet_data_unavailable' })); }
+      else { res.writeHead(403, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: refusalCode(req.url) })); }
     } finally { clearTimeout(timer); }
   };
   server.requestTimeout = 10_000;
@@ -214,7 +242,7 @@ export async function listenFleetData(plane: FleetListenerPlane, extensions?: Fl
   server.emit('listening');
   let shutdown: Promise<void> | undefined;
   const close = () => shutdown ??= (async () => {
-    stopping = true; proof?.shutdown(); extensions?.shutdown(); reset?.shutdown();
+    stopping = true; dualProof?.shutdown(); proof?.shutdown(); extensions?.shutdown(); reset?.shutdown();
     // Unlink only our captured inode in the unchanged private management root.
     // The transferred descriptor has no libuv bind pathname to auto-unlink.
     let cleanupError: unknown;

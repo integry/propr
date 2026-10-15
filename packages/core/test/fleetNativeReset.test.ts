@@ -591,7 +591,7 @@ test('recovery cold start never loads application services or opens customer SQL
     registerHooks({ load(url, context, next) {
       if (/\\/(?:bullmq|ioredis|redis|knex|express-session)\\//.test(url) ||
           /\\/(?:server|worker|daemon)\\.(?:ts|js)$/.test(url) ||
-          /\\/(?:db\\/connection|queue\\/taskQueue)\\.(?:ts|js)$/.test(url)) {
+          /\\/(?:db\\/connection|queue\\/taskQueue|utils\\/logger|extensions\\/extensionProfileStore)\\.(?:ts|js)$/.test(url)) {
         forbidden.push(url); throw new Error('application service imported: ' + url);
       }
       return next(url, context);
@@ -604,7 +604,12 @@ test('recovery cold start never loads application services or opens customer SQL
     assert.ok(opened.length > 0, 'real control SQLite must be opened');
     assert.ok(opened.every(file => file.startsWith(process.env.PROPR_FLEET_RESET_RUNTIME_ROOT + path.sep)));
   `;
-  await promisify(execFile)(process.execPath, ['--import', 'tsx', '--experimental-test-module-mocks', '--input-type=module', '-e', script],
+  // A file-backed module avoids passing --input-type to tsx's loader workers.
+  // Keep it in the working directory so the script's relative imports resolve.
+  const entry = path.join(process.cwd(), `.native-reset-cold-start-${randomUUID()}.mjs`);
+  t.after(() => fs.rm(entry, { force: true }));
+  await fs.writeFile(entry, script);
+  await promisify(execFile)(process.execPath, ['--import', 'tsx', '--experimental-test-module-mocks', entry],
     { cwd: process.cwd(), env: { ...process.env, TEST_TENANT_ROOT: f.tenantRoot }, timeout: 30_000 });
   assert.deepEqual(await treeSnapshot(f.tenantRoot), before);
 });

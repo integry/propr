@@ -1,0 +1,480 @@
+{
+  "trust": {
+    "contract": "propr.extension-authority.v2",
+    "keyId": "synthetic-routing",
+    "keyEpoch": "1",
+    "authorityEpoch": "1",
+    "publicKey": "MCowBQYDK2VwAyEA1O7Bhp-xuKToF1Fq1akxVXy1aAXD6xbo86gD1kffeGk",
+    "producerRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "producerEpoch": "1"
+  },
+  "coreSPKI": "MCowBQYDK2VwAyEA4oqJcHUzMr1y_vQT5rCy7xtKrdp6osFB8jNxKmh2s1E",
+  "nowMs": 1800000001000,
+  "secret": "PUBLIC-SYNTHETIC-V2-TRANSPORT-SECRET",
+  "phases": [
+    {
+      "request": {
+        "contract": "propr.extension-authority.v2",
+        "contractPin": "9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706",
+        "work": {
+          "extension": {
+            "action": "profile.list",
+            "contract": "propr.fleet-extensions.v1",
+            "contractPin": "d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0",
+            "githubActorId": 100,
+            "hostedInstanceId": "fixture-hosted-a",
+            "operationId": "00000000-0000-4000-8000-000000000001",
+            "placementGeneration": "placement-42",
+            "requestDigest": "1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4",
+            "runtimeGeneration": "00000000-0000-4000-8000-000000000101",
+            "scope": "hosted_instance_extensions",
+            "storageGeneration": "00000000-0000-4000-8000-000000000102",
+            "storageInstanceId": "00000000-0000-4000-8000-000000000100",
+            "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "issuedAt": 1800000000,
+            "expiresAt": 1800000030
+          },
+          "extensionInstanceId": "11111111-1111-4111-8111-111111111111",
+          "workDigest": "44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78",
+          "acquisitionOperationId": null,
+          "coreAuthorityEpoch": "2",
+          "scope": {
+            "accountId": "account",
+            "installationId": "installation",
+            "tenantId": "tenant",
+            "targetId": "target",
+            "actorEpoch": "1",
+            "membershipEpoch": "1",
+            "securityEpoch": "1",
+            "passkeyEpoch": "1",
+            "accountEpoch": "1",
+            "installationEpoch": "1",
+            "tenantEpoch": "1",
+            "targetEpoch": "1",
+            "placementEpoch": "1",
+            "runtimeEpoch": "1",
+            "storageEpoch": "1",
+            "extensionEpoch": "1"
+          }
+        },
+        "phase": "request",
+        "challenge": "1111111111111111111111111111111111111111111111111111111111111111",
+        "issuedAt": 1800000000,
+        "expiresAt": 1800000030
+      },
+      "routing": {
+        "statement": {
+          "contract": "propr.routing-extension-authorization.v2",
+          "request": {
+            "contract": "propr.extension-authority.v2",
+            "contractPin": "9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706",
+            "work": {
+              "extension": {
+                "action": "profile.list",
+                "contract": "propr.fleet-extensions.v1",
+                "contractPin": "d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0",
+                "githubActorId": 100,
+                "hostedInstanceId": "fixture-hosted-a",
+                "operationId": "00000000-0000-4000-8000-000000000001",
+                "placementGeneration": "placement-42",
+                "requestDigest": "1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4",
+                "runtimeGeneration": "00000000-0000-4000-8000-000000000101",
+                "scope": "hosted_instance_extensions",
+                "storageGeneration": "00000000-0000-4000-8000-000000000102",
+                "storageInstanceId": "00000000-0000-4000-8000-000000000100",
+                "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "issuedAt": 1800000000,
+                "expiresAt": 1800000030
+              },
+              "extensionInstanceId": "11111111-1111-4111-8111-111111111111",
+              "workDigest": "44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78",
+              "acquisitionOperationId": null,
+              "coreAuthorityEpoch": "2",
+              "scope": {
+                "accountId": "account",
+                "installationId": "installation",
+                "tenantId": "tenant",
+                "targetId": "target",
+                "actorEpoch": "1",
+                "membershipEpoch": "1",
+                "securityEpoch": "1",
+                "passkeyEpoch": "1",
+                "accountEpoch": "1",
+                "installationEpoch": "1",
+                "tenantEpoch": "1",
+                "targetEpoch": "1",
+                "placementEpoch": "1",
+                "runtimeEpoch": "1",
+                "storageEpoch": "1",
+                "extensionEpoch": "1"
+              }
+            },
+            "phase": "request",
+            "challenge": "1111111111111111111111111111111111111111111111111111111111111111",
+            "issuedAt": 1800000000,
+            "expiresAt": 1800000030
+          },
+          "decision": "allow",
+          "keyId": "synthetic-routing",
+          "keyEpoch": "1",
+          "authorityEpoch": "1",
+          "producerRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "producerEpoch": "1",
+          "checkedAt": 1800000001,
+          "expiresAt": 1800000030
+        },
+        "signature": "DAQJ9F7k8x-hOtQI5-7L1SUaYFezJTzthZvikFsZOll44JQUQl_zN99LyimNhH6L7vbH0v9ixs40GiSeTS_7Cg"
+      },
+      "envelopeCanonical": "{\"mac\":\"5375dc51cfc889777d4ca42a71eefca1e27d354bfb2fcc735c6c2f26e72fa697\",\"request\":{\"challenge\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"request\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}},\"routing\":{\"signature\":\"DAQJ9F7k8x-hOtQI5-7L1SUaYFezJTzthZvikFsZOll44JQUQl_zN99LyimNhH6L7vbH0v9ixs40GiSeTS_7Cg\",\"statement\":{\"authorityEpoch\":\"1\",\"checkedAt\":1800000001,\"contract\":\"propr.routing-extension-authorization.v2\",\"decision\":\"allow\",\"expiresAt\":1800000030,\"keyEpoch\":\"1\",\"keyId\":\"synthetic-routing\",\"producerEpoch\":\"1\",\"producerRevision\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"request\":{\"challenge\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"request\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}}}}}",
+      "responseCanonical": "{\"signature\":\"h0wMVTC7hdDB-pa7jk-Z3cqsgXda2SwY2Cq4vkLz0Ttkt_fO37MRYWBmib8JYIM34MFu2xNLeub3F33zAN1aDg\",\"statement\":{\"combinedDecisionDigest\":\"3d9b825c7c7c4b2f83ac50ede2d8b742d52e2aa1d5b92c776c36094684a52bef\",\"committedAt\":1800000001,\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"coreDecision\":{\"actorId\":100,\"authorityEpoch\":\"2\",\"checkedAt\":1800000001,\"permission\":\"instance.manage_settings\",\"requestDigest\":\"57ea360e8be76cbedb73defb19a22ea33808b8cf48483ebc8ba811a735ba05a3\",\"role\":\"admin\",\"source\":\"local\",\"workDigest\":\"3456214884a62207b58fd4aac9b7fe9b5d28d07420698eadb2adef8d02ec6740\"},\"expiresAt\":1800000030,\"request\":{\"challenge\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"request\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}},\"result\":{\"dispatchDecisionDigest\":null,\"nativeResultDigest\":null,\"recipientCommitment\":null,\"state\":\"admitted\"},\"resultDigest\":\"b50e9b1c73803c14f5c36ff49c2533b1ef569cccf065a2ae9500772b608e7c3a\",\"routingDigest\":\"397e2a239fb524ed67045968c5bbe865de9cabbdada10b71e99847a16087426d\",\"trustDigest\":\"06b0388b51ade5e0511902136220cb62ab3bafd4217e6b2b834b1a537a8d6299\"}}"
+    },
+    {
+      "request": {
+        "contract": "propr.extension-authority.v2",
+        "contractPin": "9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706",
+        "work": {
+          "extension": {
+            "action": "profile.list",
+            "contract": "propr.fleet-extensions.v1",
+            "contractPin": "d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0",
+            "githubActorId": 100,
+            "hostedInstanceId": "fixture-hosted-a",
+            "operationId": "00000000-0000-4000-8000-000000000001",
+            "placementGeneration": "placement-42",
+            "requestDigest": "1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4",
+            "runtimeGeneration": "00000000-0000-4000-8000-000000000101",
+            "scope": "hosted_instance_extensions",
+            "storageGeneration": "00000000-0000-4000-8000-000000000102",
+            "storageInstanceId": "00000000-0000-4000-8000-000000000100",
+            "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "issuedAt": 1800000000,
+            "expiresAt": 1800000030
+          },
+          "extensionInstanceId": "11111111-1111-4111-8111-111111111111",
+          "workDigest": "44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78",
+          "acquisitionOperationId": null,
+          "coreAuthorityEpoch": "2",
+          "scope": {
+            "accountId": "account",
+            "installationId": "installation",
+            "tenantId": "tenant",
+            "targetId": "target",
+            "actorEpoch": "1",
+            "membershipEpoch": "1",
+            "securityEpoch": "1",
+            "passkeyEpoch": "1",
+            "accountEpoch": "1",
+            "installationEpoch": "1",
+            "tenantEpoch": "1",
+            "targetEpoch": "1",
+            "placementEpoch": "1",
+            "runtimeEpoch": "1",
+            "storageEpoch": "1",
+            "extensionEpoch": "1"
+          }
+        },
+        "phase": "dispatch",
+        "challenge": "2222222222222222222222222222222222222222222222222222222222222222",
+        "issuedAt": 1800000000,
+        "expiresAt": 1800000030
+      },
+      "routing": {
+        "statement": {
+          "contract": "propr.routing-extension-authorization.v2",
+          "request": {
+            "contract": "propr.extension-authority.v2",
+            "contractPin": "9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706",
+            "work": {
+              "extension": {
+                "action": "profile.list",
+                "contract": "propr.fleet-extensions.v1",
+                "contractPin": "d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0",
+                "githubActorId": 100,
+                "hostedInstanceId": "fixture-hosted-a",
+                "operationId": "00000000-0000-4000-8000-000000000001",
+                "placementGeneration": "placement-42",
+                "requestDigest": "1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4",
+                "runtimeGeneration": "00000000-0000-4000-8000-000000000101",
+                "scope": "hosted_instance_extensions",
+                "storageGeneration": "00000000-0000-4000-8000-000000000102",
+                "storageInstanceId": "00000000-0000-4000-8000-000000000100",
+                "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "issuedAt": 1800000000,
+                "expiresAt": 1800000030
+              },
+              "extensionInstanceId": "11111111-1111-4111-8111-111111111111",
+              "workDigest": "44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78",
+              "acquisitionOperationId": null,
+              "coreAuthorityEpoch": "2",
+              "scope": {
+                "accountId": "account",
+                "installationId": "installation",
+                "tenantId": "tenant",
+                "targetId": "target",
+                "actorEpoch": "1",
+                "membershipEpoch": "1",
+                "securityEpoch": "1",
+                "passkeyEpoch": "1",
+                "accountEpoch": "1",
+                "installationEpoch": "1",
+                "tenantEpoch": "1",
+                "targetEpoch": "1",
+                "placementEpoch": "1",
+                "runtimeEpoch": "1",
+                "storageEpoch": "1",
+                "extensionEpoch": "1"
+              }
+            },
+            "phase": "dispatch",
+            "challenge": "2222222222222222222222222222222222222222222222222222222222222222",
+            "issuedAt": 1800000000,
+            "expiresAt": 1800000030
+          },
+          "decision": "allow",
+          "keyId": "synthetic-routing",
+          "keyEpoch": "1",
+          "authorityEpoch": "1",
+          "producerRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "producerEpoch": "1",
+          "checkedAt": 1800000001,
+          "expiresAt": 1800000030
+        },
+        "signature": "Q3PmOa6E5Vrn1BNa4xleHdvRn-AGAnlboZGOnUex0_8FEJ5yh0F2nauxRwLUI3eUkzv7LJrATYO0IFesxunnBg"
+      },
+      "envelopeCanonical": "{\"mac\":\"69e716803db6db844a3173807706f55851cd1cd2806432fe5db4f656fd2f35ad\",\"native\":{\"action\":\"profile.list\"},\"request\":{\"challenge\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"dispatch\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}},\"routing\":{\"signature\":\"Q3PmOa6E5Vrn1BNa4xleHdvRn-AGAnlboZGOnUex0_8FEJ5yh0F2nauxRwLUI3eUkzv7LJrATYO0IFesxunnBg\",\"statement\":{\"authorityEpoch\":\"1\",\"checkedAt\":1800000001,\"contract\":\"propr.routing-extension-authorization.v2\",\"decision\":\"allow\",\"expiresAt\":1800000030,\"keyEpoch\":\"1\",\"keyId\":\"synthetic-routing\",\"producerEpoch\":\"1\",\"producerRevision\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"request\":{\"challenge\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"dispatch\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}}}}}",
+      "responseCanonical": "{\"signature\":\"lFnS32nejlddFsBZhwYXxjCzXcRKqDvfdmTW14Ed7vPLMXeFwVKAO1dw6gYZuXbLDw2GZmbjLcSHNqbLqMd7Aw\",\"statement\":{\"combinedDecisionDigest\":\"558d7422341d3b3d2496815bb0d50e470d2b3b87f8b08d0916853105cc9328d7\",\"committedAt\":1800000001,\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"coreDecision\":{\"actorId\":100,\"authorityEpoch\":\"2\",\"checkedAt\":1800000001,\"permission\":\"instance.manage_settings\",\"requestDigest\":\"67f86d8802407ed6f411c6e8372d590959cb7620165b85b175579561fcf78cd2\",\"role\":\"admin\",\"source\":\"local\",\"workDigest\":\"3456214884a62207b58fd4aac9b7fe9b5d28d07420698eadb2adef8d02ec6740\"},\"expiresAt\":1800000030,\"request\":{\"challenge\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"dispatch\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}},\"result\":{\"dispatchDecisionDigest\":\"558d7422341d3b3d2496815bb0d50e470d2b3b87f8b08d0916853105cc9328d7\",\"nativeResultDigest\":\"190dda1707f782cc75ba21f15489c4a8ed901a5ba8534789415f3d57c6d19e51\",\"recipientCommitment\":null,\"state\":\"completed\"},\"resultDigest\":\"736eb61c7476a74fa3ade54fe11d28263eddfd6404b07402e794af0248b8cf79\",\"routingDigest\":\"62e7a66cb9344b4477f65041e2c2f42a963a4fe2c6babe2865e86e73c360c80d\",\"trustDigest\":\"06b0388b51ade5e0511902136220cb62ab3bafd4217e6b2b834b1a537a8d6299\"}}"
+    },
+    {
+      "request": {
+        "contract": "propr.extension-authority.v2",
+        "contractPin": "9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706",
+        "work": {
+          "extension": {
+            "action": "profile.list",
+            "contract": "propr.fleet-extensions.v1",
+            "contractPin": "d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0",
+            "githubActorId": 100,
+            "hostedInstanceId": "fixture-hosted-a",
+            "operationId": "00000000-0000-4000-8000-000000000001",
+            "placementGeneration": "placement-42",
+            "requestDigest": "1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4",
+            "runtimeGeneration": "00000000-0000-4000-8000-000000000101",
+            "scope": "hosted_instance_extensions",
+            "storageGeneration": "00000000-0000-4000-8000-000000000102",
+            "storageInstanceId": "00000000-0000-4000-8000-000000000100",
+            "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "issuedAt": 1800000000,
+            "expiresAt": 1800000030
+          },
+          "extensionInstanceId": "11111111-1111-4111-8111-111111111111",
+          "workDigest": "44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78",
+          "acquisitionOperationId": null,
+          "coreAuthorityEpoch": "2",
+          "scope": {
+            "accountId": "account",
+            "installationId": "installation",
+            "tenantId": "tenant",
+            "targetId": "target",
+            "actorEpoch": "1",
+            "membershipEpoch": "1",
+            "securityEpoch": "1",
+            "passkeyEpoch": "1",
+            "accountEpoch": "1",
+            "installationEpoch": "1",
+            "tenantEpoch": "1",
+            "targetEpoch": "1",
+            "placementEpoch": "1",
+            "runtimeEpoch": "1",
+            "storageEpoch": "1",
+            "extensionEpoch": "1"
+          }
+        },
+        "phase": "completion",
+        "challenge": "3333333333333333333333333333333333333333333333333333333333333333",
+        "issuedAt": 1800000000,
+        "expiresAt": 1800000030
+      },
+      "routing": {
+        "statement": {
+          "contract": "propr.routing-extension-authorization.v2",
+          "request": {
+            "contract": "propr.extension-authority.v2",
+            "contractPin": "9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706",
+            "work": {
+              "extension": {
+                "action": "profile.list",
+                "contract": "propr.fleet-extensions.v1",
+                "contractPin": "d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0",
+                "githubActorId": 100,
+                "hostedInstanceId": "fixture-hosted-a",
+                "operationId": "00000000-0000-4000-8000-000000000001",
+                "placementGeneration": "placement-42",
+                "requestDigest": "1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4",
+                "runtimeGeneration": "00000000-0000-4000-8000-000000000101",
+                "scope": "hosted_instance_extensions",
+                "storageGeneration": "00000000-0000-4000-8000-000000000102",
+                "storageInstanceId": "00000000-0000-4000-8000-000000000100",
+                "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "issuedAt": 1800000000,
+                "expiresAt": 1800000030
+              },
+              "extensionInstanceId": "11111111-1111-4111-8111-111111111111",
+              "workDigest": "44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78",
+              "acquisitionOperationId": null,
+              "coreAuthorityEpoch": "2",
+              "scope": {
+                "accountId": "account",
+                "installationId": "installation",
+                "tenantId": "tenant",
+                "targetId": "target",
+                "actorEpoch": "1",
+                "membershipEpoch": "1",
+                "securityEpoch": "1",
+                "passkeyEpoch": "1",
+                "accountEpoch": "1",
+                "installationEpoch": "1",
+                "tenantEpoch": "1",
+                "targetEpoch": "1",
+                "placementEpoch": "1",
+                "runtimeEpoch": "1",
+                "storageEpoch": "1",
+                "extensionEpoch": "1"
+              }
+            },
+            "phase": "completion",
+            "challenge": "3333333333333333333333333333333333333333333333333333333333333333",
+            "issuedAt": 1800000000,
+            "expiresAt": 1800000030
+          },
+          "decision": "allow",
+          "keyId": "synthetic-routing",
+          "keyEpoch": "1",
+          "authorityEpoch": "1",
+          "producerRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "producerEpoch": "1",
+          "checkedAt": 1800000001,
+          "expiresAt": 1800000030
+        },
+        "signature": "Iy4hS4iSISe4Cel-P-KoFx2C7UdaXCU041aQjn6JHynM0WxrT05T-KmlY7i904fouJduBF3Cq-CJJ-t7ChHuCg"
+      },
+      "envelopeCanonical": "{\"mac\":\"655365433b2b875376e4ec00e5d22024073c7c154023e8b2cf68af70207f0d6a\",\"request\":{\"challenge\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"completion\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}},\"routing\":{\"signature\":\"Iy4hS4iSISe4Cel-P-KoFx2C7UdaXCU041aQjn6JHynM0WxrT05T-KmlY7i904fouJduBF3Cq-CJJ-t7ChHuCg\",\"statement\":{\"authorityEpoch\":\"1\",\"checkedAt\":1800000001,\"contract\":\"propr.routing-extension-authorization.v2\",\"decision\":\"allow\",\"expiresAt\":1800000030,\"keyEpoch\":\"1\",\"keyId\":\"synthetic-routing\",\"producerEpoch\":\"1\",\"producerRevision\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"request\":{\"challenge\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"completion\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}}}}}",
+      "responseCanonical": "{\"signature\":\"fPOngP84jdLiQLQGTVv2X6OkjB-wfk-NLP0icshlD16thj1zlVWchU-XUrVXJwqJTDoB82n7ZNrwYCfg9xFwAg\",\"statement\":{\"combinedDecisionDigest\":\"58790e101c609b1e2a944e1c70d4f1a781391ef60d154074e2ba552f8fcf2a8f\",\"committedAt\":1800000001,\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"coreDecision\":{\"actorId\":100,\"authorityEpoch\":\"2\",\"checkedAt\":1800000001,\"permission\":\"instance.manage_settings\",\"requestDigest\":\"7fb046137b788241f96eeff5b7e8fcd69832e124b6848d093600974a97c94a11\",\"role\":\"admin\",\"source\":\"local\",\"workDigest\":\"3456214884a62207b58fd4aac9b7fe9b5d28d07420698eadb2adef8d02ec6740\"},\"expiresAt\":1800000030,\"request\":{\"challenge\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"completion\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}},\"result\":{\"dispatchDecisionDigest\":\"558d7422341d3b3d2496815bb0d50e470d2b3b87f8b08d0916853105cc9328d7\",\"nativeResultDigest\":\"190dda1707f782cc75ba21f15489c4a8ed901a5ba8534789415f3d57c6d19e51\",\"recipientCommitment\":null,\"state\":\"completed\"},\"resultDigest\":\"736eb61c7476a74fa3ade54fe11d28263eddfd6404b07402e794af0248b8cf79\",\"routingDigest\":\"e4848f69b0f8c1c69c448ebdc60d99935aab1bfab227894ab5b0bf7b61f8a3d1\",\"trustDigest\":\"06b0388b51ade5e0511902136220cb62ab3bafd4217e6b2b834b1a537a8d6299\"}}"
+    },
+    {
+      "request": {
+        "contract": "propr.extension-authority.v2",
+        "contractPin": "9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706",
+        "work": {
+          "extension": {
+            "action": "profile.list",
+            "contract": "propr.fleet-extensions.v1",
+            "contractPin": "d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0",
+            "githubActorId": 100,
+            "hostedInstanceId": "fixture-hosted-a",
+            "operationId": "00000000-0000-4000-8000-000000000001",
+            "placementGeneration": "placement-42",
+            "requestDigest": "1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4",
+            "runtimeGeneration": "00000000-0000-4000-8000-000000000101",
+            "scope": "hosted_instance_extensions",
+            "storageGeneration": "00000000-0000-4000-8000-000000000102",
+            "storageInstanceId": "00000000-0000-4000-8000-000000000100",
+            "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "issuedAt": 1800000000,
+            "expiresAt": 1800000030
+          },
+          "extensionInstanceId": "11111111-1111-4111-8111-111111111111",
+          "workDigest": "44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78",
+          "acquisitionOperationId": null,
+          "coreAuthorityEpoch": "2",
+          "scope": {
+            "accountId": "account",
+            "installationId": "installation",
+            "tenantId": "tenant",
+            "targetId": "target",
+            "actorEpoch": "1",
+            "membershipEpoch": "1",
+            "securityEpoch": "1",
+            "passkeyEpoch": "1",
+            "accountEpoch": "1",
+            "installationEpoch": "1",
+            "tenantEpoch": "1",
+            "targetEpoch": "1",
+            "placementEpoch": "1",
+            "runtimeEpoch": "1",
+            "storageEpoch": "1",
+            "extensionEpoch": "1"
+          }
+        },
+        "phase": "status",
+        "challenge": "4444444444444444444444444444444444444444444444444444444444444444",
+        "issuedAt": 1800000000,
+        "expiresAt": 1800000030
+      },
+      "routing": {
+        "statement": {
+          "contract": "propr.routing-extension-authorization.v2",
+          "request": {
+            "contract": "propr.extension-authority.v2",
+            "contractPin": "9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706",
+            "work": {
+              "extension": {
+                "action": "profile.list",
+                "contract": "propr.fleet-extensions.v1",
+                "contractPin": "d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0",
+                "githubActorId": 100,
+                "hostedInstanceId": "fixture-hosted-a",
+                "operationId": "00000000-0000-4000-8000-000000000001",
+                "placementGeneration": "placement-42",
+                "requestDigest": "1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4",
+                "runtimeGeneration": "00000000-0000-4000-8000-000000000101",
+                "scope": "hosted_instance_extensions",
+                "storageGeneration": "00000000-0000-4000-8000-000000000102",
+                "storageInstanceId": "00000000-0000-4000-8000-000000000100",
+                "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "issuedAt": 1800000000,
+                "expiresAt": 1800000030
+              },
+              "extensionInstanceId": "11111111-1111-4111-8111-111111111111",
+              "workDigest": "44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78",
+              "acquisitionOperationId": null,
+              "coreAuthorityEpoch": "2",
+              "scope": {
+                "accountId": "account",
+                "installationId": "installation",
+                "tenantId": "tenant",
+                "targetId": "target",
+                "actorEpoch": "1",
+                "membershipEpoch": "1",
+                "securityEpoch": "1",
+                "passkeyEpoch": "1",
+                "accountEpoch": "1",
+                "installationEpoch": "1",
+                "tenantEpoch": "1",
+                "targetEpoch": "1",
+                "placementEpoch": "1",
+                "runtimeEpoch": "1",
+                "storageEpoch": "1",
+                "extensionEpoch": "1"
+              }
+            },
+            "phase": "status",
+            "challenge": "4444444444444444444444444444444444444444444444444444444444444444",
+            "issuedAt": 1800000000,
+            "expiresAt": 1800000030
+          },
+          "decision": "allow",
+          "keyId": "synthetic-routing",
+          "keyEpoch": "1",
+          "authorityEpoch": "1",
+          "producerRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "producerEpoch": "1",
+          "checkedAt": 1800000001,
+          "expiresAt": 1800000030
+        },
+        "signature": "ZlF7JU-jVViM3-OIvuLFUijb9fF3jyFRoO8JQ6laH3yH4JFHzBOA-o6E_E7IQhjcxuiV-V2x6ZJ27RbWAkoHAQ"
+      },
+      "envelopeCanonical": "{\"mac\":\"9dfc8829809ca20c78351873681ff392f87aedcff7ec8c4796a0ab8836980343\",\"request\":{\"challenge\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"status\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}},\"routing\":{\"signature\":\"ZlF7JU-jVViM3-OIvuLFUijb9fF3jyFRoO8JQ6laH3yH4JFHzBOA-o6E_E7IQhjcxuiV-V2x6ZJ27RbWAkoHAQ\",\"statement\":{\"authorityEpoch\":\"1\",\"checkedAt\":1800000001,\"contract\":\"propr.routing-extension-authorization.v2\",\"decision\":\"allow\",\"expiresAt\":1800000030,\"keyEpoch\":\"1\",\"keyId\":\"synthetic-routing\",\"producerEpoch\":\"1\",\"producerRevision\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"request\":{\"challenge\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"status\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}}}}}",
+      "responseCanonical": "{\"signature\":\"dS97fn5KH7YxyR1mQhbpCgiA8SJdgbhNkqku4oaeuuLUmLQyGLulfM2MUCslYaKLhepep6BudXy5IPNAnQIHDw\",\"statement\":{\"combinedDecisionDigest\":\"da89ac86147d7ba6c99167b09e6c1f0b40465daa1ad32acb724e3bd52f57f753\",\"committedAt\":1800000001,\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"coreDecision\":{\"actorId\":100,\"authorityEpoch\":\"2\",\"checkedAt\":1800000001,\"permission\":\"instance.manage_settings\",\"requestDigest\":\"359dbba3ee5430ac20a80aa1b23c858c6c7b64baed1808260c8617192035a5cc\",\"role\":\"admin\",\"source\":\"local\",\"workDigest\":\"3456214884a62207b58fd4aac9b7fe9b5d28d07420698eadb2adef8d02ec6740\"},\"expiresAt\":1800000030,\"request\":{\"challenge\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"contract\":\"propr.extension-authority.v2\",\"contractPin\":\"9165092e8bedec5ba024fb94b32ff6442a8f4a57e3bdfc68310b9ed785382706\",\"expiresAt\":1800000030,\"issuedAt\":1800000000,\"phase\":\"status\",\"work\":{\"acquisitionOperationId\":null,\"coreAuthorityEpoch\":\"2\",\"extension\":{\"action\":\"profile.list\",\"contract\":\"propr.fleet-extensions.v1\",\"contractPin\":\"d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0\",\"expiresAt\":1800000030,\"githubActorId\":100,\"hostedInstanceId\":\"fixture-hosted-a\",\"issuedAt\":1800000000,\"nonce\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operationId\":\"00000000-0000-4000-8000-000000000001\",\"placementGeneration\":\"placement-42\",\"requestDigest\":\"1f949655922be18a767ee63f5f6ddcfd48507f2d54c99d5c951006078df130e4\",\"runtimeGeneration\":\"00000000-0000-4000-8000-000000000101\",\"scope\":\"hosted_instance_extensions\",\"storageGeneration\":\"00000000-0000-4000-8000-000000000102\",\"storageInstanceId\":\"00000000-0000-4000-8000-000000000100\"},\"extensionInstanceId\":\"11111111-1111-4111-8111-111111111111\",\"scope\":{\"accountEpoch\":\"1\",\"accountId\":\"account\",\"actorEpoch\":\"1\",\"extensionEpoch\":\"1\",\"installationEpoch\":\"1\",\"installationId\":\"installation\",\"membershipEpoch\":\"1\",\"passkeyEpoch\":\"1\",\"placementEpoch\":\"1\",\"runtimeEpoch\":\"1\",\"securityEpoch\":\"1\",\"storageEpoch\":\"1\",\"targetEpoch\":\"1\",\"targetId\":\"target\",\"tenantEpoch\":\"1\",\"tenantId\":\"tenant\"},\"workDigest\":\"44e2ac119d9aa2a9d85c17a1c7f3c4259d1b57d01a7c7722a75879817ab08f78\"}},\"result\":{\"dispatchDecisionDigest\":\"558d7422341d3b3d2496815bb0d50e470d2b3b87f8b08d0916853105cc9328d7\",\"nativeResultDigest\":\"190dda1707f782cc75ba21f15489c4a8ed901a5ba8534789415f3d57c6d19e51\",\"recipientCommitment\":null,\"state\":\"completed\"},\"resultDigest\":\"736eb61c7476a74fa3ade54fe11d28263eddfd6404b07402e794af0248b8cf79\",\"routingDigest\":\"61dd0d696170c0d3d2cfa0e503406d1e2ef9930e2fc89dccdfbba19442eea084\",\"trustDigest\":\"06b0388b51ade5e0511902136220cb62ab3bafd4217e6b2b834b1a537a8d6299\"}}"
+    }
+  ]
+}
