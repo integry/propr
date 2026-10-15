@@ -12,7 +12,9 @@ const { insertTaskSubmission, findIssueSubmission } = await import('../../core/s
 const { resolveTaskSubmissionRetry } = await import('../../core/src/services/taskSubmissionRetry.js');
 const { fetchIssueComments } = await import('../../../src/jobs/issueJob/github.js');
 const { generateClaudePrompt } = await import('../../core/src/claude/prompts/promptGenerator.js');
+const { findIssueRetryRequest, settleIssueRetryRequest } = await import('../../core/src/services/issueRetryRequest.js');
 
+const retryRequestKey = 'issue:retry-request:integry:propr:14';
 const routes = () => request.mock.calls.map(call => call.arguments[0]);
 const pullRequestReads = () => routes().filter(route => route.includes('/pulls/'));
 const postedComments = () => request.mock.calls.filter(call => call.arguments[0].endsWith('/comments'));
@@ -75,6 +77,45 @@ test('the relabel webhook and a repeated request do not queue a second run', asy
   assert.equal(add.mock.callCount(), 2);
 });
 
+const retryRequestStore = {
+  find: (issue: IssueJobData) => findIssueRetryRequest(redis as unknown as Redis, issue),
+  settle: (issue: IssueJobData, request: { requesterId: string; commentId: number }) => settleIssueRetryRequest(redis as unknown as Redis, issue, request),
+};
+
+/** Runs the matrix dispatcher on the parent job the queue received at `index`. */
+async function dispatchQueued(index: number) {
+  const children: Array<{ jobId: string; data: IssueJobData }> = [];
+  const deps = {
+    findSubmission: (issue: IssueJobData) => findIssueSubmission(issue, database),
+    resolveSubmissionRetry: (submission: Parameters<typeof resolveTaskSubmissionRetry>[0]) => resolveTaskSubmissionRetry(submission, database,
+      async () => ({ request: async () => ({ data: state.timeline }) }) as never, async () => ['AI']),
+    recordDispatch: async () => undefined, recordDispatchFailure: async () => undefined,
+    getAuthenticatedOctokit: async () => ({ request: async () => ({ data: { labels: state.issueLabels.map(name => ({ name })) } }) }),
+    withRetry: async (operation: () => Promise<unknown>) => operation(), retryConfigs: { githubApi: {} },
+    validateRepositoryInfo: async () => ({ isValid: true, repoData: { defaultBranch: 'main' } }),
+    resolveLlmLabel: async () => ({ agentAlias: 'claude', model: 'claude-opus-5-5' }),
+    getAllCustomLabels: async () => [], getDefaultModel: () => 'claude-opus-5-5',
+    issueQueue: { add: async (_name: string, data: IssueJobData, options: { jobId: string }) => { children.push({ jobId: options.jobId, data }); } },
+    retryRequests: retryRequestStore,
+  } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
+  const [name, data] = add.mock.calls[index].arguments as unknown as [string, IssueJobData];
+  const dispatched = await handleDispatchWithDeps({ id: 'issue-integry-propr-14', name, data: { ...data } } as Job<IssueJobData>, deps);
+  return { dispatched, children };
+}
+
+/** The comments a run on issue 14 reads into its prompt, after the app posted the request. */
+async function promptFor(child: IssueJobData) {
+  const [posted] = postedComments();
+  const issueComments = [
+    { id: 1, body: 'An unrelated bot note', user: { login: 'other-app[bot]', type: 'Bot' } },
+    { id: 6157569382, body: posted.arguments[1].body!, user: { login: 'propr-dev[bot]', type: 'Bot' } },
+  ];
+  const octokit = { request: async () => ({ data: issueComments, headers: {} }) };
+  const comments = await fetchIssueComments(octokit as never, child, { warn: () => undefined } as never);
+  return generateClaudePrompt({ issueRef: { number: 14, repoOwner: 'integry', repoName: 'propr' }, branchName: 'retry', modelName: 'claude-opus-5-5',
+    issueDetails: { title: 'Issue', body: 'Body', comments } });
+}
+
 test('a first retry within the failure second relabels after it, so the submission dispatcher starts a run for the requester with their instructions', async () => {
   const row = await insertTaskSubmission(database, { user_id: 'submitter', submission_key: 'retry-in-failure-second',
     payload_hash: 'hash', repository: 'integry/propr', payload: '{}', attachments: '[]' });
@@ -86,25 +127,12 @@ test('a first retry within the failure second relabels after it, so the submissi
     assert.deepEqual(state.sleeps, [300], 'the relabel waits for the second after the failure');
     assert.equal(state.timeline.at(-1)!.created_at, '2026-10-15T10:00:01.000Z');
 
-    const children: Array<{ jobId: string; data: IssueJobData }> = [];
-    const deps = {
-      findSubmission: (issue: IssueJobData) => findIssueSubmission(issue, database),
-      resolveSubmissionRetry: (submission: Parameters<typeof resolveTaskSubmissionRetry>[0]) => resolveTaskSubmissionRetry(submission, database,
-        async () => ({ request: async () => ({ data: state.timeline }) }) as never, async () => ['AI']),
-      recordDispatch: async () => undefined, recordDispatchFailure: async () => undefined,
-      getAuthenticatedOctokit: async () => ({ request: async () => ({ data: { labels: state.issueLabels.map(name => ({ name })) } }) }),
-      withRetry: async (operation: () => Promise<unknown>) => operation(), retryConfigs: { githubApi: {} },
-      validateRepositoryInfo: async () => ({ isValid: true, repoData: { defaultBranch: 'main' } }),
-      resolveLlmLabel: async () => ({ agentAlias: 'claude', model: 'claude-opus-5-5' }),
-      getAllCustomLabels: async () => [], getDefaultModel: () => 'claude-opus-5-5',
-      issueQueue: { add: async (_name: string, data: IssueJobData, options: { jobId: string }) => { children.push({ jobId: options.jobId, data }); } },
-    } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
-    const [name, data] = add.mock.calls[0].arguments as unknown as [string, IssueJobData];
-    const dispatched = await handleDispatchWithDeps({ id: 'issue-integry-propr-14', name, data } as Job<IssueJobData>, deps);
+    const { dispatched, children } = await dispatchQueued(0);
     assert.equal(dispatched.status, 'dispatched');
     assert.deepEqual(children.map(child => child.jobId), [`issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${state.timeline.at(-1)!.id}`]);
     const [{ data: child }] = children;
     assert.equal(child.userId, 'user-1', 'the retry runs for the requester, not the submitter');
+    assert.equal(claims.has(retryRequestKey), false, 'the dispatched request is released');
 
     // The run reads its prompt context from the issue's comments, where the app posted the request.
     const [posted] = postedComments();
@@ -126,6 +154,70 @@ test('a first retry within the failure second relabels after it, so the submissi
   } finally {
     await database('task_submissions').where({ id: row.id }).delete();
   }
+});
+
+/** The direct enqueue fails before the queue accepts it, and the relabel arrives after the shared window. */
+async function recoverFailedEnqueue(body: string) {
+  state.queueFails = true;
+  const result = await postFollowup({ body }, 'failed-issue-task');
+  assert.equal(result.json.state, 'unknown');
+  assert.ok(claims.has(retryRequestKey), 'the request is held before the trigger is published');
+  state.queueFails = false;
+  claims.delete('issue:dedup:integry:propr:14');
+  assert.notEqual((await relabelWebhook()).status, 'ignored');
+  const [, recovered] = add.mock.calls[1].arguments as unknown as [string, IssueJobData];
+  assert.equal(recovered.retryCommentId, undefined, 'the relabel delivery carries no retry metadata');
+  return dispatchQueued(1);
+}
+
+test('a submission retry whose enqueue failed runs for the requester with their instructions when its relabel recovers it', async () => {
+  const row = await insertTaskSubmission(database, { user_id: 'submitter', submission_key: 'retry-recovered-by-relabel',
+    payload_hash: 'hash', repository: 'integry/propr', payload: '{}', attachments: '[]' });
+  try {
+    await database('task_submissions').where({ id: row.id }).update({ issue_number: 14, task_id: 'failed-issue-task', dispatch_complete: true });
+    const { dispatched, children } = await recoverFailedEnqueue('Retry with the rotated token');
+    assert.equal(dispatched.status, 'dispatched');
+    const [{ data: child }] = children;
+    assert.equal(child.userId, 'user-1', 'the recovered retry runs for the requester, not the submitter');
+    assert.equal(child.retryCommentId, 6157569382);
+    const prompt = await promptFor(child);
+    assert.match(prompt, /Retry with the rotated token/);
+    assert.doesNotMatch(prompt, /An unrelated bot note/);
+    assert.equal(claims.has(retryRequestKey), false, 'the request is released once a dispatch carries it');
+  } finally {
+    await database('task_submissions').where({ id: row.id }).delete();
+  }
+});
+
+test('an issue-only retry whose enqueue failed runs for the requester with their instructions when its relabel recovers it', async () => {
+  const { children } = await recoverFailedEnqueue('Retry without the cache');
+  const [{ data: child }] = children;
+  assert.equal(child.userId, 'user-1', 'not the app account that re-applied the label');
+  assert.match(await promptFor(child), /Retry without the cache/);
+  assert.equal(claims.has(retryRequestKey), false);
+});
+
+test('a dispatch that fails keeps the request for the next recovery', async () => {
+  state.queueFails = true;
+  await postFollowup({ body: 'Retry' }, 'failed-issue-task');
+  state.queueFails = false;
+  claims.delete('issue:dedup:integry:propr:14');
+  await relabelWebhook();
+  const [name, data] = add.mock.calls[1].arguments as unknown as [string, IssueJobData];
+  const deps = {
+    findSubmission: async () => undefined, recordDispatch: async () => undefined, recordDispatchFailure: async () => undefined,
+    getAuthenticatedOctokit: async () => { throw new Error('GitHub unavailable'); },
+    withRetry: async (operation: () => Promise<unknown>) => operation(), retryConfigs: { githubApi: {} },
+    retryRequests: retryRequestStore,
+  } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
+  await assert.rejects(handleDispatchWithDeps({ id: 'issue-integry-propr-14', name, data } as Job<IssueJobData>, deps), /GitHub unavailable/);
+  assert.ok(claims.has(retryRequestKey));
+});
+
+test('a trigger that cannot be re-applied does not hold the request for a later trigger', async () => {
+  state.labelFails = true;
+  await postFollowup({ body: 'Retry' }, 'failed-issue-task');
+  assert.equal(claims.has(retryRequestKey), false);
 });
 
 test('a failure recorded beyond the bounded wait is refused before posting or relabelling', async () => {

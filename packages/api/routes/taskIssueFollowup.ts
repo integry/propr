@@ -3,6 +3,7 @@ import type { Redis } from 'ioredis';
 import {
   getAuthenticatedOctokit, getIssueQueue, loadPrimaryProcessingLabels, parseSlashCommand,
   safeAddLabel, safeRemoveLabel, generateCorrelationId, logger, findIssueSubmission, submissionRetryAdmissibleAt,
+  rememberIssueRetryRequest, settleIssueRetryRequest,
 } from '@propr/core';
 import { enqueueIssueImplementationJob } from './planIssueHelpers.js';
 
@@ -155,18 +156,34 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   console.log(`[followup] Posted retry request (ID: ${commentId}) to ${owner}/${repo}#${issueNumber}`);
   const posted = { posted: true, commentId, sourceTaskId: task.task_id, intent: 'issue', issueNumber };
 
+  const notStarted = (): FollowupResult => ({ status: 202, body: { success: false, state: 'failed', ...posted,
+    message: `Comment posted, but the retry could not be started. Make sure issue #${issueNumber} has the '${trigger}' label, then try again.` } });
+
+  // Held before the trigger is published: a relabel delivery that recovers a
+  // failed enqueue carries neither the requester nor the comment to exempt.
+  const issueKey = { repoOwner: owner, repoName: repo, number: issueNumber };
+  const retryRequest = { requesterId: userId, commentId };
+  try {
+    await rememberIssueRetryRequest(redis, issueKey, retryRequest);
+  } catch (error) {
+    console.warn(`[followup] Could not record the retry request: ${(error as Error).message}`);
+    await redis.del(dedupeKey);
+    return notStarted();
+  }
+
   const context = { octokit, owner, repo, issueNumber, logger: logger.withCorrelation(correlationId) };
   if (!(labels.includes(trigger) ? await safeRemoveLabel(context, trigger) : true) || !await safeAddLabel(context, trigger)) {
+    await settleIssueRetryRequest(redis, issueKey, retryRequest).catch(() => undefined);
     await redis.del(dedupeKey);
-    return { status: 202, body: { success: false, state: 'failed', ...posted,
-      message: `Comment posted, but the retry could not be started. Make sure issue #${issueNumber} has the '${trigger}' label, then try again.` } };
+    return notStarted();
   }
 
   const jobId = `issue-${owner}-${repo}-${issueNumber}`;
   try {
     await (deps.enqueueIssue ?? enqueueIssueImplementationJob)({ owner, repo, issueNumber, userId, retryRequesterId: userId, retryCommentId: commentId, triggeringLabel: trigger, correlationId });
   } catch (error) {
-    // The queue may have accepted the job before failing; the trigger label stays for polling.
+    // The queue may have accepted the job before failing; the trigger label
+    // stays for polling, and the held request lets that recovery run it.
     console.warn(`[followup] Issue retry dispatch failed: ${(error as Error).message}`);
     return { status: 202, body: { success: false, state: 'unknown', jobId, ...posted,
       message: 'Comment posted, but submission could not be confirmed. Inspect the comment and any job receipt before retrying.' } };
