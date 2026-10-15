@@ -190,6 +190,7 @@ const { closeConnection } = await import('@propr/core');
 const { up: submissionsTable } = await import('../../core/src/db/migrations/20260922000000_add_task_submissions.js');
 const { up: submissionIdentity } = await import('../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js');
 const { up: retryRequestStates } = await import('../../core/src/db/migrations/20261015080000_create_issue_retry_request_states.js');
+const { up: retryRequestRestarts } = await import('../../core/src/db/migrations/20261015090000_add_issue_retry_request_resumed_at.js');
 const { createTaskRoutes, resolveFollowupThread } = await import('../routes/taskRoutes.js');
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
@@ -210,6 +211,7 @@ await database.schema.createTable('task_history', table => {
 await submissionsTable(database);
 await submissionIdentity(database);
 await retryRequestStates(database);
+await retryRequestRestarts(database);
 await database('tasks').insert([
   { task_id: 'completed-task', repository: 'integry/propr', issue_number: 12, pr_number: 7, task_type: 'issue' },
   { task_id: 'task-without-pr', repository: 'integry/propr', issue_number: null, pr_number: null, task_type: 'issue' },

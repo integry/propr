@@ -276,13 +276,13 @@ for (const [routing, backed] of routings) {
   });
 
   for (const [write, labelAdd] of [['timed-out', 'delayed'], ['refused', 'rejected']] as const) {
-    test(`${routing} ${write} trigger write whose outcome cannot be recorded in either store defers the trigger it may own beyond retention, unconsumed`, async () => {
+    test(`${routing} ${write} trigger write whose outcome cannot be recorded in either store defers the trigger it may own beyond retention, unconsumed, until a later follow-up restarts it for its requester`, async () => {
       await onIssue(backed, `unrecorded-trigger-${backed}-${write}`, async () => {
         state.labelAdd = labelAdd;
         // Both the database and Redis fail from the trigger write on.
         let restore: () => Promise<void> = async () => undefined;
         state.onLabelAdd = async () => { state.redisFails = true; restore = await takeRecordsOffline(); };
-        assert.equal((await postFollowup({ body: 'Retry' }, 'failed-issue-task')).json.state, write === 'refused' ? 'failed' : 'unknown');
+        assert.equal((await postFollowup({ body: 'Retry with the original instructions' }, 'failed-issue-task')).json.state, write === 'refused' ? 'failed' : 'unknown');
         await restore();
         state.redisFails = false;
         state.onLabelAdd = undefined;
@@ -302,12 +302,31 @@ for (const [routing, backed] of routings) {
           assert.equal(children.length, 0);
         }
 
-        // Retention cleanup runs with a later follow-up, which the unresolved request still holds back.
-        claims.delete(dedupKey);
-        const later = await postFollowup({ body: 'A later request' }, 'failed-issue-task');
-        assert.equal(later.status, 409);
         if (backed) assert.equal((await submissionRow()).retry_event_id, null, 'the trigger stays unconsumed for a later delivery');
         assert.deepEqual(await openRequests(), recorded, 'the obligation is retained');
+
+        // Retention cleanup runs with a later follow-up, from another user, which restarts the
+        // stranded request on a fresh trigger of its own instead of posting.
+        claims.delete(dedupKey);
+        const later = await postFollowup({ body: 'A later request' }, 'failed-issue-task', 'user-2');
+        assert.equal(later.status, 202);
+        assert.equal(later.json.success, false, 'the later request itself was not posted');
+        assert.equal(later.json.posted, false);
+        assert.deepEqual(later.json.restartedRequest, { state: 'queued', commentId: FIRST_COMMENT_ID });
+        assert.equal(postedComments().length, 1);
+        const fresh = state.timeline.at(-1)!.id;
+        const { dispatched, children } = await dispatchQueued(add.mock.callCount() - 1);
+        assert.equal(dispatched.status, 'dispatched');
+        const [{ jobId, data: child }] = children;
+        if (backed) assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${fresh}`);
+        assert.equal(child.userId, 'user-1', 'the restarted request runs for its own requester');
+        assert.equal(child.retryRequesterId, 'user-1');
+        assert.equal(child.retryCommentId, FIRST_COMMENT_ID);
+        const prompt = await promptFor(child);
+        assert.match(prompt, /Retry with the original instructions/);
+        assert.doesNotMatch(prompt, /A later request/);
+        if (backed) assert.equal((await submissionRow()).retry_event_id, String(fresh), 'the run consumes the trigger it may own with its fresh one');
+        assert.deepEqual(await openRequests(), []);
       });
     });
   }

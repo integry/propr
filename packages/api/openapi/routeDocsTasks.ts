@@ -124,7 +124,7 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
     pathParams: { taskId: TASK_ID },
     requestBody: { schema: TaskFollowupRequest },
     responses: {
-      202: { description: 'The comment was posted; the outcome distinguishes queued, batched, handled, refused, failed and unknown submissions.', schema: TaskFollowupResult },
+      202: { description: 'The comment was posted; the outcome distinguishes queued, batched, handled, refused, failed and unknown submissions. An issue retry refuses the comment, without posting it, while it restarts an earlier retry whose start was never confirmed; `restartedRequest` reports that restart.', schema: TaskFollowupResult },
       400: { description: 'The comment body or target is invalid, or a pull request command was sent for a task without a pull request.' },
       404: { description: 'Task not found.' },
       409: { description: 'The issue cannot be retried: the run has not failed, the issue is closed or done, a run is already queued, or an earlier retry may still start.' },

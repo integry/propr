@@ -7693,7 +7693,7 @@ paths:
               $ref: "#/components/schemas/TaskFollowupRequest"
       responses:
         "202":
-          description: The comment was posted; the outcome distinguishes queued, batched, handled, refused, failed and unknown submissions.
+          description: The comment was posted; the outcome distinguishes queued, batched, handled, refused, failed and unknown submissions. An issue retry refuses the comment, without posting it, while it restarts an earlier retry whose start was never confirmed; `restartedRequest` reports that restart.
           content:
             application/json:
               schema:
@@ -9515,6 +9515,23 @@ components:
         issueNumber:
           description: The issue a retry was queued on.
           type: integer
+        restartedRequest:
+          description: Present when, instead of posting this follow-up, an earlier issue retry whose start was never confirmed was restarted for its own requester.
+          type: object
+          properties:
+            state:
+              type: string
+              enum:
+                - queued
+                - failed
+                - unknown
+            commentId:
+              type: integer
+              description: The earlier request's comment, whose instructions the restarted run carries.
+          required:
+            - state
+            - commentId
+          additionalProperties: false
         message:
           description: Explains a refusal, failure, or uncertain submission.
           type: string
@@ -9607,6 +9624,23 @@ components:
         issueNumber:
           description: The issue a retry was queued on.
           type: integer
+        restartedRequest:
+          description: Present when, instead of posting this follow-up, an earlier issue retry whose start was never confirmed was restarted for its own requester.
+          type: object
+          properties:
+            state:
+              type: string
+              enum:
+                - queued
+                - failed
+                - unknown
+            commentId:
+              type: integer
+              description: The earlier request's comment, whose instructions the restarted run carries.
+          required:
+            - state
+            - commentId
+          additionalProperties: false
         message:
           description: Explains a refusal, failure, or uncertain submission.
           type: string

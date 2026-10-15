@@ -232,13 +232,15 @@ async function resolveRun(
 }
 
 /**
- * Whether the job is the one the route queued for the deferred request. The
- * route queues a request's job only once GitHub confirmed its trigger write,
- * so the job is the evidence of the outcome the route could not record.
+ * Whether the job is the one the route queued for the deferred request's
+ * current trigger write. The route queues a request's job only once GitHub
+ * confirmed that write, so the job is the evidence of the outcome the route
+ * could not record; a job of an earlier write of a restarted request is not.
  */
 function confirmsPublication(issueRef: IssueJobData, request: IssueRetryRequest): boolean {
-    return request.publication === 'pending' && request.commentId !== null
-        && issueRef.retryCommentId === request.commentId && issueRef.retryRequesterId === request.requesterId;
+    return request.publication === 'pending' && request.commentId !== null && request.publishedAt !== null
+        && issueRef.retryCommentId === request.commentId && issueRef.retryRequesterId === request.requesterId
+        && issueRef.retryPublishedAt === request.publishedAt;
 }
 
 /**
@@ -268,6 +270,7 @@ function applyRunRequest(issueRef: IssueJobData, submission: Submission, request
         logger.info({ issue: issueRef.number, triggerEventId: retry?.eventId }, 'Queued retry request does not own the dispatched trigger; dispatching it without the request');
         delete issueRef.retryRequesterId;
         delete issueRef.retryCommentId;
+        delete issueRef.retryPublishedAt;
     }
     if (submission) {
         issueRef.userId = submissionRunOwner(submission.user_id, issueRef, Boolean(retry));

@@ -26,6 +26,8 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData {
     retryRequesterId?: string;
     /** Issue comment carrying a requested retry's instructions; posted by the app, so exempt from author filtering. */
     retryCommentId?: number;
+    /** When the trigger write the requested retry's job confirms began; ties that evidence to that write only. */
+    retryPublishedAt?: number;
     repoOwner: string;
     repoName: string;
     number: number;

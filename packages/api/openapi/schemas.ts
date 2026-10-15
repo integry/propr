@@ -248,6 +248,10 @@ export const TaskFollowupResult = component('TaskFollowupResult', z.object({
   sourceTaskId: z.string(),
   intent: z.literal('issue').optional().describe('Present when a failed implementation without a pull request was retried on its issue.'),
   issueNumber: z.number().int().optional().describe('The issue a retry was queued on.'),
+  restartedRequest: z.object({
+    state: z.enum(['queued', 'failed', 'unknown']),
+    commentId: z.number().int().describe('The earlier request\'s comment, whose instructions the restarted run carries.'),
+  }).optional().describe('Present when, instead of posting this follow-up, an earlier issue retry whose start was never confirmed was restarted for its own requester.'),
   message: z.string().optional().describe('Explains a refusal, failure, or uncertain submission.'),
 }), 'Result of posting a follow-up comment. `state: unknown` means inspect the job before retrying.');
 

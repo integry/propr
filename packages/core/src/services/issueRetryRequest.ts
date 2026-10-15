@@ -21,6 +21,14 @@ import { loadPrimaryProcessingLabels } from '../config/configManager.js';
  * refused) lets recovery adopt it, and a refusal releases it. While it is
  * pending the outcome is unknown, and dispatch defers the request's trigger
  * rather than run it with or without the request.
+ *
+ * A request still owed once its write can no longer land is stranded: its
+ * outcome may have been lost with the process that learned it, when nothing
+ * tells its own trigger from another the same identity wrote, or every
+ * delivery may have come before its trigger was visible. A later follow-up
+ * restarts it: a fresh trigger write, after a fresh baseline, that recovery
+ * can tell apart. A restarted request stays owed until a run carries it, so
+ * the trigger it may already have published never runs without it.
  */
 export interface IssueRetryRequest {
   id: number;
@@ -32,6 +40,8 @@ export interface IssueRetryRequest {
   afterEventId: string | null;
   actorId: number | null;
   publication: 'reserved' | 'pending' | 'possible' | 'refused';
+  /** When a follow-up restarted its stranded publication; null unless restarted. */
+  resumedAt: number | null;
 }
 
 export interface TriggerLabelEvent { id?: number; event: string; created_at?: string; label?: { name: string }; actor?: { id?: number } }
@@ -76,6 +86,7 @@ const owedIssue = (issue: IssueKey) => `${issue.repoOwner}/${issue.repoName}#${i
 interface RequestRow {
   id: number; requester_id: string; comment_id: number | string | null; requested_at: number | string;
   published_at: number | string | null; after_event_id: string | null; actor_id: number | string | null; publication: string;
+  resumed_at?: number | string | null;
 }
 
 function parseRow(row: RequestRow): IssueRetryRequest {
@@ -85,6 +96,7 @@ function parseRow(row: RequestRow): IssueRetryRequest {
     publishedAt: row.published_at === null ? null : Number(row.published_at),
     commentId: row.comment_id === null ? null : Number(row.comment_id),
     afterEventId: row.after_event_id, actorId: row.actor_id === null ? null : Number(row.actor_id), publication,
+    resumedAt: row.resumed_at === null || row.resumed_at === undefined ? null : Number(row.resumed_at),
   };
 }
 
@@ -122,9 +134,11 @@ export function retryRequestTrigger(request: IssueRetryRequest, events: TriggerL
  * Whether the request may still be owed a run: its trigger write is in
  * progress or may still land, or it published a trigger no dispatch has
  * consumed. A request whose write never landed within the publication window,
- * or whose trigger the submission consumed, is owed none.
+ * or whose trigger the submission consumed, is owed none. A restarted request
+ * may own the trigger its lost write published, so it is owed until it runs.
  */
 function mayBeOwed(request: IssueRetryRequest, { events, now, consumedEventId }: TriggerHistory): boolean {
+  if (request.resumedAt !== null) return true;
   if (request.publication === 'refused') return false;
   if (request.publication === 'reserved') return windowOpen(request, now);
   const own = retryRequestTrigger(request, events);
@@ -135,6 +149,18 @@ function mayBeOwed(request: IssueRetryRequest, { events, now, consumedEventId }:
   return consumed < events.findIndex(event => String(event.id) === own);
 }
 
+/**
+ * Whether an owed request is stranded: its trigger write can no longer land,
+ * or a restart's write was refused, and still no run has carried it. A
+ * delivery may yet run one whose outcome was recorded, but none is due: its
+ * outcome may never be recorded, or every delivery may have come early. A
+ * restart, which a later follow-up makes, recovers it either way.
+ */
+function stranded(request: IssueRetryRequest, history: TriggerHistory): boolean {
+  if (request.publication === 'reserved' || request.commentId === null || !mayBeOwed(request, history)) return false;
+  return request.publication === 'refused' || !windowOpen(request, history.now);
+}
+
 /** The issue's open requests, oldest first. */
 export async function findIssueRetryRequests(database: Knex, issue: IssueKey): Promise<IssueRetryRequest[]> {
   const rows = await database(TABLE).where({ owed_issue: owedIssue(issue) }).orderBy('requested_at').select() as RequestRow[];
@@ -142,23 +168,29 @@ export async function findIssueRetryRequests(database: Knex, issue: IssueKey): P
 }
 
 /**
+ * A reservation of the issue for a new request, or the earlier request it is
+ * still owed, and whether that one is stranded until a follow-up restarts it.
+ */
+export type RetryReservation = { reserved: IssueRetryRequest } | { owed: IssueRetryRequest; stranded: boolean };
+
+/**
  * Reserves the issue for a new request, before anything of it is posted or
  * published, unless an earlier request may still be owed a run: a second
  * request could not then be told apart from it, and running either would
  * consume the other's trigger. Requests known to be owed nothing are released.
- * Null when the issue is still owed an earlier request.
  */
 export async function reserveIssueRetryRequest(
   database: Knex,
   issue: IssueKey,
   request: Pick<IssueRetryRequest, 'requesterId' | 'requestedAt' | 'afterEventId'>,
   history: TriggerHistory,
-): Promise<IssueRetryRequest | null> {
+): Promise<RetryReservation> {
   return database.transaction(async trx => {
     // Only requests known to be owed nothing are ever discarded.
     await trx(TABLE).whereNull('owed_issue').where('recorded_at', '<', history.now - CLOSED_RETENTION_MS).delete();
     const open = await findIssueRetryRequests(trx, issue);
-    if (open.some(held => mayBeOwed(held, history))) return null;
+    const owed = open.find(held => mayBeOwed(held, history));
+    if (owed) return { owed, stranded: stranded(owed, history) };
     if (open.length > 0) await trx(TABLE).whereIn('id', open.map(held => held.id)).update({ owed_issue: null, recorded_at: history.now });
     // The unique open slot refuses a concurrent reservation the read above could not see.
     const [id] = await trx(TABLE).insert({
@@ -166,7 +198,7 @@ export async function reserveIssueRetryRequest(
       requester_id: request.requesterId, requested_at: request.requestedAt, after_event_id: request.afterEventId,
       publication: 'reserved', recorded_at: history.now,
     }) as number[];
-    return { ...request, id: Number(id), commentId: null, actorId: null, publishedAt: null, publication: 'reserved' as const };
+    return { reserved: { ...request, id: Number(id), commentId: null, actorId: null, publishedAt: null, publication: 'reserved' as const, resumedAt: null } };
   });
 }
 
@@ -185,6 +217,21 @@ export async function beginIssueRetryPublication(
   return Number(updated) === 1 ? { ...request, ...posted, publishedAt: now, publication: 'pending' } : null;
 }
 
+/**
+ * Restarts a stranded request's publication just before its fresh trigger
+ * write: its baseline moves to `afterEventId`, the latest trigger event now,
+ * and its window opens at `now`, so its own trigger is the first its identity
+ * labels after the trigger it may already have published. Null when the
+ * request changed meanwhile, so the trigger must not be written.
+ */
+export async function restartIssueRetryPublication(
+  database: Knex, request: IssueRetryRequest, afterEventId: string | null, now = Date.now(),
+): Promise<IssueRetryRequest | null> {
+  const updated = await database(TABLE).where({ id: request.id, publication: request.publication, published_at: request.publishedAt }).whereNotNull('owed_issue')
+    .update({ after_event_id: afterEventId, published_at: now, publication: 'pending', resumed_at: now, recorded_at: now });
+  return Number(updated) === 1 ? { ...request, afterEventId, publishedAt: now, publication: 'pending', resumedAt: now } : null;
+}
+
 /** Releases a reservation whose trigger was never written. */
 export async function releaseIssueRetryReservation(database: Knex, request: IssueRetryRequest): Promise<void> {
   await database(TABLE).where({ id: request.id, publication: 'reserved' }).delete();
@@ -193,14 +240,17 @@ export async function releaseIssueRetryReservation(database: Knex, request: Issu
 /**
  * Records the outcome of the request's trigger write: `possible` lets recovery
  * adopt it, and a refusal, which published no trigger of the request, releases
- * it whoever else labels the issue. Recording it again, or after it was
- * released, changes nothing.
+ * it whoever else labels the issue, unless it was restarted: then it may own
+ * the trigger its lost write published, and stays stranded for a restart.
+ * Recording it again, after it was released, or for an earlier write of a
+ * restarted request, changes nothing.
  */
 export async function recordIssueRetryPublication(
-  database: Knex, request: Pick<IssueRetryRequest, 'id'>, publication: 'possible' | 'refused', now = Date.now(),
+  database: Knex, request: Pick<IssueRetryRequest, 'id' | 'publishedAt' | 'resumedAt'>, publication: 'possible' | 'refused', now = Date.now(),
 ): Promise<void> {
-  await database(TABLE).where({ id: request.id, publication: 'pending' }).whereNotNull('owed_issue')
-    .update({ publication, recorded_at: now, ...(publication === 'refused' ? { owed_issue: null } : {}) });
+  const releases = publication === 'refused' && request.resumedAt === null;
+  await database(TABLE).where({ id: request.id, publication: 'pending', published_at: request.publishedAt }).whereNotNull('owed_issue')
+    .update({ publication, recorded_at: now, ...(releases ? { owed_issue: null } : {}) });
 }
 
 /** Records that a dispatch carried the request into its run, which releases it. */
@@ -247,13 +297,19 @@ export async function selectRetryRun(
 /**
  * The admitted trigger of its own a request is owed a run on, 'defer' while
  * its outcome is unknown or its trigger may still land, or null when it is
- * owed nothing by this delivery.
+ * owed nothing by this delivery. A restarted request runs only on its fresh
+ * trigger, and defers every other: one may be its lost write's.
  */
 function owedRun(
   request: IssueRetryRequest,
   { events, admissible, now }: Omit<TriggerHistory, 'consumedEventId'> & { admissible: Set<string> },
 ): string | 'defer' | null {
-  if (request.publication === 'reserved' || request.publication === 'refused' || request.commentId === null) return null;
+  if (request.publication === 'reserved' || request.commentId === null) return null;
+  if (request.resumedAt !== null) {
+    const fresh = retryRequestTrigger(request, events);
+    return typeof fresh === 'string' && admissible.has(fresh) && request.publication === 'possible' ? fresh : 'defer';
+  }
+  if (request.publication === 'refused') return null;
   const own = retryRequestTrigger(request, events);
   if (own === undefined) return 'defer';
   if (own !== null && admissible.has(own)) return request.publication === 'possible' ? own : 'defer';

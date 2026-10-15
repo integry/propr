@@ -27,6 +27,13 @@ export const relabelWebhook = () => processDetectedIssue({
   triggeredBy: 'propr-dev[bot]', triggeredById: '99', source: 'webhook', triggerReapplied: true,
 }, 'relabel-webhook', redis as unknown as Redis);
 
+/** The issue as the daemon's poll detects it while its trigger label is on it. */
+export const pollDelivery = () => processDetectedIssue({
+  id: 1014, number: 14, title: 'Issue', url: 'https://github.com/integry/propr/issues/14', repoOwner: 'integry', repoName: 'propr',
+  labels: [...state.issueLabels], createdAt: '2026-10-15T09:00:00Z', updatedAt: '2026-10-15T10:00:01Z',
+  triggeredBy: 'propr-dev[bot]', triggeredById: '99', source: 'polling',
+}, 'poll', redis as unknown as Redis);
+
 const timelineOctokit = async () => ({ request: async () => ({ data: state.timeline }) }) as never;
 export const retryRequestStore = {
   select: (issue: IssueJobData, { submission }: { submission: Submission }) =>
@@ -100,11 +107,11 @@ export async function onIssue(backed: boolean, key: string, body: () => Promise<
   }
 }
 
-/** Delivers the issue's relabel after the shared window and dispatches the recovery job it queues, not an earlier job. */
-export async function deliverAndDispatch() {
+/** Delivers the issue's relabel (or a poll) after the shared window and dispatches the recovery job it queues, not an earlier job. */
+export async function deliverAndDispatch(deliver: () => ReturnType<typeof processDetectedIssue> = relabelWebhook) {
   claims.delete(dedupKey);
   const index = add.mock.callCount();
-  assert.notEqual((await relabelWebhook()).status, 'ignored');
+  assert.notEqual((await deliver()).status, 'ignored');
   assert.equal(add.mock.callCount(), index + 1, 'the relabel queues one recovery job');
   const [, recovery] = add.mock.calls[index].arguments as unknown as [string, IssueJobData];
   assert.equal(recovery.retryCommentId, undefined, 'the relabel delivery carries no retry metadata');
