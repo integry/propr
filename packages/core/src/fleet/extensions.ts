@@ -27,16 +27,16 @@ export class FleetExtensionPlane {
   constructor(readonly fleet: FleetDataPlane, readonly store: ExtensionProfileStore) {
     this.ready = fs.readdir(fleet.files.root).then(names => { this.slots = names.filter(n => n.startsWith('extension-')).length; });
   }
-  private async recipientSigningKey() {
+  private async recipientSigningKey(instanceId?: string) {
     const env = this.store.environment;
     const root = env.PROPR_CREDENTIAL_ENCRYPTION_KEY?.trim() || env.SYSTEM_TASK_SECRET?.trim() || env.SESSION_SECRET?.trim();
     if (!root) throw new FleetRefusal();
-    const seed = createHash('sha256').update('propr.fleet-extensions.v1.recipient-signing\0').update(await this.store.instanceId()).update('\0').update(root).digest();
+    const seed = createHash('sha256').update('propr.fleet-extensions.v1.recipient-signing\0').update(instanceId ?? await this.store.instanceId()).update('\0').update(root).digest();
     try { return createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]), format: 'der', type: 'pkcs8' }); }
     finally { seed.fill(0); }
   }
   /** Provision this public key through an independently authenticated native/operator channel, never trust a relay's pin. */
-  async recipientVerificationKey() { return createPublicKey(await this.recipientSigningKey()).export({ format: 'der', type: 'spki' }).toString('base64url'); }
+  async recipientVerificationKey(instanceId?: string) { return createPublicKey(await this.recipientSigningKey(instanceId)).export({ format: 'der', type: 'spki' }).toString('base64url'); }
   shutdown() { this.stopped = true; for (const id of this.recipients.keys()) this.destroyRecipient(id); }
   private destroyRecipient(id: string) {
     const recipient = this.recipients.get(id);

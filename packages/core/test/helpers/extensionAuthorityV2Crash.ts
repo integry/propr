@@ -63,7 +63,7 @@ f.extensions.dispatchAtomic = async (...args) => {
   if (fault === 'mutation-after') die();
   return result;
 };
-await f.plane.invoke(canonical(envelope), response => {
+await f.plane.invokeDelivery(canonical(envelope), response => {
   if (fault === 'reply-before') die();
   // A serialized reply may have left Core without reaching Fleet.
   canonical(response);
