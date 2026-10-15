@@ -170,9 +170,13 @@ const walkFiles = async root => {
   return files.sort();
 };
 
+// Token prefixes must start at a token boundary. The desktop profile journal
+// stores base64url ciphertext as one printable run, and uniformly random
+// base64url bytes spell `gh?_` mid-run by chance; a real token is never
+// preceded by another identifier or base64url character.
 const genericSecretPatterns = [
-  /propr_it_[A-Za-z0-9_-]{20,}/g,
-  /gh[pousr]_[A-Za-z0-9_]{20,}/g,
+  /(?<![A-Za-z0-9_-])propr_it_[A-Za-z0-9_-]{20,}/g,
+  /(?<![A-Za-z0-9_-])gh[pousr]_[A-Za-z0-9_]{20,}/g,
   /Bearer\s+[A-Za-z0-9._~-]{16,}/gi,
   /(?:token|secret|password|private[_-]?key)\s*[=:]\s*[^\s"']{8,}/gi,
 ];

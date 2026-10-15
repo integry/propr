@@ -658,6 +658,31 @@ describe('packaged acceptance artifact contract', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('does not mistake base64url journal ciphertext for a token prefix while still catching bounded tokens', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-acceptance-contract-journal-scan-'));
+    const desktop = join(root, 'desktop');
+    const journal = join(desktop, 'profiles.journal.0');
+    // Deterministic ciphertext-shaped base64url whose random-looking bytes happen to spell
+    // token prefixes mid-run, as uniformly random encrypted payloads do by chance.
+    const ciphertext = `${'Qm'.repeat(40)}ghp_${'x'.repeat(36)}${'-_'.repeat(20)}propr_it_${'Y'.repeat(43)}${'Qm'.repeat(40)}`;
+    const record = { version: 2, generation: '7', encryptedPayload: ciphertext, checksum: 'f'.repeat(64) };
+    try {
+      await mkdir(desktop, { recursive: true });
+      await writeFile(journal, `P${JSON.stringify(record)}\n`);
+      await scanAcceptancePaths([root]);
+
+      for (const leaked of [
+        `{"encryptedPayload":"${ciphertext}","leak":"ghp_${'b'.repeat(36)}"}`,
+        `${ciphertext} ghu_${'b'.repeat(36)}`,
+        `token=propr_it_${'T'.repeat(43)}`,
+        `{"url":"https://example.invalid/propr_it_${'T'.repeat(43)}"}`,
+      ]) {
+        await writeFile(journal, `P${leaked}\n`);
+        await assert.rejects(scanAcceptancePaths([root]), /Secret-shaped value/);
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('sanitizes traced network secrets so sentinel and generic scans pass deterministically', async () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-acceptance-contract-trace-'));
     const trace = join(root, 'sanitized-trace.zip');
