@@ -64,6 +64,7 @@ await mock.module('bullmq', {
         Worker: function Worker() {
             return { on: mock.fn(), close: mock.fn() };
         },
+        Job: class {},
     },
 });
 
