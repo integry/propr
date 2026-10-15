@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('frameFixture', {
   minimize: () => ipcRenderer.invoke('fixture:minimize'),
   toggleMaximize: () => ipcRenderer.invoke('fixture:toggle-maximize'),
   closeWindow: () => ipcRenderer.invoke('fixture:close'),
+  showApplicationMenu: (request: unknown) => ipcRenderer.invoke('fixture:application-menu', request),
 });

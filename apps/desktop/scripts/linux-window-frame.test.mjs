@@ -282,6 +282,24 @@ const exerciseLinuxFrame = async (context, managerOpen) => {
       await expect(page.getByRole('dialog', { name: 'Manage instances' })).toBeVisible();
     }
     assert.equal(await page.getByRole('group', { name: 'Window controls' }).evaluate(element => !!element.closest('[inert]')), false);
+    // Native application menu: XTest pointer through the WM hit test and F10,
+    // each dismissed with Escape, without dragging the window or losing focus.
+    const menuEvents = () => application.evaluate(() => globalThis.__applicationMenuEvents.filter(event => !event.startsWith('command:')));
+    const beforeMenu = (await native()).bounds;
+    const menuEventCount = (await menuEvents()).length;
+    await pointerClick('Application menu');
+    await expect.poll(async () => (await menuEvents()).slice(menuEventCount)).toEqual(['show']);
+    execFileSync('xdotool', ['key', 'Escape'], { timeout: 5_000 });
+    await expect.poll(async () => (await menuEvents()).slice(menuEventCount)).toEqual(['show', 'close']);
+    assert.deepEqual((await native()).bounds, beforeMenu, 'Opening the menu must not drag the window');
+    await native('focus');
+    await expect(html).toHaveAttribute('data-window-focused', 'true');
+    execFileSync('xdotool', ['key', 'F10'], { timeout: 5_000 });
+    await expect.poll(async () => (await menuEvents()).slice(menuEventCount)).toEqual(['show', 'close', 'show']);
+    execFileSync('xdotool', ['key', 'Escape'], { timeout: 5_000 });
+    await expect.poll(async () => (await menuEvents()).slice(menuEventCount)).toEqual(['show', 'close', 'show', 'close']);
+    await native('focus');
+    await expect(html).toHaveAttribute('data-window-focused', 'true');
     await pointerClick('Minimize window');
     await expect.poll(async () => (await native()).minimized).toBe(true);
     await native('restore');

@@ -44,6 +44,11 @@
   --desktop-titlebar-height: 44px;
 }
 
+/* The application menu control leads the Linux window-control group. */
+.desktop-platform-linux.desktop-has-application-menu {
+  --desktop-window-controls-end-inset: 11.5rem;
+}
+
 /* A three-pixel transparent allowance holds a short shadow, not a solid rim.
    Keep the top flush and round only the upper corners, like integrated chrome.
    Electron's native five-pixel resize band includes this allowance. */
@@ -163,6 +168,11 @@ html[data-desktop-window="linux"] .desktop-sidebar-header {
 .desktop-window-controls button:hover { background: #e2e8f0; }
 .desktop-window-controls button:active { background: #cbd5e1; }
 .desktop-window-controls button:focus-visible { outline: 2px solid var(--desktop-focus); outline-offset: -2px; }
+.desktop-window-controls:has(.desktop-application-menu-button) {
+  width: 11.5rem;
+  grid-template-columns: repeat(4, 1fr);
+}
+.desktop-window-controls .desktop-application-menu-button svg { width: 1.05rem; height: 1.05rem; }
 .desktop-window-controls .desktop-window-close:hover { color: #fff; background: #dc2626; }
 .desktop-window-controls .desktop-window-close:active { color: #fff; background: #b91c1c; }
 .desktop-window-controls svg { width: .9rem; height: .9rem; stroke-width: 1.75; }

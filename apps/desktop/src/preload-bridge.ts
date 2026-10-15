@@ -8,6 +8,7 @@ import type {
 } from './shared/contract';
 import {
   IPC_CHANNELS,
+  isDesktopApplicationMenuRequest,
   isDesktopNativeCommandDelivery,
   isDesktopNotificationScope,
   isDesktopPairingOperationId,
@@ -152,6 +153,13 @@ export const createDesktopBridge = (
       minimize: () => invoke(ipc, IPC_CHANNELS.windowMinimize),
       toggleMaximize: () => invoke(ipc, IPC_CHANNELS.windowToggleMaximize),
       closeWindow: () => invoke(ipc, IPC_CHANNELS.windowClose),
+      ...(process.platform === 'linux' ? {
+        showApplicationMenu: request => {
+          if (!isDesktopApplicationMenuRequest(request)) return Promise.reject(new Error('Invalid application menu request'));
+          // Copy only the validated fields across the isolated-world boundary.
+          return invoke<void>(ipc, IPC_CHANNELS.applicationMenuPopup, { x: request.x, y: request.y, source: request.source });
+        },
+      } : {}),
       hasStartupConnectIntent: () => startupConnectIntent,
       onDeepLink: (listener) => {
         const consumerWasAbsent = deepLinkListeners.size === 0;

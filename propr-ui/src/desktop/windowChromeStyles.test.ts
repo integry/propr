@@ -66,6 +66,15 @@ describe('desktop window chrome styles', () => {
     expect(dividerRule).toContain('border-left: 1px solid #e2e8f0');
   });
 
+  it('widens the Linux control group and its reserved inset together for the application menu', () => {
+    expect(ruleFor('.desktop-window-controls')).toContain('width: 8.625rem');
+    expect(ruleFor('.desktop-platform-linux')).toContain('--desktop-window-controls-end-inset: 8.625rem');
+    const menuGroup = ruleFor('.desktop-window-controls:has(.desktop-application-menu-button)');
+    expect(menuGroup).toContain('width: 11.5rem');
+    expect(menuGroup).toContain('grid-template-columns: repeat(4, 1fr)');
+    expect(ruleFor('.desktop-platform-linux.desktop-has-application-menu')).toContain('--desktop-window-controls-end-inset: 11.5rem');
+  });
+
   it('uses subtle eight-pixel scrollbars throughout the desktop surface', () => {
     expect(desktopStyles).toMatch(/::-webkit-scrollbar[^}]+width: 8px;/s);
     expect(desktopStyles).toMatch(/::-webkit-scrollbar-track[^}]+background: transparent;/s);

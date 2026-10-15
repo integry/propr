@@ -85,7 +85,7 @@ export const DesktopConnectedExperience: React.FC<DesktopConnectedExperienceProp
     <DesktopContext.Provider value={contextValue}>
       <DesktopGitHubAuthorizationRecovery key={`${profile.id}:${result.transportScope}`} adapters={adapters} profile={profile} transportScope={result.transportScope} />
       {deepLinkError && <div className="desktop-inline-error" role="alert">{deepLinkError}</div>}
-      <div className={`desktop-app desktop-platform-${adapters.platform}`} inert={managerOpen} aria-hidden={managerOpen || undefined}>{children}</div>
+      <div className={`desktop-app desktop-platform-${adapters.platform}${windowControls?.showApplicationMenu ? ' desktop-has-application-menu' : ''}`} inert={managerOpen} aria-hidden={managerOpen || undefined}>{children}</div>
       {managerOpen && (
         <div className="desktop-modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) closeManager(); }}>
           <section ref={managerRef} className="desktop-profile-manager" role="dialog" aria-modal="true" aria-labelledby="desktop-manager-title" tabIndex={-1}>

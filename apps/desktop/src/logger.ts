@@ -48,6 +48,12 @@ const CHROME_KEYS = new Set([
   'nativeControlRegion', 'nativeControlRegionStyle', 'overlayRect', 'overlayVisible',
 ]);
 
+// Linux custom chrome; the application menu control leads when the bridge exposes it.
+const CUSTOM_CONTROL_LABEL_SETS = new Set([
+  'Minimize window|Maximize or restore window|Close window',
+  'Application menu|Minimize window|Maximize or restore window|Close window',
+]);
+
 const boundedElementRectangle = (value: unknown): Record<string, number> | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const geometry = Object.entries(value);
@@ -77,8 +83,8 @@ const boundedChrome = (value: unknown): Record<string, unknown> | null => {
   if (!Array.isArray(nativeControlLabels)
     || nativeControlLabels.some(label => typeof label !== 'string')) return null;
   const dragRegion = boundedElementRectangle(chrome.dragRegion);
-  const hasCustomControls = nativeControlLabels.length === 3
-    && nativeControlLabels.join('|') === 'Minimize window|Maximize or restore window|Close window';
+  const customControlLabels = nativeControlLabels.join('|');
+  const hasCustomControls = CUSTOM_CONTROL_LABEL_SETS.has(customControlLabels);
   const hasNativeOverlayControls = nativeControlLabels.length === 0;
   if (!hasCustomControls && !hasNativeOverlayControls) return null;
   const nativeControlRegion = chrome.nativeControlRegion === null

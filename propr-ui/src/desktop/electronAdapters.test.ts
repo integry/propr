@@ -154,6 +154,22 @@ describe('Electron remote instance adapters', () => {
     expect(windows.authentication.copyApproval).toBeUndefined();
     platform.mockRestore();
   });
+  it('projects the application menu popup only for Linux bridges', async () => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get');
+    const showApplicationMenu = vi.fn(async () => undefined);
+    const withMenu = () => {
+      const fixture = bridgeFixture();
+      return { ...fixture.bridge, app: { ...fixture.bridge.app, showApplicationMenu } };
+    };
+    platform.mockReturnValue('Linux x86_64');
+    const linux = createElectronDesktopAdapters(withMenu());
+    await linux.app.showApplicationMenu?.({ x: 10, y: 44, source: 'mouse' });
+    expect(showApplicationMenu).toHaveBeenCalledWith({ x: 10, y: 44, source: 'mouse' });
+    expect(createElectronDesktopAdapters(bridgeFixture().bridge).app.showApplicationMenu).toBeUndefined();
+    platform.mockReturnValue('MacIntel');
+    expect(createElectronDesktopAdapters(withMenu()).app.showApplicationMenu).toBeUndefined();
+    platform.mockRestore();
+  });
   it('matches the shared canonical origin parity table before profile IPC', async () => {
     const fixture = bridgeFixture();
     const adapters = createElectronDesktopAdapters(fixture.bridge);

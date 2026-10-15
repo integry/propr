@@ -1,5 +1,6 @@
-import type { Menu, MenuItemConstructorOptions } from 'electron';
+import type { Menu, MenuItemConstructorOptions, PopupOptions } from 'electron';
 import type { DesktopNativeCommandDispatcher } from './native-commands';
+import type { DesktopApplicationMenuRequest } from './shared/contract';
 
 interface ApplicationMenuHost {
   buildFromTemplate(template: MenuItemConstructorOptions[]): Menu;
@@ -132,6 +133,63 @@ export const configureApplicationMenu = (
       if (closed) return;
       closed = true;
       unsubscribe();
+    },
+  };
+};
+
+export interface ApplicationMenuPopupWindow {
+  isDestroyed(): boolean;
+  getContentSize(): number[];
+  webContents: { getZoomFactor(): number };
+}
+
+interface ApplicationMenuPopupHost<W extends ApplicationMenuPopupWindow> {
+  buildFromTemplate(template: MenuItemConstructorOptions[]): {
+    popup(options: Omit<PopupOptions, 'window'> & { window: W }): void;
+  };
+}
+
+export interface ApplicationMenuPopup<W extends ApplicationMenuPopupWindow> {
+  /** Returns once the popup is requested; it never waits for the user. */
+  show(window: W, request: DesktopApplicationMenuRequest): void;
+}
+
+const clamp = (value: number, maximum: number): number => Math.min(Math.max(0, Math.round(value)), Math.max(0, maximum));
+
+/**
+ * Linux frameless windows hide the native menubar, so a visible renderer
+ * control pops up the same template and dispatcher. The renderer supplies only
+ * a bounded anchor; commands, enablement and roles remain main-owned.
+ */
+export const createApplicationMenuPopup = <W extends ApplicationMenuPopupWindow>(
+  host: ApplicationMenuPopupHost<W>,
+  commands: DesktopNativeCommandDispatcher,
+  platform: NodeJS.Platform = process.platform,
+): ApplicationMenuPopup<W> => {
+  let open = false;
+  return {
+    show(window, request) {
+      if (platform !== 'linux') throw new Error('The application menu control is Linux-only');
+      if (window.isDestroyed()) throw new Error('Application menu window is unavailable');
+      if (open) return;
+      const zoom = window.webContents.getZoomFactor();
+      const [width, height] = window.getContentSize();
+      if (!Number.isFinite(zoom) || zoom <= 0 || !Number.isInteger(width) || !Number.isInteger(height)) {
+        throw new Error('Application menu window geometry is unavailable');
+      }
+      open = true;
+      try {
+        host.buildFromTemplate(createApplicationMenuTemplate(platform, commands)).popup({
+          window,
+          x: clamp(request.x * zoom, width),
+          y: clamp(request.y * zoom, height),
+          sourceType: request.source,
+          callback: () => { open = false; },
+        });
+      } catch (error) {
+        open = false;
+        throw error;
+      }
     },
   };
 };

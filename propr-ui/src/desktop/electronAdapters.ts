@@ -111,6 +111,9 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
     minimize: () => bridge.app.minimize(),
     toggleMaximize: () => bridge.app.toggleMaximize(),
     closeWindow: () => bridge.app.closeWindow(),
+    ...(desktopPlatform === 'linux' && bridge.app.showApplicationMenu ? {
+      showApplicationMenu: request => bridge.app.showApplicationMenu!(request),
+    } : {}),
   },
   profiles: {
     async list() {

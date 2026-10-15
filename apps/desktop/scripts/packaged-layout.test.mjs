@@ -25,11 +25,11 @@ const layout = ({
   workArea: { x: 0, y: 0, width: workAreaWidth, height: workAreaHeight },
   viewport: { width: viewportWidth, height: viewportHeight },
   chrome: {
-    dragRegion: bounds(inset.left, inset.top, viewportWidth - inset.left - inset.right - 138, 44),
+    dragRegion: bounds(inset.left, inset.top, viewportWidth - inset.left - inset.right - 184, 44),
     dragRegionStyle: 'drag',
     legacyTitleRowCount: 0,
-    nativeControlLabels: ['Minimize window', 'Maximize or restore window', 'Close window'],
-    nativeControlRegion: bounds(viewportWidth - inset.right - 138, inset.top, 138, 44),
+    nativeControlLabels: ['Application menu', 'Minimize window', 'Maximize or restore window', 'Close window'],
+    nativeControlRegion: bounds(viewportWidth - inset.right - 184, inset.top, 184, 44),
     nativeControlRegionStyle: 'no-drag',
     overlayRect: bounds(0, 0, 0, 0),
     overlayVisible: false,
@@ -81,9 +81,10 @@ describe('packaged desktop event parsing', () => {
 describe('packaged desktop layout assertions', () => {
   it('retains the exact 1280x820 Linux Xvfb proof', () => {
     // Regression evidence from #2276: approved 44px chrome, left/bottom inset,
-    // and controls flush with the right viewport edge.
-    assert.deepEqual(layout().chrome.dragRegion, bounds(3, 0, 1139, 44));
-    assert.deepEqual(layout().chrome.nativeControlRegion, bounds(1142, 0, 138, 44));
+    // and controls flush with the right viewport edge. The application menu
+    // control (#3139) widens the control group from 138px to 184px.
+    assert.deepEqual(layout().chrome.dragRegion, bounds(3, 0, 1093, 44));
+    assert.deepEqual(layout().chrome.nativeControlRegion, bounds(1096, 0, 184, 44));
     assert.doesNotThrow(() => assertPackagedLayout(layout(), 'linux'));
     assert.throws(
       () => assertPackagedLayout(layout({ windowWidth: 1279 }), 'linux'),
@@ -119,42 +120,43 @@ describe('packaged desktop layout assertions', () => {
     ['native overlay alongside custom controls', chrome => { chrome.overlayVisible = true; }],
     ['duplicate controls', chrome => { chrome.nativeControlLabels.push(...chrome.nativeControlLabels); }],
     ['missing control', chrome => { chrome.nativeControlLabels.pop(); }],
+    ['missing application menu control', chrome => { chrome.nativeControlLabels.shift(); }],
     ['incorrect control label', chrome => { chrome.nativeControlLabels[0] = 'Close window'; }],
     ['non-draggable title band', chrome => { chrome.dragRegionStyle = 'no-drag'; }],
     ['draggable controls', chrome => { chrome.nativeControlRegionStyle = 'drag'; }],
-    ['overlapping drag and controls', chrome => { chrome.dragRegion = bounds(3, 0, 1140, 44); }],
-    ['gap between drag and controls', chrome => { chrome.dragRegion = bounds(3, 0, 1138, 44); }],
-    ['drag clipped by viewport', chrome => { chrome.dragRegion = bounds(-1, 0, 1143, 44); }],
-    ['drag outside inset entry', chrome => { chrome.dragRegion = bounds(0, 0, 1142, 44); }],
-    ['gap at entry left edge', chrome => { chrome.dragRegion = bounds(4, 0, 1138, 44); }],
+    ['overlapping drag and controls', chrome => { chrome.dragRegion = bounds(3, 0, 1094, 44); }],
+    ['gap between drag and controls', chrome => { chrome.dragRegion = bounds(3, 0, 1092, 44); }],
+    ['drag clipped by viewport', chrome => { chrome.dragRegion = bounds(-1, 0, 1097, 44); }],
+    ['drag outside inset entry', chrome => { chrome.dragRegion = bounds(0, 0, 1096, 44); }],
+    ['gap at entry left edge', chrome => { chrome.dragRegion = bounds(4, 0, 1092, 44); }],
     ['controls clipped by viewport', chrome => {
-      chrome.dragRegion = bounds(3, 0, 1140, 44);
-      chrome.nativeControlRegion = bounds(1143, 0, 138, 44);
+      chrome.dragRegion = bounds(3, 0, 1094, 44);
+      chrome.nativeControlRegion = bounds(1097, 0, 184, 44);
     }],
     ['gap at entry right edge', chrome => {
-      chrome.dragRegion = bounds(3, 0, 1138, 44);
-      chrome.nativeControlRegion = bounds(1141, 0, 138, 44);
+      chrome.dragRegion = bounds(3, 0, 1092, 44);
+      chrome.nativeControlRegion = bounds(1095, 0, 184, 44);
     }],
-    ['controls above viewport', chrome => { chrome.nativeControlRegion = bounds(1142, -1, 138, 44); }],
-    ['vertically misaligned controls', chrome => { chrome.nativeControlRegion = bounds(1142, 1, 138, 44); }],
+    ['controls above viewport', chrome => { chrome.nativeControlRegion = bounds(1096, -1, 184, 44); }],
+    ['vertically misaligned controls', chrome => { chrome.nativeControlRegion = bounds(1096, 1, 184, 44); }],
     ['title band below entry top', chrome => {
-      chrome.dragRegion = bounds(3, 1, 1139, 44);
-      chrome.nativeControlRegion = bounds(1142, 1, 138, 44);
+      chrome.dragRegion = bounds(3, 1, 1093, 44);
+      chrome.nativeControlRegion = bounds(1096, 1, 184, 44);
     }],
     ['old 56px title band', chrome => {
-      chrome.dragRegion = bounds(3, 0, 1139, 56);
-      chrome.nativeControlRegion = bounds(1142, 0, 138, 56);
+      chrome.dragRegion = bounds(3, 0, 1093, 56);
+      chrome.nativeControlRegion = bounds(1096, 0, 184, 56);
     }],
-    ['undersized drag band', chrome => { chrome.dragRegion = bounds(3, 0, 1139, 43); }],
-    ['oversized controls', chrome => { chrome.nativeControlRegion = bounds(1142, 0, 138, 45); }],
-    ['undersized controls', chrome => { chrome.nativeControlRegion = bounds(1142, 0, 138, 43); }],
+    ['undersized drag band', chrome => { chrome.dragRegion = bounds(3, 0, 1093, 43); }],
+    ['oversized controls', chrome => { chrome.nativeControlRegion = bounds(1096, 0, 184, 45); }],
+    ['undersized controls', chrome => { chrome.nativeControlRegion = bounds(1096, 0, 184, 43); }],
     ['narrow controls', chrome => {
-      chrome.dragRegion = bounds(3, 0, 1140, 44);
-      chrome.nativeControlRegion = bounds(1143, 0, 137, 44);
+      chrome.dragRegion = bounds(3, 0, 1094, 44);
+      chrome.nativeControlRegion = bounds(1097, 0, 183, 44);
     }],
     ['wide controls', chrome => {
-      chrome.dragRegion = bounds(3, 0, 1138, 44);
-      chrome.nativeControlRegion = bounds(1141, 0, 139, 44);
+      chrome.dragRegion = bounds(3, 0, 1092, 44);
+      chrome.nativeControlRegion = bounds(1095, 0, 185, 44);
     }],
   ]) {
     it(`rejects Linux chrome with ${name}`, () => {
@@ -166,8 +168,8 @@ describe('packaged desktop layout assertions', () => {
 
   it('rejects controls inside the viewport but clipped by an inset entry', () => {
     const invalid = layout({ inset: { left: 3, top: 3, right: 3, bottom: 3 } });
-    invalid.chrome.dragRegion = bounds(3, 3, 1139, 44);
-    invalid.chrome.nativeControlRegion = bounds(1142, 3, 138, 44);
+    invalid.chrome.dragRegion = bounds(3, 3, 1093, 44);
+    invalid.chrome.nativeControlRegion = bounds(1096, 3, 184, 44);
     assert.throws(() => assertPackagedLayout(invalid, 'linux'), /not one safe native-control band/);
   });
 

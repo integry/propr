@@ -17,11 +17,11 @@ const completePackagedLayout = () => ({
   viewport: { height: 820, width: 1280 },
   chrome: {
     // Approved Linux frame: 44px chrome with a 3px left/bottom inset.
-    dragRegion: bounds(3, 0, 1139, 44),
+    dragRegion: bounds(3, 0, 1093, 44),
     dragRegionStyle: 'drag',
     legacyTitleRowCount: 0,
-    nativeControlLabels: ['Minimize window', 'Maximize or restore window', 'Close window'],
-    nativeControlRegion: bounds(1142, 0, 138, 44),
+    nativeControlLabels: ['Application menu', 'Minimize window', 'Maximize or restore window', 'Close window'],
+    nativeControlRegion: bounds(1096, 0, 184, 44),
     nativeControlRegionStyle: 'no-drag',
     overlayRect: bounds(0, 0, 0, 0),
     overlayVisible: false,
@@ -97,6 +97,33 @@ describe('desktop logger field schemas', () => {
     assert.deepEqual(
       sanitizeDesktopLogFields('desktop.renderer.layout.ready', { layout }),
       { layout },
+    );
+  });
+
+  it('accepts Linux custom controls with and without the leading application menu control', () => {
+    const base = completePackagedLayout();
+    const withoutApplicationMenu = {
+      ...base,
+      chrome: {
+        ...base.chrome,
+        dragRegion: bounds(3, 0, 1139, 44),
+        nativeControlLabels: ['Minimize window', 'Maximize or restore window', 'Close window'],
+        nativeControlRegion: bounds(1142, 0, 138, 44),
+      },
+    };
+    for (const layout of [base, withoutApplicationMenu]) {
+      assert.deepEqual(sanitizeDesktopLogFields('desktop.renderer.layout.ready', { layout }), { layout });
+    }
+    const trailingApplicationMenu = {
+      ...base,
+      chrome: {
+        ...base.chrome,
+        nativeControlLabels: ['Minimize window', 'Maximize or restore window', 'Close window', 'Application menu'],
+      },
+    };
+    assert.deepEqual(
+      sanitizeDesktopLogFields('desktop.renderer.layout.ready', { layout: trailingApplicationMenu }),
+      { layout: { code: 'DETAIL_REDACTED' } },
     );
   });
 

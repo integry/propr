@@ -56,7 +56,13 @@ it('Linux/macOS menu dispatch reaches actual search, sidebar, task creation, con
     context.diagnostic(`Browser version: ${browser.version()}`);
     for (const platform of ['darwin', 'linux']) {
       const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
-      await page.addInitScript(platform => { window.__FIXTURE_PLATFORM__ = platform; Object.defineProperty(navigator, 'platform', { value: platform === 'darwin' ? 'MacIntel' : 'Linux x86_64' }); }, platform);
+      await page.addInitScript(platform => {
+        window.__FIXTURE_PLATFORM__ = platform;
+        Object.defineProperty(navigator, 'platform', { value: platform === 'darwin' ? 'MacIntel' : 'Linux x86_64' });
+        // Mirror the Linux preload's frame styling state (installWindowFrameStyles).
+        const frame = () => Object.assign(document.documentElement.dataset, { desktopWindow: 'linux', windowFocused: 'true', windowExpanded: 'false' });
+        if (platform === 'linux') document.addEventListener('DOMContentLoaded', frame);
+      }, platform);
       await page.route('http://127.0.0.1:3000/**', route => route.fulfill({ status: 503, json: { error: 'Isolated renderer fixture' } }));
       page.on('pageerror', error => context.diagnostic(error.stack));
       await page.goto(`http://127.0.0.1:${server.address().port}/renderer.html`);
@@ -70,6 +76,17 @@ it('Linux/macOS menu dispatch reaches actual search, sidebar, task creation, con
         previews.push({ path: `.propr/previews/${filename}`, title, description: 'Production renderer reached through the application menu template, dispatcher and preload bridge. Isolated fixture account; Chromium does not render native OS menus.' });
       };
       await expect(page.getByRole('heading', { name: 'Choose an instance' })).toBeVisible();
+      const menuButton = page.getByRole('button', { name: 'Application menu', exact: true });
+      const popup = () => page.evaluate(() => window.nativeMenu.popup());
+      if (platform === 'linux') {
+        // Entry surface: the same main-owned template, before any instance.
+        await capture('application-menu-entry', page.locator('#root'), 'Linux: Application menu control on the instance chooser');
+        await menuButton.click();
+        await expect.poll(popup).toMatchObject({ menus: ['ProPR', 'File', 'Edit', 'View', 'Navigate', 'Window', 'Help'], sourceType: 'mouse' });
+        await page.evaluate(() => window.nativeMenu.dismiss());
+      } else {
+        await expect(menuButton).toHaveCount(0);
+      }
       await click('Connect Instance…');
       await expect(page.getByRole('heading', { name: 'Connect to an instance' })).toBeVisible();
       await page.getByRole('button', { name: 'Back', exact: true }).click();
@@ -86,6 +103,73 @@ it('Linux/macOS menu dispatch reaches actual search, sidebar, task creation, con
       });
       expect(new Set(iconRails).size).toBe(1);
       await capture('sidebar', page.locator('.desktop-sidebar'), 'Desktop sidebar without version metadata');
+      if (platform === 'linux') {
+        // Actual Linux minimum and a shorter supported window: the control stays
+        // a separate no-drag hit target beside the native controls, never over
+        // search/new-task, and the toolbar drag strip remains.
+        for (const viewport of [{ width: 880, height: 620 }, { width: 880, height: 480 }]) {
+          await page.setViewportSize(viewport);
+          const layout = await page.evaluate(() => {
+            const box = element => { const { left, right, top, bottom } = element.getBoundingClientRect(); return { left, right, top, bottom }; };
+            const menu = document.querySelector('[aria-label="Application menu"]');
+            const toolbar = document.querySelector('header[aria-label="Application toolbar"]');
+            const minimize = document.querySelector('[aria-label="Minimize window"]');
+            const toolbarControls = [...toolbar.querySelectorAll('button, input, a, [role="combobox"]')]
+              .filter(element => element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden').map(box);
+            return {
+              menu: box(menu), minimize: box(minimize), group: box(menu.parentElement),
+              toolbarControls, appRegion: getComputedStyle(menu).getPropertyValue('-webkit-app-region') || getComputedStyle(menu).getPropertyValue('app-region'),
+              toolbarRegion: getComputedStyle(toolbar).getPropertyValue('-webkit-app-region') || getComputedStyle(toolbar).getPropertyValue('app-region'),
+              hit: document.elementFromPoint((menu.getBoundingClientRect().left + menu.getBoundingClientRect().right) / 2, 22) === menu
+                || menu.contains(document.elementFromPoint((menu.getBoundingClientRect().left + menu.getBoundingClientRect().right) / 2, 22)),
+              width: innerWidth,
+            };
+          });
+          expect(layout.hit).toBe(true);
+          expect(layout.appRegion).toBe('no-drag');
+          expect(layout.toolbarRegion).toBe('drag');
+          expect(layout.group.right).toBe(layout.width);
+          expect(layout.menu.right).toBeLessThanOrEqual(layout.minimize.left);
+          expect(layout.menu.top).toBe(layout.minimize.top);
+          expect(layout.menu.bottom).toBe(layout.minimize.bottom);
+          expect(layout.group.bottom).toBe(44);
+          expect(layout.toolbarControls.length).toBeGreaterThan(0);
+          for (const control of layout.toolbarControls) expect(control.right).toBeLessThanOrEqual(layout.group.left);
+        }
+        await capture('application-menu-control', page.locator('header[aria-label="Application toolbar"]'), 'Linux: Application menu control beside the window controls at 880px');
+        await page.setViewportSize({ width: 1280, height: 820 });
+
+        // Pointer: popup anchored under the control, then a real command.
+        const menuBox = await menuButton.boundingBox();
+        await menuButton.click();
+        await expect.poll(popup).toMatchObject({ x: Math.round(menuBox.x), y: Math.round(menuBox.y + menuBox.height), sourceType: 'mouse' });
+        expect((await popup()).roles).toEqual(expect.arrayContaining(['undo', 'cut', 'copy', 'paste', 'selectAll', 'resetZoom', 'zoomIn', 'zoomOut', 'togglefullscreen', 'minimize', 'close']));
+        await page.evaluate(() => window.nativeMenu.choose('Settings…'));
+        await expect(page).toHaveURL(/#\/settings$/);
+        // Keyboard: Tab-reachable button with Enter, and F10 from a focused field
+        // (focus stays in the field, so Edit roles act on it).
+        await menuButton.focus();
+        await page.keyboard.press('Enter');
+        await expect.poll(popup).toMatchObject({ sourceType: 'keyboard' });
+        await page.evaluate(() => window.nativeMenu.choose('Dashboard'));
+        await expect(page).toHaveURL(/#\/$/);
+        const search = page.getByRole('combobox', { name: 'Search', exact: true });
+        await search.focus();
+        await page.keyboard.press('F10');
+        await expect.poll(popup).toMatchObject({ sourceType: 'keyboard' });
+        await expect(search).toBeFocused();
+        await page.evaluate(() => window.nativeMenu.dismiss());
+        await page.keyboard.press('Alt+f');
+        await expect.poll(popup).toMatchObject({ sourceType: 'keyboard' });
+        await expect(search).toBeFocused();
+        await page.evaluate(() => window.nativeMenu.dismiss());
+        // Pointer activation must not take focus from the field either.
+        await menuButton.click();
+        await expect(search).toBeFocused();
+        await page.evaluate(() => window.nativeMenu.dismiss());
+      } else {
+        await expect(menuButton).toHaveCount(0);
+      }
       await click('Toggle Sidebar');
       await expect(page.locator('.desktop-sidebar')).toHaveCount(0);
       await capture('sidebar-hidden', page.locator('.desktop-shell'), 'View → Toggle Sidebar: content expands');

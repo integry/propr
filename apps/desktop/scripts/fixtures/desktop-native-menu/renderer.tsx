@@ -6,10 +6,11 @@ import Layout from '../../../../../propr-ui/src/components/Layout';
 import PlanStudioPage from '../../../../../propr-ui/src/pages/PlanStudioPage';
 import NewTaskPage from '../../../../../propr-ui/src/pages/NewTaskPage';
 import { DesktopNativeNavigationObserver } from '../../../../../propr-ui/src/desktop/DesktopNativeNavigationObserver';
-import { createApplicationMenuTemplate } from '../../../src/application-menu';
+import type { MenuItemConstructorOptions } from 'electron';
+import { createApplicationMenuPopup, createApplicationMenuTemplate } from '../../../src/application-menu';
 import { createDesktopNativeCommandDispatcher } from '../../../src/native-commands';
 import { createDesktopBridge } from '../../../src/preload-bridge';
-import { IPC_CHANNELS, isDesktopNativeNavigationState } from '../../../src/shared/contract';
+import { IPC_CHANNELS, isDesktopApplicationMenuRequest, isDesktopNativeNavigationState } from '../../../src/shared/contract';
 import { ToastProvider } from '../../../../../propr-ui/src/components/ui/Toast';
 import { AuthProvider } from '../../../../../propr-ui/src/contexts/AuthContext';
 import { NotificationCenterProvider } from '../../../../../propr-ui/src/contexts/NotificationCenterContext';
@@ -29,12 +30,27 @@ const dispatcher = createDesktopNativeCommandDispatcher({
   activeNotificationScope: () => null, notificationState: () => ({ available: false, enabled: false }),
   setNativeNotificationsEnabled: async () => undefined, quit: () => undefined,
 });
+// Stand-in for main's Menu.popup: records the production template and options
+// so the test can choose an item. Chromium does not render native OS menus.
+let popup: { template: MenuItemConstructorOptions[]; options: Record<string, unknown> } | null = null;
+const popupWindow = {
+  isDestroyed: () => false,
+  getContentSize: () => [window.innerWidth, window.innerHeight],
+  webContents: { getZoomFactor: () => 1 },
+};
+const applicationMenuPopup = createApplicationMenuPopup<typeof popupWindow>({
+  buildFromTemplate: template => ({ popup: options => { popup = { template, options: { ...options, window: undefined } }; } }),
+}, dispatcher, process.platform);
 const bridge = createDesktopBridge({
   on: (channel, listener) => { listeners.set(channel, listener); },
   removeListener: channel => { listeners.delete(channel); },
   invoke: async (channel, value) => {
     if (channel === IPC_CHANNELS.deepLinkConsumerReady) return { pendingConnect: false };
     if (channel === IPC_CHANNELS.nativeNavigationState && isDesktopNativeNavigationState(value)) dispatcher.updateNavigationState?.(value);
+    if (channel === IPC_CHANNELS.applicationMenuPopup) {
+      if (!isDesktopApplicationMenuRequest(value)) throw new Error('Invalid application menu request');
+      applicationMenuPopup.show(popupWindow, value);
+    }
   },
 });
 dispatcher.rendererReady();
@@ -43,6 +59,22 @@ Object.assign(window, { nativeMenu: {
     const item = createApplicationMenuTemplate(platform, dispatcher).flatMap(item => Array.isArray(item.submenu) ? item.submenu : []).find(item => item.label === label);
     if (!item || item.enabled === false) throw new Error(`Unavailable menu item: ${label}`);
     (item.click as () => void)();
+  },
+  popup: () => popup && {
+    menus: popup.template.map(item => item.label),
+    roles: popup.template.flatMap(item => Array.isArray(item.submenu) ? item.submenu : []).flatMap(item => item.role ? [item.role] : []),
+    x: popup.options.x, y: popup.options.y, sourceType: popup.options.sourceType,
+  },
+  choose(label: string) {
+    const item = popup?.template.flatMap(item => Array.isArray(item.submenu) ? item.submenu : []).find(item => item.label === label);
+    if (!item || item.enabled === false) throw new Error(`Unavailable popup item: ${label}`);
+    (popup!.options.callback as () => void)();
+    popup = null;
+    (item.click as () => void)();
+  },
+  dismiss() {
+    (popup?.options.callback as (() => void) | undefined)?.();
+    popup = null;
   },
 } });
 const adapters: DesktopAdapters = {

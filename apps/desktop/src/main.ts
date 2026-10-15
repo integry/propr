@@ -27,7 +27,7 @@ import { DesktopConnectDiscoveryService } from './connect-discovery';
 import { requestDesktopMicrophoneConsent } from './microphone-consent';
 import { configureMacOSBranding } from './macos-branding';
 import { applicationAboutDetails, showApplicationAbout } from './application-about';
-import { configureApplicationMenu } from './application-menu';
+import { configureApplicationMenu, createApplicationMenuPopup } from './application-menu';
 import {
   authorizePackagedAcceptanceTest,
   packagedAcceptancePairingTiming,
@@ -1865,6 +1865,7 @@ if (!hasSingleInstanceLock) {
       log: (level, event) => log(level, event),
     });
     const applicationMenu = configureApplicationMenu(Menu, desktopNativeCommands, process.platform);
+    const applicationMenuPopup = createApplicationMenuPopup<BrowserWindow>(Menu, desktopNativeCommands, process.platform);
     nativeProfiles = profiles;
     const trayArtworkPath = resolveDesktopTrayIconPath({
       isPackaged: app.isPackaged,
@@ -1957,6 +1958,10 @@ if (!hasSingleInstanceLock) {
       openExternal: openAllowedExternalUrl,
       platform: process.platform,
       windowForSender: event => mainWindow?.webContents === event.sender ? mainWindow : null,
+      showApplicationMenu: (event, request) => {
+        if (!mainWindow || mainWindow.webContents !== event.sender) throw new Error('Application menu window is unavailable');
+        applicationMenuPopup.show(mainWindow, request);
+      },
       rendererConsumerReady: event => {
         const ready = deepLinkDelivery.rendererConsumerReady(event.sender, event.senderFrame);
         if (ready) recordNativeEvent('desktop.deeplink.consumer_ready');

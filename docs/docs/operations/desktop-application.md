@@ -171,7 +171,9 @@ Installation-level **Settings** belong to the connected server. Connection manag
 | Window | Minimize; on macOS also zoom window and bring all to front |
 | Help | ProPR Website, Documentation, Connection Help, Connection Diagnostics…, Report a Problem… |
 
-On Linux, use `Ctrl` in place of `Cmd`. The Linux tray icon and the macOS menu-bar item show task and plan counts and
+On Linux, use `Ctrl` in place of `Cmd`. The Linux window has no native menu bar, so open these menus with the
+**Application menu** button (⋮) beside the minimize, maximize and close buttons, or press `F10` or `Alt+F`. The
+shortcuts leave focus in the current field, so Edit actions apply to it. Press `Escape` to close the menu. The Linux tray icon and the macOS menu-bar item show task and plan counts and
 offer New Plan, Tasks, Plans, Inbox, instance switching, notification settings, and pausing or resuming native
 notifications. On Linux, left-clicking the tray icon restores the ProPR window.
 

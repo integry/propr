@@ -1821,6 +1821,7 @@ try {
   await runJourney('first-run-chooser', 'default', null, async page => {
     await page.getByRole('heading', { name: 'Let’s set up this computer' }).waitFor();
     const expectedKeyboardOrder = [
+      'Application menu',
       'Minimize window',
       'Maximize or restore window',
       'Close window',

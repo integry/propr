@@ -1,7 +1,8 @@
 const EXPECTED_WINDOW_SIZE = { width: 1280, height: 820 };
 const MINIMUM_WINDOW_SIZE = { width: 880, height: 620 };
 const LINUX_TITLEBAR_HEIGHT = 44;
-const LINUX_CONTROL_REGION_WIDTH = 138;
+// Application menu, minimize, maximize and close share an 11.5rem group.
+const LINUX_CONTROL_REGION_WIDTH = 184;
 
 export const parseEventRecord = (smokeOutput, expectedEvent) => {
   for (const line of smokeOutput.split(/\r?\n/)) {
@@ -137,6 +138,7 @@ export const assertPackagedLayout = (layout, platform = process.platform) => {
       || layout.chrome.legacyTitleRowCount !== 0
       || layout.chrome.nativeControlRegionStyle !== 'no-drag'
       || JSON.stringify(layout.chrome.nativeControlLabels) !== JSON.stringify([
+        'Application menu',
         'Minimize window',
         'Maximize or restore window',
         'Close window',

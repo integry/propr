@@ -406,9 +406,10 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     return <InstanceChooser onAddAccount={addAccount} profiles={profiles} busy={busy} error={operationError} localSetupSupported={adapters.localSetup.supported} networkDiscoverySupported={adapters.discovery.supported} onLocalSetup={() => void setupLocal()} onConnectNew={() => openEditor('new')} onDiscover={() => void discover()} onConnect={profile => void connect(profile)} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />;
   };
 
+  const applicationMenuClass = adapters.platform === 'linux' && adapters.app.showApplicationMenu ? ' desktop-has-application-menu' : '';
   const diagnostics = diagnosticsOpen ? <DesktopConnectionDiagnostics state={state} platform={adapters.platform} onClose={() => setDiagnosticsOpen(false)} /> : null;
 
-  if (state.phase !== 'connected') return <>{diagnostics}<div className={`desktop-entry desktop-platform-${adapters.platform}`}><div className="desktop-entry-drag-region" aria-hidden="true" />{adapters.platform === 'linux' && <DesktopWindowControls actions={adapters.app} />}{deepLinkError && <div className="desktop-inline-error" role="alert">{deepLinkError}</div>}{content()}</div></>;
+  if (state.phase !== 'connected') return <>{diagnostics}<div className={`desktop-entry desktop-platform-${adapters.platform}${applicationMenuClass}`}><div className="desktop-entry-drag-region" aria-hidden="true" />{adapters.platform === 'linux' && <DesktopWindowControls actions={adapters.app} />}{deepLinkError && <div className="desktop-inline-error" role="alert">{deepLinkError}</div>}{content()}</div></>;
 
   return (
     <>{diagnostics}<DesktopConnectedExperience

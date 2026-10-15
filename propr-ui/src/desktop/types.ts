@@ -158,6 +158,8 @@ export interface DesktopAdapters {
     minimize?(): Promise<void>;
     toggleMaximize?(): Promise<void>;
     closeWindow?(): Promise<void>;
+    /** Linux frameless window only; absent on macOS, Windows and the web. */
+    showApplicationMenu?(request: import('../../../apps/desktop/src/shared/contract').DesktopApplicationMenuRequest): Promise<void>;
   };
   profiles: DesktopProfileAdapter;
   discovery: DesktopDiscoveryAdapter;

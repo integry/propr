@@ -11,6 +11,7 @@ export const IPC_CHANNELS = Object.freeze({
   windowMinimize: 'desktop:window-minimize',
   windowToggleMaximize: 'desktop:window-toggle-maximize',
   windowClose: 'desktop:window-close',
+  applicationMenuPopup: 'desktop:application-menu-popup',
   authLogout: 'desktop:auth-logout',
   openExternal: 'desktop:open-external',
   storageSecurity: 'desktop:storage-security',
@@ -103,6 +104,28 @@ export const isDesktopNativeNavigationState = (value: unknown): value is Desktop
     && (state.connectionScope === null || isDesktopConnectionScope(state.connectionScope))
     && typeof state.canManageInstances === 'boolean'
     && typeof state.canGoBack === 'boolean' && typeof state.canGoForward === 'boolean';
+};
+
+/**
+ * Renderer CSS pixels below the visible menu control and how it was opened.
+ * Main clamps the anchor to the sender window; no command or menu content crosses IPC.
+ */
+export interface DesktopApplicationMenuRequest {
+  x: number;
+  y: number;
+  source: 'mouse' | 'keyboard';
+}
+
+const MAX_APPLICATION_MENU_ANCHOR = 32_768;
+
+export const isDesktopApplicationMenuRequest = (value: unknown): value is DesktopApplicationMenuRequest => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const request = value as Record<string, unknown>;
+  return Object.keys(request).length === 3
+    && (request.source === 'mouse' || request.source === 'keyboard')
+    && [request.x, request.y].every(coordinate => typeof coordinate === 'number'
+      && Number.isFinite(coordinate) && coordinate >= 0 && coordinate <= MAX_APPLICATION_MENU_ANCHOR);
 };
 
 export interface DesktopDeepLinkDelivery {
@@ -413,6 +436,11 @@ export interface DesktopBridge {
     minimize(): Promise<void>;
     toggleMaximize(): Promise<void>;
     closeWindow(): Promise<void>;
+    /**
+     * Linux frameless windows only: pop up the main-owned application menu
+     * template below the visible control. Only a bounded anchor crosses IPC.
+     */
+    showApplicationMenu?(request: DesktopApplicationMenuRequest): Promise<void>;
     /** Resolves after consumer registration, before startup may reconnect a saved account. */
     hasStartupConnectIntent?(): Promise<boolean>;
     onDeepLink(listener: (

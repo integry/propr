@@ -143,7 +143,13 @@ in-app links, filters and detail routes and is reset for every authenticated tra
 on the same instance. It does not traverse the document's history from a previous account. Native commands retain the
 unsaved Plan Studio confirmation. Authenticated destinations disable while disconnected; instance management disables
 while setup, connection or authentication is busy. Permission-restricted administration pages remain in the app UI.
-Linux window framing and Windows' deferred application menus are unchanged.
+Windows' deferred application menus are unchanged. Linux windows are frameless, so Alt cannot reveal a native
+menubar there. The renderer's **Application menu** control in the window-control group, along with `F10`/`Alt+F`, invokes the
+fixed `desktop:application-menu-popup` channel. That channel accepts only a bounded `{ x, y, source }` anchor and is
+registered only on Linux, for the sender that owns the main window. Main then pops up `createApplicationMenuTemplate`
+with the same dispatcher, enablement and roles; it clamps the anchor to the window's zoomed content size. macOS keeps the
+native menu bar and has no such control. Chromium fixtures record the popup template (`scripts/desktop-native-menu.test.mjs`).
+The opt-in X11 test (`PROPR_DESKTOP_FRAME_TEST=1 scripts/linux-window-frame.test.mjs`) opens and dismisses the real native popup.
 
 **Root real-Mac verification required before closing #2306:** build the final artifact using the existing desktop build
 and #2303 signing procedure; do not patch an already signed app. On an actual Mac:

@@ -158,6 +158,69 @@ describe('desktop IPC shutdown gate', () => {
     assert.deepEqual(calls, { close: 1, maximize: 1, minimize: 1, unmaximize: 1 });
   });
 
+  it('pops up the Linux application menu only for the owning sender with a validated anchor', async () => {
+    const register = (platform: NodeJS.Platform) => {
+      const handlers = new Map<string, (...args: any[]) => unknown>();
+      const acceptedSender = {};
+      const requests: unknown[] = [];
+      registerIpcHandlers({
+        app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+        ipcMain: {
+          handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+          removeHandler: (channel: string) => { handlers.delete(channel); },
+        } as unknown as IpcMain,
+        profiles: {} as ProfileStore,
+        credentials: {} as DesktopCredentialService,
+        connectDiscovery,
+        lifecycle: {} as LocalLifecycleController,
+        logger: { log: () => undefined } as unknown as DesktopLogger,
+        desktopSession: {} as Session,
+        devServerUrl: undefined,
+        packagedRendererUrl: 'propr-renderer://app/index.html',
+        openExternal: async () => undefined,
+        platform,
+        showApplicationMenu: (event, request) => {
+          if (event.sender !== acceptedSender) throw new Error('stale window');
+          requests.push(request);
+        },
+      });
+      const event = {
+        sender: acceptedSender,
+        senderFrame: { url: 'propr-renderer://app/index.html' },
+      } as unknown as IpcMainInvokeEvent;
+      return { handlers, event, requests };
+    };
+    for (const platform of ['darwin', 'win32'] as const) {
+      assert.equal(register(platform).handlers.has(IPC_CHANNELS.applicationMenuPopup), false);
+    }
+    const { handlers, event, requests } = register('linux');
+    const popup = handlers.get(IPC_CHANNELS.applicationMenuPopup)!;
+    await Promise.resolve(popup(event, { x: 760, y: 44, source: 'keyboard' }));
+    assert.deepEqual(requests, [{ x: 760, y: 44, source: 'keyboard' }]);
+    for (const args of [
+      [],
+      [{ x: 760, y: 44 }],
+      [{ x: -1, y: 44, source: 'mouse' }],
+      [{ x: Number.NaN, y: 44, source: 'mouse' }],
+      [{ x: 1e9, y: 44, source: 'mouse' }],
+      [{ x: 760, y: 44, source: 'touch' }],
+      [{ x: 760, y: 44, source: 'mouse', template: [{ label: 'Injected' }] }],
+      [{ x: 760, y: 44, source: 'mouse' }, 'unexpected'],
+      ['https://example.test'],
+    ]) {
+      await assert.rejects(Promise.resolve(popup(event, ...args)), /Desktop operation failed \[IPC_OPERATION_FAILED\]/);
+    }
+    await assert.rejects(
+      Promise.resolve(popup({ ...event, sender: {} }, { x: 760, y: 44, source: 'mouse' })),
+      /Desktop operation failed \[IPC_OPERATION_FAILED\]/,
+    );
+    await assert.rejects(
+      Promise.resolve(popup({ ...event, senderFrame: { url: 'https://example.test/' } }, { x: 760, y: 44, source: 'mouse' })),
+      /Untrusted desktop IPC sender/,
+    );
+    assert.equal(requests.length, 1);
+  });
+
   it('clears old and new origin storage through the real save IPC before a same-ID URL commit', async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
     const cleared: Array<Parameters<Session['clearStorageData']>[0]> = [];

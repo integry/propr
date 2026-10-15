@@ -35,6 +35,36 @@ describe('desktop preload bridge', () => {
     assert.equal('exec' in bridge, false);
   });
 
+  it('exposes the application menu popup only on Linux and forwards only a validated anchor copy', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const withPlatform = <T>(platform: NodeJS.Platform, run: () => T): T => {
+      Object.defineProperty(process, 'platform', { ...descriptor, value: platform });
+      try { return run(); } finally { Object.defineProperty(process, 'platform', descriptor); }
+    };
+    for (const platform of ['darwin', 'win32'] as const) {
+      const bridge = withPlatform(platform, () => createDesktopBridge(new FakeIpc()));
+      assert.equal('showApplicationMenu' in bridge.app, false);
+    }
+    const ipc = new FakeIpc();
+    const bridge = withPlatform('linux', () => createDesktopBridge(ipc));
+    assert.equal(typeof bridge.app.showApplicationMenu, 'function');
+    await bridge.app.showApplicationMenu!({ x: 712, y: 44, source: 'mouse' });
+    for (const invalid of [
+      { x: 712, y: 44 },
+      { x: 712, y: 44, source: 'mouse', command: 'quit' },
+      { x: -4, y: 44, source: 'mouse' },
+      { x: 712, y: Number.POSITIVE_INFINITY, source: 'keyboard' },
+    ]) {
+      await assert.rejects(
+        bridge.app.showApplicationMenu!(invalid as unknown as Parameters<NonNullable<typeof bridge.app.showApplicationMenu>>[0]),
+        /Invalid application menu request/,
+      );
+    }
+    assert.deepEqual(ipc.invocations, [
+      { channel: IPC_CHANNELS.applicationMenuPopup, args: [{ x: 712, y: 44, source: 'mouse' }] },
+    ]);
+  });
+
   it('requires a live user gesture before microphone consent IPC', { skip: process.platform !== 'linux' && process.platform !== 'darwin' }, async () => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
     const ipc = new FakeIpc();

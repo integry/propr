@@ -18,8 +18,18 @@ import {
   isSafeExternalUrl,
   isTrustedRendererUrl,
 } from './security';
-import { IPC_CHANNELS, isDesktopPairingOperationId, isDesktopNativeNavigationState } from './shared/contract';
-import type { DesktopAcceptanceJourneyStage, DesktopDeepLinkAcknowledgement, DesktopNativeNavigationState } from './shared/contract';
+import {
+  IPC_CHANNELS,
+  isDesktopApplicationMenuRequest,
+  isDesktopPairingOperationId,
+  isDesktopNativeNavigationState,
+} from './shared/contract';
+import type {
+  DesktopAcceptanceJourneyStage,
+  DesktopApplicationMenuRequest,
+  DesktopDeepLinkAcknowledgement,
+  DesktopNativeNavigationState,
+} from './shared/contract';
 
 export type DesktopAcceptanceOperation = 'PROFILE_SAVE' | 'PAIR' | 'PROBE' | 'ACTIVATE';
 export type DesktopAcceptanceOperationStatus =
@@ -46,6 +56,8 @@ interface RegisterIpcOptions {
   openExternal(url: string): Promise<void>;
   platform?: NodeJS.Platform;
   windowForSender?(event: IpcMainInvokeEvent): DesktopWindowControlTarget | null;
+  /** Linux frameless windows: pop up the main-owned application menu for this sender's window. */
+  showApplicationMenu?(event: IpcMainInvokeEvent, request: DesktopApplicationMenuRequest): void;
   rendererConsumerReady?(event: IpcMainInvokeEvent): boolean;
   hasPendingConnectIntent?(): boolean;
   acknowledgeDeepLink?(event: IpcMainInvokeEvent, acknowledgement: DesktopDeepLinkAcknowledgement): boolean;
@@ -249,6 +261,12 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
     });
     handle(IPC_CHANNELS.windowClose, (event, ...args) => {
       windowControlTarget(event, args).close();
+    });
+  }
+  if (options.showApplicationMenu && (options.platform ?? process.platform) === 'linux') {
+    handle(IPC_CHANNELS.applicationMenuPopup, (event, request, ...args) => {
+      if (args.length || !isDesktopApplicationMenuRequest(request)) throw new Error('Invalid application menu request');
+      options.showApplicationMenu!(event, { x: request.x, y: request.y, source: request.source });
     });
   }
   handle(IPC_CHANNELS.deepLinkAcknowledgement, (event, acknowledgement, ...args) => {
