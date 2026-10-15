@@ -37,7 +37,10 @@ import { loadPrimaryProcessingLabels } from '../config/configManager.js';
  * A run carries a request on its own trigger, and its dispatch records that
  * trigger, or a later one, as the submission's consumed trigger before it
  * records the request consumed. A request whose own trigger that receipt
- * reached was carried, even if recording its consumption failed.
+ * reached was carried, even if recording its consumption failed. An
+ * issue-only run consumes no trigger, so its dispatch instead keeps a receipt
+ * of the request whose run it enqueued until it records the request consumed:
+ * a request with that receipt was carried, and never runs again.
  */
 export interface IssueRetryRequest {
   id: number;
@@ -87,6 +90,8 @@ export interface RetryRunDelivery {
   admitted?: (events: TriggerLabelEvent[]) => Promise<TriggerLabelEvent[]>;
   /** The latest trigger the submission's dispatch receipt records as consumed. */
   consumedEventId?: string | null;
+  /** Whether an earlier issue-only dispatch kept a receipt of enqueuing the request's run. */
+  dispatched?: (request: IssueRetryRequest) => Promise<boolean>;
 }
 
 // A trigger write whose response was lost lands within this; a first trigger
@@ -325,11 +330,19 @@ export async function issueRetryPublicationOpen(database: Knex, write: Publicati
  * and any job carrying it, until a delivery's dispatch or a later follow-up
  * records the outcome. It names the write by its request and when the write
  * began, so it never confirms another write of a restarted request.
+ *
+ * It also keeps the receipt of an issue-only request whose run a dispatch
+ * enqueued, from just after its children are added until the request is
+ * recorded consumed, so neither a retry of that dispatch nor a later
+ * delivery, restart or follow-up runs it again once its children are gone.
  */
 export interface RetryOutcomeEvidence {
   save(write: PublicationWrite, publication: RetryPublicationOutcome): Promise<void>;
   read(write: PublicationWrite): Promise<RetryPublicationOutcome | null>;
   clear(write: PublicationWrite): Promise<void>;
+  saveDispatched(request: Pick<IssueRetryRequest, 'id'>): Promise<void>;
+  dispatched(request: Pick<IssueRetryRequest, 'id'>): Promise<boolean>;
+  clearDispatched(request: Pick<IssueRetryRequest, 'id'>): Promise<void>;
 }
 
 interface EvidenceClient {
@@ -339,8 +352,9 @@ interface EvidenceClient {
 }
 
 const evidenceKey = (write: PublicationWrite) => `issue:retry-outcome:${write.id}:${write.publishedAt}`;
+const dispatchedKey = (request: Pick<IssueRetryRequest, 'id'>) => `issue:retry-dispatched:${request.id}`;
 
-/** Evidence kept in Redis without expiry: only recording the outcome it evidences drops it. */
+/** Evidence kept in Redis without expiry: only recording the outcome or consumption it evidences drops it. */
 export function redisRetryOutcomeEvidence(client: () => EvidenceClient | Promise<EvidenceClient>): RetryOutcomeEvidence {
   return {
     save: async (write, publication) => { await (await client()).set(evidenceKey(write), publication); },
@@ -349,6 +363,9 @@ export function redisRetryOutcomeEvidence(client: () => EvidenceClient | Promise
       return publication === 'possible' || publication === 'refused' ? publication : null;
     },
     clear: async write => { await (await client()).del(evidenceKey(write)); },
+    saveDispatched: async request => { await (await client()).set(dispatchedKey(request), '1'); },
+    dispatched: async request => (await (await client()).get(dispatchedKey(request))) !== null,
+    clearDispatched: async request => { await (await client()).del(dispatchedKey(request)); },
   };
 }
 
@@ -368,19 +385,28 @@ export async function confirmIssueRetryPublication(
 /**
  * Records the evidenced outcome of each of the issue's requests whose trigger
  * write's outcome is still unrecorded, so a refusal releases its request and
- * an applied write lets recovery adopt it, whatever process learned it.
+ * an applied write lets recovery adopt it, whatever process learned it. A
+ * request whose run an issue-only dispatch enqueued is recorded consumed.
  */
 export async function reconcileIssueRetryOutcomes(stores: RetryOutcomeStores, issue: IssueKey, now = Date.now()): Promise<void> {
   for (const request of await findIssueRetryRequests(stores.database, issue)) {
+    if (await stores.evidence.dispatched(request)) {
+      await consumeIssueRetryRequest(stores, request, now);
+      continue;
+    }
     if (request.publication !== 'pending' || request.publishedAt === null) continue;
     const publication = await stores.evidence.read(request);
     if (publication) await confirmIssueRetryPublication(stores, request, publication, now);
   }
 }
 
-/** Records that a dispatch carried the request into its run, which releases it. */
-export async function consumeIssueRetryRequest(database: Knex, request: Pick<IssueRetryRequest, 'id'>, now = Date.now()): Promise<void> {
+/**
+ * Records that a dispatch carried the request into its run, which releases it,
+ * then drops any dispatch receipt of it, which is kept if recording fails.
+ */
+export async function consumeIssueRetryRequest({ database, evidence }: RetryOutcomeStores, request: Pick<IssueRetryRequest, 'id'>, now = Date.now()): Promise<void> {
   await database(TABLE).where({ id: request.id }).update({ consumed_at: now, owed_issue: null, recorded_at: now });
+  await evidence.clearDispatched(request);
 }
 
 /**
@@ -391,8 +417,9 @@ export async function consumeIssueRetryRequest(database: Knex, request: Pick<Iss
  * still land, defers the delivery: dispatching another trigger would consume
  * its trigger, and dispatching its own would either drop its requester or
  * adopt a request that may have been refused. One the submission's dispatch
- * receipt shows an earlier run carried is reported for its consumption to be
- * recorded, and owes this delivery nothing.
+ * receipt, or an issue-only dispatch's receipt of it, shows an earlier run
+ * carried is reported for its consumption to be recorded, and owes this
+ * delivery nothing.
  *
  * The open requests are read after the history, so one still reserved then
  * had written no trigger the history shows, and a delivery that admits
@@ -400,7 +427,7 @@ export async function consumeIssueRetryRequest(database: Knex, request: Pick<Iss
  */
 export async function selectRetryRun(
   issue: IssueKey,
-  { admitted, consumedEventId }: RetryRunDelivery,
+  { admitted, consumedEventId, dispatched }: RetryRunDelivery,
   { getOctokit = getAuthenticatedOctokit, processingLabels = loadPrimaryProcessingLabels, database = db, now = Date.now }: SelectionDeps = {},
 ): Promise<RetryRun> {
   // An issue-only delivery consumes no trigger, so without a request it needs no history.
@@ -414,7 +441,7 @@ export async function selectRetryRun(
   const settled: IssueRetryRequest[] = [];
   const withCarried = <Run extends RetryRun>(run: Run): Run => settled.length > 0 ? { ...run, carried: settled } : run;
   for (const request of open) {
-    const owed = owedRun(request, { events, admissible, now: at, consumedEventId });
+    const owed = await owedDelivery(request, { events, admissible, now: at, consumedEventId }, dispatched);
     if (owed === 'carried') {
       settled.push(request);
       continue;
@@ -425,6 +452,14 @@ export async function selectRetryRun(
   }
   if (!admitted) return withCarried({ request: null });
   return withCarried({ request: null, trigger: latest?.id && admittedEvents.at(-1) === latest ? { eventId: String(latest.id) } : null });
+}
+
+/** What the request is owed, as by `owedRun`, unless an issue-only dispatch's receipt shows its run was enqueued: it was carried. */
+async function owedDelivery(
+  request: IssueRetryRequest, history: TriggerHistory & { admissible: Set<string> }, dispatched: RetryRunDelivery['dispatched'],
+): Promise<ReturnType<typeof owedRun>> {
+  if (request.publication !== 'reserved' && dispatched && await dispatched(request)) return 'carried';
+  return owedRun(request, history);
 }
 
 /**

@@ -3,6 +3,11 @@ import { test } from 'node:test';
 import { state, claims, add, postFollowup, database, applyLabels, landDelayedLabels, APP_ACTOR_ID, HUMAN_ACTOR_ID, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
 import { openRequests, routes, postedComments, dispatchQueued, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch, dedupKey } from './taskFollowupIssueDispatch.js';
 
+/** The ID of the request posted as `commentId`. */
+const requestId = async (commentId = FIRST_COMMENT_ID) => (await database('issue_retry_request_states').where({ comment_id: commentId }).first('id') as { id: number }).id;
+/** Whether the receipt an issue-only dispatch keeps of the first request's run, until it is recorded consumed, is in Redis. */
+const hasDispatchReceipt = async () => claims.has(`issue:retry-dispatched:${await requestId()}`);
+
 // A recorded retry request belongs only to the trigger it published: a later,
 // independent trigger must not adopt it, a trigger write that may still land
 // keeps it for that write, a newer trigger does not strand it, a write whose
@@ -102,7 +107,7 @@ for (const [routing, backed] of routings) {
     });
   });
 
-  test(`${routing} retry whose consumption cannot be recorded is redispatched with its request, and a later trigger runs without it`, async () => {
+  test(`${routing} retry whose consumption cannot be recorded is settled without running it again, and a later trigger runs without it`, async () => {
     await onIssue(backed, `consumption-unrecorded-${backed}`, async () => {
       const result = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
       assert.equal(result.json.state, 'queued');
@@ -112,12 +117,13 @@ for (const [routing, backed] of routings) {
       if (backed) {
         assert.equal((await openRequests()).length, 1);
       } else {
-        // The queue retries the failed dispatch, which re-adds the same child with the request.
-        const { children: [requested] } = await dispatchQueued(0);
-        assert.equal(requested.jobId, 'issue-integry-propr-14-claude-claude-opus-5-5-main');
-        assert.equal(requested.data.userId, 'user-1');
-        assert.equal(requested.data.retryCommentId, FIRST_COMMENT_ID);
+        // The queue retries the failed dispatch, which finds its receipt of the request's run and adds nothing again.
+        assert.ok(await hasDispatchReceipt(), 'the dispatch kept its receipt of the request\'s run');
+        const retried = await dispatchQueued(0);
+        assert.deepEqual(retried.dispatched, { status: 'skipped', reason: 'retry_request_already_dispatched', issueNumber: 14 });
+        assert.deepEqual(retried.children, []);
         assert.deepEqual(await openRequests(), []);
+        assert.equal(await hasDispatchReceipt(), false, 'the receipt is dropped once the request is recorded consumed');
       }
 
       // Within the request's lifetime the app's own identity triggers the issue again.
@@ -133,6 +139,53 @@ for (const [routing, backed] of routings) {
       assert.deepEqual((await openRequests()).map(held => held.comment_id), [FIRST_COMMENT_ID + 1]);
     });
   });
+
+  if (!backed) {
+    test('an issue-only retry whose consumption cannot be recorded is recorded consumed by the next follow-up, which runs only its own instructions', async () => {
+      assert.equal((await postFollowup({ body: 'Retry' }, 'failed-issue-task')).json.state, 'queued');
+      state.consumeFails = true;
+      await assert.rejects(dispatchQueued(0), /database is locked/);
+      state.consumeFails = false;
+      assert.equal((await openRequests()).length, 1, 'no retry of the dispatch recorded it');
+
+      // Past the publication window the request would be stranded, but its receipt shows it ran: it is not restarted.
+      state.now += 11 * 60_000;
+      claims.delete(dedupKey);
+      const next = await postFollowup({ body: 'Another retry' }, 'failed-issue-task', 'user-2');
+      assert.equal(next.json.state, 'queued');
+      assert.equal(next.json.restartedRequest, undefined);
+      assert.deepEqual((await openRequests()).map(held => held.comment_id), [FIRST_COMMENT_ID + 1]);
+      assert.equal(await hasDispatchReceipt(), false);
+      const { dispatched, children: [child] } = await dispatchQueued(add.mock.callCount() - 1);
+      assert.equal(dispatched.status, 'dispatched');
+      assert.deepEqual([child.data.userId, child.data.retryCommentId], ['user-2', FIRST_COMMENT_ID + 1]);
+      const prompt = await promptFor(child.data);
+      assert.match(prompt, /Another retry/);
+      assert.deepEqual(await openRequests(), []);
+    });
+
+    test('an issue-only retry whose receipt cannot be kept adds its child again only under the request\'s own deduplication', async () => {
+      assert.equal((await postFollowup({ body: 'Retry' }, 'failed-issue-task')).json.state, 'queued');
+      state.dispatchReceiptFails = true;
+      const failed = await dispatchQueued(0).then(() => null, (error: Error) => error);
+      assert.match(failed?.message ?? '', /Connection is closed/);
+      state.dispatchReceiptFails = false;
+      const retried = await dispatchQueued(0);
+      assert.equal(retried.dispatched.status, 'dispatched');
+      const [child] = retried.children;
+      assert.equal(child.jobId, 'issue-integry-propr-14-claude-claude-opus-5-5-main');
+      assert.deepEqual([child.data.userId, child.data.retryCommentId], ['user-1', FIRST_COMMENT_ID]);
+      assert.deepEqual(child.options?.deduplication, { id: `${child.jobId}-retry-request-${await requestId()}`, ttl: DAY_MS },
+        'BullMQ takes the request\'s deduplication with the add, so the retry is absorbed after the child is removed');
+      assert.deepEqual(await openRequests(), []);
+
+      // A later trigger, without a request, takes no request's deduplication.
+      state.now += 60_000;
+      applyLabels(['AI'], APP_ACTOR_ID);
+      const { children: [plain] } = await deliverAndDispatch();
+      assert.equal(plain.options?.deduplication, undefined);
+    });
+  }
 
   for (const [who, actorId, delay] of [
     ['another actor', HUMAN_ACTOR_ID, 60_000],

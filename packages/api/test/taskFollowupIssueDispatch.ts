@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import type { Redis } from 'ioredis';
-import type { Job } from 'bullmq';
+import type { Job, JobsOptions } from 'bullmq';
 import type { IssueJobData } from '../../core/src/queue/taskQueue.types.js';
 import { state, claims, add, request, redis, database } from './taskFollowupFixture.js';
 
@@ -41,22 +41,27 @@ export const retryOutcomes = redisRetryOutcomeEvidence(() => redis);
 /** The production retry request store, on the test database and the given outcome evidence. */
 export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence) => ({
   select: (issue: IssueJobData, { submission }: { submission: Submission }) =>
-    selectRetryRun(issue, submission ? { admitted: events => admittedSubmissionTriggers(submission, events, database), consumedEventId: submission.retry_event_id } : {},
+    selectRetryRun(issue, submission ? { admitted: events => admittedSubmissionTriggers(submission, events, database), consumedEventId: submission.retry_event_id }
+      : { dispatched: held => outcomes.dispatched(held) },
       { getOctokit: timelineOctokit, processingLabels: async () => ['AI'], database, now: () => state.now }),
   evidence: (_issue: IssueJobData, held: IssueRetryRequest) => outcomes.read(held),
   confirm: async (_issue: IssueJobData, held: IssueRetryRequest, publication: 'possible' | 'refused') => {
     if (state.confirmFails) throw new Error('SQLITE_BUSY: database is locked');
     await confirmIssueRetryPublication({ database, evidence: outcomes }, held, publication, state.now);
   },
+  dispatched: async (_issue: IssueJobData, held: IssueRetryRequest) => {
+    if (state.dispatchReceiptFails) throw new Error('Connection is closed.');
+    await outcomes.saveDispatched(held);
+  },
   consume: async (_issue: IssueJobData, held: IssueRetryRequest) => {
     if (state.consumeFails) throw new Error('SQLITE_BUSY: database is locked');
-    await consumeIssueRetryRequest(database, held, state.now);
+    await consumeIssueRetryRequest({ database, evidence: outcomes }, held, state.now);
   },
 });
 export const retryRequestStore = retryRequestStoreFor(retryOutcomes);
 
 /** The matrix dispatcher's dependencies on the test database and GitHub, collecting the child jobs it adds. */
-export function dispatcherDeps(children: Array<{ jobId: string; data: IssueJobData }>, retryRequests = retryRequestStore) {
+export function dispatcherDeps(children: Array<{ jobId: string; data: IssueJobData; options?: JobsOptions }>, retryRequests = retryRequestStore) {
   return {
     findSubmission: (issue: IssueJobData) => findIssueSubmission(issue, database),
     resolveSubmissionRetry: (submission: Parameters<typeof resolveTaskSubmissionRetry>[0]) => resolveTaskSubmissionRetry(submission, database,
@@ -71,14 +76,14 @@ export function dispatcherDeps(children: Array<{ jobId: string; data: IssueJobDa
     validateRepositoryInfo: async () => ({ isValid: true, repoData: { defaultBranch: 'main' } }),
     resolveLlmLabel: async () => ({ agentAlias: 'claude', model: 'claude-opus-5-5' }),
     getAllCustomLabels: async () => [], getDefaultModel: () => 'claude-opus-5-5',
-    issueQueue: { add: async (_name: string, data: IssueJobData, options: { jobId: string }) => { children.push({ jobId: options.jobId, data }); } },
+    issueQueue: { add: async (_name: string, data: IssueJobData, options: JobsOptions & { jobId: string }) => { children.push({ jobId: options.jobId, data, options }); } },
     retryRequests,
   } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
 }
 
 /** Runs the matrix dispatcher on the parent job the queue received at `index`. */
 export async function dispatchQueued(index: number) {
-  const children: Array<{ jobId: string; data: IssueJobData }> = [];
+  const children: Array<{ jobId: string; data: IssueJobData; options?: JobsOptions }> = [];
   const deps = dispatcherDeps(children);
   const [name, data] = add.mock.calls[index].arguments as unknown as [string, IssueJobData];
   const dispatched = await handleDispatchWithDeps({ id: 'issue-integry-propr-14', name, data: { ...data } } as Job<IssueJobData>, deps);

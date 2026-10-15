@@ -47,7 +47,9 @@ interface RetryRequestStore {
     evidence(issue: IssueJobData, request: IssueRetryRequest): Promise<RetryPublicationOutcome | null>;
     /** Durably records the outcome of the request's trigger write, as the route learned it, then drops its evidence. */
     confirm(issue: IssueJobData, request: IssueRetryRequest, publication: RetryPublicationOutcome): Promise<void>;
-    /** Durably records that the dispatch carried the request into its run, which releases it. */
+    /** Durably records that an issue-only dispatch enqueued the request's run, until the request is recorded consumed. */
+    dispatched(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
+    /** Durably records that the dispatch carried the request into its run, which releases it and drops its receipt. */
     consume(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
 }
 
@@ -117,10 +119,12 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         resolveDefaultAgentForDispatcher,
         retryRequests: {
             select: (issue, { submission }) => selectRetryRun(issue, submission
-                ? { admitted: events => admittedSubmissionTriggers(submission, events), consumedEventId: submission.retry_event_id } : {}),
+                ? { admitted: events => admittedSubmissionTriggers(submission, events), consumedEventId: submission.retry_event_id }
+                : { dispatched: request => retryOutcomes.dispatched(request) }),
             evidence: (_issue, request) => retryOutcomes.read(request),
             confirm: async (_issue, request, publication) => { await confirmIssueRetryPublication({ database: db, evidence: retryOutcomes }, request, publication); },
-            consume: async (_issue, request) => consumeIssueRetryRequest(db, request),
+            dispatched: (_issue, request) => retryOutcomes.saveDispatched(request),
+            consume: async (_issue, request) => consumeIssueRetryRequest({ database: db, evidence: retryOutcomes }, request),
         },
     });
 }
@@ -297,14 +301,33 @@ function applyRunRequest(issueRef: IssueJobData, submission: Submission, request
     }
 }
 
+// How long an issue-only request's child ID stays taken after the child is gone: past any retry of
+// the dispatch that added it, which records its receipt if the dispatch could not.
+const REQUEST_RUN_DEDUPLICATION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * BullMQ deduplication of an issue-only request's child beyond its job ID,
+ * which is freed once the child completes or fails and is removed: the add
+ * takes it atomically, so a retry of the dispatch that added the child does
+ * not run the request again even when the dispatch could not keep its receipt.
+ */
+function requestRunDeduplication(childJobId: string, submission: Submission, request: IssueRetryRequest | null) {
+    if (submission || !request) return {};
+    return { deduplication: { id: `${childJobId}-retry-request-${request.id}`, ttl: REQUEST_RUN_DEDUPLICATION_MS } };
+}
+
 /**
  * Once the children carry the request it is consumed, durably, so neither a
  * redelivery nor a later trigger runs it again. A submission's consumed
- * trigger also releases it; an issue-only request whose consumption cannot be
- * recorded fails the dispatch, whose retry re-adds the same children.
+ * trigger also releases it. An issue-only run consumes no trigger, so its
+ * receipt of the request is kept first: a request whose consumption cannot be
+ * recorded fails the dispatch, whose retry, or a later delivery or follow-up,
+ * records it consumed by that receipt instead of adding its children again.
  */
-async function releaseRetryRequest(issueRef: IssueJobData, request: IssueRetryRequest | null, deps: DispatcherDeps): Promise<void> {
-    if (request) await deps.retryRequests?.consume(issueRef, request);
+async function releaseRetryRequest(issueRef: IssueJobData, submission: Submission, request: IssueRetryRequest | null, deps: DispatcherDeps): Promise<void> {
+    if (!request) return;
+    if (!submission) await deps.retryRequests?.dispatched(issueRef, request);
+    await deps.retryRequests?.consume(issueRef, request);
 }
 
 /**
@@ -325,10 +348,16 @@ async function settleCarriedRequests(issueRef: IssueJobData, run: RetryRun, deps
 
 /**
  * A queued issue-only request runs only on its own trigger, by the rules
- * recovery uses; a delivery whose selection is not it runs nothing.
+ * recovery uses; a delivery whose selection is not it runs nothing. A retry
+ * of the dispatch that enqueued its run finds the request carried.
  */
-function unownedRequest(issueRef: IssueJobData, submission: Submission, request: IssueRetryRequest | null): JobResult | null {
+function unownedRequest(issueRef: IssueJobData, submission: Submission, run: RetryRun): JobResult | null {
+    const request = 'request' in run ? run.request : null;
     if (request || submission || issueRef.retryCommentId === undefined) return null;
+    if (run.carried?.some(held => held.commentId === issueRef.retryCommentId && held.requesterId === issueRef.retryRequesterId)) {
+        logger.info({ issue: issueRef.number, retryCommentId: issueRef.retryCommentId }, 'Queued retry request already had its run enqueued; not dispatching it again');
+        return { status: 'skipped', reason: 'retry_request_already_dispatched', issueNumber: issueRef.number };
+    }
     logger.warn({ issue: issueRef.number, retryCommentId: issueRef.retryCommentId }, 'Queued retry request does not own a published trigger; not dispatching it');
     return { status: 'skipped', reason: 'retry_request_not_owed', issueNumber: issueRef.number };
 }
@@ -343,7 +372,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
         logger.warn({ issue: issueRef.number, retryCommentId: run.deferred.commentId }, 'A held retry request may own the trigger but its publication is unreconciled; deferring dispatch');
         return { status: 'skipped', reason: 'retry_request_unreconciled', issueNumber: issueRef.number };
     }
-    const unowned = unownedRequest(issueRef, submission, run.request);
+    const unowned = unownedRequest(issueRef, submission, run);
     if (unowned) return unowned;
     const retry = submission?.dispatch_complete ? trigger : null;
     if (submission?.dispatch_complete && !retry) return { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: issueRef.number };
@@ -410,6 +439,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
                     // Late webhook deliveries consult that receipt, even after queue cleanup.
                     removeOnComplete: !submission,
                     removeOnFail: !submission,
+                    ...requestRunDeduplication(childJobId, submission, retryRequest),
                 });
                 jobsEnqueued++;
                 correlatedLogger.info({
@@ -426,7 +456,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
 
         // A run of a request's own trigger also consumes newer triggers it was dispatched past.
         if (submission) await deps.recordDispatch(submission.id, (run.request ? run.latestTriggerEventId : undefined) ?? trigger?.eventId);
-        await releaseRetryRequest(issueRef, retryRequest, deps);
+        await releaseRetryRequest(issueRef, submission, retryRequest, deps);
         correlatedLogger.info({ jobId, issue: issueRef.number, jobsEnqueued }, 'Matrix dispatcher job complete.');
         return { status: 'dispatched', jobsEnqueued, issueNumber: issueRef.number };
 

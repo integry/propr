@@ -31,8 +31,9 @@ export const state = {
   // Whether Redis scripts fail, as during a Redis connection failure, and a hook run as GitHub
   // receives the trigger add, before it answers.
   redisFails: false, onLabelAdd: undefined as undefined | (() => void | Promise<void>),
-  // Whether a dispatch fails to record that it consumed a retry request, or the trigger write its job confirms.
-  consumeFails: false, confirmFails: false,
+  // Whether a dispatch fails to record that it consumed a retry request, the trigger write its job confirms,
+  // or its receipt of the issue-only request whose run it enqueued.
+  consumeFails: false, confirmFails: false, dispatchReceiptFails: false,
   // A hook run while GitHub creates a posted comment, before it answers.
   onCommentPost: undefined as undefined | (() => void | Promise<void>),
   // Outcome records the route left to retry after responding; a test runs them.
@@ -201,7 +202,7 @@ beforeEach(async () => {
   state.startLoopFails = false; state.prState = 'open'; state.commentPostError = undefined;
   state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
   state.labelAdd = 'ok'; state.timelineReadFails = false; state.delayedLabels = []; state.redisFails = false; state.onLabelAdd = undefined;
-  state.consumeFails = false; state.confirmFails = false; state.onCommentPost = undefined; state.outcomeRetries = [];
+  state.consumeFails = false; state.confirmFails = false; state.dispatchReceiptFails = false; state.onCommentPost = undefined; state.outcomeRetries = [];
   state.now = Date.parse('2026-10-15T10:00:00.700Z'); state.sleeps = [];
   state.timeline = [{ id: 1, event: 'labeled', created_at: '2026-10-15T09:59:00Z', label: { name: 'AI' }, actor: { id: HUMAN_ACTOR_ID } }];
   claims.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();

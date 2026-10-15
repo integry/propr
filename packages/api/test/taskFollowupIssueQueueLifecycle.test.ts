@@ -4,7 +4,8 @@
  * The other follow-up suites simulate the queue and Redis. This suite runs
  * the route, the matrix dispatcher and the child jobs it enqueues on BullMQ's
  * actual job-ID deduplication, retries and job removal, and on Redis's actual
- * claim and outcome keys: repeated retries through their actual child runs, a
+ * claim and outcome keys: repeated retries through their actual child runs,
+ * issue-only children that complete or fail before their dispatch's retry, a
  * delivery while a retry's job waits, and a job carrying a confirmation that
  * exhausts its attempts. GitHub, the request records and the child runs'
  * agent stay simulated: a child run only reads the prompt it would be given.
@@ -142,6 +143,8 @@ interface LiveQueue {
   childSettled: () => Promise<Settled>;
   /** Holds every child run that starts until the returned release runs. */
   holdChildren: () => () => void;
+  /** Whether each child run that starts fails right away, as on an agent authentication failure. */
+  failChildren: (fail: boolean) => void;
   /** Waits until no job is waiting, delayed or running. */
   drained: () => Promise<void>;
   /** Waits until the job is in `jobState`. */
@@ -182,6 +185,7 @@ async function withLiveQueue(body: (live: LiveQueue) => Promise<void>) {
   const childOutcomes = channel();
   let hold: Promise<void> | null = null;
   let releaseHold = () => {};
+  let childrenFail = false;
   let worker: Worker | undefined;
   // The route takes its Redis from the issue queue; it is the namespaced client, while BullMQ keeps its own.
   useLiveQueue(new Proxy(queue, { get: (target, prop) => {
@@ -192,6 +196,7 @@ async function withLiveQueue(body: (live: LiveQueue) => Promise<void>) {
   const runChild = async (job: Job<IssueJobData>): Promise<JobResult> => {
     await hold;
     runs.push({ jobId: job.id!, data: job.data, prompt: await promptFor(job.data) });
+    if (childrenFail) throw new Error('Claude authentication failed');
     return { status: 'completed', issueNumber: job.data.number };
   };
   try {
@@ -211,6 +216,7 @@ async function withLiveQueue(body: (live: LiveQueue) => Promise<void>) {
         hold = new Promise(resolve => { releaseHold = () => { hold = null; resolve(); }; });
         return releaseHold;
       },
+      failChildren: fail => { childrenFail = fail; },
       drained: () => until(async () => Object.values(await queue.getJobCounts('waiting', 'delayed', 'active')).every(jobs => jobs === 0),
         'the queue did not drain'),
       reaches: (jobId, jobState) => until(async () => await (await queue.getJob(jobId))?.getState() === jobState, `${jobId} did not become ${jobState}`),
@@ -286,9 +292,10 @@ for (const [routing, backed] of [['submission-backed', true], ['issue-only', fal
           assert.deepEqual(retried.event === 'completed' && retried.result, { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: 14 });
           assert.deepEqual(live.children.map(child => child.jobId), [firstChild]);
         } else {
-          // The retry re-adds the same child, which BullMQ deduplicates by its ID while it runs.
-          assert.equal(retried.event === 'completed' && retried.result.status, 'dispatched');
-          assert.deepEqual(live.children.map(child => child.jobId), [firstChild, firstChild]);
+          // Its receipt shows the request's run was enqueued, so it is recorded consumed and nothing is added again.
+          assert.deepEqual(retried.event === 'completed' && retried.result, { status: 'skipped', reason: 'retry_request_already_dispatched', issueNumber: 14 });
+          assert.deepEqual(live.children.map(child => child.jobId), [firstChild]);
+          assert.deepEqual(await ownedKeys('issue:retry-dispatched:*'), [], 'the receipt is dropped once the request is recorded consumed');
         }
         assert.deepEqual(await openRequests(), []);
         release();
@@ -321,6 +328,72 @@ for (const [routing, backed] of [['submission-backed', true], ['issue-only', fal
       });
     });
   });
+}
+
+for (const outcome of ['completes', 'fails'] as const) {
+  for (const receipt of ['kept', 'lost'] as const) {
+    const lost = receipt === 'lost';
+    test(`an issue-only retry whose child ${outcome} before its dispatch's retry, after recording the request consumed failed${lost ? ' and its receipt could not be kept' : ''}, runs once, and the next follow-up runs its own`, { skip, timeout: 60_000 }, async () => {
+      await withLiveQueue(async live => {
+        live.startWorker();
+        // The run ends fast, as on the original agent authentication failure, while its dispatch fails to record the request consumed.
+        live.failChildren(outcome === 'fails');
+        state.consumeFails = true;
+        state.dispatchReceiptFails = lost;
+        const first = await postFollowup({ body: 'First instructions' }, 'failed-issue-task');
+        assert.equal(first.json.state, 'queued');
+        const failed = await live.settled();
+        assert.equal(failed.event, 'failed');
+        assert.match(failed.event === 'failed' ? failed.error.message : '', lost ? /Connection is closed/ : /database is locked/);
+        assert.equal(live.children[0]?.jobId, CHILD_ID);
+        const [deduplication] = await ownedKeys('bull:*:de:*');
+        assert.ok(deduplication, 'the child\'s add takes the request\'s deduplication');
+        assert.ok(await raw.pttl(deduplication) > 0, 'which expires on its own');
+
+        // The child ends and is removed, freeing its ID, before BullMQ retries the dispatch after its backoff.
+        assert.equal((await live.childSettled()).event, outcome === 'completes' ? 'completed' : 'failed');
+        assert.equal(await live.queue.getJob(CHILD_ID), undefined, 'the ended child is removed, freeing its ID');
+        assert.equal(await (await live.queue.getJob(JOB_ID))?.getState(), 'delayed', 'the dispatch has not retried yet');
+        state.consumeFails = false;
+        state.dispatchReceiptFails = false;
+        const retried = await live.settled();
+        assert.equal(retried.event, 'completed', retried.event === 'failed' ? retried.error.message : undefined);
+        if (lost) {
+          // Without a receipt the retry adds the request's child again, which the deduplication its first add took absorbs.
+          assert.equal(retried.event === 'completed' && retried.result.status, 'dispatched');
+          assert.deepEqual(live.children.map(child => child.jobId), [CHILD_ID, CHILD_ID]);
+        } else {
+          // The receipt shows the request's run was enqueued, so it is recorded consumed and nothing is added again.
+          assert.deepEqual(retried.event === 'completed' && retried.result, { status: 'skipped', reason: 'retry_request_already_dispatched', issueNumber: 14 });
+          assert.deepEqual(live.children.map(child => child.jobId), [CHILD_ID]);
+        }
+        await live.drained();
+        assert.equal(live.runs.length, 1, 'the request\'s child ran once');
+        assertChildRun(live.runs[0], { jobId: CHILD_ID, requester: 'user-1', commentId: FIRST_COMMENT_ID, instructions: /First instructions/ });
+        assert.equal(await live.queue.getJob(CHILD_ID), undefined);
+        assert.deepEqual(await openRequests(), [], 'the request is recorded consumed');
+        assert.deepEqual(await ownedKeys('issue:retry-dispatched:*'), [], 'and its receipt is dropped');
+
+        // Once the claim expires another user follows up with new instructions, which run once for them.
+        live.failChildren(false);
+        state.now += 60_000;
+        await owned.del(dedupKey);
+        const second = await postFollowup({ body: 'Second instructions' }, 'failed-issue-task', 'user-2');
+        assert.equal(second.json.state, 'queued');
+        await assertDispatched(await live.settled(), live.children.at(-1), { requester: 'user-2', commentId: FIRST_COMMENT_ID + 1, instructions: /Second instructions/ });
+        assert.equal((await live.childSettled()).event, 'completed');
+        await live.drained();
+        assert.equal(live.runs.length, 2);
+        assertChildRun(live.runs[1], {
+          jobId: CHILD_ID, requester: 'user-2', commentId: FIRST_COMMENT_ID + 1, instructions: /Second instructions/, foreign: /First instructions/,
+        });
+        assert.deepEqual(await openRequests(), []);
+        assert.deepEqual(await ownedKeys('issue:retry-dispatched:*'), []);
+        const counts = await live.queue.getJobCounts('waiting', 'active', 'delayed', 'failed', 'completed');
+        assert.deepEqual(Object.entries(counts).filter(([, jobs]) => jobs > 0), [], 'no job is left behind');
+      });
+    });
+  }
 }
 
 test('a delivery while an issue-only retry\'s job waits does not replace it, and the one job runs for the requester', { skip, timeout: 30_000 }, async () => {
