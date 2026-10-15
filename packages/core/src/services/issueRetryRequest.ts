@@ -104,6 +104,8 @@ export type CarriedRetryRequest = IssueRetryRequest & {
   receiptEventId?: string;
   /** The latest trigger the history shows the run consumed, when it shows any. */
   runTriggerEventId?: string;
+  /** The queue's record of the run, whose trigger, not the delivery's, the submission's dispatch receipt records. */
+  run?: RetryRunReceipt;
 };
 
 export interface RetryRunDelivery {
@@ -429,17 +431,22 @@ export function carriedReceipt(
  * write's outcome is still unrecorded, so a refusal releases its request and
  * an applied write lets recovery adopt it, whatever process learned it. A
  * request the queue's record shows a run carried is recorded consumed, after
- * the submission's dispatch receipt records its trigger, so neither a restart
- * nor a later follow-up takes it for one never run.
+ * the submission's dispatch receipt records the trigger that record names,
+ * unless it already records it or a later one, so neither a restart nor a
+ * later follow-up takes it for one never run. `refresh` reads the history
+ * afresh, to order a receipt another dispatch recorded since `history`.
  */
-export async function reconcileIssueRetryOutcomes(stores: RetryOutcomeStores, issue: IssueKey, history: TriggerHistory): Promise<void> {
+export async function reconcileIssueRetryOutcomes(
+  stores: RetryOutcomeStores, issue: IssueKey, history: TriggerHistory, refresh: () => Promise<TriggerLabelEvent[]>,
+): Promise<void> {
   for (const request of await findIssueRetryRequests(stores.database, issue)) {
     const run = request.publication === 'reserved' ? null : await stores.runs?.read(request);
     if (run) {
-      const receipt = carriedReceipt(request, run, history);
-      if (receipt) {
-        const submission = await findIssueSubmission({ ...issue } as Parameters<typeof findIssueSubmission>[0], stores.database);
-        if (submission) await recordIssueRetryRunReceipt(stores.database, submission.id, receipt);
+      const submission = await findIssueSubmission({ ...issue } as Parameters<typeof findIssueSubmission>[0], stores.database);
+      if (submission) {
+        const { eventId, events } = await acceptedRunTrigger(request, run, { events: history.events, history: refresh });
+        await recordIssueRetryRunReceipt(stores.database, submission.id, eventId,
+          { observedEventId: submission.retry_event_id ?? null, events, history: refresh });
       }
       await consumeIssueRetryRequest(stores, request, history.now);
       continue;
@@ -450,10 +457,104 @@ export async function reconcileIssueRetryOutcomes(stores: RetryOutcomeStores, is
   }
 }
 
-/** The submission's dispatch receipt, as a dispatch that enqueued a run records it: dispatched, and through `triggerEventId`. */
-export async function recordIssueRetryRunReceipt(database: Knex, submissionId: string, triggerEventId?: string): Promise<void> {
-  await database('task_submissions').where({ id: submissionId })
-    .update({ dispatch_complete: true, state: 'queued', error: null, ...(triggerEventId ? { retry_event_id: triggerEventId } : {}) });
+/**
+ * What a write of the submission's dispatch receipt is fenced on: the receipt
+ * its writer read before deciding what its run consumed, and the issue's
+ * trigger history, which orders the run's trigger against a receipt. Another
+ * dispatch may have recorded a later receipt since, from a history the
+ * writer's own predates, so a conflict is ordered on the history read afresh.
+ */
+export interface RunReceiptFence {
+  /** The receipt the writer read; the write applies only while it is still the receipt. */
+  observedEventId: string | null;
+  /** The history the writer read, which orders its trigger against the receipt it read, if it shows both. */
+  events?: TriggerLabelEvent[];
+  /** Reads the issue's trigger history afresh. */
+  history: () => Promise<TriggerLabelEvent[]>;
+  /**
+   * Whether the writer's own admission placed its trigger after the receipt it read: a dispatch admits only
+   * triggers after the submission's consumed one, also when the history no longer shows that one.
+   */
+  admitted?: boolean;
+}
+
+/** Whether the receipt records the trigger itself, or a later one: 'recorded' when the write advanced it, 'covered' when it already did. */
+export type RunReceiptWrite = 'recorded' | 'covered';
+
+// How often a receipt write that meets a newer receipt orders it afresh before it gives up, leaving it to a later one.
+const RECEIPT_WRITE_ATTEMPTS = 3;
+
+/** Whether `eventId` comes after `receiptEventId` in the history, or undefined when the history does not show both. */
+function laterThan(events: TriggerLabelEvent[] | undefined, eventId: string, receiptEventId: string): boolean | undefined {
+  const [at, receipt] = [eventPosition(events ?? [], eventId), eventPosition(events ?? [], receiptEventId)];
+  return at === -1 || receipt === -1 ? undefined : at > receipt;
+}
+
+/**
+ * Records the submission's dispatch receipt, as a dispatch that enqueued a
+ * run records it: dispatched, and through `triggerEventId`. The receipt is a
+ * watermark: no trigger at or before it is admitted again, so it only ever
+ * advances. The write applies only while the receipt is still the one its
+ * writer read, and only for a trigger after it; a receipt another dispatch
+ * recorded since is ordered against the trigger on the history read afresh,
+ * which shows them both, and the write is retried on it when the trigger is
+ * later, or left as it is when it already records the trigger or a later one.
+ * A receipt the history cannot order the trigger against is neither
+ * overwritten nor taken to cover it: the write fails, and its caller keeps
+ * what it would settle for a later reconciliation.
+ */
+export async function recordIssueRetryRunReceipt(
+  database: Knex, submissionId: string, triggerEventId: string | undefined, fence: RunReceiptFence,
+): Promise<RunReceiptWrite> {
+  let observed = fence.observedEventId;
+  let { events } = fence;
+  let fresh = false;
+  for (let attempt = 0; attempt < RECEIPT_WRITE_ATTEMPTS; attempt++) {
+    if (observed !== null) {
+      // A recorded receipt already shows the submission dispatched; only a later trigger advances it.
+      if (!triggerEventId || observed === triggerEventId) return 'covered';
+      if (attempt > 0 || !fence.admitted) {
+        let later = laterThan(events, triggerEventId, observed);
+        if (later === undefined && !fresh) {
+          events = await fence.history();
+          fresh = true;
+          later = laterThan(events, triggerEventId, observed);
+        }
+        if (later === undefined) {
+          throw new Error(`Submission ${submissionId}'s dispatch receipt records trigger ${observed}, which the issue's history cannot order against trigger ${triggerEventId}`);
+        }
+        if (!later) return 'covered';
+      }
+    }
+    const updated = await database('task_submissions').where({ id: submissionId })
+      .where(fenced => { if (observed === null) fenced.whereNull('retry_event_id'); else fenced.where({ retry_event_id: observed }); })
+      .update({ dispatch_complete: true, state: 'queued', error: null, ...(triggerEventId ? { retry_event_id: triggerEventId } : {}) });
+    if (Number(updated) === 1) return 'recorded';
+    const current = await database('task_submissions').where({ id: submissionId }).first('retry_event_id') as { retry_event_id: string | null } | undefined;
+    if (!current) throw new Error(`Submission ${submissionId} is gone, so its dispatch receipt was not recorded`);
+    // Another dispatch recorded a receipt since it was read, from a history this one's may predate.
+    observed = current.retry_event_id ?? null;
+    events = undefined;
+    fresh = false;
+  }
+  throw new Error(`Submission ${submissionId}'s dispatch receipt kept changing, so trigger ${triggerEventId ?? '(none)'} was not recorded`);
+}
+
+/**
+ * The latest trigger the request's accepted run consumed, which the
+ * submission's dispatch receipt must record: the queue's record of the run
+ * names the trigger its dispatch recorded with it, whichever dispatch that
+ * was, and however stale the caller's own selection is. It is placed on the
+ * caller's history, or, when that does not show it, as when another dispatch
+ * accepted the run from a later history, on the history read afresh, which
+ * is returned with it. A trigger no history shows is still the run's.
+ */
+export async function acceptedRunTrigger(
+  request: IssueRetryRequest, run: RetryRunReceipt, { events, history }: Pick<RunReceiptFence, 'events' | 'history'>,
+): Promise<{ eventId: string | undefined; events: TriggerLabelEvent[] }> {
+  const shows = (read: TriggerLabelEvent[]) => run.receiptEventId === null || eventPosition(read, run.receiptEventId) !== -1;
+  const placed = events && shows(events) ? events : await history();
+  return { eventId: shows(placed) ? runTrigger(request, run, placed) : run.receiptEventId!, events: placed };
 }
 
 /**
@@ -559,7 +660,7 @@ async function recordedRun(
   if (request.publication === 'reserved' || !runs) return null;
   const run = await runs(request);
   if (!run) return null;
-  if (admitted) return { ...request, receiptEventId: carriedReceipt(request, run, history) };
+  if (admitted) return { ...request, run, receiptEventId: carriedReceipt(request, run, history) };
   const consumed = runTrigger(request, run, history.events);
   return consumed === undefined ? request : { ...request, runTriggerEventId: consumed };
 }

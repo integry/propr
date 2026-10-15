@@ -69,6 +69,15 @@ export async function admittedSubmissionTriggers(submission: TaskSubmission, eve
   });
 }
 
+/** The trigger events of the submission's issue, oldest first, read afresh. */
+export async function submissionTriggerEvents(
+  submission: TaskSubmission,
+  getOctokit = getAuthenticatedOctokit,
+  processingLabels = loadPrimaryProcessingLabels,
+): Promise<TriggerLabelEvent[]> {
+  return processingLabelEvents(submission, new Set(await processingLabels()), getOctokit);
+}
+
 /** Capture the initial trigger, or recognize a fresh trigger after terminal work. */
 export async function resolveTaskSubmissionRetry(
   submission: TaskSubmission,

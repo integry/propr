@@ -68,6 +68,11 @@ export interface RetryRunEvidence {
    * accepted none, not every child of it, or the record is retired.
    */
   read(request: Pick<IssueRetryRequest, 'id' | 'commentId'>): Promise<RetryRunReceipt | null>;
+  /**
+   * The run the queue accepted for the request, whether or not the record is retired since, or null when it
+   * accepted none: the receipt of whichever dispatch's transaction accepted it.
+   */
+  accepted(request: Pick<IssueRetryRequest, 'id' | 'commentId'>): Promise<RetryRunReceipt | null>;
   /** Retires the record once the request is recorded consumed, keeping it as the tombstone that fences any later add of its run. */
   retire(request: Pick<IssueRetryRequest, 'id' | 'commentId'>): Promise<void>;
 }
@@ -79,6 +84,10 @@ export function queueRetryRunEvidence(queueOf: () => RetryRunQueue | Promise<Ret
       const queue = await queueOf();
       const record = await (await queue.client as RunRecordClient).hgetall(runKey(queue, request)) ?? {};
       return ownEntry(record[CONSUMED_FIELD], request) ? null : ownEntry(record[RUN_FIELD], request);
+    },
+    accepted: async request => {
+      const queue = await queueOf();
+      return ownEntry((await (await queue.client as RunRecordClient).hgetall(runKey(queue, request)) ?? {})[RUN_FIELD], request);
     },
     retire: async request => {
       const queue = await queueOf();

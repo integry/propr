@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { state, claims, add, postFollowup, database, applyLabels, landDelayedLabels, APP_ACTOR_ID, HUMAN_ACTOR_ID, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
-import { openRequests, routes, postedComments, dispatchQueued, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch, dedupKey, retryRuns, requestChildId } from './taskFollowupIssueDispatch.js';
+import {
+  openRequests, routes, postedComments, dispatchQueued, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch, pollDelivery, dedupKey, retryRuns, requestChildId,
+} from './taskFollowupIssueDispatch.js';
 
 /** The ID of the request posted as `commentId`. */
 const requestId = async (commentId = FIRST_COMMENT_ID) => (await database('issue_retry_request_states').where({ comment_id: commentId }).first('id') as { id: number }).id;
@@ -140,6 +142,62 @@ for (const [routing, backed] of routings) {
       assert.deepEqual((await openRequests()).map(held => held.comment_id), [FIRST_COMMENT_ID + 1]);
     });
   });
+
+  if (backed) {
+    test('a follow-up that settles an earlier request\'s accepted run keeps the later receipt a dispatch recorded after the follow-up read it', async () => {
+      await onIssue(true, 'reconcile-later-receipt', async () => {
+        assert.equal((await postFollowup({ body: 'Retry' }, 'failed-issue-task')).json.state, 'queued');
+        const own = String(state.timeline.at(-1)!.id);
+        // Its dispatch accepts its run through its own trigger, but can record neither the receipt nor the request consumed.
+        state.recordDispatchFails = true;
+        state.consumeFails = true;
+        await assert.rejects(dispatchQueued(0), /database is locked/);
+        state.recordDispatchFails = false;
+        assert.ok(await hasRunRecord());
+        assert.equal((await submissionRow()).retry_event_id, null);
+
+        // Someone relabels the issue; the delivery is queued, and its claim expires before its dispatch runs.
+        state.now += 60_000;
+        applyLabels(['AI'], HUMAN_ACTOR_ID);
+        const independent = String(state.timeline.at(-1)!.id);
+        claims.delete(dedupKey);
+        const relabel = add.mock.callCount();
+        assert.notEqual((await pollDelivery()).status, 'ignored');
+        claims.delete(dedupKey);
+        // A later follow-up reads the receipt. While it reads the trigger history, the relabel's dispatch records the
+        // request's trigger, still fails to record it consumed, and runs the later, independent trigger, recording it.
+        state.onTimelineRead = async () => {
+          state.onTimelineRead = undefined;
+          const { dispatched, children } = await dispatchQueued(relabel);
+          assert.equal(dispatched.status, 'dispatched');
+          assert.deepEqual(children.map(child => [child.data.userId, child.data.retryCommentId]), [['submitter', undefined]]);
+          assert.equal((await submissionRow()).retry_event_id, independent);
+          state.consumeFails = false;
+        };
+        const next = await postFollowup({ body: 'Another retry' }, 'failed-issue-task', 'user-2');
+        assert.equal(next.json.state, 'queued', String(next.json.error));
+        assert.equal(state.onTimelineRead, undefined, 'the relabel was dispatched while the follow-up read the history');
+        assert.notEqual(independent, own);
+        // The follow-up records the earlier request consumed, but keeps the later receipt it did not read.
+        assert.equal((await submissionRow()).retry_event_id, independent, 'the earlier request\'s trigger does not overwrite the later receipt');
+        assert.equal(await hasRunRecord(), false);
+        assert.deepEqual((await openRequests()).map(held => held.comment_id), [FIRST_COMMENT_ID + 1]);
+        const { dispatched, children } = await dispatchQueued(add.mock.callCount() - 1);
+        assert.equal(dispatched.status, 'dispatched');
+        assert.deepEqual(children.map(child => [child.jobId, child.data.userId]), [[await requestChildId(FIRST_COMMENT_ID + 1), 'user-2']]);
+        const latest = String(state.timeline.at(-1)!.id);
+        assert.equal((await submissionRow()).retry_event_id, latest);
+
+        // A redelivery of the consumed triggers runs nothing more.
+        claims.delete(dedupKey);
+        const index = add.mock.callCount();
+        assert.notEqual((await pollDelivery()).status, 'ignored');
+        const redelivered = await dispatchQueued(index);
+        assert.deepEqual(redelivered.dispatched, { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: 14 });
+        assert.deepEqual(redelivered.children, []);
+      });
+    });
+  }
 
   test(`${routing} retry whose run's record cannot be read once its publication window has passed is not restarted, and the next follow-up runs only its own instructions`, async () => {
     await onIssue(backed, `unreadable-run-record-${backed}`, async () => {

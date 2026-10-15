@@ -193,7 +193,11 @@ async function postRequest(octokit: Octokit, input: IssueFollowupInput, body: st
  */
 async function claimRetry(
   db: Knex, input: IssueFollowupInput, history: TriggerHistory,
-  { dedupeKey, correlationId, request }: { dedupeKey: string; correlationId: string; request: Pick<IssueRetryRequest, 'requesterId' | 'requestedAt' | 'afterEventId'> },
+  { dedupeKey, correlationId, request, refresh }: {
+    dedupeKey: string; correlationId: string; request: Pick<IssueRetryRequest, 'requesterId' | 'requestedAt' | 'afterEventId'>;
+    /** Reads the trigger history afresh, to order a dispatch receipt recorded since `history`. */
+    refresh: () => Promise<TriggerLabelEvent[]>;
+  },
 ): Promise<FollowupResult | { reserved: IssueRetryRequest } | { stranded: IssueRetryRequest }> {
   if (!await input.redis.set(dedupeKey, correlationId, 'EX', 30, 'NX')) {
     return refused(409, `A run for issue #${input.issueNumber} was just requested. Refresh the task before retrying.`);
@@ -203,7 +207,7 @@ async function claimRetry(
   // one whose run the queue accepted is recorded consumed, so it is neither restarted nor
   // taken for owed, however its receipt was lost and whichever trigger it published.
   const stores = { database: db, evidence: outcomeEvidence(input.redis), runs: queueRetryRunEvidence(() => getIssueQueue()) };
-  const reconciled = await reconcileIssueRetryOutcomes(stores, issueKeyOf(input), history).then(() => true, (error: Error) => {
+  const reconciled = await reconcileIssueRetryOutcomes(stores, issueKeyOf(input), history, refresh).then(() => true, (error: Error) => {
     console.warn(`[followup] Could not reconcile earlier retry outcomes of #${input.issueNumber}: ${error.message}`);
     return false;
   });
@@ -436,7 +440,8 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   // independent trigger cannot adopt it.
   const requestedAt = clock(deps)();
   const claimed = await claimRetry(db, input, { events: baseline.events, now: requestedAt, consumedEventId },
-    { dedupeKey, correlationId, request: { requesterId: userId, requestedAt, afterEventId: baseline.afterEventId } });
+    { dedupeKey, correlationId, request: { requesterId: userId, requestedAt, afterEventId: baseline.afterEventId },
+      refresh: () => triggerLabelEvents(octokit, issueKeyOf(input), new Set(triggers)) });
   if ('status' in claimed) return claimed;
   const publishing = { input, octokit, trigger, triggers, dedupeKey, correlationId };
   if ('stranded' in claimed) return restartRetry(db, deps, publishing, claimed.stranded);

@@ -7,14 +7,16 @@ import { state, claims, add, request, redis, database, FIRST_COMMENT_ID } from '
 const { processDetectedIssue } = await import('../../core/src/daemon/issueDetection.js');
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
 const { findIssueSubmission, insertTaskSubmission } = await import('../../core/src/services/taskSubmissionService.js');
-const { resolveTaskSubmissionRetry, admittedSubmissionTriggers } = await import('../../core/src/services/taskSubmissionRetry.js');
+const { resolveTaskSubmissionRetry, admittedSubmissionTriggers, submissionTriggerEvents } = await import('../../core/src/services/taskSubmissionRetry.js');
 const { fetchIssueComments } = await import('../../../src/jobs/issueJob/github.js');
 const { generateClaudePrompt } = await import('../../core/src/claude/prompts/promptGenerator.js');
-const { selectRetryRun, consumeIssueRetryRequest, confirmIssueRetryPublication, redisRetryOutcomeEvidence } = await import('../../core/src/services/issueRetryRequest.js');
+const { selectRetryRun, consumeIssueRetryRequest, confirmIssueRetryPublication, redisRetryOutcomeEvidence, recordIssueRetryRunReceipt } = await import('../../core/src/services/issueRetryRequest.js');
 const { queueRetryRunEvidence, retryRunRecord } = await import('../../core/src/services/issueRetryRun.js');
 const { getIssueQueue } = await import('../../core/src/queue/taskQueue.js');
 type IssueRetryRequest = import('../../core/src/services/issueRetryRequest.js').IssueRetryRequest;
 type RetryRunChild = import('../../core/src/services/issueRetryRun.js').RetryRunChild;
+type RetryRunEvidence = import('../../core/src/services/issueRetryRun.js').RetryRunEvidence;
+type RunReceiptFence = import('../../core/src/services/issueRetryRequest.js').RunReceiptFence;
 type Submission = Awaited<ReturnType<typeof findIssueSubmission>>;
 
 /** The retry requests issue 14 may still owe a run, oldest first. */
@@ -51,12 +53,15 @@ const simulatedRunEnqueue: RunEnqueue = async (held, children, receiptEventId) =
   await redis.hset(key, fields);
   return true;
 };
-/** The production retry request store, on the test database, the given outcome evidence, and the queue's run records. */
-export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence, enqueue: RunEnqueue = simulatedRunEnqueue) => ({
+/**
+ * The production retry request store, on the test database, the given outcome evidence, and the queue's run records,
+ * which selection reads through `runs`.
+ */
+export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence, enqueue: RunEnqueue = simulatedRunEnqueue, runs: RetryRunEvidence = retryRuns) => ({
   select: (issue: IssueJobData, { submission }: { submission: Submission }) =>
     selectRetryRun(issue, submission
-      ? { admitted: events => admittedSubmissionTriggers(submission, events, database), consumedEventId: submission.retry_event_id, runs: held => retryRuns.read(held) }
-      : { runs: held => retryRuns.read(held) },
+      ? { admitted: events => admittedSubmissionTriggers(submission, events, database), consumedEventId: submission.retry_event_id, runs: held => runs.read(held) }
+      : { runs: held => runs.read(held) },
       { getOctokit: timelineOctokit, processingLabels: async () => ['AI'], database, now: () => state.now }),
   evidence: (_issue: IssueJobData, held: IssueRetryRequest) => outcomes.read(held),
   confirm: async (_issue: IssueJobData, held: IssueRetryRequest, publication: 'possible' | 'refused') => {
@@ -67,6 +72,7 @@ export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence, enqueue: Ru
     if (state.runEnqueueFails) throw new Error('Connection is closed.');
     return enqueue(held, children, receiptEventId);
   },
+  accepted: (_issue: IssueJobData, held: IssueRetryRequest) => retryRuns.accepted(held),
   consume: async (_issue: IssueJobData, held: IssueRetryRequest) => {
     if (state.consumeFails) throw new Error('SQLITE_BUSY: database is locked');
     await consumeIssueRetryRequest({ database, evidence: outcomes, runs: retryRuns }, held, state.now);
@@ -80,11 +86,12 @@ export function dispatcherDeps(children: Array<{ jobId: string; data: IssueJobDa
     findSubmission: (issue: IssueJobData) => findIssueSubmission(issue, database),
     resolveSubmissionRetry: (submission: Parameters<typeof resolveTaskSubmissionRetry>[0]) => resolveTaskSubmissionRetry(submission, database,
       timelineOctokit, async () => ['AI']),
-    // The durable receipt the production dispatcher records.
-    recordDispatch: async (id: string, triggerEventId?: string) => {
+    // The durable receipt the production dispatcher records, fenced on the receipt the dispatch read.
+    recordDispatch: async (id: string, triggerEventId: string | undefined, fence: RunReceiptFence) => {
       if (state.recordDispatchFails) throw new Error('SQLITE_BUSY: database is locked');
-      await database('task_submissions').where({ id }).update({ dispatch_complete: true, ...(triggerEventId ? { retry_event_id: triggerEventId } : {}) });
+      await recordIssueRetryRunReceipt(database, id, triggerEventId, fence);
     },
+    submissionTriggers: (submission: Parameters<typeof submissionTriggerEvents>[0]) => submissionTriggerEvents(submission, timelineOctokit, async () => ['AI']),
     recordDispatchFailure: async () => undefined,
     getAuthenticatedOctokit: async () => ({ request: async () => ({ data: { labels: state.issueLabels.map(name => ({ name })) } }) }),
     withRetry: async (operation: () => Promise<unknown>) => operation(), retryConfigs: { githubApi: {} },

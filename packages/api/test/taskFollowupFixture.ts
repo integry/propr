@@ -36,9 +36,10 @@ export const state = {
   consumeFails: false, confirmFails: false, recordDispatchFails: false, runEnqueueFails: false,
   // Whether the queue's records of requested retries' runs cannot be read.
   runRecordsFail: false,
-  // Hooks run while GitHub creates a posted comment, and while it reads the issue, before it answers.
+  // Hooks run while GitHub creates a posted comment, while it reads the issue, and while it reads its timeline, before it answers.
   onCommentPost: undefined as undefined | (() => void | Promise<void>),
   onIssueRead: undefined as undefined | (() => void | Promise<void>),
+  onTimelineRead: undefined as undefined | (() => void | Promise<void>),
   // Outcome records the route left to retry after responding; a test runs them.
   outcomeRetries: [] as Array<() => Promise<boolean>>,
   // The ID GitHub gives the next posted comment; every post gets its own.
@@ -140,6 +141,7 @@ const request = mock.fn(async (route: string, options: { body?: string; issue_nu
   }
   if (route.includes('/labels')) return { data: await labelRequest(route, options as { name?: string; labels?: string[] }) };
   if (route.endsWith('/timeline')) {
+    await state.onTimelineRead?.();
     if (state.timelineReadFails) throw new Error('read ECONNRESET');
     return { data: state.timeline };
   }
@@ -218,7 +220,7 @@ beforeEach(async () => {
   state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
   state.labelAdd = 'ok'; state.timelineReadFails = false; state.delayedLabels = []; state.redisFails = false; state.onLabelAdd = undefined;
   state.consumeFails = false; state.confirmFails = false; state.recordDispatchFails = false; state.runEnqueueFails = false; state.runRecordsFail = false;
-  state.onCommentPost = undefined; state.onIssueRead = undefined; state.outcomeRetries = [];
+  state.onCommentPost = undefined; state.onIssueRead = undefined; state.onTimelineRead = undefined; state.outcomeRetries = [];
   state.now = Date.parse('2026-10-15T10:00:00.700Z'); state.sleeps = [];
   state.timeline = [{ id: 1, event: 'labeled', created_at: '2026-10-15T09:59:00Z', label: { name: 'AI' }, actor: { id: HUMAN_ACTOR_ID } }];
   claims.clear(); hashes.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();

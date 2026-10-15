@@ -3,7 +3,9 @@ import type { Logger } from 'pino';
 import {
     db, findIssueSubmission, resolveTaskSubmissionRetry, admittedSubmissionTriggers, logger, selectRetryRun, consumeIssueRetryRequest,
     confirmIssueRetryPublication, redisRetryOutcomeEvidence, queueRetryRunEvidence, enqueueIssueRetryRun, recordIssueRetryRunReceipt,
-    type IssueRetryRequest, type RetryPublicationOutcome, type RetryRun, type RetryRunChild, type SubmissionRetry,
+    acceptedRunTrigger, submissionTriggerEvents,
+    type IssueRetryRequest, type RetryPublicationOutcome, type RetryRun, type RetryRunChild, type RetryRunReceipt, type SubmissionRetry,
+    type RunReceiptFence, type TriggerLabelEvent,
 } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
@@ -55,13 +57,18 @@ interface RetryRequestStore {
      * queue had already accepted the run from another dispatch, and added nothing.
      */
     enqueue(issue: IssueJobData, request: IssueRetryRequest, children: RetryRunChild[], receiptEventId: string | null): Promise<boolean>;
+    /** The run the queue accepted for the request, by whichever dispatch, retired or not, or null when it accepted none. */
+    accepted(issue: IssueJobData, request: IssueRetryRequest): Promise<RetryRunReceipt | null>;
     /** Durably records that the dispatch carried the request into its run, which releases it and retires the record of its run. */
     consume(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
 }
 
 interface DispatcherDeps {
     findSubmission: typeof findIssueSubmission;
-    recordDispatch: (id: string, triggerEventId?: string) => Promise<void>;
+    /** Records the submission's dispatch receipt through `triggerEventId`, fenced on the receipt the dispatch read. */
+    recordDispatch: (id: string, triggerEventId: string | undefined, fence: RunReceiptFence) => Promise<void>;
+    /** The trigger events of the submission's issue, read afresh, which order a receipt another dispatch recorded since. */
+    submissionTriggers?: (submission: NonNullable<Submission>) => Promise<TriggerLabelEvent[]>;
     resolveSubmissionRetry: typeof resolveTaskSubmissionRetry;
     recordDispatchFailure: (id: string, error: string) => Promise<void>;
     getAuthenticatedOctokit: typeof getAuthenticatedOctokit;
@@ -113,7 +120,8 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         findSubmission: findIssueSubmission,
         resolveSubmissionRetry: resolveTaskSubmissionRetry,
         recordDispatchFailure: async (id, error) => { await db('task_submissions').where({ id, dispatch_complete: false }).update({ state: 'failed', error }); },
-        recordDispatch: (id, triggerEventId) => recordIssueRetryRunReceipt(db, id, triggerEventId),
+        recordDispatch: async (id, triggerEventId, fence) => { await recordIssueRetryRunReceipt(db, id, triggerEventId, fence); },
+        submissionTriggers: submission => submissionTriggerEvents(submission),
         getAuthenticatedOctokit,
         withRetry,
         retryConfigs,
@@ -131,6 +139,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
             evidence: (_issue, request) => retryOutcomes.read(request),
             confirm: async (_issue, request, publication) => { await confirmIssueRetryPublication({ database: db, evidence: retryOutcomes }, request, publication); },
             enqueue: (_issue, request, children, receiptEventId) => enqueueIssueRetryRun(issueQueue, request, children, { receiptEventId }),
+            accepted: (_issue, request) => retryRuns.accepted(request),
             consume: async (_issue, request) => consumeIssueRetryRequest({ database: db, evidence: retryOutcomes, runs: retryRuns }, request),
         },
     });
@@ -333,18 +342,60 @@ async function releaseRetryRequest(issueRef: IssueJobData, request: IssueRetryRe
 }
 
 /**
+ * The fence of the submission's dispatch receipt this dispatch records: the
+ * receipt it read when it began, which its selection admitted triggers after.
+ */
+function receiptFence(submission: NonNullable<Submission>, deps: DispatcherDeps, fence: Partial<RunReceiptFence> = {}): RunReceiptFence {
+    return {
+        observedEventId: submission.retry_event_id ?? null,
+        history: () => deps.submissionTriggers ? deps.submissionTriggers(submission) : Promise.reject(new Error('The issue\'s trigger history cannot be read')),
+        ...fence,
+    };
+}
+
+/**
+ * Records, in the submission's dispatch receipt, the trigger the queue's
+ * record of a request's accepted run names, whichever dispatch accepted it:
+ * not a trigger this dispatch's own, possibly stale, selection would have run
+ * it on. A receipt that already records it or a later trigger is kept. A
+ * receipt that cannot be read, ordered or written fails, so the request is
+ * not recorded consumed and its record is not retired.
+ */
+async function recordAcceptedRun(submission: NonNullable<Submission>, request: IssueRetryRequest, run: RetryRunReceipt, deps: DispatcherDeps): Promise<void> {
+    const fence = receiptFence(submission, deps);
+    const { eventId, events } = await acceptedRunTrigger(request, run, fence);
+    await deps.recordDispatch(submission.id, eventId, { ...fence, events });
+}
+
+/**
+ * Settles a request whose run another dispatch, such as one that recovered
+ * this job while it was stalled, accepted since this one selected it: the
+ * submission's receipt records that run's trigger, as the queue's record
+ * names it, not this stale selection's, before the request is recorded
+ * consumed; it stays open, with its record, until it is.
+ */
+async function settleAcceptedRequest(issueRef: IssueJobData, submission: Submission, request: IssueRetryRequest | null, deps: DispatcherDeps): Promise<void> {
+    if (submission && request) {
+        const accepted = await deps.retryRequests?.accepted(issueRef, request);
+        if (accepted) await recordAcceptedRun(submission, request, accepted, deps);
+    }
+    await releaseRetryRequest(issueRef, request, deps);
+}
+
+/**
  * Records the consumption of requests an earlier dispatch carried into its
  * run, as its receipt of their own triggers or the queue's record of their
  * runs shows, after recording that consumption itself failed; a submission's
- * receipt first records the trigger the run consumed. Selection already owes
- * them nothing, so a failure here is left to a later delivery or follow-up,
- * which settles them on the same records, rather than holding back this delivery.
+ * receipt first records the trigger the run consumed, as the record names it.
+ * Selection already owes them nothing, so a failure here is left to a later
+ * delivery or follow-up, which settles them on the same records, rather than
+ * holding back this delivery.
  */
 async function settleCarriedRequests(issueRef: IssueJobData, submission: Submission, run: RetryRun, deps: DispatcherDeps): Promise<void> {
     for (const request of run.carried ?? []) {
         logger.info({ issue: issueRef.number, retryCommentId: request.commentId }, 'Recording the consumption of a retry request an earlier dispatch carried');
         try {
-            if (submission && request.receiptEventId) await deps.recordDispatch(submission.id, request.receiptEventId);
+            if (submission && request.run) await recordAcceptedRun(submission, request, request.run, deps);
             await deps.retryRequests?.consume(issueRef, request);
         } catch (error) {
             logger.warn({ issue: issueRef.number, retryCommentId: request.commentId, errMessage: (error as Error).message }, 'Could not record a carried retry request as consumed');
@@ -481,10 +532,8 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
 
         const receiptEventId = consumedTrigger(run, trigger);
         if (!await enqueueChildren(issueRef, { request: retryRequest, receiptEventId }, children, deps)) {
-            // Another dispatch of the request, such as one that recovered this job while it was stalled, accepted its
-            // run since this one selected it: its receipt is that dispatch's to record, not this stale selection's.
             correlatedLogger.info({ jobId, issue: issueRef.number, retryCommentId: retryRequest?.commentId }, 'Retry request\'s run was already accepted; adding nothing');
-            await releaseRetryRequest(issueRef, retryRequest, deps);
+            await settleAcceptedRequest(issueRef, submission, retryRequest, deps);
             return { status: 'skipped', reason: 'retry_request_already_dispatched', issueNumber: issueRef.number };
         }
         for (const child of children) {
@@ -500,7 +549,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
         }
         const jobsEnqueued = children.length;
 
-        if (submission) await deps.recordDispatch(submission.id, receiptEventId);
+        if (submission) await deps.recordDispatch(submission.id, receiptEventId, receiptFence(submission, deps, { admitted: true }));
         await releaseRetryRequest(issueRef, retryRequest, deps);
         correlatedLogger.info({ jobId, issue: issueRef.number, jobsEnqueued }, 'Matrix dispatcher job complete.');
         return { status: 'dispatched', jobsEnqueued, issueNumber: issueRef.number };
