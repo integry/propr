@@ -3,6 +3,7 @@ import test, { after } from 'node:test';
 import { closeConnection } from '@propr/core';
 after(() => closeConnection());
 import { EventEmitter } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import { RedisStore } from 'connect-redis';
 import session from 'express-session';
 import { BrowserSessionLifecycle } from '../authSession.js';
@@ -19,19 +20,19 @@ test('browser sessions drain admitted HTTP/Engine.IO work and pending Redis writ
     const store = new RedisStore({ client: { set: async () => { events.push('write'); await write.promise; } } });
     lifecycle.trackStore(store);
     const response = new EventEmitter();
-    lifecycle.middleware({} as any, response as any, () => events.push('admitted'));
+    lifecycle.middleware({} as never, response as never, () => events.push('admitted'));
     const closing = lifecycle.close(async () => { events.push('disconnect'); });
     const refused = { statusCode: 0, end() { events.push('refused'); } };
-    lifecycle.middleware({} as any, refused as any, () => assert.fail('admitted during shutdown'));
+    lifecycle.middleware({} as never, refused as never, () => assert.fail('admitted during shutdown'));
     assert.equal(refused.statusCode, 503);
-    const saving = store.set('session', { cookie: {} } as any);
+    const saving = store.set('session', { cookie: {} } as unknown as session.SessionData);
     await Promise.resolve();
     assert.deepEqual(events, ['admitted', 'refused', 'write']);
     response.emit('close'); // Aborted response does not release an outstanding store operation.
     await Promise.resolve();
     assert.equal(events.includes('disconnect'), false);
     let lateError: unknown;
-    await store.set('late', { cookie: {} } as any, error => { lateError = error; });
+    await store.set('late', { cookie: {} } as unknown as session.SessionData, error => { lateError = error; });
     assert.ok(lateError);
     write.resolve(); await saving; await closing;
     assert.deepEqual(events, ['admitted', 'refused', 'write', 'disconnect']);
@@ -52,9 +53,9 @@ test('Engine.IO upgrade response shim drains when its socket closes', async () =
     const http = createServer();
     const io = new Server(http, { transports: ['websocket'] });
     const lifecycle = new BrowserSessionLifecycle();
-    io.engine.use(lifecycle.middleware as any);
+    io.engine.use(lifecycle.middleware as never);
     await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
-    const client = connect(`http://127.0.0.1:${(http.address() as any).port}`, { transports: ['websocket'], reconnection: false });
+    const client = connect(`http://127.0.0.1:${(http.address() as AddressInfo).port}`, { transports: ['websocket'], reconnection: false });
     try {
         await new Promise<void>((resolve, reject) => { client.once('connect', resolve); client.once('connect_error', reject); });
         let disconnected = false;
@@ -140,7 +141,7 @@ for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 
         let callbacks = 0;
         let disconnects = 0;
         const store = {
-            [name]: function (...received: any[]) {
+            [name]: function (...received: unknown[]) {
                 assert.equal(this, store);
                 assert.equal(typeof received.pop(), 'function');
                 assert.deepEqual(received, args);
@@ -150,7 +151,7 @@ for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 
         };
         lifecycle.trackStore(store as unknown as session.Store);
         const response = new EventEmitter();
-        lifecycle.middleware({} as any, response as any, () => {});
+        lifecycle.middleware({} as never, response as never, () => {});
         const result = store[name](...args, () => { callbacks++; });
         const closing = lifecycle.close(async () => { disconnects++; });
         const repeatedClose = lifecycle.close(async () => assert.fail('disconnected twice'));
@@ -179,9 +180,9 @@ for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 
         const callbackError = new Error('persistence failed');
         let complete!: (...results: unknown[]) => unknown;
         const store = {
-            [name]: function (...received: any[]) {
+            [name]: function (...received: unknown[]) {
                 assert.equal(this, store);
-                complete = received.pop();
+                complete = received.pop() as typeof complete;
                 assert.deepEqual(received, args);
                 events.push('write');
                 return undefined;
@@ -189,7 +190,7 @@ for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 
         };
         lifecycle.trackStore(store as unknown as session.Store);
         const response = new EventEmitter();
-        lifecycle.middleware({} as any, response as any, () => events.push('admitted'));
+        lifecycle.middleware({} as never, response as never, () => events.push('admitted'));
         const result = store[name](...args, function (this: unknown, ...results: unknown[]) {
             assert.equal(this, callbackReceiver);
             assert.deepEqual(results, [callbackError, data, 'extra']);

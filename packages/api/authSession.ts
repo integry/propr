@@ -98,11 +98,11 @@ export class BrowserSessionLifecycle {
     trackStore(store: session.Store): void {
         // Stores may complete through callbacks, promises, or both.
         for (const name of ['get', 'set', 'touch', 'destroy', 'clear', 'length', 'ids', 'all'] as const) {
-            const target = store as unknown as Record<string, (...args: any[]) => Promise<unknown>>;
+            const target = store as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
             // Store extensions are optional (MemoryStore, for example, has no ids).
             if (typeof target[name] !== 'function') continue;
             const original = target[name].bind(store);
-            target[name] = (...args: any[]) => {
+            target[name] = (...args: unknown[]) => {
                 if (this.storeClosed) {
                     const error = new Error('Browser sessions are closed');
                     const callback = args.at(-1);
@@ -115,7 +115,7 @@ export class BrowserSessionLifecycle {
                 if (typeof callback === 'function') {
                     callbackDone = new Promise<void>(resolve => {
                         settleCallback = resolve;
-                        args[args.length - 1] = function (this: unknown, ...results: any[]) {
+                        args[args.length - 1] = function (this: unknown, ...results: unknown[]) {
                             try { return callback.apply(this, results); }
                             finally { resolve(); }
                         };
