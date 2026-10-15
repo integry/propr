@@ -9,6 +9,6 @@ SIGKILL/mutation-after: intent=1 mutation=0 receipt=0 integrity=ok
 SIGKILL/decision-before: intent=1 mutation=0 receipt=0 integrity=ok
 SIGKILL/decision-after: intent=1 mutation=0 receipt=0 integrity=ok
 SIGKILL/result-before: intent=1 mutation=0 receipt=0 integrity=ok
-SIGKILL/result-after: intent=1 mutation=1 receipt=1 integrity=ok
-SIGKILL/reply-before: intent=1 mutation=1 receipt=1 integrity=ok
-SIGKILL/reply-after: intent=1 mutation=1 receipt=1 integrity=ok
+SIGKILL/result-after: intent=1 mutation=1 receipt=1 restart=200 delivery=unavailable redispatch=0 reconstruction=0 cardinality=unchanged integrity=ok
+SIGKILL/reply-before: intent=1 mutation=1 receipt=1 restart=200 delivery=unavailable redispatch=0 reconstruction=0 cardinality=unchanged integrity=ok
+SIGKILL/reply-after: intent=1 mutation=1 receipt=1 restart=200 delivery=unavailable redispatch=0 reconstruction=0 cardinality=unchanged integrity=ok

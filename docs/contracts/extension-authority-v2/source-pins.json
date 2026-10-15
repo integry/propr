@@ -18,8 +18,8 @@
   "packages/core/src/storage/service.ts": "c7aaafe01b48466a838268e84015bfb25f03771a164cb6aa7bd069b42aea364e",
   "packages/core/src/storage/proofIdentity.ts": "ef54cac930b926a7cb1dd182b2273863cc79e91506a85ab5c39d0ea13168fb85",
   "packages/core/test/extensionAuthorityV2.test.ts": "d13af26069e9dc9bb244ba44a70b432d2d00944b74aa0120a8410a67cded57a8",
-  "packages/core/test/extensionAuthorityV2Crash.test.ts": "a9ee1aaf628071cda1cdce199ebbdcacc04acf2495e049360612752399ffb3e5",
+  "packages/core/test/extensionAuthorityV2Crash.test.ts": "7e675c9af3b6efce92c3d72a9a1e9c79b091a5a28991dd594cf66b14b7d61f23",
   "packages/core/test/helpers/extensionAuthorityV2Fixture.ts": "d496d6d15dfce4d885a0e36b2a8dd50b0e223fb140d774269081438d929f1b0d",
-  "packages/core/test/helpers/extensionAuthorityV2Crash.ts": "45b16dfec64f16d1e990310d1acb36a9e5e61c55a685acede89f81212e7fac6f",
+  "packages/core/test/helpers/extensionAuthorityV2Crash.ts": "1c1c097939438ed433f8f9fc623e7589dc4e097d05f1bd117e9af14b74ab6996",
   "scripts/generate-extension-authority-v2-fixtures.mjs": "b6f860016ca031e449ba42a1cff38e71364653221aca36f459f853369acf38b6"
 }

@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import knex from 'knex';
+import { canonicalFleetJson as canonical, EXTENSION_RESULT_DELIVERY } from '@propr/shared';
 import { verifyProof } from '../../../docs/contracts/extension-authority-v2/verifier.mjs';
 test('SIGKILL at every dispatch boundary: SQLite recovers mutation and receipt together', async t => {
   const transcript: string[] = [];
@@ -48,8 +49,26 @@ test('SIGKILL at every dispatch boundary: SQLite recovers mutation and receipt t
         assert.equal(Boolean(receipt), committed);
         assert.equal(Boolean(await db('extension_authority_v2_intents').where({ challenge: m.r.challenge }).first()), fault !== 'intent-before');
         if (receipt) verifyProof(receipt.response, m.r, m.envelope.routing, m.trust, m.coreSPKI, Date.now(), new Set());
+        if (receipt) {
+          const receipts = await db('extension_authority_v2_receipts');
+          assert.equal(receipts.filter(row => row.challenge === m.r.challenge).length, 1);
+          await new Promise<void>((resolve, reject) => {
+            const child = spawn(process.execPath, ['--experimental-test-module-mocks', '--import', 'tsx', 'packages/core/test/helpers/extensionAuthorityV2Crash.ts', 'recover', metadata, action], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 20_000 });
+            let error = ''; child.stderr.on('data', data => { error += data; }); child.on('error', reject);
+            child.on('exit', (code, signal) => code === 0 ? resolve() : reject(Error(error || `Recovery exit ${code}/${signal}`)));
+          });
+          const replay = JSON.parse(await fs.readFile(metadata + '.recovery', 'utf8'));
+          assert.equal(replay.status, 200, replay.raw);
+          assert.equal(replay.raw, canonical({ contract: EXTENSION_RESULT_DELIVERY, receipt: JSON.parse(receipt.response), delivery: { state: 'unavailable' } }));
+          assert.deepEqual(replay.calls, { dispatch: 0, recipient: 0 });
+          // Full row equality catches repeated mutations, revisions, imports and receipts.
+          assert.deepEqual(await db('extension_profiles'), profiles);
+          assert.deepEqual(await db('extension_profile_revisions'), revisions);
+          assert.deepEqual(await db('extension_skill_bundles'), bundles);
+          assert.deepEqual(await db('extension_authority_v2_receipts'), receipts);
+        }
         assert.deepEqual(await db.raw('PRAGMA integrity_check'), [{ integrity_check: 'ok' }]);
-        if (action === 'profile.create') transcript.push(`SIGKILL/${fault}: intent=${Number(fault !== 'intent-before')} mutation=${Number(committed)} receipt=${Number(committed)} integrity=ok\n`);
+        if (action === 'profile.create') transcript.push(`SIGKILL/${fault}: intent=${Number(fault !== 'intent-before')} mutation=${Number(committed)} receipt=${Number(committed)}${committed ? ' restart=200 delivery=unavailable redispatch=0 reconstruction=0 cardinality=unchanged' : ''} integrity=ok\n`);
       } finally { await db.destroy(); }
     } finally { if (root) await fs.rm(root, { recursive: true, force: true }); await fs.rm(dir, { recursive: true, force: true }); }
   });
