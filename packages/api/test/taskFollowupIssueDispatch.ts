@@ -188,3 +188,14 @@ export async function requestChildId(commentId = FIRST_COMMENT_ID) {
 export const consumedTrigger = async () => (await database('task_submissions').where({ issue_number: 14 }).first('retry_event_id') as { retry_event_id: string | null } | undefined)?.retry_event_id;
 /** Whether issue 14's submission's dispatch receipt is recorded at all. */
 export const receiptRecorded = async () => Boolean((await database('task_submissions').where({ issue_number: 14 }).first('dispatch_complete') as { dispatch_complete: number | boolean } | undefined)?.dispatch_complete);
+
+/** A later trigger is delivered after the shared window and dispatched; it must not carry any request. */
+export async function assertIndependentRun(backed: boolean) {
+  const { dispatched, children } = await deliverAndDispatch();
+  assert.equal(dispatched.status, 'dispatched');
+  const [{ data: child }] = children;
+  assert.equal(child.retryCommentId, undefined, 'no request\'s instructions are exempted into the new run');
+  assert.equal(child.retryRequesterId, undefined);
+  if (backed) assert.equal(child.userId, 'submitter', 'the new run belongs to the submitter');
+  else assert.notEqual(child.userId, 'user-1', 'the new run does not belong to the requester');
+}
