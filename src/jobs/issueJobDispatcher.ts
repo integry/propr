@@ -237,9 +237,14 @@ async function resolveDispatchTargets(
     return { basesToProcess, agentModelsToProcess, reasoningLevel };
 }
 
-/** A requested retry runs for its requester; other deliveries keep the submitter. */
-function submissionRunOwner(submitterId: string, issueRef: IssueJobData, isRetry: boolean): string {
-    return isRetry && issueRef.retryRequesterId ? issueRef.retryRequesterId : submitterId;
+/**
+ * A run of the selected request runs for its requester, whether or not the
+ * submission's initial dispatch receipt was recorded: the request, not the
+ * receipt or the trigger the run is suffixed with, decides whose run it is.
+ * Deliveries without a request keep the submitter.
+ */
+function submissionRunOwner(submitterId: string, request: IssueRetryRequest | null): string {
+    return request ? request.requesterId : submitterId;
 }
 
 /**
@@ -259,7 +264,7 @@ function applyRunRequest(issueRef: IssueJobData, submission: Submission, request
         delete issueRef.retryPublishedAt;
     }
     if (submission) {
-        issueRef.userId = submissionRunOwner(submission.user_id, issueRef, Boolean(retry));
+        issueRef.userId = submissionRunOwner(submission.user_id, request);
         issueRef.correlationId = retry ? `${submission.id}-${retry.eventId}` : submission.id;
     } else if (issueRef.retryRequesterId) {
         issueRef.userId = issueRef.retryRequesterId;

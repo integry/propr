@@ -151,12 +151,15 @@ export async function takeRecordsOffline() {
   return async () => { await database.schema.renameTable('issue_retry_request_states_offline', 'issue_retry_request_states'); };
 }
 
-/** Runs `body` on issue 14 with or without a submission whose initial run was dispatched and failed. */
-export async function onIssue(backed: boolean, key: string, body: () => Promise<void>) {
+/**
+ * Runs `body` on issue 14 with or without a submission whose initial run was dispatched and failed. A submission's
+ * initial dispatch receipt is recorded unless `receipt` is false: then its initial delivery is still to be dispatched.
+ */
+export async function onIssue(backed: boolean, key: string, body: () => Promise<void>, { receipt = true } = {}) {
   const row = backed ? await insertTaskSubmission(database, { user_id: 'submitter', submission_key: key,
     payload_hash: 'hash', repository: 'integry/propr', payload: '{}', attachments: '[]' }) : null;
   try {
-    if (row) await database('task_submissions').where({ id: row.id }).update({ issue_number: 14, task_id: 'failed-issue-task', dispatch_complete: true });
+    if (row) await database('task_submissions').where({ id: row.id }).update({ issue_number: 14, task_id: 'failed-issue-task', dispatch_complete: receipt });
     await body();
   } finally {
     if (row) await database('task_submissions').where({ id: row.id }).delete();
@@ -183,3 +186,5 @@ export async function requestChildId(commentId = FIRST_COMMENT_ID) {
 
 /** The latest trigger issue 14's submission's dispatch receipt records as consumed. */
 export const consumedTrigger = async () => (await database('task_submissions').where({ issue_number: 14 }).first('retry_event_id') as { retry_event_id: string | null } | undefined)?.retry_event_id;
+/** Whether issue 14's submission's dispatch receipt is recorded at all. */
+export const receiptRecorded = async () => Boolean((await database('task_submissions').where({ issue_number: 14 }).first('dispatch_complete') as { dispatch_complete: number | boolean } | undefined)?.dispatch_complete);

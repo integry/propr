@@ -46,6 +46,7 @@ import type { IssueJobData, JobResult } from '../../core/src/queue/taskQueue.typ
 import { state, postFollowup, useLiveQueue, applyLabels, database, FIRST_COMMENT_ID, HUMAN_ACTOR_ID } from './taskFollowupFixture.js';
 import {
   openRequests, promptFor, onIssue, takeRecordsOffline, dispatcherDeps, retryRequestStoreFor, dedupKey, requestChildId, postedComments, retryRuns, consumedTrigger,
+  receiptRecorded,
 } from './taskFollowupIssueDispatch.js';
 
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
@@ -713,6 +714,45 @@ for (const [routing, backed] of routings) {
     });
   });
 }
+
+test('a submission-backed follow-up by another user, after the initial dispatch ran the submitter\'s actual child but exhausted its attempts without recording its receipt, runs its own actual child once for that user', { skip, timeout: 60_000 }, async () => {
+  await onIssue(true, 'live-initial-receipt-unrecorded', async () => {
+    await withLiveQueue(async live => {
+      live.startWorker();
+      // The submission's initial delivery: each attempt adds the submitter's child, which fails fast, but cannot record the receipt.
+      live.failChildren(true);
+      state.recordDispatchFails = true;
+      assert.notEqual((await livePoll()).status, 'ignored');
+      for (let attempt = 0; attempt < 3; attempt++) assertFailedAttempt(await live.settled(), /database is locked/);
+      assert.equal((await live.childSettled()).event, 'failed');
+      await live.drained();
+      state.recordDispatchFails = false;
+      const initialChild = 'issue-integry-propr-14-claude-claude-opus-5-5-main';
+      assert.deepEqual(live.children.map(child => child.jobId), [initialChild, initialChild, initialChild], 'every attempt adds the same ordinary child');
+      assert.equal(live.runs.length, 1, 'which BullMQ deduplicates, so it ran once');
+      assert.deepEqual([live.runs[0].data.userId, live.runs[0].data.retryRequesterId, live.runs[0].data.retryCommentId], ['submitter', undefined, undefined]);
+      assert.equal(await (await live.queue.getJob(initialChild))?.getState(), 'failed', 'the failed child is kept, and blocks nothing');
+      assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the exhausted parent is removed');
+      assert.equal(await receiptRecorded(), false, 'the receipt is still not recorded');
+
+      // The run failed without a PR; another user follows up, and their own child runs for them, once.
+      live.failChildren(false);
+      state.now += 60_000;
+      await owned.del(dedupKey);
+      const next = await postFollowup({ body: 'Second user instructions' }, 'failed-issue-task', 'user-2');
+      assert.equal(next.json.state, 'queued', String(next.json.message ?? next.json.error));
+      assert.equal(next.json.restartedRequest, undefined);
+      await assertDispatched(await live.settled(), live.children.at(-1), { requester: 'user-2', commentId: FIRST_COMMENT_ID, instructions: /Second user instructions/ });
+      assert.equal((await live.childSettled()).event, 'completed');
+      await live.drained();
+      assert.equal(live.runs.length, 2, 'the submitter\'s initial child did not run again');
+      assertChildRun(live.runs[1], { jobId: await requestChildId(), requester: 'user-2', commentId: FIRST_COMMENT_ID, instructions: /Second user instructions/ });
+      assert.equal(await receiptRecorded(), true, 'the receipt records the request\'s dispatch');
+      assert.deepEqual(await openRequests(), []);
+      assert.deepEqual(await runRecords(), []);
+    });
+  }, { receipt: false });
+});
 
 test('a delivery while an issue-only retry\'s job waits does not replace it, and the one job runs for the requester', { skip, timeout: 30_000 }, async () => {
   await withLiveQueue(async live => {
