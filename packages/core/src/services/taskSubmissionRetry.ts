@@ -35,6 +35,29 @@ async function latestProcessingLabelEvent(
   return event;
 }
 
+async function terminalMillis(submission: TaskSubmission, database: Knex): Promise<number | null> {
+  const taskId = submission.latest_task_id || submission.task_id;
+  if (!taskId) return null;
+  const latest = await database('task_history').where({ task_id: taskId }).orderBy('history_id', 'desc').first('state', 'timestamp');
+  if (!latest || !['completed', 'failed', 'cancelled'].includes(String(latest.state).toLowerCase())) return null;
+  const terminalTime = timestampMillis(latest.timestamp);
+  return Number.isFinite(terminalTime) ? terminalTime : null;
+}
+
+/**
+ * The earliest time a new trigger event is admitted as a retry of the
+ * submission's terminal work, or null while none can be. GitHub truncates
+ * event times to seconds, so without a consumed retry identity an event in
+ * the terminal second is indistinguishable from the initial trigger.
+ */
+export async function submissionRetryAdmissibleAt(submission: TaskSubmission, database: Knex = db): Promise<number | null> {
+  if (!submission.dispatch_complete) return 0;
+  const terminalTime = await terminalMillis(submission, database);
+  if (terminalTime === null) return null;
+  const terminalSecond = Math.floor(terminalTime / 1000) * 1000;
+  return submission.retry_event_id ? terminalSecond : terminalSecond + 1000;
+}
+
 /** Capture the initial trigger, or recognize a fresh trigger after terminal work. */
 export async function resolveTaskSubmissionRetry(
   submission: TaskSubmission,
@@ -46,12 +69,8 @@ export async function resolveTaskSubmissionRetry(
     const event = await latestProcessingLabelEvent(submission, new Set(await processingLabels()), getOctokit);
     return event?.id ? { eventId: String(event.id) } : null;
   }
-  const taskId = submission.latest_task_id || submission.task_id;
-  if (!taskId) return null;
-  const latest = await database('task_history').where({ task_id: taskId }).orderBy('history_id', 'desc').first('state', 'timestamp');
-  if (!latest || !['completed', 'failed', 'cancelled'].includes(String(latest.state).toLowerCase())) return null;
-  const terminalTime = timestampMillis(latest.timestamp);
-  if (!Number.isFinite(terminalTime)) return null;
+  const terminalTime = await terminalMillis(submission, database);
+  if (terminalTime === null) return null;
   const triggers = new Set(await processingLabels());
   const event = await latestProcessingLabelEvent(submission, triggers, getOctokit);
   const eventTime = timestampMillis(event?.created_at);

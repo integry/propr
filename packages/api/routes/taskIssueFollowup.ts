@@ -2,13 +2,15 @@ import type { Knex } from 'knex';
 import type { Redis } from 'ioredis';
 import {
   getAuthenticatedOctokit, getIssueQueue, loadPrimaryProcessingLabels, parseSlashCommand,
-  safeAddLabel, safeRemoveLabel, generateCorrelationId, logger,
+  safeAddLabel, safeRemoveLabel, generateCorrelationId, logger, findIssueSubmission, submissionRetryAdmissibleAt,
 } from '@propr/core';
 import { enqueueIssueImplementationJob } from './planIssueHelpers.js';
 
 export interface IssueFollowupDeps {
   processingLabels?: typeof loadPrimaryProcessingLabels;
   enqueueIssue?: typeof enqueueIssueImplementationJob;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface IssueFollowupInput {
@@ -31,6 +33,9 @@ interface IssueData {
   pull_request?: unknown;
   labels?: Array<{ name?: string } | string>;
 }
+
+// Bounds the wait for the retry second when the database clock runs ahead.
+const MAX_ADMISSION_WAIT_MS = 2000;
 
 const refused = (status: number, error: string): FollowupResult => ({ status, body: { error } });
 
@@ -57,6 +62,17 @@ async function issueRunPending(owner: string, repo: string, issueNumber: number)
     const data = job?.data as { repoOwner?: string; repoName?: string; number?: number } | undefined;
     return job?.name === 'processGitHubIssue' && data?.repoOwner === owner && data.repoName === repo && Number(data.number) === issueNumber;
   });
+}
+
+/** A submission-backed issue only reruns on a trigger event its dispatcher admits as a retry. */
+async function retryAdmissibleAt(db: Knex, owner: string, repo: string, issueNumber: number): Promise<number | null> {
+  const submission = await findIssueSubmission({ repoOwner: owner, repoName: repo, number: issueNumber }, db);
+  return submission ? submissionRetryAdmissibleAt(submission, db) : 0;
+}
+
+async function waitUntil(deps: IssueFollowupDeps, time: number): Promise<void> {
+  const wait = Math.min(time - (deps.now ?? Date.now)(), MAX_ADMISSION_WAIT_MS);
+  if (wait > 0) await (deps.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms))))(wait);
 }
 
 async function checkRetryable(db: Knex, input: IssueFollowupInput): Promise<FollowupResult | null> {
@@ -94,6 +110,10 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   }) as { data: IssueData };
   if (issue.pull_request) return refused(409, `#${issueNumber} is a pull request, not the task's issue.`);
   if (issue.state !== 'open') return refused(409, `Issue #${issueNumber} is closed. Reopen it before retrying.`);
+  const admissibleAt = await retryAdmissibleAt(db, owner, repo, issueNumber);
+  if (admissibleAt === null) {
+    return refused(409, `Issue #${issueNumber}'s latest run is not recorded as finished, so a new trigger would not start a run. Refresh the task before retrying.`);
+  }
   const labels = (issue.labels ?? []).map(label => typeof label === 'string' ? label : label.name ?? '');
   const triggers = await (deps.processingLabels ?? loadPrimaryProcessingLabels)();
   const trigger = retryTrigger(task, labels, triggers);
@@ -125,6 +145,9 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
 
   // Re-applying records a trigger after the failure; an already present label
   // would emit no event, and submission-backed issues only rerun on a new one.
+  // GitHub stamps that event to the second, so it must land after the
+  // failure's second for the dispatcher to tell it from the initial trigger.
+  await waitUntil(deps, admissibleAt);
   const context = { octokit, owner, repo, issueNumber, logger: logger.withCorrelation(correlationId) };
   if (!(labels.includes(trigger) ? await safeRemoveLabel(context, trigger) : true) || !await safeAddLabel(context, trigger)) {
     await redis.del(dedupeKey);

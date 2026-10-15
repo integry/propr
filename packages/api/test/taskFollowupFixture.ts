@@ -22,6 +22,9 @@ export const state = {
   webhookFirst: false, prState: 'open', commentPostError: undefined as unknown,
   startLoopFails: false, pendingReview: false,
   issueState: 'open', issueLabels: ['AI', 'llm-claude-opus-5-5'] as string[], labelFails: false,
+  // GitHub's clock and the issue timeline it stamps label events on, to the second.
+  now: Date.parse('2026-10-15T10:00:00.700Z'), sleeps: [] as number[],
+  timeline: [] as Array<{ id: number; event: string; created_at: string; label: { name: string } }>,
 };
 
 const claims = new Map<string, string>();
@@ -41,6 +44,7 @@ const redis = {
   },
   rpush: mock.fn(async (...args: [string, string]) => { assert.equal(args.length, 2); return 1; }),
   expire: async () => 1,
+  smembers: async () => [],
 };
 const acceptedJobs = new Map<string, CommentJobData>();
 const add = mock.fn(async (...args: [string, CommentJobData, JobsOptions]) => {
@@ -75,6 +79,13 @@ const request = mock.fn(async (route: string, options: { body?: string }) => {
     return { data: { state: state.issueState, labels: state.issueLabels.map(name => ({ name })) } };
   }
   if (route.includes('/labels') && state.labelFails) throw Object.assign(new Error('label write failed'), { status: 500 });
+  if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+    const created_at = new Date(Math.floor(state.now / 1000) * 1000).toISOString();
+    for (const name of (options as { labels?: string[] }).labels ?? []) {
+      state.timeline.push({ id: state.timeline.length + 1, event: 'labeled', created_at, label: { name } });
+    }
+  }
+  if (route.endsWith('/timeline')) return { data: state.timeline };
   return { data: {} };
 });
 const authModule = await import('../../core/src/auth/githubAuth.js');
@@ -107,11 +118,15 @@ setUltrafixDeps({
 beforeEach(() => {
   state.startLoopFails = false; state.prState = 'open'; state.commentPostError = undefined;
   state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
+  state.now = Date.parse('2026-10-15T10:00:00.700Z'); state.sleeps = [];
+  state.timeline = [{ id: 1, event: 'labeled', created_at: '2026-10-15T09:59:00Z', label: { name: 'AI' } }];
   claims.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();
   for (const fn of [add, request, invalidate, startLoop, clearState, updateLabels, redis.rpush]) fn.mock.resetCalls();
 });
 
 const { closeConnection } = await import('@propr/core');
+const { up: submissionsTable } = await import('../../core/src/db/migrations/20260922000000_add_task_submissions.js');
+const { up: submissionIdentity } = await import('../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js');
 const { createTaskRoutes, resolveFollowupThread } = await import('../routes/taskRoutes.js');
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
@@ -127,7 +142,10 @@ await database.schema.createTable('task_history', table => {
   table.increments('history_id');
   table.text('task_id').notNullable();
   table.text('state').notNullable();
+  table.text('timestamp').nullable();
 });
+await submissionsTable(database);
+await submissionIdentity(database);
 await database('tasks').insert([
   { task_id: 'completed-task', repository: 'integry/propr', issue_number: 12, pr_number: 7, task_type: 'issue' },
   { task_id: 'task-without-pr', repository: 'integry/propr', issue_number: null, pr_number: null, task_type: 'issue' },
@@ -140,7 +158,7 @@ await database('tasks').insert([
 ]);
 await database('task_history').insert([
   { task_id: 'failed-issue-task', state: 'processing' },
-  { task_id: 'failed-issue-task', state: 'failed' },
+  { task_id: 'failed-issue-task', state: 'failed', timestamp: '2026-10-15T10:00:00.500Z' },
   { task_id: 'running-issue-task', state: 'processing' },
 ]);
 
@@ -160,7 +178,10 @@ export async function postFollowup(body: Record<string, unknown>, taskId = 'task
     status(code: number) { result.status = code; return this; },
     json(payload: unknown) { result.json = payload as Record<string, unknown>; return this; },
   } as unknown as Response;
-  await createTaskRoutes({ db: database, processingLabels: async () => ['AI'] }).postFollowup({
+  await createTaskRoutes({
+    db: database, processingLabels: async () => ['AI'],
+    now: () => state.now, sleep: async ms => { state.sleeps.push(ms); state.now += ms; },
+  }).postFollowup({
     params: { taskId },
     body,
     user: { id: 'user-1' },

@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Redis } from 'ioredis';
 import type { IssueCommentEvent } from '@octokit/webhooks-types';
-import { state, claims, add, request, postFollowup, processCommentEvent, redis } from './taskFollowupFixture.js';
+import type { Job } from 'bullmq';
+import type { IssueJobData } from '../../core/src/queue/taskQueue.types.js';
+import { state, claims, add, request, postFollowup, processCommentEvent, redis, database } from './taskFollowupFixture.js';
+
+const { processDetectedIssue } = await import('../../core/src/daemon/issueDetection.js');
+const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
+const { insertTaskSubmission, findIssueSubmission } = await import('../../core/src/services/taskSubmissionService.js');
+const { resolveTaskSubmissionRetry } = await import('../../core/src/services/taskSubmissionRetry.js');
 
 const routes = () => request.mock.calls.map(call => call.arguments[0]);
 const pullRequestReads = () => routes().filter(route => route.includes('/pulls/'));
@@ -42,13 +49,74 @@ test('a failed issue-only implementation is retried through the issue job for th
   assert.ok(claims.has('issue:dedup:integry:propr:14'), 'the relabel webhook shares the issue dedup window');
 });
 
+/** The label webhook GitHub delivers for the route's relabel, as the webhook handler admits it. */
+const relabelWebhook = () => processDetectedIssue({
+  id: 1014, number: 14, title: 'Issue', url: 'https://github.com/integry/propr/issues/14', repoOwner: 'integry', repoName: 'propr',
+  labels: [...state.issueLabels], createdAt: '2026-10-15T09:00:00Z', updatedAt: '2026-10-15T10:00:01Z',
+  triggeredBy: 'propr-dev[bot]', triggeredById: '99', source: 'webhook', triggerReapplied: true,
+}, 'relabel-webhook', redis as unknown as Redis);
+
 test('the relabel webhook and a repeated request do not queue a second run', async () => {
   await postFollowup({ body: 'Retry' }, 'failed-issue-task');
+  assert.deepEqual(await relabelWebhook(), { status: 'ignored', reason: 'duplicate_delivery' });
   const repeated = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
   assert.equal(repeated.status, 409);
   assert.match(String(repeated.json.error), /just requested/);
   assert.equal(add.mock.callCount(), 1);
   assert.equal(postedComments().length, 1);
+
+  // Outside the shared window the same delivery is admitted, so the claim is what held it back.
+  claims.clear();
+  assert.notEqual((await relabelWebhook()).status, 'ignored');
+  assert.equal(add.mock.callCount(), 2);
+});
+
+test('a first retry within the failure second relabels after it, so the submission dispatcher starts a run', async () => {
+  const row = await insertTaskSubmission(database, { user_id: 'submitter', submission_key: 'retry-in-failure-second',
+    payload_hash: 'hash', repository: 'integry/propr', payload: '{}', attachments: '[]' });
+  try {
+    // The initial run was dispatched and failed at 10:00:00.500; no retry identity is consumed yet.
+    await database('task_submissions').where({ id: row.id }).update({ issue_number: 14, task_id: 'failed-issue-task', dispatch_complete: true });
+    const result = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
+    assert.equal(result.json.state, 'queued');
+    assert.deepEqual(state.sleeps, [300], 'the relabel waits for the second after the failure');
+    assert.equal(state.timeline.at(-1)!.created_at, '2026-10-15T10:00:01.000Z');
+
+    const children: string[] = [];
+    const deps = {
+      findSubmission: (issue: IssueJobData) => findIssueSubmission(issue, database),
+      resolveSubmissionRetry: (submission: Parameters<typeof resolveTaskSubmissionRetry>[0]) => resolveTaskSubmissionRetry(submission, database,
+        async () => ({ request: async () => ({ data: state.timeline }) }) as never, async () => ['AI']),
+      recordDispatch: async () => undefined, recordDispatchFailure: async () => undefined,
+      getAuthenticatedOctokit: async () => ({ request: async () => ({ data: { labels: state.issueLabels.map(name => ({ name })) } }) }),
+      withRetry: async (operation: () => Promise<unknown>) => operation(), retryConfigs: { githubApi: {} },
+      validateRepositoryInfo: async () => ({ isValid: true, repoData: { defaultBranch: 'main' } }),
+      resolveLlmLabel: async () => ({ agentAlias: 'claude', model: 'claude-opus-5-5' }),
+      getAllCustomLabels: async () => [], getDefaultModel: () => 'claude-opus-5-5',
+      issueQueue: { add: async (_name: string, _data: IssueJobData, options: { jobId: string }) => { children.push(options.jobId); } },
+    } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
+    const [name, data] = add.mock.calls[0].arguments as unknown as [string, IssueJobData];
+    const dispatched = await handleDispatchWithDeps({ id: 'issue-integry-propr-14', name, data } as Job<IssueJobData>, deps);
+    assert.equal(dispatched.status, 'dispatched');
+    assert.deepEqual(children, [`issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${state.timeline.at(-1)!.id}`]);
+  } finally {
+    await database('task_submissions').where({ id: row.id }).delete();
+  }
+});
+
+test('a submission whose latest run has not finished is refused before posting', async () => {
+  const row = await insertTaskSubmission(database, { user_id: 'submitter', submission_key: 'retry-while-running',
+    payload_hash: 'hash', repository: 'integry/propr', payload: '{}', attachments: '[]' });
+  try {
+    await database('task_submissions').where({ id: row.id }).update({ issue_number: 14, task_id: 'failed-issue-task', latest_task_id: 'running-issue-task', dispatch_complete: true });
+    const result = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
+    assert.equal(result.status, 409);
+    assert.match(String(result.json.error), /not recorded as finished/);
+    assert.equal(postedComments().length, 0);
+    assert.equal(add.mock.callCount(), 0);
+  } finally {
+    await database('task_submissions').where({ id: row.id }).delete();
+  }
 });
 
 test('an issue run already queued or running refuses the retry before posting', async () => {
