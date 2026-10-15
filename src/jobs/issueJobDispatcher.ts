@@ -1,6 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { db, findIssueSubmission, resolveTaskSubmissionRetry, logger, findIssueRetryRequest, settleIssueRetryRequest, type IssueRetryRequest, type SubmissionRetry } from '@propr/core';
+import { db, findIssueSubmission, resolveTaskSubmissionRetry, logger, findIssueRetryRequest, isRetryRequestTrigger, settleIssueRetryRequest, type IssueRetryRequest, type SubmissionRetry } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
@@ -34,6 +34,8 @@ type IssueQueueAdd = typeof issueQueue.add;
 
 interface RetryRequestStore {
     find(issue: IssueJobData): Promise<IssueRetryRequest | null>;
+    /** Whether the trigger a delivery dispatches is the one the request published; the latest when unresolved. */
+    publishedBy(issue: IssueJobData, request: IssueRetryRequest, triggerEventId?: string): Promise<boolean>;
     settle(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
 }
 
@@ -104,6 +106,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         resolveDefaultAgentForDispatcher,
         retryRequests: {
             find: async issue => findIssueRetryRequest(await workerRedis(), issue),
+            publishedBy: (issue, request, triggerEventId) => isRetryRequestTrigger(issue, request, triggerEventId),
             settle: async (issue, request) => settleIssueRetryRequest(await workerRedis(), issue, request),
         },
     });
@@ -208,19 +211,28 @@ function submissionRunOwner(submitterId: string, issueRef: IssueJobData, isRetry
 /**
  * Fixes who the run is for and which retry request it carries. A relabel
  * delivery recovering a requested retry carries neither the requester nor the
- * comment to exempt; the request held for the issue does.
+ * comment to exempt; the request held for the issue does, but only for the
+ * trigger it published. A held request whose release failed after its
+ * dispatch or refusal is not adopted by a later, independent trigger.
  */
 async function resolveRunRequest(
     issueRef: IssueJobData,
     submission: Awaited<ReturnType<typeof findIssueSubmission>>,
-    retry: SubmissionRetry | null,
+    trigger: SubmissionRetry | null,
     deps: DispatcherDeps,
 ): Promise<IssueRetryRequest | null> {
+    const retry = submission?.dispatch_complete ? trigger : null;
     if (submission) [issueRef.repoOwner, issueRef.repoName] = submission.repository.split('/');
-    const request = await deps.retryRequests?.find(issueRef) ?? null;
-    if (request && issueRef.retryCommentId === undefined) {
-        issueRef.retryRequesterId = request.requesterId;
-        issueRef.retryCommentId = request.commentId;
+    const held = await deps.retryRequests?.find(issueRef) ?? null;
+    let request = held && held.commentId === issueRef.retryCommentId ? held : null;
+    if (held && issueRef.retryCommentId === undefined) {
+        if (await deps.retryRequests!.publishedBy(issueRef, held, trigger?.eventId)) {
+            request = held;
+            issueRef.retryRequesterId = held.requesterId;
+            issueRef.retryCommentId = held.commentId;
+        } else {
+            logger.info({ issue: issueRef.number, triggerEventId: trigger?.eventId }, 'Held retry request belongs to another trigger; not adopted');
+        }
     }
     if (submission) {
         issueRef.userId = submissionRunOwner(submission.user_id, issueRef, Boolean(retry));
@@ -231,9 +243,9 @@ async function resolveRunRequest(
     return request;
 }
 
-/** Once the children carry the request, a later trigger is a new one. */
+/** Once the children carry the request it is consumed; one whose release fails stays bound to the dispatched trigger. */
 async function releaseRetryRequest(issueRef: IssueJobData, request: IssueRetryRequest | null, deps: DispatcherDeps, log: Logger): Promise<void> {
-    if (!request || request.commentId !== issueRef.retryCommentId) return;
+    if (!request) return;
     await deps.retryRequests?.settle(issueRef, request).catch((error: Error) => {
         log.warn({ issue: issueRef.number, error: error.message }, 'Failed to release the dispatched retry request');
     });
@@ -245,7 +257,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
     const trigger = submission ? await deps.resolveSubmissionRetry(submission) : null;
     const retry = submission?.dispatch_complete ? trigger : null;
     if (submission?.dispatch_complete && !retry) return { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: issueRef.number };
-    const retryRequest = await resolveRunRequest(issueRef, submission, retry, deps);
+    const retryRequest = await resolveRunRequest(issueRef, submission, trigger, deps);
     const correlationId = issueRef.correlationId || generateCorrelationId();
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
     correlatedLogger.info({ jobId, issueRef: issueRef.number }, 'Running as matrix dispatcher...');

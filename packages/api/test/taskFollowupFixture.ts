@@ -22,12 +22,19 @@ export const state = {
   webhookFirst: false, prState: 'open', commentPostError: undefined as unknown,
   startLoopFails: false, pendingReview: false,
   issueState: 'open', issueLabels: ['AI', 'llm-claude-opus-5-5'] as string[], labelFails: false,
-  // How GitHub answers the trigger add: applied but its response lost, or refused; and whether labels can be read back.
-  labelAdd: 'ok' as 'ok' | 'lost' | 'rejected', labelReadFails: false,
+  // How GitHub answers the trigger add: applied but its response lost, refused, or timed out while GitHub
+  // still applies it later; and whether labels can be read back.
+  labelAdd: 'ok' as 'ok' | 'lost' | 'rejected' | 'delayed', labelReadFails: false, delayedLabels: [] as string[],
+  // Whether releasing a held retry request fails, as during a Redis connection failure.
+  settleFails: false,
   // GitHub's clock and the issue timeline it stamps label events on, to the second.
   now: Date.parse('2026-10-15T10:00:00.700Z'), sleeps: [] as number[],
-  timeline: [] as Array<{ id: number; event: string; created_at: string; label: { name: string } }>,
+  timeline: [] as Array<{ id: number; event: string; created_at: string; label: { name: string }; actor: { id: number } }>,
 };
+
+// The GitHub identity the app's credentials act as, and a person labelling the issue themselves.
+export const APP_ACTOR_ID = 99;
+export const HUMAN_ACTOR_ID = 7;
 
 const claims = new Map<string, string>();
 const redis = {
@@ -40,6 +47,7 @@ const redis = {
   setex: async (key: string, _ttl: number, value: string) => { claims.set(key, value); },
   del: async (key: string) => { claims.delete(key); },
   eval: async (script: string, _count: number, key: string, token: string) => {
+    if (state.settleFails) throw new Error('Connection is closed.');
     if (claims.get(key) !== token) return 0;
     if (script.includes("redis.call('DEL'")) claims.delete(key);
     return 1;
@@ -73,7 +81,7 @@ const request = mock.fn(async (route: string, options: { body?: string }) => {
   if (route.startsWith('POST') && route.endsWith('/comments') && state.commentPostError) throw state.commentPostError;
   if (state.webhookFirst && options.body?.includes('<!-- propr-api-followup:')) await deliverWebhook(options.body);
   if (route.startsWith('POST') && route.endsWith('/comments')) return { data: {
-    id: 6157569382, body: options.body, user: { login: 'propr-dev[bot]', type: 'Bot' },
+    id: 6157569382, body: options.body, user: { id: APP_ACTOR_ID, login: 'propr-dev[bot]', type: 'Bot' },
     created_at: '2026-10-13T00:00:00Z', updated_at: '2026-10-13T00:00:00Z',
   } };
   if (route.startsWith('GET') && route.includes('/pulls/')) return { data: { state: state.prState, head: { ref: 'acceptance' }, labels: [] } };
@@ -84,6 +92,19 @@ const request = mock.fn(async (route: string, options: { body?: string }) => {
   if (route.endsWith('/timeline')) return { data: state.timeline };
   return { data: {} };
 });
+/** Labels the issue as `actorId` at GitHub's current second, recording the timeline events. */
+export function applyLabels(names: string[], actorId: number) {
+  const created_at = new Date(Math.floor(state.now / 1000) * 1000).toISOString();
+  for (const name of names) {
+    state.timeline.push({ id: state.timeline.length + 1, event: 'labeled', created_at, label: { name }, actor: { id: actorId } });
+    if (!state.issueLabels.includes(name)) state.issueLabels = [...state.issueLabels, name];
+  }
+}
+/** GitHub finishes a timed-out trigger add after the route has already read the labels back. */
+export function landDelayedLabels() {
+  applyLabels(state.delayedLabels, APP_ACTOR_ID);
+  state.delayedLabels = [];
+}
 /** The issue's label endpoints; an add is applied before its response can be lost. */
 function labelRequest(route: string, options: { name?: string; labels?: string[] }) {
   if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/labels') {
@@ -96,11 +117,11 @@ function labelRequest(route: string, options: { name?: string; labels?: string[]
   }
   if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
     if (state.labelAdd === 'rejected') throw Object.assign(new Error('Validation Failed'), { status: 422 });
-    const created_at = new Date(Math.floor(state.now / 1000) * 1000).toISOString();
-    for (const name of options.labels ?? []) {
-      state.timeline.push({ id: state.timeline.length + 1, event: 'labeled', created_at, label: { name } });
-      if (!state.issueLabels.includes(name)) state.issueLabels = [...state.issueLabels, name];
+    if (state.labelAdd === 'delayed') {
+      state.delayedLabels.push(...options.labels ?? []);
+      throw new Error('Request timed out');
     }
+    applyLabels(options.labels ?? [], APP_ACTOR_ID);
     if (state.labelAdd === 'lost') throw new Error('socket hang up');
   }
   return {};
@@ -135,9 +156,9 @@ setUltrafixDeps({
 beforeEach(() => {
   state.startLoopFails = false; state.prState = 'open'; state.commentPostError = undefined;
   state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
-  state.labelAdd = 'ok'; state.labelReadFails = false;
+  state.labelAdd = 'ok'; state.labelReadFails = false; state.delayedLabels = []; state.settleFails = false;
   state.now = Date.parse('2026-10-15T10:00:00.700Z'); state.sleeps = [];
-  state.timeline = [{ id: 1, event: 'labeled', created_at: '2026-10-15T09:59:00Z', label: { name: 'AI' } }];
+  state.timeline = [{ id: 1, event: 'labeled', created_at: '2026-10-15T09:59:00Z', label: { name: 'AI' }, actor: { id: HUMAN_ACTOR_ID } }];
   claims.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();
   for (const fn of [add, request, invalidate, startLoop, clearState, updateLabels, redis.rpush]) fn.mock.resetCalls();
 });

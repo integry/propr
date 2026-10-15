@@ -3,9 +3,9 @@ import { db } from '../db/connection.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import type { TaskSubmission } from './taskSubmissionService.js';
+import { triggerLabelEvents, type TriggerLabelEvent } from './issueRetryRequest.js';
 
 export interface SubmissionRetry { eventId: string }
-interface LabelEvent { id?: number; event: string; created_at?: string; label?: { name: string }; actor?: { id: number } }
 
 function timestampMillis(value: unknown): number {
   if (value instanceof Date) return value.getTime();
@@ -19,20 +19,9 @@ async function latestProcessingLabelEvent(
   submission: TaskSubmission,
   triggers: Set<string>,
   getOctokit: typeof getAuthenticatedOctokit,
-): Promise<LabelEvent | undefined> {
-  const [owner, repo] = submission.repository.split('/');
-  const octokit = await getOctokit();
-  let event: LabelEvent | undefined;
-  for (let page = 1; ; page++) {
-    const { data } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
-      owner, repo, issue_number: submission.issue_number!, per_page: 100, page,
-    });
-    for (const item of data as LabelEvent[]) {
-      if (item.event === 'labeled' && item.label && triggers.has(item.label.name)) event = item;
-    }
-    if (data.length < 100) break;
-  }
-  return event;
+): Promise<TriggerLabelEvent | undefined> {
+  const [repoOwner, repoName] = submission.repository.split('/');
+  return (await triggerLabelEvents(await getOctokit(), { repoOwner, repoName, number: submission.issue_number! }, triggers)).at(-1);
 }
 
 async function terminalMillis(submission: TaskSubmission, database: Knex): Promise<number | null> {
