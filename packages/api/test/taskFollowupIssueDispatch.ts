@@ -6,12 +6,12 @@ import { state, add, request, redis, database } from './taskFollowupFixture.js';
 const { processDetectedIssue } = await import('../../core/src/daemon/issueDetection.js');
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
 const { findIssueSubmission } = await import('../../core/src/services/taskSubmissionService.js');
-const { resolveTaskSubmissionRetry } = await import('../../core/src/services/taskSubmissionRetry.js');
+const { resolveTaskSubmissionRetry, admittedSubmissionTriggers } = await import('../../core/src/services/taskSubmissionRetry.js');
 const { fetchIssueComments } = await import('../../../src/jobs/issueJob/github.js');
 const { generateClaudePrompt } = await import('../../core/src/claude/prompts/promptGenerator.js');
-const { findIssueRetryRequests, settleIssueRetryRequest, retryRequestForTrigger } = await import('../../core/src/services/issueRetryRequest.js');
+const { findIssueRetryRequests, settleIssueRetryRequest, selectRetryRun, consumeIssueRetryRequest } = await import('../../core/src/services/issueRetryRequest.js');
 type IssueRetryRequest = import('../../core/src/services/issueRetryRequest.js').IssueRetryRequest;
-type RetryDelivery = import('../../core/src/services/issueRetryRequest.js').RetryDelivery;
+type Submission = Awaited<ReturnType<typeof findIssueSubmission>>;
 
 export const retryRequestKey = 'issue:retry-request:integry:propr:14';
 export const routes = () => request.mock.calls.map(call => call.arguments[0]);
@@ -27,8 +27,10 @@ export const relabelWebhook = () => processDetectedIssue({
 const timelineOctokit = async () => ({ request: async () => ({ data: state.timeline }) }) as never;
 export const retryRequestStore = {
   find: (issue: IssueJobData) => findIssueRetryRequests(redis as unknown as Redis, issue),
-  publishedBy: (issue: IssueJobData, held: IssueRetryRequest[], delivery: RetryDelivery) =>
-    retryRequestForTrigger(issue, held, delivery, { getOctokit: timelineOctokit, processingLabels: async () => ['AI'] }),
+  select: (issue: IssueJobData, held: IssueRetryRequest[], { commentId, submission }: { commentId?: number; submission: Submission }) =>
+    selectRetryRun(issue, held, { commentId, ...(submission ? { admitted: events => admittedSubmissionTriggers(submission, events, database) } : {}) },
+      { getOctokit: timelineOctokit, processingLabels: async () => ['AI'], database, now: () => state.now }),
+  consume: (_issue: IssueJobData, held: IssueRetryRequest) => consumeIssueRetryRequest(database, held, state.now),
   settle: (issue: IssueJobData, held: IssueRetryRequest) => settleIssueRetryRequest(redis as unknown as Redis, issue, held),
 };
 

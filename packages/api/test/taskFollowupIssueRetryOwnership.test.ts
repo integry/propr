@@ -6,12 +6,24 @@ import { retryRequestKey, routes, postedComments, relabelWebhook, dispatchQueued
 const { insertTaskSubmission } = await import('../../core/src/services/taskSubmissionService.js');
 
 // A held retry request belongs only to the trigger it published: a later,
-// independent trigger must not adopt it when releasing it failed, and a
-// trigger write that may still land keeps it for that write.
+// independent trigger must not adopt it when releasing it failed, a trigger
+// write that may still land keeps it for that write, a newer trigger does not
+// strand it, and a write whose outcome is unknown defers its trigger.
 
 const dedupKey = 'issue:dedup:integry:propr:14';
 const heldRequests = () => JSON.parse(claims.get(retryRequestKey) ?? '[]') as Array<{ commentId: number; requestedAt: number; publication: string }>;
 const routings = [['a submission-backed', true], ['an issue-only', false]] as const;
+const submissionRow = async () => database('task_submissions').where({ issue_number: 14 }).first('retry_event_id') as Promise<{ retry_event_id: string | null }>;
+
+/** Runs `body` while the durable request records cannot be written, as when the database is unavailable. */
+async function withoutDurableRecords(body: () => Promise<void>) {
+  await database.schema.renameTable('issue_retry_request_states', 'issue_retry_request_states_offline');
+  try {
+    await body();
+  } finally {
+    await database.schema.renameTable('issue_retry_request_states_offline', 'issue_retry_request_states');
+  }
+}
 
 /** Runs `body` on issue 14 with or without a submission whose initial run was dispatched and failed. */
 async function onIssue(backed: boolean, key: string, body: () => Promise<void>) {
@@ -161,44 +173,118 @@ for (const [routing, backed] of routings) {
     });
   });
 
-  test(`${routing} trigger write whose outcome cannot be reported is not adopted by its late relabel`, async () => {
+  test(`${routing} trigger write whose outcome cannot be reported to the held request still runs its late relabel for the requester`, async () => {
     await onIssue(backed, `unreported-trigger-${backed}`, async () => {
       state.labelAdd = 'delayed';
       state.onLabelAdd = () => { state.settleFails = true; };
-      const result = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
+      const result = await postFollowup({ body: 'Retry after the timeout' }, 'failed-issue-task');
       assert.equal(result.json.state, 'unknown');
-      assert.equal(heldRequests()[0].publication, 'pending');
+      assert.equal(heldRequests()[0].publication, 'pending', 'the held request could not be updated');
       state.settleFails = false;
 
-      // Without the reported outcome the late trigger cannot be told from an independent one.
+      // The durable record of the outcome lets the late trigger be told apart as the request's own.
       state.now += 5000;
       landDelayedLabels();
-      await assertIndependentRun(backed, 0);
+      const late = state.timeline.at(-1)!.id;
+      claims.delete(dedupKey);
+      assert.notEqual((await relabelWebhook()).status, 'ignored');
+      const { dispatched, children } = await dispatchQueued(0);
+      assert.equal(dispatched.status, 'dispatched');
+      const [{ data: child }] = children;
+      assert.equal(child.userId, 'user-1', 'the late trigger runs for the requester');
+      assert.equal(child.retryCommentId, 6157569382);
+      assert.match(await promptFor(child), /Retry after the timeout/);
+      if (backed) assert.equal((await submissionRow()).retry_event_id, String(late));
+      assert.equal(claims.has(retryRequestKey), false);
+    });
+  });
+
+  for (const [write, labelAdd] of [['timed-out', 'delayed'], ['refused', 'rejected']] as const) {
+    test(`${routing} ${write} trigger write whose outcome cannot be recorded anywhere defers the trigger it may own, unconsumed`, async () => {
+      await onIssue(backed, `unrecorded-trigger-${backed}-${write}`, async () => {
+        state.labelAdd = labelAdd;
+        state.onLabelAdd = () => { state.settleFails = true; };
+        await withoutDurableRecords(async () => {
+          assert.equal((await postFollowup({ body: 'Retry' }, 'failed-issue-task')).json.state, write === 'refused' ? 'failed' : 'unknown');
+        });
+        assert.equal(heldRequests()[0].publication, 'pending');
+        state.settleFails = false;
+        state.labelAdd = 'ok';
+
+        // The app's next trigger is the request's own if its write landed late, or an
+        // independent one if GitHub refused it; nothing tells which.
+        state.now += 5000;
+        if (write === 'refused') applyLabels(['AI'], APP_ACTOR_ID); else landDelayedLabels();
+        for (const index of [0, 1]) {
+          claims.delete(dedupKey);
+          assert.notEqual((await relabelWebhook()).status, 'ignored');
+          const { dispatched, children } = await dispatchQueued(index);
+          assert.deepEqual(dispatched, { status: 'skipped', reason: 'retry_request_unreconciled', issueNumber: 14 }, 'neither with nor without the request');
+          assert.equal(children.length, 0);
+        }
+        if (backed) assert.equal((await submissionRow()).retry_event_id, null, 'the trigger stays unconsumed for a later delivery');
+        assert.equal(heldRequests().length, 1, 'the obligation is retained');
+      });
+    });
+  }
+}
+
+for (const [routing, backed] of routings) {
+  test(`${routing} queued retry whose trigger a later, independent relabel supersedes still runs on its own trigger for its requester`, async () => {
+    await onIssue(backed, `superseded-queued-retry-${backed}`, async () => {
+      const result = await postFollowup({ body: 'Retry with these instructions' }, 'failed-issue-task');
+      assert.equal(result.json.state, 'queued');
+      const own = state.timeline.at(-1)!.id;
+      const [, queued] = add.mock.calls[0].arguments as unknown as [string, { retryCommentId?: number }];
+      assert.equal(queued.retryCommentId, 6157569382);
+
+      // Before the queued job runs, a person removes and re-applies the trigger.
+      state.now += 60_000;
+      applyLabels(['AI'], HUMAN_ACTOR_ID);
+      const independent = state.timeline.at(-1)!.id;
+
+      const { dispatched, children } = await dispatchQueued(0);
+      assert.equal(dispatched.status, 'dispatched');
+      const [{ jobId, data: child }] = children;
+      if (backed) assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${own}`, 'the request runs on the trigger it published');
+      assert.equal(child.userId, 'user-1');
+      assert.equal(child.retryRequesterId, 'user-1');
+      assert.equal(child.retryCommentId, 6157569382);
+      assert.match(await promptFor(child), /Retry with these instructions/);
+      assert.equal(claims.has(retryRequestKey), false, 'the request is released once its run carries it');
+      if (!backed) return;
+      assert.equal((await submissionRow()).retry_event_id, String(independent), 'the run consumes the trigger it was dispatched past');
+
+      // The independent trigger's own delivery starts no second run, with or without the request.
+      claims.delete(dedupKey);
+      assert.notEqual((await relabelWebhook()).status, 'ignored');
+      assert.deepEqual((await dispatchQueued(1)).dispatched, { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: 14 });
+    });
+  });
+
+  test(`${routing} retry whose enqueue failed is recovered on its own trigger after a later, independent relabel`, async () => {
+    await onIssue(backed, `superseded-unqueued-retry-${backed}`, async () => {
+      state.queueFails = true;
+      const result = await postFollowup({ body: 'Retry with these instructions' }, 'failed-issue-task');
+      assert.equal(result.json.state, 'unknown');
+      state.queueFails = false;
+      const own = state.timeline.at(-1)!.id;
+
+      // A person relabels before recovery; its delivery is the one that reaches the dispatcher.
+      state.now += 60_000;
+      applyLabels(['AI'], HUMAN_ACTOR_ID);
+      const independent = state.timeline.at(-1)!.id;
+      claims.delete(dedupKey);
+      assert.notEqual((await relabelWebhook()).status, 'ignored');
+      const { dispatched, children } = await dispatchQueued(1);
+      assert.equal(dispatched.status, 'dispatched');
+      const [{ jobId, data: child }] = children;
+      if (backed) assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${own}`);
+      assert.equal(child.userId, 'user-1', 'recovery runs the request for its requester');
+      assert.equal(child.retryCommentId, 6157569382);
+      assert.match(await promptFor(child), /Retry with these instructions/);
+      if (backed) assert.equal((await submissionRow()).retry_event_id, String(independent));
+      assert.equal(claims.has(retryRequestKey), false);
     });
   });
 }
-
-test('a queued retry whose trigger a later, independent relabel supersedes runs that trigger without the request, which stays held', async () => {
-  await onIssue(true, 'superseded-queued-retry', async () => {
-    const result = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
-    assert.equal(result.json.state, 'queued');
-    const [, queued] = add.mock.calls[0].arguments as unknown as [string, { retryCommentId?: number }];
-    assert.equal(queued.retryCommentId, 6157569382);
-
-    // Before the queued job runs, a person removes and re-applies the trigger.
-    state.now += 60_000;
-    applyLabels(['AI'], HUMAN_ACTOR_ID);
-    const independent = state.timeline.at(-1)!.id;
-
-    const { dispatched, children } = await dispatchQueued(0);
-    assert.equal(dispatched.status, 'dispatched');
-    const [{ jobId, data: child }] = children;
-    assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${independent}`);
-    assert.equal(child.userId, 'submitter', 'the independent trigger runs for the submitter');
-    assert.equal(child.retryRequesterId, undefined);
-    assert.equal(child.retryCommentId, undefined, 'the request\'s instructions are not exempted into it');
-    const submission = await database('task_submissions').where({ issue_number: 14 }).first('retry_event_id');
-    assert.equal(submission.retry_event_id, String(independent));
-    assert.equal(heldRequests().length, 1, 'the request stays held for its own trigger');
-  });
-});

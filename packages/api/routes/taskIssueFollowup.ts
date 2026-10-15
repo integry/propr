@@ -3,7 +3,7 @@ import type { Redis } from 'ioredis';
 import {
   getAuthenticatedOctokit, getIssueQueue, loadPrimaryProcessingLabels, parseSlashCommand,
   safeRemoveLabel, generateCorrelationId, logger, findIssueSubmission, submissionRetryAdmissibleAt,
-  reserveIssueRetryRequest, reportIssueRetryPublication, settleIssueRetryRequest, hasUnresolvedIssueRetryRequest, triggerLabelEvents,
+  reserveIssueRetryRequest, reportIssueRetryPublication, recordIssueRetryPublication, settleIssueRetryRequest, hasUnresolvedIssueRetryRequest, triggerLabelEvents,
   type IssueRetryRequest, type TriggerHistory, type TriggerLabelEvent,
 } from '@propr/core';
 import { enqueueIssueImplementationJob } from './planIssueHelpers.js';
@@ -183,12 +183,18 @@ async function holdRequest(input: IssueFollowupInput, request: IssueRetryRequest
 }
 
 /**
- * Lets recovery adopt the held request once its trigger write was applied or
- * may still be; still pending, a late trigger runs without it rather than
- * risk another's. A write GitHub refused published no trigger of the
- * request; releasing it is cleanup, as a failed release leaves it pending.
+ * Records the trigger write's outcome for recovery: `possible` once it was
+ * applied or may still be, or a refusal, which published no trigger of the
+ * request. The durable record survives a failure of the store holding the
+ * request; with neither record the outcome stays unknown, and recovery defers
+ * the request's trigger rather than run it with or without the request.
+ * Releasing a refused request is cleanup.
  */
-async function recordTriggerOutcome(input: IssueFollowupInput, request: IssueRetryRequest, applied: boolean | undefined): Promise<void> {
+async function recordTriggerOutcome(db: Knex, input: IssueFollowupInput, request: IssueRetryRequest, { applied, now }: { applied: boolean | undefined; now: number }): Promise<void> {
+  const publication = applied === false ? 'refused' : 'possible';
+  await recordIssueRetryPublication(db, request, publication, now).catch((error: Error) => {
+    console.warn(`[followup] Could not durably record the retry trigger as ${publication}: ${error.message}`);
+  });
   if (applied === false) {
     await settleIssueRetryRequest(input.redis, issueKeyOf(input), request).catch(() => undefined);
     return;
@@ -293,7 +299,7 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
 
   const context = { octokit, owner, repo, issueNumber, logger: logger.withCorrelation(correlationId) };
   const applied = await reapplyTrigger(context, input, labels.includes(trigger), trigger);
-  await recordTriggerOutcome(input, retryRequest, applied);
+  await recordTriggerOutcome(db, input, retryRequest, { applied, now: clock(deps)() });
   if (applied === undefined) {
     // GitHub may have applied the trigger or may still apply it, and its
     // relabel delivery or polling recovers the run; the held request keeps

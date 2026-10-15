@@ -197,6 +197,27 @@ test('a deliberate label retry after terminal work is distinct from delayed init
   } finally { await database.destroy(); }
 });
 
+test('an older unconsumed trigger stays admitted beside a newer one, and a consumed trigger admits only later ones', async () => {
+  const { admittedSubmissionTriggers } = await import('../src/services/taskSubmissionRetry.js');
+  const database = await fixture();
+  try {
+    await database.schema.createTable('task_history', table => { table.increments('history_id'); table.string('task_id'); table.string('state'); table.timestamp('timestamp').defaultTo(database.fn.now()); });
+    const row = await insertTaskSubmission(database, input);
+    await database('task_submissions').where({ id: row.id }).update({ issue_number: 17, task_id: 'initial-task', dispatch_complete: true });
+    await database('task_history').insert({ task_id: 'initial-task', state: 'failed', timestamp: '2026-09-22T10:00:00.500Z' });
+    const events = [1, 2, 3].map((id, index) => ({ id, event: 'labeled', label: { name: 'AI' },
+      created_at: ['2026-09-22T09:59:00Z', '2026-09-22T10:01:00Z', '2026-09-22T10:02:00Z'][index] }));
+    const admitted = async () => (await admittedSubmissionTriggers((await database('task_submissions').first())!, events, database)).map(event => event.id);
+    assert.deepEqual(await admitted(), [2, 3], 'both triggers after the failure are admitted, the older one too');
+    await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '2' });
+    assert.deepEqual(await admitted(), [3]);
+    await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '3' });
+    assert.deepEqual(await admitted(), [], 'a run consumes the triggers before the one it recorded');
+    await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '99' });
+    assert.deepEqual(await admitted(), [3], 'an unknown consumed trigger leaves only the latest to tell');
+  } finally { await database.destroy(); }
+});
+
 test('a definitive GitHub rejection can retry creation with the same identity', async () => {
   const database = await fixture();
   try {

@@ -1,6 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { db, findIssueSubmission, resolveTaskSubmissionRetry, logger, findIssueRetryRequests, retryRequestForTrigger, settleIssueRetryRequest, type IssueRetryRequest, type RetryDelivery, type SubmissionRetry } from '@propr/core';
+import { db, findIssueSubmission, resolveTaskSubmissionRetry, admittedSubmissionTriggers, logger, findIssueRetryRequests, selectRetryRun, consumeIssueRetryRequest, settleIssueRetryRequest, type IssueRetryRequest, type RetryRun, type SubmissionRetry } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
@@ -32,13 +32,18 @@ interface AgentModelToProcess {
 
 type IssueQueueAdd = typeof issueQueue.add;
 
+type Submission = Awaited<ReturnType<typeof findIssueSubmission>>;
+
 interface RetryRequestStore {
     find(issue: IssueJobData): Promise<IssueRetryRequest[]>;
     /**
-     * The held request that published the trigger a delivery dispatches (the
-     * latest when unresolved); for a direct job, only the request it names.
+     * The run a delivery dispatches for the held requests: one on its own
+     * admitted, unconsumed trigger, none, or a deferral while one cannot be
+     * reconciled. `commentId` is the request a direct job names.
      */
-    publishedBy(issue: IssueJobData, requests: IssueRetryRequest[], delivery: RetryDelivery): Promise<IssueRetryRequest | null>;
+    select(issue: IssueJobData, requests: IssueRetryRequest[], delivery: { commentId?: number; submission: Submission }): Promise<RetryRun>;
+    /** Durably records that the dispatch carried the request into its run. */
+    consume(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
     settle(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
 }
 
@@ -109,7 +114,11 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         resolveDefaultAgentForDispatcher,
         retryRequests: {
             find: async issue => findIssueRetryRequests(await workerRedis(), issue),
-            publishedBy: (issue, requests, delivery) => retryRequestForTrigger(issue, requests, delivery),
+            select: (issue, requests, { commentId, submission }) => selectRetryRun(issue, requests, {
+                commentId,
+                ...(submission ? { admitted: events => admittedSubmissionTriggers(submission, events) } : {}),
+            }),
+            consume: async (_issue, request) => consumeIssueRetryRequest(db, request),
             settle: async (issue, request) => settleIssueRetryRequest(await workerRedis(), issue, request),
         },
     });
@@ -212,46 +221,41 @@ function submissionRunOwner(submitterId: string, issueRef: IssueJobData, isRetry
 }
 
 /**
- * Fixes who the run is for and which retry request it carries. A relabel
- * delivery recovering a requested retry carries neither the requester nor the
- * comment to exempt; the request held for the issue does, but only for the
- * trigger it published. A held request whose release failed after its
- * dispatch or refusal is not adopted by a later, independent trigger.
- *
- * A job the route queued carries its request, but a trigger it consumes may
- * be a later, independent one; it then runs without that request, which stays
- * held for its own trigger.
+ * The run the delivery dispatches. Held requests are selected by the same
+ * rules for a direct job and a recovering relabel or poll: each only on its
+ * own admitted, unconsumed trigger, oldest first, so a newer, independent
+ * trigger runs a request still owed a run instead of stranding it. Without
+ * one, the delivery's latest trigger runs without any request.
  */
-async function resolveRunRequest(
+async function resolveRun(
     issueRef: IssueJobData,
-    submission: Awaited<ReturnType<typeof findIssueSubmission>>,
-    trigger: SubmissionRetry | null,
+    submission: Submission,
     deps: DispatcherDeps,
-): Promise<IssueRetryRequest | null> {
-    const retry = submission?.dispatch_complete ? trigger : null;
+): Promise<{ run: RetryRun; trigger: SubmissionRetry | null }> {
     if (submission) [issueRef.repoOwner, issueRef.repoName] = submission.repository.split('/');
     const held = await deps.retryRequests?.find(issueRef) ?? [];
-    const queued = issueRef.retryCommentId;
-    let request: IssueRetryRequest | null = null;
-    if (queued !== undefined && !trigger) {
-        // No trigger is consumed, so the job dispatches its own request.
-        request = held.find(candidate => candidate.commentId === queued) ?? null;
-    } else if (queued !== undefined) {
-        request = held.length > 0 ? await deps.retryRequests!.publishedBy(issueRef, held, { triggerEventId: trigger!.eventId, commentId: queued }) : null;
-        if (!request) {
-            logger.info({ issue: issueRef.number, triggerEventId: trigger!.eventId }, 'Queued retry request did not publish the dispatched trigger; dispatching it without the request');
-            delete issueRef.retryRequesterId;
-            delete issueRef.retryCommentId;
-        }
-    }
-    if (issueRef.retryCommentId === undefined && held.length > 0) {
-        request = await deps.retryRequests!.publishedBy(issueRef, held, { triggerEventId: trigger?.eventId });
-        if (request) {
-            issueRef.retryRequesterId = request.requesterId;
-            issueRef.retryCommentId = request.commentId;
-        } else {
-            logger.info({ issue: issueRef.number, triggerEventId: trigger?.eventId }, 'Held retry requests belong to other triggers; not adopted');
-        }
+    const run: RetryRun = held.length > 0
+        ? await deps.retryRequests!.select(issueRef, held, { commentId: issueRef.retryCommentId, submission })
+        : { request: null };
+    if ('deferred' in run || !submission) return { run, trigger: null };
+    if (run.request) return { run, trigger: { eventId: run.triggerEventId! } };
+    return { run, trigger: await deps.resolveSubmissionRetry(submission) };
+}
+
+/**
+ * Fixes who the run is for and which retry request it carries. A relabel
+ * delivery recovering a requested retry carries neither the requester nor the
+ * comment to exempt; the selected request does. A job the route queued whose
+ * trigger run is another, independent one runs without its request.
+ */
+function applyRunRequest(issueRef: IssueJobData, submission: Submission, request: IssueRetryRequest | null, retry: SubmissionRetry | null): void {
+    if (request) {
+        issueRef.retryRequesterId = request.requesterId;
+        issueRef.retryCommentId = request.commentId;
+    } else if (submission && issueRef.retryCommentId !== undefined) {
+        logger.info({ issue: issueRef.number, triggerEventId: retry?.eventId }, 'Queued retry request does not own the dispatched trigger; dispatching it without the request');
+        delete issueRef.retryRequesterId;
+        delete issueRef.retryCommentId;
     }
     if (submission) {
         issueRef.userId = submissionRunOwner(submission.user_id, issueRef, Boolean(retry));
@@ -259,12 +263,18 @@ async function resolveRunRequest(
     } else if (issueRef.retryRequesterId) {
         issueRef.userId = issueRef.retryRequesterId;
     }
-    return request;
 }
 
-/** Once the children carry the request it is consumed; one whose release fails stays bound to the dispatched trigger. */
+/**
+ * Once the children carry the request it is consumed: durably, so neither a
+ * redelivery nor a later trigger runs it again, then released. A request whose
+ * release fails stays bound to the dispatched trigger.
+ */
 async function releaseRetryRequest(issueRef: IssueJobData, request: IssueRetryRequest | null, deps: DispatcherDeps, log: Logger): Promise<void> {
     if (!request) return;
+    await deps.retryRequests?.consume(issueRef, request).catch((error: Error) => {
+        log.warn({ issue: issueRef.number, error: error.message }, 'Failed to record the dispatched retry request as consumed');
+    });
     await deps.retryRequests?.settle(issueRef, request).catch((error: Error) => {
         log.warn({ issue: issueRef.number, error: error.message }, 'Failed to release the dispatched retry request');
     });
@@ -273,10 +283,16 @@ async function releaseRetryRequest(issueRef: IssueJobData, request: IssueRetryRe
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
     const { id: jobId, name: jobName, data: issueRef } = job;
     const submission = await deps.findSubmission(issueRef);
-    const trigger = submission ? await deps.resolveSubmissionRetry(submission) : null;
+    const { run, trigger } = await resolveRun(issueRef, submission, deps);
+    if ('deferred' in run) {
+        // Its trigger stays unconsumed, so a later delivery retries once its outcome is known.
+        logger.warn({ issue: issueRef.number, retryCommentId: run.deferred.commentId }, 'A held retry request may own the trigger but its publication is unreconciled; deferring dispatch');
+        return { status: 'skipped', reason: 'retry_request_unreconciled', issueNumber: issueRef.number };
+    }
     const retry = submission?.dispatch_complete ? trigger : null;
     if (submission?.dispatch_complete && !retry) return { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: issueRef.number };
-    const retryRequest = await resolveRunRequest(issueRef, submission, trigger, deps);
+    const retryRequest = run.request;
+    applyRunRequest(issueRef, submission, retryRequest, retry);
     const correlationId = issueRef.correlationId || generateCorrelationId();
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
     correlatedLogger.info({ jobId, issueRef: issueRef.number }, 'Running as matrix dispatcher...');
@@ -352,7 +368,8 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
             }
         }
 
-        if (submission) await deps.recordDispatch(submission.id, trigger?.eventId);
+        // A run of a request's own trigger also consumes newer triggers it was dispatched past.
+        if (submission) await deps.recordDispatch(submission.id, (run.request ? run.latestTriggerEventId : undefined) ?? trigger?.eventId);
         await releaseRetryRequest(issueRef, retryRequest, deps, correlatedLogger);
         correlatedLogger.info({ jobId, issue: issueRef.number, jobsEnqueued }, 'Matrix dispatcher job complete.');
         return { status: 'dispatched', jobsEnqueued, issueNumber: issueRef.number };

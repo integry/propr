@@ -15,13 +15,13 @@ function timestampMillis(value: unknown): number {
   return Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(timestamp) ? timestamp : `${timestamp}Z`);
 }
 
-async function latestProcessingLabelEvent(
+async function processingLabelEvents(
   submission: TaskSubmission,
   triggers: Set<string>,
   getOctokit: typeof getAuthenticatedOctokit,
-): Promise<TriggerLabelEvent | undefined> {
+): Promise<TriggerLabelEvent[]> {
   const [repoOwner, repoName] = submission.repository.split('/');
-  return (await triggerLabelEvents(await getOctokit(), { repoOwner, repoName, number: submission.issue_number! }, triggers)).at(-1);
+  return triggerLabelEvents(await getOctokit(), { repoOwner, repoName, number: submission.issue_number! }, triggers);
 }
 
 async function terminalMillis(submission: TaskSubmission, database: Knex): Promise<number | null> {
@@ -47,6 +47,28 @@ export async function submissionRetryAdmissibleAt(submission: TaskSubmission, da
   return submission.retry_event_id ? terminalSecond : terminalSecond + 1000;
 }
 
+/**
+ * The trigger events, oldest first, the submission admits as a fresh run:
+ * any before its initial dispatch, and afterwards those after the latest
+ * consumed trigger that a retry of its terminal work admits. A consumed
+ * trigger the history no longer shows leaves only the latest event to tell.
+ */
+export async function admittedSubmissionTriggers(submission: TaskSubmission, events: TriggerLabelEvent[], database: Knex = db): Promise<TriggerLabelEvent[]> {
+  if (!submission.dispatch_complete) return events;
+  const terminalTime = await terminalMillis(submission, database);
+  if (terminalTime === null) return [];
+  const consumed = submission.retry_event_id ? events.findIndex(event => String(event.id) === submission.retry_event_id) : -1;
+  const unconsumed = submission.retry_event_id && consumed === -1 ? events.slice(-1) : events.slice(consumed + 1);
+  // GitHub truncates event times to seconds. Within the terminal second,
+  // a different consumed identity distinguishes a relabel from redelivery.
+  const terminalSecond = Math.floor(terminalTime / 1000) * 1000;
+  return unconsumed.filter(event => {
+    const eventTime = timestampMillis(event.created_at);
+    return event.id && String(event.id) !== submission.retry_event_id && Number.isFinite(eventTime) && eventTime >= terminalSecond
+      && (eventTime > terminalTime || Boolean(submission.retry_event_id));
+  });
+}
+
 /** Capture the initial trigger, or recognize a fresh trigger after terminal work. */
 export async function resolveTaskSubmissionRetry(
   submission: TaskSubmission,
@@ -54,20 +76,8 @@ export async function resolveTaskSubmissionRetry(
   getOctokit = getAuthenticatedOctokit,
   processingLabels = loadPrimaryProcessingLabels,
 ): Promise<SubmissionRetry | null> {
-  if (!submission.dispatch_complete) {
-    const event = await latestProcessingLabelEvent(submission, new Set(await processingLabels()), getOctokit);
-    return event?.id ? { eventId: String(event.id) } : null;
-  }
-  const terminalTime = await terminalMillis(submission, database);
-  if (terminalTime === null) return null;
-  const triggers = new Set(await processingLabels());
-  const event = await latestProcessingLabelEvent(submission, triggers, getOctokit);
-  const eventTime = timestampMillis(event?.created_at);
-  // GitHub truncates event times to seconds. Within the terminal second,
-  // a different consumed identity distinguishes a relabel from redelivery.
-  const terminalSecond = Math.floor(terminalTime / 1000) * 1000;
-  if (!event?.id || String(event.id) === submission.retry_event_id
-    || !Number.isFinite(eventTime) || eventTime < terminalSecond
-    || (eventTime <= terminalTime && !submission.retry_event_id)) return null;
-  return { eventId: String(event.id) };
+  const events = await processingLabelEvents(submission, new Set(await processingLabels()), getOctokit);
+  const latest = events.at(-1);
+  if (!submission.dispatch_complete) return latest?.id ? { eventId: String(latest.id) } : null;
+  return latest && (await admittedSubmissionTriggers(submission, events, database)).at(-1) === latest ? { eventId: String(latest.id) } : null;
 }

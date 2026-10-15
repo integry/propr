@@ -161,7 +161,9 @@ setUltrafixDeps({
   reserveAutomaticWork: async () => 8, invalidateAutomaticWork: invalidate,
   getPendingReviewState: async () => ({ hasPendingReview: state.pendingReview }),
 });
-beforeEach(() => {
+beforeEach(async () => {
+  // Every posted request has the same comment ID, so its durable records start empty.
+  await database('issue_retry_request_states').delete();
   state.startLoopFails = false; state.prState = 'open'; state.commentPostError = undefined;
   state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
   state.labelAdd = 'ok'; state.labelReadFails = false; state.delayedLabels = []; state.settleFails = false; state.onLabelAdd = undefined;
@@ -174,6 +176,7 @@ beforeEach(() => {
 const { closeConnection } = await import('@propr/core');
 const { up: submissionsTable } = await import('../../core/src/db/migrations/20260922000000_add_task_submissions.js');
 const { up: submissionIdentity } = await import('../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js');
+const { up: retryRequestStates } = await import('../../core/src/db/migrations/20261015080000_create_issue_retry_request_states.js');
 const { createTaskRoutes, resolveFollowupThread } = await import('../routes/taskRoutes.js');
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
@@ -193,6 +196,7 @@ await database.schema.createTable('task_history', table => {
 });
 await submissionsTable(database);
 await submissionIdentity(database);
+await retryRequestStates(database);
 await database('tasks').insert([
   { task_id: 'completed-task', repository: 'integry/propr', issue_number: 12, pr_number: 7, task_type: 'issue' },
   { task_id: 'task-without-pr', repository: 'integry/propr', issue_number: null, pr_number: null, task_type: 'issue' },
