@@ -12,7 +12,6 @@ import { issueQueue, type IssueJobData, type JobResult } from '@propr/core';
 import { getDefaultModel, resolveLlmLabel, loadSettings, resolveCustomLabel, getAllCustomLabels, NoDefaultModelConfiguredError } from '@propr/core';
 import { AgentRegistry } from '@propr/core';
 import { isReasoningLevelLabel, parseReasoningLevelFromLabels } from '@propr/shared';
-import { redisClient } from './issueJob/config.js';
 
 interface CurrentIssueData {
     data: {
@@ -84,6 +83,9 @@ async function resolveDefaultAgentForDispatcher(correlatedLogger: Logger): Promi
     return { agentAlias, modelToUse };
 }
 
+// Loaded on first use so importing the injected-deps entry point never opens a Redis connection.
+const workerRedis = async () => (await import('./issueJob/config.js')).redisClient;
+
 export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult> {
     return handleDispatchWithDeps(job, {
         findSubmission: findIssueSubmission,
@@ -101,8 +103,8 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         getAllCustomLabels,
         resolveDefaultAgentForDispatcher,
         retryRequests: {
-            find: issue => findIssueRetryRequest(redisClient, issue),
-            settle: (issue, request) => settleIssueRetryRequest(redisClient, issue, request),
+            find: async issue => findIssueRetryRequest(await workerRedis(), issue),
+            settle: async (issue, request) => settleIssueRetryRequest(await workerRedis(), issue, request),
         },
     });
 }
