@@ -665,3 +665,41 @@ test('one run attempt can reserve both credential resources and its distinct pro
   await assert.rejects(f.authority.reserveProviderLaunch(session), refused);
   assert.equal((await f.authority.observeInventory(identity)).highWater, 3);
 });
+
+test('purpose-to-source catalog is transitively immutable; runtime mutation cannot admit a forbidden source', async () => {
+  const helpers = await import('../src/providerAuthority/authorityHelpers.js');
+  const catalog = helpers.PURPOSE_SOURCES;
+  const expected = {
+    'config-mutation': ['config'], 'credential-writer': ['login', 'run', 'migration'],
+    'credential-use': ['login', 'run', 'probe', 'migration'],
+    'provider-launch': ['login', 'run', 'probe', 'migration', 'retry', 'callback'],
+  };
+  assert.deepEqual(structuredClone(catalog), expected);
+  assert.ok(Object.isFrozen(catalog));
+  for (const sources of Object.values(catalog)) assert.ok(Object.isFrozen(sources));
+  const mutable = catalog as unknown as Record<string, string[]>;
+  // Strict-mode module code: every write to a frozen target throws rather than silently succeeding.
+  assert.throws(() => mutable['credential-writer'].push('probe'), TypeError);
+  assert.throws(() => { mutable['credential-writer'][0] = 'probe'; }, TypeError);
+  assert.throws(() => { mutable['credential-writer'].length = 0; }, TypeError);
+  assert.throws(() => { mutable['credential-writer'] = ['probe']; }, TypeError);
+  assert.throws(() => { mutable['new-purpose'] = ['probe']; }, TypeError);
+  assert.throws(() => { delete mutable['credential-writer']; }, TypeError);
+  assert.equal(Reflect.set(mutable['credential-writer'], 3, 'probe'), false);
+  assert.equal(Reflect.defineProperty(mutable, 'credential-writer', { value: ['probe'] }), false);
+  assert.deepEqual(structuredClone(catalog), expected);
+  // An enrolled probe issuer covering credential resources still cannot reserve a writer.
+  const e = enrollment();
+  const probe = { ...structuredClone(e.issuers[0]), issuerId: 'claude-probe-creator', sourceKind: 'probe' as const };
+  probe.resources = probe.resources.filter(key => key.includes(':credential:'));
+  e.issuers.push(probe);
+  const f = await fixture({ enrollment: e });
+  const asProbe = (): Reservation => ({ ...f.reservation('provider-credentials'), issuer: structuredClone(probe) });
+  await assert.rejects(f.authority.reserveCredentialWriter(asProbe()), refused);
+  await assert.rejects(f.authority.prepareCredentialConfig(asProbe()), refused);
+  assert.equal((await f.authority.observeInventory(identity)).highWater, 0);
+  // Valid source-purpose pairs keep working: probe may use, run may write.
+  assert.ok(await f.authority.reserveCredentialUse(asProbe()));
+  assert.ok(await f.authority.reserveCredentialWriter(f.reservation('provider-credentials', 'claude:credential:claude-settings')));
+  await assert.rejects(f.authority.reserveCredentialWriter(asProbe()), refused);
+});
