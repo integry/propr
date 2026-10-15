@@ -199,6 +199,107 @@ for (const [routing, backed] of routings) {
     });
   }
 
+  test(`${routing} recovery dispatch whose history predates its request's accepted run, and during whose refresh another dispatch settles the request and runs a later trigger, runs nothing on the stale selection`, async () => {
+    await onIssue(backed, `refresh-newer-receipt-${backed}`, async () => {
+      // A submission's previous failed retry consumed E0.
+      const e0 = String(state.timeline[0].id);
+      if (backed) await database('task_submissions').where({ issue_number: 14 }).update({ retry_event_id: e0 });
+      assert.equal((await postFollowup({ body: 'Retry' }, 'failed-issue-task')).json.state, 'queued');
+      // Independent relabels E2 and E3; the route's job accepts R's run through E3, but can record neither the
+      // submission's receipt nor R consumed.
+      state.now += 2_000;
+      applyLabels(['AI'], HUMAN_ACTOR_ID);
+      state.now += 2_000;
+      applyLabels(['AI'], HUMAN_ACTOR_ID);
+      const e3 = String(state.timeline.at(-1)!.id);
+      state.recordDispatchFails = true;
+      state.consumeFails = true;
+      await assert.rejects(dispatchQueued(0), /database is locked/);
+      state.recordDispatchFails = false;
+      state.consumeFails = false;
+      assert.deepEqual(await retryRuns.read({ id: await requestId(), commentId: FIRST_COMMENT_ID }), { receiptEventId: e3 });
+
+      // Polls queue two recovery parents carrying no request, A's and C's.
+      claims.delete(dedupKey);
+      const a = add.mock.callCount();
+      assert.notEqual((await pollDelivery()).status, 'ignored');
+      claims.delete(dedupKey);
+      const c = add.mock.callCount();
+      assert.notEqual((await pollDelivery()).status, 'ignored');
+
+      // GitHub answers A's history read through E2, before E3 shows. A reads R's run through E3 and reads the history
+      // afresh. That read is answered through E3, but while its answer is on its way E4 is labelled and C's dispatch
+      // settles R, recording E3, and runs E4, recording that.
+      const full = state.timeline;
+      state.timeline = full.slice(0, -1);
+      let later: Awaited<ReturnType<typeof dispatchQueued>> | undefined;
+      state.onDispatchTimelineRead = async () => {
+        state.timeline = full;
+        state.onDispatchTimelineRead = async () => {
+          state.onDispatchTimelineRead = undefined;
+          state.now += 60_000;
+          applyLabels(['AI'], HUMAN_ACTOR_ID);
+          later = await dispatchQueued(c);
+        };
+      };
+      const stale = await dispatchQueued(a);
+      assert.equal(state.onDispatchTimelineRead, undefined, 'C was dispatched while A read the history afresh');
+      const e4 = state.timeline.at(-1)!.id;
+      assert.equal(later?.dispatched.status, 'dispatched');
+      assert.deepEqual(later.children.map(child => [child.jobId, child.data.userId, child.data.retryCommentId]),
+        [[`issue-integry-propr-14-claude-claude-opus-5-5-main${backed ? `-trigger-${e4}` : ''}`, backed ? 'submitter' : '99', undefined]], 'C runs the later E4');
+
+      // A, whose selection admitted triggers after E0 and found R settled, runs nothing, neither E3 nor E4 again.
+      assert.deepEqual(stale.dispatched, { status: 'skipped', reason: backed ? 'submission_already_dispatched' : 'retry_request_already_dispatched', issueNumber: 14 });
+      assert.deepEqual(stale.children, []);
+      if (backed) assert.equal((await submissionRow()).retry_event_id, String(e4));
+      assert.deepEqual(await openRequests(), []);
+    });
+  });
+
+  test(`${routing} recovery dispatch that no history read shows its request's accepted run to defers without running or settling anything, and runs nothing more once one does`, async () => {
+    await onIssue(backed, `unordered-run-${backed}`, async () => {
+      const e0 = String(state.timeline[0].id);
+      if (backed) await database('task_submissions').where({ issue_number: 14 }).update({ retry_event_id: e0 });
+      assert.equal((await postFollowup({ body: 'Retry' }, 'failed-issue-task')).json.state, 'queued');
+      state.now += 2_000;
+      applyLabels(['AI'], HUMAN_ACTOR_ID);
+      state.now += 2_000;
+      applyLabels(['AI'], HUMAN_ACTOR_ID);
+      const e3 = String(state.timeline.at(-1)!.id);
+      state.recordDispatchFails = true;
+      state.consumeFails = true;
+      await assert.rejects(dispatchQueued(0), /database is locked/);
+      state.recordDispatchFails = false;
+      state.consumeFails = false;
+
+      // The history the dispatch reads, however often, no longer shows E3, which R's run consumed.
+      const full = state.timeline;
+      state.timeline = full.slice(0, -1);
+      let reads = 0;
+      state.onDispatchTimelineRead = () => { reads++; };
+      claims.delete(dedupKey);
+      const poll = add.mock.callCount();
+      assert.notEqual((await pollDelivery()).status, 'ignored');
+      const deferred = await dispatchQueued(poll);
+      assert.deepEqual(deferred.dispatched, unreconciled, 'its triggers cannot be ordered against the run\'s, so it defers');
+      assert.deepEqual(deferred.children, []);
+      assert.equal(reads, 3, 'after a bounded number of fresh reads');
+      assert.deepEqual((await openRequests()).map(held => held.comment_id), [FIRST_COMMENT_ID], 'R is not settled on an unordered history');
+      assert.deepEqual(await retryRuns.read({ id: await requestId(), commentId: FIRST_COMMENT_ID }), { receiptEventId: e3 });
+      if (backed) assert.equal((await submissionRow()).retry_event_id, e0);
+
+      // Once the history shows E3 again, a delivery settles R and runs nothing on the triggers its run consumed.
+      state.timeline = full;
+      state.onDispatchTimelineRead = undefined;
+      const settled = await dispatchQueued(poll);
+      assert.deepEqual(settled.dispatched, { status: 'skipped', reason: backed ? 'submission_already_dispatched' : 'retry_request_already_dispatched', issueNumber: 14 });
+      assert.deepEqual(settled.children, []);
+      assert.deepEqual(await openRequests(), []);
+      if (backed) assert.equal((await submissionRow()).retry_event_id, e3);
+    });
+  });
+
   test(`${routing} retry whose run's record cannot be read once its publication window has passed is not restarted, and the next follow-up runs only its own instructions`, async () => {
     await onIssue(backed, `unreadable-run-record-${backed}`, async () => {
       assert.equal((await postFollowup({ body: 'Retry' }, 'failed-issue-task')).json.state, 'queued');

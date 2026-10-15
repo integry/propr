@@ -40,6 +40,8 @@ export const state = {
   onCommentPost: undefined as undefined | (() => void | Promise<void>),
   onIssueRead: undefined as undefined | (() => void | Promise<void>),
   onTimelineRead: undefined as undefined | (() => void | Promise<void>),
+  // A hook run once GitHub read the issue's timeline for a dispatch, before its answer arrives, and whether that read fails.
+  onDispatchTimelineRead: undefined as undefined | (() => void | Promise<void>), dispatchTimelineFails: false,
   // Outcome records the route left to retry after responding; a test runs them.
   outcomeRetries: [] as Array<() => Promise<boolean>>,
   // The ID GitHub gives the next posted comment; every post gets its own.
@@ -221,6 +223,7 @@ beforeEach(async () => {
   state.labelAdd = 'ok'; state.timelineReadFails = false; state.delayedLabels = []; state.redisFails = false; state.onLabelAdd = undefined;
   state.consumeFails = false; state.confirmFails = false; state.recordDispatchFails = false; state.runEnqueueFails = false; state.runRecordsFail = false;
   state.onCommentPost = undefined; state.onIssueRead = undefined; state.onTimelineRead = undefined; state.outcomeRetries = [];
+  state.onDispatchTimelineRead = undefined; state.dispatchTimelineFails = false;
   state.now = Date.parse('2026-10-15T10:00:00.700Z'); state.sleeps = [];
   state.timeline = [{ id: 1, event: 'labeled', created_at: '2026-10-15T09:59:00Z', label: { name: 'AI' }, actor: { id: HUMAN_ACTOR_ID } }];
   claims.clear(); hashes.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();

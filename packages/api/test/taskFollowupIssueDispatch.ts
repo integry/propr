@@ -39,7 +39,13 @@ export const pollDelivery = () => processDetectedIssue({
   triggeredBy: 'propr-dev[bot]', triggeredById: '99', source: 'polling',
 }, 'poll', redis as unknown as Redis);
 
-const timelineOctokit = async () => ({ request: async () => ({ data: state.timeline }) }) as never;
+// A dispatch's timeline read answers with the timeline as GitHub read it, however long the answer takes to arrive.
+const timelineOctokit = async () => ({ request: async () => {
+  const data = [...state.timeline];
+  await state.onDispatchTimelineRead?.();
+  if (state.dispatchTimelineFails) throw new Error('read ECONNRESET');
+  return { data };
+} }) as never;
 type RetryOutcomeEvidence = ReturnType<typeof redisRetryOutcomeEvidence>;
 /** The trigger write outcomes the route kept in Redis because it could not record them. */
 export const retryOutcomes = redisRetryOutcomeEvidence(() => redis);
@@ -61,7 +67,7 @@ export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence, enqueue: Ru
   select: (issue: IssueJobData, { submission }: { submission: Submission }) =>
     selectRetryRun(issue, submission
       ? { admitted: events => admittedSubmissionTriggers(submission, events, database), consumedEventId: submission.retry_event_id, runs: held => runs.read(held) }
-      : { runs: held => runs.read(held) },
+      : { runs: held => runs.read(held), accepted: held => runs.accepted(held) },
       { getOctokit: timelineOctokit, processingLabels: async () => ['AI'], database, now: () => state.now }),
   evidence: (_issue: IssueJobData, held: IssueRetryRequest) => outcomes.read(held),
   confirm: async (_issue: IssueJobData, held: IssueRetryRequest, publication: 'possible' | 'refused') => {

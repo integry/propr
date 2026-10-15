@@ -3,11 +3,12 @@ import type { Logger } from 'pino';
 import {
     db, findIssueSubmission, resolveTaskSubmissionRetry, admittedSubmissionTriggers, logger, selectRetryRun, consumeIssueRetryRequest,
     confirmIssueRetryPublication, redisRetryOutcomeEvidence, queueRetryRunEvidence, enqueueIssueRetryRun, recordIssueRetryRunReceipt,
-    acceptedRunTrigger, submissionTriggerEvents,
+    submissionTriggerEvents,
     type IssueRetryRequest, type RetryPublicationOutcome, type RetryRun, type RetryRunChild, type RetryRunReceipt, type SubmissionRetry,
     type RunReceiptFence, type TriggerLabelEvent,
 } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
+import { resolveCurrentRun, receiptFence, recordAcceptedRun } from './issueRetryRunSelection.js';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { validateRepositoryInfo } from '@propr/core';
@@ -38,7 +39,7 @@ interface AgentModelToProcess {
 
 type IssueQueueAdd = typeof issueQueue.add;
 
-type Submission = Awaited<ReturnType<typeof findIssueSubmission>>;
+export type Submission = Awaited<ReturnType<typeof findIssueSubmission>>;
 
 interface RetryRequestStore {
     /**
@@ -63,7 +64,7 @@ interface RetryRequestStore {
     consume(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
 }
 
-interface DispatcherDeps {
+export interface DispatcherDeps {
     findSubmission: typeof findIssueSubmission;
     /** Records the submission's dispatch receipt through `triggerEventId`, fenced on the receipt the dispatch read. */
     recordDispatch: (id: string, triggerEventId: string | undefined, fence: RunReceiptFence) => Promise<void>;
@@ -135,7 +136,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         retryRequests: {
             select: (issue, { submission }) => selectRetryRun(issue, submission
                 ? { admitted: events => admittedSubmissionTriggers(submission, events), consumedEventId: submission.retry_event_id, runs: request => retryRuns.read(request) }
-                : { runs: request => retryRuns.read(request) }),
+                : { runs: request => retryRuns.read(request), accepted: request => retryRuns.accepted(request) }),
             evidence: (_issue, request) => retryOutcomes.read(request),
             confirm: async (_issue, request, publication) => { await confirmIssueRetryPublication({ database: db, evidence: retryOutcomes }, request, publication); },
             enqueue: (_issue, request, children, receiptEventId) => enqueueIssueRetryRun(issueQueue, request, children, { receiptEventId }),
@@ -242,58 +243,6 @@ function submissionRunOwner(submitterId: string, issueRef: IssueJobData, isRetry
 }
 
 /**
- * The run the delivery dispatches. The open request is selected by the same
- * rules for a direct job and a recovering relabel or poll: only on its own
- * admitted trigger, so a newer, independent trigger runs a request still owed
- * a run instead of stranding it. Without one, the delivery's latest trigger,
- * read from the same history, runs without any request.
- */
-async function resolveRun(
-    issueRef: IssueJobData,
-    submission: Submission,
-    deps: DispatcherDeps,
-): Promise<{ run: RetryRun; trigger: SubmissionRetry | null }> {
-    if (submission) [issueRef.repoOwner, issueRef.repoName] = submission.repository.split('/');
-    const run: RetryRun = deps.retryRequests ? await deps.retryRequests.select(issueRef, { submission }) : { request: null };
-    if ('deferred' in run || !submission) return { run, trigger: null };
-    if (run.request) return { run, trigger: { eventId: run.triggerEventId } };
-    return { run, trigger: run.trigger !== undefined ? run.trigger : await deps.resolveSubmissionRetry(submission) };
-}
-
-/**
- * Whether the job is the one the route queued for the deferred request's
- * current trigger write. The route queues a request's job only once GitHub
- * confirmed that write, so the job is the evidence of the outcome the route
- * could not record; a job of an earlier write of a restarted request is not.
- */
-function confirmsPublication(issueRef: IssueJobData, request: IssueRetryRequest): boolean {
-    return request.publication === 'pending' && request.commentId !== null && request.publishedAt !== null
-        && issueRef.retryCommentId === request.commentId && issueRef.retryRequesterId === request.requesterId
-        && issueRef.retryPublishedAt === request.publishedAt;
-}
-
-/**
- * The run the delivery dispatches, after recording the outcome of a deferred
- * request's trigger write that the job itself confirms or that the route kept
- * as durable evidence, so any later delivery reconciles it after the route's
- * process or the job carrying it is gone. A refusal releases the request, and
- * the delivery runs without it. A failure to record it fails the dispatch,
- * whose retry or a later delivery reconciles again, with the evidence kept,
- * rather than completing it as deferred for good.
- */
-async function resolveConfirmedRun(issueRef: IssueJobData, submission: Submission, deps: DispatcherDeps): ReturnType<typeof resolveRun> {
-    const resolved = await resolveRun(issueRef, submission, deps);
-    if (!('deferred' in resolved.run) || !deps.retryRequests) return resolved;
-    const request = resolved.run.deferred;
-    if (request.publication !== 'pending' || request.publishedAt === null) return resolved;
-    const outcome = confirmsPublication(issueRef, request) ? 'possible' : await deps.retryRequests.evidence(issueRef, request);
-    if (!outcome) return resolved;
-    logger.info({ issue: issueRef.number, retryCommentId: request.commentId, outcome }, 'Recording the retry trigger outcome its publication left');
-    await deps.retryRequests.confirm(issueRef, request, outcome);
-    return resolveRun(issueRef, submission, deps);
-}
-
-/**
  * Fixes who the run is for and which retry request it carries. A relabel
  * delivery recovering a requested retry carries neither the requester nor the
  * comment to exempt; the selected request does. A job the route queued whose
@@ -342,32 +291,6 @@ async function releaseRetryRequest(issueRef: IssueJobData, request: IssueRetryRe
 }
 
 /**
- * The fence of the submission's dispatch receipt this dispatch records: the
- * receipt it read when it began, which its selection admitted triggers after.
- */
-function receiptFence(submission: NonNullable<Submission>, deps: DispatcherDeps, fence: Partial<RunReceiptFence> = {}): RunReceiptFence {
-    return {
-        observedEventId: submission.retry_event_id ?? null,
-        history: () => deps.submissionTriggers ? deps.submissionTriggers(submission) : Promise.reject(new Error('The issue\'s trigger history cannot be read')),
-        ...fence,
-    };
-}
-
-/**
- * Records, in the submission's dispatch receipt, the trigger the queue's
- * record of a request's accepted run names, whichever dispatch accepted it:
- * not a trigger this dispatch's own, possibly stale, selection would have run
- * it on. A receipt that already records it or a later trigger is kept. A
- * receipt that cannot be read, ordered or written fails, so the request is
- * not recorded consumed and its record is not retired.
- */
-async function recordAcceptedRun(submission: NonNullable<Submission>, request: IssueRetryRequest, run: RetryRunReceipt, deps: DispatcherDeps): Promise<void> {
-    const fence = receiptFence(submission, deps);
-    const { eventId, events } = await acceptedRunTrigger(request, run, fence);
-    await deps.recordDispatch(submission.id, eventId, { ...fence, events });
-}
-
-/**
  * Settles a request whose run another dispatch, such as one that recovered
  * this job while it was stalled, accepted since this one selected it: the
  * submission's receipt records that run's trigger, as the queue's record
@@ -380,27 +303,6 @@ async function settleAcceptedRequest(issueRef: IssueJobData, submission: Submiss
         if (accepted) await recordAcceptedRun(submission, request, accepted, deps);
     }
     await releaseRetryRequest(issueRef, request, deps);
-}
-
-/**
- * Records the consumption of requests an earlier dispatch carried into its
- * run, as its receipt of their own triggers or the queue's record of their
- * runs shows, after recording that consumption itself failed; a submission's
- * receipt first records the trigger the run consumed, as the record names it.
- * Selection already owes them nothing, so a failure here is left to a later
- * delivery or follow-up, which settles them on the same records, rather than
- * holding back this delivery.
- */
-async function settleCarriedRequests(issueRef: IssueJobData, submission: Submission, run: RetryRun, deps: DispatcherDeps): Promise<void> {
-    for (const request of run.carried ?? []) {
-        logger.info({ issue: issueRef.number, retryCommentId: request.commentId }, 'Recording the consumption of a retry request an earlier dispatch carried');
-        try {
-            if (submission && request.run) await recordAcceptedRun(submission, request, request.run, deps);
-            await deps.retryRequests?.consume(issueRef, request);
-        } catch (error) {
-            logger.warn({ issue: issueRef.number, retryCommentId: request.commentId, errMessage: (error as Error).message }, 'Could not record a carried retry request as consumed');
-        }
-    }
 }
 
 /**
@@ -452,12 +354,12 @@ async function enqueueChildren(
 
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
     const { id: jobId, name: jobName, data: issueRef } = job;
-    const submission = await deps.findSubmission(issueRef);
-    const { run, trigger } = await resolveConfirmedRun(issueRef, submission, deps);
-    await settleCarriedRequests(issueRef, submission, run, deps);
+    const { submission, run, trigger } = await resolveCurrentRun(issueRef, deps);
     if ('deferred' in run) {
         // Its trigger stays unconsumed, so a later delivery retries once its outcome is known.
-        logger.warn({ issue: issueRef.number, retryCommentId: run.deferred.commentId }, 'A held retry request may own the trigger but its publication is unreconciled; deferring dispatch');
+        logger.warn({ issue: issueRef.number, retryCommentId: run.deferred.commentId }, run.unordered
+            ? 'Another dispatch accepted a held retry request\'s run through a trigger the issue\'s history does not show yet; deferring dispatch'
+            : 'A held retry request may own the trigger but its publication is unreconciled; deferring dispatch');
         return { status: 'skipped', reason: 'retry_request_unreconciled', issueNumber: issueRef.number };
     }
     const unowned = unownedRequest(issueRef, submission, run);
