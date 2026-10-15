@@ -5,8 +5,8 @@ import { openRequests, dispatchQueued, promptFor, onIssue, takeRecordsOffline, d
 
 // A request's publication window opens when its trigger write begins, however
 // long posting it took, and a trigger write the route saw land keeps a path to
-// its run when its outcome cannot be recorded: the job it queues records it,
-// or the route's retry does once the database recovers.
+// its run when its outcome can be neither recorded nor kept in Redis: the job
+// it queues records it, or the route's retry does once the database recovers.
 
 const routings = [['a submission-backed', true], ['an issue-only', false]] as const;
 const submissionRow = async () => database('task_submissions').where({ issue_number: 14 }).first('retry_event_id') as Promise<{ retry_event_id: string | null } | undefined>;
@@ -71,13 +71,14 @@ for (const [routing, backed] of routings) {
     });
   });
 
-  test(`${routing} confirmed trigger whose outcome cannot be recorded is reported unknown, and its queued job records it and runs for the requester`, async () => {
+  test(`${routing} confirmed trigger whose outcome can be neither recorded nor kept is reported unknown, and its queued job records it and runs for the requester`, async () => {
     await onIssue(backed, `confirmed-unrecorded-${backed}`, async () => {
-      // The database fails from the trigger write on; GitHub applies the trigger and answers.
+      // The database and Redis fail from the trigger write on; GitHub applies the trigger and answers.
       let restore: () => Promise<void> = async () => undefined;
-      state.onLabelAdd = async () => { restore = await takeRecordsOffline(); };
+      state.onLabelAdd = async () => { state.redisFails = true; restore = await takeRecordsOffline(); };
       const result = await postFollowup({ body: 'Retry with these instructions' }, 'failed-issue-task');
       await restore();
+      state.redisFails = false;
       state.onLabelAdd = undefined;
       assert.equal(result.status, 202);
       assert.equal(result.json.success, false, 'no queued receipt while the trigger is unrecorded');
@@ -107,12 +108,12 @@ for (const [routing, backed] of routings) {
   });
 
   for (const [write, labelAdd] of [['confirmed', 'ok'], ['timed-out', 'delayed'], ['refused', 'rejected']] as const) {
-    test(`${routing} ${write} trigger write whose outcome and job cannot be saved is recorded by the route's retry once the database recovers`, async () => {
+    test(`${routing} ${write} trigger write whose outcome and job cannot be saved in any store is recorded by the route's retry once the database recovers`, async () => {
       await onIssue(backed, `unsaved-${write}-${backed}`, async () => {
         state.labelAdd = labelAdd;
         state.queueFails = true;
         let restore: () => Promise<void> = async () => undefined;
-        state.onLabelAdd = async () => { restore = await takeRecordsOffline(); };
+        state.onLabelAdd = async () => { state.redisFails = true; restore = await takeRecordsOffline(); };
         const result = await postFollowup({ body: 'Retry with these instructions' }, 'failed-issue-task');
         state.onLabelAdd = undefined;
         state.queueFails = false;
@@ -122,8 +123,9 @@ for (const [routing, backed] of routings) {
         assert.equal(add.mock.callCount(), write === 'confirmed' ? 1 : 0, 'no job carries the outcome');
         assert.equal(state.outcomeRetries.length, 1);
 
-        // The retry fails while the database is still unavailable, then records the outcome.
+        // The retry fails while both stores are still unavailable, then records the outcome.
         assert.equal(await state.outcomeRetries[0](), false);
+        state.redisFails = false;
         await restore();
         state.now += 5000;
         if (write === 'timed-out') landDelayedLabels();

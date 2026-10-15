@@ -49,15 +49,17 @@ export const APP_ACTOR_ID = 99;
 export const HUMAN_ACTOR_ID = 7;
 
 const claims = new Map<string, string>();
+const redisDown = () => { if (state.redisFails) throw new Error('Connection is closed.'); };
 const redis = {
   set: mock.fn(async (key: string, value: string) => {
+    redisDown();
     if (claims.has(key)) return null;
     claims.set(key, value);
     return 'OK';
   }),
-  get: async (key: string) => claims.get(key) ?? null,
+  get: async (key: string) => { redisDown(); return claims.get(key) ?? null; },
   setex: async (key: string, _ttl: number, value: string) => { claims.set(key, value); },
-  del: async (key: string) => { claims.delete(key); },
+  del: async (key: string) => { redisDown(); claims.delete(key); },
   eval: async (script: string, _count: number, key: string, ...[token, next]: string[]) => {
     if (state.redisFails) throw new Error('Connection is closed.');
     if (script.includes("ARGV[2] == ''")) {
@@ -81,9 +83,22 @@ const add = mock.fn(async (...args: [string, CommentJobData, JobsOptions]) => {
   if (state.queueFails) throw new Error('connection lost');
 });
 const queue = { add, client: Promise.resolve(redis), getActive: async () => state.existingJobs, getWaiting: async () => [], getDelayed: async () => [] };
+// A real BullMQ queue, on a real Redis server, that replaces the simulated queue and Redis while set.
+let liveQueue: object | null = null;
+/** Routes the issue queue, and the Redis client the route takes from it, to a real queue until reset with null. */
+export function useLiveQueue(live: object | null) { liveQueue = live; }
+const currentQueue = () => (liveQueue ?? queue) as Record<string | symbol, unknown>;
 const queueModule = await import('../../core/src/queue/taskQueue.js');
 await mock.module('../../core/src/queue/taskQueue.js', {
-  namedExports: { ...queueModule, issueQueue: queue, getIssueQueue: async () => queue },
+  namedExports: {
+    ...queueModule,
+    issueQueue: new Proxy({}, { get: (_target, prop) => {
+      const target = currentQueue();
+      const value = target[prop];
+      return typeof value === 'function' ? value.bind(target) : value;
+    } }),
+    getIssueQueue: async () => currentQueue(),
+  },
 });
 export async function deliverWebhook(body: string, login = 'propr-dev[bot]', repo = 'propr') {
   return processCommentEvent({
@@ -114,7 +129,10 @@ const request = mock.fn(async (route: string, options: { body?: string; issue_nu
   }
   return { data: {} };
 });
-/** Labels the issue as `actorId` at GitHub's current second, recording the timeline events. */
+/**
+ * Labels the issue afresh as `actorId` at GitHub's current second, recording the timeline events: a
+ * label someone applies, or removes and applies again when it is already on the issue.
+ */
 export function applyLabels(names: string[], actorId: number) {
   const created_at = new Date(Math.floor(state.now / 1000) * 1000).toISOString();
   for (const name of names) {
@@ -122,9 +140,13 @@ export function applyLabels(names: string[], actorId: number) {
     if (!state.issueLabels.includes(name)) state.issueLabels = [...state.issueLabels, name];
   }
 }
+/** GitHub's label add: a label already on the issue stays as it is and publishes no event. */
+function addLabels(names: string[], actorId: number) {
+  applyLabels(names.filter(name => !state.issueLabels.includes(name)), actorId);
+}
 /** GitHub finishes a timed-out trigger add after the route has already read the labels back. */
 export function landDelayedLabels() {
-  applyLabels(state.delayedLabels, APP_ACTOR_ID);
+  addLabels(state.delayedLabels, APP_ACTOR_ID);
   state.delayedLabels = [];
 }
 /** The issue's label endpoints; an add is applied before its response can be lost. */
@@ -141,7 +163,7 @@ async function labelRequest(route: string, options: { name?: string; labels?: st
       state.delayedLabels.push(...options.labels ?? []);
       throw new Error('Request timed out');
     }
-    applyLabels(options.labels ?? [], APP_ACTOR_ID);
+    addLabels(options.labels ?? [], APP_ACTOR_ID);
     if (state.labelAdd === 'lost') throw new Error('socket hang up');
   }
   return {};

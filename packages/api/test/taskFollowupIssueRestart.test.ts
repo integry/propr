@@ -8,7 +8,8 @@ import {
 
 // A request still owed once its trigger write can no longer land is stranded
 // when nothing will run it: its outcome was lost with the API process that
-// learned it, or every delivery came before its trigger was visible. A later
+// learned it, when neither the request records nor Redis could keep it, or
+// every delivery came before its trigger was visible. A later
 // follow-up restarts it on a fresh trigger of its own, for its own requester
 // with its own instructions, instead of posting; until then its trigger is
 // deferred, never run without it.
@@ -25,16 +26,18 @@ const heldRow = async () => database('issue_retry_request_states').where({ issue
     { comment_id: number; requester_id: string; publication: string; published_at: number; resumed_at: number | null } | undefined>;
 
 /**
- * GitHub confirms the request's trigger write while the request records are
- * unavailable and the queue rejects its job without accepting it; the
- * records come back, and the API process restarts, losing its outcome retry.
+ * GitHub confirms the request's trigger write while the request records and
+ * Redis are unavailable, so the outcome can be neither recorded nor kept, and
+ * the queue rejects its job without accepting it; both stores come back, and
+ * the API process restarts, losing its outcome retry.
  */
 async function strandConfirmedRequest(body = ORIGINAL) {
   let restore: () => Promise<void> = async () => undefined;
-  state.onLabelAdd = async () => { restore = await takeRecordsOffline(); };
+  state.onLabelAdd = async () => { state.redisFails = true; restore = await takeRecordsOffline(); };
   state.queueFails = true;
   const result = await postFollowup({ body }, 'failed-issue-task');
   await restore();
+  state.redisFails = false;
   state.onLabelAdd = undefined;
   state.queueFails = false;
   assert.equal(result.status, 202);
@@ -69,7 +72,7 @@ async function assertRestartedRun(backed: boolean, laterBody: string) {
 }
 
 for (const [routing, backed] of routings) {
-  test(`${routing} confirmed request whose outcome record and job are lost with the API process is restarted by a later follow-up and runs for its requester`, async () => {
+  test(`${routing} confirmed request whose outcome neither store could keep and whose job is lost with the API process is restarted by a later follow-up and runs for its requester`, async () => {
     await onIssue(backed, `restart-lost-outcome-${backed}`, async () => {
       await strandConfirmedRequest();
       const own = state.timeline.at(-1)!.id;
@@ -156,11 +159,13 @@ for (const [routing, backed] of routings) {
 
   test(`${routing} stale evidence of the lost write does not confirm a restart whose own outcome is unrecorded`, async () => {
     await onIssue(backed, `restart-stale-evidence-${backed}`, async () => {
-      // The first write's job is accepted but never dispatched, and its outcome retry outlives the restart.
+      // The first write's job is accepted but never dispatched, and its outcome retry outlives the restart;
+      // neither store can keep either write's outcome.
       let restore: () => Promise<void> = async () => undefined;
-      state.onLabelAdd = async () => { restore = await takeRecordsOffline(); };
+      state.onLabelAdd = async () => { state.redisFails = true; restore = await takeRecordsOffline(); };
       assert.equal((await postFollowup({ body: ORIGINAL }, 'failed-issue-task')).json.state, 'unknown');
       await restore();
+      state.redisFails = false;
       const [staleRetry] = state.outcomeRetries;
       state.outcomeRetries = [];
 
@@ -170,6 +175,7 @@ for (const [routing, backed] of routings) {
       state.queueFails = true;
       const restarted = await postFollowup({ body: 'A later request' }, 'failed-issue-task');
       await restore();
+      state.redisFails = false;
       state.queueFails = false;
       state.onLabelAdd = undefined;
       assert.deepEqual(restarted.json.restartedRequest, { state: 'unknown', commentId: FIRST_COMMENT_ID });

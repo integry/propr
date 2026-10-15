@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import type { Redis } from 'ioredis';
 import type { Job } from 'bullmq';
 import type { IssueJobData } from '../../core/src/queue/taskQueue.types.js';
-import { state, claims, add, request, redis, database, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
+import { state, claims, add, request, redis, database } from './taskFollowupFixture.js';
 
 const { processDetectedIssue } = await import('../../core/src/daemon/issueDetection.js');
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
@@ -10,7 +10,7 @@ const { findIssueSubmission, insertTaskSubmission } = await import('../../core/s
 const { resolveTaskSubmissionRetry, admittedSubmissionTriggers } = await import('../../core/src/services/taskSubmissionRetry.js');
 const { fetchIssueComments } = await import('../../../src/jobs/issueJob/github.js');
 const { generateClaudePrompt } = await import('../../core/src/claude/prompts/promptGenerator.js');
-const { selectRetryRun, consumeIssueRetryRequest, recordIssueRetryPublication } = await import('../../core/src/services/issueRetryRequest.js');
+const { selectRetryRun, consumeIssueRetryRequest, confirmIssueRetryPublication, redisRetryOutcomeEvidence } = await import('../../core/src/services/issueRetryRequest.js');
 type IssueRetryRequest = import('../../core/src/services/issueRetryRequest.js').IssueRetryRequest;
 type Submission = Awaited<ReturnType<typeof findIssueSubmission>>;
 
@@ -35,24 +35,29 @@ export const pollDelivery = () => processDetectedIssue({
 }, 'poll', redis as unknown as Redis);
 
 const timelineOctokit = async () => ({ request: async () => ({ data: state.timeline }) }) as never;
-export const retryRequestStore = {
+type RetryOutcomeEvidence = ReturnType<typeof redisRetryOutcomeEvidence>;
+/** The trigger write outcomes the route kept in Redis because it could not record them. */
+export const retryOutcomes = redisRetryOutcomeEvidence(() => redis);
+/** The production retry request store, on the test database and the given outcome evidence. */
+export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence) => ({
   select: (issue: IssueJobData, { submission }: { submission: Submission }) =>
     selectRetryRun(issue, submission ? { admitted: events => admittedSubmissionTriggers(submission, events, database) } : {},
       { getOctokit: timelineOctokit, processingLabels: async () => ['AI'], database, now: () => state.now }),
-  confirm: async (_issue: IssueJobData, held: IssueRetryRequest) => {
+  evidence: (_issue: IssueJobData, held: IssueRetryRequest) => outcomes.read(held),
+  confirm: async (_issue: IssueJobData, held: IssueRetryRequest, publication: 'possible' | 'refused') => {
     if (state.confirmFails) throw new Error('SQLITE_BUSY: database is locked');
-    await recordIssueRetryPublication(database, held, 'possible', state.now);
+    await confirmIssueRetryPublication({ database, evidence: outcomes }, held, publication, state.now);
   },
   consume: async (_issue: IssueJobData, held: IssueRetryRequest) => {
     if (state.consumeFails) throw new Error('SQLITE_BUSY: database is locked');
     await consumeIssueRetryRequest(database, held, state.now);
   },
-};
+});
+export const retryRequestStore = retryRequestStoreFor(retryOutcomes);
 
-/** Runs the matrix dispatcher on the parent job the queue received at `index`. */
-export async function dispatchQueued(index: number) {
-  const children: Array<{ jobId: string; data: IssueJobData }> = [];
-  const deps = {
+/** The matrix dispatcher's dependencies on the test database and GitHub, collecting the child jobs it adds. */
+export function dispatcherDeps(children: Array<{ jobId: string; data: IssueJobData }>, retryRequests = retryRequestStore) {
+  return {
     findSubmission: (issue: IssueJobData) => findIssueSubmission(issue, database),
     resolveSubmissionRetry: (submission: Parameters<typeof resolveTaskSubmissionRetry>[0]) => resolveTaskSubmissionRetry(submission, database,
       timelineOctokit, async () => ['AI']),
@@ -67,18 +72,28 @@ export async function dispatchQueued(index: number) {
     resolveLlmLabel: async () => ({ agentAlias: 'claude', model: 'claude-opus-5-5' }),
     getAllCustomLabels: async () => [], getDefaultModel: () => 'claude-opus-5-5',
     issueQueue: { add: async (_name: string, data: IssueJobData, options: { jobId: string }) => { children.push({ jobId: options.jobId, data }); } },
-    retryRequests: retryRequestStore,
+    retryRequests,
   } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
+}
+
+/** Runs the matrix dispatcher on the parent job the queue received at `index`. */
+export async function dispatchQueued(index: number) {
+  const children: Array<{ jobId: string; data: IssueJobData }> = [];
+  const deps = dispatcherDeps(children);
   const [name, data] = add.mock.calls[index].arguments as unknown as [string, IssueJobData];
   const dispatched = await handleDispatchWithDeps({ id: 'issue-integry-propr-14', name, data: { ...data } } as Job<IssueJobData>, deps);
   return { dispatched, children };
 }
 
-/** The comments a run on issue 14 reads into its prompt, after the app posted every request. */
+/** The comments a run on issue 14 reads into its prompt, after the app posted every request, with the IDs GitHub gave them. */
 export async function promptFor(child: IssueJobData) {
+  const posted = await Promise.all(postedComments().map(async call => {
+    const created = await (call.result as Promise<{ data: { id: number } }> | undefined)?.catch(() => undefined);
+    return created && { id: created.data.id, body: call.arguments[1].body!, user: { login: 'propr-dev[bot]', type: 'Bot' } };
+  }));
   const issueComments = [
     { id: 1, body: 'An unrelated bot note', user: { login: 'other-app[bot]', type: 'Bot' } },
-    ...postedComments().map((posted, index) => ({ id: FIRST_COMMENT_ID + index, body: posted.arguments[1].body!, user: { login: 'propr-dev[bot]', type: 'Bot' } })),
+    ...posted.filter(comment => comment !== undefined),
   ];
   const octokit = { request: async () => ({ data: issueComments, headers: {} }) };
   const comments = await fetchIssueComments(octokit as never, child, { warn: () => undefined } as never);

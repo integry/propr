@@ -1,6 +1,9 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { db, findIssueSubmission, resolveTaskSubmissionRetry, admittedSubmissionTriggers, logger, selectRetryRun, consumeIssueRetryRequest, recordIssueRetryPublication, type IssueRetryRequest, type RetryRun, type SubmissionRetry } from '@propr/core';
+import {
+    db, findIssueSubmission, resolveTaskSubmissionRetry, admittedSubmissionTriggers, logger, selectRetryRun, consumeIssueRetryRequest,
+    confirmIssueRetryPublication, redisRetryOutcomeEvidence, type IssueRetryRequest, type RetryPublicationOutcome, type RetryRun, type SubmissionRetry,
+} from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
@@ -40,8 +43,10 @@ interface RetryRequestStore {
      * own admitted trigger, none, or a deferral while it cannot be reconciled.
      */
     select(issue: IssueJobData, delivery: { submission: Submission }): Promise<RetryRun>;
-    /** Durably records that the request's trigger write was applied, as the route confirmed it. */
-    confirm(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
+    /** The outcome of the request's current trigger write that the route could not record and kept as durable evidence, if any. */
+    evidence(issue: IssueJobData, request: IssueRetryRequest): Promise<RetryPublicationOutcome | null>;
+    /** Durably records the outcome of the request's trigger write, as the route learned it, then drops its evidence. */
+    confirm(issue: IssueJobData, request: IssueRetryRequest, publication: RetryPublicationOutcome): Promise<void>;
     /** Durably records that the dispatch carried the request into its run, which releases it. */
     consume(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
 }
@@ -93,6 +98,8 @@ async function resolveDefaultAgentForDispatcher(correlatedLogger: Logger): Promi
 }
 
 export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult> {
+    // Read through the issue queue's own connection, and only when a request is deferred.
+    const retryOutcomes = redisRetryOutcomeEvidence(() => issueQueue.client);
     return handleDispatchWithDeps(job, {
         findSubmission: findIssueSubmission,
         resolveSubmissionRetry: resolveTaskSubmissionRetry,
@@ -110,7 +117,8 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         resolveDefaultAgentForDispatcher,
         retryRequests: {
             select: (issue, { submission }) => selectRetryRun(issue, submission ? { admitted: events => admittedSubmissionTriggers(submission, events) } : {}),
-            confirm: async (_issue, request) => recordIssueRetryPublication(db, request, 'possible'),
+            evidence: (_issue, request) => retryOutcomes.read(request),
+            confirm: async (_issue, request, publication) => { await confirmIssueRetryPublication({ database: db, evidence: retryOutcomes }, request, publication); },
             consume: async (_issue, request) => consumeIssueRetryRequest(db, request),
         },
     });
@@ -244,15 +252,23 @@ function confirmsPublication(issueRef: IssueJobData, request: IssueRetryRequest)
 }
 
 /**
- * The run the delivery dispatches, after recording the publication the job
- * itself confirms. A failure to record it fails the dispatch, whose retry
- * reconciles again, rather than completing it as deferred for good.
+ * The run the delivery dispatches, after recording the outcome of a deferred
+ * request's trigger write that the job itself confirms or that the route kept
+ * as durable evidence, so any later delivery reconciles it after the route's
+ * process or the job carrying it is gone. A refusal releases the request, and
+ * the delivery runs without it. A failure to record it fails the dispatch,
+ * whose retry or a later delivery reconciles again, with the evidence kept,
+ * rather than completing it as deferred for good.
  */
 async function resolveConfirmedRun(issueRef: IssueJobData, submission: Submission, deps: DispatcherDeps): ReturnType<typeof resolveRun> {
     const resolved = await resolveRun(issueRef, submission, deps);
-    if (!('deferred' in resolved.run) || !deps.retryRequests || !confirmsPublication(issueRef, resolved.run.deferred)) return resolved;
-    logger.info({ issue: issueRef.number, retryCommentId: issueRef.retryCommentId }, 'Recording the retry trigger the queued request confirms');
-    await deps.retryRequests.confirm(issueRef, resolved.run.deferred);
+    if (!('deferred' in resolved.run) || !deps.retryRequests) return resolved;
+    const request = resolved.run.deferred;
+    if (request.publication !== 'pending' || request.publishedAt === null) return resolved;
+    const outcome = confirmsPublication(issueRef, request) ? 'possible' : await deps.retryRequests.evidence(issueRef, request);
+    if (!outcome) return resolved;
+    logger.info({ issue: issueRef.number, retryCommentId: request.commentId, outcome }, 'Recording the retry trigger outcome its publication left');
+    await deps.retryRequests.confirm(issueRef, request, outcome);
     return resolveRun(issueRef, submission, deps);
 }
 

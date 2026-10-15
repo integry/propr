@@ -67,6 +67,8 @@ for (const [routing, backed] of routings) {
       assert.deepEqual((await deliverAndDispatch()).dispatched, unreconciled, 'it is neither run with the request nor consumed past it');
       if (backed) assert.equal((await submissionRow()).retry_event_id, null);
 
+      // The person removes their label again, so the late add is not a no-op on it.
+      state.issueLabels = state.issueLabels.filter(name => name !== 'AI');
       state.now += 5000;
       landDelayedLabels();
       const own = state.timeline.at(-1)!.id;
@@ -137,18 +139,20 @@ for (const [routing, backed] of routings) {
     ['the app within the publication window', APP_ACTOR_ID, 60_000],
     ['the app after the publication window', APP_ACTOR_ID, 11 * 60_000],
   ] as const) {
-    test(`${routing} trigger GitHub refused whose refusal cannot be recorded is not adopted by a later trigger from ${who}`, async () => {
+    test(`${routing} trigger GitHub refused whose refusal can be neither recorded nor kept is not adopted by a later trigger from ${who}`, async () => {
       await onIssue(backed, `refused-unrecorded-${backed}-${actorId}-${delay}`, async () => {
         state.labelAdd = 'rejected';
-        // The database fails from the trigger write on, so the refusal cannot be recorded.
+        // The database and Redis fail from the trigger write on, so the refusal can be neither recorded nor kept.
         let restore: () => Promise<void> = async () => undefined;
-        state.onLabelAdd = async () => { restore = await takeRecordsOffline(); };
+        state.onLabelAdd = async () => { state.redisFails = true; restore = await takeRecordsOffline(); };
         const result = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
         await restore();
+        state.redisFails = false;
         assert.equal(result.json.state, 'failed', 'a write GitHub refused is still reported as not started');
         assert.equal(add.mock.callCount(), 0);
         assert.deepEqual((await openRequests()).map(held => held.publication), ['pending'], 'no recovery adopts a request whose outcome was not recorded');
-        assert.equal(claims.has(dedupKey), false);
+        assert.equal(claims.has(dedupKey), true, 'Redis could not release the claim, which expires on its own');
+        claims.delete(dedupKey);
         state.labelAdd = 'ok';
         state.onLabelAdd = undefined;
 

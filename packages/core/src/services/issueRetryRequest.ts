@@ -18,13 +18,16 @@ import { loadPrimaryProcessingLabels } from '../config/configManager.js';
  *
  * A request is `reserved` until its trigger write is attempted, then `pending`
  * until the route records the write's outcome: `possible` (applied, or not
- * refused) lets recovery adopt it, and a refusal releases it. While it is
- * pending the outcome is unknown, and dispatch defers the request's trigger
- * rather than run it with or without the request.
+ * refused) lets recovery adopt it, and a refusal releases it. An outcome the
+ * route cannot record is kept as durable evidence of that write, which a
+ * delivery's dispatch or a later follow-up records. While it is pending
+ * without either, the outcome is unknown, and dispatch defers the request's
+ * trigger rather than run it with or without the request.
  *
  * A request still owed once its write can no longer land is stranded: its
- * outcome may have been lost with the process that learned it, when nothing
- * tells its own trigger from another the same identity wrote, or every
+ * outcome may have been lost with the process that learned it, when neither
+ * store could keep it and nothing tells its own trigger from another the same
+ * identity wrote, or every
  * delivery may have come before its trigger was visible. A later follow-up
  * restarts it: a fresh trigger write, after a fresh baseline, that recovery
  * can tell apart. A restarted request stays owed until a run carries it, so
@@ -117,17 +120,28 @@ export async function triggerLabelEvents(octokit: Octokit, issue: IssueKey, trig
 const windowOpen = (request: IssueRetryRequest, time: number) => time <= (request.publishedAt ?? request.requestedAt) + PUBLICATION_WINDOW_MS;
 
 /**
- * The trigger event the request published: null when it has none, or
- * undefined when its baseline is gone from the history, so none can be told
- * apart as its own.
+ * Whether a trigger event GitHub stamped at `time` lies in the request's
+ * publication interval: from the second its trigger write began, as GitHub
+ * stamps events to the second, until that write can no longer land.
+ */
+function inPublicationInterval(request: IssueRetryRequest, time: number): boolean {
+  const opened = request.publishedAt ?? request.requestedAt;
+  return time >= Math.floor(opened / 1000) * 1000 && windowOpen(request, time);
+}
+
+/**
+ * The trigger event the request published: the first its identity labelled
+ * after its baseline within its publication interval, so a trigger labelled
+ * while its comment was still being posted is another's. Null when it has
+ * none, or undefined when its baseline is gone from the history, so none can
+ * be told apart as its own.
  */
 export function retryRequestTrigger(request: IssueRetryRequest, events: TriggerLabelEvent[]): string | null | undefined {
   const start = request.afterEventId === null ? 0 : events.findIndex(event => String(event.id) === request.afterEventId) + 1;
   if (start === 0 && request.afterEventId !== null) return undefined;
-  const published = events.slice(start).find(event => request.actorId === null || event.actor?.id === request.actorId);
-  const publishedAt = Date.parse(published?.created_at ?? '');
-  if (!published?.id || !Number.isFinite(publishedAt) || !windowOpen(request, publishedAt)) return null;
-  return String(published.id);
+  const published = events.slice(start).find(event => (request.actorId === null || event.actor?.id === request.actorId)
+    && inPublicationInterval(request, Date.parse(event.created_at ?? '')));
+  return published?.id ? String(published.id) : null;
 }
 
 /**
@@ -237,20 +251,97 @@ export async function releaseIssueRetryReservation(database: Knex, request: Issu
   await database(TABLE).where({ id: request.id, publication: 'reserved' }).delete();
 }
 
+/** A trigger write's outcome: applied or not refused, or refused by GitHub. */
+export type RetryPublicationOutcome = 'possible' | 'refused';
+
 /**
  * Records the outcome of the request's trigger write: `possible` lets recovery
  * adopt it, and a refusal, which published no trigger of the request, releases
  * it whoever else labels the issue, unless it was restarted: then it may own
  * the trigger its lost write published, and stays stranded for a restart.
  * Recording it again, after it was released, or for an earlier write of a
- * restarted request, changes nothing.
+ * restarted request, changes nothing, and false is returned: the write is no
+ * longer the issue's open publication.
  */
 export async function recordIssueRetryPublication(
-  database: Knex, request: Pick<IssueRetryRequest, 'id' | 'publishedAt' | 'resumedAt'>, publication: 'possible' | 'refused', now = Date.now(),
-): Promise<void> {
+  database: Knex, request: Pick<IssueRetryRequest, 'id' | 'publishedAt' | 'resumedAt'>, publication: RetryPublicationOutcome, now = Date.now(),
+): Promise<boolean> {
   const releases = publication === 'refused' && request.resumedAt === null;
-  await database(TABLE).where({ id: request.id, publication: 'pending', published_at: request.publishedAt }).whereNotNull('owed_issue')
+  const updated = await database(TABLE).where({ id: request.id, publication: 'pending', published_at: request.publishedAt }).whereNotNull('owed_issue')
     .update({ publication, recorded_at: now, ...(releases ? { owed_issue: null } : {}) });
+  return Number(updated) === 1;
+}
+
+/** A trigger write of a request: the request, and when the write began. */
+type PublicationWrite = Pick<IssueRetryRequest, 'id' | 'publishedAt'>;
+
+/**
+ * Whether the write is still the issue's open publication, with its outcome
+ * unrecorded: no later request took the issue over once it could no longer
+ * land, and no restart began another write of the request.
+ */
+export async function issueRetryPublicationOpen(database: Knex, write: PublicationWrite): Promise<boolean> {
+  const row = await database(TABLE).where({ id: write.id, publication: 'pending', published_at: write.publishedAt }).whereNotNull('owed_issue').first('id');
+  return row !== undefined;
+}
+
+/**
+ * Durable evidence of a trigger write's outcome that the route learned but
+ * could not record with its request. It outlives the process that learned it
+ * and any job carrying it, until a delivery's dispatch or a later follow-up
+ * records the outcome. It names the write by its request and when the write
+ * began, so it never confirms another write of a restarted request.
+ */
+export interface RetryOutcomeEvidence {
+  save(write: PublicationWrite, publication: RetryPublicationOutcome): Promise<void>;
+  read(write: PublicationWrite): Promise<RetryPublicationOutcome | null>;
+  clear(write: PublicationWrite): Promise<void>;
+}
+
+interface EvidenceClient {
+  set(key: string, value: string): Promise<unknown>;
+  get(key: string): Promise<string | null>;
+  del(key: string): Promise<unknown>;
+}
+
+const evidenceKey = (write: PublicationWrite) => `issue:retry-outcome:${write.id}:${write.publishedAt}`;
+
+/** Evidence kept in Redis without expiry: only recording the outcome it evidences drops it. */
+export function redisRetryOutcomeEvidence(client: () => EvidenceClient | Promise<EvidenceClient>): RetryOutcomeEvidence {
+  return {
+    save: async (write, publication) => { await (await client()).set(evidenceKey(write), publication); },
+    read: async write => {
+      const publication = await (await client()).get(evidenceKey(write));
+      return publication === 'possible' || publication === 'refused' ? publication : null;
+    },
+    clear: async write => { await (await client()).del(evidenceKey(write)); },
+  };
+}
+
+/** The request records, and the outcome evidence kept for writes they could not record. */
+export interface RetryOutcomeStores { database: Knex; evidence: RetryOutcomeEvidence }
+
+/** Records the outcome of the request's trigger write, then drops its evidence, which is kept if recording fails. */
+export async function confirmIssueRetryPublication(
+  { database, evidence }: RetryOutcomeStores, request: Pick<IssueRetryRequest, 'id' | 'publishedAt' | 'resumedAt'>,
+  publication: RetryPublicationOutcome, now = Date.now(),
+): Promise<boolean> {
+  const recorded = await recordIssueRetryPublication(database, request, publication, now);
+  await evidence.clear(request);
+  return recorded;
+}
+
+/**
+ * Records the evidenced outcome of each of the issue's requests whose trigger
+ * write's outcome is still unrecorded, so a refusal releases its request and
+ * an applied write lets recovery adopt it, whatever process learned it.
+ */
+export async function reconcileIssueRetryOutcomes(stores: RetryOutcomeStores, issue: IssueKey, now = Date.now()): Promise<void> {
+  for (const request of await findIssueRetryRequests(stores.database, issue)) {
+    if (request.publication !== 'pending' || request.publishedAt === null) continue;
+    const publication = await stores.evidence.read(request);
+    if (publication) await confirmIssueRetryPublication(stores, request, publication, now);
+  }
 }
 
 /** Records that a dispatch carried the request into its run, which releases it. */
