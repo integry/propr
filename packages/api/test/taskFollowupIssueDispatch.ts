@@ -68,7 +68,7 @@ export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence, enqueue: Ru
     selectRetryRun(issue, submission
       ? { admitted: events => admittedSubmissionTriggers(submission, events, database), consumedEventId: submission.retry_event_id, runs: held => runs.read(held) }
       : { runs: held => runs.read(held), accepted: held => runs.accepted(held) },
-      { getOctokit: timelineOctokit, processingLabels: async () => ['AI'], database, now: () => state.now }),
+      { getOctokit: timelineOctokit, processingLabels: async () => state.processingLabels, database, now: () => state.now }),
   evidence: (_issue: IssueJobData, held: IssueRetryRequest) => outcomes.read(held),
   confirm: async (_issue: IssueJobData, held: IssueRetryRequest, publication: 'possible' | 'refused') => {
     if (state.confirmFails) throw new Error('SQLITE_BUSY: database is locked');
@@ -91,13 +91,14 @@ export function dispatcherDeps(children: Array<{ jobId: string; data: IssueJobDa
   return {
     findSubmission: (issue: IssueJobData) => findIssueSubmission(issue, database),
     resolveSubmissionRetry: (submission: Parameters<typeof resolveTaskSubmissionRetry>[0]) => resolveTaskSubmissionRetry(submission, database,
-      timelineOctokit, async () => ['AI']),
+      timelineOctokit, async () => state.processingLabels),
     // The durable receipt the production dispatcher records, fenced on the receipt the dispatch read.
     recordDispatch: async (id: string, triggerEventId: string | undefined, fence: RunReceiptFence) => {
       if (state.recordDispatchFails) throw new Error('SQLITE_BUSY: database is locked');
       await recordIssueRetryRunReceipt(database, id, triggerEventId, fence);
     },
-    submissionTriggers: (submission: Parameters<typeof submissionTriggerEvents>[0]) => submissionTriggerEvents(submission, timelineOctokit, async () => ['AI']),
+    submissionTriggers: (submission: Parameters<typeof submissionTriggerEvents>[0], retained?: Array<string | null | undefined>) =>
+      submissionTriggerEvents(submission, timelineOctokit, async () => state.processingLabels, retained),
     recordDispatchFailure: async () => undefined,
     getAuthenticatedOctokit: async () => ({ request: async () => ({ data: { labels: state.issueLabels.map(name => ({ name })) } }) }),
     withRetry: async (operation: () => Promise<unknown>) => operation(), retryConfigs: { githubApi: {} },

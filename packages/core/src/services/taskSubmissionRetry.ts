@@ -19,9 +19,10 @@ async function processingLabelEvents(
   submission: TaskSubmission,
   triggers: Set<string>,
   getOctokit: typeof getAuthenticatedOctokit,
+  retained: Array<string | null | undefined> = [],
 ): Promise<TriggerLabelEvent[]> {
   const [repoOwner, repoName] = submission.repository.split('/');
-  return triggerLabelEvents(await getOctokit(), { repoOwner, repoName, number: submission.issue_number! }, triggers, submission.retry_event_id);
+  return triggerLabelEvents(await getOctokit(), { repoOwner, repoName, number: submission.issue_number! }, triggers, [submission.retry_event_id, ...retained]);
 }
 
 async function terminalMillis(submission: TaskSubmission, database: Knex): Promise<number | null> {
@@ -71,13 +72,17 @@ export async function admittedSubmissionTriggers(submission: TaskSubmission, eve
   });
 }
 
-/** The trigger events of the submission's issue, oldest first, read afresh, with its consumed trigger, however it is labelled now. */
+/**
+ * The trigger events of the submission's issue, oldest first, read afresh, with its consumed trigger and the
+ * triggers `retained` names, such as an accepted run's receipt, however they are labelled now.
+ */
 export async function submissionTriggerEvents(
   submission: TaskSubmission,
   getOctokit = getAuthenticatedOctokit,
   processingLabels = loadPrimaryProcessingLabels,
+  retained: Array<string | null | undefined> = [],
 ): Promise<TriggerLabelEvent[]> {
-  return processingLabelEvents(submission, new Set(await processingLabels()), getOctokit);
+  return processingLabelEvents(submission, new Set(await processingLabels()), getOctokit, retained);
 }
 
 /** Capture the initial trigger, or recognize a fresh trigger after terminal work. */

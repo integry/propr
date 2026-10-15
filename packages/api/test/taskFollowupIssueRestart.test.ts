@@ -5,7 +5,7 @@ import type { Job } from 'bullmq';
 import { state, claims, add, postFollowup, database, applyLabels, APP_ACTOR_ID, HUMAN_ACTOR_ID, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
 import {
   openRequests, postedComments, dispatchQueued, dispatcherDeps, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch, relabelWebhook, pollDelivery, dedupKey,
-  requestChildId, consumedTrigger,
+  requestChildId, consumedTrigger, routes,
 } from './taskFollowupIssueDispatch.js';
 
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
@@ -23,6 +23,8 @@ const routings = [['a submission-backed', true], ['an issue-only', false]] as co
 const submissionRow = async () => database('task_submissions').where({ issue_number: 14 }).first('retry_event_id') as Promise<{ retry_event_id: string | null } | undefined>;
 const unreconciled = { status: 'skipped', reason: 'retry_request_unreconciled', issueNumber: 14 };
 const HOUR_MS = 60 * 60_000;
+/** How many trigger adds the route sent GitHub. */
+const labelAdds = () => routes().filter(route => route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels').length;
 const ORIGINAL = 'Retry with the original instructions';
 
 /** The issue's open request row, with when it was restarted. */
@@ -153,6 +155,66 @@ for (const [routing, backed] of routings) {
       applyLabels(['AI'], APP_ACTOR_ID);
       assert.deepEqual((await deliverAndDispatch()).dispatched, unreconciled);
       if (backed) assert.equal((await submissionRow())?.retry_event_id, null);
+
+      state.now += 60_000;
+      claims.delete(dedupKey);
+      const restarted = await postFollowup({ body: 'A later request' }, 'failed-issue-task');
+      assert.deepEqual(restarted.json.restartedRequest, { state: 'queued', commentId: FIRST_COMMENT_ID });
+      await assertRestartedRun(backed, 'A later request');
+    });
+  });
+
+  test(`${routing} restart whose removal is answered after its publication window closed adds no trigger, and a further follow-up restarts it`, async () => {
+    await onIssue(backed, `restart-lapsed-window-${backed}`, async () => {
+      await strandConfirmedRequest();
+      state.now += HOUR_MS;
+      claims.delete(dedupKey);
+      const [timeline, adds] = [state.timeline.length, labelAdds()];
+      state.onLabelRemove = () => { state.onLabelRemove = undefined; state.now += 11 * 60_000; };
+      const lapsed = await postFollowup({ body: 'A later request' }, 'failed-issue-task');
+      assert.deepEqual(lapsed.json.restartedRequest, { state: 'failed', commentId: FIRST_COMMENT_ID });
+      assert.match(String(lapsed.json.message), /restart lapsed before its 'AI' label was added, .* so no label was added/);
+      assert.equal(labelAdds(), adds, 'no add is attempted once the restart\'s window closed');
+      assert.equal(state.timeline.length, timeline, 'no trigger event is published');
+      assert.equal(claims.has(dedupKey), false);
+      assert.deepEqual((await openRequests()).map(held => held.publication), ['refused'], 'the request stays owed, stranded for a restart');
+
+      // The trigger the lost write published is still not run without the request.
+      applyLabels(['AI'], APP_ACTOR_ID);
+      assert.deepEqual((await deliverAndDispatch()).dispatched, unreconciled);
+      state.now += 60_000;
+      claims.delete(dedupKey);
+      const restarted = await postFollowup({ body: 'A later request' }, 'failed-issue-task');
+      assert.deepEqual(restarted.json.restartedRequest, { state: 'queued', commentId: FIRST_COMMENT_ID });
+      await assertRestartedRun(backed, 'A later request');
+    });
+  });
+
+  test(`${routing} restart whose removal is answered after a further restart took its write over adds no trigger`, async () => {
+    await onIssue(backed, `restart-lapsed-superseded-${backed}`, async () => {
+      await strandConfirmedRequest();
+      state.now += HOUR_MS;
+      claims.delete(dedupKey);
+      const [timeline, adds] = [state.timeline.length, labelAdds()];
+      let further: Awaited<ReturnType<typeof postFollowup>> | undefined;
+      state.onLabelRemove = async () => {
+        state.onLabelRemove = undefined;
+        // The first restart is suspended before GitHub's answer arrives, past its window and claim; a further
+        // follow-up restarts the request again, whose own add GitHub refuses.
+        state.now += 11 * 60_000;
+        claims.delete(dedupKey);
+        state.labelAdd = 'rejected';
+        further = await postFollowup({ body: 'A further request' }, 'failed-issue-task', 'user-2');
+        state.labelAdd = 'ok';
+      };
+      const lapsed = await postFollowup({ body: 'A later request' }, 'failed-issue-task');
+      assert.deepEqual(further?.json.restartedRequest, { state: 'failed', commentId: FIRST_COMMENT_ID });
+      assert.deepEqual(lapsed.json.restartedRequest, { state: 'failed', commentId: FIRST_COMMENT_ID });
+      assert.match(String(lapsed.json.message), /so no label was added/);
+      assert.equal(labelAdds(), adds + 1, 'only the further restart attempted its add');
+      assert.equal(state.timeline.length, timeline, 'no trigger event is published');
+      const held = await heldRow();
+      assert.deepEqual([held?.publication, held?.resumed_at], ['refused', held?.published_at], 'the further restart\'s refusal is kept, not the lapsed one\'s');
 
       state.now += 60_000;
       claims.delete(dedupKey);

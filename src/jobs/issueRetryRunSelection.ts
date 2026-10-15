@@ -62,7 +62,7 @@ async function resolveConfirmedRun(issueRef: IssueJobData, submission: Submissio
 export function receiptFence(submission: NonNullable<Submission>, deps: DispatcherDeps, fence: Partial<RunReceiptFence> = {}): RunReceiptFence {
     return {
         observedEventId: submission.retry_event_id ?? null,
-        history: () => deps.submissionTriggers ? deps.submissionTriggers(submission) : Promise.reject(new Error('The issue\'s trigger history cannot be read')),
+        history: retained => deps.submissionTriggers ? deps.submissionTriggers(submission, retained) : Promise.reject(new Error('The issue\'s trigger history cannot be read')),
         ...fence,
     };
 }

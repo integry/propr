@@ -279,4 +279,73 @@ for (const [routing, backed] of routings) {
       assert.equal(next.json.commentId, FIRST_COMMENT_ID + 1);
     });
   });
+
+  test(`${routing} request whose first removal is answered after a later request took the issue over and abandoned it adds no trigger and reports that none was added`, async () => {
+    await onIssue(backed, `lapsed-superseded-first-add-${backed}`, async () => {
+      const timeline = state.timeline.length;
+      let successor: Awaited<ReturnType<typeof postFollowup>> | undefined;
+      state.onLabelRemove = async () => {
+        state.onLabelRemove = undefined;
+        // GitHub removed the first request's trigger, but its answer arrives only after the request's window and
+        // claim passed, and a later request reserved the issue, releasing it, then abandoned the issue when GitHub
+        // rejected its comment.
+        state.now += ELEVEN_MINUTES;
+        claims.delete(dedupKey);
+        state.commentPostError = Object.assign(new Error('GitHub rejected comment creation'), { status: 422 });
+        successor = await postFollowup({ body: 'Successor instructions' }, 'failed-issue-task', 'user-2');
+        state.commentPostError = undefined;
+        assert.equal(await database('issue_retry_request_states').where({ issue_number: 14 }).whereNotNull('owed_issue').count({ count: '*' })
+          .first().then(row => Number(row?.count)), 0, 'the later request released the first one and then its own reservation');
+      };
+      const lapsed = await postFollowup({ body: 'Lapsed instructions' }, 'failed-issue-task');
+      assert.notEqual(successor?.json.state, 'queued', 'the later request posted nothing and queued nothing');
+
+      assert.equal(lapsed.status, 202);
+      assert.equal(lapsed.json.success, false);
+      assert.equal(lapsed.json.state, 'failed', 'no trigger of the request exists');
+      assert.match(String(lapsed.json.message), /publication lapsed before the 'AI' label was added, .* so no label was added/);
+      assert.equal(count(LABEL_REMOVE), 1);
+      assert.equal(count(LABEL_ADD), 0, 'no add is attempted once the request no longer holds the issue');
+      assert.equal(state.timeline.length, timeline, 'no trigger event is published');
+      assert.ok(!state.issueLabels.includes('AI'), 'no trigger is left on the issue for polling to find');
+      assert.equal(add.mock.callCount(), 0, 'no job is queued');
+      assert.deepEqual(await openRequests(), [], 'neither request is held');
+      assert.equal(claims.get(dedupKey), undefined, 'no claim is left behind');
+
+      // The issue is free for a new request, which runs on its own trigger for its own requester.
+      state.now += 60_000;
+      const next = await postFollowup({ body: 'Next instructions' }, 'failed-issue-task', 'user-3');
+      assert.equal(next.json.state, 'queued');
+      await assertRunFor(backed, await dispatchQueued(0), {
+        own: state.timeline.at(-1)!.id, requester: 'user-3', commentId: Number(next.json.commentId), instructions: /Next instructions/, foreign: /Lapsed instructions/,
+      });
+    });
+  });
+
+  test(`${routing} request whose first removal is answered after its publication window closed adds no trigger, and is released`, async () => {
+    await onIssue(backed, `lapsed-window-first-add-${backed}`, async () => {
+      const timeline = state.timeline.length;
+      state.onLabelRemove = () => { state.onLabelRemove = undefined; state.now += ELEVEN_MINUTES; };
+      const lapsed = await postFollowup({ body: 'Lapsed instructions' }, 'failed-issue-task');
+      assert.equal(lapsed.json.state, 'failed');
+      assert.match(String(lapsed.json.message), /so no label was added/);
+      assert.equal(count(LABEL_ADD), 0, 'a trigger added now could not be told apart as the request\'s own');
+      assert.equal(state.timeline.length, timeline);
+      assert.equal(add.mock.callCount(), 0);
+      assert.deepEqual(await openRequests(), [], 'the request, which published nothing, is released');
+      assert.equal(state.outcomeRetries.length, 0, 'its outcome is recorded');
+    });
+  });
+
+  test(`${routing} request whose first removal is answered within its window still adds its trigger and runs`, async () => {
+    await onIssue(backed, `prompt-first-add-${backed}`, async () => {
+      state.onLabelRemove = () => { state.onLabelRemove = undefined; state.now += 9 * 60_000; };
+      const result = await postFollowup({ body: 'Slow instructions' }, 'failed-issue-task');
+      assert.equal(result.json.state, 'queued');
+      assert.equal(count(LABEL_ADD), 1);
+      await assertRunFor(backed, await dispatchQueued(0), {
+        own: state.timeline.at(-1)!.id, requester: 'user-1', commentId: Number(result.json.commentId), instructions: /Slow instructions/,
+      });
+    });
+  });
 }

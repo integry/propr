@@ -116,7 +116,11 @@ async function ownTrigger(octokit: Octokit, input: IssueFollowupInput, request: 
 
 /**
  * Writes the trigger; undefined when GitHub may still apply it, or applied it
- * without an event of the request's own. Each write first removes the trigger
+ * without an event of the request's own, and 'lapsed' when the write was no
+ * longer the issue's open publication, or its window had closed, once the
+ * first removal completed, so no add was attempted and no trigger of the
+ * request exists: a later request may hold the issue, and a trigger added
+ * then would run without this request. Each write first removes the trigger
  * as the issue has it now, not as it was read before the comment was posted:
  * adding a present label succeeds but publishes no event. A refusal of the
  * first write GitHub answered proves no write of the request, whoever else
@@ -127,13 +131,20 @@ async function ownTrigger(octokit: Octokit, input: IssueFollowupInput, request: 
  * written again while the write is still the issue's open publication; a
  * later request that took the issue over owns the trigger then.
  */
-async function addTrigger(db: Knex, context: PublishContext, request: IssueRetryRequest): Promise<boolean | undefined> {
+async function addTrigger(db: Knex, context: PublishContext, request: IssueRetryRequest, now: () => number): Promise<boolean | undefined | 'lapsed'> {
   const { input, octokit, trigger, triggers } = context;
   const labelContext = { octokit, owner: input.owner, repo: input.repo, issueNumber: input.issueNumber, logger: logger.withCorrelation(context.correlationId) };
   for (let write = 1; ; write++) {
     if (write > 1 && !await issueRetryPublicationOpen(db, request).catch(() => false)) return undefined;
     // A removal publishes no trigger event; one that fails before the first add leaves no write of the request.
     if (!await safeRemoveLabel(labelContext, trigger)) return write === 1 ? false : undefined;
+    // The removal may have taken long enough for the window to close, or for a later request to take the issue
+    // over; the add is attempted only while the write is still the issue's open publication. Only the add itself
+    // can still race GitHub.
+    if (!await issueRetryPublicationOpen(db, request, now).catch(() => false)) {
+      console.warn(`[followup] Retry request ${request.id}'s publication on #${input.issueNumber} lapsed before '${trigger}' was added; not adding it`);
+      return write === 1 ? 'lapsed' : undefined;
+    }
     try {
       await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
         owner: input.owner, repo: input.repo, issue_number: input.issueNumber, labels: [trigger],
@@ -162,11 +173,17 @@ async function releaseClaim(redis: Redis, dedupeKey: string, correlationId: stri
 
 const outcomeEvidence = (redis: Redis) => redisRetryOutcomeEvidence(() => redis);
 
-/** The trigger history, whose latest event is the one after which the request's own trigger is the first its identity labels. */
-async function triggerBaseline(octokit: Octokit, input: IssueFollowupInput, triggers: string[]): Promise<{ events: TriggerLabelEvent[]; afterEventId: string | null } | null> {
+/**
+ * The trigger history, whose latest trigger is the one after which the request's own trigger is the first its
+ * identity labels. It keeps the receipts `retained` names whatever their label now, as dispatch reads it, to
+ * order triggers against them; a receipt kept only to order on is never the baseline.
+ */
+async function triggerBaseline(
+  octokit: Octokit, input: IssueFollowupInput, triggers: string[], retained: Array<string | null> = [],
+): Promise<{ events: TriggerLabelEvent[]; afterEventId: string | null } | null> {
   try {
-    const events = await triggerLabelEvents(octokit, issueKeyOf(input), new Set(triggers));
-    const latest = events.at(-1);
+    const events = await triggerLabelEvents(octokit, issueKeyOf(input), new Set(triggers), retained);
+    const latest = events.filter(event => !event.orderingOnly).at(-1);
     return { events, afterEventId: latest?.id === undefined ? null : String(latest.id) };
   } catch (error) {
     console.warn(`[followup] Could not read the trigger history of #${input.issueNumber}: ${(error as Error).message}`);
@@ -195,8 +212,8 @@ async function claimRetry(
   db: Knex, input: IssueFollowupInput, history: TriggerHistory,
   { dedupeKey, correlationId, request, refresh }: {
     dedupeKey: string; correlationId: string; request: Pick<IssueRetryRequest, 'requesterId' | 'requestedAt' | 'afterEventId'>;
-    /** Reads the trigger history afresh, to order a dispatch receipt recorded since `history`. */
-    refresh: () => Promise<TriggerLabelEvent[]>;
+    /** Reads the trigger history afresh, keeping the receipts it is given, to order a dispatch receipt recorded since `history`. */
+    refresh: (retained: Array<string | null | undefined>) => Promise<TriggerLabelEvent[]>;
   },
 ): Promise<FollowupResult | { reserved: IssueRetryRequest } | { stranded: IssueRetryRequest }> {
   if (!await input.redis.set(dedupeKey, correlationId, 'EX', 30, 'NX')) {
@@ -314,9 +331,9 @@ async function beginPublication(
  * job or the outcome's record could not be confirmed; and whether the outcome
  * was recorded.
  */
-type PublishOutcome = 'queued' | 'refused' | 'superseded' | 'unconfirmed' | 'unsubmitted' | 'unrecorded';
+type PublishOutcome = 'queued' | 'refused' | 'lapsed' | 'superseded' | 'unconfirmed' | 'unsubmitted' | 'unrecorded';
 interface Published { outcome: PublishOutcome; recorded: boolean }
-const outcomeState = (outcome: PublishOutcome) => outcome === 'queued' ? 'queued' : outcome === 'refused' ? 'failed' : 'unknown';
+const outcomeState = (outcome: PublishOutcome) => outcome === 'queued' ? 'queued' : outcome === 'refused' || outcome === 'lapsed' ? 'failed' : 'unknown';
 
 interface PublishContext {
   input: IssueFollowupInput;
@@ -331,7 +348,7 @@ interface PublishContext {
  * Points to the restart a later follow-up makes: if an unrecorded outcome
  * stays unrecorded, the request is stranded once its write can no longer land.
  */
-const strandedHint = ({ outcome, recorded }: Published) => recorded || outcome === 'refused' || outcome === 'superseded' ? ''
+const strandedHint = ({ outcome, recorded }: Published) => recorded || outcome === 'refused' || outcome === 'lapsed' || outcome === 'superseded' ? ''
   : ' If it has not started in about ten minutes, follow up again to restart it.';
 
 /**
@@ -339,12 +356,19 @@ const strandedHint = ({ outcome, recorded }: Published) => recorded || outcome =
  * trigger confirmed the write, queues the request's run for its requester.
  * The job is queued only then, so while the outcome is unrecorded it is also
  * evidence its dispatch records it from, for this write only. A write a later
- * request superseded leaves the issue to that request.
+ * request superseded leaves the issue to that request. A write that lapsed
+ * before its first add published nothing, which is recorded as a refusal
+ * would be, unless a later request holds the issue.
  */
 async function publishRetry(db: Knex, deps: IssueFollowupDeps, context: PublishContext, request: IssueRetryRequest): Promise<Published> {
   const { input, trigger } = context;
-  const applied = await addTrigger(db, context, request);
+  const added = await addTrigger(db, context, request, clock(deps));
+  const applied = added === 'lapsed' ? false : added;
   const { recorded, superseded } = await recordTriggerOutcome(db, deps, { request, applied, redis: input.redis });
+  if (added === 'lapsed') {
+    await releaseClaim(input.redis, context.dedupeKey, context.correlationId);
+    return { outcome: 'lapsed', recorded };
+  }
   if (superseded) return { outcome: 'superseded', recorded };
   // GitHub may have applied the trigger or may still apply it, and its
   // relabel delivery or polling recovers the run; the held request keeps
@@ -427,7 +451,8 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
     return refused(409, `Issue #${issueNumber}'s failure is recorded later than this server's clock, so a new trigger would not start a run yet. Try again in a few seconds.`);
   }
 
-  const baseline = await triggerBaseline(octokit, input, triggers);
+  // Read as dispatch reads it, keeping the submission's consumed trigger however it is labelled now.
+  const baseline = await triggerBaseline(octokit, input, triggers, [consumedEventId]);
   if (!baseline) {
     return refused(502, `Issue #${issueNumber}'s label history could not be read, so the retry could not be tied to its trigger. Try again.`);
   }
@@ -441,7 +466,7 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   const requestedAt = clock(deps)();
   const claimed = await claimRetry(db, input, { events: baseline.events, now: requestedAt, consumedEventId },
     { dedupeKey, correlationId, request: { requesterId: userId, requestedAt, afterEventId: baseline.afterEventId },
-      refresh: () => triggerLabelEvents(octokit, issueKeyOf(input), new Set(triggers)) });
+      refresh: retained => triggerLabelEvents(octokit, issueKeyOf(input), new Set(triggers), [consumedEventId, ...retained]) });
   if ('status' in claimed) return claimed;
   const publishing = { input, octokit, trigger, triggers, dedupeKey, correlationId };
   if ('stranded' in claimed) return restartRetry(db, deps, publishing, claimed.stranded);
@@ -476,6 +501,9 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   const published = await publishRetry(db, deps, publishing, retryRequest);
   const { outcome } = published;
   if (outcome === 'refused') return notStarted(`Make sure issue #${issueNumber} has the '${trigger}' label, then try again.`);
+  if (outcome === 'lapsed') {
+    return notStarted(`Its publication lapsed before the '${trigger}' label was added, because it took too long or a later retry took the issue over, so no label was added. Inspect issue #${issueNumber} before retrying.`);
+  }
   if (outcome === 'queued') return { status: 202, body: { success: true, state: 'queued', jobId, ...posted, message: `Retry queued on issue #${issueNumber}.` } };
   const messages: Record<typeof outcome, string> = {
     superseded: `Comment posted, but a later retry of issue #${issueNumber} took the issue over before this one's '${trigger}' label was recorded, so this request may not start. Inspect issue #${issueNumber} before retrying.`,
@@ -529,6 +557,7 @@ async function restartRetry(db: Knex, deps: IssueFollowupDeps, context: PublishC
   const messages: Record<PublishOutcome, string> = {
     queued: `${earlier}, so it was restarted and queued with its original instructions for its original requester.`,
     refused: `${earlier}, and GitHub refused the restart's '${trigger}' label, so it is still waiting. Make sure the label can be applied, then follow up again.`,
+    lapsed: `${earlier}, and its restart lapsed before its '${trigger}' label was added, because it took too long or a later retry took the issue over, so no label was added.`,
     superseded: `${earlier}, and a later retry took the issue over while it was restarted.`,
     unconfirmed: `${earlier}, so it was restarted with its original instructions, but whether its '${trigger}' label was applied could not be confirmed.`,
     unsubmitted: `${earlier}, so it was restarted with its original instructions, but its submission could not be confirmed.`,

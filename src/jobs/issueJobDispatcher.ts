@@ -68,8 +68,8 @@ export interface DispatcherDeps {
     findSubmission: typeof findIssueSubmission;
     /** Records the submission's dispatch receipt through `triggerEventId`, fenced on the receipt the dispatch read. */
     recordDispatch: (id: string, triggerEventId: string | undefined, fence: RunReceiptFence) => Promise<void>;
-    /** The trigger events of the submission's issue, read afresh, which order a receipt another dispatch recorded since. */
-    submissionTriggers?: (submission: NonNullable<Submission>) => Promise<TriggerLabelEvent[]>;
+    /** The trigger events of the submission's issue, read afresh, keeping the receipts `retained` names whatever their label, which order a receipt another dispatch recorded since. */
+    submissionTriggers?: (submission: NonNullable<Submission>, retained?: Array<string | null | undefined>) => Promise<TriggerLabelEvent[]>;
     resolveSubmissionRetry: typeof resolveTaskSubmissionRetry;
     recordDispatchFailure: (id: string, error: string) => Promise<void>;
     getAuthenticatedOctokit: typeof getAuthenticatedOctokit;
@@ -122,7 +122,7 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         resolveSubmissionRetry: resolveTaskSubmissionRetry,
         recordDispatchFailure: async (id, error) => { await db('task_submissions').where({ id, dispatch_complete: false }).update({ state: 'failed', error }); },
         recordDispatch: async (id, triggerEventId, fence) => { await recordIssueRetryRunReceipt(db, id, triggerEventId, fence); },
-        submissionTriggers: submission => submissionTriggerEvents(submission),
+        submissionTriggers: (submission, retained) => submissionTriggerEvents(submission, undefined, undefined, retained),
         getAuthenticatedOctokit,
         withRetry,
         retryConfigs,

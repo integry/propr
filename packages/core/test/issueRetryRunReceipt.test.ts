@@ -5,7 +5,7 @@ import { up } from '../src/db/migrations/20260922000000_add_task_submissions.js'
 import { up as identityMigration } from '../src/db/migrations/20260922010000_preserve_task_submission_identity.js';
 import { closeConnection } from '../src/db/connection.js';
 import { insertTaskSubmission } from '../src/services/taskSubmissionService.js';
-import { recordIssueRetryRunReceipt, acceptedRunTrigger, type TriggerLabelEvent, type IssueRetryRequest } from '../src/services/issueRetryRequest.js';
+import { recordIssueRetryRunReceipt, acceptedRunTrigger, triggerLabelEvents, type TriggerLabelEvent, type IssueRetryRequest } from '../src/services/issueRetryRequest.js';
 
 // The submission's dispatch receipt is a watermark every dispatch, carried-request settlement and follow-up
 // reconciliation advances: a write applies only while the receipt is still the one its writer read, and only
@@ -128,4 +128,26 @@ test('the accepted run\'s trigger is the queue\'s record of it, placed on a fres
   // A history that shows it already is used as it is.
   assert.equal((await acceptedRunTrigger(request, { receiptEventId: String(E1.id) }, { events: [E0, E1], history })).eventId, String(E1.id));
   assert.equal(reads.count, 2);
+});
+
+test('a history read keeps the receipts it orders on whatever their label now, marked as ordering evidence only, and asks for each receipt it orders', async () => {
+  const relabelled = { ...E3, id: 1001, label: { name: 'implement' } };
+  const timeline = [E0, E1, E2, relabelled];
+  const octokit = { request: async () => ({ data: timeline }) };
+  const issue = { repoOwner: 'owner', repoName: 'repo', number: 14 };
+  const events = await triggerLabelEvents(octokit, issue, new Set(['implement']), [String(E1.id), null, String(E2.id)]);
+  assert.deepEqual(events.map(event => [event.id, event.orderingOnly]), [[E1.id, true], [E2.id, true], [relabelled.id, undefined]],
+    'E0, a trigger under the old label that orders nothing, is dropped');
+  assert.equal((E1 as TriggerLabelEvent).orderingOnly, undefined, 'GitHub\'s own events are not marked');
+  assert.deepEqual((await triggerLabelEvents(octokit, issue, new Set(['AI']), [String(E1.id)])).map(event => event.orderingOnly), [undefined, undefined, undefined],
+    'a receipt under a configured label is a trigger');
+
+  // A receipt write orders the receipt it read and its trigger on a history that keeps them both.
+  await withSubmission(String(E1.id), async (database, id) => {
+    const asked: Array<Array<string | null | undefined>> = [];
+    const history = async (retained: Array<string | null | undefined>) => { asked.push(retained); return triggerLabelEvents(octokit, issue, new Set(['implement']), retained); };
+    assert.equal(await recordIssueRetryRunReceipt(database, id, String(E2.id), { observedEventId: String(E1.id), history }), 'recorded');
+    assert.deepEqual(asked, [[String(E1.id), String(E2.id)]]);
+    assert.equal((await receiptOf(database, id)).retry_event_id, String(E2.id));
+  });
 });

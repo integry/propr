@@ -4,6 +4,9 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import { findIssueSubmission } from './taskSubmissionService.js';
 import type { RetryRunEvidence, RetryRunReceipt } from './issueRetryRun.js';
+import type { RetryOutcomeEvidence } from './issueRetryOutcomeEvidence.js';
+
+export { redisRetryOutcomeEvidence, type RetryOutcomeEvidence } from './issueRetryOutcomeEvidence.js';
 
 /**
  * The requester and posted instructions of a requested issue retry. The job
@@ -61,7 +64,11 @@ export interface IssueRetryRequest {
   resumedAt: number | null;
 }
 
-export interface TriggerLabelEvent { id?: number; event: string; created_at?: string; label?: { name: string }; actor?: { id?: number } }
+/**
+ * A label event of the issue. `orderingOnly` marks a receipt kept only to order triggers against, as its label
+ * is not a processing label now: it is never admitted as a trigger, nor taken for a request's own.
+ */
+export interface TriggerLabelEvent { id?: number; event: string; created_at?: string; label?: { name: string }; actor?: { id?: number }; orderingOnly?: true }
 
 interface IssueKey { repoOwner: string; repoName: string; number: number }
 type Octokit = Pick<Awaited<ReturnType<typeof getAuthenticatedOctokit>>, 'request'>;
@@ -161,19 +168,22 @@ function parseRow(row: RequestRow): IssueRetryRequest {
 }
 
 /**
- * The issue's trigger-label events, oldest first. The label event of
- * `consumedEventId`, a submission's consumed trigger, is kept whatever its
- * label: a trigger is ordered against it, also once its label is no longer
- * a processing label.
+ * The issue's trigger-label events, oldest first. The label events of
+ * `retained`, the receipts triggers are ordered against, such as a
+ * submission's consumed trigger or the trigger an accepted run consumed
+ * through, are kept whatever their label: a trigger is ordered against them,
+ * also once their label is no longer a processing label. Such an event is
+ * only ordering evidence, never a trigger itself, and is marked `orderingOnly`.
  */
-export async function triggerLabelEvents(octokit: Octokit, issue: IssueKey, triggers: Set<string>, consumedEventId?: string | null): Promise<TriggerLabelEvent[]> {
+export async function triggerLabelEvents(octokit: Octokit, issue: IssueKey, triggers: Set<string>, retained: Array<string | null | undefined> = []): Promise<TriggerLabelEvent[]> {
+  const receipts = new Set(retained.filter((eventId): eventId is string => Boolean(eventId)));
   const events: TriggerLabelEvent[] = [];
   for (let page = 1; ; page++) {
     const { data } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/timeline', {
       owner: issue.repoOwner, repo: issue.repoName, issue_number: issue.number, per_page: 100, page,
     }) as { data: TriggerLabelEvent[] };
-    const kept = (item: TriggerLabelEvent) => triggers.has(item.label!.name) || (Boolean(consumedEventId) && String(item.id) === consumedEventId);
-    events.push(...data.filter(item => item.event === 'labeled' && item.label && kept(item)));
+    const kept = data.filter(item => item.event === 'labeled' && item.label && (triggers.has(item.label.name) || receipts.has(String(item.id))));
+    events.push(...kept.map(item => triggers.has(item.label!.name) ? item : { ...item, orderingOnly: true as const }));
     if (data.length < 100) break;
   }
   return events;
@@ -195,14 +205,15 @@ function inPublicationInterval(request: IssueRetryRequest, time: number): boolea
 /**
  * The trigger event the request published: the first its identity labelled
  * after its baseline within its publication interval, so a trigger labelled
- * while its comment was still being posted is another's. Null when it has
- * none, or undefined when its baseline is gone from the history, so none can
- * be told apart as its own.
+ * while its comment was still being posted is another's. A receipt kept
+ * only to order on is never its own, as the route confirms its write on
+ * processing labels alone. Null when it has none, or undefined when its
+ * baseline is gone from the history, so none can be told apart as its own.
  */
 export function retryRequestTrigger(request: IssueRetryRequest, events: TriggerLabelEvent[]): string | null | undefined {
   const start = request.afterEventId === null ? 0 : events.findIndex(event => String(event.id) === request.afterEventId) + 1;
   if (start === 0 && request.afterEventId !== null) return undefined;
-  const published = events.slice(start).find(event => (request.actorId === null || event.actor?.id === request.actorId)
+  const published = events.slice(start).find(event => !event.orderingOnly && (request.actorId === null || event.actor?.id === request.actorId)
     && inPublicationInterval(request, Date.parse(event.created_at ?? '')));
   return published?.id ? String(published.id) : null;
 }
@@ -379,49 +390,19 @@ export async function recordIssueRetryPublication(
 }
 
 /** A trigger write of a request: the request, and when the write began. */
-type PublicationWrite = Pick<IssueRetryRequest, 'id' | 'publishedAt'>;
+export type PublicationWrite = Pick<IssueRetryRequest, 'id' | 'publishedAt'>;
 
 /**
  * Whether the write is still the issue's open publication, with its outcome
  * unrecorded: no later request took the issue over once it could no longer
- * land, and no restart began another write of the request.
+ * land, and no restart began another write of the request. Given a clock,
+ * also whether its publication window is still open, so a trigger it adds
+ * now may still be told apart as its own.
  */
-export async function issueRetryPublicationOpen(database: Knex, write: PublicationWrite): Promise<boolean> {
+export async function issueRetryPublicationOpen(database: Knex, write: PublicationWrite, now?: () => number): Promise<boolean> {
   const row = await database(TABLE).where({ id: write.id, publication: 'pending', published_at: write.publishedAt }).whereNotNull('owed_issue').first('id');
-  return row !== undefined;
-}
-
-/**
- * Durable evidence of a trigger write's outcome that the route learned but
- * could not record with its request. It outlives the process that learned it
- * and any job carrying it, until a delivery's dispatch or a later follow-up
- * records the outcome. It names the write by its request and when the write
- * began, so it never confirms another write of a restarted request.
- */
-export interface RetryOutcomeEvidence {
-  save(write: PublicationWrite, publication: RetryPublicationOutcome): Promise<void>;
-  read(write: PublicationWrite): Promise<RetryPublicationOutcome | null>;
-  clear(write: PublicationWrite): Promise<void>;
-}
-
-interface EvidenceClient {
-  set(key: string, value: string): Promise<unknown>;
-  get(key: string): Promise<string | null>;
-  del(key: string): Promise<unknown>;
-}
-
-const evidenceKey = (write: PublicationWrite) => `issue:retry-outcome:${write.id}:${write.publishedAt}`;
-
-/** Evidence kept in Redis without expiry: only recording the outcome it evidences drops it. */
-export function redisRetryOutcomeEvidence(client: () => EvidenceClient | Promise<EvidenceClient>): RetryOutcomeEvidence {
-  return {
-    save: async (write, publication) => { await (await client()).set(evidenceKey(write), publication); },
-    read: async write => {
-      const publication = await (await client()).get(evidenceKey(write));
-      return publication === 'possible' || publication === 'refused' ? publication : null;
-    },
-    clear: async write => { await (await client()).del(evidenceKey(write)); },
-  };
+  // The clock is read once the record is, so a slow query does not leave the window taken for open.
+  return row !== undefined && (now === undefined || (write.publishedAt !== null && now() <= write.publishedAt + PUBLICATION_WINDOW_MS));
 }
 
 /**
@@ -481,7 +462,7 @@ export function carriedReceipt(
  * afresh, to order a receipt another dispatch recorded since `history`.
  */
 export async function reconcileIssueRetryOutcomes(
-  stores: RetryOutcomeStores, issue: IssueKey, history: TriggerHistory, refresh: () => Promise<TriggerLabelEvent[]>,
+  stores: RetryOutcomeStores, issue: IssueKey, history: TriggerHistory, refresh: RunReceiptFence['history'],
 ): Promise<void> {
   for (const request of await findIssueRetryRequests(stores.database, issue)) {
     const run = request.publication === 'reserved' ? null : await stores.runs?.read(request);
@@ -515,8 +496,11 @@ export interface RunReceiptFence {
   observedEventId: string | null;
   /** The history the writer read, which orders its trigger against the receipt it read, if it shows both. */
   events?: TriggerLabelEvent[];
-  /** Reads the issue's trigger history afresh. */
-  history: () => Promise<TriggerLabelEvent[]>;
+  /**
+   * Reads the issue's trigger history afresh, keeping the triggers `retained` names, which it is to order,
+   * whatever their label now.
+   */
+  history: (retained: Array<string | null | undefined>) => Promise<TriggerLabelEvent[]>;
 }
 
 /** Whether the receipt records the trigger itself, or a later one: 'recorded' when the write advanced it, 'covered' when it already did. */
@@ -556,7 +540,7 @@ export async function recordIssueRetryRunReceipt(
       if (!triggerEventId || observed === triggerEventId) return 'covered';
       let later = laterThan(events, triggerEventId, observed);
       if (later === undefined && !fresh) {
-        events = await fence.history();
+        events = await fence.history([observed, triggerEventId]);
         fresh = true;
         later = laterThan(events, triggerEventId, observed);
       }
@@ -592,7 +576,7 @@ export async function acceptedRunTrigger(
   request: IssueRetryRequest, run: RetryRunReceipt, { events, history }: Pick<RunReceiptFence, 'events' | 'history'>,
 ): Promise<{ eventId: string | undefined; events: TriggerLabelEvent[] }> {
   const shows = (read: TriggerLabelEvent[]) => run.receiptEventId === null || eventPosition(read, run.receiptEventId) !== -1;
-  const placed = events && shows(events) ? events : await history();
+  const placed = events && shows(events) ? events : await history([run.receiptEventId]);
   return { eventId: shows(placed) ? runTrigger(request, run, placed) : run.receiptEventId!, events: placed };
 }
 
@@ -634,6 +618,13 @@ const SELECTION_HISTORY_READS = 3;
  * So is a selection on a history that does not show the trigger the
  * submission's dispatch receipt records, such as one GitHub answered from
  * before it: none of the triggers it shows is known to come after it.
+ *
+ * Each history is read keeping the receipts it is ordered on, whatever their
+ * label now: the submission's consumed trigger, and the triggers the queue's
+ * records show accepted runs of open requests, and the latest consumed one,
+ * consumed through. A processing label configured since does not hide them,
+ * so a later trigger under it is ordered after them rather than deferred for
+ * good. They order triggers, and are never admitted as triggers themselves.
  */
 export async function selectRetryRun(
   issue: IssueKey,
@@ -647,12 +638,29 @@ export async function selectRetryRun(
   const triggers = new Set(await processingLabels());
   let unordered: IssueRetryRequest | null = null;
   for (let read = 0; read < SELECTION_HISTORY_READS; read++) {
-    const events = await triggerLabelEvents(octokit, issue, triggers, delivery.consumedEventId);
+    // Read before the history, so a run accepted since, from a later history, is the one left unordered.
+    const receipts = await orderingReceipts(issue, delivery, database);
+    const events = await triggerLabelEvents(octokit, issue, triggers, receipts);
     const selected = await selectOnHistory(issue, delivery, events, { database, now });
     if (!('unorderedRun' in selected)) return { ...selected, events };
     unordered = selected.unorderedRun;
   }
   return { deferred: unordered, unordered: true };
+}
+
+/**
+ * The receipts a selection's history is ordered on: the submission's consumed
+ * trigger, and the trigger the queue's record of each open request's accepted
+ * run names, and, for an issue-only delivery, that of the latest consumed
+ * request whose run it accepted, as `consumedRunTriggers` orders on it. A
+ * record that cannot be read fails the selection, as reading it there would.
+ */
+async function orderingReceipts(issue: IssueKey, { consumedEventId, runs, accepted }: RetryRunDelivery, database: Knex): Promise<Array<string | null | undefined>> {
+  const receipts = [consumedEventId, (await latestConsumedRun(issue, accepted, database))?.run.receiptEventId];
+  for (const request of runs ? await findIssueRetryRequests(database, issue) : []) {
+    if (request.publication !== 'reserved') receipts.push((await runs!(request))?.receiptEventId);
+  }
+  return receipts;
 }
 
 /**
@@ -669,7 +677,8 @@ async function selectOnHistory(
   if (consumedEventId && eventPosition(events, consumedEventId) === -1) return { unorderedRun: null };
   const open = await findIssueRetryRequests(database, issue);
   const at = now();
-  const admittedEvents = admitted ? await admitted(events) : events;
+  // A receipt kept under a label no longer configured orders triggers, but is never admitted as one.
+  const admittedEvents = (admitted ? await admitted(events) : events).filter(event => !event.orderingOnly);
   const admissible = new Set(admittedEvents.map(event => String(event.id)));
   const latest = events.at(-1);
   const settled: CarriedRetryRequest[] = [];
@@ -695,7 +704,7 @@ async function selectOnHistory(
   const consumed = await consumedRunTriggers(issue, accepted, events, database);
   if (!Array.isArray(consumed)) return { unorderedRun: consumed };
   const ran = [...settled.map(held => held.runTriggerEventId), ...consumed];
-  return withCarried(ran.length > 0 || settled.length > 0 ? { request: null, ...issueTrigger(events, ran) } : { request: null });
+  return withCarried(ran.length > 0 || settled.length > 0 ? { request: null, ...issueTrigger(events, admittedEvents, ran) } : { request: null });
 }
 
 /**
@@ -709,30 +718,39 @@ async function selectOnHistory(
 async function consumedRunTriggers(
   issue: IssueKey, accepted: RetryRunDelivery['accepted'], events: TriggerLabelEvent[], database: Knex,
 ): Promise<string[] | IssueRetryRequest> {
-  if (!accepted) return [];
-  for (const request of (await findConsumedIssueRetryRequests(database, issue)).reverse()) {
-    const run = await accepted(request);
-    if (!run) continue;
-    if (run.receiptEventId !== null && eventPosition(events, run.receiptEventId) === -1) return request;
-    const consumed = runTrigger(request, run, events);
-    return consumed === undefined ? [] : [consumed];
+  const latest = await latestConsumedRun(issue, accepted, database);
+  if (!latest) return [];
+  if (latest.run.receiptEventId !== null && eventPosition(events, latest.run.receiptEventId) === -1) return latest.request;
+  const consumed = runTrigger(latest.request, latest.run, events);
+  return consumed === undefined ? [] : [consumed];
+}
+
+/** The latest consumed request whose run the queue accepted, by its retired record, with that run. */
+async function latestConsumedRun(
+  issue: IssueKey, accepted: RetryRunDelivery['accepted'], database: Knex,
+): Promise<{ request: IssueRetryRequest; run: RetryRunReceipt } | null> {
+  for (const request of accepted ? (await findConsumedIssueRetryRequests(database, issue)).reverse() : []) {
+    const run = await accepted!(request);
+    if (run) return { request, run };
   }
-  return [];
+  return null;
 }
 
 /**
  * The trigger an issue-only delivery runs once a request's run consumed
  * triggers, as a carried request's run or a consumed one's retired record
- * shows: none when its latest trigger is one such a run consumed, as that
- * run was the trigger's; otherwise the latest, a later, independent trigger,
- * which runs as any other. A history that shows neither leaves the delivery
+ * shows: none when its latest trigger is one such a run consumed, or comes
+ * before one, as that run was the trigger's; otherwise the latest, a later,
+ * independent trigger, which runs as any other. A receipt kept only to order
+ * on is never that trigger. A history that shows neither leaves the delivery
  * to run as any other.
  */
-function issueTrigger(events: TriggerLabelEvent[], ran: Array<string | undefined>): { trigger?: { eventId: string } | null } {
-  const latest = events.at(-1);
-  if (!latest?.id) return {};
+function issueTrigger(events: TriggerLabelEvent[], triggers: TriggerLabelEvent[], ran: Array<string | undefined>): { trigger?: { eventId: string } | null } {
+  const latest = triggers.at(-1);
+  if (!latest?.id) return events.length > 0 ? { trigger: null } : {};
   const eventId = String(latest.id);
-  return { trigger: ran.includes(eventId) ? null : { eventId } };
+  const consumedThrough = Math.max(-1, ...ran.map(ranId => eventPosition(events, ranId)));
+  return { trigger: consumedThrough >= events.indexOf(latest) ? null : { eventId } };
 }
 
 /**

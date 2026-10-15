@@ -40,6 +40,8 @@ export const state = {
   onCommentPost: undefined as undefined | (() => void | Promise<void>),
   onIssueRead: undefined as undefined | (() => void | Promise<void>),
   onTimelineRead: undefined as undefined | (() => void | Promise<void>),
+  // A hook run once GitHub removed a label, before its successful answer arrives.
+  onLabelRemove: undefined as undefined | (() => void | Promise<void>),
   // A hook run once GitHub read the issue's timeline for a dispatch, before its answer arrives, and whether that read fails.
   onDispatchTimelineRead: undefined as undefined | (() => void | Promise<void>), dispatchTimelineFails: false,
   // Outcome records the route left to retry after responding; a test runs them.
@@ -49,6 +51,8 @@ export const state = {
   // GitHub's clock and the issue timeline it stamps label events on, to the second.
   now: Date.parse('2026-10-15T10:00:00.700Z'), sleeps: [] as number[],
   timeline: [] as Array<{ id: number; event: string; created_at: string; label: { name: string }; actor: { id: number } }>,
+  // The processing labels configured now, which the route and dispatch read.
+  processingLabels: ['AI'],
 };
 
 // The GitHub identity the app's credentials act as, and a person labelling the issue themselves.
@@ -175,6 +179,7 @@ async function labelRequest(route: string, options: { name?: string; labels?: st
   if (state.labelFails) throw Object.assign(new Error('label write failed'), { status: 500 });
   if (route === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
     state.issueLabels = state.issueLabels.filter(name => name !== options.name);
+    await state.onLabelRemove?.();
   }
   if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
     await state.onLabelAdd?.();
@@ -222,9 +227,9 @@ beforeEach(async () => {
   state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
   state.labelAdd = 'ok'; state.timelineReadFails = false; state.delayedLabels = []; state.redisFails = false; state.onLabelAdd = undefined;
   state.consumeFails = false; state.confirmFails = false; state.recordDispatchFails = false; state.runEnqueueFails = false; state.runRecordsFail = false;
-  state.onCommentPost = undefined; state.onIssueRead = undefined; state.onTimelineRead = undefined; state.outcomeRetries = [];
+  state.onCommentPost = undefined; state.onIssueRead = undefined; state.onTimelineRead = undefined; state.onLabelRemove = undefined; state.outcomeRetries = [];
   state.onDispatchTimelineRead = undefined; state.dispatchTimelineFails = false;
-  state.now = Date.parse('2026-10-15T10:00:00.700Z'); state.sleeps = [];
+  state.now = Date.parse('2026-10-15T10:00:00.700Z'); state.sleeps = []; state.processingLabels = ['AI'];
   state.timeline = [{ id: 1, event: 'labeled', created_at: '2026-10-15T09:59:00Z', label: { name: 'AI' }, actor: { id: HUMAN_ACTOR_ID } }];
   claims.clear(); hashes.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();
   for (const fn of [add, request, invalidate, startLoop, clearState, updateLabels, redis.rpush]) fn.mock.resetCalls();
@@ -289,7 +294,7 @@ export async function postFollowup(body: Record<string, unknown>, taskId = 'task
     json(payload: unknown) { result.json = payload as Record<string, unknown>; return this; },
   } as unknown as Response;
   await createTaskRoutes({
-    db: database, processingLabels: async () => ['AI'],
+    db: database, processingLabels: async () => state.processingLabels,
     now: () => state.now, sleep: async ms => { state.sleeps.push(ms); state.now += ms; },
     retryLater: attempt => { state.outcomeRetries.push(attempt); },
   }).postFollowup({
