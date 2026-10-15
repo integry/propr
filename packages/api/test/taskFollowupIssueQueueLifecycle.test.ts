@@ -10,10 +10,12 @@
  * a request whose follow-up passed its checks while another request's child
  * runs, a child ID another payload holds, restarts of runs that were and were
  * never added, a delivery while a retry's job waits, a job carrying a
- * confirmation that exhausts its attempts, and the run's transaction itself:
- * replies lost after or before Redis ran it, adds that fail inside it, a
- * partly accepted matrix, foreign payloads, reused request IDs and children
- * that cannot be built. GitHub, the request records and the child runs'
+ * confirmation that exhausts its attempts, a dispatch that resumes after
+ * another worker's stalled check recovered its job and ran the request's
+ * child, a fresh poll after the request's run, and the run's transaction
+ * itself: replies lost after or before Redis ran it, adds that fail inside it,
+ * adds that write a job but never queue it, a partly accepted matrix, foreign
+ * payloads, reused request IDs and children that cannot be built. GitHub, the request records and the child runs'
  * agent stay simulated: a child run only reads the prompt it would be given.
  * Every wait is bounded, so a run that never settles fails its test, whose
  * cleanup still closes its workers and drops its keys.
@@ -33,9 +35,9 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, test } from 'node:test';
 import { Redis } from 'ioredis';
-import { Queue, Worker, type Job } from 'bullmq';
+import { Queue, Worker, type Job, type WorkerOptions } from 'bullmq';
 import type { IssueJobData, JobResult } from '../../core/src/queue/taskQueue.types.js';
-import { state, postFollowup, useLiveQueue, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
+import { state, postFollowup, useLiveQueue, applyLabels, FIRST_COMMENT_ID, HUMAN_ACTOR_ID } from './taskFollowupFixture.js';
 import { openRequests, promptFor, onIssue, takeRecordsOffline, dispatcherDeps, retryRequestStoreFor, dedupKey, requestChildId, postedComments } from './taskFollowupIssueDispatch.js';
 
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
@@ -99,8 +101,18 @@ async function clearOwnedKeys(pattern = '*') {
 }
 
 const outcomeKeys = () => ownedKeys('issue:retry-outcome:*');
-/** The queue's records of requested retries' runs, under its BullMQ prefix in the namespace. */
-const runRecords = () => ownedKeys('bull:*:retry-run:*');
+/** The queue's records of requested retries' runs, under its BullMQ prefix in the namespace, that are not retired. */
+async function runRecords(): Promise<string[]> {
+  const records: string[] = [];
+  for (const key of await ownedKeys('bull:*:retry-run:*')) if (!await raw.hexists(key, 'consumed')) records.push(key);
+  return records;
+}
+/** The records of runs whose requests were recorded consumed, kept as their tombstones. */
+async function retiredRecords(): Promise<string[]> {
+  const records: string[] = [];
+  for (const key of await ownedKeys('bull:*:retry-run:*')) if (await raw.hexists(key, 'consumed')) records.push(key);
+  return records;
+}
 
 async function assertSentinelsUnchanged() {
   for (const [key, value] of Object.entries(SENTINELS)) {
@@ -162,7 +174,12 @@ interface LiveQueue {
   children: Array<{ jobId: string; data: IssueJobData }>;
   /** The child jobs BullMQ actually ran. */
   runs: ChildRun[];
-  startWorker: () => void;
+  /** What each dispatch the workers ran returned or threw, as it returned, whether or not its job still held its lock. */
+  dispatches: Array<JobResult | Error>;
+  /** The jobs the workers' stalled checks moved back to wait. */
+  stalls: string[];
+  /** Starts a worker, with `options` over the suite's; the latest started is the one `restartWorker` restarts. */
+  startWorker: (options?: Partial<WorkerOptions>) => Worker;
   /** Closes the worker, as when the worker process stops, and starts a fresh one. */
   restartWorker: () => Promise<void>;
   /** The next parent (dispatcher) job to settle. */
@@ -223,6 +240,8 @@ async function withLiveQueue(body: (live: LiveQueue) => Promise<void>) {
   const queue = new Queue(`issue-retry-itest-${randomUUID()}`, { connection: raw, prefix });
   const children: LiveQueue['children'] = [];
   const runs: ChildRun[] = [];
+  const dispatches: Array<JobResult | Error> = [];
+  const stalls: string[] = [];
   // Runs are added to the real queue, with their record, in one transaction; the storage lifecycle guard is the production queue's.
   const store = retryRequestStoreFor(redisRetryOutcomeEvidence(() => owned), (held, runChildren, receiptEventId) => {
     const through = nextRunQueue?.(queue) ?? queue;
@@ -259,18 +278,33 @@ async function withLiveQueue(body: (live: LiveQueue) => Promise<void>) {
     if (childrenFail) throw new Error('Claude authentication failed');
     return { status: 'completed', issueNumber: job.data.number };
   };
-  const startWorker = () => {
+  const dispatch = async (job: Job<IssueJobData>) => {
+    try {
+      const result = await handleDispatchWithDeps(job, deps);
+      dispatches.push(result);
+      return result;
+    } catch (error) {
+      dispatches.push(error as Error);
+      throw error;
+    }
+  };
+  const startWorker = (options: Partial<WorkerOptions> = {}) => {
     const connection = connect();
     clients.push(connection);
-    worker = new Worker<IssueJobData, JobResult>(queue.name, job => job.data.isChildJob ? runChild(job) : handleDispatchWithDeps(job, deps),
-      { connection, prefix, concurrency: 2 });
-    workers.push(worker);
-    worker.on('completed', (job, result) => (job.data.isChildJob ? childOutcomes : parents).push({ event: 'completed', job, result }));
-    worker.on('failed', (job, error) => { if (job) (job.data.isChildJob ? childOutcomes : parents).push({ event: 'failed', job, error }); });
+    const started = new Worker<IssueJobData, JobResult>(queue.name, job => job.data.isChildJob ? runChild(job) : dispatch(job),
+      { connection, prefix, concurrency: 2, ...options });
+    worker = started;
+    workers.push(started);
+    started.on('completed', (job, result) => (job.data.isChildJob ? childOutcomes : parents).push({ event: 'completed', job, result }));
+    started.on('failed', (job, error) => { if (job) (job.data.isChildJob ? childOutcomes : parents).push({ event: 'failed', job, error }); });
+    started.on('stalled', jobId => { stalls.push(jobId); });
+    // A worker whose job another recovered cannot record its outcome; BullMQ reports that as an error event.
+    started.on('error', () => {});
+    return started;
   };
   try {
     await body({
-      queue, children, runs, startWorker,
+      queue, children, runs, dispatches, stalls, startWorker,
       restartWorker: async () => {
         await worker?.close();
         startWorker();
@@ -363,7 +397,7 @@ async function assertNextFollowupRunsOnce(live: LiveQueue, earlierRuns: number, 
   assert.equal(live.runs.length, earlierRuns + 1, 'the earlier request\'s instructions did not run again');
   assertChildRun(live.runs.at(-1), { jobId: await requestChildId(commentId), requester: 'user-2', commentId, instructions: /Second instructions/, foreign });
   assert.deepEqual(await openRequests(), []);
-  assert.deepEqual(await runRecords(), [], 'no run record outlives its request');
+  assert.deepEqual(await runRecords(), [], 'no run record outlives its request unretired');
 }
 
 for (const [routing, backed] of routings) {
@@ -388,7 +422,8 @@ for (const [routing, backed] of routings) {
         // request's run shows it was carried, so it is recorded consumed and nothing is added again.
         assertCompleted(await live.settled(), alreadyDispatched(backed));
         assert.deepEqual(live.children.map(child => child.jobId), [firstChild]);
-        assert.deepEqual(await runRecords(), [], 'the record is dropped once the request is recorded consumed');
+        assert.deepEqual(await runRecords(), [], 'the record is retired once the request is recorded consumed');
+        assert.equal((await retiredRecords()).length, 1, 'and kept as its tombstone');
         assert.deepEqual(await openRequests(), []);
         release();
         assert.equal((await live.childSettled()).event, 'completed');
@@ -440,7 +475,7 @@ for (const outcome of ['completes', 'fails'] as const) {
       assert.equal(live.runs.length, 1, 'the request\'s child ran once');
       assertChildRun(live.runs[0], { jobId: childId, requester: 'user-1', commentId: FIRST_COMMENT_ID, instructions: /First instructions/ });
       assert.deepEqual(await openRequests(), [], 'the request is recorded consumed');
-      assert.deepEqual(await runRecords(), [], 'and its record is dropped');
+      assert.deepEqual(await runRecords(), [], 'and its record is retired');
 
       await assertNextFollowupRunsOnce(live, 1);
       const counts = await live.queue.getJobCounts('waiting', 'active', 'delayed', 'failed', 'completed');
@@ -809,6 +844,182 @@ test('a requested run with a child that cannot be built sends nothing to Redis',
     assert.equal(await live.queue.getJob(childIdOf(held, 'a')), undefined, 'the child built before it is not added');
     assert.equal(await runs.read(held), null);
     assert.deepEqual(await runRecords(), []);
+  });
+});
+
+/** The queue seen through a connection that runs `around` each transaction's execution. */
+function aroundTransactions(queue: Queue, around: (exec: () => Promise<unknown>) => Promise<unknown>): Queue {
+  const bind = (target: object, prop: string | symbol) => {
+    const value = Reflect.get(target, prop, target) as unknown;
+    return typeof value === 'function' ? value.bind(target) : value;
+  };
+  const hooked = (client: object) => new Proxy(client, { get: (target, prop) => prop !== 'multi' ? bind(target, prop) : () => {
+    const transaction = (target as { multi(): { exec(): Promise<unknown> } }).multi();
+    const exec = transaction.exec.bind(transaction);
+    transaction.exec = () => around(exec);
+    return transaction;
+  } });
+  return new Proxy(queue, { get: (target, prop) => prop === 'client' ? target.client.then(hooked) : bind(target, prop) });
+}
+
+/** The queue as a dispatch sees it that is suspended at its first child check, after it read the run's record, until `resume` runs. */
+function suspendedAtCheck(): { suspend: (queue: Queue) => Queue; reached: Promise<void>; resume: () => void } {
+  let reach = () => {};
+  const reached = new Promise<void>(resolve => { reach = resolve; });
+  let resume = () => {};
+  const resumed = new Promise<void>(resolve => { resume = resolve; });
+  const suspend = (queue: Queue) => new Proxy(queue, { get: (target, prop) => {
+    if (prop === 'getJob') return async (jobId: string) => { reach(); await resumed; return target.getJob(jobId); };
+    const value = Reflect.get(target, prop, target) as unknown;
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  return { suspend, reached, resume };
+}
+
+for (const evidence of ['retained', 'retired'] as const) {
+  test(`an issue-only retry's dispatch that resumes after another worker recovered its stalled job, and ran and removed the request's child, adds nothing again, with the run's record ${evidence}`, { skip, timeout: 60_000 }, async () => {
+    await withLiveQueue(async live => {
+      // Worker A's dispatch reads the record, finds no run, builds its children and is suspended at its child check,
+      // as a process that misses its lock renewals: its lock expires, and it recovers no stalled job itself.
+      const suspended = suspendedAtCheck();
+      nextRunQueue = suspended.suspend;
+      const workerA = live.startWorker({ concurrency: 1, lockDuration: 1_000, skipLockRenewal: true, skipStalledCheck: true });
+      // A retained record is one whose request could not be recorded consumed; a retired one is the tombstone left once it was.
+      state.consumeFails = evidence === 'retained';
+      assert.equal((await postFollowup({ body: 'First instructions' }, 'failed-issue-task')).json.state, 'queued');
+      await suspended.reached;
+      const childId = await requestChildId();
+
+      // Worker B's stalled check recovers the same parent once A's lock expires; its dispatch adds and records the
+      // child, which runs and is removed, and the parent finishes and is removed too.
+      live.startWorker({ stalledInterval: 250 });
+      if (evidence === 'retained') {
+        assertFailedAttempt(await live.settled(), /database is locked/);
+        assertCompleted(await live.settled(), alreadyDispatched(false));
+      } else {
+        await assertDispatched(await live.settled(), live.children[0], { requester: 'user-1', commentId: FIRST_COMMENT_ID, instructions: /First instructions/ });
+      }
+      assert.equal((await live.childSettled()).event, 'completed');
+      await live.drained();
+      assert.deepEqual(live.stalls, [JOB_ID], 'B recovered A\'s parent from its stalled check');
+      assert.equal(await live.queue.getJob(childId), undefined, 'the child ran and was removed, freeing its ID');
+      assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the recovered parent finished and was removed');
+      assert.equal((await runRecords()).length, evidence === 'retained' ? 1 : 0);
+      assert.equal((await retiredRecords()).length, evidence === 'retained' ? 0 : 1);
+      const recovered = live.dispatches.length;
+
+      // A resumes with the children it built before B ran: the record its transaction meets fences their adds.
+      suspended.resume();
+      await until(async () => live.dispatches.length === recovered + 1, 'the suspended dispatch did not return');
+      const stale = live.dispatches.at(-1);
+      if (evidence === 'retained') assert.match(stale instanceof Error ? stale.message : '', /database is locked/, 'it only tries to settle the request');
+      else assert.deepEqual(stale, alreadyDispatched(false));
+      await workerA.close(true);
+      await live.drained();
+      assert.equal(live.dispatches.length, recovered + 1, 'the parent was dispatched by A, then by B, and by nothing else');
+      assert.equal(live.runs.length, 1, 'the accepted instructions ran once');
+      assertChildRun(live.runs[0], { jobId: childId, requester: 'user-1', commentId: FIRST_COMMENT_ID, instructions: /First instructions/ });
+      assert.deepEqual(live.children.map(child => child.jobId), [childId], 'only B added the child');
+      assert.equal(await raw.exists(live.queue.toKey(childId)), 0, 'nothing is left under the child\'s ID');
+
+      state.consumeFails = false;
+      await assertNextFollowupRunsOnce(live, 1);
+    });
+  });
+}
+
+for (const [routing, backed, later] of [['issue-only', false, false], ['issue-only', false, true], ['submission-backed', true, false]] as const) {
+  test(`a fresh poll after a ${routing} retry's child failed fast and its dispatch could not record it ${later ? 'still runs a later, independent trigger as usual' : 'only settles the request, running nothing more'}`, { skip, timeout: 60_000 }, async () => {
+    await onIssue(backed, `live-fresh-poll-${backed}-${later}`, async () => {
+      await withLiveQueue(async live => {
+        live.startWorker();
+        live.failChildren(true);
+        state.consumeFails = true;
+        assert.equal((await postFollowup({ body: 'First instructions' }, 'failed-issue-task')).json.state, 'queued');
+        // The child fails at once; the dispatch's retry recognizes its run but cannot settle it, and the parent
+        // carrying the request's metadata completes and is removed.
+        assertFailedAttempt(await live.settled(), /database is locked/);
+        assert.equal((await live.childSettled()).event, 'failed');
+        assertCompleted(await live.settled(), alreadyDispatched(backed));
+        await live.drained();
+        const childId = await requestChildId();
+        assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the original parent is gone');
+        assert.equal((await openRequests()).length, 1, 'the request is still open');
+        assert.equal((await runRecords()).length, 1, 'with the record of its run');
+
+        // Storage recovers; past the claim, an ordinary poll queues a fresh parent, after someone relabelled the issue or not.
+        state.consumeFails = false;
+        live.failChildren(false);
+        state.now += 60_000;
+        if (later) applyLabels(['AI'], HUMAN_ACTOR_ID);
+        await owned.del(dedupKey);
+        assert.equal((await livePoll()).status, 'accepted');
+        const polled = await live.settled();
+        assert.deepEqual([polled.job.data.retryCommentId, polled.job.data.retryRequesterId, polled.job.data.userId], [undefined, undefined, '99'],
+          'the poll carries no retry metadata');
+        if (later) {
+          assert.equal(polled.event === 'completed' && polled.result.status, 'dispatched');
+          assert.equal((await live.childSettled()).event, 'completed');
+        } else {
+          assertCompleted(polled, alreadyDispatched(backed));
+        }
+        await live.drained();
+        assert.equal(live.runs.length, later ? 2 : 1, later ? 'the later trigger ran once' : 'nothing more ran on the accepted trigger');
+        assertChildRun(live.runs[0], { jobId: childId, requester: 'user-1', commentId: FIRST_COMMENT_ID, instructions: /First instructions/ });
+        if (later) {
+          const ordinary = live.runs[1];
+          assert.equal(ordinary.jobId, 'issue-integry-propr-14-claude-claude-opus-5-5-main', 'an ordinary run of the issue');
+          assert.deepEqual([ordinary.data.userId, ordinary.data.retryRequesterId, ordinary.data.retryCommentId], ['99', undefined, undefined]);
+        }
+        assert.deepEqual(live.children.map(child => child.jobId).slice(0, 1), [childId]);
+        assert.equal(live.children.length, later ? 2 : 1);
+        assert.deepEqual(await openRequests(), [], 'the request is settled either way');
+        assert.deepEqual(await runRecords(), []);
+
+        await assertNextFollowupRunsOnce(live, live.runs.length);
+      });
+    });
+  });
+}
+
+test('requested children an add wrote but never queued are not taken for the run: the request stays owed, and its retry replaces and runs them once, even when its reply is lost', { skip, timeout: 30_000 }, async () => {
+  await withLiveQueue(async live => {
+    const runs = queueRetryRunEvidence(() => live.queue);
+    const held = requestOf(6);
+    const matrix = [childOf(held, 'a'), childOf(held, 'b')];
+    const enqueue = (queue: Queue) => enqueueIssueRetryRun(queue, held, matrix, { receiptEventId: null, use: run => run() });
+    // Deliberately injected: while the transaction runs, the queue's event stream is a string, so each add's script
+    // fails at its first event, after writing its job and before queueing it, as any script error after that write would.
+    const events = live.queue.toKey('events');
+    const failing = aroundTransactions(live.queue, async exec => {
+      const existed = await raw.exists(events) === 1;
+      if (existed) await raw.rename(events, `${events}:held`);
+      await raw.set(events, 'blocked');
+      try {
+        return await exec();
+      } finally {
+        await raw.del(events);
+        if (existed) await raw.rename(`${events}:held`, events);
+      }
+    });
+    await assert.rejects(enqueue(failing), /accepted 0 of 2 children.*WRONGTYPE/);
+    for (const child of matrix) {
+      const job = await live.queue.getJob(child.opts.jobId);
+      assert.equal(job?.data.retryCommentId, held.commentId, 'the add wrote the job');
+      assert.equal(await job?.getState(), 'unknown', 'but the queue holds it in no state, so it can never run');
+    }
+    assert.equal(await runs.read(held), null, 'jobs alone are not taken for the run');
+
+    // The retry replaces them and the queue accepts the run, though the reply is lost; a later dispatch adds nothing.
+    await assert.rejects(enqueue(replyLosingQueue(live.queue, true)), /after the transaction ran/);
+    assert.deepEqual(await runs.read(held), { receiptEventId: null });
+    for (const child of matrix) assert.equal(await (await live.queue.getJob(child.opts.jobId))?.getState(), 'waiting');
+    assert.equal(await enqueue(live.queue), false);
+    live.startWorker();
+    await live.childSettled();
+    await live.childSettled();
+    await live.drained();
+    assert.deepEqual(live.runs.map(run => run.jobId).sort(), matrix.map(child => child.opts.jobId).sort(), 'each child ran once');
   });
 });
 

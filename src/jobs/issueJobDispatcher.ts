@@ -50,11 +50,12 @@ interface RetryRequestStore {
     confirm(issue: IssueJobData, request: IssueRetryRequest, publication: RetryPublicationOutcome): Promise<void>;
     /**
      * Adds the request's children together with the queue's record of its run, which
-     * keeps it carried until it is recorded consumed; `receiptEventId` is the trigger
-     * the submission's dispatch receipt records for the run.
+     * keeps it carried until it is recorded consumed, and fences any later add of them;
+     * `receiptEventId` is the latest trigger the run consumes. Resolves false when the
+     * queue had already accepted the run from another dispatch, and added nothing.
      */
-    enqueue(issue: IssueJobData, request: IssueRetryRequest, children: RetryRunChild[], receiptEventId: string | null): Promise<void>;
-    /** Durably records that the dispatch carried the request into its run, which releases it and drops the record of its run. */
+    enqueue(issue: IssueJobData, request: IssueRetryRequest, children: RetryRunChild[], receiptEventId: string | null): Promise<boolean>;
+    /** Durably records that the dispatch carried the request into its run, which releases it and retires the record of its run. */
     consume(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
 }
 
@@ -354,11 +355,19 @@ async function settleCarriedRequests(issueRef: IssueJobData, submission: Submiss
 /**
  * A queued issue-only request runs only on its own trigger, by the rules
  * recovery uses; a delivery whose selection is not it runs nothing. A retry
- * of the dispatch that enqueued its run finds the request carried.
+ * of the dispatch that enqueued its run finds the request carried. Any
+ * delivery whose latest trigger a carried request's run consumed, such as a
+ * poll after that dispatch is gone, only settles the request: the run was
+ * that trigger's, so nothing more runs on it, for the delivery or anyone.
  */
 function unownedRequest(issueRef: IssueJobData, submission: Submission, run: RetryRun): JobResult | null {
     const request = 'request' in run ? run.request : null;
-    if (request || submission || issueRef.retryCommentId === undefined) return null;
+    if (request || submission) return null;
+    if ('trigger' in run && run.trigger === null) {
+        logger.info({ issue: issueRef.number, retryCommentId: issueRef.retryCommentId }, 'A carried retry request\'s run consumed the latest trigger; not dispatching it again');
+        return { status: 'skipped', reason: 'retry_request_already_dispatched', issueNumber: issueRef.number };
+    }
+    if (issueRef.retryCommentId === undefined) return null;
     if (run.carried?.some(held => held.commentId === issueRef.retryCommentId && held.requesterId === issueRef.retryRequesterId)) {
         logger.info({ issue: issueRef.number, retryCommentId: issueRef.retryCommentId }, 'Queued retry request already had its run enqueued; not dispatching it again');
         return { status: 'skipped', reason: 'retry_request_already_dispatched', issueNumber: issueRef.number };
@@ -367,22 +376,27 @@ function unownedRequest(issueRef: IssueJobData, submission: Submission, run: Ret
     return { status: 'skipped', reason: 'retry_request_not_owed', issueNumber: issueRef.number };
 }
 
-/** The trigger the submission's dispatch receipt records: a run of a request's own trigger also consumes newer triggers it was dispatched past. */
-function dispatchReceipt(submission: Submission, run: RetryRun, trigger: SubmissionRetry | null): string | undefined {
-    if (!submission) return undefined;
-    return ('request' in run && run.request ? run.latestTriggerEventId : undefined) ?? trigger?.eventId;
+/**
+ * The latest trigger the run consumes, which the submission's dispatch receipt records, and the queue's record
+ * of a request's run keeps for an issue-only one: a run of a request's own trigger also consumes newer
+ * triggers it was dispatched past.
+ */
+function consumedTrigger(run: RetryRun, trigger: SubmissionRetry | null): string | undefined {
+    if ('request' in run && run.request) return run.latestTriggerEventId ?? run.triggerEventId;
+    return trigger?.eventId;
 }
 
-/** Adds the run's children: a requested retry's with the queue's record of its run, in one transaction; any other's as they are. */
+/**
+ * Adds the run's children: a requested retry's with the queue's record of its run, in one transaction; any
+ * other's as they are. False when the queue had already accepted the request's run from another dispatch.
+ */
 async function enqueueChildren(
     issueRef: IssueJobData, { request, receiptEventId }: { request: IssueRetryRequest | null; receiptEventId: string | undefined },
     children: RetryRunChild[], deps: DispatcherDeps,
-): Promise<void> {
-    if (request && deps.retryRequests) {
-        await deps.retryRequests.enqueue(issueRef, request, children, receiptEventId ?? null);
-        return;
-    }
+): Promise<boolean> {
+    if (request && deps.retryRequests) return deps.retryRequests.enqueue(issueRef, request, children, receiptEventId ?? null);
     for (const child of children) await deps.issueQueue.add(child.name, child.data, child.opts);
+    return true;
 }
 
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
@@ -465,8 +479,14 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
             }
         }
 
-        const receiptEventId = dispatchReceipt(submission, run, trigger);
-        await enqueueChildren(issueRef, { request: retryRequest, receiptEventId }, children, deps);
+        const receiptEventId = consumedTrigger(run, trigger);
+        if (!await enqueueChildren(issueRef, { request: retryRequest, receiptEventId }, children, deps)) {
+            // Another dispatch of the request, such as one that recovered this job while it was stalled, accepted its
+            // run since this one selected it: its receipt is that dispatch's to record, not this stale selection's.
+            correlatedLogger.info({ jobId, issue: issueRef.number, retryCommentId: retryRequest?.commentId }, 'Retry request\'s run was already accepted; adding nothing');
+            await releaseRetryRequest(issueRef, retryRequest, deps);
+            return { status: 'skipped', reason: 'retry_request_already_dispatched', issueNumber: issueRef.number };
+        }
         for (const child of children) {
             correlatedLogger.info({
                 jobId,

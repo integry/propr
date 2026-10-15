@@ -43,11 +43,13 @@ type RetryOutcomeEvidence = ReturnType<typeof redisRetryOutcomeEvidence>;
 export const retryOutcomes = redisRetryOutcomeEvidence(() => redis);
 /** The queue's records of the requested retries' runs it accepted, as the route reads them from the issue queue. */
 export const retryRuns = queueRetryRunEvidence(async () => await getIssueQueue() as never);
-type RunEnqueue = (held: IssueRetryRequest, children: RetryRunChild[], receiptEventId: string | null) => Promise<void>;
+/** Adds a request's run, resolving false when the queue had already accepted it and added nothing. */
+type RunEnqueue = (held: IssueRetryRequest, children: RetryRunChild[], receiptEventId: string | null) => Promise<boolean>;
 /** Adds a run to the simulated queue: only the record of the run is kept, in the simulated Redis. */
 const simulatedRunEnqueue: RunEnqueue = async (held, children, receiptEventId) => {
   const { key, fields } = retryRunRecord(await getIssueQueue() as never, held, children.map(child => child.opts.jobId), receiptEventId);
   await redis.hset(key, fields);
+  return true;
 };
 /** The production retry request store, on the test database, the given outcome evidence, and the queue's run records. */
 export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence, enqueue: RunEnqueue = simulatedRunEnqueue) => ({
@@ -63,7 +65,7 @@ export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence, enqueue: Ru
   },
   enqueue: async (_issue: IssueJobData, held: IssueRetryRequest, children: RetryRunChild[], receiptEventId: string | null) => {
     if (state.runEnqueueFails) throw new Error('Connection is closed.');
-    await enqueue(held, children, receiptEventId);
+    return enqueue(held, children, receiptEventId);
   },
   consume: async (_issue: IssueJobData, held: IssueRetryRequest) => {
     if (state.consumeFails) throw new Error('SQLITE_BUSY: database is locked');
@@ -93,8 +95,9 @@ export function dispatcherDeps(children: Array<{ jobId: string; data: IssueJobDa
     retryRequests: {
       ...retryRequests,
       enqueue: async (issue: IssueJobData, held: IssueRetryRequest, runChildren: RetryRunChild[], receiptEventId: string | null) => {
-        await retryRequests.enqueue(issue, held, runChildren, receiptEventId);
-        children.push(...runChildren.map(child => ({ jobId: child.opts.jobId, data: child.data, options: child.opts })));
+        const added = await retryRequests.enqueue(issue, held, runChildren, receiptEventId);
+        if (added) children.push(...runChildren.map(child => ({ jobId: child.opts.jobId, data: child.data, options: child.opts })));
+        return added;
       },
     },
   } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
