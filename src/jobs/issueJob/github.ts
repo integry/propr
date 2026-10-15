@@ -92,6 +92,8 @@ export async function fetchIssueComments(
     }
 
     return allComments.filter(comment => {
+      // A requested retry's instructions are posted with the app's credentials.
+      if (issueRef.retryCommentId !== undefined && comment.id === issueRef.retryCommentId) return true;
       const filterResult = filterCommentByAuthor(comment.user.login, comment.user.type);
       return !filterResult.shouldFilter;
     });

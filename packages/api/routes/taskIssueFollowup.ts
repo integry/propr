@@ -164,7 +164,7 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
 
   const jobId = `issue-${owner}-${repo}-${issueNumber}`;
   try {
-    await (deps.enqueueIssue ?? enqueueIssueImplementationJob)({ owner, repo, issueNumber, userId, triggeringLabel: trigger, correlationId });
+    await (deps.enqueueIssue ?? enqueueIssueImplementationJob)({ owner, repo, issueNumber, userId, retryRequesterId: userId, retryCommentId: commentId, triggeringLabel: trigger, correlationId });
   } catch (error) {
     // The queue may have accepted the job before failing; the trigger label stays for polling.
     console.warn(`[followup] Issue retry dispatch failed: ${(error as Error).message}`);

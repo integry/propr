@@ -187,6 +187,11 @@ async function resolveDispatchTargets(
     return { basesToProcess, agentModelsToProcess, reasoningLevel };
 }
 
+/** A requested retry runs for its requester; other deliveries keep the submitter. */
+function submissionRunOwner(submitterId: string, issueRef: IssueJobData, isRetry: boolean): string {
+    return isRetry && issueRef.retryRequesterId ? issueRef.retryRequesterId : submitterId;
+}
+
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
     const { id: jobId, name: jobName, data: issueRef } = job;
     const submission = await deps.findSubmission(issueRef);
@@ -195,7 +200,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
     if (submission?.dispatch_complete && !retry) return { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: issueRef.number };
     if (submission) {
         [issueRef.repoOwner, issueRef.repoName] = submission.repository.split('/');
-        issueRef.userId = submission.user_id;
+        issueRef.userId = submissionRunOwner(submission.user_id, issueRef, Boolean(retry));
         issueRef.correlationId = retry ? `${submission.id}-${retry.eventId}` : submission.id;
     }
     const correlationId = issueRef.correlationId || generateCorrelationId();

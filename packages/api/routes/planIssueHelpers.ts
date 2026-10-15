@@ -60,6 +60,8 @@ export async function enqueueIssueImplementationJob(params: {
   userId: string;
   triggeringLabel: string;
   correlationId?: string;
+  retryRequesterId?: string;
+  retryCommentId?: number;
 }): Promise<void> {
   const { owner, repo, issueNumber, userId, triggeringLabel } = params;
   const queue = await getIssueQueue();
@@ -70,6 +72,8 @@ export async function enqueueIssueImplementationJob(params: {
     number: issueNumber,
     userId,
     triggeringLabel,
+    ...(params.retryRequesterId ? { retryRequesterId: params.retryRequesterId } : {}),
+    ...(params.retryCommentId ? { retryCommentId: params.retryCommentId } : {}),
     correlationId: params.correlationId || generateCorrelationId()
   }, {
     jobId,

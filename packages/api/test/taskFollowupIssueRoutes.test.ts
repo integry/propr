@@ -10,6 +10,8 @@ const { processDetectedIssue } = await import('../../core/src/daemon/issueDetect
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
 const { insertTaskSubmission, findIssueSubmission } = await import('../../core/src/services/taskSubmissionService.js');
 const { resolveTaskSubmissionRetry } = await import('../../core/src/services/taskSubmissionRetry.js');
+const { fetchIssueComments } = await import('../../../src/jobs/issueJob/github.js');
+const { generateClaudePrompt } = await import('../../core/src/claude/prompts/promptGenerator.js');
 
 const routes = () => request.mock.calls.map(call => call.arguments[0]);
 const pullRequestReads = () => routes().filter(route => route.includes('/pulls/'));
@@ -31,6 +33,8 @@ test('a failed issue-only implementation is retried through the issue job for th
   assert.equal(options.jobId, 'issue-integry-propr-14');
   assert.deepEqual({ repoOwner: job.repoOwner, repoName: job.repoName, number: job.number, userId: job.userId, triggeringLabel: job.triggeringLabel },
     { repoOwner: 'integry', repoName: 'propr', number: 14, userId: 'user-1', triggeringLabel: 'AI' });
+  assert.equal(job.retryRequesterId, 'user-1');
+  assert.equal(job.retryCommentId, 6157569382);
   // The dispatcher resolves the model from the issue's labels; nothing here overrides it.
   assert.equal(job.agentAlias, undefined);
   assert.equal(job.modelName, undefined);
@@ -71,18 +75,18 @@ test('the relabel webhook and a repeated request do not queue a second run', asy
   assert.equal(add.mock.callCount(), 2);
 });
 
-test('a first retry within the failure second relabels after it, so the submission dispatcher starts a run', async () => {
+test('a first retry within the failure second relabels after it, so the submission dispatcher starts a run for the requester with their instructions', async () => {
   const row = await insertTaskSubmission(database, { user_id: 'submitter', submission_key: 'retry-in-failure-second',
     payload_hash: 'hash', repository: 'integry/propr', payload: '{}', attachments: '[]' });
   try {
     // The initial run was dispatched and failed at 10:00:00.500; no retry identity is consumed yet.
     await database('task_submissions').where({ id: row.id }).update({ issue_number: 14, task_id: 'failed-issue-task', dispatch_complete: true });
-    const result = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
+    const result = await postFollowup({ body: 'Retry with the rotated token' }, 'failed-issue-task');
     assert.equal(result.json.state, 'queued');
     assert.deepEqual(state.sleeps, [300], 'the relabel waits for the second after the failure');
     assert.equal(state.timeline.at(-1)!.created_at, '2026-10-15T10:00:01.000Z');
 
-    const children: string[] = [];
+    const children: Array<{ jobId: string; data: IssueJobData }> = [];
     const deps = {
       findSubmission: (issue: IssueJobData) => findIssueSubmission(issue, database),
       resolveSubmissionRetry: (submission: Parameters<typeof resolveTaskSubmissionRetry>[0]) => resolveTaskSubmissionRetry(submission, database,
@@ -93,12 +97,32 @@ test('a first retry within the failure second relabels after it, so the submissi
       validateRepositoryInfo: async () => ({ isValid: true, repoData: { defaultBranch: 'main' } }),
       resolveLlmLabel: async () => ({ agentAlias: 'claude', model: 'claude-opus-5-5' }),
       getAllCustomLabels: async () => [], getDefaultModel: () => 'claude-opus-5-5',
-      issueQueue: { add: async (_name: string, _data: IssueJobData, options: { jobId: string }) => { children.push(options.jobId); } },
+      issueQueue: { add: async (_name: string, data: IssueJobData, options: { jobId: string }) => { children.push({ jobId: options.jobId, data }); } },
     } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
     const [name, data] = add.mock.calls[0].arguments as unknown as [string, IssueJobData];
     const dispatched = await handleDispatchWithDeps({ id: 'issue-integry-propr-14', name, data } as Job<IssueJobData>, deps);
     assert.equal(dispatched.status, 'dispatched');
-    assert.deepEqual(children, [`issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${state.timeline.at(-1)!.id}`]);
+    assert.deepEqual(children.map(child => child.jobId), [`issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${state.timeline.at(-1)!.id}`]);
+    const [{ data: child }] = children;
+    assert.equal(child.userId, 'user-1', 'the retry runs for the requester, not the submitter');
+
+    // The run reads its prompt context from the issue's comments, where the app posted the request.
+    const [posted] = postedComments();
+    const issueComments = [
+      { id: 1, body: 'An unrelated bot note', user: { login: 'other-app[bot]', type: 'Bot' } },
+      { id: 6157569382, body: posted.arguments[1].body!, user: { login: 'propr-dev[bot]', type: 'Bot' } },
+    ];
+    const octokit = { request: async (route: string, options: { issue_number: number }) => {
+      assert.equal(route, 'GET /repos/{owner}/{repo}/issues/{issue_number}/comments');
+      assert.equal(options.issue_number, 14);
+      return { data: issueComments, headers: {} };
+    } };
+    const comments = await fetchIssueComments(octokit as never, child, { warn: () => undefined } as never);
+    assert.deepEqual(comments.map(comment => comment.id), [6157569382], 'only the requested retry is exempt from author filtering');
+    const prompt = generateClaudePrompt({ issueRef: { number: 14, repoOwner: 'integry', repoName: 'propr' }, branchName: 'retry', modelName: 'claude-opus-5-5',
+      issueDetails: { title: 'Issue', body: 'Body', comments } });
+    assert.match(prompt, /Retry with the rotated token/);
+    assert.doesNotMatch(prompt, /An unrelated bot note/);
   } finally {
     await database('task_submissions').where({ id: row.id }).delete();
   }
