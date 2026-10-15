@@ -272,18 +272,27 @@ async function recordTriggerOutcome(
  * Begins the trigger write: records the request with its comment while its
  * reservation is still its own, before anything on the issue is changed. Its
  * publication window opens then, not when it was reserved, so time spent
- * posting it does not make its own trigger look like another's; the read-back
- * and dispatch match the trigger against the same recorded window. Null when
- * the reservation was released meanwhile: a later request may hold the issue
- * and its trigger, so nothing of it must be touched.
+ * posting it does not make its own trigger look like another's; and its
+ * baseline is the trigger history read then, not before the comment was
+ * posted, so a trigger another flow of the app's identity labelled while it
+ * was posted, even in the second the write begins, is not taken for its own.
+ * The read-back and dispatch match the trigger against the same recorded
+ * baseline and window. Otherwise, why it was not begun: the history cannot
+ * be read, or the reservation was released meanwhile, when a later request
+ * may hold the issue and its trigger, so nothing of it must be touched.
  */
 async function beginPublication(
-  db: Knex, deps: IssueFollowupDeps, reservation: IssueRetryRequest, posted: Pick<IssueRetryRequest, 'commentId' | 'actorId'>,
-): Promise<IssueRetryRequest | null> {
-  return beginIssueRetryPublication(db, reservation, posted, clock(deps)()).catch((error: Error) => {
+  db: Knex, deps: IssueFollowupDeps, context: Pick<PublishContext, 'input' | 'octokit' | 'trigger' | 'triggers'>,
+  { reservation, posted }: { reservation: IssueRetryRequest; posted: Pick<IssueRetryRequest, 'commentId' | 'actorId'> },
+): Promise<IssueRetryRequest | string> {
+  const { issueNumber } = context.input;
+  const baseline = await triggerBaseline(context.octokit, context.input, context.triggers);
+  if (!baseline) return `Issue #${issueNumber}'s label history could not be read, so the retry could not be tied to its trigger. Try again.`;
+  const begun = await beginIssueRetryPublication(db, reservation, { ...posted, afterEventId: baseline.afterEventId }, clock(deps)()).catch((error: Error) => {
     console.warn(`[followup] Could not record the retry request: ${error.message}`);
     return null;
   });
+  return begun ?? `Make sure issue #${issueNumber} has the '${context.trigger}' label, then try again.`;
 }
 
 /**
@@ -421,9 +430,7 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
     { dedupeKey, correlationId, request: { requesterId: userId, requestedAt, afterEventId: baseline.afterEventId } });
   if ('status' in claimed) return claimed;
   const publishing = { input, octokit, trigger, triggers, dedupeKey, correlationId };
-  if ('stranded' in claimed) {
-    return restartRetry(db, deps, publishing, { request: claimed.stranded, afterEventId: baseline.afterEventId });
-  }
+  if ('stranded' in claimed) return restartRetry(db, deps, publishing, claimed.stranded);
   const reservation = claimed.reserved;
   const abandon = async () => {
     await releaseIssueRetryReservation(db, reservation).catch(() => undefined);
@@ -441,19 +448,20 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   console.log(`[followup] Posted retry request (ID: ${commentId}) to ${owner}/${repo}#${issueNumber}`);
   const posted = { posted: true, commentId, sourceTaskId: task.task_id, intent: 'issue', issueNumber };
 
-  const notStarted = (): FollowupResult => ({ status: 202, body: { success: false, state: 'failed', ...posted,
-    message: `Comment posted, but the retry could not be started. Make sure issue #${issueNumber} has the '${trigger}' label, then try again.` } });
+  const notStarted = (reason: string): FollowupResult => ({
+    status: 202, body: { success: false, state: 'failed', ...posted, message: `Comment posted, but the retry could not be started. ${reason}` },
+  });
 
-  const retryRequest = await beginPublication(db, deps, reservation, { commentId, actorId });
-  if (!retryRequest) {
+  const retryRequest = await beginPublication(db, deps, publishing, { reservation, posted: { commentId, actorId } });
+  if (typeof retryRequest === 'string') {
     await abandon();
-    return notStarted();
+    return notStarted(retryRequest);
   }
 
   const jobId = `issue-${owner}-${repo}-${issueNumber}`;
   const published = await publishRetry(db, deps, publishing, retryRequest);
   const { outcome } = published;
-  if (outcome === 'refused') return notStarted();
+  if (outcome === 'refused') return notStarted(`Make sure issue #${issueNumber} has the '${trigger}' label, then try again.`);
   if (outcome === 'queued') return { status: 202, body: { success: true, state: 'queued', jobId, ...posted, message: `Retry queued on issue #${issueNumber}.` } };
   const messages: Record<typeof outcome, string> = {
     superseded: `Comment posted, but a later retry of issue #${issueNumber} took the issue over before this one's '${trigger}' label was recorded, so this request may not start. Inspect issue #${issueNumber} before retrying.`,
@@ -472,10 +480,7 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
  * for its own requester with its own instructions, and the new follow-up is
  * refused so its author can send it once that run finishes.
  */
-async function restartRetry(
-  db: Knex, deps: IssueFollowupDeps, context: PublishContext,
-  { request, afterEventId }: { request: IssueRetryRequest; afterEventId: string | null },
-): Promise<FollowupResult> {
+async function restartRetry(db: Knex, deps: IssueFollowupDeps, context: PublishContext, request: IssueRetryRequest): Promise<FollowupResult> {
   const { input, trigger, dedupeKey } = context;
   const { issueNumber } = input;
   const earlier = `Issue #${issueNumber}'s earlier retry (comment ${request.commentId}) was never confirmed to start`;
@@ -487,9 +492,17 @@ async function restartRetry(
   } });
   console.log(`[followup] Restarting stranded retry request ${request.id} (comment ${request.commentId}) on ${input.owner}/${input.repo}#${issueNumber}`);
 
+  // The restart's baseline is read just before it is recorded, so a trigger
+  // another flow of the app's identity labelled since the follow-up began,
+  // which a delivery may already have consumed, is not taken for its own.
+  const baseline = await triggerBaseline(context.octokit, input, context.triggers);
+  if (!baseline) {
+    await releaseClaim(input.redis, dedupeKey, context.correlationId);
+    return receipt('failed', `${earlier}, and issue #${issueNumber}'s label history could not be read, so it could not be restarted. Try again.`);
+  }
   // The restart is recorded before anything on the issue is changed, and only
   // while the request is as it was read; otherwise it is left as it is.
-  const restarted = await restartIssueRetryPublication(db, request, afterEventId, clock(deps)()).catch((error: Error) => {
+  const restarted = await restartIssueRetryPublication(db, request, baseline.afterEventId, clock(deps)()).catch((error: Error) => {
     console.warn(`[followup] Could not record the restart of retry request ${request.id}: ${error.message}`);
     return null;
   });

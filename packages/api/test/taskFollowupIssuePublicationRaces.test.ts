@@ -145,6 +145,52 @@ for (const [routing, backed] of routings) {
     });
   });
 
+  test(`${routing} request whose comment completes in the second of an independent app trigger already dispatched keeps its requester and instructions`, async () => {
+    await onIssue(backed, `same-second-app-trigger-${backed}`, async () => {
+      let independent: (typeof state.timeline)[number] | undefined;
+      state.onCommentPost = async () => {
+        state.onCommentPost = undefined;
+        // Past the shared window, another flow with the app's identity relabels the issue, and recovery
+        // dispatches it while the request is still reserved; the comment completes within that same second.
+        state.now += 31_000;
+        applyLabels(['AI'], APP_ACTOR_ID);
+        independent = state.timeline.at(-1)!;
+        const { dispatched, children: [{ data: child }] } = await deliverAndDispatch();
+        assert.equal(dispatched.status, 'dispatched');
+        assert.equal(child.retryCommentId, undefined, 'the independent trigger runs without the request');
+        if (backed) assert.equal((await submissionRow())?.retry_event_id, String(independent.id), 'the independent trigger is consumed');
+        state.now += 200;
+      };
+      const result = await postFollowup({ body: 'Retry with my instructions' }, 'failed-issue-task');
+      assert.equal(result.json.state, 'queued');
+      const own = state.timeline.at(-1)!;
+      assert.ok(independent && own.id > independent.id);
+      assert.equal(own.created_at, independent.created_at, 'GitHub stamps both triggers in the same second');
+      const [held] = await openRequests();
+      assert.equal(Math.floor(Number(held.published_at) / 1000) * 1000, Date.parse(independent.created_at), 'the write began in that second');
+      await assertRunFor(backed, await dispatchQueued(add.mock.callCount() - 1), {
+        own: own.id, requester: 'user-1', commentId: FIRST_COMMENT_ID, instructions: /Retry with my instructions/,
+      });
+    });
+  });
+
+  test(`${routing} request whose trigger history cannot be read once its comment posted is not published`, async () => {
+    await onIssue(backed, `unreadable-history-after-comment-${backed}`, async () => {
+      state.onCommentPost = () => { state.onCommentPost = undefined; state.timelineReadFails = true; };
+      const result = await postFollowup({ body: 'Retry with my instructions' }, 'failed-issue-task');
+      state.timelineReadFails = false;
+      assert.equal(result.status, 202);
+      assert.equal(result.json.success, false);
+      assert.equal(result.json.state, 'failed');
+      assert.equal(result.json.commentId, FIRST_COMMENT_ID);
+      assert.match(String(result.json.message), /label history could not be read/);
+      assert.equal(count(LABEL_REMOVE) + count(LABEL_ADD), 0, 'nothing on the issue is changed');
+      assert.equal(add.mock.callCount(), 0);
+      assert.deepEqual(await openRequests(), [], 'the reservation is released');
+      assert.equal(claims.has(dedupKey), false, 'and so is the claim');
+    });
+  });
+
   test(`${routing} timed-out trigger write is not confirmed by an app trigger labelled while its comment posted`, async () => {
     await onIssue(backed, `independent-app-trigger-readback-${backed}`, async () => {
       state.onCommentPost = () => {

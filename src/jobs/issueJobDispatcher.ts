@@ -116,7 +116,8 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         getAllCustomLabels,
         resolveDefaultAgentForDispatcher,
         retryRequests: {
-            select: (issue, { submission }) => selectRetryRun(issue, submission ? { admitted: events => admittedSubmissionTriggers(submission, events) } : {}),
+            select: (issue, { submission }) => selectRetryRun(issue, submission
+                ? { admitted: events => admittedSubmissionTriggers(submission, events), consumedEventId: submission.retry_event_id } : {}),
             evidence: (_issue, request) => retryOutcomes.read(request),
             confirm: async (_issue, request, publication) => { await confirmIssueRetryPublication({ database: db, evidence: retryOutcomes }, request, publication); },
             consume: async (_issue, request) => consumeIssueRetryRequest(db, request),
@@ -307,6 +308,22 @@ async function releaseRetryRequest(issueRef: IssueJobData, request: IssueRetryRe
 }
 
 /**
+ * Records the consumption of requests an earlier dispatch carried into its
+ * run, as its receipt of their own triggers shows, after recording that
+ * consumption itself failed. Selection already owes them nothing, so a
+ * failure here is left to a later delivery or follow-up, which settles them
+ * on the same receipt, rather than holding back this delivery.
+ */
+async function settleCarriedRequests(issueRef: IssueJobData, run: RetryRun, deps: DispatcherDeps): Promise<void> {
+    for (const request of run.carried ?? []) {
+        logger.info({ issue: issueRef.number, retryCommentId: request.commentId }, 'Recording the consumption of a retry request an earlier dispatch carried');
+        await deps.retryRequests?.consume(issueRef, request).catch((error: Error) => {
+            logger.warn({ issue: issueRef.number, retryCommentId: request.commentId, errMessage: error.message }, 'Could not record a carried retry request as consumed');
+        });
+    }
+}
+
+/**
  * A queued issue-only request runs only on its own trigger, by the rules
  * recovery uses; a delivery whose selection is not it runs nothing.
  */
@@ -320,6 +337,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
     const { id: jobId, name: jobName, data: issueRef } = job;
     const submission = await deps.findSubmission(issueRef);
     const { run, trigger } = await resolveConfirmedRun(issueRef, submission, deps);
+    await settleCarriedRequests(issueRef, run, deps);
     if ('deferred' in run) {
         // Its trigger stays unconsumed, so a later delivery retries once its outcome is known.
         logger.warn({ issue: issueRef.number, retryCommentId: run.deferred.commentId }, 'A held retry request may own the trigger but its publication is unreconciled; deferring dispatch');

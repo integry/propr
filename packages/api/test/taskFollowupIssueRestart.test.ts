@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IssueJobData } from '../../core/src/queue/taskQueue.types.js';
-import { state, claims, add, postFollowup, database, applyLabels, APP_ACTOR_ID, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
+import type { Job } from 'bullmq';
+import { state, claims, add, postFollowup, database, applyLabels, APP_ACTOR_ID, HUMAN_ACTOR_ID, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
 import {
-  openRequests, postedComments, dispatchQueued, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch, relabelWebhook, pollDelivery, dedupKey,
+  openRequests, postedComments, dispatchQueued, dispatcherDeps, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch, relabelWebhook, pollDelivery, dedupKey,
 } from './taskFollowupIssueDispatch.js';
+
+const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
+const { selectRetryRun, reserveIssueRetryRequest } = await import('../../core/src/services/issueRetryRequest.js');
 
 // A request still owed once its trigger write can no longer land is stranded
 // when nothing will run it: its outcome was lost with the API process that
@@ -259,3 +263,140 @@ for (const [routing, backed] of routings) {
     });
   });
 }
+
+/** Restarts a stranded request an hour later, from another user's follow-up; the restart's job is the last one queued. */
+async function restartStranded() {
+  await strandConfirmedRequest();
+  state.now += HOUR_MS;
+  claims.delete(dedupKey);
+  const later = await postFollowup({ body: 'A later request' }, 'failed-issue-task', 'user-2');
+  assert.deepEqual(later.json.restartedRequest, { state: 'queued', commentId: FIRST_COMMENT_ID });
+  return { index: add.mock.callCount() - 1, fresh: state.timeline.at(-1)!.id };
+}
+
+/**
+ * Dispatches the restart's job while recording the request's consumption fails: its child is enqueued
+ * with the request and its dispatch receipt records the fresh trigger, but the dispatch fails.
+ */
+async function dispatchWithoutConsumption(index: number, fresh: number) {
+  const children: Array<{ jobId: string; data: IssueJobData }> = [];
+  const [name, data] = add.mock.calls[index].arguments as unknown as [string, IssueJobData];
+  state.consumeFails = true;
+  await assert.rejects(handleDispatchWithDeps({ id: 'issue-integry-propr-14', name, data: { ...data } } as Job<IssueJobData>, dispatcherDeps(children)), /database is locked/);
+  state.consumeFails = false;
+  assert.equal(children.length, 1);
+  const [{ jobId, data: child }] = children;
+  assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${fresh}`);
+  assert.deepEqual([child.userId, child.retryRequesterId, child.retryCommentId], ['user-1', 'user-1', FIRST_COMMENT_ID]);
+  assert.match(await promptFor(child), new RegExp(ORIGINAL));
+  assert.equal((await submissionRow())?.retry_event_id, String(fresh), 'the dispatch receipt is durable');
+  assert.deepEqual((await openRequests()).map(held => held.publication), ['possible'], 'the request is still open');
+}
+
+/** After the run failed again, a new follow-up is an ordinary request of its own and runs only its own instructions. */
+async function assertNewFollowupRuns() {
+  state.now += 60_000;
+  claims.delete(dedupKey);
+  const timeline = state.timeline.length;
+  const next = await postFollowup({ body: 'Genuinely new instructions' }, 'failed-issue-task', 'user-2');
+  assert.equal(next.json.state, 'queued');
+  assert.equal(next.json.posted, true);
+  assert.equal(next.json.commentId, FIRST_COMMENT_ID + 1);
+  assert.equal(next.json.restartedRequest, undefined, 'the old request is not restarted');
+  assert.equal(state.timeline.length, timeline + 1);
+  const { dispatched, children: [{ data: child }] } = await dispatchQueued(add.mock.callCount() - 1);
+  assert.equal(dispatched.status, 'dispatched');
+  assert.deepEqual([child.userId, child.retryRequesterId, child.retryCommentId], ['user-2', 'user-2', FIRST_COMMENT_ID + 1]);
+  const prompt = await promptFor(child);
+  assert.match(prompt, /Genuinely new instructions/);
+  assert.doesNotMatch(prompt, new RegExp(ORIGINAL), 'the old instructions are not replayed');
+  assert.deepEqual(await openRequests(), []);
+}
+
+/** The first request's row: whether it is still owed, and whether a dispatch recorded it consumed. */
+const firstRequest = async () => database('issue_retry_request_states').where({ comment_id: FIRST_COMMENT_ID })
+  .first('owed_issue', 'consumed_at') as Promise<{ owed_issue: string | null; consumed_at: number | null }>;
+
+test('a restarted submission-backed request whose run was dispatched but not recorded consumed is settled by the dispatch retry', async () => {
+  await onIssue(true, 'restart-consumption-unrecorded-dispatch', async () => {
+    const { index, fresh } = await restartStranded();
+    await dispatchWithoutConsumption(index, fresh);
+
+    // The queue retries the failed dispatch: the receipt shows the request was carried, so it is recorded
+    // consumed and nothing is dispatched again.
+    const retried = await dispatchQueued(index);
+    assert.deepEqual(retried.dispatched, { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: 14 });
+    assert.equal(retried.children.length, 0, 'the request is not run again');
+    assert.deepEqual(await openRequests(), []);
+    assert.deepEqual(await firstRequest(), { owed_issue: null, consumed_at: state.now });
+
+    // Later deliveries are no longer deferred, and run nothing the receipt already consumed.
+    for (const deliver of [relabelWebhook, pollDelivery]) {
+      assert.deepEqual((await deliverAndDispatch(deliver)).dispatched, { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: 14 });
+    }
+    await assertNewFollowupRuns();
+  });
+});
+
+test('a restarted submission-backed request whose run was dispatched but not recorded consumed is released by the next follow-up\'s reservation', async () => {
+  await onIssue(true, 'restart-consumption-unrecorded-reservation', async () => {
+    const { index, fresh } = await restartStranded();
+    await dispatchWithoutConsumption(index, fresh);
+    // No delivery or dispatch retry comes before the next follow-up.
+    await assertNewFollowupRuns();
+    assert.equal((await firstRequest()).owed_issue, null, 'the carried request is released, not restarted');
+  });
+});
+
+test('a restarted request is settled only by a dispatch receipt at or past its own applied trigger, not by its trigger being inadmissible', async () => {
+  await onIssue(true, 'restart-settlement-evidence', async () => {
+    const issue = { repoOwner: 'integry', repoName: 'propr', number: 14 };
+    const at = (second: number) => `2026-10-15T11:00:${String(second).padStart(2, '0')}Z`;
+    const labelled = (id: number, second: number, actor = APP_ACTOR_ID) => ({ id, event: 'labeled', created_at: at(second), label: { name: 'AI' }, actor: { id: actor } });
+    // 1: the initial trigger; 2: the lost write's; 3: after the restart's baseline but before its write began;
+    // 4: the restart's own; 5: a person's later trigger.
+    state.timeline = [labelled(1, 0, HUMAN_ACTOR_ID), labelled(2, 10), labelled(3, 20), labelled(4, 30), labelled(5, 40, HUMAN_ACTOR_ID)];
+    const restartAt = Date.parse(at(30)) + 400;
+    const insert = async (publication: string, afterEventId = '3') => {
+      await database('issue_retry_request_states').delete();
+      await database('issue_retry_request_states').insert({
+        repo_owner: 'integry', repo_name: 'propr', issue_number: 14, owed_issue: 'integry/propr#14', requester_id: 'user-1',
+        comment_id: FIRST_COMMENT_ID, actor_id: APP_ACTOR_ID, requested_at: restartAt - 2 * HOUR_MS, published_at: restartAt,
+        after_event_id: afterEventId, publication, resumed_at: restartAt, recorded_at: restartAt,
+      });
+    };
+    const deps = { getOctokit: async () => ({ request: async () => ({ data: state.timeline }) }) as never, processingLabels: async () => ['AI'], database, now: () => restartAt + HOUR_MS };
+    // Its own trigger is not admitted however the receipt reads, so only the receipt can show it was carried.
+    const select = (consumedEventId: string | null) => selectRetryRun(issue, { admitted: async () => [], consumedEventId }, deps);
+    const reserve = (consumedEventId: string | null) => reserveIssueRetryRequest(database, issue,
+      { requesterId: 'user-2', requestedAt: restartAt + HOUR_MS, afterEventId: '5' }, { events: state.timeline, now: restartAt + HOUR_MS, consumedEventId });
+
+    for (const [publication, consumedEventId, afterEventId, why] of [
+      ['possible', null, '3', 'no receipt'],
+      ['possible', '3', '3', 'a receipt before its own trigger'],
+      ['possible', '99', '3', 'a receipt the history no longer shows'],
+      ['possible', '5', '99', 'a baseline the history no longer shows'],
+      ['refused', '5', '3', 'a refused restart'],
+      ['pending', '5', '3', 'a restart whose outcome is unknown'],
+    ] as const) {
+      await insert(publication, afterEventId);
+      const run = await select(consumedEventId);
+      assert.ok('deferred' in run, `${why}: its trigger is deferred`);
+      assert.equal(run.carried, undefined, `${why}: it is not settled`);
+      const reservation = await reserve(consumedEventId);
+      assert.ok('owed' in reservation, `${why}: it is still owed`);
+      assert.equal(reservation.owed.commentId, FIRST_COMMENT_ID);
+    }
+
+    for (const consumedEventId of ['4', '5']) {
+      await insert('possible');
+      const run = await select(consumedEventId);
+      assert.deepEqual(run.carried?.map(held => held.commentId), [FIRST_COMMENT_ID], `a receipt of ${consumedEventId} shows the request was carried`);
+      assert.ok(!('deferred' in run) && run.request === null, 'and owes this delivery nothing');
+      const reservation = await reserve(consumedEventId);
+      assert.ok('reserved' in reservation, 'the next follow-up is admitted');
+      assert.equal(await database('issue_retry_request_states').where({ comment_id: FIRST_COMMENT_ID }).whereNotNull('owed_issue').first('id'), undefined);
+    }
+    await database('issue_retry_request_states').delete();
+  });
+});

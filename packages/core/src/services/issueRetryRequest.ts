@@ -12,9 +12,10 @@ import { loadPrimaryProcessingLabels } from '../config/configManager.js';
  *
  * A request belongs only to the trigger it published: the first trigger the
  * route's GitHub identity labels after `afterEventId` (the latest trigger
- * event before the request), within the publication window that opens at
- * `publishedAt`, when its trigger write begins. `requestedAt` only times the
- * reservation, which expires unless publication begins within that window.
+ * event read just before its trigger write began, after its comment was
+ * posted), within the publication window that opens at `publishedAt`, when
+ * that write begins. `requestedAt` only times the reservation, which expires
+ * unless publication begins within that window.
  *
  * A request is `reserved` until its trigger write is attempted, then `pending`
  * until the route records the write's outcome: `possible` (applied, or not
@@ -32,6 +33,11 @@ import { loadPrimaryProcessingLabels } from '../config/configManager.js';
  * restarts it: a fresh trigger write, after a fresh baseline, that recovery
  * can tell apart. A restarted request stays owed until a run carries it, so
  * the trigger it may already have published never runs without it.
+ *
+ * A run carries a request on its own trigger, and its dispatch records that
+ * trigger, or a later one, as the submission's consumed trigger before it
+ * records the request consumed. A request whose own trigger that receipt
+ * reached was carried, even if recording its consumption failed.
  */
 export interface IssueRetryRequest {
   id: number;
@@ -67,14 +73,20 @@ interface SelectionDeps extends TimelineDeps { database?: Knex; now?: () => numb
  * consumes. A delivery that admits triggers also learns, from the same
  * history, the latest admitted trigger it runs without a request.
  */
-export type RetryRun =
+export type RetryRun = (
   | { request: IssueRetryRequest; triggerEventId: string; latestTriggerEventId?: string }
   | { request: null; trigger?: { eventId: string } | null }
-  | { deferred: IssueRetryRequest };
+  | { deferred: IssueRetryRequest }
+) & {
+  /** Open requests an earlier dispatch already carried, whose consumption is still to be recorded. */
+  carried?: IssueRetryRequest[];
+};
 
 export interface RetryRunDelivery {
   /** The trigger events a submission admits as a fresh run; an issue-only run admits every one. */
   admitted?: (events: TriggerLabelEvent[]) => Promise<TriggerLabelEvent[]>;
+  /** The latest trigger the submission's dispatch receipt records as consumed. */
+  consumedEventId?: string | null;
 }
 
 // A trigger write whose response was lost lands within this; a first trigger
@@ -145,13 +157,31 @@ export function retryRequestTrigger(request: IssueRetryRequest, events: TriggerL
 }
 
 /**
+ * Whether a dispatch durably carried the request: its write was applied, and
+ * the submission's dispatch receipt consumed its own trigger or a later one.
+ * Dispatch runs past a request's own admitted trigger only by running it: a
+ * restarted request defers every other trigger, and an ordinary one runs on
+ * its own whenever that is admitted. A trigger that is merely not admitted,
+ * or a receipt the history no longer shows, proves nothing.
+ */
+function carried(request: IssueRetryRequest, { events, consumedEventId }: Pick<TriggerHistory, 'events' | 'consumedEventId'>): boolean {
+  if (request.publication !== 'possible' || request.commentId === null || !consumedEventId) return false;
+  const own = retryRequestTrigger(request, events);
+  if (typeof own !== 'string') return false;
+  const consumed = events.findIndex(event => String(event.id) === consumedEventId);
+  return consumed !== -1 && consumed >= events.findIndex(event => String(event.id) === own);
+}
+
+/**
  * Whether the request may still be owed a run: its trigger write is in
  * progress or may still land, or it published a trigger no dispatch has
  * consumed. A request whose write never landed within the publication window,
  * or whose trigger the submission consumed, is owed none. A restarted request
- * may own the trigger its lost write published, so it is owed until it runs.
+ * may own the trigger its lost write published, so it is owed until a run
+ * carries it.
  */
 function mayBeOwed(request: IssueRetryRequest, { events, now, consumedEventId }: TriggerHistory): boolean {
+  if (carried(request, { events, consumedEventId })) return false;
   if (request.resumedAt !== null) return true;
   if (request.publication === 'refused') return false;
   if (request.publication === 'reserved') return windowOpen(request, now);
@@ -218,16 +248,20 @@ export async function reserveIssueRetryRequest(
 
 /**
  * Records the posted request just before its trigger is written, opening its
- * publication window at `now` however long posting it took. The pending
- * request, carrying that window, is what the write's read-back and dispatch
- * match its trigger by. Null when the reservation was released meanwhile, so
- * the trigger must not be written.
+ * publication window at `now` however long posting it took, after
+ * `afterEventId`, the latest trigger event read once its comment was posted:
+ * a trigger labelled while the comment was being posted, even in the second
+ * the write begins, is another's. The pending request, carrying that
+ * baseline and window, is what the write's read-back and dispatch match its
+ * trigger by. Null when the reservation was released meanwhile, so the
+ * trigger must not be written.
  */
 export async function beginIssueRetryPublication(
-  database: Knex, request: IssueRetryRequest, posted: Pick<IssueRetryRequest, 'commentId' | 'actorId'>, now = Date.now(),
+  database: Knex, request: IssueRetryRequest, posted: Pick<IssueRetryRequest, 'commentId' | 'actorId' | 'afterEventId'>, now = Date.now(),
 ): Promise<IssueRetryRequest | null> {
-  const updated = await database(TABLE).where({ id: request.id, publication: 'reserved' }).whereNotNull('owed_issue')
-    .update({ comment_id: posted.commentId, actor_id: posted.actorId, published_at: now, publication: 'pending', recorded_at: now });
+  const updated = await database(TABLE).where({ id: request.id, publication: 'reserved' }).whereNotNull('owed_issue').update({
+    comment_id: posted.commentId, actor_id: posted.actorId, after_event_id: posted.afterEventId, published_at: now, publication: 'pending', recorded_at: now,
+  });
   return Number(updated) === 1 ? { ...request, ...posted, publishedAt: now, publication: 'pending' } : null;
 }
 
@@ -356,7 +390,9 @@ export async function consumeIssueRetryRequest(database: Knex, request: Pick<Iss
  * does not strand it. One whose outcome is unknown, or whose trigger write may
  * still land, defers the delivery: dispatching another trigger would consume
  * its trigger, and dispatching its own would either drop its requester or
- * adopt a request that may have been refused.
+ * adopt a request that may have been refused. One the submission's dispatch
+ * receipt shows an earlier run carried is reported for its consumption to be
+ * recorded, and owes this delivery nothing.
  *
  * The open requests are read after the history, so one still reserved then
  * had written no trigger the history shows, and a delivery that admits
@@ -364,7 +400,7 @@ export async function consumeIssueRetryRequest(database: Knex, request: Pick<Iss
  */
 export async function selectRetryRun(
   issue: IssueKey,
-  { admitted }: RetryRunDelivery,
+  { admitted, consumedEventId }: RetryRunDelivery,
   { getOctokit = getAuthenticatedOctokit, processingLabels = loadPrimaryProcessingLabels, database = db, now = Date.now }: SelectionDeps = {},
 ): Promise<RetryRun> {
   // An issue-only delivery consumes no trigger, so without a request it needs no history.
@@ -375,27 +411,35 @@ export async function selectRetryRun(
   const admittedEvents = admitted ? await admitted(events) : events;
   const admissible = new Set(admittedEvents.map(event => String(event.id)));
   const latest = events.at(-1);
+  const settled: IssueRetryRequest[] = [];
+  const withCarried = <Run extends RetryRun>(run: Run): Run => settled.length > 0 ? { ...run, carried: settled } : run;
   for (const request of open) {
-    const owed = owedRun(request, { events, admissible, now: at });
-    if (owed === 'defer') return { deferred: request };
+    const owed = owedRun(request, { events, admissible, now: at, consumedEventId });
+    if (owed === 'carried') {
+      settled.push(request);
+      continue;
+    }
+    if (owed === 'defer') return withCarried({ deferred: request });
     // An issue owes one open request at a time, so no other request's trigger is consumed with it.
-    if (owed !== null) return { request, triggerEventId: owed, latestTriggerEventId: latest?.id === undefined ? undefined : String(latest.id) };
+    if (owed !== null) return withCarried({ request, triggerEventId: owed, latestTriggerEventId: latest?.id === undefined ? undefined : String(latest.id) });
   }
-  if (!admitted) return { request: null };
-  return { request: null, trigger: latest?.id && admittedEvents.at(-1) === latest ? { eventId: String(latest.id) } : null };
+  if (!admitted) return withCarried({ request: null });
+  return withCarried({ request: null, trigger: latest?.id && admittedEvents.at(-1) === latest ? { eventId: String(latest.id) } : null });
 }
 
 /**
  * The admitted trigger of its own a request is owed a run on, 'defer' while
- * its outcome is unknown or its trigger may still land, or null when it is
+ * its outcome is unknown or its trigger may still land, 'carried' once the
+ * dispatch receipt shows a run consumed its own trigger, or null when it is
  * owed nothing by this delivery. A restarted request runs only on its fresh
  * trigger, and defers every other: one may be its lost write's.
  */
 function owedRun(
   request: IssueRetryRequest,
-  { events, admissible, now }: Omit<TriggerHistory, 'consumedEventId'> & { admissible: Set<string> },
-): string | 'defer' | null {
+  { events, admissible, now, consumedEventId }: TriggerHistory & { admissible: Set<string> },
+): string | 'defer' | 'carried' | null {
   if (request.publication === 'reserved' || request.commentId === null) return null;
+  if (carried(request, { events, consumedEventId })) return 'carried';
   if (request.resumedAt !== null) {
     const fresh = retryRequestTrigger(request, events);
     return typeof fresh === 'string' && admissible.has(fresh) && request.publication === 'possible' ? fresh : 'defer';

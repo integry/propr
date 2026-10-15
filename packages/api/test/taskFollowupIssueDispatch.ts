@@ -41,7 +41,7 @@ export const retryOutcomes = redisRetryOutcomeEvidence(() => redis);
 /** The production retry request store, on the test database and the given outcome evidence. */
 export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence) => ({
   select: (issue: IssueJobData, { submission }: { submission: Submission }) =>
-    selectRetryRun(issue, submission ? { admitted: events => admittedSubmissionTriggers(submission, events, database) } : {},
+    selectRetryRun(issue, submission ? { admitted: events => admittedSubmissionTriggers(submission, events, database), consumedEventId: submission.retry_event_id } : {},
       { getOctokit: timelineOctokit, processingLabels: async () => ['AI'], database, now: () => state.now }),
   evidence: (_issue: IssueJobData, held: IssueRetryRequest) => outcomes.read(held),
   confirm: async (_issue: IssueJobData, held: IssueRetryRequest, publication: 'possible' | 'refused') => {
