@@ -586,3 +586,5 @@ export * from './fleetExtensions.js';
 export * from './fleetReset.js';
 export * from './extensionAuthorityProof.js';
 export * from './extensionAuthorityV2.js';
+
+export * from "./extensionResultDelivery.js";

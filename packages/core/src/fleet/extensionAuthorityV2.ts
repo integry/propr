@@ -3,6 +3,7 @@ import type { Knex } from 'knex';
 import {
   canonicalFleetJson as canonical, INSTANCE_PERMISSIONS, EXTENSION_AUTHORITY_V2, EXTENSION_AUTHORITY_V2_SCHEMA,
   EXTENSION_AUTHORITY_V2_LIMITS as limits, authorityV2EnvelopeSchema, authorityV2ResponseSchema,
+  EXTENSION_RESULT_DELIVERY, parseExtensionResultDelivery, type ExtensionResultDelivery,
   routingTrustSchema, type AuthorityV2Request, type AuthorityV2Response, type FleetExtensionRequest,
 } from '@propr/shared';
 import { digest } from './contract.js';
@@ -85,7 +86,13 @@ export class ExtensionAuthorityV2Plane {
     if (!timingSafeEqual(createHmac('sha256', secret).update(canonical({ request: r, routing })).digest(), Buffer.from(envelope.mac, 'hex'))) return refuse();
     return { envelope, trust, nativePin, secret };
   }
-  async invoke(raw: string, deliver?: (response: AuthorityV2Response) => void): Promise<AuthorityV2Response> {
+  /** Private listener handoff; no delivery is retained by this plane. */
+  async invokeDelivery(raw: string, deliver: (response: ExtensionResultDelivery) => void): Promise<void> {
+    await this.invoke(raw, (receipt, delivery) => deliver(delivery ?? {
+      contract: EXTENSION_RESULT_DELIVERY, receipt, delivery: { state: 'unavailable' },
+    }));
+  }
+  async invoke(raw: string, deliver?: (response: AuthorityV2Response, delivery?: ExtensionResultDelivery) => void): Promise<AuthorityV2Response> {
     let connection: Connection | undefined;
     let synchronous: number | undefined;
     let discard: (() => void) | undefined;
@@ -136,15 +143,18 @@ export class ExtensionAuthorityV2Plane {
       const routingDigest = digest(routing), trustDigest = digest(trust);
       const combinedDecisionDigest = digest({ coreDecision, routingDigest, trustDigest });
       let nativeResultDigest: string | null = committedDispatch?.statement.result.nativeResultDigest ?? null;
+      let volatileResult: unknown;
       if (native) {
         const rawIntent = nativeIntent(native);
         const outcome = await this.extensions.dispatchAtomic(r.work.extension, native, rawIntent,
           { database: transactionDatabase(this.extensions.store.database, c), guard: assertion => {
-            if (assertion && assertion.operationId !== id && assertion.operationId !== r.work.acquisitionOperationId) return refuse();
+            if (assertion && assertion.operationId !== id && assertion.operationId !== r.work.acquisitionOperationId
+              && !(native.action === 'operation.status' && assertion.operationId === native.targetOperationId)) return refuse();
             observe();
           }, secret });
         discard = outcome.discard;
         nativeResultDigest = digest(outcome.result);
+        volatileResult = outcome.result;
       }
       const buildResult = () => {
         const recipientCommitment = native?.action === 'recipient.issue'
@@ -160,13 +170,36 @@ export class ExtensionAuthorityV2Plane {
         committedAt: Math.floor(observe() / 1000), expiresAt: r.expiresAt };
       const response = authorityV2ResponseSchema.parse({ statement, signature: sign(null, Buffer.from(canonical(statement)), this.key()).toString('base64url') });
       if (Buffer.byteLength(canonical(response)) > limits.responseBytes) return refuse();
+      // Preflight the exact outer response while rollback is still possible. The
+      // expectations below come only from the authenticated, retained request.
+      // The observed request identity avoids a pooled query while owning SQLite,
+      // and exact retries never depend on recipient signing material.
+      const delivery = await this.preflightDelivery(r, native, response, volatileResult);
       run('INSERT INTO extension_authority_v2_receipts VALUES (?, ?, ?)', r.challenge, canonical(response), digest(response));
       commit();
       discard = undefined;
-      deliver?.(response);
+      deliver?.(response, delivery);
       return response;
-    } catch { discard?.(); return refuse(); }
+    } catch {
+      // A COMMIT may have succeeded even when its caller observes an error.
+      // Committed recipients stay volatile until normal expiry; never reconstruct.
+      if (connection?.inTransaction) discard?.();
+      return refuse();
+    }
     finally { await this.releaseConnection(connection, synchronous); }
+  }
+  private async preflightDelivery(r: AuthorityV2Request, native: FleetExtensionRequest | undefined,
+    response: AuthorityV2Response, volatileResult: unknown): Promise<ExtensionResultDelivery> {
+    const recipientKey = native?.action === 'recipient.issue'
+      ? await this.extensions.recipientVerificationKey(r.work.extensionInstanceId) : undefined;
+    return parseExtensionResultDelivery(canonical({ contract: EXTENSION_RESULT_DELIVERY, receipt: response,
+      delivery: native ? { state: 'available', action: native.action, native: volatileResult } : { state: 'unavailable' },
+    }), r, native, digest, recipient => {
+      const { signature, ...signed } = recipient;
+      const bytes = Buffer.from(signature, 'base64url');
+      if (bytes.toString('base64url') !== signature || !recipientKey || !verify(null, Buffer.from(canonical(signed)),
+        createPublicKey({ key: Buffer.from(recipientKey, 'base64url'), type: 'spki', format: 'der' }), bytes)) return refuse();
+    });
   }
   private checkTime(context: ObservationContext, latestObservation: number, now: number, high: Record<string, unknown> | undefined) {
     const { envelope: { request: r, routing: { statement: s } } } = context;

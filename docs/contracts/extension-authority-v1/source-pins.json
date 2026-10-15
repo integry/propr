@@ -9,8 +9,8 @@
   "packages/core/src/storage/service.ts": "c7aaafe01b48466a838268e84015bfb25f03771a164cb6aa7bd069b42aea364e",
   "packages/core/src/storage/proofIdentity.ts": "ef54cac930b926a7cb1dd182b2273863cc79e91506a85ab5c39d0ea13168fb85",
   "packages/core/src/storage/services.ts": "ce42200fe436630742a2b25f1132d4c2fa5bc02359abf4e0db25689d00bf23ca",
-  "packages/api/fleetDataListener.ts": "34d5735a49ddc306acac4aef5e4e05b8f5759aa3857d07d8299b7ce70db5c1be",
-  "packages/core/src/fleet/extensions.ts": "9048bb36ac853be567f9171be1c99fb1e8f473acde6db1b62c83750510d3df69",
+  "packages/api/fleetDataListener.ts": "b6d86d4409697d8b27d25faef5ac8735876f2369a307cd70f9d80ce5eda96fbd",
+  "packages/core/src/fleet/extensions.ts": "fc0b0050f182968bba4db1f4e293d5cd88233a1283b548aa36c32a6729181bf5",
   "packages/shared/src/fleetExtensions.ts": "1c9d77e537fb675a6f7a3d5af96625fa8b932334e001d7e6ed69100e3b3bdff8",
   "scripts/generate-extension-authority-fixtures.mjs": "3ebf9af96606f8dc0d35746f4558d49a095ef8c9b664dcb0024f499412713b3a"
 }

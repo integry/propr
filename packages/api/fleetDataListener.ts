@@ -146,6 +146,9 @@ export async function listenFleetData(plane: FleetListenerPlane, extensions?: Fl
     void work.finally(() => active.delete(work));
   });
   const handle = async (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
+    // A post-commit stream error only closes this connection. Never log its
+    // diagnostic or turn it into rollback/retry of the authority operation.
+    if (req.url === EXTENSION_AUTHORITY_V2_PATH) res.on('error', () => res.destroy());
     res.setHeader('Cache-Control', 'no-store');
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -155,7 +158,8 @@ export async function listenFleetData(plane: FleetListenerPlane, extensions?: Fl
       clearTimeout(timer);
       const raw = decodeRequestBytes(req.url, bytes);
       if (req.url === EXTENSION_AUTHORITY_V2_PATH) {
-        await dualProof!.invoke(raw, response => {
+        await dualProof!.invokeDelivery(raw, response => {
+          if (res.destroyed || stopping) return;
           res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(canonicalFleetJson(response));
         });
       } else if (req.url === EXTENSION_AUTHORITY_PATH) {

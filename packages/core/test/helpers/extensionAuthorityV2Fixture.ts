@@ -52,7 +52,14 @@ export async function fixture(t: any) {
   let listener = await listenFleetData(fleet, extensions);
   const send = (raw: string | Buffer, url = route) => new Promise<any>((resolve, reject) => {
     const req = httpRequest({ socketPath: listener.address()!, path: url, method: 'POST', headers: { 'Content-Type': 'application/json' } }, res => {
-      let body = ''; res.on('data', b => { body += b; }); res.on('end', () => resolve({ status: res.statusCode, raw: body, body: JSON.parse(body) }));
+      let body = ''; res.on('data', b => { body += b; });
+      res.on('end', () => {
+        const wire = JSON.parse(body);
+        // Existing receipt tests keep their original assertions. Delivery tests
+        // inspect the exact unmodified wire bytes and outer envelope separately.
+        resolve({ status: res.statusCode, deliveryRaw: body, wire,
+          raw: wire.receipt ? canonical(wire.receipt) : body, body: wire.receipt ?? wire });
+      });
     }); req.on('error', reject); req.end(raw);
   });
   const runtime = await fleet.runtime();

@@ -1,10 +1,58 @@
 // Real process death, never a simulated exception or graceful database close.
 import fs from 'node:fs/promises';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { request as httpRequest } from 'node:http';
+import knex from 'knex';
+import { FleetDataPlane } from '../../src/fleet/dataPlane.js';
+import { FleetExtensionPlane } from '../../src/fleet/extensions.js';
+import { ExtensionAuthorityV2Plane } from '../../src/fleet/extensionAuthorityV2.js';
+import { ExtensionProfileStore } from '../../src/extensions/extensionProfileStore.js';
+import { InstanceStorageService } from '../../src/storage/service.js';
+import { StorageLifecycle } from '../../src/storage/lifecycle.js';
+import { listenFleetData } from '../../../api/fleetDataListener.js';
 import { mock } from 'node:test';
 import { createHash } from 'node:crypto';
 import { canonicalFleetJson as canonical } from '@propr/shared';
 import { fixture, create } from './extensionAuthorityV2Fixture.js';
 const [fault, metadata, action = 'profile.create'] = process.argv.slice(2);
+if (fault === 'recover') {
+  // Open only retained state: no fixture provisioning, new keys or new envelope.
+  const m = JSON.parse(await fs.readFile(metadata, 'utf8'));
+  const db = knex({ client: 'better-sqlite3', connection: { filename: path.join(m.root, 'db.sqlite') }, useNullAsDefault: true });
+  const storage = new InstanceStorageService({ lifecycle: new StorageLifecycle(path.join(m.root, 'storage')), clonesRoot: m.root, roots: [], hasPendingTasks: async () => false });
+  // Keep the provisioned binding epoch from control state. The synthetic storage
+  // service otherwise invents a new generation per constructor, testing rotation
+  // refusal rather than recovery within the same authority/runtime epoch.
+  const runtime = JSON.parse(await fs.readFile(path.join(m.root, 'fleet', 'runtime.json'), 'utf8'));
+  assert.equal(runtime.runtimeGeneration, runtime.storageGeneration);
+  Object.defineProperty(storage, 'generation', { value: runtime.storageGeneration });
+  await storage.initialize();
+  const fleet = new FleetDataPlane(storage, path.join(m.root, 'fleet'), () => 'SENTINEL-V2-TRANSPORT-SECRET-NEVER-RETAIN', async (id, database = db) => {
+    const row = await database('instance_members').where({ github_user_id: String(id) }).first();
+    return { role: row?.role, source: row?.source, permissions: row?.role === 'admin' ? ['instance.manage_settings'] : [] };
+  });
+  await fleet.initialize();
+  const extensions = new FleetExtensionPlane(fleet, new ExtensionProfileStore(db, { SYSTEM_TASK_SECRET: 'synthetic-v2-test-custody' }));
+  const calls = { dispatch: 0, recipient: 0 };
+  extensions.dispatchAtomic = async () => { calls.dispatch++; throw Error('repeated native dispatch'); };
+  extensions.recipientVerificationKey = async () => { calls.recipient++; throw Error('reconstructed recipient'); };
+  const listener = await listenFleetData(fleet, extensions);
+  try {
+    assert.equal(m.raw, canonical(m.envelope));
+    const response = await new Promise<{ status: number | undefined; raw: string }>((resolve, reject) => {
+      const req = httpRequest({ socketPath: listener.address()!, path: '/extensions/authority/v2/invoke', method: 'POST', headers: { 'Content-Type': 'application/json' } }, res => {
+        let raw = ''; res.on('data', chunk => { raw += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode, raw }));
+        res.on('error', reject);
+      });
+      req.on('error', reject); req.end(m.raw);
+    });
+    assert.deepEqual(calls, { dispatch: 0, recipient: 0 });
+    await fs.writeFile(metadata + '.recovery', JSON.stringify({ ...response, calls }));
+  } finally { await listener.shutdown(); await db.destroy(); }
+  process.exit(0);
+}
 if (action === 'skill.import') {
   const skill = Buffer.from('---\nname: atomic-skill\ndescription: Atomic import regression\n---\nSynthetic declaration.');
   const sha = createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${skill.length}\0`), skill])).digest('hex');
@@ -26,7 +74,7 @@ const before = { profiles: await f.db('extension_profiles'), revisions: await f.
 const work = await f.newWork(native);
 await f.invoke(f.request(work));
 const r = f.request(work, 'dispatch'), envelope = f.envelope(r, native);
-await fs.writeFile(metadata, JSON.stringify({ root: f.root, before, r, envelope, trust: f.trust, coreSPKI: f.spki(f.core) }));
+await fs.writeFile(metadata, JSON.stringify({ root: f.root, before, r, envelope, raw: canonical(envelope), trust: f.trust, coreSPKI: f.spki(f.core) }));
 const die = (): never => { process.kill(process.pid, 'SIGKILL'); throw Error('unreachable'); };
 const conn = await f.db.client.acquireConnection(); await f.db.client.releaseConnection(conn);
 const exec = conn.exec.bind(conn); let commits = 0;
@@ -63,10 +111,14 @@ f.extensions.dispatchAtomic = async (...args) => {
   if (fault === 'mutation-after') die();
   return result;
 };
-await f.plane.invoke(canonical(envelope), response => {
-  if (fault === 'reply-before') die();
-  // A serialized reply may have left Core without reaching Fleet.
-  canonical(response);
-  if (fault === 'reply-after') die();
-});
+// Install reply faults on the authority plane owned by the real Unix listener.
+const invokeDelivery = ExtensionAuthorityV2Plane.prototype.invokeDelivery;
+ExtensionAuthorityV2Plane.prototype.invokeDelivery = async function (raw, deliver) {
+  return invokeDelivery.call(this, raw, response => {
+    if (fault === 'reply-before') die();
+    deliver(response);
+    if (fault === 'reply-after') die();
+  });
+};
+await f.send(canonical(envelope));
 throw Error('Fault boundary was not reached');

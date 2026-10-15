@@ -59,9 +59,12 @@ Recipient receipts additionally bind the target mutation operation and canonical
 intent digest. Credential-bearing dispatch requires that exact acquisition; its
 volatile recipients cannot come from a different acquisition or legacy operation.
 
-The response is a bounded receipt, not native output: no profile bodies, skill
+The v2 response remains a bounded receipt, not native output: no profile bodies, skill
 contents, ciphertext, tokens or raw results are copied into authority storage or
-responses. `nativeResultDigest` commits to the complete canonical native response envelope; a consumer
+receipts. The production private listener now wraps this unchanged receipt in
+[volatile result delivery v1](../extension-result-delivery-v1/README.md). Only that
+separate contract can deliver a first-dispatch native result after commit; it adds
+no retrieval channel and never reconstructs lost recipient material. `nativeResultDigest` commits to the complete canonical native response envelope; a consumer
 that already holds a native result can compare it. This contract does not provide
 a raw-result retrieval channel. In particular, a recipient's volatile material is
 not reconstructible after restart. That limitation must remain a downstream
@@ -79,7 +82,8 @@ receipt's result commitment, or incomplete; it never invents success from an
 intent. Application-level remote/network side effects cannot be rolled back;
 ambiguous calls are never retried. All native SQLite mutations roll back together.
 
-Use `verifier.mjs` with the actual canonical response wire string, independently
+Use `verifier.mjs` with the canonical v2 receipt string (the `receipt` member of
+the new outer contract; use its verifier for the complete wire response), independently
 retained request and Routing authorization, operator-pinned Routing trust, and
 independently pinned Core SPKI. Persist consumed challenges before acting. Verifying
 an historical receipt is not a new authorization to execute work. Completion/status
