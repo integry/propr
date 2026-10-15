@@ -38,7 +38,7 @@ export type ProviderGrant = Readonly<{
   identity: Readonly<AuthorityIdentity>; binding: AuthorityReadonly<Reservation>;
   purpose: Purpose | 'reset-effect'; expiresAt: number; effectIntentId: string | null;
 }>;
-export type LocalProviderCapability = { recordId: string; leaseId: string; purpose: Purpose | 'reset-effect'; consumed: boolean; effectConsumed: boolean };
+export type LocalProviderCapability = { recordId: string; leaseId: string; purpose: Purpose | 'reset-effect'; consumed: boolean; effectAttempted: boolean; effectConsumed: boolean };
 export interface HostedAuthorityPorts {
   store: HostedAuthorityStore;
   clock: AuthorityClock;

@@ -344,8 +344,12 @@ for (const boundary of ['issuance', 'session-binding', 'finish', 'renew', 'unkno
       const record = persisted.records[0];
       switch (boundary) {
         case 'consume-grant':
-          if (point === 'before-cas' || committed) await assert.rejects(f.authority.consumeGrant(grant, 'provider-launch'), refused);
-          else await f.authority.consumeGrant(grant, 'provider-launch');
+          if (point === 'before-cas' || committed) {
+            await assert.rejects(f.authority.consumeGrant(grant, 'provider-launch'), refused);
+            await assert.rejects(f.authority.commitIssuance(grant), refused);
+            await assert.rejects(f.authority.bindSessionId(grant, 'PRIVATE-id'), refused);
+            await assert.rejects(f.authority.renew(grant), refused);
+          } else await f.authority.consumeGrant(grant, 'provider-launch');
           break;
         case 'resource-retirement': assert.equal(record.resetEffect?.kind ?? null, committed ? 'resource-retirement' : null); break;
         case 'issuance': assert.equal(record.phase, committed ? 'issued' : 'dispatched'); break;
@@ -545,6 +549,108 @@ test('physical grants redeem only once for the exact purpose and cannot regain e
   await assert.rejects(f.authority.consumeGrant(reset, 'reset-effect'), refused);
   f.setNow(31000);
   await assert.rejects(f.authority.consumeGrant(reset, 'reset-effect'), refused);
+});
+
+// Pause exactly one CAS without blocking reads or subsequent authority calls.
+function pauseRedemptionCas(store: TestControlRoot, outcome: 'confirmed' | 'false' | 'throw' | 'lost-ack') {
+  let entered!: () => void; let release!: () => void;
+  const paused = new Promise<void>(resolve => { entered = resolve; });
+  const resumed = new Promise<void>(resolve => { release = resolve; });
+  const cas = store.compareAndSwap.bind(store);
+  store.compareAndSwap = async (key, expected, bytes) => {
+    store.compareAndSwap = cas;
+    // Lost acknowledgement pauses after durable commit, all others before CAS.
+    if (outcome === 'lost-ack') assert.equal(await cas(key, expected, bytes), true);
+    entered(); await resumed;
+    if (outcome === 'false') return false;
+    if (outcome === 'throw' || outcome === 'lost-ack') throw new Error('PRIVATE-ADAPTER-ERROR');
+    return cas(key, expected, bytes);
+  };
+  return { paused, release };
+}
+
+for (const purpose of ['provider-launch', 'config-mutation', 'credential-writer', 'credential-use'] as const) {
+  for (const outcome of ['false', 'throw', 'lost-ack'] as const) {
+    test(`unconfirmed redemption stays closed before/after ${outcome}, including renewal: ${purpose}`, async () => {
+      const enrolled = enrollment();
+      if (purpose === 'config-mutation') {
+        enrolled.issuers.push({ ...structuredClone(enrolled.issuers[0]), issuerId: 'claude-run-creator' });
+        enrolled.issuers[0].sourceKind = 'config';
+        enrolled.issuers[0].resources = enrolled.issuers[0].resources.filter(key => key.includes(':credential:'));
+      }
+      const f = await fixture({ enrollment: enrolled });
+      const r = await f.authority.reserve(f.reservation(purpose === 'provider-launch' ? 'provider-sessions' : 'provider-credentials'), purpose);
+      const grant = await f.authority.claimDispatch(identity, r.recordId);
+      const before = structuredClone([...f.store.rows.values()][0]);
+      const gate = pauseRedemptionCas(f.store, outcome);
+      const redemption = assert.rejects(f.authority.consumeGrant(grant, purpose), refused);
+      await gate.paused;
+      async function assertClosed() {
+        await assert.rejects(f.authority.consumeGrant(grant, purpose), refused);
+        await assert.rejects(f.authority.commitIssuance(grant), refused);
+        await assert.rejects(f.authority.commitCredentialConfig(grant, 'PRIVATE-value'), refused);
+        await assert.rejects(f.authority.bindSessionId(grant, 'PRIVATE-id', { locator: '/PRIVATE/session' }), refused);
+        await assert.rejects(f.authority.renew(grant), refused);
+      }
+      try { await assertClosed(); } finally { gate.release(); }
+      await redemption;
+      await assertClosed();
+      const after = [...f.store.rows.values()][0];
+      assert.equal(after.revision, before.revision + (outcome === 'lost-ack' ? 1 : 0));
+      const record = JSON.parse(after.bytes).records[0];
+      assert.equal(record.phase, 'dispatched');
+      assert.equal(record.providerIdCommitment, null);
+      assert.equal(record.valueCommitment, null);
+      assert.equal(record.privateCustody, null);
+      assert.deepEqual(record.lease, JSON.parse(before.bytes).records[0].lease);
+      const restarted = await f.restart();
+      await assert.rejects(restarted.consumeGrant(grant, purpose), refused);
+      await assert.rejects(restarted.commitIssuance(grant), refused);
+      await assert.rejects(restarted.bindSessionId(grant, 'PRIVATE-id'), refused);
+      await assert.rejects(restarted.renew(grant), refused);
+      await assert.rejects(restarted.claimDispatch(identity, r.recordId), refused);
+      assert.equal((await restarted.observeInventory(identity)).records[0].phase, 'unknown-after-crash');
+    });
+  }
+}
+
+test('only acknowledged redemption releases exact metadata completion, preserved once across renewal', async () => {
+  const f = await fixture();
+  const r = await f.authority.reserveProviderLaunch(f.reservation());
+  const original = await f.authority.claimDispatch(identity, r.recordId);
+  // Renewal before redemption preserves the unattempted state, not authorization.
+  const grant = await f.authority.renew(original);
+  await assert.rejects(f.authority.consumeGrant(original, original.purpose), refused);
+  await assert.rejects(f.authority.commitIssuance(grant), refused);
+  await assert.rejects(f.authority.bindSessionId(grant, 'exact-id'), refused);
+  const gate = pauseRedemptionCas(f.store, 'confirmed');
+  const redemption = f.authority.consumeGrant(grant, grant.purpose);
+  await gate.paused;
+  try {
+    await assert.rejects(f.authority.commitIssuance(grant), refused);
+    await assert.rejects(f.authority.bindSessionId(grant, 'exact-id'), refused);
+    await assert.rejects(f.authority.renew(grant), refused);
+    await assert.rejects(f.authority.consumeGrant(grant, grant.purpose), refused);
+  } finally { gate.release(); }
+  const effect = await redemption;
+  assert.equal(effect.recordId, r.recordId); assert.equal(effect.incarnation, r.incarnation);
+  const renewed = await f.authority.renew(grant);
+  await assert.rejects(f.authority.commitIssuance(grant), refused);
+  await assert.rejects(f.authority.bindSessionId(grant, 'exact-id'), refused);
+  await assert.rejects(f.authority.consumeGrant(renewed, renewed.purpose), refused);
+  await assert.rejects(f.authority.commitIssuance(structuredClone(renewed)), refused);
+  await f.authority.bindSessionId(renewed, 'exact-id');
+  await f.authority.bindSessionId(renewed, 'exact-id'); // Exact binding retries remain idempotent.
+  await assert.rejects(f.authority.bindSessionId(renewed, 'different-id'), refused);
+  await f.authority.commitIssuance(renewed);
+  await assert.rejects(f.authority.commitIssuance(renewed), refused);
+  const record = JSON.parse([...f.store.rows.values()][0].bytes).records[0];
+  assert.equal(record.phase, 'issued'); assert.ok(record.providerIdCommitment);
+  const restarted = await f.restart();
+  await assert.rejects(restarted.consumeGrant(renewed, renewed.purpose), refused);
+  await assert.rejects(restarted.commitIssuance(renewed), refused);
+  await assert.rejects(restarted.bindSessionId(renewed, 'exact-id'), refused);
+  await assert.rejects(restarted.claimDispatch(identity, r.recordId), refused);
 });
 
 test('one run attempt can reserve both credential resources and its distinct provider session', async () => {

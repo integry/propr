@@ -90,7 +90,7 @@ class HostedProviderAuthority {
     const grant = immutable({ recordId: record.id, incarnation: record.incarnation,
       identity: copy(record.binding.identity), binding: copy(record.binding), purpose, expiresAt,
       effectIntentId: purpose === 'reset-effect' ? record.resetEffect?.intentId ?? null : null }) as ProviderGrant;
-    this.#caps.set(grant, { recordId: record.id, leaseId: record.lease.id, purpose, consumed: false, effectConsumed: false });
+    this.#caps.set(grant, { recordId: record.id, leaseId: record.lease.id, purpose, consumed: false, effectAttempted: false, effectConsumed: false });
     return grant;
   }
   #capability(state: AuthorityState, grant: ProviderGrant, now: number, purpose?: Purpose | 'reset-effect') {
@@ -177,9 +177,9 @@ class HostedProviderAuthority {
   /** Physical adapters redeem the local grant immediately before their one
    * external effect. Metadata/lease completion uses the same grant afterward. */
   async consumeGrant(grant: ProviderGrant, purpose: Purpose | 'reset-effect') {
-    return this.#change((state, now) => {
+    const result = await this.#change((state, now) => {
       const { cap, record } = this.#capability(state, grant, now, purpose);
-      if (cap.effectConsumed || cap.purpose !== purpose) return refuse();
+      if (cap.effectAttempted || cap.purpose !== purpose) return refuse();
       if (purpose === 'reset-effect') {
         if (record.resetEffect?.dispatch !== 'claimed' || record.resetEffect.intentId !== grant.effectIntentId
           || record.resetEffect.readback !== 'unproven') return refuse();
@@ -187,10 +187,14 @@ class HostedProviderAuthority {
         this.#exact(state, grant.identity, true); this.#issuer(state, record.binding.issuer, true);
         if (record.resetEffect || record.phase !== 'dispatched' || record.lease.status !== 'open') return refuse();
       }
-      cap.effectConsumed = true;
+      // Burn before persistence, but never treat an ambiguous attempt as proof
+      // that redemption succeeded. Concurrent metadata/renewal must stay closed.
+      cap.effectAttempted = true;
       return { recordId: record.id, incarnation: record.incarnation, binding: copy(record.binding), purpose,
         effectIntentId: grant.effectIntentId, expiresAt: grant.expiresAt };
     });
+    this.#caps.get(grant)!.effectConsumed = true;
+    return result;
   }
   async commitIssuance(grant: ProviderGrant, value?: string) {
     return this.#change((state, now) => {
@@ -230,12 +234,14 @@ class HostedProviderAuthority {
       this.#exact(state, grant.identity, true);
       const { cap, record } = this.#capability(state, grant, now);
       this.#issuer(state, record.binding.issuer, true);
-      if (record.resetEffect || cap.purpose === 'reset-effect' || record.lease.status !== 'open' || !['dispatched', 'issued'].includes(record.phase)) return refuse();
+      if ((cap.effectAttempted && !cap.effectConsumed) || record.resetEffect || cap.purpose === 'reset-effect'
+        || record.lease.status !== 'open' || !['dispatched', 'issued'].includes(record.phase)) return refuse();
       record.lease.expiresAt = this.#deadline(now, leaseMs); record.lease.id = randomUUID();
       return copy(record);
     });
     this.#caps.get(grant)!.consumed = true;
     const renewed = this.#grant(record, record.purpose);
+    this.#caps.get(renewed)!.effectAttempted = this.#caps.get(grant)!.effectAttempted;
     this.#caps.get(renewed)!.effectConsumed = this.#caps.get(grant)!.effectConsumed;
     return renewed;
   }

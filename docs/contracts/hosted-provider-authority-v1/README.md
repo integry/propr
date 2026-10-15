@@ -121,9 +121,11 @@ commitments for distinct incarnations.
    A physical adapter calls `consumeGrant` with its required purpose immediately
    before performing the effect. Redemption authenticates the local capability,
    checks the current fence/closure and deadline, and permits that effect only
-   once. Issuance and session binding require redemption. Renewal preserves the
-   consumed effect claim. Consumers must execute the granted purpose within its
-   scope. An ambiguous
+   once. Issuance and session binding require durably acknowledged redemption.
+   An attempt is burned before persistence; a false CAS or thrown/lost reply
+   cannot authorize metadata completion or renewal, even if persistence committed.
+   Renewal preserves both the attempted and confirmed redemption states.
+   Consumers must execute the granted purpose within its scope. An ambiguous
    claim is burned: do not retry physical work because the acknowledgement was lost.
 4. `commitCredentialConfig` / `commitIssuance` records committed issuance.
    `bindSessionId` binds the exact returned identifier by keyed commitment, with
