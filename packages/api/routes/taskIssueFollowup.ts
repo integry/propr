@@ -3,7 +3,8 @@ import type { Redis } from 'ioredis';
 import {
   getAuthenticatedOctokit, getIssueQueue, loadPrimaryProcessingLabels, parseSlashCommand,
   safeRemoveLabel, generateCorrelationId, logger, findIssueSubmission, submissionRetryAdmissibleAt,
-  rememberIssueRetryRequest, settleIssueRetryRequest, triggerLabelEvents,
+  reserveIssueRetryRequest, reportIssueRetryPublication, settleIssueRetryRequest, hasUnresolvedIssueRetryRequest, triggerLabelEvents,
+  type IssueRetryRequest, type TriggerHistory, type TriggerLabelEvent,
 } from '@propr/core';
 import { enqueueIssueImplementationJob } from './planIssueHelpers.js';
 
@@ -126,11 +127,12 @@ async function reapplyTrigger(context: Parameters<typeof safeRemoveLabel>[0] & {
   return addTrigger(context.octokit, input, trigger);
 }
 
-/** The latest trigger event, after which the request's own trigger is the first its identity labels. */
-async function triggerBaseline(octokit: Octokit, input: IssueFollowupInput, triggers: string[]): Promise<{ afterEventId: string | null } | null> {
+/** The trigger history, whose latest event is the one after which the request's own trigger is the first its identity labels. */
+async function triggerBaseline(octokit: Octokit, input: IssueFollowupInput, triggers: string[]): Promise<{ events: TriggerLabelEvent[]; afterEventId: string | null } | null> {
   try {
-    const latest = (await triggerLabelEvents(octokit, { repoOwner: input.owner, repoName: input.repo, number: input.issueNumber }, new Set(triggers))).at(-1);
-    return { afterEventId: latest?.id === undefined ? null : String(latest.id) };
+    const events = await triggerLabelEvents(octokit, { repoOwner: input.owner, repoName: input.repo, number: input.issueNumber }, new Set(triggers));
+    const latest = events.at(-1);
+    return { events, afterEventId: latest?.id === undefined ? null : String(latest.id) };
   } catch (error) {
     console.warn(`[followup] Could not read the trigger history of #${input.issueNumber}: ${(error as Error).message}`);
     return null;
@@ -143,6 +145,57 @@ async function postRequest(octokit: Octokit, input: IssueFollowupInput, body: st
     owner: input.owner, repo: input.repo, issue_number: input.issueNumber, body,
   });
   return { commentId: comment.id, actorId: typeof comment.user?.id === 'number' ? comment.user.id : null };
+}
+
+const issueKeyOf = (input: IssueFollowupInput) => ({ repoOwner: input.owner, repoName: input.repo, number: input.issueNumber });
+
+/**
+ * Claims the label-event window the relabel's webhook shares, so it does not
+ * queue a second run without the requesting user. Refuses, releasing it,
+ * while an earlier request's trigger write may still land: that request keeps
+ * its requester and instructions until it does or cannot, and a second
+ * request then could not be told apart from it.
+ */
+async function claimRetryWindow(input: IssueFollowupInput, history: TriggerHistory, { dedupeKey, correlationId }: { dedupeKey: string; correlationId: string }): Promise<FollowupResult | null> {
+  if (!await input.redis.set(dedupeKey, correlationId, 'EX', 30, 'NX')) {
+    return refused(409, `A run for issue #${input.issueNumber} was just requested. Refresh the task before retrying.`);
+  }
+  let unresolved: boolean;
+  try {
+    unresolved = await hasUnresolvedIssueRetryRequest(input.redis, issueKeyOf(input), history);
+  } catch (error) {
+    await input.redis.del(dedupeKey);
+    throw error;
+  }
+  if (!unresolved) return null;
+  await input.redis.del(dedupeKey);
+  return refused(409, `An earlier retry of issue #${input.issueNumber} may still start. Inspect the issue and try again in a few minutes.`);
+}
+
+/** Holds the request pending its trigger write; false when it cannot be held. */
+async function holdRequest(input: IssueFollowupInput, request: IssueRetryRequest, events: TriggerLabelEvent[]): Promise<boolean> {
+  try {
+    return await reserveIssueRetryRequest(input.redis, issueKeyOf(input), request, { events, now: request.requestedAt });
+  } catch (error) {
+    console.warn(`[followup] Could not record the retry request: ${(error as Error).message}`);
+    return false;
+  }
+}
+
+/**
+ * Lets recovery adopt the held request once its trigger write was applied or
+ * may still be; still pending, a late trigger runs without it rather than
+ * risk another's. A write GitHub refused published no trigger of the
+ * request; releasing it is cleanup, as a failed release leaves it pending.
+ */
+async function recordTriggerOutcome(input: IssueFollowupInput, request: IssueRetryRequest, applied: boolean | undefined): Promise<void> {
+  if (applied === false) {
+    await settleIssueRetryRequest(input.redis, issueKeyOf(input), request).catch(() => undefined);
+    return;
+  }
+  await reportIssueRetryPublication(input.redis, issueKeyOf(input), request).catch((error: Error) => {
+    console.warn(`[followup] Could not report the retry trigger as published: ${error.message}`);
+  });
 }
 
 async function checkRetryable(db: Knex, input: IssueFollowupInput): Promise<FollowupResult | null> {
@@ -206,13 +259,10 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
     return refused(502, `Issue #${issueNumber}'s label history could not be read, so the retry could not be tied to its trigger. Try again.`);
   }
 
-  // Shares the label-event window, so the relabel's webhook does not queue a
-  // second run without the requesting user.
   const correlationId = generateCorrelationId();
   const dedupeKey = `issue:dedup:${owner}:${repo}:${issueNumber}`;
-  if (!await redis.set(dedupeKey, correlationId, 'EX', 30, 'NX')) {
-    return refused(409, `A run for issue #${issueNumber} was just requested. Refresh the task before retrying.`);
-  }
+  const unclaimed = await claimRetryWindow(input, { events: baseline.events, now: clock(deps)() }, { dedupeKey, correlationId });
+  if (unclaimed) return unclaimed;
 
   let commentId: number;
   let actorId: number | null;
@@ -232,12 +282,8 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   // failed enqueue carries neither the requester nor the comment to exempt.
   // It is bound to the trigger it publishes, so if releasing it fails a
   // later, independent trigger cannot adopt it.
-  const issueKey = { repoOwner: owner, repoName: repo, number: issueNumber };
-  const retryRequest = { requesterId: userId, commentId, requestedAt: clock(deps)(), afterEventId: baseline.afterEventId, actorId };
-  try {
-    await rememberIssueRetryRequest(redis, issueKey, retryRequest);
-  } catch (error) {
-    console.warn(`[followup] Could not record the retry request: ${(error as Error).message}`);
+  const retryRequest: IssueRetryRequest = { requesterId: userId, commentId, requestedAt: clock(deps)(), afterEventId: baseline.afterEventId, actorId, publication: 'pending' };
+  if (!await holdRequest(input, retryRequest, baseline.events)) {
     await redis.del(dedupeKey);
     return notStarted();
   }
@@ -247,6 +293,7 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
 
   const context = { octokit, owner, repo, issueNumber, logger: logger.withCorrelation(correlationId) };
   const applied = await reapplyTrigger(context, input, labels.includes(trigger), trigger);
+  await recordTriggerOutcome(input, retryRequest, applied);
   if (applied === undefined) {
     // GitHub may have applied the trigger or may still apply it, and its
     // relabel delivery or polling recovers the run; the held request keeps
@@ -254,10 +301,7 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
     return unconfirmed(`Comment posted, but whether the '${trigger}' label was applied could not be confirmed, so the retry may still start. Inspect issue #${issueNumber} before retrying.`);
   }
   if (!applied) {
-    // GitHub refused the write, so no trigger of this request exists. A failed
-    // release leaves a request a later trigger by another actor, or after the
-    // publication window, cannot adopt.
-    await settleIssueRetryRequest(redis, issueKey, retryRequest).catch(() => undefined);
+    // GitHub refused the write, so no trigger of this request exists.
     await redis.del(dedupeKey);
     return notStarted();
   }

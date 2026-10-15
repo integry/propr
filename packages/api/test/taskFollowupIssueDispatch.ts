@@ -9,8 +9,9 @@ const { findIssueSubmission } = await import('../../core/src/services/taskSubmis
 const { resolveTaskSubmissionRetry } = await import('../../core/src/services/taskSubmissionRetry.js');
 const { fetchIssueComments } = await import('../../../src/jobs/issueJob/github.js');
 const { generateClaudePrompt } = await import('../../core/src/claude/prompts/promptGenerator.js');
-const { findIssueRetryRequest, settleIssueRetryRequest, isRetryRequestTrigger } = await import('../../core/src/services/issueRetryRequest.js');
+const { findIssueRetryRequests, settleIssueRetryRequest, retryRequestForTrigger } = await import('../../core/src/services/issueRetryRequest.js');
 type IssueRetryRequest = import('../../core/src/services/issueRetryRequest.js').IssueRetryRequest;
+type RetryDelivery = import('../../core/src/services/issueRetryRequest.js').RetryDelivery;
 
 export const retryRequestKey = 'issue:retry-request:integry:propr:14';
 export const routes = () => request.mock.calls.map(call => call.arguments[0]);
@@ -25,9 +26,9 @@ export const relabelWebhook = () => processDetectedIssue({
 
 const timelineOctokit = async () => ({ request: async () => ({ data: state.timeline }) }) as never;
 export const retryRequestStore = {
-  find: (issue: IssueJobData) => findIssueRetryRequest(redis as unknown as Redis, issue),
-  publishedBy: (issue: IssueJobData, held: IssueRetryRequest, triggerEventId?: string) =>
-    isRetryRequestTrigger(issue, held, triggerEventId, { getOctokit: timelineOctokit, processingLabels: async () => ['AI'] }),
+  find: (issue: IssueJobData) => findIssueRetryRequests(redis as unknown as Redis, issue),
+  publishedBy: (issue: IssueJobData, held: IssueRetryRequest[], delivery: RetryDelivery) =>
+    retryRequestForTrigger(issue, held, delivery, { getOctokit: timelineOctokit, processingLabels: async () => ['AI'] }),
   settle: (issue: IssueJobData, held: IssueRetryRequest) => settleIssueRetryRequest(redis as unknown as Redis, issue, held),
 };
 

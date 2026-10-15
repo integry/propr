@@ -25,8 +25,9 @@ export const state = {
   // How GitHub answers the trigger add: applied but its response lost, refused, or timed out while GitHub
   // still applies it later; and whether labels can be read back.
   labelAdd: 'ok' as 'ok' | 'lost' | 'rejected' | 'delayed', labelReadFails: false, delayedLabels: [] as string[],
-  // Whether releasing a held retry request fails, as during a Redis connection failure.
-  settleFails: false,
+  // Whether writing held retry requests fails, as during a Redis connection failure, and a hook
+  // run as GitHub answers the trigger add.
+  settleFails: false, onLabelAdd: undefined as undefined | (() => void),
   // GitHub's clock and the issue timeline it stamps label events on, to the second.
   now: Date.parse('2026-10-15T10:00:00.700Z'), sleeps: [] as number[],
   timeline: [] as Array<{ id: number; event: string; created_at: string; label: { name: string }; actor: { id: number } }>,
@@ -46,8 +47,14 @@ const redis = {
   get: async (key: string) => claims.get(key) ?? null,
   setex: async (key: string, _ttl: number, value: string) => { claims.set(key, value); },
   del: async (key: string) => { claims.delete(key); },
-  eval: async (script: string, _count: number, key: string, token: string) => {
+  eval: async (script: string, _count: number, key: string, ...[token, next]: string[]) => {
     if (state.settleFails) throw new Error('Connection is closed.');
+    if (script.includes("ARGV[2] == ''")) {
+      // Replaces the value only if it is still the one read; an empty value means none.
+      if ((claims.get(key) ?? '') !== token) return 0;
+      if (next) claims.set(key, next); else claims.delete(key);
+      return 1;
+    }
     if (claims.get(key) !== token) return 0;
     if (script.includes("redis.call('DEL'")) claims.delete(key);
     return 1;
@@ -116,6 +123,7 @@ function labelRequest(route: string, options: { name?: string; labels?: string[]
     state.issueLabels = state.issueLabels.filter(name => name !== options.name);
   }
   if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+    state.onLabelAdd?.();
     if (state.labelAdd === 'rejected') throw Object.assign(new Error('Validation Failed'), { status: 422 });
     if (state.labelAdd === 'delayed') {
       state.delayedLabels.push(...options.labels ?? []);
@@ -156,7 +164,7 @@ setUltrafixDeps({
 beforeEach(() => {
   state.startLoopFails = false; state.prState = 'open'; state.commentPostError = undefined;
   state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
-  state.labelAdd = 'ok'; state.labelReadFails = false; state.delayedLabels = []; state.settleFails = false;
+  state.labelAdd = 'ok'; state.labelReadFails = false; state.delayedLabels = []; state.settleFails = false; state.onLabelAdd = undefined;
   state.now = Date.parse('2026-10-15T10:00:00.700Z'); state.sleeps = [];
   state.timeline = [{ id: 1, event: 'labeled', created_at: '2026-10-15T09:59:00Z', label: { name: 'AI' }, actor: { id: HUMAN_ACTOR_ID } }];
   claims.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();

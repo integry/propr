@@ -1,6 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { db, findIssueSubmission, resolveTaskSubmissionRetry, logger, findIssueRetryRequest, isRetryRequestTrigger, settleIssueRetryRequest, type IssueRetryRequest, type SubmissionRetry } from '@propr/core';
+import { db, findIssueSubmission, resolveTaskSubmissionRetry, logger, findIssueRetryRequests, retryRequestForTrigger, settleIssueRetryRequest, type IssueRetryRequest, type RetryDelivery, type SubmissionRetry } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
@@ -33,9 +33,12 @@ interface AgentModelToProcess {
 type IssueQueueAdd = typeof issueQueue.add;
 
 interface RetryRequestStore {
-    find(issue: IssueJobData): Promise<IssueRetryRequest | null>;
-    /** Whether the trigger a delivery dispatches is the one the request published; the latest when unresolved. */
-    publishedBy(issue: IssueJobData, request: IssueRetryRequest, triggerEventId?: string): Promise<boolean>;
+    find(issue: IssueJobData): Promise<IssueRetryRequest[]>;
+    /**
+     * The held request that published the trigger a delivery dispatches (the
+     * latest when unresolved); for a direct job, only the request it names.
+     */
+    publishedBy(issue: IssueJobData, requests: IssueRetryRequest[], delivery: RetryDelivery): Promise<IssueRetryRequest | null>;
     settle(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
 }
 
@@ -105,8 +108,8 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         getAllCustomLabels,
         resolveDefaultAgentForDispatcher,
         retryRequests: {
-            find: async issue => findIssueRetryRequest(await workerRedis(), issue),
-            publishedBy: (issue, request, triggerEventId) => isRetryRequestTrigger(issue, request, triggerEventId),
+            find: async issue => findIssueRetryRequests(await workerRedis(), issue),
+            publishedBy: (issue, requests, delivery) => retryRequestForTrigger(issue, requests, delivery),
             settle: async (issue, request) => settleIssueRetryRequest(await workerRedis(), issue, request),
         },
     });
@@ -214,6 +217,10 @@ function submissionRunOwner(submitterId: string, issueRef: IssueJobData, isRetry
  * comment to exempt; the request held for the issue does, but only for the
  * trigger it published. A held request whose release failed after its
  * dispatch or refusal is not adopted by a later, independent trigger.
+ *
+ * A job the route queued carries its request, but a trigger it consumes may
+ * be a later, independent one; it then runs without that request, which stays
+ * held for its own trigger.
  */
 async function resolveRunRequest(
     issueRef: IssueJobData,
@@ -223,15 +230,27 @@ async function resolveRunRequest(
 ): Promise<IssueRetryRequest | null> {
     const retry = submission?.dispatch_complete ? trigger : null;
     if (submission) [issueRef.repoOwner, issueRef.repoName] = submission.repository.split('/');
-    const held = await deps.retryRequests?.find(issueRef) ?? null;
-    let request = held && held.commentId === issueRef.retryCommentId ? held : null;
-    if (held && issueRef.retryCommentId === undefined) {
-        if (await deps.retryRequests!.publishedBy(issueRef, held, trigger?.eventId)) {
-            request = held;
-            issueRef.retryRequesterId = held.requesterId;
-            issueRef.retryCommentId = held.commentId;
+    const held = await deps.retryRequests?.find(issueRef) ?? [];
+    const queued = issueRef.retryCommentId;
+    let request: IssueRetryRequest | null = null;
+    if (queued !== undefined && !trigger) {
+        // No trigger is consumed, so the job dispatches its own request.
+        request = held.find(candidate => candidate.commentId === queued) ?? null;
+    } else if (queued !== undefined) {
+        request = held.length > 0 ? await deps.retryRequests!.publishedBy(issueRef, held, { triggerEventId: trigger!.eventId, commentId: queued }) : null;
+        if (!request) {
+            logger.info({ issue: issueRef.number, triggerEventId: trigger!.eventId }, 'Queued retry request did not publish the dispatched trigger; dispatching it without the request');
+            delete issueRef.retryRequesterId;
+            delete issueRef.retryCommentId;
+        }
+    }
+    if (issueRef.retryCommentId === undefined && held.length > 0) {
+        request = await deps.retryRequests!.publishedBy(issueRef, held, { triggerEventId: trigger?.eventId });
+        if (request) {
+            issueRef.retryRequesterId = request.requesterId;
+            issueRef.retryCommentId = request.commentId;
         } else {
-            logger.info({ issue: issueRef.number, triggerEventId: trigger?.eventId }, 'Held retry request belongs to another trigger; not adopted');
+            logger.info({ issue: issueRef.number, triggerEventId: trigger?.eventId }, 'Held retry requests belong to other triggers; not adopted');
         }
     }
     if (submission) {
