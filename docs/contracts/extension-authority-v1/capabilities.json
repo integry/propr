@@ -1,0 +1,25 @@
+{
+  "contract": "propr.extension-authority.v1",
+  "contractPin": "cd959bc68d7a221c13fb42342dddf64aad0675290ecae2c91f84fd12042125c5",
+  "qualifiedExtensionContract": "propr.fleet-extensions.v1",
+  "qualifiedExtensionPin": "d4987a10399fbbaf9b8c9483daaf26316d82a5ae5b2961d3ebdeb69c2d24e1c0",
+  "transport": "existing-authenticated-private-unix-only",
+  "path": "/extensions/authority/v1/prove",
+  "phases": [
+    "request",
+    "dispatch",
+    "status",
+    "completion"
+  ],
+  "downstreamReady": false,
+  "publicReady": false,
+  "consumerGates": {
+    "fleet": "independent-pin-and-reciprocal-qualification-required",
+    "routing": "independent-pin-and-reciprocal-qualification-required",
+    "connect": "independent-account-subscription-installation-passkey-evidence-required"
+  },
+  "keyProvisioning": "operator-native-channel-only",
+  "keyAlgorithm": "Ed25519",
+  "publicPinEncoding": "base64url-SPKI",
+  "readiness": "local-contract-only-no-hosted-enablement"
+}

@@ -1,0 +1,16 @@
+{
+  "packages/shared/src/extensionAuthorityProof.ts": "64e6781c24d23e669afd3e4239ff3fb32f707461a91aa06b05ea3c734ad4ce48",
+  "packages/core/src/fleet/extensionAuthorityProof.ts": "8ec624529da035e524489e497cad831066f2d44f0e18344539dcdd3260a47af0",
+  "packages/core/src/db/migrations/20261015070000_extension_authority_epoch.js": "a59112915c1b0fba2033f6e07cbe792eb2f30f35e7d82a52010a8eb2efd4137f",
+  "packages/core/src/fleet/files.ts": "068a467f6b80fe9fcc281117351bfdf07f11a14d448c64cb73caade6d21a5dd4",
+  "packages/core/src/fleet/dataPlane.ts": "fdeea701f5982cbec04d2d13c5a0804400c35456a0fcdca266cc7399d9a29109",
+  "packages/core/src/fleet/resetFence.ts": "7f57362751711990892cf41d2d7a85b175056e305c36d2443bea84b0b135f3b7",
+  "packages/shared/src/instanceAuthorization.ts": "09c552221ac4a9c59ee7f1c23687d21e01d350c1e4f94f1f72279da93e431379",
+  "packages/core/src/storage/service.ts": "c7aaafe01b48466a838268e84015bfb25f03771a164cb6aa7bd069b42aea364e",
+  "packages/core/src/storage/proofIdentity.ts": "ef54cac930b926a7cb1dd182b2273863cc79e91506a85ab5c39d0ea13168fb85",
+  "packages/core/src/storage/services.ts": "ce42200fe436630742a2b25f1132d4c2fa5bc02359abf4e0db25689d00bf23ca",
+  "packages/api/fleetDataListener.ts": "db2b8e89baf36f6319386e543fbcd7d55476024fd2f0420138151194d0ae7042",
+  "packages/core/src/fleet/extensions.ts": "c4b6250c0a94cd10b6c0621ed0e9f63b70c7c771e708bca502056d1d82f98daa",
+  "packages/shared/src/fleetExtensions.ts": "1c9d77e537fb675a6f7a3d5af96625fa8b932334e001d7e6ed69100e3b3bdff8",
+  "scripts/generate-extension-authority-fixtures.mjs": "3ebf9af96606f8dc0d35746f4558d49a095ef8c9b664dcb0024f499412713b3a"
+}

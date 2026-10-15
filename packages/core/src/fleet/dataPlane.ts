@@ -105,6 +105,18 @@ export class FleetDataPlane {
       || secret !== latest.secret || Date.now() >= assertion.expiresAt * 1000) throw new FleetRefusal();
     return secret;
   }
+  /** Additive proof observation; no awaits between native observation and signing. */
+  extensionProofObservationSync() {
+    const authority = JSON.parse(this.files.readSync('authority.json'));
+    exact(authority, ['hostedInstanceId', 'placementGeneration', 'scope', 'secretSha256']);
+    const secret = this.secret();
+    if (!secret || secret.length < 32 || secret.trim() !== secret || authority.secretSha256 !== secretHash(secret)
+      || authority.scope !== FLEET_DATA_SCOPE || !identifier(authority.hostedInstanceId) || !identifier(authority.placementGeneration)) throw new FleetRefusal();
+    const current = { contract: FLEET_DATA_ACTOR_CONTRACT, contractPin, hostedInstanceId: authority.hostedInstanceId,
+      placementGeneration: authority.placementGeneration, scope: authority.scope, ...this.storage.proofIdentitySync() };
+    if (digest(current) !== digest(JSON.parse(this.files.readSync('runtime.json')))) throw new FleetRefusal();
+    return { binding: binding(current), secret };
+  }
   private name(id: string) { return `operation-${id}.jsonl`; }
   private async save(op: Operation, state: FleetDataState, result?: FleetDataResult['result']) {
     const candidate = { ...op, state, ...(result === undefined ? {} : { result }) };

@@ -154,7 +154,9 @@ describe('TaskWatcherManager', () => {
 
 test('shutdown attempts every watcher and retains failed closure evidence', async () => {
   const manager = new TaskWatcherManager(createIo());
-  const internals = manager as unknown as { taskWatchers: Map<string, { watcher: { close(): Promise<void> } }> };
+  const internals = manager as unknown as {
+    taskWatchers: Map<string, { watcher: { close(): Promise<void> } }>;
+  };
   const closed: string[] = [];
   const failure = new Error('watcher failure');
   internals.taskWatchers.set('failed', { watcher: { close: async () => { closed.push('failed'); throw failure; } } });
@@ -169,7 +171,10 @@ test('shutdown attempts every watcher and retains failed closure evidence', asyn
 test('shutdown revokes watcher creation across a pending session lookup', async () => {
   const manager = new TaskWatcherManager(createIo());
   let resume!: (value: undefined) => void;
-  const internals = manager as unknown as { findSessionIdForTask: () => Promise<undefined>; taskWatchers: Map<string, unknown> };
+  const internals = manager as unknown as {
+    findSessionIdForTask(): Promise<string | undefined>;
+    taskWatchers: Map<string, unknown>;
+  };
   internals.findSessionIdForTask = () => new Promise(resolve => { resume = resolve; });
   const starting = manager.startTaskWatcher('pending');
   const closing = manager.closeAll();
