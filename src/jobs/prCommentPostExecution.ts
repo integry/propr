@@ -40,7 +40,7 @@ import {
 import type { PullRequestPublication, PublicationSalvage } from './prPublication.js';
 import { recordPushSalvageEvent } from './pushSalvageTimeline.js';
 import { savePublicationCheckpoint } from './prContinuation.js';
-import { buildWorkNotificationRecap } from './notificationRecap.js';
+import { buildWorkNotificationRecap, fullNotificationSummary } from './notificationRecap.js';
 import { autoAssignFollowUpPullRequest } from './prCommentAutoAssignment.js';
 import type { LinkedIssueReference } from '../github/prAutoAssignment.js';
 
@@ -388,6 +388,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
                 } : undefined,
                 githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
                 notificationRecap: buildPostExecutionRecap(job.data, { commitResult, changesSummary }, partial),
+                notificationSummary: fullNotificationSummary(changesSummary),
                 ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
                 ...buildAddressedFeedbackHistoryMeta(unprocessedReviewComments),
                 ...(partial && { incompleteExecution: { reason: terminationReason } }),

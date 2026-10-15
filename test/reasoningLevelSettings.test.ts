@@ -17,6 +17,15 @@ import { CodexAgent } from '../packages/core/src/agents/impl/CodexAgent.ts';
 import { buildDockerArgs as buildClaudeDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.ts';
 import type { AgentConfig } from '../packages/core/src/agents/types.ts';
 
+// Native-host fixtures: provider `~/...` defaults expand against HOME rather
+// than requiring a launcher host mapping, even when the suite runs in a container.
+const previousContainerized = process.env.PROPR_CONTAINERIZED;
+process.env.PROPR_CONTAINERIZED = '0';
+after(() => {
+    if (previousContainerized === undefined) delete process.env.PROPR_CONTAINERIZED;
+    else process.env.PROPR_CONTAINERIZED = previousContainerized;
+});
+
 process.env.PROPR_DEMO_MODE = 'true';
 
 const { db } = await import('../packages/core/src/db/connection.ts');

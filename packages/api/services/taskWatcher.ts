@@ -26,6 +26,8 @@ export interface TaskWatcherInfo {
   watcher: chokidar.FSWatcher | null;
   sessionId: string;
   taskId: string;
+  /** Resolved Claude conversation file; absent for Redis watchers. */
+  conversationPath?: string;
   lastSize: number;
   subscriberCount: number;
   /** Number of events last sent - used to track which events have been broadcast */
@@ -115,7 +117,16 @@ export class TaskWatcherManager {
     // Get agent config to find the correct log path
     const agentConfig = await findAgentConfigForTask(taskId, this.deps?.db);
     const agentType = agentConfig?.type || 'claude';
-    const agentRoot = agentConfig ? resolveConfigPath(agentConfig.configPath) : path.join(os.homedir(), '.claude');
+    let agentRoot: string;
+    try {
+      agentRoot = agentConfig ? resolveConfigPath(agentConfig.configPath) : path.join(os.homedir(), '.claude');
+    } catch (error) {
+      // An unmapped containerized default has no readable log root; never
+      // substitute the backend account's home directory.
+      console.log(`[TaskWatcher] Agent log root unavailable for task ${taskId} (${(error as Error).message}), using Redis watcher`);
+      await this.startRedisWatcher(taskId);
+      return;
+    }
 
     let conversationPath: string;
     if (agentType === 'codex' || agentType === 'antigravity' || agentType === 'vibe') {
@@ -197,6 +208,7 @@ export class TaskWatcherManager {
         watcher,
         sessionId,
         taskId,
+        conversationPath,
         lastSize: 0,
         subscriberCount: 1,
         lastSentEventCount: 0,
@@ -239,6 +251,7 @@ export class TaskWatcherManager {
       watcher,
       sessionId,
       taskId,
+      conversationPath,
       lastSize: initialSize,
       subscriberCount: 1,
       lastSentEventCount: 0,
@@ -291,6 +304,7 @@ export class TaskWatcherManager {
       watcher,
       sessionId,
       taskId,
+      conversationPath,
       lastSize: 0,
       subscriberCount: existing.subscriberCount,
       lastSentEventCount: 0,
@@ -333,17 +347,11 @@ export class TaskWatcherManager {
    */
   async sendTaskLiveUpdate(taskId: string, isInitial = false): Promise<void> {
     const watcherInfo = this.taskWatchers.get(taskId);
-    if (!watcherInfo) return;
+    // Read the file the watcher resolved, never a path rebuilt from backend HOME.
+    const conversationPath = watcherInfo?.conversationPath;
+    if (!watcherInfo || !conversationPath) return;
 
     try {
-      const conversationPath = path.join(
-        os.homedir(),
-        '.claude',
-        'projects',
-        '-home-node-workspace',
-        `${watcherInfo.sessionId}.jsonl`
-      );
-
       const exists = await fs.pathExists(conversationPath);
       if (!exists) {
         return;

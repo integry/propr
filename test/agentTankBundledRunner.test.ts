@@ -90,12 +90,16 @@ fs.mkdirSync(secondaryClaudeHome);
 let configuredAgents: AgentConfig[] = [];
 let registryInitialized = false;
 
+const realConfigPaths = await import('../packages/core/src/config/agentConfigPaths.js');
+
 await mock.module('../packages/core/src/config/configManager.js', {
     namedExports: {
         loadAgentTankSettings: async () => ({ mode: 'bundled', enabled: true, url: '' }),
         loadAgents: async (): Promise<AgentConfig[]> => configuredAgents,
-        resolveConfigPath: (configPath: string): string => configPath,
-        resolveCodexConfigPath: (configPath: string): string => configPath,
+        // The real, pure resolvers: the usage/health launch must bind the same
+        // host store as login and task execution.
+        resolveConfigPath: realConfigPaths.resolveConfigPath,
+        resolveCodexConfigPath: realConfigPaths.resolveCodexConfigPath,
     },
 });
 
@@ -408,6 +412,35 @@ test('a credential directory the backend cannot see is still handed to the Docke
     assert.equal(dockerRuns.length, 1);
     assert.deepEqual(bindMounts(dockerRuns[0]), [mountSpec(hostOnlyClaude, '/home/node/.claude')]);
     assert.ok(result?.claude);
+});
+
+test('a containerized Claude default is mounted from its launcher mapping, never the backend HOME', async () => {
+    const previous = { HOME: process.env.HOME, CLAUDE_CONFIG_PATH: process.env.CLAUDE_CONFIG_PATH, HOST_CLAUDE_DIR: process.env.HOST_CLAUDE_DIR };
+    try {
+        process.env.PROPR_CONTAINERIZED = '1';
+        process.env.HOME = '/root';
+        process.env.CLAUDE_CONFIG_PATH = '/home/desktop-user/.claude';
+        delete process.env.HOST_CLAUDE_DIR;
+        configuredAgents = [agent({ alias: 'claude', type: 'claude', configPath: '~/.claude' })];
+        await refreshBundledStatuses({ force: true });
+        assert.deepEqual(bindMounts(dockerRuns[0]), [mountSpec('/home/desktop-user/.claude', '/home/node/.claude')]);
+
+        // Without a mapping the agent is left out rather than bound to /root/.claude.
+        delete process.env.CLAUDE_CONFIG_PATH;
+        configuredAgents = [
+            agent({ alias: 'claude', type: 'claude', configPath: '~/.claude' }),
+            agent({ alias: 'codex', type: 'codex', configPath: codexHome }),
+        ];
+        clearBundledAgentTankCache();
+        dockerRuns = [];
+        await refreshBundledStatuses({ force: true });
+        assert.deepEqual(bindMounts(dockerRuns[0]), [mountSpec(codexHome, '/home/node/.codex')]);
+    } finally {
+        for (const [key, value] of Object.entries(previous)) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
+    }
 });
 
 test('bundled detection offers the feature for credentials only the Docker host can see', async () => {

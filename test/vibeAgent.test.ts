@@ -10,6 +10,15 @@ import { getForwardedVibeEnvVars, isSuccessfulVibeResult, splitVibeCliArgs } fro
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 
+// Native-host fixtures: provider `~/...` defaults expand against HOME rather
+// than requiring a launcher host mapping, even when the suite runs in a container.
+const previousContainerized = process.env.PROPR_CONTAINERIZED;
+process.env.PROPR_CONTAINERIZED = '0';
+after(() => {
+    if (previousContainerized === undefined) delete process.env.PROPR_CONTAINERIZED;
+    else process.env.PROPR_CONTAINERIZED = previousContainerized;
+});
+
 after(async () => {
     await closeConnection();
 });
@@ -457,6 +466,40 @@ describe('VibeAgent Docker args', () => {
                 process.env.HOME = previousHome;
             }
             fs.rmSync(homeDir, { recursive: true, force: true });
+        }
+    });
+
+    test('containerized API-key-only execution runs without a mapped default config directory', () => {
+        // A usable backend-HOME ~/.vibe must never be mounted in place of the missing host mapping.
+        const backendHome = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-backend-home-'));
+        fs.mkdirSync(path.join(backendHome, '.vibe'));
+        fs.writeFileSync(path.join(backendHome, '.vibe', 'credentials.json'), '{}');
+        const keys = ['HOME', 'PROPR_CONTAINERIZED', 'HOST_VIBE_DIR', 'VIBE_CONFIG_PATH', 'MISTRAL_API_KEY'] as const;
+        const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+        try {
+            for (const key of keys) delete process.env[key];
+            process.env.HOME = backendHome;
+            process.env.PROPR_CONTAINERIZED = '1';
+            const agent = createAgent({ configPath: '~/.vibe' });
+            const args = buildArgs(agent, { mistralApiKey: 'mistral-key', envFilePath: '/tmp/propr-vibe-agent.env' });
+
+            assert.ok(!args.some(arg => arg.endsWith(':/home/node/.vibe:ro')), 'no config directory is mounted');
+            assert.ok(!args.some(arg => arg.startsWith(backendHome)), 'backend HOME is never mounted');
+            const diagnostics = (agent as unknown as {
+                diagnosticContext(nativeRoot: string, mistralApiKey?: string): { configPath?: string; authenticationRoot?: string; nativeCredentialContextComplete?: boolean };
+            }).diagnosticContext('/tmp/vibe-runtime-home', 'mistral-key');
+            assert.strictEqual(diagnostics.configPath, undefined);
+            assert.strictEqual(diagnostics.authenticationRoot, '/tmp/vibe-runtime-home');
+            assert.strictEqual(diagnostics.nativeCredentialContextComplete, true);
+
+            // Without an API key the directory is required, so the unmapped default is refused.
+            assert.throws(() => buildArgs(agent), /no host mapping.*HOST_VIBE_DIR/);
+        } finally {
+            for (const key of keys) {
+                if (previous[key] === undefined) delete process.env[key];
+                else process.env[key] = previous[key];
+            }
+            fs.rmSync(backendHome, { recursive: true, force: true });
         }
     });
 

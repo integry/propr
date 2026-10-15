@@ -228,7 +228,10 @@ export interface FinalizeResponse {
 export interface IssueSummary {
   total: number;
   pending: number;
+  /** Issues with an agent queued or working: initial implementation or follow-up refinement. */
   processing: number;
+  /** Issues whose PR waits for review with no agent working on it. Absent from older servers. */
+  in_review?: number;
   merged: number;
   closed: number;
 }

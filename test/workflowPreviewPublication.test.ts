@@ -86,7 +86,7 @@ for (const [name, namedExports] of Object.entries({
     prContinuation: { savePublicationCheckpoint: noOp },
     issueJobAutoAssignment: { autoAssignCompletedPullRequest: noOp },
     prCommentAutoAssignment: { autoAssignFollowUpPullRequest: noOp },
-    notificationRecap: { buildWorkNotificationRecap: () => '' },
+    notificationRecap: { buildWorkNotificationRecap: () => '', fullNotificationSummary: () => undefined },
 })) {
     await mock.module(`../src/jobs/${name}.js`, { namedExports });
 }

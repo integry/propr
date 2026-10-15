@@ -107,7 +107,7 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', { name
 await mock.module('../packages/core/src/webhook/checkRunHelpers.js', { namedExports: { getUltrafixStateRedis: () => redis, clearUltrafixLoopState: async (_owner: string, _repo: string, number: number) => { clearedLoops.push(number); } } });
 const { cancelWithdrawnIntent, reconcileTaskIntents, preventWithdrawnJob, withdrawnIntentReason, updateWithdrawnIssueLabels, taskIntentTarget, intentJobTaskId, restoreIssueTrigger } = await import('../packages/core/src/services/taskIntent.js');
 await mock.module('../packages/core/src/webhook/planIssueTracking.js', { namedExports: {
-    handlePlanIssueStatusUpdate: async () => {}, handlePlanPRUpdate: async () => {}, handlePlanPRCommentTracking: async () => {},
+    handlePlanIssueStatusUpdate: async () => {}, handlePlanPRUpdate: async () => {}, handlePlanPRCommentTracking: async () => {}, handlePlanPRCommentActivity: async () => {},
 } });
 await mock.module('../packages/core/src/webhook/checkRunHandler.js', { namedExports: {
     handleCheckRunEvent: async () => {}, handleCheckSuiteEvent: async () => {}, handleStatusEvent: async () => {}, reevaluatePRAutoMerge: async () => {},

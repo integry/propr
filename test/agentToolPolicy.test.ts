@@ -22,6 +22,15 @@ import type { Agent, AgentConfig, AgentTaskOptions, AgentToolPolicy } from '../p
 import { agentRunToolPolicy } from '../src/jobs/agentRuns/toolPolicy.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
 
+// Native-host fixtures: provider `~/...` defaults expand against HOME rather
+// than requiring a launcher host mapping, even when the suite runs in a container.
+const previousContainerized = process.env.PROPR_CONTAINERIZED;
+process.env.PROPR_CONTAINERIZED = '0';
+after(() => {
+    if (previousContainerized === undefined) delete process.env.PROPR_CONTAINERIZED;
+    else process.env.PROPR_CONTAINERIZED = previousContainerized;
+});
+
 const TOKEN = 'propr_mcp_run_token_abcdef0123456789';
 const MCP_POLICY: AgentToolPolicy = {
     allowWeb: false,

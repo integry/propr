@@ -2,9 +2,8 @@ import type { Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import {
   db,
-  getPlanIssuesByDraft,
-  getPlanIssuesByDraftPaginated,
-  getPlanIssue,
+  getPlanIssuesByDraft, getPlanIssuesByDraftPaginated,
+  getPlanIssue, reconcileDraftPlanIssueRefinement,
   updatePlanIssue,
   loadPrimaryProcessingLabels,
   getAuthenticatedOctokit,
@@ -309,6 +308,8 @@ export function createGetIssuesHandler(deps: PlanIssueDeps) {
       const ownership = await deps.verifyOwnership(req.params.id, req.user!.id, ['user_id']);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
       const { page, limit, status } = req.query;
+      // Settle refinement whose follow-up work ended before filtering, counting or paging.
+      await reconcileDraftPlanIssueRefinement(req.params.id);
       const hasPagination = page !== undefined || limit !== undefined;
       if (hasPagination) {
         const pageNum = page ? parseInt(page as string, 10) : 0;

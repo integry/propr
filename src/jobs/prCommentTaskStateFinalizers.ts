@@ -10,6 +10,7 @@ import {
     finalizeFailedPRCommentTask,
     type PRCommentTaskFinalizationResult,
 } from './prCommentTaskFinalizer.js';
+import { scheduleAutomaticPRCommentRetry } from './prCommentAutomaticRetry.js';
 
 const FAILURE_STATE_ATTEMPTS = 3;
 
@@ -21,16 +22,16 @@ async function waitForFailureStateRetry(attempt: number): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 10 * (2 ** attempt)));
 }
 
-async function isFailureExhausted(job: Job<MainJobData>): Promise<boolean> {
+async function readFailedJobState(job: Job<MainJobData>): Promise<string> {
     for (let attempt = 0; attempt < FAILURE_STATE_ATTEMPTS; attempt++) {
         try {
-            return await job.getState() === 'failed';
+            return await job.getState();
         } catch (error) {
             if (attempt === FAILURE_STATE_ATTEMPTS - 1) throw error;
             await waitForFailureStateRetry(attempt);
         }
     }
-    return false;
+    return 'unknown';
 }
 
 export interface PRCommentTaskStateFinalizerOptions {
@@ -56,6 +57,8 @@ export function attachPRCommentTaskStateFinalizers(
                         'Finalized PR comment task in Redis with incomplete publication');
                 } else if (result.outcome === 'task_missing') {
                     logger.warn({ taskId }, 'Could not finalize PR comment task because its state is missing');
+                } else if (result.outcome === 'retry_scheduled') {
+                    logger.info({ taskId }, 'PR comment task is waiting for its automatic retry');
                 } else if (result.outcome === 'retry_pending') {
                     logger.debug({ taskId }, 'PR comment job failure is retryable; task was not finalized');
                 } else {
@@ -78,8 +81,13 @@ export function attachPRCommentTaskStateFinalizers(
         if (job?.name !== 'processPullRequestComment' || !job.id) return;
         const taskId = job.id;
         const finalizeIfExhausted = async (): Promise<PRCommentTaskFinalizationResult> => {
-            if (!await isFailureExhausted(job)) {
-                return { outcome: 'retry_pending', stateChanged: false };
+            const jobState = await readFailedJobState(job);
+            if (jobState !== 'failed') {
+                // BullMQ counted the attempt and queued its retry: the task waits for it, not finished.
+                const retry = await scheduleAutomaticPRCommentRetry(job, jobState, stateManager);
+                return retry === 'scheduled'
+                    ? { outcome: 'retry_scheduled', stateChanged: true }
+                    : { outcome: 'retry_pending', stateChanged: false };
             }
             try {
                 await options.onExhaustedFailure?.(job);

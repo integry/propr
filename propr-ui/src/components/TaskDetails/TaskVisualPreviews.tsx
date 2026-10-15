@@ -34,7 +34,11 @@ const pill = 'inline-flex h-6 max-w-[10rem] items-center rounded px-2 text-xs fo
  * on the left, what it shows on the right, a switcher between captures and a lightbox for the pixels.
  * Renders nothing when the run published none.
  */
-export default function TaskVisualPreviews({ previews }: { previews?: PublishedVisualPreview[] }) {
+export default function TaskVisualPreviews({ previews, className = 'border-b border-slate-200 px-4 py-3' }: {
+  previews?: PublishedVisualPreview[];
+  /** The section's frame; the task pane rules it off from the trace below. */
+  className?: string;
+}) {
   const media = trustedPreviewMedia(previews, 8);
   // Tracked by url, not index: polling refreshes reorder and replace the list.
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
@@ -57,7 +61,7 @@ export default function TaskVisualPreviews({ previews }: { previews?: PublishedV
   const width = captureWidth(selected);
   const isImage = selected.type === 'image';
 
-  return <section aria-labelledby="task-visual-previews-heading" className="border-b border-slate-200 px-4 py-3">
+  return <section aria-labelledby="task-visual-previews-heading" className={className}>
     <div className="flex min-h-7 flex-wrap items-center justify-between gap-2">
       <h2 id="task-visual-previews-heading" className="m-0 text-[11px] font-bold uppercase tracking-widest text-slate-500">
         Visual evidence{' '}

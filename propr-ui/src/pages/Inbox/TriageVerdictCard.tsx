@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Check, ExternalLink, SquareArrowOutUpRight } from 'lucide-react';
-import type { Notification } from '@propr/shared';
+import { isNotificationPreviewEligible, type Notification, type PublishedVisualPreview } from '@propr/shared';
 import { getFileChanges } from '../../api/fileChangesApi';
+import { getTaskHistory } from '../../api/proprApi';
 import NotificationActions from '../../components/Inbox/NotificationActions';
 import { ReferenceChip } from '../../components/TaskList/ReferenceChips';
 import { readTaskGroup, readTaskRuns, taskGroupRuns } from '../../components/TaskDetails/readTaskRuns';
+import MarkdownRenderer from '../../components/TaskDetails/MarkdownRenderer';
+import TaskVisualPreviews from '../../components/TaskDetails/TaskVisualPreviews';
 import { taskPath, type TaskRunEntry } from '../../components/TaskList/rowModel';
 import { useOptionalSocket } from '../../contexts/useSocket';
 import {
@@ -16,7 +19,7 @@ import {
   notificationRepository,
   notificationStatus,
 } from '../inboxUtils';
-import { reviewedRunId, reviewFindings, triageTaskId, trimDiffForTriage, type TriageDiff } from './triageVerdict';
+import { reviewedRunId, reviewFindings, taskHistorySummary, triageTaskId, trimDiffForTriage, type TriageDiff } from './triageVerdict';
 
 interface TriageVerdictCardProps {
   notification: Notification;
@@ -33,6 +36,8 @@ const pluralize = (count: number, word: string) => `${count} ${word}${count === 
 
 interface TriageReadState {
   diff: TriageDiff | null;
+  /** The run's full summary and visual previews from its history; null until read, or when it cannot be. */
+  details: TriageDetails | null;
   /** The task's runs, oldest first; null until read, or when they cannot be. */
   runs: TaskRunEntry[] | null;
 }
@@ -42,13 +47,30 @@ interface TriageRead extends TriageReadState {
   readRuns: () => Promise<TaskRunEntry[] | null>;
 }
 
+interface TriageDetails {
+  /** Null when the run recorded no full summary, so the notification's own body stands in. */
+  summary: string | null;
+  previews: PublishedVisualPreview[] | undefined;
+}
+
+/** The full summary and visual previews a run's history records. */
+const readDetails = async (taskId: string): Promise<TriageDetails | null> => {
+  const data = await getTaskHistory(taskId).catch(() => null) as {
+    history?: unknown;
+    previewMedia?: PublishedVisualPreview[];
+    taskInfo?: { previewMedia?: PublishedVisualPreview[] };
+  } | null;
+  if (!data) return null;
+  return { summary: taskHistorySummary(data.history), previews: data.previewMedia ?? data.taskInfo?.previewMedia };
+};
+
 /** A diff that cannot be read reads as no changes, so a review still falls back to the code it read. */
 const readDiff = async (taskId: string): Promise<TriageDiff> =>
   trimDiffForTriage((await getFileChanges(taskId).catch(() => null))?.files ?? []);
 
 /**
- * What the card reads for the selected notification: the few changed lines
- * behind it and its task's runs, each read once per selection and silent when
+ * What the card reads for the selected notification: the run's full summary
+ * and visual previews, the few changed lines behind it and its task's runs, each read once per selection and silent when
  * they fail, because the verdict is what the card is for. A review commits
  * nothing, so when its own run shows no changes the card shows the newest
  * earlier run of the task that pushed a commit, the code it read. The runs are
@@ -56,7 +78,7 @@ const readDiff = async (taskId: string): Promise<TriageDiff> =>
  * run started elsewhere withdraws the commands it supersedes.
  */
 function useTriageRead(taskId: string | null, isReview: boolean, repository: string | null): TriageRead {
-  const [read, setRead] = useState<TriageReadState>({ diff: null, runs: null });
+  const [read, setRead] = useState<TriageReadState>({ diff: null, details: null, runs: null });
   // Every runs read takes a number; only the newest one started is shown, and none once the selection changes.
   const runsReadRef = useRef(0);
   const readRuns = useCallback(async () => {
@@ -68,9 +90,10 @@ function useTriageRead(taskId: string | null, isReview: boolean, repository: str
   }, [taskId]);
 
   useEffect(() => {
-    setRead({ diff: null, runs: null });
+    setRead({ diff: null, details: null, runs: null });
     if (!taskId) return;
     let current = true;
+    void readDetails(taskId).then(details => { if (current) setRead(previous => ({ ...previous, details })); });
     const sequence = ++runsReadRef.current;
     const group = readTaskGroup(taskId).catch(() => null);
     void group.then(found => {
@@ -140,6 +163,25 @@ const ReviewVerdict: React.FC<{ notification: Notification }> = ({ notification 
   );
 };
 
+/**
+ * The run's summary in full, as its agent or reviewer wrote it. Runs that
+ * recorded none, and the moment before it is read, show the notification's
+ * verdict instead.
+ */
+const TriageSummary: React.FC<{ notification: Notification; summary: string | null }> = ({ notification, summary }) => {
+  if (!summary) return <ReviewVerdict notification={notification} />;
+  return (
+    <section aria-labelledby="triage-summary-heading">
+      <h3 id="triage-summary-heading" className={SECTION_HEADING}>
+        {notification.target.type === 'review' ? 'Review summary' : 'Summary'}
+      </h3>
+      <div className="prose prose-sm mt-2 max-w-none break-words text-sm leading-6 text-slate-700 prose-li:marker:text-teal-600" data-testid="triage-summary">
+        <MarkdownRenderer text={summary} />
+      </div>
+    </section>
+  );
+};
+
 const VisualDiff: React.FC<{ diff: TriageDiff }> = ({ diff }) => {
   if (diff.files.length === 0) return null;
   return (
@@ -178,7 +220,8 @@ const VisualDiff: React.FC<{ diff: TriageDiff }> = ({ diff }) => {
 
 /**
  * The Inbox's right pane: why the AI stopped and whether it is safe to tell it
- * to continue. It shows the verdict, a bounded diff and the decision buttons;
+ * to continue. It shows the run's full summary, its visual previews, a bounded
+ * diff and the decision buttons;
  * the full workbench stays in /tasks, one `Inspect in Tasks` away.
  */
 const TriageVerdictCard: React.FC<TriageVerdictCardProps> = ({
@@ -190,7 +233,7 @@ const TriageVerdictCard: React.FC<TriageVerdictCardProps> = ({
 }) => {
   const taskId = triageTaskId(notification);
   const repository = notification.target.type === 'system_failure' ? null : notification.target.repository;
-  const { diff, runs, readRuns } = useTriageRead(taskId, notification.target.type === 'review', repository);
+  const { diff, details, runs, readRuns } = useTriageRead(taskId, notification.target.type === 'review', repository);
   const reference = notificationReference(notification);
   const pullRequestUrl = notificationPullRequestUrl(notification);
   const status = notificationStatus(notification);
@@ -240,7 +283,12 @@ const TriageVerdictCard: React.FC<TriageVerdictCardProps> = ({
       </header>
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-5 py-4">
-        <ReviewVerdict notification={notification} />
+        <TriageSummary notification={notification} summary={details?.summary ?? null} />
+        {/* The notification carries one preview; the run's history has them all. */}
+        <TaskVisualPreviews
+          previews={details?.previews ?? (isNotificationPreviewEligible(notification) ? notification.previewMedia : undefined)}
+          className=""
+        />
         {diff && <VisualDiff diff={diff} />}
       </div>
 

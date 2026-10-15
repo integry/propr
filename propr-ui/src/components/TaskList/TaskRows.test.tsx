@@ -163,6 +163,18 @@ describe('task ledger rows', () => {
     expect(onRowClick).toHaveBeenCalledWith(group.tasks[0].id);
   });
 
+  it('ends the run track on a violet dot once the pull request has merged', () => {
+    const merged: TaskGroup = { ...group, tasks: group.tasks.slice(1, 4).map(task => ({ ...task, prState: 'merged' })) };
+    render(<TaskTableContent groupedTasks={[merged]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} selectsInPlace />);
+    const table = screen.getByRole('table', { name: 'Tasks' });
+    const chip = within(table).getByRole('img', { name: '3 runs' });
+    const markers = [...chip.querySelectorAll('[data-outcome]')];
+    expect(markers.map(node => node.getAttribute('data-outcome'))).toEqual(['passed', 'passed', 'merged']);
+    expect(markers.at(-1)).toHaveClass('bg-violet-600');
+    expect(chip.getAttribute('title')).toMatch(/Run 3 passed$/);
+    expect(within(table).getAllByText('Merged').length).toBeGreaterThan(0);
+  });
+
   it('marks a queued newest run as waiting, never as a run in flight', () => {
     const queued: TaskGroup = { ...group, tasks: [{ ...group.tasks[0], id: 'queued-run', status: 'queued' }, ...group.tasks.slice(1, 3)] };
     render(<TaskTableContent groupedTasks={[queued]} expandedGroups={new Set()} onRowClick={vi.fn()} onToggleGroup={vi.fn()} selectsInPlace />);

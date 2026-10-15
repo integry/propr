@@ -1,10 +1,11 @@
 import React from 'react';
 import { describeRun, RUN_TRACK_LIMIT, type RunOutcome, type TaskRunEntry } from './rowModel';
+import { getDisplayStatus } from './utils.tsx';
 
 /**
  * A run's outcome as a shape and a colour, so it reads without colour too:
  * a red triangle for a failure, an amber square for a review that left
- * findings (6/10 or lower), a slate dot for a pass or a merge, a turning teal
+ * findings (6/10 or lower), a slate dot for a pass, a turning teal
  * arc for a run in flight, a still dashed ring for a run waiting to start, and
  * a hollow ring for a run that was stopped.
  */
@@ -40,7 +41,8 @@ export const RunOutcomeMarker: React.FC<{ outcome: RunOutcome; size?: 'sm' | 'md
  * the newest four, joined by a 1px rail and set on a quiet slate pill, so a
  * row of identical dots reads as a track rather than a masked password. The
  * older runs are counted inside the pill; the task pane's timeline carries
- * every run in full.
+ * every run in full. Once the pull request merges, the newest node is a
+ * violet dot: the track ends where the task did.
  */
 export const RunTrack: React.FC<{ runs: TaskRunEntry[] }> = ({ runs }) => {
   const shown = runs.slice(-RUN_TRACK_LIMIT);
@@ -55,12 +57,19 @@ export const RunTrack: React.FC<{ runs: TaskRunEntry[] }> = ({ runs }) => {
         </span>
       )}
       <span className="inline-flex items-center">
-        {shown.map((run, index) => (
-          <React.Fragment key={run.task.id}>
-            {index > 0 && <span aria-hidden="true" className="h-px w-2 bg-slate-300" />}
-            <span title={describeRun(run)} className="inline-flex"><RunOutcomeMarker outcome={run.outcome} /></span>
-          </React.Fragment>
-        ))}
+        {shown.map((run, index) => {
+          const merged = index === shown.length - 1 && getDisplayStatus(run.task) === 'merged';
+          return (
+            <React.Fragment key={run.task.id}>
+              {index > 0 && <span aria-hidden="true" className="h-px w-2 bg-slate-300" />}
+              <span title={merged ? `${describeRun(run)}, then merged` : describeRun(run)} className="inline-flex">
+                {merged
+                  ? <span data-outcome="merged" aria-hidden="true" className="h-2 w-2 flex-none rounded-full bg-violet-600" />
+                  : <RunOutcomeMarker outcome={run.outcome} />}
+              </span>
+            </React.Fragment>
+          );
+        })}
       </span>
     </span>
   );

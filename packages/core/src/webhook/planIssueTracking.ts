@@ -396,7 +396,29 @@ async function findOrLinkPlanIssue(
 }
 
 /**
+ * The PR a created, non-bot comment was posted on, or null when the comment
+ * cannot be follow-up work for a plan issue.
+ */
+function followUpCommentPullRequest(
+    payload: IssueCommentEvent | PullRequestReviewCommentEvent,
+    eventType: CommentEventType
+): number | null {
+    if (payload.action !== 'created') return null;
+    const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr-dev[bot]';
+    if (payload.comment.user?.login === botUsername) return null;
+    if (eventType === 'pull_request_review_comment') {
+        return (payload as PullRequestReviewCommentEvent).pull_request.number;
+    }
+    const issuePayload = payload as IssueCommentEvent;
+    return 'pull_request' in issuePayload.issue && issuePayload.issue.pull_request ? issuePayload.issue.number : null;
+}
+
+/**
  * Tracks comment counts on PRs linked to plan issues.
+ *
+ * Runs before the comment is handled, so it records only the follow-up count.
+ * Whether the comment admitted work, and so whether the plan is refining, is
+ * decided afterwards by {@link handlePlanPRCommentActivity}.
  */
 export async function handlePlanPRCommentTracking(
     payload: IssueCommentEvent | PullRequestReviewCommentEvent,
@@ -407,44 +429,50 @@ export async function handlePlanPRCommentTracking(
     const repository = payload.repository.full_name;
 
     try {
-        let prNumber: number | null = null;
-
-        if (eventType === 'pull_request_review_comment') {
-            prNumber = (payload as PullRequestReviewCommentEvent).pull_request.number;
-        } else if (eventType === 'issue_comment') {
-            const issuePayload = payload as IssueCommentEvent;
-            if ('pull_request' in issuePayload.issue && issuePayload.issue.pull_request) {
-                prNumber = issuePayload.issue.number;
-            }
-        }
-
+        const prNumber = followUpCommentPullRequest(payload, eventType);
         if (!prNumber) return;
 
         const planIssue = await findPlanIssueByRepoAndPR(repository, prNumber);
         if (!planIssue) return;
 
-        if (payload.action === 'created') {
-            const commentAuthor = payload.comment.user?.login;
-            const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr-dev[bot]';
-            if (commentAuthor === botUsername) return;
-
-            // Don't update status if the issue is already merged or closed
-            if (planIssue.status === PlanIssueStatus.MERGED || planIssue.status === PlanIssueStatus.CLOSED) {
-                log.debug({
-                    repository,
-                    prNumber,
-                    currentStatus: planIssue.status
-                }, 'Skipping refinement status update - plan issue already completed');
-                return;
-            }
-
-            const newFollowupCount = (planIssue.followup_count || 0) + 1;
-            const newStatus: PlanIssueStatus = PlanIssueStatus.IN_REFINEMENT;
-
-            await updatePlanIssueByPR(repository, prNumber, { followup_count: newFollowupCount, status: newStatus });
-            log.info({ repository, prNumber, followupCount: newFollowupCount }, 'Updated plan issue follow-up count from PR comment');
+        // Don't update a plan issue whose PR is already merged or closed
+        if (planIssue.status === PlanIssueStatus.MERGED || planIssue.status === PlanIssueStatus.CLOSED) {
+            log.debug({
+                repository,
+                prNumber,
+                currentStatus: planIssue.status
+            }, 'Skipping follow-up tracking - plan issue already completed');
+            return;
         }
+
+        const newFollowupCount = (planIssue.followup_count || 0) + 1;
+        await updatePlanIssueByPR(repository, prNumber, { followup_count: newFollowupCount });
+        log.info({ repository, prNumber, followupCount: newFollowupCount }, 'Updated plan issue follow-up count from PR comment');
     } catch (error) {
         log.error({ error, repository }, 'Failed to handle plan PR comment tracking');
+    }
+}
+
+/**
+ * After a PR comment was handled, shows the linked plan issue as refining only
+ * while follow-up work for the PR is queued or running. A comment that admitted
+ * no work (an ordinary discussion comment, an ignored keyword, a rejected
+ * author) leaves or returns the issue to under_review. Other events are ignored.
+ */
+export async function handlePlanPRCommentActivity(
+    payload: unknown,
+    eventType: string,
+    correlationId: string
+): Promise<void> {
+    if (eventType !== 'issue_comment' && eventType !== 'pull_request_review_comment') return;
+    const comment = payload as IssueCommentEvent | PullRequestReviewCommentEvent;
+    const repository = comment?.repository?.full_name;
+    try {
+        const prNumber = repository ? followUpCommentPullRequest(comment, eventType) : null;
+        if (!repository || !prNumber) return;
+        const { syncPlanRefinementForPullRequest } = await import('../services/taskPlanning/planRefinementSettlement.js');
+        await syncPlanRefinementForPullRequest(repository, prNumber);
+    } catch (error) {
+        logger.withCorrelation(correlationId).error({ error, repository }, 'Failed to update plan refinement after PR comment');
     }
 }

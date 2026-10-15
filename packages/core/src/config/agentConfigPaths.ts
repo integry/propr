@@ -24,13 +24,42 @@ export class AgentConfigPathUnavailableError extends Error {
 type ConfigPathEnvironment = Record<string, string | undefined>;
 
 function isContainerizedEnvironment(environment: ConfigPathEnvironment): boolean {
-    return environment.PROPR_CONTAINERIZED === '1'
-        || environment.PROPR_CONTAINERIZED === 'true'
-        || (environment === process.env && fs.existsSync('/.dockerenv'));
+    const flag = environment.PROPR_CONTAINERIZED?.trim().toLowerCase();
+    if (flag === '1' || flag === 'true') return true;
+    // An explicit native declaration wins over the /.dockerenv heuristic, e.g.
+    // for a native backend that itself runs inside a development container.
+    if (flag === '0' || flag === 'false') return false;
+    return environment === process.env && fs.existsSync('/.dockerenv');
 }
 
-function validateCodexCredentialMapping(value: string, source: string): string {
-    const normalized = path.normalize(value.trim());
+/**
+ * Launcher-provided host mappings for each provider's exact default path, in
+ * precedence order. The launcher mounts the host directory HOST:HOST and sets
+ * the `*_CONFIG_PATH` variable to it; `HOST_*` is the raw launcher setting.
+ * Login, health, usage and execution all resolve the default through this one
+ * table so they bind the same host credential store.
+ */
+export const DEFAULT_CONFIG_PATH_MAPPINGS: Record<AgentType, readonly string[]> = {
+    claude: ['CLAUDE_CONFIG_PATH', 'HOST_CLAUDE_DIR'],
+    codex: ['CODEX_CONFIG_PATH', 'HOST_CODEX_DIR'],
+    antigravity: ['ANTIGRAVITY_CONFIG_PATH', 'HOST_ANTIGRAVITY_DIR'],
+    opencode: ['OPENCODE_CONFIG_PATH', 'HOST_OPENCODE_XDG_DIR'],
+    vibe: ['VIBE_CONFIG_PATH', 'HOST_VIBE_DIR']
+};
+
+const PROVIDER_NAMES: Record<AgentType, string> = {
+    claude: 'Claude',
+    codex: 'Codex',
+    antigravity: 'Antigravity',
+    opencode: 'OpenCode',
+    vibe: 'Vibe'
+};
+
+function validateCredentialMapping(value: string, source: string): string {
+    // One canonical identity per directory, so login and execution compare equal;
+    // normalize() has already collapsed repeated separators to one.
+    const collapsed = path.normalize(value.trim());
+    const normalized = collapsed.length > 1 && collapsed.endsWith('/') ? collapsed.slice(0, -1) : collapsed;
     if (!normalized || !path.isAbsolute(normalized) || normalized.includes(':') || /[\0\r\n]/.test(normalized)) {
         throw new AgentConfigPathUnavailableError(
             `${source} must name an absolute Linux directory mounted into this container`
@@ -42,8 +71,47 @@ function validateCodexCredentialMapping(value: string, source: string): string {
     return normalized;
 }
 
+/** The provider whose exact portable default this config path is, if any. */
+export function defaultConfigPathProvider(configPath: string): AgentType | undefined {
+    return (Object.keys(DEFAULT_CONFIG_PATHS) as AgentType[])
+        .find(type => DEFAULT_CONFIG_PATHS[type] === configPath);
+}
+
 /**
- * Resolves a config path, expanding ~ to the home directory.
+ * Resolve a provider's exact default path through its launcher host mapping.
+ *
+ * Returns the validated mapping when one is configured, the backend HOME
+ * expansion on a native host without a mapping, and throws in a containerized
+ * backend without a mapping: there the backend's own HOME (e.g. /root) is not
+ * the operator's account, so expanding against it would silently bind a
+ * different (usually empty or stale) credential store.
+ */
+export function resolveDefaultConfigPath(
+    type: AgentType,
+    environment: ConfigPathEnvironment = process.env
+): string {
+    const source = DEFAULT_CONFIG_PATH_MAPPINGS[type].find(name => environment[name]?.trim());
+    if (source) return validateCredentialMapping(environment[source]!, source);
+    const defaultPath = DEFAULT_CONFIG_PATHS[type];
+    if (isContainerizedEnvironment(environment)) {
+        const hostVariable = DEFAULT_CONFIG_PATH_MAPPINGS[type][1];
+        throw new AgentConfigPathUnavailableError(
+            `The existing ${defaultPath} credential path has no host mapping in this container; ` +
+            `configure ${hostVariable} and restart ProPR, or use a ProPR-managed ${PROVIDER_NAMES[type]} login`
+        );
+    }
+    const homeDir = environment.HOME || environment.USERPROFILE || '/root';
+    return path.join(homeDir, defaultPath.slice(1));
+}
+
+/**
+ * Resolves a config path to the bind source visible to the Docker daemon.
+ *
+ * ProPR-managed paths resolve below the managed credential root. A provider's
+ * exact portable default (e.g. `~/.claude`) means "this installation's existing
+ * host account" and resolves through the launcher host mapping (see
+ * resolveDefaultConfigPath). Explicit absolute paths are returned unchanged;
+ * other `~` paths expand against HOME.
  */
 export function resolveConfigPath(
     configPath: string,
@@ -56,20 +124,8 @@ export function resolveConfigPath(
             || path.join(homeDir, '.propr', 'agent-credentials');
         return path.join(managedRoot, managedRelativePath);
     }
-    if (configPath === DEFAULT_CONFIG_PATHS.codex) {
-        const mapping = environment.CODEX_CONFIG_PATH?.trim()
-            ? { source: 'CODEX_CONFIG_PATH', value: environment.CODEX_CONFIG_PATH }
-            : environment.HOST_CODEX_DIR?.trim()
-                ? { source: 'HOST_CODEX_DIR', value: environment.HOST_CODEX_DIR }
-                : undefined;
-        if (mapping) return validateCodexCredentialMapping(mapping.value, mapping.source);
-        if (isContainerizedEnvironment(environment)) {
-            throw new AgentConfigPathUnavailableError(
-                'The existing ~/.codex credential path has no host mapping in this container; ' +
-                'configure HOST_CODEX_DIR and restart ProPR, or use a ProPR-managed Codex login'
-            );
-        }
-    }
+    const defaultProvider = defaultConfigPathProvider(configPath);
+    if (defaultProvider) return resolveDefaultConfigPath(defaultProvider, environment);
     if (configPath.startsWith('~')) {
         const homeDir = environment.HOME || environment.USERPROFILE || '/root';
         return path.join(homeDir, configPath.slice(1));

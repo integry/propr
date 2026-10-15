@@ -7,7 +7,7 @@ import {
 } from '@propr/shared';
 import { buildMetricsSection } from './prCommentJobUtils.js';
 import { buildAttributionLine, buildSlashCommandsBlock } from '../shared/slashCommandsBlock.js';
-import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
+import { buildAcceptedRequestMarkers, buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import { describeAgentTermination, resolveAgentTerminationReason, sanitizeAgentReport, redactSecrets, VISUAL_PREVIEW_DIRECTORY, redactVisualPreviewPaths } from '@propr/core';
 
 /** Build the processing comment IDs suffix, or empty string if no real comments */
@@ -17,10 +17,18 @@ function buildCommentIdsSuffix(comments: UnprocessedComment[]): string {
     return `_Processing comment ID${real.length > 1 ? 's' : ''}: ${real.map(c => String(c.id) + '✓').join(', ')}_`;
 }
 
-/** Comment IDs suffix plus the completed work-evidence marker shared by both completion branches */
-function buildCompletionFooter(comments: UnprocessedComment[]): string {
-    const completedEvidence = buildWorkEvidenceMarker('completed', filterRealComments(comments).map(comment => comment.id));
-    return buildCommentIdsSuffix(comments) + (completedEvidence ? `\n${completedEvidence}` : '');
+/**
+ * Comment IDs suffix plus the completed work-evidence marker shared by both
+ * completion branches. A fully completed run also binds the accepted comment
+ * bodies, which is what lets a later review treat them as completed requests;
+ * a partial run keeps its completed marker but binds nothing.
+ */
+function buildCompletionFooter(comments: UnprocessedComment[], options: { partial: boolean }): string {
+    const real = filterRealComments(comments);
+    const completedEvidence = buildWorkEvidenceMarker('completed', real.map(comment => comment.id));
+    if (!completedEvidence) return buildCommentIdsSuffix(comments);
+    const acceptedRequests = options.partial ? '' : buildAcceptedRequestMarkers(real);
+    return `${buildCommentIdsSuffix(comments)}\n${completedEvidence}${acceptedRequests ? `\n${acceptedRequests}` : ''}`;
 }
 
 export interface CommentContext {
@@ -229,7 +237,7 @@ export async function buildCompletionComment(
         prCommentBody += `\n\n---\n`;
         prCommentBody += buildSlashCommandsBlock();
         prCommentBody += `${buildAttributionLine()}\n`;
-        prCommentBody += buildCompletionFooter(unprocessedComments);
+        prCommentBody += buildCompletionFooter(unprocessedComments, { partial });
 
         return prCommentBody;
     } else {
@@ -254,7 +262,7 @@ export async function buildCompletionComment(
         noChangesBody += `\n\n---\n`;
         noChangesBody += buildSlashCommandsBlock();
         noChangesBody += `${buildAttributionLine()}\n`;
-        noChangesBody += buildCompletionFooter(unprocessedComments);
+        noChangesBody += buildCompletionFooter(unprocessedComments, { partial });
 
         return noChangesBody;
     }

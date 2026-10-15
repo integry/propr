@@ -2,15 +2,35 @@ import React from 'react';
 import { TaskInfo } from './types';
 import { getDisplayTitle, getSubtitle } from './taskHeaderText';
 import { formatRelativeTime } from '../TaskList/utils.tsx';
-import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench, RefreshCw, History, ArrowRight } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Clock, Play, GitPullRequest, Eye, Wrench, RefreshCw, History, ArrowRight, FileText } from 'lucide-react';
+import { AUTOMATION_REPORT_MODE, taskLabelMode } from './taskKind';
 
 interface TaskHeaderProps {
   taskInfo: TaskInfo | null;
   currentStatus: string;
 }
 
+type StatusInfo = { icon: React.ReactNode; label: string; color: string; bgColor: string };
+
+/** An automation report's working phases: it generates and stores a report, it implements nothing and opens no PR. */
+const getReportStatusInfo = (normalizedStatus: string, commandMode?: string): StatusInfo | null => {
+  if (commandMode !== AUTOMATION_REPORT_MODE) return null;
+  if (normalizedStatus === 'CLAUDE_EXECUTION' || normalizedStatus === 'CLAUDE_EXECUTION_STARTED') {
+    return { icon: <Play className="h-4 w-4 text-blue-600 animate-pulse" />, label: 'Generating Report', color: 'text-blue-700', bgColor: 'bg-blue-50' };
+  }
+  if (normalizedStatus === 'CLAUDE_EXECUTION_COMPLETED') {
+    return { icon: <CheckCircle2 className="h-4 w-4 text-green-600" />, label: 'Report Generated', color: 'text-green-700', bgColor: 'bg-green-50' };
+  }
+  if (normalizedStatus === 'POST_PROCESSING') {
+    return { icon: <FileText className="h-4 w-4 text-purple-600 animate-pulse" />, label: 'Storing Report', color: 'text-purple-700', bgColor: 'bg-purple-50' };
+  }
+  return null;
+};
+
 const getStatusInfo = (status: string, commandMode?: string): { icon: React.ReactNode; label: string; color: string; bgColor: string } => {
   const normalizedStatus = status?.toUpperCase() || '';
+  const reportInfo = getReportStatusInfo(normalizedStatus, commandMode);
+  if (reportInfo) return reportInfo;
 
   if (normalizedStatus === 'COMPLETED') {
     return {
@@ -101,12 +121,20 @@ const getCommandModeBadge = (commandMode?: string): { icon: React.ReactNode; lab
       bgColor: 'bg-amber-50',
     };
   }
+  if (commandMode === AUTOMATION_REPORT_MODE) {
+    return {
+      icon: <FileText className="h-3.5 w-3.5" />,
+      label: 'Report',
+      color: 'text-slate-700',
+      bgColor: 'bg-slate-100',
+    };
+  }
   return null;
 };
 
 const TaskHeader: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
-  const statusInfo = getStatusInfo(currentStatus, taskInfo?.commandMode);
-  const commandModeBadge = getCommandModeBadge(taskInfo?.commandMode);
+  const statusInfo = getStatusInfo(currentStatus, taskLabelMode(taskInfo));
+  const commandModeBadge = getCommandModeBadge(taskLabelMode(taskInfo));
   const title = getDisplayTitle(taskInfo?.title);
 
   return (
@@ -151,7 +179,7 @@ const WORKING_STATUSES = new Set(['PROCESSING', 'CLAUDE_EXECUTION', 'CLAUDE_EXEC
  * icon at this size read as an empty placeholder beside the separators.
  */
 export const TaskStatusBadge: React.FC<TaskHeaderProps> = ({ taskInfo, currentStatus }) => {
-  const statusInfo = getStatusInfo(currentStatus, taskInfo?.commandMode);
+  const statusInfo = getStatusInfo(currentStatus, taskLabelMode(taskInfo));
   const working = WORKING_STATUSES.has(currentStatus?.toUpperCase() ?? '');
   return (
     <span data-testid="task-status-badge" className={`inline-flex flex-none items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${statusInfo.bgColor} ${statusInfo.color}`}>

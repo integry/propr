@@ -1618,18 +1618,18 @@ function simulateHandlePlanPRCommentTracking(
             return { skipped: true, reason: 'Plan issue already completed' };
         }
 
-        // Increment followup count and set status to in_refinement
+        // Increment the followup count only. Refinement status is decided after the
+        // comment was handled, from the follow-up work it actually admitted.
         const newFollowupCount = (planIssue.followup_count || 0) + 1;
-        const newStatus: PlanIssueStatus = 'in_refinement';
 
         context.updatePlanIssueByPRCalls.push({
             repository,
             prNumber,
-            updates: { followup_count: newFollowupCount, status: newStatus }
+            updates: { followup_count: newFollowupCount }
         });
         context.loggedInfo.push({ repository, prNumber, followupCount: newFollowupCount });
 
-        return { skipped: false, updatedFollowupCount: newFollowupCount, updatedStatus: newStatus };
+        return { skipped: false, updatedFollowupCount: newFollowupCount };
     }
 
     return { skipped: true, reason: 'Non-created action' };
@@ -1888,8 +1888,8 @@ describe('handlePlanPRCommentTracking', () => {
         });
     });
 
-    describe('sets status to in_refinement', () => {
-        test('transitions from under_review to in_refinement', () => {
+    describe('leaves refinement status to the follow-up work the comment admits', () => {
+        test('keeps under_review while counting the follow-up', () => {
             const context = createCommentTrackingTestContext();
             const payload: MockPullRequestReviewCommentEvent = {
                 action: 'created',
@@ -1910,11 +1910,11 @@ describe('handlePlanPRCommentTracking', () => {
                 findPlanIssueByRepoAndPR: () => mockPlanIssue
             });
 
-            assert.strictEqual(result.updatedStatus, 'in_refinement');
-            assert.strictEqual(context.updatePlanIssueByPRCalls[0].updates.status, 'in_refinement');
+            assert.strictEqual(result.updatedStatus, undefined);
+            assert.strictEqual(context.updatePlanIssueByPRCalls[0].updates.status, undefined);
         });
 
-        test('transitions from processing to in_refinement', () => {
+        test('keeps processing while counting the follow-up', () => {
             const context = createCommentTrackingTestContext();
             const payload: MockPullRequestReviewCommentEvent = {
                 action: 'created',
@@ -1935,10 +1935,10 @@ describe('handlePlanPRCommentTracking', () => {
                 findPlanIssueByRepoAndPR: () => mockPlanIssue
             });
 
-            assert.strictEqual(result.updatedStatus, 'in_refinement');
+            assert.strictEqual(result.updatedStatus, undefined);
         });
 
-        test('transitions from refinement_processing to in_refinement', () => {
+        test('keeps refinement_processing while counting the follow-up', () => {
             const context = createCommentTrackingTestContext();
             const payload: MockPullRequestReviewCommentEvent = {
                 action: 'created',
@@ -1959,11 +1959,11 @@ describe('handlePlanPRCommentTracking', () => {
                 findPlanIssueByRepoAndPR: () => mockPlanIssue
             });
 
-            assert.strictEqual(result.updatedStatus, 'in_refinement');
+            assert.strictEqual(result.updatedStatus, undefined);
             assert.strictEqual(result.updatedFollowupCount, 3);
         });
 
-        test('stays at in_refinement if already in that status (increments count)', () => {
+        test('keeps in_refinement while counting the follow-up', () => {
             const context = createCommentTrackingTestContext();
             const payload: MockPullRequestReviewCommentEvent = {
                 action: 'created',
@@ -1984,7 +1984,7 @@ describe('handlePlanPRCommentTracking', () => {
                 findPlanIssueByRepoAndPR: () => mockPlanIssue
             });
 
-            assert.strictEqual(result.updatedStatus, 'in_refinement');
+            assert.strictEqual(result.updatedStatus, undefined);
             assert.strictEqual(result.updatedFollowupCount, 4);
         });
     });
@@ -2144,7 +2144,7 @@ describe('handlePlanPRCommentTracking', () => {
 
             assert.strictEqual(result.skipped, false);
             assert.strictEqual(result.updatedFollowupCount, 2);
-            assert.strictEqual(result.updatedStatus, 'in_refinement');
+            assert.strictEqual(result.updatedStatus, undefined);
         });
 
         test('handles pull_request_review_comment correctly', () => {
@@ -2170,7 +2170,7 @@ describe('handlePlanPRCommentTracking', () => {
 
             assert.strictEqual(result.skipped, false);
             assert.strictEqual(result.updatedFollowupCount, 1);
-            assert.strictEqual(result.updatedStatus, 'in_refinement');
+            assert.strictEqual(result.updatedStatus, undefined);
         });
     });
 

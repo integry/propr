@@ -16,7 +16,7 @@ import { taskTerminalReasonForAgentTermination } from '@propr/shared';
 import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
 import type { TaskCompletionParams } from './types.js';
-import { buildWorkNotificationRecap } from '../notificationRecap.js';
+import { buildWorkNotificationRecap, fullNotificationSummary } from '../notificationRecap.js';
 import { completeProviderReplacement } from '../providerReplacement.js';
 
 export function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null, postProcessingResult: PostProcessingResult | null): string {
@@ -34,10 +34,13 @@ type TerminalStateParams = Pick<
   'stateManager' | 'taskId' | 'claudeResult' | 'postProcessingResult' | 'commitResult'
 >;
 
+const terminalSummary = ({ claudeResult, commitResult }: TerminalStateParams): unknown =>
+  claudeResult?.summary ?? claudeResult?.finalResult?.result ?? commitResult?.commitMessage;
+
 function buildTerminalNotificationRecap(params: TerminalStateParams, status: string) {
   const { claudeResult, postProcessingResult, commitResult } = params;
   return buildWorkNotificationRecap(
-    claudeResult?.summary ?? claudeResult?.finalResult?.result ?? commitResult?.commitMessage,
+    terminalSummary(params),
     {
       filesChanged: claudeResult?.modifiedFiles?.length,
       createdPullRequest: Boolean(postProcessingResult?.pr),
@@ -86,7 +89,8 @@ async function markAgentTerminalState(params: TerminalStateParams): Promise<void
     prNumber: postProcessingResult?.pr?.number ?? undefined,
     prUrl: postProcessingResult?.pr?.url ?? undefined,
     commitResult: commitResultData,
-    notificationRecap: buildTerminalNotificationRecap(params, status)
+    notificationRecap: buildTerminalNotificationRecap(params, status),
+    notificationSummary: fullNotificationSummary(terminalSummary(params))
   };
 
   if (status === 'claude_processing_failed') {

@@ -522,7 +522,7 @@ export async function deletePlanIssue(draftId: string, issueNumber: number): Pro
     }
 }
 
-async function publishPlanIssueActivity(repository: string, entityId: string, status: string): Promise<void> {
+export async function publishPlanIssueActivity(repository: string, entityId: string, status: string): Promise<void> {
     await getEventPublisher().publishActivity({ domain: 'plan', repository, entityId,
         change: status === 'under_review' ? 'blocked' : status === 'merged' ? 'completed'
             : status === 'closed' ? 'cancelled' : 'created' });

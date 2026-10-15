@@ -50,6 +50,7 @@ import { recoverPendingPublication, type ProcessingState, type ExecuteProcessing
 import { findPRContinuation, type Contribution } from './prContinuation.js';
 import { suspendObsoleteValidationForImplementation } from './followupCiSuspension.js';
 import { stoppedReviewRecap } from './notificationRecap.js';
+import { resumeAutomaticPRCommentRetry } from './prCommentAutomaticRetry.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -415,6 +416,9 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
     try {
         const reason = await preventWithdrawnJob(job);
         if (reason) return { status: 'cancelled', reason };
+        // Cancellation and withdrawn intent are settled above; only then may the queue's
+        // own retry of a recorded failed attempt make the same task active again.
+        await resumeAutomaticPRCommentRetry({ job, taskId, stateManager, correlatedLogger });
         // Re-read under the shared lease: implementation may have adopted while queued.
         state.octokit = octokit;
         const recovered = await runWithExecutionAbortSignal(executionController.signal,
@@ -456,10 +460,7 @@ async function processAdmittedPRCommentJob(job: Job<CommentJobData>): Promise<Jo
         // Don't re-throw for user cancellations (not an error, just cancelled)
         const cancelledState = await stateManager.getTaskState(taskId);
         if (cancelledState?.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: cancelledState.terminalReason };
-        const isUserCancelled = (error as Error).message?.includes('aborted by user');
-        if (isUserCancelled) {
-            return { status: 'cancelled', reason: 'cancelled_by_user' };
-        }
+        if ((error as Error).message?.includes('aborted by user')) return { status: 'cancelled', reason: 'cancelled_by_user' };
         if (!(error instanceof UsageLimitError)) throw nonRetryableRepositoryWorkflowError(error);
         return { status: 'requeued', reason: 'usage_limit' };
     } finally {

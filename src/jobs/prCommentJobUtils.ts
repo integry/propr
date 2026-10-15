@@ -21,6 +21,7 @@ import { releasePRProcessingLock } from './prProcessingLock.js';
 import { releaseFollowupCiSuspensionsForTask } from './followupCiSuspension.js';
 import type { CiSuspensionOctokit } from './followupCiSuspensionRuns.js';
 import { schedulePRCommentUsageLimitRetry } from './prCommentUsageLimitRecovery.js';
+import { automaticRetryFailureMetadata } from './prCommentAutomaticRetry.js';
 
 export async function fetchOriginalContributionDiscussion(
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
@@ -298,7 +299,8 @@ async function handleGenericError(error: Error, job: Job<CommentJobData>, option
     // so it must not be cut at the generic 500-character limit.
     const sanitizedMessage = sanitizeErrorMessage(error.message, pushFailure ? 4000 : undefined);
     await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: pushFailure ? `PR comment processing failed: ${sanitizedMessage}` : 'PR comment processing failed', error: { message: sanitizedMessage, ...(pushFailure ? { category: 'git_operation' } : {}) },
-        historyMetadata: { ...ultrafixTerminalMetadata(job, 'failed'), ...(pushFailure ? { pushFailure } : {}) } });
+        // Names this BullMQ attempt, so only the queue's own retry of it can resume the task.
+        historyMetadata: { ...ultrafixTerminalMetadata(job, 'failed'), ...(pushFailure ? { pushFailure } : {}), ...automaticRetryFailureMetadata(job, taskId) } });
     if (claudeResult) {
         try {
             await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });

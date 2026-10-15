@@ -11,6 +11,7 @@ import { isReasoningLevelLabel, parseReasoningLevelFromLabels } from '@propr/sha
 import type { ReasoningLevel, ReasoningLevelLabel } from '@propr/shared';
 import { parseLinkedIssueNumbers } from '../github/linkedIssueReferences.js';
 import type { LinkedIssueReference } from '../github/prAutoAssignment.js';
+import { acceptedRequestDigest } from '../shared/workEvidenceMarker.js';
 
 interface ValidationComment {
     id: number;
@@ -87,12 +88,15 @@ export async function validateAndFilterComments(
 
         const commentWasEditedAfterQueuing = (comment as unknown as { updated_at?: string }).updated_at && currentComment.updated_at !== (comment as unknown as { updated_at?: string }).updated_at;
 
+        // The completion footer binds the request this run executes. Command
+        // metadata was parsed from the queued body, so a GitHub body that no
+        // longer matches it is not the accepted request and binds nothing.
+        const acceptedBodySha256 = currentComment.body === comment.body ? acceptedRequestDigest(comment.body) : undefined;
         if (commentWasEditedAfterQueuing) {
             correlatedLogger.info({ pullRequestNumber, commentId: comment.id, commentAuthor: comment.author }, 'Comment has been edited since job was queued, using updated content');
-            validatedComments.push({ ...comment, body: currentComment.body || comment.body });
-        } else {
-            validatedComments.push(comment);
         }
+        const body = commentWasEditedAfterQueuing ? currentComment.body || comment.body : comment.body;
+        validatedComments.push({ ...comment, body, acceptedBodySha256 });
     }
     return validatedComments;
 }

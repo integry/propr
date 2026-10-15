@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { getPullRequestScores, type PullRequestScoresResponse } from '../../api/taskStatsApi';
 import type { TaskInfo } from './types';
 import type { TaskRunEntry } from '../TaskList/rowModel';
+import { getDisplayStatus } from '../TaskList/utils.tsx';
 
 /**
  * The PR a task belongs to: the PR it opened, or the PR a PR follow-up or
@@ -35,6 +36,25 @@ export function usePullRequestScores(repository: string | undefined, prNumber: n
   }, [repository, prNumber, identity]);
 
   return identity && loaded?.identity === identity ? loaded.history : null;
+}
+
+/**
+ * The task's PR, read once for the task screen: its scores and outcome, and
+ * whether it has merged. A merged PR takes no more follow-ups. A merge the
+ * task's runs already record is known before the scores load and even if they
+ * fail; otherwise `merged` is null until the scores say where the PR stands,
+ * so follow-ups are held back rather than offered on a guess.
+ */
+export function useTaskPullRequestScores(
+  taskInfo: TaskInfo | null | undefined,
+  prInfo?: { number?: number },
+  runs: readonly TaskRunEntry[] = [],
+): { history: PullRequestScoresResponse | null; merged: boolean | null } {
+  const pr = taskPullRequest(taskInfo, prInfo);
+  const history = usePullRequestScores(pr?.repository, pr?.prNumber);
+  if (runs.some(run => getDisplayStatus(run.task) === 'merged') || history?.outcome === 'merged') return { history, merged: true };
+  if (!pr) return { history, merged: false };
+  return { history, merged: history ? false : null };
 }
 
 /** Where the task's pull request ended: merged, or closed without merging. */

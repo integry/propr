@@ -11,8 +11,9 @@ import { ListSearchInput } from '../components/ListSearchInput';
 import { ListSkeleton } from '../components/ui/Skeleton';
 import { EmptyState, PlansTable, PaginationControls } from './PlansPageComponents';
 import { useSocket } from '../contexts/useSocket';
-import type { DraftUpdatePayload } from '@propr/shared';
+import type { ActivityUpdatePayload, DraftUpdatePayload } from '@propr/shared';
 import { useLiveRefreshScheduler } from '../hooks/useLiveRefreshScheduler';
+import { matchesInterest } from '../hooks/useLiveResource';
 
 const DEFAULT_PAGE_SIZE = 50;
 
@@ -21,7 +22,7 @@ const PlansPage: React.FC = () => {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { onDraftUpdate, isConnected } = useSocket();
+  const { onDraftUpdate, onActivityUpdate, subscribeToActivity, unsubscribeFromActivity, isConnected } = useSocket();
 
   // Derive state from URL parameters
   const repoFilter = searchParams.get('repository') || 'all';
@@ -216,6 +217,29 @@ const PlansPage: React.FC = () => {
       unsubscribe();
     };
   }, [isConnected, onDraftUpdate, handleDraftUpdate]);
+
+  // A plan issue changing state (refinement settling, a PR merging) changes a
+  // listed plan's counts without changing the plan's own status, so no draft
+  // update arrives; it is published as plan activity in the issue's repository.
+  const handlePlanActivity = useCallback((payload: ActivityUpdatePayload) => {
+    if (!matchesInterest(payload, { domains: ['plan'], repository: repoFilter })) return;
+    if (payload.repository != null && !drafts.some(draft => draft.repository === payload.repository)) return;
+    scheduleLiveRefresh();
+  }, [drafts, repoFilter, scheduleLiveRefresh]);
+  const handlePlanActivityRef = useRef(handlePlanActivity);
+  handlePlanActivityRef.current = handlePlanActivity;
+
+  // Join the activity room once per connection; the handler ref keeps a page
+  // or filter change from leaving and rejoining it.
+  useEffect(() => {
+    if (!isConnected) return;
+    const unsubscribe = onActivityUpdate(payload => handlePlanActivityRef.current(payload));
+    subscribeToActivity();
+    return () => {
+      unsubscribe();
+      unsubscribeFromActivity();
+    };
+  }, [isConnected, onActivityUpdate, subscribeToActivity, unsubscribeFromActivity]);
 
   // Helper to update URL params
   const updateSearchParams = useCallback((updates: Record<string, string | null>) => {

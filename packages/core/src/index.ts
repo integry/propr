@@ -65,6 +65,18 @@ export {
     deletePlanIssue,
     PlanIssueStatus
 } from './config/planIssueManager.js';
+export {
+    REFINEMENT_PLAN_ISSUE_STATUSES,
+    settlePlanIssueRefinement,
+    markPlanIssueRefining,
+    findPullRequestsWithFollowUpWork,
+    reconcilePlanIssueRefinement,
+    reconcileDraftPlanIssueRefinement,
+    settlePlanRefinementForPullRequest,
+    syncPlanRefinementForPullRequest,
+    syncPlanRefinementForJob
+} from './services/taskPlanning/planRefinementSettlement.js';
+export type { RefinementActivitySources, QueuedJobSnapshot } from './services/taskPlanning/planRefinementSettlement.js';
 export type {
     PlanIssue,
     CreatePlanIssueInput,

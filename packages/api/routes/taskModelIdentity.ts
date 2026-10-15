@@ -9,8 +9,19 @@ const object = (value: unknown): Row => {
 };
 const text = (value: unknown): string | null => typeof value === 'string' && value.trim() ? value : null;
 
+/**
+ * An automation run's definition snapshot names its model only when it pinned
+ * both the agent and the model; otherwise the run used defaults resolved at
+ * execution time, which the snapshot does not record and must not be guessed.
+ */
+function agentRunSnapshotIdentity(run: Row | undefined) {
+  const snapshot = object(run?.definition_snapshot);
+  const modelName = text(snapshot.modelName), agentAlias = text(snapshot.agentAlias);
+  return modelName && agentAlias ? { modelName, agentAlias } : null;
+}
+
 /** Execution evidence outranks submission-time routing, which may predate PR label resolution. */
-export function taskModelIdentity(task: Row, history: Row[], executions: Row[] = []) {
+export function taskModelIdentity(task: Row, history: Row[], executions: Row[] = [], agentRun?: Row) {
   const job = object(task.initial_job_data);
   const metadata = history.map(row => object(row.metadata)).reverse();
   // Synthetic tasks retain their virtual identity; physical attempts are shown separately.
@@ -24,6 +35,8 @@ export function taskModelIdentity(task: Row, history: Row[], executions: Row[] =
     // Never pair execution evidence with a different submission-time provider.
     return { modelName, agentAlias: (modelName === routed.model ? text(routed.agentAlias) : null) || (modelName === job.modelName ? text(job.agentAlias) : null) };
   }
+  // Automation report and action tasks record no model on the task row; their run's snapshot is the only other immutable source.
+  if (task.task_type === 'agent-run') return agentRunSnapshotIdentity(agentRun) ?? { modelName: null, agentAlias: null };
   const isFollowup = task.task_type === 'pr-comment' || !!job.pullRequestNumber || String(task.task_id).startsWith('pr-comment');
   return {
     modelName: isFollowup ? text(job.modelName) || text(job.llm) : text(task.model_name),
@@ -34,9 +47,10 @@ export function taskModelIdentity(task: Row, history: Row[], executions: Row[] =
 /** Batched and bounded to the requested page, including historical runs with stale task rows. */
 export async function loadTaskModelIdentities(db: Knex, tasks: Row[]) {
   const ids = tasks.map(task => String(task.task_id));
-  const [history, executions] = await Promise.all([
+  const [history, executions, agentRuns] = await Promise.all([
     db('task_history').whereIn('task_id', ids).select('task_id', 'metadata').orderBy('timestamp').orderBy('history_id'),
     db('llm_executions').whereIn('task_id', ids).select('task_id', 'model_name').orderBy('start_time').orderBy('execution_id'),
+    loadAgentRunsByTask(db, tasks),
   ]);
   const group = (rows: Row[]) => {
     const result = new Map<string, Row[]>();
@@ -48,5 +62,20 @@ export async function loadTaskModelIdentities(db: Knex, tasks: Row[]) {
     return result;
   };
   const histories = group(history), runs = group(executions);
-  return new Map(tasks.map(task => [String(task.task_id), taskModelIdentity(task, histories.get(String(task.task_id)) || [], runs.get(String(task.task_id)) || [])]));
+  return new Map(tasks.map(task => [String(task.task_id), taskModelIdentity(task, histories.get(String(task.task_id)) || [], runs.get(String(task.task_id)) || [], agentRuns.get(String(task.task_id)))]));
+}
+
+/** The automation runs owning the given report or action tasks, keyed by task id. */
+export async function loadAgentRunsByTask(db: Knex, tasks: Row[]): Promise<Map<string, Row>> {
+  const ids = tasks.filter(task => task.task_type === 'agent-run').map(task => String(task.task_id));
+  const result = new Map<string, Row>();
+  if (ids.length === 0) return result;
+  const rows: Row[] = await db('agent_runs').whereIn('report_task_id', ids).orWhereIn('action_task_id', ids)
+    .select('report_task_id', 'action_task_id', 'definition_snapshot');
+  for (const row of rows) {
+    for (const taskId of [row.report_task_id, row.action_task_id]) {
+      if (typeof taskId === 'string' && ids.includes(taskId)) result.set(taskId, row);
+    }
+  }
+  return result;
 }

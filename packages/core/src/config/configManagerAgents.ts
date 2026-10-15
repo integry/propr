@@ -12,7 +12,8 @@ import { migrateAgentConfig } from './configManagerAgentMigrations.js';
 
 export { migrateAgentConfig } from './configManagerAgentMigrations.js';
 export {
-    DEFAULT_CONFIG_PATHS, AgentConfigPathUnavailableError, resolveConfigPath, resolveCodexConfigPath, assertCodexConfigPathAvailable,
+    DEFAULT_CONFIG_PATHS, AgentConfigPathUnavailableError, resolveConfigPath, resolveCodexConfigPath, resolveDefaultConfigPath,
+    assertCodexConfigPathAvailable,
 } from './agentConfigPaths.js';
 import { DEFAULT_CONFIG_PATHS, resolveConfigPath } from './agentConfigPaths.js';
 

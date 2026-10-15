@@ -555,6 +555,8 @@ export interface TaskSummary {
   modelName: string | null;
   llmProvider: string | null;
   planIssueStatus: string | null;
+  /** `merged` once the run's pull request has been merged; absent otherwise. */
+  prState?: "merged";
   /** Final review score of the run, when it was reviewed. */
   score: number | null;
   /** Assignees of the GitHub issue or pull request, as last synced; empty when nobody is assigned. */

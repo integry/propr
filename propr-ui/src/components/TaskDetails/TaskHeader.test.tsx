@@ -33,3 +33,25 @@ describe('TaskHeader', () => {
     expect(heading).toHaveAttribute('title', 'Expose task changes, logs and events through the MCP server so that an MCP client can act');
   });
 });
+
+describe('TaskHeader for an automation report', () => {
+  const report = { type: 'agent-run', number: 0, taskKind: 'automation-report', title: 'Agent: Desktop acceptance', subtitle: 'Report run' } as TaskInfo;
+
+  it.each([
+    ['claude_execution', 'Generating Report'],
+    ['claude_execution_completed', 'Report Generated'],
+    ['post_processing', 'Storing Report'],
+    ['completed', 'Completed'],
+  ])('names the report phase during %s', (currentStatus, label) => {
+    render(<TaskStatusBadge taskInfo={report} currentStatus={currentStatus} />);
+    expect(screen.getByTestId('task-status-badge')).toHaveTextContent(label);
+    expect(screen.queryByText(/Implementing|Creating PR/)).not.toBeInTheDocument();
+  });
+
+  it('marks the task as a report and keeps issue tasks implementing', () => {
+    render(<TaskHeader taskInfo={report} currentStatus="claude_execution" />);
+    expect(screen.getAllByText('Report').length).toBeGreaterThan(0);
+    render(<TaskStatusBadge taskInfo={{ type: 'issue', number: 12 } as TaskInfo} currentStatus="claude_execution" />);
+    expect(screen.getAllByTestId('task-status-badge')[0]).toHaveTextContent('Implementing');
+  });
+});

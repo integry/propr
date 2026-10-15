@@ -15,7 +15,10 @@ export async function markMergedPullRequests(
 }
 
 /** Cross-repository list results carry their own repository, so merge state is resolved per repository. */
-export async function markMergedListPullRequests(db: Knex, items: Record<string, unknown>[]): Promise<void> {
+export async function markMergedListPullRequests(
+  db: Knex, items: Record<string, unknown>[],
+  fields = { number: 'pr_number', state: 'pr_state' },
+): Promise<void> {
   const groups = new Map<string, Record<string, unknown>[]>();
   for (const item of items) {
     const repository = typeof item.repository === 'string' ? item.repository : null;
@@ -24,5 +27,5 @@ export async function markMergedListPullRequests(db: Knex, items: Record<string,
     group.push(item);
     groups.set(repository, group);
   }
-  for (const [repository, group] of groups) await markMergedPullRequests(db, repository, group);
+  for (const [repository, group] of groups) await markMergedPullRequests(db, repository, group, fields);
 }

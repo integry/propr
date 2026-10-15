@@ -81,6 +81,8 @@ Focus on security and error handling.
 
 Reviews are read-only — the agent is instructed to leave files untouched.
 
+A review judges the PR against its *effective objective*: the original objective (the linked issue, or the PR description) as amended by follow-up requests ProPR accepted and completed on the PR — GitHub follow-up comments, `/fix` instructions (after the selectors on the command line, or on the lines below), prose written below a `/use` or `/switch` command, and follow-ups sent from the Web UI or Desktop. A request counts only while its comment still reads exactly as it did when ProPR accepted it: editing a comment after it was completed removes it from the effective objective, and requests completed before ProPR recorded that binding are not included. A completed request that explicitly changes an original requirement supersedes it, so the review does not ask to undo it; every original requirement the request leaves untouched is still enforced. Earlier reviews and their suggestions, bot summaries, `/fix` selections and comments ProPR did not act on are shown as context only and never become requirements.
+
 ### Review Context Budget
 
 **Settings → AI Models & Reasoning → Review context budget** sets how much of each reviewer's *safe input capacity* a review may use, from 10% to 100% in 10% steps (`pr_review_context_budget_percent`; default 100%). The safe capacity is the routed runtime's context window minus a reserve for the review response (32K tokens) and a runtime reserve (system prompt, tool schemas, compaction headroom), so 100% never uses the reserved space. Each reviewer of a multi-model `/review`, and each model named in a `/review` command, gets its own budget; a smaller reviewer never narrows a larger one.
@@ -94,7 +96,7 @@ Reviews are read-only — the agent is instructed to leave files untouched.
 
 Prompt size is estimated from token counts, not bytes. Text is tokenized with `o200k_base`; Codex routes use that count plus a 10% margin, Claude applies a calibrated 1.84× ratio, and other runtimes 1.85×. Non-ASCII characters always count at least two tokens each. The fully assembled request, including the runtime's analysis suffix, is measured before it is sent. If it still exceeds the ceiling the review is trimmed again, and if the mandatory instructions alone do not fit the review fails with an explicit error. An oversized prompt is never sent.
 
-When a review does not fit, sections are trimmed in this order: related unchanged context, comment history, full changed-file contents, then whole diff files (lockfiles, generated and binary changes first). The original objective, review request and instructions are only trimmed once everything else is gone.
+When a review does not fit, sections are trimmed in this order: related unchanged context, comment history, full changed-file contents, then whole diff files (lockfiles, generated and binary changes first). The original objective, completed follow-up requests (newest kept longest), review request and instructions are only trimmed once everything else is gone, and a trimmed section is marked in the prompt.
 
 **Precedence with older settings:**
 

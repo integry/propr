@@ -3,6 +3,7 @@ import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-d
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CurrentUser } from '../api/proprTypes';
 import GlobalHeader from './GlobalHeader';
+import { getShortcutModifierLabel } from './globalSearchModel';
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -182,7 +183,7 @@ describe('GlobalHeader desktop toolbar', () => {
 
     // Search is the primary input, so it leads the bar from the left.
     expect(within(left).getByRole('combobox', { name: 'Search' })).toHaveClass('border-0', 'bg-slate-100');
-    expect(within(left).getByText('\u2318K')).toBeInTheDocument();
+    expect(within(left).getByText(`${getShortcutModifierLabel()}K`)).toBeInTheDocument();
 
     // The menu toggle stays available as the drawer trigger below `lg`.
     const menuToggle = within(left).getByRole('button', { name: 'Open menu' });

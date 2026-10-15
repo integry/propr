@@ -149,6 +149,28 @@ export async function compareAndSetTaskState(
     return updated ? transition : null;
 }
 
+const TERMINAL_STATES = new Set<string>(['completed', 'failed', 'cancelled']);
+const PULL_REQUEST_TASK_TYPES = new Set(['pr-comment', 'review', 'merge_conflict']);
+
+/**
+ * When a PR task finishes, the plan issue linked to that PR stops showing
+ * refinement unless newer follow-up work for the PR is still queued or running.
+ * Best effort: plan status must never block a task's own lifecycle.
+ */
+async function settlePlanRefinementAfterTask(taskId: string, transition: TaskStateTransition): Promise<void> {
+    const { state, previousState } = transition;
+    if (!TERMINAL_STATES.has(state.state) || previousState === state.state) return;
+    const { issueRef } = state;
+    const isPullRequestTask = PULL_REQUEST_TASK_TYPES.has(String(issueRef.type)) || /^pr-comments?-/.test(taskId);
+    if (!isPullRequestTask || typeof issueRef.number !== 'number') return;
+    try {
+        const { settlePlanRefinementForPullRequest } = await import('../services/taskPlanning/planRefinementSettlement.js');
+        await settlePlanRefinementForPullRequest(`${issueRef.repoOwner}/${issueRef.repoName}`, issueRef.number);
+    } catch (error) {
+        logger.warn({ taskId, error: (error as Error).message }, 'Failed to settle plan refinement after task finished');
+    }
+}
+
 export async function publishTaskStateTransition(
     taskId: string,
     transition: TaskStateTransition,
@@ -220,6 +242,8 @@ export async function publishTaskStateTransition(
             version: state.version,
         }, 'Failed to publish task state update event');
     }
+
+    await settlePlanRefinementAfterTask(taskId, transition);
 
     if (!publication.historyPersisted || !publication.eventPublished) {
         correlatedLogger.error({

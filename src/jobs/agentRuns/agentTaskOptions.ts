@@ -39,3 +39,15 @@ export function agentTaskOptions(input: {
         metadata: { agentRunId: runId, agentDefinitionId: definition.id },
     };
 }
+
+/**
+ * The execution step of a run phase, recording the agent and model it
+ * actually resolved: a definition without an alias or model runs on defaults
+ * that may change later, so the task's identity comes from this record. An
+ * unresolved model is left unrecorded rather than guessed.
+ */
+export function agentRunExecutionUpdate(alias: string, model: string | undefined): { reason: string; historyMetadata?: Record<string, unknown> } {
+    const reason = `Running agent ${alias}`;
+    if (!model) return { reason };
+    return { reason, historyMetadata: { model, executionRouting: { model, agentAlias: alias } } };
+}

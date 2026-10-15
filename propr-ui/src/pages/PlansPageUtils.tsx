@@ -134,11 +134,12 @@ export const toSingleLinePlainText = (value: string): string => value
 
 const pluralize = (count: number, singular: string, plural = `${singular}s`) => `${count} ${count === 1 ? singular : plural}`;
 
-/** Issue counts as plain labelled tokens: "3 issues · 1 running · 2 pending". */
+/** Issue counts as plain labelled tokens: "3 issues · 1 running · 1 in review · 1 pending". */
 export const getIssueSummaryTokens = (summary: IssueSummary | null | undefined): string[] => {
   if (!summary || summary.total === 0) return [];
   const tokens = [pluralize(summary.total, 'issue')];
   if (summary.processing > 0) tokens.push(`${summary.processing} running`);
+  if (summary.in_review) tokens.push(`${summary.in_review} in review`);
   if (summary.pending > 0) tokens.push(`${summary.pending} pending`);
   if (summary.merged > 0) tokens.push(`${summary.merged} merged`);
   if (summary.closed > 0) tokens.push(`${summary.closed} closed`);

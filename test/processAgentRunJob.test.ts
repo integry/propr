@@ -26,6 +26,7 @@ const {
   createAgentRunProcessor,
 } = await import('../src/jobs/processAgentRunJob.ts');
 const { advanceAfterReport } = await import('../src/jobs/agentRuns/autonomy.ts');
+const { taskModelIdentity } = await import('../packages/api/routes/taskModelIdentity.ts');
 const { AGENT_CONTEXT_DIR, AGENT_INPUTS_DIR, assertContextRepositoriesAllowed, cloneContextRepository, copyAgentInputFiles, prepareAgentRunWorkspace, prepareReservedDirectory } = await import('../src/jobs/agentRuns/workspace.ts');
 type AgentRunProcessorDeps = import('../src/jobs/processAgentRunJob.ts').AgentRunProcessorDeps;
 type AgentRunWorkspace = import('../src/jobs/agentRuns/workspace.ts').AgentRunWorkspace;
@@ -1140,4 +1141,55 @@ test('extension automation captures instance restriction before agent.executeTas
   const result = await createAgentRunProcessor(h.deps)(job);
   assert.equal(result.status, 'complete');
   assert.equal(fixture.captures(), 1);
+});
+
+describe('report task model identity', () => {
+  /** The identity the task API derives from what the producer recorded for the report task. */
+  function reportTaskIdentity(h: Harness, run: StoredAgentRun) {
+    const history = h.stateCalls
+      .filter(call => call[0] === 'update')
+      .map(call => ({ metadata: (call[3] as { historyMetadata?: unknown } | undefined)?.historyMetadata ?? {} }));
+    const created = h.stateCalls.find(call => call[0] === 'create')![2] as { type: string; modelName?: string };
+    const task = { task_id: 'agent-run-run-1-report', task_type: created.type, model_name: created.modelName ?? null, initial_job_data: created };
+    return taskModelIdentity(task, history, [], { definition_snapshot: JSON.stringify(run.definitionSnapshot) });
+  }
+
+  test('the resolved default model, not the unset configured one, names the report task', async () => {
+    const run = storedRun({ definitionSnapshot: definition({ agentAlias: null, modelName: null }) });
+    const h = harness({ run });
+    h.deps.resolveAgent = async () => ({ agent: { executeTask: h.executeTask } as never, alias: 'codex', model: 'gpt-6-astra' });
+    await createAgentRunProcessor(h.deps)(job);
+
+    const execution = h.stateCalls.find(call => call[0] === 'update' && call[2] === 'claude_execution')!;
+    assert.deepEqual(execution[3], { reason: 'Running agent codex', historyMetadata: { model: 'gpt-6-astra', executionRouting: { model: 'gpt-6-astra', agentAlias: 'codex' } } });
+    assert.deepEqual(reportTaskIdentity(h, run), { modelName: 'gpt-6-astra', agentAlias: 'codex' });
+  });
+
+  test('a resolved model replacing the configured one is the one recorded', async () => {
+    const run = storedRun({ definitionSnapshot: definition({ agentAlias: 'claude', modelName: 'opus' }) });
+    const h = harness({ run });
+    h.deps.resolveAgent = async () => ({ agent: { executeTask: h.executeTask } as never, alias: 'codex', model: 'gpt-6-astra' });
+    await createAgentRunProcessor(h.deps)(job);
+    assert.deepEqual(reportTaskIdentity(h, run), { modelName: 'gpt-6-astra', agentAlias: 'codex' });
+  });
+
+  test('a report without repositories records its model too', async () => {
+    const run = storedRun({ definitionSnapshot: definition({ capabilities: [], repositories: [] }) });
+    const h = harness({ run });
+    const result = await createAgentRunProcessor(h.deps)(job);
+    assert.equal(result.status, 'complete');
+    assert.equal((h.stateCalls[0][2] as { repoOwner: string }).repoOwner, '');
+    assert.deepEqual(reportTaskIdentity(h, run), { modelName: 'opus', agentAlias: 'claude' });
+  });
+
+  test('a model the agent did not resolve is left unknown rather than guessed', async () => {
+    const run = storedRun({ definitionSnapshot: definition({ agentAlias: 'codex', modelName: null }) });
+    const h = harness({ run });
+    h.deps.resolveAgent = async () => ({ agent: { executeTask: h.executeTask } as never, alias: 'codex', model: undefined });
+    await createAgentRunProcessor(h.deps)(job);
+
+    const execution = h.stateCalls.find(call => call[0] === 'update' && call[2] === 'claude_execution')!;
+    assert.deepEqual(execution[3], { reason: 'Running agent codex' });
+    assert.deepEqual(reportTaskIdentity(h, run), { modelName: null, agentAlias: null });
+  });
 });

@@ -35,7 +35,9 @@ function run(root: string, script: string, env: Record<string, string | undefine
         env: { ...process.env, PROPR_DEMO_MODE: 'true', PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a',
             PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool'), HOME: root, CODEX_CONFIG_PATH: '', HOST_CODEX_DIR: '', CLAUDE_CONFIG_PATH: '',
             HOST_CLAUDE_DIR: '', ANTIGRAVITY_CONFIG_PATH: '', HOST_ANTIGRAVITY_DIR: '', VIBE_CONFIG_PATH: '', HOST_VIBE_DIR: '',
-            HOST_OPENCODE_DATA_DIR: '', PROPR_MANAGED_CREDENTIALS_DIR: '', ...env },
+            OPENCODE_CONFIG_PATH: '', HOST_OPENCODE_XDG_DIR: '', HOST_OPENCODE_DATA_DIR: '', PROPR_MANAGED_CREDENTIALS_DIR: '',
+            // Native fixtures: provider defaults expand against HOME, whatever host runs the suite.
+            PROPR_CONTAINERIZED: '0', ...env },
     });
     assert.equal(result.status, 0, result.stderr);
     return JSON.parse(result.stdout.trim().split('\n').at(-1)!);

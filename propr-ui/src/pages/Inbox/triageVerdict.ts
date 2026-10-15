@@ -115,3 +115,25 @@ export function trimDiffForTriage(files: readonly FileChange[]): TriageDiff {
     hiddenFiles: Math.max(0, withChanges.length - MAX_TRIAGE_DIFF_FILES),
   };
 }
+
+const stringField = (record: unknown, key: string): string | null => {
+  if (typeof record !== 'object' || record === null) return null;
+  const value = (record as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.trim() ? value : null;
+};
+
+/**
+ * The run's full summary as the agent or reviewer wrote it, which the
+ * notification's one-line body abridges: the newest one its history records.
+ * Null for runs that predate it, or that recorded none.
+ */
+export function taskHistorySummary(history: unknown): string | null {
+  if (!Array.isArray(history)) return null;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const metadata = (history[index] as { metadata?: unknown } | null)?.metadata;
+    const summary = stringField(metadata, 'notificationSummary')
+      ?? stringField((metadata as { prResult?: unknown } | undefined)?.prResult, 'notificationSummary');
+    if (summary) return summary;
+  }
+  return null;
+}

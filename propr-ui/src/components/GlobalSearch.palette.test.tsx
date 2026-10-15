@@ -102,6 +102,21 @@ describe('GlobalSearch palette', () => {
     }
   });
 
+  it.each([
+    ['MacIntel', '⌘K', 'Ctrl+K'],
+    ['Win32', 'Ctrl+K', '⌘K'],
+    ['Linux x86_64', 'Ctrl+K', '⌘K'],
+  ])('advertises the focus shortcut in the empty field with the %s modifier', (platform, label, other) => {
+    const spy = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue(platform);
+    try {
+      render(<MemoryRouter><GlobalSearch /></MemoryRouter>);
+      expect(screen.getByText(label).tagName).toBe('KBD');
+      expect(screen.queryByText(other)).not.toBeInTheDocument();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('cycles category scopes with Tab and filters the list', async () => {
     const input = await renderWithResults();
     expect(screen.getByRole('tab', { name: /All \(3\)/ })).toHaveAttribute('aria-selected', 'true');

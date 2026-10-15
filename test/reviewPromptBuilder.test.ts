@@ -139,9 +139,10 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         assert.ok(!prompt.includes('Include every finding'));
     });
 
-    test('labels the original objective immutable and keeps suggestions out of scoring pressure', () => {
+    test('anchors scope to the original objective and keeps suggestions out of scoring pressure', () => {
         const prompt = buildReviewPrompt(baseOptions());
-        assert.ok(prompt.includes('IMMUTABLE ORIGINAL PR OBJECTIVE'));
+        assert.ok(prompt.includes('**ORIGINAL PR OBJECTIVE (scope anchor'));
+        assert.ok(prompt.includes('The comment history above is context, not an expanded specification.'));
         assert.ok(prompt.includes('Suggestions and follow-ups do not reduce the score'));
     });
 

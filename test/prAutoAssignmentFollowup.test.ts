@@ -71,7 +71,7 @@ for (const [name, namedExports] of Object.entries({
     ultrafixJobHelpers: { resolveUltrafixHistoryMeta: async () => ({}) },
     prContinuation: { savePublicationCheckpoint: noOp },
     pushSalvageTimeline: { recordPushSalvageEvent: () => noOp },
-    notificationRecap: { buildWorkNotificationRecap: () => '' },
+    notificationRecap: { buildWorkNotificationRecap: () => '', fullNotificationSummary: () => undefined },
 })) {
     await mock.module(`../src/jobs/${name}.js`, { namedExports });
 }

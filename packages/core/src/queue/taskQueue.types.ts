@@ -140,6 +140,12 @@ export interface UnprocessedComment {
     llmOverride?: string | null;
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
+    /**
+     * SHA-256 of the GitHub comment body this run accepted, recorded when the
+     * worker validates the comment. The completion comment binds it so a later
+     * edit cannot inherit this run's completion evidence.
+     */
+    acceptedBodySha256?: string;
 }
 
 export interface TaskImportJobData {

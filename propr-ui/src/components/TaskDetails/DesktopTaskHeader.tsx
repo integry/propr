@@ -5,6 +5,7 @@ import ContextStrip from './ContextStrip';
 import ActionBar from './ActionBar';
 import TaskHeader, { RunStateLabel, TaskStatusBadge } from './TaskHeader';
 import { getDisplayTitle, getSubtitle } from './taskHeaderText';
+import { taskLabelMode } from './taskKind';
 
 interface DesktopTaskHeaderProps {
   headerProps: React.ComponentProps<typeof TaskHeader>;
@@ -65,7 +66,7 @@ const DesktopTaskHeader: React.FC<DesktopTaskHeaderProps> = ({ headerProps, cont
         {/* The live run's state is the status pill above; only an earlier run says how it ended. */}
         <span data-testid="header-run-label" className="font-medium text-slate-800">
           Run {run.number}/{run.count}
-          {!runState.isActive && <span className="font-normal text-slate-500"> (<RunStateLabel {...runState} commandMode={runInfo?.commandMode} />)</span>}
+          {!runState.isActive && <span className="font-normal text-slate-500"> (<RunStateLabel {...runState} commandMode={taskLabelMode(runInfo)} />)</span>}
           {subtitle && ':'}
         </span>
         {subtitle && ` ${subtitle}`}

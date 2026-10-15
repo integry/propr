@@ -69,9 +69,10 @@ async function fixture(page: Page, options: FixtureOptions = {}) {
           : { ...(options.denseGit ? { attemptNumber: 2, attemptLineage: [{ taskId: 'previous', attemptNumber: 1 }, { taskId, attemptNumber: 2 }] } : {}), title: 'Show and edit task assignment on the task detail page', type: 'issue', number: 2894, issueNumber: 2894, repoOwner: 'integry', repoName: 'propr', modelName: options.model ?? 'claude-opus-5-5' },
         usageMetricRecords: [],
       },
-      [`/api/task/${taskId}/live-details`]: { events: [], todos: [], currentTask: null },
-      '/api/notifications/unread-count': { unreadCount: 0 },
+      [`/api/task/${taskId}/live-details`]: { events: [], todos: [], currentTask: null }, '/api/notifications/unread-count': { unreadCount: 0 },
       '/api/notifications/preferences': { preferences: {}, quietHours: {}, badgeEnabled: false },
+      // The task's PR is still open, so its follow-ups are offered.
+      '/api/pull-requests/2911/scores': { repository: 'integry/propr', pr_number: 2911, outcome: null, merged_at: null, closed_at: null, scores: [] },
     };
     return route.fulfill(path in responses ? { json: responses[path] } : { status: 503, json: { error: 'Unavailable in assignment fixture' } });
   });

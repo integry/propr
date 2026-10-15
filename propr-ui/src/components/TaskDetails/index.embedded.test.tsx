@@ -37,7 +37,22 @@ vi.mock('./useDerivedTaskData', () => ({
 }));
 vi.mock('../ui/useToast', () => ({ useToast: () => ({ addToast: vi.fn() }) }));
 vi.mock('./ActionBar', () => ({
-  default: ({ onDeleteTask }: { onDeleteTask: () => void }) => <button type="button" onClick={onDeleteTask}>Delete task</button>,
+  default: ({ onDeleteTask, onFollowUp, followupCommands }: { onDeleteTask: () => void; onFollowUp?: () => void; followupCommands?: React.ReactNode }) => (
+    <>
+      <button type="button" onClick={onDeleteTask}>Delete task</button>
+      {onFollowUp && <button type="button" onClick={onFollowUp}>Follow Up</button>}
+      {followupCommands && <span data-testid="followup-commands" />}
+    </>
+  ),
+}));
+// The task's PR is open unless a test merges it, or makes its read fail or hang.
+const pullRequestScores = vi.hoisted(() => ({ outcome: null as 'merged' | 'closed' | null, read: 'resolves' as 'resolves' | 'rejects' | 'pending' }));
+vi.mock('../../api/taskStatsApi', () => ({
+  getPullRequestScores: vi.fn(async (repository: string, prNumber: number) => {
+    if (pullRequestScores.read === 'rejects') throw new Error('scores unavailable');
+    if (pullRequestScores.read === 'pending') return new Promise(() => {});
+    return { repository, pr_number: prNumber, outcome: pullRequestScores.outcome, merged_at: null, closed_at: null, scores: [] };
+  }),
 }));
 // Children have their own suites; this one is about the details shell.
 vi.mock('./ThinkingLog', () => ({ default: () => null }));
@@ -63,8 +78,11 @@ const LocationProbe = () => <output data-testid="location">{useLocation().pathna
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   loadedTaskIds.length = 0;
   loadedTaskInfo.current = {};
+  pullRequestScores.outcome = null;
+  pullRequestScores.read = 'resolves';
   document.title = '';
 });
 
@@ -183,6 +201,88 @@ describe('TaskDetails embedded beside the task list', () => {
   it('offers to return to the newest run as live while it is still working', () => {
     renderInspecting(run('run-2', 2, 'active'));
     expect(within(timelineHeader()).getByRole('button', { name: 'Return to live Run 2' })).toBeInTheDocument();
+  });
+});
+
+describe('follow-up actions', () => {
+  const renderPullRequestTask = (runs?: TaskRunEntry[]) => {
+    loadedTaskInfo.current = { type: 'pr-comment', number: 12, repoOwner: 'integry', repoName: 'propr' };
+    render(<MemoryRouter><TaskDetails taskId="pr-task" embedded runs={runs} /></MemoryRouter>);
+  };
+  const expectNoFollowups = () => {
+    expect(screen.queryByRole('button', { name: 'Follow Up' })).toBeNull();
+    expect(screen.queryByTestId('followup-commands')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Delete task' }).length).toBeGreaterThan(0);
+  };
+  const mergedRun: TaskRunEntry = {
+    task: { id: 'pr-task', status: 'completed', prState: 'merged', prNumber: 12, createdAt: '2026-10-01T12:00:00Z' },
+    number: 1, type: 'Follow-up', summary: 'Stopped work', outcome: 'passed',
+  };
+
+  it('offers no follow-up actions when the runs record a merge and the scores read fails', async () => {
+    pullRequestScores.read = 'rejects';
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    renderPullRequestTask([mergedRun]);
+    await act(async () => {});
+    expectNoFollowups();
+  });
+
+  it('offers no follow-up actions when the runs record a merge and the scores say the PR is open', async () => {
+    renderPullRequestTask([mergedRun]);
+    await act(async () => {});
+    expectNoFollowups();
+  });
+
+  it('holds follow-up actions back while the pull request\'s state is loading', async () => {
+    pullRequestScores.read = 'pending';
+    renderPullRequestTask();
+    await act(async () => {});
+    expectNoFollowups();
+  });
+
+  it('holds follow-up actions back when the pull request\'s state could not be read', async () => {
+    pullRequestScores.read = 'rejects';
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    renderPullRequestTask();
+    await act(async () => {});
+    expectNoFollowups();
+  });
+
+  it('offers a follow-up on an issue task with no pull request', () => {
+    loadedTaskInfo.current = { type: 'issue', number: 42, repoOwner: 'integry', repoName: 'propr' };
+    render(<MemoryRouter><TaskDetails taskId="plain-task" embedded /></MemoryRouter>);
+    expect(screen.getAllByRole('button', { name: 'Follow Up' }).length).toBeGreaterThan(0);
+  });
+
+  it('keeps the follow-up retry path on a failed issue task', () => {
+    loadedTaskInfo.current = { type: 'issue', number: 42, repoOwner: 'integry', repoName: 'propr', subtitle: 'Agent failed' };
+    render(<MemoryRouter><TaskDetails taskId="failed-issue-task" embedded /></MemoryRouter>);
+    expect(screen.getAllByRole('button', { name: 'Follow Up' }).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['a repository report', { repoOwner: 'acme', repoName: 'web', taskKind: 'automation-report' }],
+    ['a report without repositories', { repoOwner: '', repoName: '', taskKind: 'automation-report' }],
+    ['an action on a report', { repoOwner: 'acme', repoName: 'web', taskKind: 'automation-action' }],
+  ])('offers no GitHub follow-up on %s, which has no issue or pull request', async (_name, info) => {
+    loadedTaskInfo.current = { type: 'agent-run', number: 0, title: 'Agent: Desktop acceptance', subtitle: 'Report run', issueNumber: undefined, ...info };
+    render(<MemoryRouter><TaskDetails taskId="agent-run-run-1-report" embedded /></MemoryRouter>);
+    await act(async () => {});
+    expectNoFollowups();
+  });
+
+  it('offers a follow-up while the pull request is open', async () => {
+    renderPullRequestTask();
+    await act(async () => {});
+    expect(screen.getAllByRole('button', { name: 'Follow Up' }).length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId('followup-commands').length).toBeGreaterThan(0);
+  });
+
+  it('offers no follow-up actions once the pull request has merged', async () => {
+    pullRequestScores.outcome = 'merged';
+    renderPullRequestTask();
+    await act(async () => {});
+    expectNoFollowups();
   });
 });
 

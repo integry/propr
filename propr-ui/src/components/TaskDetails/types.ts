@@ -144,6 +144,8 @@ export interface TaskInfo {
   model?: string;
   llmProvider?: string;
   commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
+  /** Set by the API for an automation run's report or action task, which has no issue or pull request. */
+  taskKind?: 'automation-report' | 'automation-action';
   /** Normalized by the API: `true` whenever any history entry belongs to an ultrafix cycle. */
   ultrafixCycle?: boolean;
   previewMedia?: PublishedVisualPreview[];

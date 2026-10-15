@@ -278,3 +278,39 @@ it('marks compact steps that carry additional details, including terminal and eg
   expect(screen.getAllByRole('img', { name: 'Additional step details' })).toHaveLength(2);
   expect(within(screen.getAllByRole('button')[0]).queryByRole('img', { name: 'Additional step details' })).toBeNull();
 });
+
+describe.each(['rail', 'branch'] as const)('%s automation report labels', (variant) => {
+  it('describes analysis, report generation and storage rather than code changes or a pull request', () => {
+    render(<TaskStatusTable variant={variant} commandMode="automation-report" history={[
+      { state: 'pending', timestamp: at(0) },
+      { state: 'processing', timestamp: at(1), reason: 'Preparing agent workspace' },
+      { state: 'claude_execution', timestamp: at(2), reason: 'Running agent codex' },
+      { state: 'post_processing', timestamp: at(3), reason: 'Storing agent report' },
+      { state: 'completed', timestamp: at(4) },
+    ]} />);
+    for (const label of ['Task Queued', 'Preparing Analysis', 'Generating Report', 'Storing Report', 'Report Ready']) {
+      expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+    }
+    for (const label of ['Implementing Changes', 'Creating Pull Request', 'Analyzing Request', 'Task Completed']) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+  });
+
+  it('keeps cancellation and failure wording for a report run', () => {
+    render(<TaskStatusTable variant={variant} commandMode="automation-report" history={[
+      { state: 'claude_execution', timestamp: at(1), reason: 'Running agent codex' },
+      { state: 'cancelled', timestamp: at(2) },
+    ]} />);
+    expect(screen.getAllByText('Generating Report').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Task Cancelled').length).toBeGreaterThan(0);
+  });
+
+  it('keeps issue wording for an issue run', () => {
+    render(<TaskStatusTable variant={variant} history={[
+      { state: 'claude_execution', timestamp: at(1), reason: 'Claude execution started' },
+      { state: 'post_processing', timestamp: at(2) },
+    ]} />);
+    expect(screen.getAllByText('Implementing Changes').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Creating Pull Request').length).toBeGreaterThan(0);
+  });
+});

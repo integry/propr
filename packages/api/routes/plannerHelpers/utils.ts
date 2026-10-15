@@ -212,19 +212,20 @@ export function scoreDraftsBySearch<T extends { name?: string; initial_prompt?: 
 export async function buildIssueSummaries(
   db: Knex,
   draftIds: string[]
-): Promise<Record<string, { total: number; pending: number; processing: number; merged: number; closed: number }>> {
+): Promise<Record<string, { total: number; pending: number; processing: number; in_review: number; merged: number; closed: number }>> {
   const issues = await db('plan_issues')
     .whereIn('draft_id', draftIds)
     .select('draft_id', 'status');
 
-  const summaryMap: Record<string, { total: number; pending: number; processing: number; merged: number; closed: number }> = {};
+  const summaryMap: Record<string, { total: number; pending: number; processing: number; in_review: number; merged: number; closed: number }> = {};
   for (const issue of issues as Array<{ draft_id: string; status: string }>) {
     if (!summaryMap[issue.draft_id]) {
-      summaryMap[issue.draft_id] = { total: 0, pending: 0, processing: 0, merged: 0, closed: 0 };
+      summaryMap[issue.draft_id] = { total: 0, pending: 0, processing: 0, in_review: 0, merged: 0, closed: 0 };
     }
     summaryMap[issue.draft_id].total++;
     if (issue.status === 'pending') summaryMap[issue.draft_id].pending++;
-    else if (issue.status === 'processing' || issue.status === 'under_review' || issue.status === 'in_refinement' || issue.status === 'refinement_processing') summaryMap[issue.draft_id].processing++;
+    else if (issue.status === 'processing' || issue.status === 'in_refinement' || issue.status === 'refinement_processing') summaryMap[issue.draft_id].processing++;
+    else if (issue.status === 'under_review') summaryMap[issue.draft_id].in_review++;
     else if (issue.status === 'merged') summaryMap[issue.draft_id].merged++;
     else if (issue.status === 'closed') summaryMap[issue.draft_id].closed++;
   }

@@ -45,6 +45,12 @@ export async function createTaskListTestDatabase(): Promise<Knex> {
     table.timestamp('updated_at');
     table.index('task_id');
   });
+  await database.schema.createTable('notification_pull_request_state', table => {
+    table.text('repository').notNullable();
+    table.integer('pr_number').notNullable();
+    table.text('merged_at').nullable();
+    table.primary(['repository', 'pr_number']);
+  });
   await database.schema.createTable('llm_executions', table => {
     table.increments('execution_id').primary();
     table.string('task_id');

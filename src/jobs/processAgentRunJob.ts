@@ -22,7 +22,7 @@ import {
     type StoredAgentRun,
     type WorkerStateManager,
 } from '@propr/core';
-import { agentTaskOptions } from './agentRuns/agentTaskOptions.js';
+import { agentRunExecutionUpdate, agentTaskOptions } from './agentRuns/agentTaskOptions.js';
 import { advanceAfterReport } from './agentRuns/autonomy.js';
 import { buildAgentReportPrompt } from './agentRuns/reportPrompt.js';
 import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
@@ -514,7 +514,7 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
 
             // 7. Execute in a container within the spend cap.
             const { agent, alias, model } = await deps.resolveAgent(definition, log);
-            await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, { reason: `Running agent ${alias}` });
+            await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, agentRunExecutionUpdate(alias, model));
             const stopped = await stoppedBeforeLaunch({ runId, taskId, stateManager, log }, correlationId);
             if (stopped) return stopped;
             // The report reads ProPR context over MCP only with `propr_mcp`.

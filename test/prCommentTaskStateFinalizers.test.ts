@@ -15,6 +15,10 @@ const logDebug = mock.fn();
 await mock.module('../src/jobs/prCommentTaskFinalizer.js', {
     namedExports: { finalizeCompletedPRCommentTask, finalizeFailedPRCommentTask },
 });
+const scheduleAutomaticPRCommentRetry = mock.fn(async (_job: unknown, _jobState: string, _stateManager: unknown) => 'not_retry');
+await mock.module('../src/jobs/prCommentAutomaticRetry.js', {
+    namedExports: { scheduleAutomaticPRCommentRetry },
+});
 await mock.module('@propr/core', {
     namedExports: { logger: { info: logInfo, error: logError, warn: logWarn, debug: logDebug } },
 });
@@ -89,6 +93,25 @@ test('failed hook ignores retryable attempts and finalizes exhausted jobs', asyn
 
     assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1);
     assert.equal(finalizeFailedPRCommentTask.mock.calls[0].arguments[1].message, 'exhausted');
+});
+
+test('failed hook schedules the task for a queued retry and never for an exhausted job', async () => {
+    finalizeFailedPRCommentTask.mock.resetCalls();
+    scheduleAutomaticPRCommentRetry.mock.resetCalls();
+    const harness = createWorkerHarness();
+    const stateManager = {} as WorkerStateManager;
+    const finalizers = attachPRCommentTaskStateFinalizers(harness.worker, stateManager);
+
+    harness.emit('failed', makeJob(async () => 'delayed'), new Error('retrying'));
+    harness.emit('failed', makeJob(async () => 'failed'), new Error('exhausted'));
+    await finalizers.close();
+
+    assert.equal(scheduleAutomaticPRCommentRetry.mock.calls.length, 1);
+    const [job, jobState, store] = scheduleAutomaticPRCommentRetry.mock.calls[0].arguments;
+    assert.equal((job as Job).id, 'task-123');
+    assert.equal(jobState, 'delayed', 'the queue state read after the failure decides');
+    assert.equal(store, stateManager);
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1, 'the exhausted job is still finalized as failed');
 });
 
 test('failed hook runs the exhausted-failure hook only once attempts are exhausted', async () => {

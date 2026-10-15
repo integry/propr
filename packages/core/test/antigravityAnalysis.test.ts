@@ -3,6 +3,15 @@ import { after, mock, test } from 'node:test';
 import type { AgentConfig } from '../src/agents/types.js';
 import { db } from '../src/db/connection.js';
 
+// Native-host fixtures: provider `~/...` defaults expand against HOME rather
+// than requiring a launcher host mapping, even when the suite runs in a container.
+const previousContainerized = process.env.PROPR_CONTAINERIZED;
+process.env.PROPR_CONTAINERIZED = '0';
+after(() => {
+    if (previousContainerized === undefined) delete process.env.PROPR_CONTAINERIZED;
+    else process.env.PROPR_CONTAINERIZED = previousContainerized;
+});
+
 const configManager = await import('../src/config/configManagerReasoning.js');
 const dockerExecutor = await import('../src/claude/docker/dockerExecutor.js');
 let globalLoads = 0;

@@ -5,6 +5,7 @@ import type { AttributedUser, TaskAssignmentFilter } from '@propr/shared';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { QUEUED_TASK_STATES, RUNNING_TASK_STATES } from './dashboardQueries.js';
 import { recordedRunScore } from './runScore.js';
+import { markMergedListPullRequests } from '../services/pullRequestMergeState.js';
 import { loadAttentionTaskIds } from './dashboardWorkQueries.js';
 import { narrowToTaskPage, type TaskSelection } from './taskGrouping.js';
 import { applyAssigneeSelection, loadPageAssignees, resolveAssigneeSelection, selectsNothing, type AssigneeSelection } from './taskAssignees.js';
@@ -271,7 +272,21 @@ export async function getTasksFromDb(query: TaskQuery): Promise<TaskPage> {
     assignees: assigneesByTask.get(String(row.task_id)) ?? [],
     ...(media[index].previews.length ? { previewMedia: media[index].previews } : {}),
   }));
+  await markMergedTasks(db, tasks);
   return { tasks, ...page };
+}
+
+/**
+ * A merged PR takes no more follow-ups, so its runs read as merged. Merge
+ * state is supplementary: a failed read leaves the runs as they were.
+ */
+async function markMergedTasks(db: Knex, tasks: Record<string, unknown>[]): Promise<void> {
+  try {
+    await timeApiStage('sql.tasks.mergeState', () =>
+      markMergedListPullRequests(db, tasks, { number: 'prNumber', state: 'prState' }));
+  } catch (error) {
+    console.warn('Failed to load pull request merge state:', (error as Error).message);
+  }
 }
 
 /**

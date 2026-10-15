@@ -7,7 +7,7 @@ import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisRes
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { buildAgentContainerResourceArgs, wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
-import { resolveConfigPath, loadSettings } from '../../config/configManager.js';
+import { resolveConfigPath, loadSettings, AgentConfigPathUnavailableError } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
@@ -303,9 +303,9 @@ export class VibeAgent implements Agent {
                 logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Health check failed: Docker image not found');
                 return false;
             }
-            const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
+            const { configPath } = this.resolveOptionalConfigPath();
             const mistralApiKey = await this.getMistralApiKey();
-            const hasCredentials = !!mistralApiKey || hasUsableVibeConfigDir(configPath, mistralApiKey);
+            const hasCredentials = !!mistralApiKey || (!!configPath && hasUsableVibeConfigDir(configPath, mistralApiKey));
             if (!hasCredentials) {
                 logger.warn({ agentAlias: this.config.alias, configPath }, 'Health check warning: no Vibe credentials found (set MISTRAL_API_KEY or configure ~/.vibe)');
             }
@@ -356,17 +356,37 @@ export class VibeAgent implements Agent {
         return args;
     }
 
+    /**
+     * Vibe's config directory is optional when an API key is available, so an
+     * unmapped containerized default is reported as absent rather than thrown;
+     * callers that need the directory rethrow `unavailable`. The backend HOME
+     * is never substituted.
+     */
+    private resolveOptionalConfigPath(): { configPath?: string; unavailable?: AgentConfigPathUnavailableError } {
+        try {
+            return { configPath: resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath) };
+        } catch (error) {
+            if (error instanceof AgentConfigPathUnavailableError) return { unavailable: error };
+            throw error;
+        }
+    }
+
     private diagnosticContext(nativeRoot: string | undefined, mistralApiKey?: string, githubToken?: string) {
-        const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
-        const hasUsableConfig = hasUsableVibeConfigDir(configPath, mistralApiKey);
+        const { configPath } = this.resolveOptionalConfigPath();
+        const hasUsableConfig = !!configPath && hasUsableVibeConfigDir(configPath, mistralApiKey);
         return { provider: this.config.type, agent: this.config.id, configPath, nativeRoot,
             authenticationRoot: hasUsableConfig ? configPath : nativeRoot, nativeCredentialContextComplete: !hasUsableConfig,
             credentials: { ...this.config.envVars, MISTRAL_API_KEY: mistralApiKey || '', GITHUB_TOKEN: githubToken || '' } };
     }
 
-    private resolveCredentialsAndConfig(mistralApiKey?: string): { configPath: string; resolvedApiKey: string | undefined; hasUsableConfig: boolean; configMountArgs: string[] } {
-        const configPath = resolveConfigPath(process.env.VIBE_CONFIG_PATH || this.config.configPath);
+    private resolveCredentialsAndConfig(mistralApiKey?: string): { configPath: string | undefined; resolvedApiKey: string | undefined; hasUsableConfig: boolean; configMountArgs: string[] } {
+        const { configPath, unavailable } = this.resolveOptionalConfigPath();
         const resolvedApiKey = mistralApiKey || process.env.MISTRAL_API_KEY?.trim() || this.config.envVars?.MISTRAL_API_KEY?.trim();
+        // Directory credentials are required without an API key.
+        if (!configPath) {
+            if (!resolvedApiKey) throw unavailable!;
+            return { configPath, resolvedApiKey, hasUsableConfig: false, configMountArgs: [] };
+        }
         const hasUsableConfig = hasUsableVibeConfigDir(configPath, resolvedApiKey);
         if (!resolvedApiKey && !hasUsableConfig) throw new Error(`Vibe agent "${this.config.alias}" has no credentials. Set MISTRAL_API_KEY or ensure ${configPath} contains valid Vibe config files.`);
         return { configPath, resolvedApiKey, hasUsableConfig, configMountArgs: hasUsableConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [] };

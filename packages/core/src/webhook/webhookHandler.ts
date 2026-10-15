@@ -2,7 +2,7 @@ import { cancelWithdrawnIntent } from '../services/taskIntent.js';
 import { resolveIssueTriggerLabels } from './issueTriggerRestoration.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 import logger from '../utils/logger.js';
-import { handlePlanIssueStatusUpdate, handlePlanPRUpdate, handlePlanPRCommentTracking, type CommentEventType } from './planIssueTracking.js';
+import { handlePlanIssueStatusUpdate, handlePlanPRUpdate, handlePlanPRCommentTracking, handlePlanPRCommentActivity, type CommentEventType } from './planIssueTracking.js';
 import { handleCheckRunEvent, handleCheckSuiteEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
 import { clearUltrafixLoopState, getUltrafixStateRedis } from './checkRunHelpers.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
@@ -489,6 +489,6 @@ export async function processWebhookEvent(
     // 7. Merge conflict detection: detect dirty PRs and enqueue auto-resolve work.
     startConflictDetection(payload, eventType, correlationId, correlatedLogger);
 
-    // 8. Standard Local Processing
-    return await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger);
+    // 8. Standard Local Processing; 9. then a plan issue refines only while a PR comment left follow-up work
+    return await processStandardWebhookEvent(payload, eventType, correlationId, correlatedLogger).finally(() => handlePlanPRCommentActivity(payload, eventType, correlationId));
 }

@@ -9864,6 +9864,10 @@ components:
           type:
             - string
             - "null"
+        prState:
+          description: "`merged` once the run's pull request has been merged; absent otherwise."
+          type: string
+          const: merged
         score:
           description: Final review score of the run, when it was reviewed.
           type:

@@ -33,6 +33,8 @@ export interface ReviewResult {
     suggestionCount?: number;
     /** The posted review covered only part of the diff (its comment is marked partial). */
     isPartial?: boolean;
+    /** The review comment as posted to the pull request. */
+    commentBody?: string;
 }
 
 export interface RunReviewsContext {
@@ -47,6 +49,8 @@ export interface RunReviewsContext {
     combinedCommentBody: string;
     commentHistory: string;
     originalTaskSpec: string;
+    /** Formatted follow-up requests ProPR accepted and completed on this PR. */
+    authorizedFollowups?: string;
     commandInstructions?: string;
     /** Untrimmed diff; each reviewer selects the files that fit its own budget. */
     preparedDiff: PreparedPRDiff;
@@ -95,7 +99,7 @@ export async function runSingleReview(
         }, ctx.reviewBudgetSettings);
         const promptResult = buildReviewPromptWithinBudget({
             pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
-            originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
+            originalTaskSpec: ctx.originalTaskSpec, authorizedFollowups: ctx.authorizedFollowups, repoOwner, repoName, instructions: ctx.commandInstructions,
             fileContents: ctx.fileContents, relatedContext: ctx.relatedContext,
             checkSummary: ctx.checkSummary, reviewPromptOverride: ctx.reviewPromptOverride,
         }, ceiling.ceiling, REVIEW_ANALYSIS_SAFETY_SUFFIX, {
@@ -181,7 +185,7 @@ export async function runSingleReview(
 
         const isPartial = promptResult.prDiffTruncated === true || promptResult.missingPatchFiles.length > 0
             || promptResult.ioGuardOmittedFiles.length > 0 || promptResult.budgetOmittedFiles.length > 0;
-        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt, findingCount, suggestionCount, isPartial };
+        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt, findingCount, suggestionCount, isPartial, commentBody: reviewCommentBody };
     } catch (reviewError) {
         const errorMsg = (reviewError as Error).message;
         correlatedLogger.error({ pullRequestNumber, model, error: errorMsg }, 'Review analysis failed');

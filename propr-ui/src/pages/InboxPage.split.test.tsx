@@ -7,7 +7,7 @@ import { ToastProvider } from '../components/ui/Toast';
 import InboxPage from './InboxPage';
 import { dismissNotification, listNotifications, markNotificationRead } from '../api/notificationApi';
 import { getFileChanges } from '../api/fileChangesApi';
-import { getTasks, postTaskFollowup } from '../api/proprApi';
+import { getTaskHistory, getTasks, postTaskFollowup } from '../api/proprApi';
 import { resetFollowupSubmissions } from '../components/Inbox/followupSubmissions';
 import { MAX_SELECTION_LOOKUP_READS } from './Inbox/useInboxTriage';
 
@@ -26,7 +26,7 @@ vi.mock('../api/notificationApi', () => ({
   markNotificationRead: vi.fn(),
 }));
 vi.mock('../api/fileChangesApi', () => ({ getFileChanges: vi.fn() }));
-vi.mock('../api/proprApi', () => ({ postTaskFollowup: vi.fn(), getTasks: vi.fn() }));
+vi.mock('../api/proprApi', () => ({ postTaskFollowup: vi.fn(), getTasks: vi.fn(), getTaskHistory: vi.fn() }));
 vi.mock('../contexts/DemoModeContext', () => ({ useDemoMode: () => ({ isDemoMode: false }) }));
 const activitySocket = vi.hoisted(() => {
   const callbacks = new Set<(payload: ActivityUpdatePayload) => void>();
@@ -143,6 +143,7 @@ describe('Inbox triage console', () => {
       return { tasks: [taskRun(id, 1, newestRuns[id])] } as never;
     });
     vi.mocked(listNotifications).mockResolvedValue({ notifications: queue, unreadCount: 0, nextCursor: null });
+    vi.mocked(getTaskHistory).mockResolvedValue({ history: [] });
     vi.mocked(dismissNotification).mockImplementation(async id => ({
       notification: { ...queue.find(entry => entry.id === id)!, dismissedAt: at(0) } as Notification, unreadCount: 0,
     }));
@@ -241,6 +242,56 @@ describe('Inbox triage console', () => {
     expect(card.getByRole('heading', { name: 'Review verdict: 4 findings (Score 3/10)' })).toBeInTheDocument();
     expect(card.getAllByRole('listitem')).toHaveLength(2);
     expect(card.getByText('2 more findings in Tasks')).toBeInTheDocument();
+  });
+
+  test("the verdict shows the run's full summary from its history, then every visual preview", async () => {
+    mockViewport(true);
+    const asset = (id: string) => `https://github.com/user-attachments/assets/${id}`;
+    vi.mocked(getTaskHistory).mockResolvedValue({
+      history: [
+        { state: 'claude_execution', metadata: {} },
+        { state: 'completed', metadata: { prResult: {
+          notificationRecap: 'Redesigned the mobile footer…',
+          notificationSummary: 'Redesigned the mobile footer and menu.\n\n- The footer keeps its links on one row\n- The menu closes on Escape',
+        } } },
+      ],
+      previewMedia: [
+        { type: 'image', title: 'Footer at Mobile 390px', url: asset('footer') },
+        { type: 'image', title: 'Menu at Desktop 1440px', url: asset('menu') },
+      ],
+    });
+    renderInbox(`/inbox?notification=${ready.id}`);
+    const card = within(await screen.findByRole('region', { name: 'Triage verdict' }));
+    const summary = await card.findByTestId('triage-summary');
+    expect(getTaskHistory).toHaveBeenCalledWith('task-3063');
+    expect(card.getByRole('heading', { name: 'Summary' })).toBeInTheDocument();
+    expect(within(summary).getByText('The footer keeps its links on one row')).toBeInTheDocument();
+    expect(within(summary).getByText('The menu closes on Escape')).toBeInTheDocument();
+    expect(card.queryByText('1 preview available')).not.toBeInTheDocument();
+    const previews = card.getByRole('heading', { name: /Visual evidence/ });
+    expect(previews).toHaveTextContent('(2 captures)');
+    // The summary reads first, the previews after it.
+    expect(summary.compareDocumentPosition(previews) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("a review's full summary replaces the abridged findings; runs without one keep the notification's verdict", async () => {
+    mockViewport(true);
+    vi.mocked(getTaskHistory).mockImplementation(async taskId => ({
+      history: taskId === 'task-3057'
+        ? [{ state: 'completed', metadata: { notificationSummary: '## Overall Evaluation\n\nThe layout test asserts the wrong default model.' } }]
+        : [],
+    }));
+    renderInbox(`/inbox?notification=${review.id}`);
+    const card = within(await screen.findByRole('region', { name: 'Triage verdict' }));
+    expect(await card.findByRole('heading', { name: 'Review summary' })).toBeInTheDocument();
+    expect(card.getByText('The layout test asserts the wrong default model.')).toBeInTheDocument();
+    expect(card.queryByRole('heading', { name: /Review verdict/ })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: 'j' });
+    await waitFor(() => expect(getTaskHistory).toHaveBeenCalledWith('task-3063'));
+    const next = within(pane()!);
+    expect(next.getByText('1 preview available')).toBeInTheDocument();
+    expect(next.queryByTestId('triage-summary')).not.toBeInTheDocument();
   });
 
   test('a failed diff read still shows the verdict and the buttons', async () => {
@@ -357,6 +408,10 @@ describe('Inbox triage console', () => {
     renderInbox(`/inbox?notification=${review.id}`);
     await screen.findByRole('article', { name: review.title });
     const inspect = within(pane()!).getByRole('link', { name: /Inspect in Tasks/ });
+    // The queue listener attaches in an effect that can land after the article renders; k on the
+    // first item is claimed without moving, so it shows the listener is live before ArrowDown is checked.
+    await waitFor(() => expect(fireEvent.keyDown(inspect, { key: 'k' })).toBe(false));
+    expect(search().get('notification')).toBe(review.id);
     expect(fireEvent.keyDown(inspect, { key: 'ArrowDown' })).toBe(true);
     expect(search().get('notification')).toBe(review.id);
     expect(fireEvent.keyDown(inspect, { key: 'j' })).toBe(false);

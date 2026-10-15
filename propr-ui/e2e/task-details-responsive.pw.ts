@@ -141,6 +141,11 @@ async function stubTaskDetailsApis(page: Page, selectedIndex = 0, runCount = 50)
       await route.fulfill({ json: { preferences: {}, quietHours: {}, badgeEnabled: false } });
       return;
     }
+    // The task's PR is still open, so its follow-ups are offered.
+    if (pathname === '/api/pull-requests/2253/scores') {
+      await route.fulfill({ json: { repository: 'integry/propr-responsive-workspace-fixture', pr_number: 2253, outcome: null, merged_at: null, closed_at: null, scores: [] } });
+      return;
+    }
     await route.fulfill({
       status: 503,
       contentType: 'application/json',

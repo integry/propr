@@ -164,7 +164,7 @@ const PlanDetails: React.FC<{ plan: DraftListItem }> = ({ plan }) => {
       <PreviewRow label="Status"><StatusPill status={plan.paused ? 'paused' : plan.status} /></PreviewRow>
       {issues && issues.total > 0 && (
         <PreviewRow label="Issues">
-          {issues.total} total · {issues.merged} merged · {issues.processing} running · {issues.pending} pending
+          {issues.total} total · {issues.merged} merged · {issues.processing} running{issues.in_review ? ` · ${issues.in_review} in review` : ''} · {issues.pending} pending
         </PreviewRow>
       )}
       <PreviewRow label="Updated">{formatTimeAgoPhrase(plan.updated_at || plan.created_at)}</PreviewRow>

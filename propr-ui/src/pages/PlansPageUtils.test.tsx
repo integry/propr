@@ -38,6 +38,12 @@ describe('getIssueSummaryTokens', () => {
     expect(getIssueSummaryTokens({ total: 1, pending: 0, processing: 0, merged: 1, closed: 0 })).toEqual(['1 issue', '1 merged']);
     expect(getIssueSummaryTokens(null)).toEqual([]);
   });
+
+  it('shows a PR awaiting review as in review, not as a running agent', () => {
+    expect(getIssueSummaryTokens({ total: 1, pending: 0, processing: 0, in_review: 1, merged: 0, closed: 0 })).toEqual(['1 issue', '1 in review']);
+    expect(getIssueSummaryTokens({ total: 3, pending: 1, processing: 1, in_review: 1, merged: 0, closed: 0 }))
+      .toEqual(['3 issues', '1 running', '1 in review', '1 pending']);
+  });
 });
 
 describe('getRepositoryShortName', () => {

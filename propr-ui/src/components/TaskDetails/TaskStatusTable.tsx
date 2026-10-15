@@ -6,12 +6,14 @@ import { NetworkEgressDetail, NetworkEgressIcon } from './NetworkEgressDetail';
 import { isNetworkEgress, networkEgressLabel, networkEgressNeedsAttention } from './networkEgress';
 import { formatDateOnly, formatTimeOnly, formatRelativeTime } from './utils';
 import { RUN_DURATION_COLUMN, RUN_LEAD_INSET, RUN_TAG_COLUMN } from './runTimelineColumns';
-import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban, CircleDollarSign } from 'lucide-react';
+import { AUTOMATION_REPORT_MODE, reportStepLabel } from './taskKind';
+import { Clock, Loader2, CheckCircle2, XCircle, CircleDot, Timer, GitPullRequest, Ban, CircleDollarSign, FileText } from 'lucide-react';
 
 interface TaskStatusTableProps {
   history: HistoryItem[];
   compact?: boolean;
-  commandMode?: 'default' | 'review' | 'fix' | 'switch' | 'use' | 'ultrafix';
+  /** A task's command mode, or `automation-report` for an automation run's report task. */
+  commandMode?: string;
   /**
    * `branch` draws the steps as tics off the task timeline's run rail, under
    * the run they belong to: `├── 11:59:12  Read the handlers   12s`.
@@ -40,7 +42,7 @@ const getDisplayLabel = (item: HistoryItem, index: number, history: HistoryItem[
   const isReview = commandMode === 'review';
   const isFix = commandMode === 'fix';
 
-  const eventLabel = getEventLabel(item);
+  const eventLabel = getEventLabel(item) ?? reportStepLabel(stateUpper, commandMode);
   if (eventLabel) return eventLabel;
   if (stateUpper === 'PENDING') return 'Task Queued';
   if (stateUpper === 'PROCESSING') return isReview ? 'Preparing Review' : 'Analyzing Request';
@@ -96,8 +98,9 @@ const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: Hist
     return (s === 'CLAUDE_EXECUTION' || s === 'CLAUDE_EXECUTION_STARTED') && !isBudgetExceeded(h) && !isNetworkEgress(h);
   }).length;
 
-  const actionLabel = isReview ? 'Reviewing' : isFix ? 'Applying Fix' : 'Implementing Changes';
-  const completedLabel = isReview ? 'Review Completed' : isFix ? 'Fix Completed' : 'Implementation Completed';
+  const isReport = commandMode === AUTOMATION_REPORT_MODE;
+  const actionLabel = isReport ? 'Generating Report' : isReview ? 'Reviewing' : isFix ? 'Applying Fix' : 'Implementing Changes';
+  const completedLabel = isReport ? 'Report Generated' : isReview ? 'Review Completed' : isFix ? 'Fix Completed' : 'Implementation Completed';
 
   if (item.reason?.toLowerCase().includes('completed')) return completedLabel;
   if (item.reason?.toLowerCase().includes('started')) {
@@ -107,12 +110,13 @@ const getClaudeExecutionLabel = (item: HistoryItem, index: number, history: Hist
   return claudeCount === 1 ? actionLabel : `Retry ${actionLabel} ${claudeCount}`;
 };
 
-const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boolean; isCancelled: boolean; isBudgetStop?: boolean }> = ({
+const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boolean; isCancelled: boolean; isBudgetStop?: boolean; isReport?: boolean }> = ({
   state,
   isRunning,
   isFailure,
   isCancelled,
-  isBudgetStop
+  isBudgetStop,
+  isReport
 }) => {
   const stateUpper = state?.toUpperCase() || '';
 
@@ -133,6 +137,7 @@ const TimelineIcon: React.FC<{ state: string; isRunning: boolean; isFailure: boo
   // Specific icons for different states
   if (stateUpper === 'PENDING') return <Clock className="h-5 w-5 text-gray-400" />;
   if (stateUpper === 'PROCESSING') return <Timer className="h-5 w-5 text-blue-500" />;
+  if (stateUpper === 'POST_PROCESSING' && isReport) return <FileText className="h-5 w-5 text-purple-500" />;
   if (stateUpper === 'POST_PROCESSING') return <GitPullRequest className="h-5 w-5 text-purple-500" />;
   if (stateUpper === 'COMPLETED') return <CheckCircle2 className="h-5 w-5 text-green-500" />;
   if (stateUpper.includes('CLAUDE_EXECUTION')) return <CircleDot className="h-5 w-5 text-blue-500" />;
@@ -283,7 +288,7 @@ const TaskTimelineItem: React.FC<{
           <div className="relative z-10 bg-white p-0.5">
             {isNetworkEgress(item)
               ? <NetworkEgressIcon attention={networkEgressNeedsAttention(item)} />
-              : <TimelineIcon state={stateUpper} isRunning={isRunning && !isBudgetExceeded(item)} isFailure={isFailure} isCancelled={isCancelled} isBudgetStop={isBudgetExceeded(item)} />}
+              : <TimelineIcon state={stateUpper} isRunning={isRunning && !isBudgetExceeded(item)} isFailure={isFailure} isCancelled={isCancelled} isBudgetStop={isBudgetExceeded(item)} isReport={commandMode === AUTOMATION_REPORT_MODE} />}
           </div>
         </div>
 

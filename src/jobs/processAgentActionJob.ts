@@ -17,7 +17,7 @@ import {
     type StoredAgentRun,
 } from '@propr/core';
 import { buildAgentActionPrompt } from './agentRuns/actionPrompt.js';
-import { agentTaskOptions } from './agentRuns/agentTaskOptions.js';
+import { agentRunExecutionUpdate, agentTaskOptions } from './agentRuns/agentTaskOptions.js';
 import { actingPausedReason, notifyAgentReportAwaitingApproval } from './agentRuns/autonomy.js';
 import { requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import { actionSummaryFromResult, AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError } from './agentRuns/runErrors.js';
@@ -266,7 +266,7 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
 
             // 5. Execute with the action-phase MCP grant, within the spend cap.
             const { agent, alias, model } = await deps.resolveAgent(definition, log);
-            await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, { reason: `Running agent ${alias}` });
+            await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, agentRunExecutionUpdate(alias, model));
             const current = await deps.getRun(runId);
             if (current?.state !== 'acting') return taskFollowsRun(context);
             const stopped = await followCancelledTask(context, 'before its agent started');

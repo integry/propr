@@ -43,7 +43,7 @@ import {
   type DraftExecutionConfig
 } from './plannerExecutionSettings.js';
 export { buildUpdatedExecutionConfig, mergeExecutionContextConfig } from './plannerExecutionSettings.js';
-import { linkTodosToDraft, pauseDraft, resumeDraft } from '@propr/core';
+import { linkTodosToDraft, pauseDraft, resumeDraft, reconcilePlanIssueRefinement } from '@propr/core';
 import { isDemoMode } from '../demoMode.js';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 import { attachCreator, projectCreator, rememberCreator } from '../services/creatorProjection.js';
@@ -151,9 +151,10 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
       const draftIds = paginatedDrafts.map((d: { draft_id: string }) => d.draft_id);
       if (draftIds.length > 0) {
         const issues = await timeApiStage('sql.drafts.issue-status', () =>
-          db!('plan_issues').whereIn('draft_id', draftIds).select('draft_id', 'status')
+          db!('plan_issues').whereIn('draft_id', draftIds).select('id', 'draft_id', 'repository', 'pr_number', 'status')
         );
-        const issueSummaries = buildIssueSummaryMap(issues);
+        // Counts must not claim refinement whose follow-up work already ended.
+        const issueSummaries = buildIssueSummaryMap(await reconcilePlanIssueRefinement(issues));
         attachIssueSummaries(paginatedDrafts as Array<Record<string, unknown> & { draft_id: string }>, issueSummaries);
       }
 

@@ -19,6 +19,8 @@ export interface Task {
   model?: string | null;
   llmProvider?: string | null;
   planIssueStatus?: string | null;
+  /** `merged` once the run's pull request has merged. */
+  prState?: string | null;
   failedReason?: string | null;
   commitHash?: string | null;
   /** The score the run recorded when it completed (a review's `6/10`), when it was scored. */

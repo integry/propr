@@ -47,7 +47,7 @@ export const getCleanDocumentTitle = (title: string | undefined, issueNumber?: n
  * merged reads as merged: that is the state an engineer scans the ledger for.
  */
 export const getDisplayStatus = (task: Task): string =>
-  task.status === 'completed' && task.planIssueStatus?.toLowerCase() === 'merged' ? 'merged' : task.status;
+  task.status === 'completed' && (task.planIssueStatus?.toLowerCase() === 'merged' || task.prState === 'merged') ? 'merged' : task.status;
 
 export const getStatusPill = (status: string, runType?: string | null) => {
   const baseClasses = "px-2 py-0.5 text-xs font-medium rounded-full inline-flex items-center gap-1.5";

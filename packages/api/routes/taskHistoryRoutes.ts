@@ -1,5 +1,5 @@
 import { fetchUsageMetrics } from './taskHistoryUsage.js';
-import { taskModelIdentity } from './taskModelIdentity.js';
+import { loadAgentRunsByTask, taskModelIdentity } from './taskModelIdentity.js';
 import type { Response } from 'express';
 import { redactVisualPreviewValue } from '@propr/core';
 import { loadTaskBudget } from './taskBudget.js';
@@ -10,6 +10,7 @@ import { Knex } from 'knex';
 import { sendSafeJson } from './jsonResponse.js';
 import { previewMediaReader, projectTaskPreviewMedia } from '../services/previewMediaProjection.js';
 import { attemptLineageFields, loadAttemptLineage } from './taskAttemptLineage.js';
+import { automationTaskKind } from './automationTaskKind.js';
 
 interface JobData {
     repoOwner?: string; repoName?: string; number?: number;
@@ -82,6 +83,8 @@ function buildTaskInfoFromDb(
   };
 
   if (isPr && issueNumber) taskInfo.issueNumber = issueNumber;
+  const taskKind = automationTaskKind(taskId, task.task_type);
+  if (taskKind) taskInfo.taskKind = taskKind;
   if (commandMode) taskInfo.commandMode = commandMode;
   if (hasUltrafixMeta) taskInfo.ultrafixCycle = true;
   return { ...taskInfo, ...attemptLineageFields(task) };
@@ -101,11 +104,12 @@ async function getHistoryFromDb(db: Knex, taskId: string, previewReader: typeof 
 
     const taskInfo = buildTaskInfoFromDb(taskId, task, parseJobData(task.initial_job_data));
 
-    const [llmExecutions, usage, previewMedia, attemptLineage] = await Promise.all([
+    const [llmExecutions, usage, previewMedia, attemptLineage, agentRuns] = await Promise.all([
       db('llm_executions').where({ task_id: taskId }).orderBy('start_time', 'asc'),
       fetchUsageMetrics(db, taskId),
       projectTaskPreviewMedia(task, historyRecords, previewReader),
       loadAttemptLineage(db, taskId, task),
+      loadAgentRunsByTask(db, [task]),
     ]);
     if (attemptLineage) taskInfo.attemptLineage = attemptLineage;
 
@@ -119,7 +123,7 @@ async function getHistoryFromDb(db: Knex, taskId: string, previewReader: typeof 
       mapDbHistoryRecord(record, executionsByHistoryId, executionsBySessionId)
     );
 
-    Object.assign(taskInfo, taskModelIdentity(task, historyRecords, llmExecutions));
+    Object.assign(taskInfo, taskModelIdentity(task, historyRecords, llmExecutions, agentRuns.get(taskId)));
     applyMetadataFlags(taskInfo, history);
 
     return { history, taskInfo, ...usage, ...(previewMedia.length ? { previewMedia } : {}) };
@@ -245,7 +249,8 @@ function resolveTaskTypeAndIssue(
   ref: Record<string, unknown>
 ): { type: string; issueNumber?: number } {
   const isPr = taskId.startsWith('pr-comments-batch-') || !!ref.pullRequestNumber;
-  if (!isPr) return { type: 'issue' };
+  // An automation run's task has no issue; its live state keeps its own type.
+  if (!isPr) return { type: ref.type === 'agent-run' ? 'agent-run' : 'issue' };
   const issueNumber = resolveIssueNumber(ref) ?? undefined;
   return { type: 'pr-comment', issueNumber };
 }
@@ -273,6 +278,8 @@ function buildTaskInfoFromState(
     modelName: ref.modelName, agentAlias: ref.agentAlias
   };
   if (issueNumber) taskInfo.issueNumber = issueNumber;
+  const taskKind = automationTaskKind(taskId, type);
+  if (taskKind) taskInfo.taskKind = taskKind;
   Object.assign(taskInfo, taskModelIdentity({ task_id: taskId, initial_job_data: ref, model_name: ref.modelName }, historyEntries));
   applyMetadataFlags(taskInfo, historyEntries);
   return taskInfo;

@@ -155,6 +155,29 @@ test('each run carries the score its latest completion recorded', async () => {
   assert.deepEqual(scores, { review: 6, ultrafix: 4, rerun: null, fix: null });
 });
 
+test('runs of a merged pull request say so, and runs of an open one do not', async () => {
+  const database = await createDatabase();
+  await database('tasks').insert([
+    { task_id: 'merged-fix', repository: 'acme/widget', task_type: 'pr_comment', pr_number: 7, created_at: '2026-09-14T04:00:00.000Z' },
+    { task_id: 'merged-review', repository: 'acme/widget', task_type: 'pr_comment', pr_number: 7, created_at: '2026-09-14T03:00:00.000Z' },
+    // The same number in another repository is another pull request.
+    { task_id: 'other-repo', repository: 'acme/other', task_type: 'pr_comment', pr_number: 7, created_at: '2026-09-14T02:00:00.000Z' },
+    { task_id: 'open', repository: 'acme/widget', task_type: 'pr_comment', pr_number: 8, created_at: '2026-09-14T01:00:00.000Z' },
+  ]);
+  await database('task_history').insert(['merged-fix', 'merged-review', 'other-repo', 'open'].map(taskId => (
+    { task_id: taskId, state: 'completed', timestamp: '2026-09-14T05:00:00.000Z' })));
+  await database('notification_pull_request_state').insert([
+    { repository: 'acme/widget', pr_number: 7, merged_at: '2026-09-14T06:00:00.000Z' },
+    { repository: 'acme/widget', pr_number: 8, merged_at: null },
+  ]);
+
+  // Previews are read from GitHub for a PR; they have their own suite.
+  const previewReader = { project: async (rows: unknown[]) => rows.map(() => ({ previews: [] })) } as never;
+  const page = await getTasksFromDb({ db: database, previewReader, status: 'all', repository: 'all', limit: 10, offset: 0 });
+  const states = Object.fromEntries((page.tasks as Array<Record<string, unknown>>).map(task => [task.id, task.prState ?? null]));
+  assert.deepEqual(states, { 'merged-fix': 'merged', 'merged-review': 'merged', 'other-repo': null, open: null });
+});
+
 test('task history migration replaces the redundant index and satisfies latest-state ordering', async () => {
   const database = await createDatabase();
   await addTaskHistoryLookupIndex(database);

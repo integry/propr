@@ -462,6 +462,7 @@ export {
     assertCodexConfigPathAvailable,
     resolveCodexConfigPath,
     resolveConfigPath,
+    resolveDefaultConfigPath,
     getDefaultConfigPath,
     loadAgents,
     loadEffectiveAgentBaseImages,

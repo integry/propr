@@ -97,7 +97,9 @@ async function discoverOpenCodeModels(agentId?: string): Promise<string[]> {
   const configuredPath = managedCredentials
     ? savedAgent!.configPath
     : process.env.OPENCODE_CONFIG_PATH || savedAgent?.configPath || AGENT_DEFAULTS.opencode.configPath;
-  const configPath = managedCredentials
+  // Managed paths and the exact provider default share the execution
+  // resolver, so discovery binds the same host store the agent runs with.
+  const configPath = managedCredentials || configuredPath === AGENT_DEFAULTS.opencode.configPath
     ? resolveConfigPath(configuredPath)
     : resolveHostPath(configuredPath);
   const dataPath = inferOpenCodeDataPath(configPath, managedCredentials);

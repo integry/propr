@@ -15,7 +15,7 @@ await mock.module('../packages/core/src/services/taskIntent.js', { namedExports:
     cancelWithdrawnIntent: async (target: any, reason: string) => { cancellations.push({ target, reason }); await cancellationWait; cancellationFinished = true; if (cancellationError) throw cancellationError; },
 } });
 await mock.module('../packages/core/src/webhook/planIssueTracking.js', { namedExports: {
-    handlePlanIssueStatusUpdate: async () => { handlers.push('plan-issue'); }, handlePlanPRUpdate: async () => { handlers.push('plan-pr'); }, handlePlanPRCommentTracking: async () => {},
+    handlePlanIssueStatusUpdate: async () => { handlers.push('plan-issue'); }, handlePlanPRUpdate: async () => { handlers.push('plan-pr'); }, handlePlanPRCommentTracking: async () => { handlers.push('plan-comment-count'); }, handlePlanPRCommentActivity: async (_payload: unknown, eventType: string) => { if (eventType.endsWith('comment')) handlers.push('plan-comment-refinement'); },
 } });
 await mock.module('../packages/core/src/webhook/epicPRHandler.js', { namedExports: {
     handleEpicPRCreationOnMerge: async () => { handlers.push('epic-merge'); }, handleEpicPRLabelCleanup: async () => { handlers.push('epic-cleanup'); },
@@ -50,7 +50,7 @@ const { closeConnection } = await import('../packages/core/src/db/connection.js'
 after(closeConnection);
 const processed: any[] = [];
 await initializeWebhookHandler({
-    issueProcessor: async issue => { processed.push(issue); }, commentProcessor: async () => {},
+    issueProcessor: async issue => { processed.push(issue); }, commentProcessor: async () => { handlers.push('comment-processor'); },
     commentDeletedHandler: async () => {}, commentEditedHandler: async () => {}, redisClient: {} as never,
     pullRequestProcessor: async () => { handlers.push('standard-pr'); },
     repositoryFilter: repo => repo === 'acme/widgets',
@@ -296,3 +296,9 @@ test('an unrelated-label delivery for a live request reaches admission with curr
     assert.equal(processed.length, 1);
     assert.deepEqual(processed[0].labels, currentLabels);
 }));
+
+test('plan refinement for a PR comment is decided after the comment handler admitted (or ignored) its work', async () => {
+    await processWebhookEvent({ repository, action: 'created', issue: { number: 87, pull_request: {} }, comment: { id: 5, user: { login: 'reviewer' } } }, 'issue_comment', 'pr-comment');
+    assert.deepEqual(handlers.filter(handler => handler.startsWith('plan-comment') || handler === 'comment-processor'),
+        ['plan-comment-count', 'comment-processor', 'plan-comment-refinement']);
+});

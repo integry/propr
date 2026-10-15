@@ -61,6 +61,11 @@ await mock.module('bullmq', {
     }
 });
 
+const planRefinementSyncs: unknown[] = [];
+await mock.module('../packages/core/src/services/taskPlanning/planRefinementSettlement.js', {
+    namedExports: { syncPlanRefinementForJob: async (data: unknown) => { planRefinementSyncs.push(data); } },
+});
+
 const { issueQueue, getIssueQueue, createWorker, shutdownQueue } = await import('../packages/core/src/queue/taskQueue.ts');
 
 await getIssueQueue();
@@ -96,6 +101,35 @@ test('createWorker creates a worker with correct configuration', async () => {
     assert.ok(eventNames.includes('failed'));
     assert.ok(eventNames.includes('error'));
     assert.ok(eventNames.includes('stalled'));
+});
+
+test('a failed attempt and a resumed retry resynchronize plan refinement for the job', async () => {
+    mockWorker.on.mock.resetCalls();
+    await createWorker('test-queue', (async () => ({ status: 'completed' })) as Parameters<typeof createWorker>[1]);
+    const handler = (event: string) => (mockWorker.on.mock.calls as Array<{ arguments: unknown[] }>)
+        .find(call => call.arguments[0] === event)!.arguments[1] as (...args: unknown[]) => unknown;
+    const data = { repoOwner: 'o', repoName: 'r', pullRequestNumber: 7 };
+    // The handlers load the settlement lazily and do not block BullMQ on it.
+    const settle = async (count = planRefinementSyncs.length) => {
+        for (let waited = 0; planRefinementSyncs.length < count && waited < 2_000; waited += 10) await new Promise(resolve => setTimeout(resolve, 10));
+    };
+
+    planRefinementSyncs.length = 0;
+    handler('active')({ id: 'j', data, attemptsMade: 0, attemptsStarted: 1 });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(planRefinementSyncs, [], 'a first attempt was already admitted by its webhook');
+
+    await handler('failed')({ id: 'j', data, attemptsMade: 1, attemptsStarted: 1 }, new Error('boom'));
+    await settle(1);
+    assert.deepEqual(planRefinementSyncs, [data], 'the failure moved the job to its delayed retry');
+
+    handler('active')({ id: 'j', data, attemptsMade: 1, attemptsStarted: 2 });
+    await settle(2);
+    assert.deepEqual(planRefinementSyncs, [data, data], 'the retry resumed processing');
+
+    handler('completed')({ id: 'j', name: 'processPullRequestComment', data, attemptsMade: 1, attemptsStarted: 2, timestamp: Date.now() }, { status: 'complete' });
+    await settle(3);
+    assert.deepEqual(planRefinementSyncs, [data, data, data], 'the retry completed and left active work');
 });
 
 test('shutdownQueue closes issue and indexing queues and Redis connection', async () => {

@@ -171,6 +171,7 @@ export const TaskSummary = component('TaskSummary', z.object({
   modelName: z.string().nullable(),
   llmProvider: z.string().nullable(),
   planIssueStatus: z.string().nullable(),
+  prState: z.literal('merged').optional().describe('`merged` once the run\'s pull request has been merged; absent otherwise.'),
   score: z.number().nullable().describe('Final review score of the run, when it was reviewed.'),
   assignees: z.array(AttributedUser).describe('Assignees of the GitHub issue or pull request, as last synced; empty when nobody is assigned.'),
 }).loose(), 'One task run as listed by `GET /api/tasks`.');

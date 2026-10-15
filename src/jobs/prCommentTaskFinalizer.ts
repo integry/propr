@@ -28,6 +28,7 @@ export type PRCommentTaskFinalizationOutcome =
     | 'partial_publication'
     | 'already_terminal'
     | 'retry_pending'
+    | 'retry_scheduled'
     | 'state_changed'
     | 'task_missing';
 

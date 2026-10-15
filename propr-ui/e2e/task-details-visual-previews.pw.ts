@@ -36,6 +36,8 @@ async function fixture(page: Page, title = 'Render visual previews full width') 
       [`/api/task/${taskId}/live-details`]: { events: [], todos: [], currentTask: null },
       '/api/notifications/unread-count': { unreadCount: 0 },
       '/api/notifications/preferences': { preferences: {}, quietHours: {}, badgeEnabled: false },
+      // The task's PR is still open, so its follow-ups are offered.
+      '/api/pull-requests/42/scores': { repository: 'acme/web', pr_number: 42, outcome: null, merged_at: null, closed_at: null, scores: [] },
     };
     return route.fulfill(path in responses ? { json: responses[path] } : { status: 503, json: { error: 'Unavailable in visual preview fixture' } });
   });

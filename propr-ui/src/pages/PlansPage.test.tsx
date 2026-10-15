@@ -9,6 +9,9 @@ import type { DraftUpdatePayload } from '@propr/shared';
 const draftUpdateListeners = new Set<(payload: DraftUpdatePayload) => void | Promise<void>>();
 const socketState = {
   isConnected: false,
+  onActivityUpdate: vi.fn(() => () => {}),
+  subscribeToActivity: vi.fn(),
+  unsubscribeFromActivity: vi.fn(),
   onDraftUpdate: vi.fn((callback: (payload: DraftUpdatePayload) => void | Promise<void>) => {
     draftUpdateListeners.add(callback);
     return () => {

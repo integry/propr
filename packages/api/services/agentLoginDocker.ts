@@ -8,12 +8,11 @@ import {
   isAgentLoginSupported,
   isManagedAgentConfigPath,
   type AgentLoginDescriptor,
-  type AgentType,
 } from '@propr/shared';
 import {
   AgentConfigPathUnavailableError,
   assertCodexConfigPathAvailable,
-  resolveCodexConfigPath,
+  resolveDefaultConfigPath,
   type AgentConfig,
 } from '@propr/core';
 
@@ -26,25 +25,11 @@ export class AgentLoginInputError extends Error {
   }
 }
 
-function envConfigPath(type: AgentType): string | undefined {
-  switch (type) {
-    case 'claude':
-      return process.env.CLAUDE_CONFIG_PATH || process.env.HOST_CLAUDE_DIR;
-    case 'codex':
-      return process.env.CODEX_CONFIG_PATH || process.env.HOST_CODEX_DIR;
-    case 'antigravity':
-      return process.env.ANTIGRAVITY_CONFIG_PATH || process.env.HOST_ANTIGRAVITY_DIR;
-    case 'opencode':
-      return process.env.OPENCODE_CONFIG_PATH || process.env.HOST_OPENCODE_XDG_DIR;
-    default:
-      return undefined;
-  }
-}
-
 function isContainerizedApi(): boolean {
-  return process.env.PROPR_CONTAINERIZED === '1'
-    || process.env.PROPR_CONTAINERIZED === 'true'
-    || fs.existsSync('/.dockerenv');
+  const flag = process.env.PROPR_CONTAINERIZED?.trim().toLowerCase();
+  if (flag === '1' || flag === 'true') return true;
+  if (flag === '0' || flag === 'false') return false;
+  return fs.existsSync('/.dockerenv');
 }
 
 function validateAbsoluteCredentialPath(value: string, label: string): string {
@@ -106,37 +91,20 @@ export function resolveAgentLoginConfigPath(agent: AgentConfig): string {
     );
   }
 
-  if (agent.type === 'codex' && configured === AGENT_DEFAULTS.codex.configPath) {
+  let resolved = configured;
+  if (configured === AGENT_DEFAULTS[agent.type].configPath) {
+    // The exact provider default resolves through the same shared contract as
+    // health, usage and task execution, so login updates the store they read.
     try {
-      const resolved = validateAbsoluteCredentialPath(
-        resolveCodexConfigPath(configured),
-        'Agent credential path',
-      );
-      return assertCodexLoginPathAvailable(resolved);
+      resolved = resolveDefaultConfigPath(agent.type);
     } catch (error) {
       if (error instanceof AgentConfigPathUnavailableError) {
         throw new AgentLoginInputError(error.message);
       }
       throw error;
     }
-  }
-
-  let resolved = configured;
-  if (configured === '~' || configured.startsWith('~/')) {
-    const environmentPath = envConfigPath(agent.type);
-    if (configured !== AGENT_DEFAULTS[agent.type].configPath) {
-      throw new AgentLoginInputError('Custom agent credential paths must be absolute; "~" is only supported for the default path');
-    } else if (environmentPath) {
-      resolved = validateAbsoluteCredentialPath(environmentPath, `${agent.type} credential mapping`);
-    } else if (isContainerizedApi()) {
-      throw new AgentLoginInputError(
-        `The existing ${configured} credential path has no host mapping in this container; configure the provider host directory or use a ProPR-managed login`,
-      );
-    } else {
-      resolved = configured === '~'
-        ? os.homedir()
-        : path.join(os.homedir(), configured.slice(2));
-    }
+  } else if (configured === '~' || configured.startsWith('~/')) {
+    throw new AgentLoginInputError('Custom agent credential paths must be absolute; "~" is only supported for the default path');
   }
   const credentialPath = validateAbsoluteCredentialPath(resolved, 'Agent credential path');
   if (agent.type === 'codex') return assertCodexLoginPathAvailable(credentialPath);
