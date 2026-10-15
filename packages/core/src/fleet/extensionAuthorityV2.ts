@@ -174,16 +174,7 @@ export class ExtensionAuthorityV2Plane {
       // expectations below come only from the authenticated, retained request.
       // The observed request identity avoids a pooled query while owning SQLite,
       // and exact retries never depend on recipient signing material.
-      const recipientKey = native?.action === 'recipient.issue'
-        ? await this.extensions.recipientVerificationKey(r.work.extensionInstanceId) : undefined;
-      const delivery = parseExtensionResultDelivery(canonical({ contract: EXTENSION_RESULT_DELIVERY, receipt: response,
-        delivery: native ? { state: 'available', action: native.action, native: volatileResult } : { state: 'unavailable' },
-      }), r, native, digest, recipient => {
-        const { signature, ...signed } = recipient;
-        const bytes = Buffer.from(signature, 'base64url');
-        if (bytes.toString('base64url') !== signature || !recipientKey || !verify(null, Buffer.from(canonical(signed)),
-          createPublicKey({ key: Buffer.from(recipientKey, 'base64url'), type: 'spki', format: 'der' }), bytes)) return refuse();
-      });
+      const delivery = await this.preflightDelivery(r, native, response, volatileResult);
       run('INSERT INTO extension_authority_v2_receipts VALUES (?, ?, ?)', r.challenge, canonical(response), digest(response));
       commit();
       discard = undefined;
@@ -196,6 +187,19 @@ export class ExtensionAuthorityV2Plane {
       return refuse();
     }
     finally { await this.releaseConnection(connection, synchronous); }
+  }
+  private async preflightDelivery(r: AuthorityV2Request, native: FleetExtensionRequest | undefined,
+    response: AuthorityV2Response, volatileResult: unknown): Promise<ExtensionResultDelivery> {
+    const recipientKey = native?.action === 'recipient.issue'
+      ? await this.extensions.recipientVerificationKey(r.work.extensionInstanceId) : undefined;
+    return parseExtensionResultDelivery(canonical({ contract: EXTENSION_RESULT_DELIVERY, receipt: response,
+      delivery: native ? { state: 'available', action: native.action, native: volatileResult } : { state: 'unavailable' },
+    }), r, native, digest, recipient => {
+      const { signature, ...signed } = recipient;
+      const bytes = Buffer.from(signature, 'base64url');
+      if (bytes.toString('base64url') !== signature || !recipientKey || !verify(null, Buffer.from(canonical(signed)),
+        createPublicKey({ key: Buffer.from(recipientKey, 'base64url'), type: 'spki', format: 'der' }), bytes)) return refuse();
+    });
   }
   private checkTime(context: ObservationContext, latestObservation: number, now: number, high: Record<string, unknown> | undefined) {
     const { envelope: { request: r, routing: { statement: s } } } = context;
