@@ -2,6 +2,8 @@ import type { Knex } from 'knex';
 import { db } from '../db/connection.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
+import { findIssueSubmission } from './taskSubmissionService.js';
+import type { RetryRunEvidence, RetryRunReceipt } from './issueRetryRun.js';
 
 /**
  * The requester and posted instructions of a requested issue retry. The job
@@ -37,10 +39,12 @@ import { loadPrimaryProcessingLabels } from '../config/configManager.js';
  * A run carries a request on its own trigger, and its dispatch records that
  * trigger, or a later one, as the submission's consumed trigger before it
  * records the request consumed. A request whose own trigger that receipt
- * reached was carried, even if recording its consumption failed. An
- * issue-only run consumes no trigger, so its dispatch instead keeps a receipt
- * of the request whose run it enqueued until it records the request consumed:
- * a request with that receipt was carried, and never runs again.
+ * reached was carried, even if recording its consumption failed. Whatever
+ * either receipt records, the queue keeps its own record of every request
+ * whose children it accepted, written with them, until the request is
+ * recorded consumed: a request with that record was carried, and never runs
+ * again, however long recording its consumption takes, and whichever
+ * trigger a restart published since.
  */
 export interface IssueRetryRequest {
   id: number;
@@ -82,16 +86,23 @@ export type RetryRun = (
   | { deferred: IssueRetryRequest }
 ) & {
   /** Open requests an earlier dispatch already carried, whose consumption is still to be recorded. */
-  carried?: IssueRetryRequest[];
+  carried?: CarriedRetryRequest[];
 };
+
+/**
+ * An open request a run carried, and the trigger the submission's dispatch
+ * receipt must still record for it before it is recorded consumed, when the
+ * queue's record of its run shows a run the receipt does not.
+ */
+export type CarriedRetryRequest = IssueRetryRequest & { receiptEventId?: string };
 
 export interface RetryRunDelivery {
   /** The trigger events a submission admits as a fresh run; an issue-only run admits every one. */
   admitted?: (events: TriggerLabelEvent[]) => Promise<TriggerLabelEvent[]>;
   /** The latest trigger the submission's dispatch receipt records as consumed. */
   consumedEventId?: string | null;
-  /** Whether an earlier issue-only dispatch kept a receipt of enqueuing the request's run. */
-  dispatched?: (request: IssueRetryRequest) => Promise<boolean>;
+  /** The run the queue accepted for the request, by its own record, or null when it accepted none. */
+  runs?: (request: IssueRetryRequest) => Promise<RetryRunReceipt | null>;
 }
 
 // A trigger write whose response was lost lands within this; a first trigger
@@ -330,19 +341,11 @@ export async function issueRetryPublicationOpen(database: Knex, write: Publicati
  * and any job carrying it, until a delivery's dispatch or a later follow-up
  * records the outcome. It names the write by its request and when the write
  * began, so it never confirms another write of a restarted request.
- *
- * It also keeps the receipt of an issue-only request whose run a dispatch
- * enqueued, from just after its children are added until the request is
- * recorded consumed, so neither a retry of that dispatch nor a later
- * delivery, restart or follow-up runs it again once its children are gone.
  */
 export interface RetryOutcomeEvidence {
   save(write: PublicationWrite, publication: RetryPublicationOutcome): Promise<void>;
   read(write: PublicationWrite): Promise<RetryPublicationOutcome | null>;
   clear(write: PublicationWrite): Promise<void>;
-  saveDispatched(request: Pick<IssueRetryRequest, 'id'>): Promise<void>;
-  dispatched(request: Pick<IssueRetryRequest, 'id'>): Promise<boolean>;
-  clearDispatched(request: Pick<IssueRetryRequest, 'id'>): Promise<void>;
 }
 
 interface EvidenceClient {
@@ -352,9 +355,8 @@ interface EvidenceClient {
 }
 
 const evidenceKey = (write: PublicationWrite) => `issue:retry-outcome:${write.id}:${write.publishedAt}`;
-const dispatchedKey = (request: Pick<IssueRetryRequest, 'id'>) => `issue:retry-dispatched:${request.id}`;
 
-/** Evidence kept in Redis without expiry: only recording the outcome or consumption it evidences drops it. */
+/** Evidence kept in Redis without expiry: only recording the outcome it evidences drops it. */
 export function redisRetryOutcomeEvidence(client: () => EvidenceClient | Promise<EvidenceClient>): RetryOutcomeEvidence {
   return {
     save: async (write, publication) => { await (await client()).set(evidenceKey(write), publication); },
@@ -363,14 +365,14 @@ export function redisRetryOutcomeEvidence(client: () => EvidenceClient | Promise
       return publication === 'possible' || publication === 'refused' ? publication : null;
     },
     clear: async write => { await (await client()).del(evidenceKey(write)); },
-    saveDispatched: async request => { await (await client()).set(dispatchedKey(request), '1'); },
-    dispatched: async request => (await (await client()).get(dispatchedKey(request))) !== null,
-    clearDispatched: async request => { await (await client()).del(dispatchedKey(request)); },
   };
 }
 
-/** The request records, and the outcome evidence kept for writes they could not record. */
-export interface RetryOutcomeStores { database: Knex; evidence: RetryOutcomeEvidence }
+/**
+ * The request records, the outcome evidence kept for writes they could not
+ * record, and the queue's records of the runs it accepted.
+ */
+export interface RetryOutcomeStores { database: Knex; evidence: RetryOutcomeEvidence; runs?: RetryRunEvidence }
 
 /** Records the outcome of the request's trigger write, then drops its evidence, which is kept if recording fails. */
 export async function confirmIssueRetryPublication(
@@ -383,30 +385,64 @@ export async function confirmIssueRetryPublication(
 }
 
 /**
+ * The trigger the submission's dispatch receipt must still record for a
+ * request the queue's record shows a run carried: the later of the trigger
+ * its run's dispatch would have recorded and the request's own, which a
+ * restart may have published since, so neither runs again without it. None
+ * when the receipt already records it, or no longer shows in the history.
+ */
+export function carriedReceipt(
+  request: IssueRetryRequest, run: RetryRunReceipt, { events, consumedEventId }: Pick<TriggerHistory, 'events' | 'consumedEventId'>,
+): string | undefined {
+  const position = (eventId: string | null | undefined) => eventId ? events.findIndex(event => String(event.id) === eventId) : -1;
+  const own = retryRequestTrigger(request, events);
+  const target = [run.receiptEventId, typeof own === 'string' ? own : null]
+    .filter((eventId): eventId is string => position(eventId) !== -1)
+    .sort((a, b) => position(b) - position(a))[0];
+  if (target === undefined || (consumedEventId && position(consumedEventId) === -1)) return undefined;
+  return position(consumedEventId) < position(target) ? target : undefined;
+}
+
+/**
  * Records the evidenced outcome of each of the issue's requests whose trigger
  * write's outcome is still unrecorded, so a refusal releases its request and
  * an applied write lets recovery adopt it, whatever process learned it. A
- * request whose run an issue-only dispatch enqueued is recorded consumed.
+ * request the queue's record shows a run carried is recorded consumed, after
+ * the submission's dispatch receipt records its trigger, so neither a restart
+ * nor a later follow-up takes it for one never run.
  */
-export async function reconcileIssueRetryOutcomes(stores: RetryOutcomeStores, issue: IssueKey, now = Date.now()): Promise<void> {
+export async function reconcileIssueRetryOutcomes(stores: RetryOutcomeStores, issue: IssueKey, history: TriggerHistory): Promise<void> {
   for (const request of await findIssueRetryRequests(stores.database, issue)) {
-    if (await stores.evidence.dispatched(request)) {
-      await consumeIssueRetryRequest(stores, request, now);
+    const run = request.publication === 'reserved' ? null : await stores.runs?.read(request);
+    if (run) {
+      const receipt = carriedReceipt(request, run, history);
+      if (receipt) {
+        const submission = await findIssueSubmission({ ...issue } as Parameters<typeof findIssueSubmission>[0], stores.database);
+        if (submission) await recordIssueRetryRunReceipt(stores.database, submission.id, receipt);
+      }
+      await consumeIssueRetryRequest(stores, request, history.now);
       continue;
     }
     if (request.publication !== 'pending' || request.publishedAt === null) continue;
     const publication = await stores.evidence.read(request);
-    if (publication) await confirmIssueRetryPublication(stores, request, publication, now);
+    if (publication) await confirmIssueRetryPublication(stores, request, publication, history.now);
   }
+}
+
+/** The submission's dispatch receipt, as a dispatch that enqueued a run records it: dispatched, and through `triggerEventId`. */
+export async function recordIssueRetryRunReceipt(database: Knex, submissionId: string, triggerEventId?: string): Promise<void> {
+  await database('task_submissions').where({ id: submissionId })
+    .update({ dispatch_complete: true, state: 'queued', error: null, ...(triggerEventId ? { retry_event_id: triggerEventId } : {}) });
 }
 
 /**
  * Records that a dispatch carried the request into its run, which releases it,
- * then drops any dispatch receipt of it, which is kept if recording fails.
+ * then drops the queue's record of its run, which is kept if recording fails.
  */
-export async function consumeIssueRetryRequest({ database, evidence }: RetryOutcomeStores, request: Pick<IssueRetryRequest, 'id'>, now = Date.now()): Promise<void> {
+export async function consumeIssueRetryRequest({ database, runs }: RetryOutcomeStores, request: Pick<IssueRetryRequest, 'id'>, now = Date.now()): Promise<void> {
   await database(TABLE).where({ id: request.id }).update({ consumed_at: now, owed_issue: null, recorded_at: now });
-  await evidence.clearDispatched(request);
+  // Once released, the request is never selected again, so a record left behind is never read.
+  await runs?.clear(request).catch(() => undefined);
 }
 
 /**
@@ -417,9 +453,9 @@ export async function consumeIssueRetryRequest({ database, evidence }: RetryOutc
  * still land, defers the delivery: dispatching another trigger would consume
  * its trigger, and dispatching its own would either drop its requester or
  * adopt a request that may have been refused. One the submission's dispatch
- * receipt, or an issue-only dispatch's receipt of it, shows an earlier run
- * carried is reported for its consumption to be recorded, and owes this
- * delivery nothing.
+ * receipt, or the queue's record of its run, shows an earlier run carried is
+ * reported for its consumption to be recorded, and owes this delivery
+ * nothing; nor does its trigger, which that run consumed, run without it.
  *
  * The open requests are read after the history, so one still reserved then
  * had written no trigger the history shows, and a delivery that admits
@@ -427,7 +463,7 @@ export async function consumeIssueRetryRequest({ database, evidence }: RetryOutc
  */
 export async function selectRetryRun(
   issue: IssueKey,
-  { admitted, consumedEventId, dispatched }: RetryRunDelivery,
+  { admitted, consumedEventId, runs }: RetryRunDelivery,
   { getOctokit = getAuthenticatedOctokit, processingLabels = loadPrimaryProcessingLabels, database = db, now = Date.now }: SelectionDeps = {},
 ): Promise<RetryRun> {
   // An issue-only delivery consumes no trigger, so without a request it needs no history.
@@ -438,10 +474,16 @@ export async function selectRetryRun(
   const admittedEvents = admitted ? await admitted(events) : events;
   const admissible = new Set(admittedEvents.map(event => String(event.id)));
   const latest = events.at(-1);
-  const settled: IssueRetryRequest[] = [];
+  const settled: CarriedRetryRequest[] = [];
   const withCarried = <Run extends RetryRun>(run: Run): Run => settled.length > 0 ? { ...run, carried: settled } : run;
   for (const request of open) {
-    const owed = await owedDelivery(request, { events, admissible, now: at, consumedEventId }, dispatched);
+    // The queue's record of a run outlives its children and any receipt, so it is consulted first.
+    const recorded = await recordedRun(request, { runs, admitted }, { events, consumedEventId });
+    if (recorded) {
+      settled.push(recorded);
+      continue;
+    }
+    const owed = owedRun(request, { events, admissible, now: at, consumedEventId });
     if (owed === 'carried') {
       settled.push(request);
       continue;
@@ -451,15 +493,33 @@ export async function selectRetryRun(
     if (owed !== null) return withCarried({ request, triggerEventId: owed, latestTriggerEventId: latest?.id === undefined ? undefined : String(latest.id) });
   }
   if (!admitted) return withCarried({ request: null });
-  return withCarried({ request: null, trigger: latest?.id && admittedEvents.at(-1) === latest ? { eventId: String(latest.id) } : null });
+  return withCarried({ request: null, trigger: unrequestedTrigger(events, admittedEvents, settled) });
 }
 
-/** What the request is owed, as by `owedRun`, unless an issue-only dispatch's receipt shows its run was enqueued: it was carried. */
-async function owedDelivery(
-  request: IssueRetryRequest, history: TriggerHistory & { admissible: Set<string> }, dispatched: RetryRunDelivery['dispatched'],
-): Promise<ReturnType<typeof owedRun>> {
-  if (request.publication !== 'reserved' && dispatched && await dispatched(request)) return 'carried';
-  return owedRun(request, history);
+/**
+ * The trigger a delivery runs without a request: the latest, if admitted,
+ * unless a carried request's run consumed it, which the submission's receipt
+ * does not record yet; that runs nothing more.
+ */
+function unrequestedTrigger(events: TriggerLabelEvent[], admittedEvents: TriggerLabelEvent[], settled: CarriedRetryRequest[]): { eventId: string } | null {
+  const latest = events.at(-1);
+  if (!latest?.id || admittedEvents.at(-1) !== latest) return null;
+  const eventId = String(latest.id);
+  return settled.some(held => held.receiptEventId === eventId) ? null : { eventId };
+}
+
+/**
+ * The request as carried, when the queue's record shows it accepted the
+ * request's run, with the trigger a submission's dispatch receipt must still
+ * record for it; null when it shows none.
+ */
+async function recordedRun(
+  request: IssueRetryRequest, { runs, admitted }: Pick<RetryRunDelivery, 'runs' | 'admitted'>, history: Pick<TriggerHistory, 'events' | 'consumedEventId'>,
+): Promise<CarriedRetryRequest | null> {
+  if (request.publication === 'reserved' || !runs) return null;
+  const run = await runs(request);
+  if (!run) return null;
+  return admitted ? { ...request, receiptEventId: carriedReceipt(request, run, history) } : request;
 }
 
 /**

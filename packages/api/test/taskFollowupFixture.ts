@@ -32,10 +32,13 @@ export const state = {
   // receives the trigger add, before it answers.
   redisFails: false, onLabelAdd: undefined as undefined | (() => void | Promise<void>),
   // Whether a dispatch fails to record that it consumed a retry request, the trigger write its job confirms,
-  // or its receipt of the issue-only request whose run it enqueued.
-  consumeFails: false, confirmFails: false, dispatchReceiptFails: false,
-  // A hook run while GitHub creates a posted comment, before it answers.
+  // or the submission's dispatch receipt; and whether adding a requested retry's run fails before it reaches the queue.
+  consumeFails: false, confirmFails: false, recordDispatchFails: false, runEnqueueFails: false,
+  // Whether the queue's records of requested retries' runs cannot be read.
+  runRecordsFail: false,
+  // Hooks run while GitHub creates a posted comment, and while it reads the issue, before it answers.
   onCommentPost: undefined as undefined | (() => void | Promise<void>),
+  onIssueRead: undefined as undefined | (() => void | Promise<void>),
   // Outcome records the route left to retry after responding; a test runs them.
   outcomeRetries: [] as Array<() => Promise<boolean>>,
   // The ID GitHub gives the next posted comment; every post gets its own.
@@ -50,6 +53,8 @@ export const APP_ACTOR_ID = 99;
 export const HUMAN_ACTOR_ID = 7;
 
 const claims = new Map<string, string>();
+// Hashes, such as the queue's records of requested retries' runs.
+const hashes = new Map<string, Record<string, string>>();
 const redisDown = () => { if (state.redisFails) throw new Error('Connection is closed.'); };
 const redis = {
   set: mock.fn(async (key: string, value: string) => {
@@ -60,7 +65,13 @@ const redis = {
   }),
   get: async (key: string) => { redisDown(); return claims.get(key) ?? null; },
   setex: async (key: string, _ttl: number, value: string) => { claims.set(key, value); },
-  del: async (key: string) => { redisDown(); claims.delete(key); },
+  del: async (key: string) => { redisDown(); claims.delete(key); hashes.delete(key); },
+  hset: async (key: string, fields: Record<string, string>) => { redisDown(); hashes.set(key, { ...hashes.get(key), ...fields }); },
+  hgetall: async (key: string) => {
+    redisDown();
+    if (state.runRecordsFail) throw new Error('Connection is closed.');
+    return { ...hashes.get(key) };
+  },
   eval: async (script: string, _count: number, key: string, ...[token, next]: string[]) => {
     if (state.redisFails) throw new Error('Connection is closed.');
     if (script.includes("ARGV[2] == ''")) {
@@ -83,7 +94,10 @@ const add = mock.fn(async (...args: [string, CommentJobData, JobsOptions]) => {
   if (!state.queueFails || state.acceptBeforeFailure) acceptedJobs.set(args[2].jobId!, args[1]);
   if (state.queueFails) throw new Error('connection lost');
 });
-const queue = { add, client: Promise.resolve(redis), getActive: async () => state.existingJobs, getWaiting: async () => [], getDelayed: async () => [] };
+const queue = {
+  add, client: Promise.resolve(redis), toKey: (type: string) => `bull:github-issue-processor:${type}`,
+  getActive: async () => state.existingJobs, getWaiting: async () => [], getDelayed: async () => [],
+};
 // A real BullMQ queue, on a real Redis server, that replaces the simulated queue and Redis while set.
 let liveQueue: object | null = null;
 /** Routes the issue queue, and the Redis client the route takes from it, to a real queue until reset with null. */
@@ -121,6 +135,7 @@ const request = mock.fn(async (route: string, options: { body?: string; issue_nu
   } };
   if (route.startsWith('GET') && route.includes('/pulls/')) return { data: { state: state.prState, head: { ref: 'acceptance' }, labels: [] } };
   if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
+    await state.onIssueRead?.();
     return { data: { state: state.issueState, labels: state.issueLabels.map(name => ({ name })) } };
   }
   if (route.includes('/labels')) return { data: await labelRequest(route, options as { name?: string; labels?: string[] }) };
@@ -202,10 +217,11 @@ beforeEach(async () => {
   state.startLoopFails = false; state.prState = 'open'; state.commentPostError = undefined;
   state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
   state.labelAdd = 'ok'; state.timelineReadFails = false; state.delayedLabels = []; state.redisFails = false; state.onLabelAdd = undefined;
-  state.consumeFails = false; state.confirmFails = false; state.dispatchReceiptFails = false; state.onCommentPost = undefined; state.outcomeRetries = [];
+  state.consumeFails = false; state.confirmFails = false; state.recordDispatchFails = false; state.runEnqueueFails = false; state.runRecordsFail = false;
+  state.onCommentPost = undefined; state.onIssueRead = undefined; state.outcomeRetries = [];
   state.now = Date.parse('2026-10-15T10:00:00.700Z'); state.sleeps = [];
   state.timeline = [{ id: 1, event: 'labeled', created_at: '2026-10-15T09:59:00Z', label: { name: 'AI' }, actor: { id: HUMAN_ACTOR_ID } }];
-  claims.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();
+  claims.clear(); hashes.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();
   for (const fn of [add, request, invalidate, startLoop, clearState, updateLabels, redis.rpush]) fn.mock.resetCalls();
 });
 

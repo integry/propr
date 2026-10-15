@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { state, claims, add, postFollowup, database, applyLabels, APP_ACTOR_ID, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
-import { openRequests, dispatchQueued, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch, pollDelivery, relabelWebhook, dedupKey } from './taskFollowupIssueDispatch.js';
+import { openRequests, dispatchQueued, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch, pollDelivery, relabelWebhook, dedupKey, requestChildId } from './taskFollowupIssueDispatch.js';
 
 // A trigger write's outcome the route learned but could not record with its
 // request is kept in Redis as durable evidence of that write. It survives the
@@ -35,7 +35,8 @@ async function publishWhileRecordsOffline(body = ORIGINAL) {
 async function assertRequestRun(backed: boolean, own: number, { dispatched, children }: Awaited<ReturnType<typeof dispatchQueued>>) {
   assert.equal(dispatched.status, 'dispatched');
   const [{ jobId, data: child }] = children;
-  if (backed) assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${own}`);
+  assert.equal(jobId, await requestChildId());
+  if (backed) assert.equal(child.correlationId?.split('-').at(-1), String(own), 'it runs on its own trigger');
   assert.equal(child.userId, 'user-1');
   assert.equal(child.retryRequesterId, 'user-1');
   assert.equal(child.retryCommentId, FIRST_COMMENT_ID);

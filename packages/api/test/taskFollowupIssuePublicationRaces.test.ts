@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IssueJobData } from '../../core/src/queue/taskQueue.types.js';
 import { state, claims, add, postFollowup, database, applyLabels, landDelayedLabels, APP_ACTOR_ID, HUMAN_ACTOR_ID, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
-import { openRequests, routes, dispatchQueued, promptFor, onIssue, deliverAndDispatch, relabelWebhook, pollDelivery, dedupKey } from './taskFollowupIssueDispatch.js';
+import { openRequests, routes, dispatchQueued, promptFor, onIssue, deliverAndDispatch, relabelWebhook, pollDelivery, dedupKey, requestChildId } from './taskFollowupIssueDispatch.js';
 
 // A request's publication touches the issue only while the issue is still
 // its own: one whose reservation or window lapsed leaves a later request's
@@ -23,7 +23,8 @@ async function assertRunFor(backed: boolean, { dispatched, children }: Awaited<R
   { own, requester, commentId, instructions, foreign }: { own: number; requester: string; commentId: number; instructions: RegExp; foreign?: RegExp }) {
   assert.equal(dispatched.status, 'dispatched');
   const [{ jobId, data: child }] = children as Array<{ jobId: string; data: IssueJobData }>;
-  if (backed) assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${own}`);
+  assert.equal(jobId, await requestChildId(commentId));
+  if (backed) assert.equal(child.correlationId?.split('-').at(-1), String(own), 'it runs on its own trigger');
   assert.equal(child.userId, requester);
   assert.equal(child.retryRequesterId, requester);
   assert.equal(child.retryCommentId, commentId);

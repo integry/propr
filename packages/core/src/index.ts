@@ -602,6 +602,7 @@ export { createManagedPreviewStorageClient } from './services/previewStorage/run
 export * from './services/taskSubmissionService.js';
 export * from './services/taskSubmissionRetry.js';
 export * from './services/issueRetryRequest.js';
+export * from './services/issueRetryRun.js';
 export { LIVE_OUTPUT_MAX_BYTES, LIVE_OUTPUT_TTL_SECONDS, liveOutputKey, liveOutputMetaKey, writeLiveOutput, LiveOutputLog, type LiveOutputWriteMode } from './agents/impl/utils/liveOutputLog.js';
 export { checkNameMatches, isNonBlockingCheck } from './webhook/nonBlockingChecks.js';
 

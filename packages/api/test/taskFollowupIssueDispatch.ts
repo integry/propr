@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import type { Redis } from 'ioredis';
 import type { Job, JobsOptions } from 'bullmq';
 import type { IssueJobData } from '../../core/src/queue/taskQueue.types.js';
-import { state, claims, add, request, redis, database } from './taskFollowupFixture.js';
+import { state, claims, add, request, redis, database, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
 
 const { processDetectedIssue } = await import('../../core/src/daemon/issueDetection.js');
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
@@ -11,7 +11,10 @@ const { resolveTaskSubmissionRetry, admittedSubmissionTriggers } = await import(
 const { fetchIssueComments } = await import('../../../src/jobs/issueJob/github.js');
 const { generateClaudePrompt } = await import('../../core/src/claude/prompts/promptGenerator.js');
 const { selectRetryRun, consumeIssueRetryRequest, confirmIssueRetryPublication, redisRetryOutcomeEvidence } = await import('../../core/src/services/issueRetryRequest.js');
+const { queueRetryRunEvidence, retryRunRecord } = await import('../../core/src/services/issueRetryRun.js');
+const { getIssueQueue } = await import('../../core/src/queue/taskQueue.js');
 type IssueRetryRequest = import('../../core/src/services/issueRetryRequest.js').IssueRetryRequest;
+type RetryRunChild = import('../../core/src/services/issueRetryRun.js').RetryRunChild;
 type Submission = Awaited<ReturnType<typeof findIssueSubmission>>;
 
 /** The retry requests issue 14 may still owe a run, oldest first. */
@@ -38,24 +41,33 @@ const timelineOctokit = async () => ({ request: async () => ({ data: state.timel
 type RetryOutcomeEvidence = ReturnType<typeof redisRetryOutcomeEvidence>;
 /** The trigger write outcomes the route kept in Redis because it could not record them. */
 export const retryOutcomes = redisRetryOutcomeEvidence(() => redis);
-/** The production retry request store, on the test database and the given outcome evidence. */
-export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence) => ({
+/** The queue's records of the requested retries' runs it accepted, as the route reads them from the issue queue. */
+export const retryRuns = queueRetryRunEvidence(async () => await getIssueQueue() as never);
+type RunEnqueue = (held: IssueRetryRequest, children: RetryRunChild[], receiptEventId: string | null) => Promise<void>;
+/** Adds a run to the simulated queue: only the record of the run is kept, in the simulated Redis. */
+const simulatedRunEnqueue: RunEnqueue = async (held, children, receiptEventId) => {
+  const { key, fields } = retryRunRecord(await getIssueQueue() as never, held, children.map(child => child.opts.jobId), receiptEventId);
+  await redis.hset(key, fields);
+};
+/** The production retry request store, on the test database, the given outcome evidence, and the queue's run records. */
+export const retryRequestStoreFor = (outcomes: RetryOutcomeEvidence, enqueue: RunEnqueue = simulatedRunEnqueue) => ({
   select: (issue: IssueJobData, { submission }: { submission: Submission }) =>
-    selectRetryRun(issue, submission ? { admitted: events => admittedSubmissionTriggers(submission, events, database), consumedEventId: submission.retry_event_id }
-      : { dispatched: held => outcomes.dispatched(held) },
+    selectRetryRun(issue, submission
+      ? { admitted: events => admittedSubmissionTriggers(submission, events, database), consumedEventId: submission.retry_event_id, runs: held => retryRuns.read(held) }
+      : { runs: held => retryRuns.read(held) },
       { getOctokit: timelineOctokit, processingLabels: async () => ['AI'], database, now: () => state.now }),
   evidence: (_issue: IssueJobData, held: IssueRetryRequest) => outcomes.read(held),
   confirm: async (_issue: IssueJobData, held: IssueRetryRequest, publication: 'possible' | 'refused') => {
     if (state.confirmFails) throw new Error('SQLITE_BUSY: database is locked');
     await confirmIssueRetryPublication({ database, evidence: outcomes }, held, publication, state.now);
   },
-  dispatched: async (_issue: IssueJobData, held: IssueRetryRequest) => {
-    if (state.dispatchReceiptFails) throw new Error('Connection is closed.');
-    await outcomes.saveDispatched(held);
+  enqueue: async (_issue: IssueJobData, held: IssueRetryRequest, children: RetryRunChild[], receiptEventId: string | null) => {
+    if (state.runEnqueueFails) throw new Error('Connection is closed.');
+    await enqueue(held, children, receiptEventId);
   },
   consume: async (_issue: IssueJobData, held: IssueRetryRequest) => {
     if (state.consumeFails) throw new Error('SQLITE_BUSY: database is locked');
-    await consumeIssueRetryRequest({ database, evidence: outcomes }, held, state.now);
+    await consumeIssueRetryRequest({ database, evidence: outcomes, runs: retryRuns }, held, state.now);
   },
 });
 export const retryRequestStore = retryRequestStoreFor(retryOutcomes);
@@ -68,6 +80,7 @@ export function dispatcherDeps(children: Array<{ jobId: string; data: IssueJobDa
       timelineOctokit, async () => ['AI']),
     // The durable receipt the production dispatcher records.
     recordDispatch: async (id: string, triggerEventId?: string) => {
+      if (state.recordDispatchFails) throw new Error('SQLITE_BUSY: database is locked');
       await database('task_submissions').where({ id }).update({ dispatch_complete: true, ...(triggerEventId ? { retry_event_id: triggerEventId } : {}) });
     },
     recordDispatchFailure: async () => undefined,
@@ -77,7 +90,13 @@ export function dispatcherDeps(children: Array<{ jobId: string; data: IssueJobDa
     resolveLlmLabel: async () => ({ agentAlias: 'claude', model: 'claude-opus-5-5' }),
     getAllCustomLabels: async () => [], getDefaultModel: () => 'claude-opus-5-5',
     issueQueue: { add: async (_name: string, data: IssueJobData, options: JobsOptions & { jobId: string }) => { children.push({ jobId: options.jobId, data, options }); } },
-    retryRequests,
+    retryRequests: {
+      ...retryRequests,
+      enqueue: async (issue: IssueJobData, held: IssueRetryRequest, runChildren: RetryRunChild[], receiptEventId: string | null) => {
+        await retryRequests.enqueue(issue, held, runChildren, receiptEventId);
+        children.push(...runChildren.map(child => ({ jobId: child.opts.jobId, data: child.data, options: child.opts })));
+      },
+    },
   } as unknown as Parameters<typeof handleDispatchWithDeps>[1];
 }
 
@@ -138,3 +157,12 @@ export async function deliverAndDispatch(deliver: () => ReturnType<typeof proces
   assert.equal(recovery.retryRequesterId, undefined);
   return dispatchQueued(index);
 }
+
+/** The ID of the child job that runs the request posted as `commentId`: the request's own, whichever trigger it ran on. */
+export async function requestChildId(commentId = FIRST_COMMENT_ID) {
+  const { id } = await database('issue_retry_request_states').where({ comment_id: commentId }).first('id') as { id: number };
+  return `issue-integry-propr-14-claude-claude-opus-5-5-main-request-${id}-${commentId}`;
+}
+
+/** The latest trigger issue 14's submission's dispatch receipt records as consumed. */
+export const consumedTrigger = async () => (await database('task_submissions').where({ issue_number: 14 }).first('retry_event_id') as { retry_event_id: string | null } | undefined)?.retry_event_id;

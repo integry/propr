@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { state, add, postFollowup, database, applyLabels, landDelayedLabels, APP_ACTOR_ID, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
-import { openRequests, dispatchQueued, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch } from './taskFollowupIssueDispatch.js';
+import { openRequests, dispatchQueued, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch, requestChildId, consumedTrigger } from './taskFollowupIssueDispatch.js';
 
 // A request's publication window opens when its trigger write begins, however
 // long posting it took, and a trigger write the route saw land keeps a path to
@@ -40,7 +40,8 @@ for (const [routing, backed] of routings) {
 
       const own = state.timeline.at(-1)!.id;
       const run = await dispatchQueued(0);
-      if (backed) assert.equal(run.children[0].jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${own}`);
+      assert.equal(run.children[0].jobId, await requestChildId());
+      if (backed) assert.equal(await consumedTrigger(), String(own), 'it ran on its own trigger');
       await assertRequestRun(run, /Retry after a slow post/);
       if (backed) assert.equal((await submissionRow())?.retry_event_id, String(own));
     });
@@ -100,7 +101,8 @@ for (const [routing, backed] of routings) {
       state.confirmFails = false;
 
       const run = await dispatchQueued(0);
-      if (backed) assert.equal(run.children[0].jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${own}`);
+      assert.equal(run.children[0].jobId, await requestChildId());
+      if (backed) assert.equal(await consumedTrigger(), String(own), 'it ran on its own trigger');
       await assertRequestRun(run, /Retry with these instructions/);
       assert.equal(await state.outcomeRetries[0](), true, 'a late retry of the record changes nothing');
       assert.deepEqual(await openRequests(), []);

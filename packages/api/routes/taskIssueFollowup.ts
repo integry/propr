@@ -4,7 +4,7 @@ import {
   getAuthenticatedOctokit, getIssueQueue, loadPrimaryProcessingLabels, parseSlashCommand,
   safeRemoveLabel, generateCorrelationId, logger, findIssueSubmission, submissionRetryAdmissibleAt,
   reserveIssueRetryRequest, beginIssueRetryPublication, releaseIssueRetryReservation, recordIssueRetryPublication, restartIssueRetryPublication,
-  retryRequestTrigger, triggerLabelEvents, redisRetryOutcomeEvidence, reconcileIssueRetryOutcomes, issueRetryPublicationOpen,
+  retryRequestTrigger, triggerLabelEvents, redisRetryOutcomeEvidence, reconcileIssueRetryOutcomes, issueRetryPublicationOpen, queueRetryRunEvidence,
   type IssueRetryRequest, type TriggerHistory, type TriggerLabelEvent,
 } from '@propr/core';
 import { enqueueIssueImplementationJob } from './planIssueHelpers.js';
@@ -199,9 +199,13 @@ async function claimRetry(
     return refused(409, `A run for issue #${input.issueNumber} was just requested. Refresh the task before retrying.`);
   }
   // An earlier request's outcome that its process could not record is recorded first, so
-  // a refused write releases its request and an applied one is not taken for unknown.
-  await reconcileIssueRetryOutcomes({ database: db, evidence: outcomeEvidence(input.redis) }, issueKeyOf(input), history.now).catch((error: Error) => {
+  // a refused write releases its request and an applied one is not taken for unknown; and
+  // one whose run the queue accepted is recorded consumed, so it is neither restarted nor
+  // taken for owed, however its receipt was lost and whichever trigger it published.
+  const stores = { database: db, evidence: outcomeEvidence(input.redis), runs: queueRetryRunEvidence(() => getIssueQueue()) };
+  const reconciled = await reconcileIssueRetryOutcomes(stores, issueKeyOf(input), history).then(() => true, (error: Error) => {
     console.warn(`[followup] Could not reconcile earlier retry outcomes of #${input.issueNumber}: ${error.message}`);
+    return false;
   });
   let reservation: Awaited<ReturnType<typeof reserveIssueRetryRequest>>;
   try {
@@ -212,8 +216,13 @@ async function claimRetry(
     return refused(503, `The retry of issue #${input.issueNumber} could not be recorded, so nothing was posted. Try again.`);
   }
   if ('reserved' in reservation) return reservation;
-  if (reservation.stranded) return { stranded: reservation.owed };
+  // Only a request the queue's records were read for, and show no accepted run of, is restarted:
+  // a record that could not be read may be its run's, which a restart would run again.
+  if (reservation.stranded && reconciled) return { stranded: reservation.owed };
   await releaseClaim(input.redis, dedupeKey, correlationId);
+  if (reservation.stranded) {
+    return refused(503, `Whether the earlier retry of issue #${input.issueNumber} already ran could not be checked, so it was not restarted. Try again.`);
+  }
   return refused(409, `An earlier retry of issue #${input.issueNumber} may still start. Inspect the issue and try again in a few minutes.`);
 }
 

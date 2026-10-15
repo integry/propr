@@ -2,7 +2,8 @@ import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
     db, findIssueSubmission, resolveTaskSubmissionRetry, admittedSubmissionTriggers, logger, selectRetryRun, consumeIssueRetryRequest,
-    confirmIssueRetryPublication, redisRetryOutcomeEvidence, type IssueRetryRequest, type RetryPublicationOutcome, type RetryRun, type SubmissionRetry,
+    confirmIssueRetryPublication, redisRetryOutcomeEvidence, queueRetryRunEvidence, enqueueIssueRetryRun, recordIssueRetryRunReceipt,
+    type IssueRetryRequest, type RetryPublicationOutcome, type RetryRun, type RetryRunChild, type SubmissionRetry,
 } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
@@ -47,9 +48,13 @@ interface RetryRequestStore {
     evidence(issue: IssueJobData, request: IssueRetryRequest): Promise<RetryPublicationOutcome | null>;
     /** Durably records the outcome of the request's trigger write, as the route learned it, then drops its evidence. */
     confirm(issue: IssueJobData, request: IssueRetryRequest, publication: RetryPublicationOutcome): Promise<void>;
-    /** Durably records that an issue-only dispatch enqueued the request's run, until the request is recorded consumed. */
-    dispatched(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
-    /** Durably records that the dispatch carried the request into its run, which releases it and drops its receipt. */
+    /**
+     * Adds the request's children together with the queue's record of its run, which
+     * keeps it carried until it is recorded consumed; `receiptEventId` is the trigger
+     * the submission's dispatch receipt records for the run.
+     */
+    enqueue(issue: IssueJobData, request: IssueRetryRequest, children: RetryRunChild[], receiptEventId: string | null): Promise<void>;
+    /** Durably records that the dispatch carried the request into its run, which releases it and drops the record of its run. */
     consume(issue: IssueJobData, request: IssueRetryRequest): Promise<void>;
 }
 
@@ -102,11 +107,12 @@ async function resolveDefaultAgentForDispatcher(correlatedLogger: Logger): Promi
 export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult> {
     // Read through the issue queue's own connection, and only when a request is deferred.
     const retryOutcomes = redisRetryOutcomeEvidence(() => issueQueue.client);
+    const retryRuns = queueRetryRunEvidence(() => issueQueue);
     return handleDispatchWithDeps(job, {
         findSubmission: findIssueSubmission,
         resolveSubmissionRetry: resolveTaskSubmissionRetry,
         recordDispatchFailure: async (id, error) => { await db('task_submissions').where({ id, dispatch_complete: false }).update({ state: 'failed', error }); },
-        recordDispatch: async (id, triggerEventId) => { await db('task_submissions').where({ id }).update({ dispatch_complete: true, state: 'queued', error: null, ...(triggerEventId ? { retry_event_id: triggerEventId } : {}) }); },
+        recordDispatch: (id, triggerEventId) => recordIssueRetryRunReceipt(db, id, triggerEventId),
         getAuthenticatedOctokit,
         withRetry,
         retryConfigs,
@@ -119,12 +125,12 @@ export async function handleDispatch(job: Job<IssueJobData>): Promise<JobResult>
         resolveDefaultAgentForDispatcher,
         retryRequests: {
             select: (issue, { submission }) => selectRetryRun(issue, submission
-                ? { admitted: events => admittedSubmissionTriggers(submission, events), consumedEventId: submission.retry_event_id }
-                : { dispatched: request => retryOutcomes.dispatched(request) }),
+                ? { admitted: events => admittedSubmissionTriggers(submission, events), consumedEventId: submission.retry_event_id, runs: request => retryRuns.read(request) }
+                : { runs: request => retryRuns.read(request) }),
             evidence: (_issue, request) => retryOutcomes.read(request),
             confirm: async (_issue, request, publication) => { await confirmIssueRetryPublication({ database: db, evidence: retryOutcomes }, request, publication); },
-            dispatched: (_issue, request) => retryOutcomes.saveDispatched(request),
-            consume: async (_issue, request) => consumeIssueRetryRequest({ database: db, evidence: retryOutcomes }, request),
+            enqueue: (_issue, request, children, receiptEventId) => enqueueIssueRetryRun(issueQueue, request, children, { receiptEventId }),
+            consume: async (_issue, request) => consumeIssueRetryRequest({ database: db, evidence: retryOutcomes, runs: retryRuns }, request),
         },
     });
 }
@@ -301,48 +307,47 @@ function applyRunRequest(issueRef: IssueJobData, submission: Submission, request
     }
 }
 
-// How long an issue-only request's child ID stays taken after the child is gone: past any retry of
-// the dispatch that added it, which records its receipt if the dispatch could not.
-const REQUEST_RUN_DEDUPLICATION_MS = 24 * 60 * 60 * 1000;
-
 /**
- * BullMQ deduplication of an issue-only request's child beyond its job ID,
- * which is freed once the child completes or fails and is removed: the add
- * takes it atomically, so a retry of the dispatch that added the child does
- * not run the request again even when the dispatch could not keep its receipt.
+ * A requested retry's children run under IDs of the request's own, the same
+ * across restarts of its publication, so they are never taken for another
+ * request's children, nor another request's for its own; other runs keep the
+ * IDs of their trigger, or of the issue.
  */
-function requestRunDeduplication(childJobId: string, submission: Submission, request: IssueRetryRequest | null) {
-    if (submission || !request) return {};
-    return { deduplication: { id: `${childJobId}-retry-request-${request.id}`, ttl: REQUEST_RUN_DEDUPLICATION_MS } };
+function childRunSuffix(request: IssueRetryRequest | null, retry: SubmissionRetry | null): string {
+    if (request) return `-request-${request.id}-${request.commentId}`;
+    return retry ? `-trigger-${retry.eventId}` : '';
 }
 
 /**
  * Once the children carry the request it is consumed, durably, so neither a
  * redelivery nor a later trigger runs it again. A submission's consumed
- * trigger also releases it. An issue-only run consumes no trigger, so its
- * receipt of the request is kept first: a request whose consumption cannot be
- * recorded fails the dispatch, whose retry, or a later delivery or follow-up,
- * records it consumed by that receipt instead of adding its children again.
+ * trigger also releases it. Until then, the queue's record of its run, which
+ * its children were added with, keeps it carried: a request whose
+ * consumption cannot be recorded fails the dispatch, whose retry, or a later
+ * delivery or follow-up, records it consumed by that record instead of adding
+ * its children again, however much later.
  */
-async function releaseRetryRequest(issueRef: IssueJobData, submission: Submission, request: IssueRetryRequest | null, deps: DispatcherDeps): Promise<void> {
-    if (!request) return;
-    if (!submission) await deps.retryRequests?.dispatched(issueRef, request);
-    await deps.retryRequests?.consume(issueRef, request);
+async function releaseRetryRequest(issueRef: IssueJobData, request: IssueRetryRequest | null, deps: DispatcherDeps): Promise<void> {
+    if (request) await deps.retryRequests?.consume(issueRef, request);
 }
 
 /**
  * Records the consumption of requests an earlier dispatch carried into its
- * run, as its receipt of their own triggers shows, after recording that
- * consumption itself failed. Selection already owes them nothing, so a
- * failure here is left to a later delivery or follow-up, which settles them
- * on the same receipt, rather than holding back this delivery.
+ * run, as its receipt of their own triggers or the queue's record of their
+ * runs shows, after recording that consumption itself failed; a submission's
+ * receipt first records the trigger the run consumed. Selection already owes
+ * them nothing, so a failure here is left to a later delivery or follow-up,
+ * which settles them on the same records, rather than holding back this delivery.
  */
-async function settleCarriedRequests(issueRef: IssueJobData, run: RetryRun, deps: DispatcherDeps): Promise<void> {
+async function settleCarriedRequests(issueRef: IssueJobData, submission: Submission, run: RetryRun, deps: DispatcherDeps): Promise<void> {
     for (const request of run.carried ?? []) {
         logger.info({ issue: issueRef.number, retryCommentId: request.commentId }, 'Recording the consumption of a retry request an earlier dispatch carried');
-        await deps.retryRequests?.consume(issueRef, request).catch((error: Error) => {
-            logger.warn({ issue: issueRef.number, retryCommentId: request.commentId, errMessage: error.message }, 'Could not record a carried retry request as consumed');
-        });
+        try {
+            if (submission && request.receiptEventId) await deps.recordDispatch(submission.id, request.receiptEventId);
+            await deps.retryRequests?.consume(issueRef, request);
+        } catch (error) {
+            logger.warn({ issue: issueRef.number, retryCommentId: request.commentId, errMessage: (error as Error).message }, 'Could not record a carried retry request as consumed');
+        }
     }
 }
 
@@ -362,11 +367,29 @@ function unownedRequest(issueRef: IssueJobData, submission: Submission, run: Ret
     return { status: 'skipped', reason: 'retry_request_not_owed', issueNumber: issueRef.number };
 }
 
+/** The trigger the submission's dispatch receipt records: a run of a request's own trigger also consumes newer triggers it was dispatched past. */
+function dispatchReceipt(submission: Submission, run: RetryRun, trigger: SubmissionRetry | null): string | undefined {
+    if (!submission) return undefined;
+    return ('request' in run && run.request ? run.latestTriggerEventId : undefined) ?? trigger?.eventId;
+}
+
+/** Adds the run's children: a requested retry's with the queue's record of its run, in one transaction; any other's as they are. */
+async function enqueueChildren(
+    issueRef: IssueJobData, { request, receiptEventId }: { request: IssueRetryRequest | null; receiptEventId: string | undefined },
+    children: RetryRunChild[], deps: DispatcherDeps,
+): Promise<void> {
+    if (request && deps.retryRequests) {
+        await deps.retryRequests.enqueue(issueRef, request, children, receiptEventId ?? null);
+        return;
+    }
+    for (const child of children) await deps.issueQueue.add(child.name, child.data, child.opts);
+}
+
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
     const { id: jobId, name: jobName, data: issueRef } = job;
     const submission = await deps.findSubmission(issueRef);
     const { run, trigger } = await resolveConfirmedRun(issueRef, submission, deps);
-    await settleCarriedRequests(issueRef, run, deps);
+    await settleCarriedRequests(issueRef, submission, run, deps);
     if ('deferred' in run) {
         // Its trigger stays unconsumed, so a later delivery retries once its outcome is known.
         logger.warn({ issue: issueRef.number, retryCommentId: run.deferred.commentId }, 'A held retry request may own the trigger but its publication is unreconciled; deferring dispatch');
@@ -413,7 +436,7 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
             { currentIssueData, repoValidation, issueNumber: issueRef.number }, deps, correlatedLogger,
         );
 
-        let jobsEnqueued = 0;
+        const children: RetryRunChild[] = [];
         for (const base of basesToProcess) {
             for (const agentModel of agentModelsToProcess) {
                 const newJobData: IssueJobData = {
@@ -431,32 +454,34 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
 
                 // Deterministic jobId for deduplication - prevents duplicate child jobs
                 // when multiple webhook events trigger the dispatcher for the same issue
-                const childJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentModel.agentAlias}-${agentModel.model}-${base.branch}${retry ? `-trigger-${retry.eventId}` : ''}`;
-
-                await deps.issueQueue.add(jobName, newJobData, {
+                const childJobId = `issue-${issueRef.repoOwner}-${issueRef.repoName}-${issueRef.number}-${agentModel.agentAlias}-${agentModel.model}-${base.branch}${childRunSuffix(retryRequest, retry)}`;
+                children.push({ name: jobName, data: newJobData, opts: {
                     jobId: childJobId,
                     // Retain the initial delivery until its durable dispatch receipt exists.
                     // Late webhook deliveries consult that receipt, even after queue cleanup.
                     removeOnComplete: !submission,
                     removeOnFail: !submission,
-                    ...requestRunDeduplication(childJobId, submission, retryRequest),
-                });
-                jobsEnqueued++;
-                correlatedLogger.info({
-                    jobId,
-                    childJobId,
-                    issue: issueRef.number,
-                    base: base.branch,
-                    agent: agentModel.agentAlias,
-                    model: agentModel.model,
-                    reasoningLevel
-                }, 'Enqueued child job');
+                } });
             }
         }
 
-        // A run of a request's own trigger also consumes newer triggers it was dispatched past.
-        if (submission) await deps.recordDispatch(submission.id, (run.request ? run.latestTriggerEventId : undefined) ?? trigger?.eventId);
-        await releaseRetryRequest(issueRef, submission, retryRequest, deps);
+        const receiptEventId = dispatchReceipt(submission, run, trigger);
+        await enqueueChildren(issueRef, { request: retryRequest, receiptEventId }, children, deps);
+        for (const child of children) {
+            correlatedLogger.info({
+                jobId,
+                childJobId: child.opts.jobId,
+                issue: issueRef.number,
+                base: child.data.baseBranch,
+                agent: child.data.agentAlias,
+                model: child.data.modelName,
+                reasoningLevel
+            }, 'Enqueued child job');
+        }
+        const jobsEnqueued = children.length;
+
+        if (submission) await deps.recordDispatch(submission.id, receiptEventId);
+        await releaseRetryRequest(issueRef, retryRequest, deps);
         correlatedLogger.info({ jobId, issue: issueRef.number, jobsEnqueued }, 'Matrix dispatcher job complete.');
         return { status: 'dispatched', jobsEnqueued, issueNumber: issueRef.number };
 

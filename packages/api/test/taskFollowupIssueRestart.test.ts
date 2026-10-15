@@ -5,6 +5,7 @@ import type { Job } from 'bullmq';
 import { state, claims, add, postFollowup, database, applyLabels, APP_ACTOR_ID, HUMAN_ACTOR_ID, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
 import {
   openRequests, postedComments, dispatchQueued, dispatcherDeps, promptFor, onIssue, takeRecordsOffline, deliverAndDispatch, relabelWebhook, pollDelivery, dedupKey,
+  requestChildId, consumedTrigger,
 } from './taskFollowupIssueDispatch.js';
 
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
@@ -64,7 +65,7 @@ async function assertRestartedRun(backed: boolean, laterBody: string) {
   const { dispatched, children } = await dispatchQueued(index);
   assert.equal(dispatched.status, 'dispatched');
   const [{ jobId, data: child }] = children;
-  if (backed) assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${fresh}`);
+  assert.equal(jobId, await requestChildId(), 'it runs under the request\'s own child ID, the same across restarts');
   assert.equal(child.userId, 'user-1', 'the restarted request runs for its own requester');
   assert.equal(child.retryRequesterId, 'user-1');
   assert.equal(child.retryCommentId, FIRST_COMMENT_ID);
@@ -195,7 +196,8 @@ for (const [routing, backed] of routings) {
       const fresh = state.timeline.at(-1)!.id;
       const { dispatched, children: [{ jobId, data: child }] } = await deliverAndDispatch();
       assert.equal(dispatched.status, 'dispatched');
-      if (backed) assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${fresh}`);
+      assert.equal(jobId, await requestChildId());
+      if (backed) assert.equal(await consumedTrigger(), String(fresh), 'it ran on its own trigger');
       assert.equal(child.userId, 'user-1');
       assert.equal(child.retryCommentId, FIRST_COMMENT_ID);
       assert.match(await promptFor(child), new RegExp(ORIGINAL));
@@ -220,7 +222,8 @@ for (const [routing, backed] of routings) {
       state.now += 30_000;
       const { dispatched, children: [{ jobId, data: child }] } = await deliverAndDispatch(pollDelivery);
       assert.equal(dispatched.status, 'dispatched');
-      if (backed) assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${own.id}`);
+      assert.equal(jobId, await requestChildId());
+      if (backed) assert.equal(await consumedTrigger(), String(own.id), 'it ran on its own trigger');
       assert.equal(child.userId, 'user-1');
       assert.equal(child.retryCommentId, FIRST_COMMENT_ID);
       assert.match(await promptFor(child), new RegExp(ORIGINAL));
@@ -286,7 +289,7 @@ async function dispatchWithoutConsumption(index: number, fresh: number) {
   state.consumeFails = false;
   assert.equal(children.length, 1);
   const [{ jobId, data: child }] = children;
-  assert.equal(jobId, `issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${fresh}`);
+  assert.equal(jobId, await requestChildId());
   assert.deepEqual([child.userId, child.retryRequesterId, child.retryCommentId], ['user-1', 'user-1', FIRST_COMMENT_ID]);
   assert.match(await promptFor(child), new RegExp(ORIGINAL));
   assert.equal((await submissionRow())?.retry_event_id, String(fresh), 'the dispatch receipt is durable');

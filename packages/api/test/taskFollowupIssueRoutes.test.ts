@@ -5,7 +5,7 @@ import type { IssueCommentEvent } from '@octokit/webhooks-types';
 import type { Job } from 'bullmq';
 import type { IssueJobData } from '../../core/src/queue/taskQueue.types.js';
 import { state, claims, add, request, postFollowup, processCommentEvent, redis, database } from './taskFollowupFixture.js';
-import { openRequests, routes, postedComments, relabelWebhook, retryRequestStore, dispatchQueued, promptFor } from './taskFollowupIssueDispatch.js';
+import { openRequests, routes, postedComments, relabelWebhook, retryRequestStore, dispatchQueued, promptFor, requestChildId } from './taskFollowupIssueDispatch.js';
 
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
 const { insertTaskSubmission } = await import('../../core/src/services/taskSubmissionService.js');
@@ -79,8 +79,9 @@ test('a first retry within the failure second relabels after it, so the submissi
 
     const { dispatched, children } = await dispatchQueued(0);
     assert.equal(dispatched.status, 'dispatched');
-    assert.deepEqual(children.map(child => child.jobId), [`issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${state.timeline.at(-1)!.id}`]);
+    assert.deepEqual(children.map(child => child.jobId), [await requestChildId()]);
     const [{ data: child }] = children;
+    assert.equal(child.correlationId, `${row.id}-${state.timeline.at(-1)!.id}`, 'it runs on the relabel\'s trigger');
     assert.equal(child.userId, 'user-1', 'the retry runs for the requester, not the submitter');
     assert.deepEqual(await openRequests(), [], 'the dispatched request is released');
 
