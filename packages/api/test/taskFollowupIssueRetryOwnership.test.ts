@@ -431,6 +431,76 @@ for (const [routing, backed] of routings) {
   }
 }
 
+for (const persistent of [true, false]) {
+  test(`a single recovery dispatch that settles its request's accepted run and selects again on a history read from before that run's receipt ${persistent ? 'defers, running nothing and keeping the receipt, and a later trigger still runs once' : 'reads it afresh until it shows the receipt, and runs nothing'}`, async () => {
+    await onIssue(true, `reselect-stale-history-${persistent}`, async () => {
+      // A previous failed retry consumed E0. R owns E1; E2 is an independent relabel its terminal work admits.
+      const e0 = String(state.timeline[0].id);
+      await database('task_submissions').where({ issue_number: 14 }).update({ retry_event_id: e0 });
+      assert.equal((await postFollowup({ body: 'Retry' }, 'failed-issue-task')).json.state, 'queued');
+      state.now += 2_000;
+      applyLabels(['AI'], HUMAN_ACTOR_ID);
+      const e2 = String(state.timeline.at(-1)!.id);
+      state.now += 2_000;
+      applyLabels(['AI'], HUMAN_ACTOR_ID);
+      const e3 = String(state.timeline.at(-1)!.id);
+      // The route's job accepts R's run through E3, but can record neither the submission's receipt nor R consumed.
+      state.recordDispatchFails = true;
+      state.consumeFails = true;
+      await assert.rejects(dispatchQueued(0), /database is locked/);
+      state.recordDispatchFails = false;
+      state.consumeFails = false;
+      assert.deepEqual(await retryRuns.read({ id: await requestId(), commentId: FIRST_COMMENT_ID }), { receiptEventId: e3 });
+      assert.equal((await submissionRow()).retry_event_id, e0);
+
+      // One poll's dispatch, and no other. GitHub answers its first history read through E2 only, its fresh read and
+      // the settlement's through E3, and its selection on the settled receipt from before E3 again: once, or every time.
+      claims.delete(dedupKey);
+      const poll = add.mock.callCount();
+      assert.notEqual((await pollDelivery()).status, 'ignored');
+      const full = state.timeline;
+      const stale = full.slice(0, -1);
+      const answers = [full, full, ...(persistent ? [] : [stale])];
+      let reads = 0;
+      state.timeline = stale;
+      state.onDispatchTimelineRead = () => { reads++; state.timeline = answers.shift() ?? (persistent ? stale : full); };
+      const { dispatched, children } = await dispatchQueued(poll);
+      state.onDispatchTimelineRead = undefined;
+      state.timeline = full;
+
+      // The settlement recorded E3 and R consumed; nothing ran on E2, which R's run consumed, for anyone.
+      assert.deepEqual(children, [], 'no ordinary child is added for a trigger the receipt covers');
+      assert.equal((await submissionRow()).retry_event_id, e3, 'the receipt never moves back to E2');
+      assert.deepEqual(await openRequests(), []);
+      assert.equal(await hasRunRecord(), false, 'R\'s record is retired');
+      assert.notEqual(e2, e3);
+      if (persistent) {
+        assert.deepEqual(dispatched, { status: 'skipped', reason: 'trigger_history_unordered', issueNumber: 14 }, 'it defers');
+        assert.equal(reads, 6, 'its selection on the settled receipt read the history a bounded number of times');
+      } else {
+        assert.deepEqual(dispatched, { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: 14 });
+        assert.equal(reads, 5);
+      }
+
+      // A redelivery on the current history runs nothing more; a genuinely later trigger runs once, for the submitter.
+      claims.delete(dedupKey);
+      const redelivery = add.mock.callCount();
+      assert.notEqual((await pollDelivery()).status, 'ignored');
+      const redelivered = await dispatchQueued(redelivery);
+      assert.deepEqual(redelivered.dispatched, { status: 'skipped', reason: 'submission_already_dispatched', issueNumber: 14 });
+      assert.deepEqual(redelivered.children, []);
+      state.now += 60_000;
+      applyLabels(['AI'], HUMAN_ACTOR_ID);
+      const e4 = String(state.timeline.at(-1)!.id);
+      const { dispatched: later, children: laterChildren } = await deliverAndDispatch();
+      assert.equal(later.status, 'dispatched');
+      assert.deepEqual(laterChildren.map(child => [child.jobId, child.data.userId, child.data.retryCommentId]),
+        [[`issue-integry-propr-14-claude-claude-opus-5-5-main-trigger-${e4}`, 'submitter', undefined]]);
+      assert.equal((await submissionRow()).retry_event_id, e4);
+    });
+  });
+}
+
 for (const [routing, backed] of routings) {
   test(`${routing} request made while an earlier trigger write may still land is refused before posting, and the earlier request still runs for its requester`, async () => {
     await onIssue(backed, `pending-then-second-${backed}`, async () => {

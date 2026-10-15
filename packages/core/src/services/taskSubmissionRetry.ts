@@ -21,7 +21,7 @@ async function processingLabelEvents(
   getOctokit: typeof getAuthenticatedOctokit,
 ): Promise<TriggerLabelEvent[]> {
   const [repoOwner, repoName] = submission.repository.split('/');
-  return triggerLabelEvents(await getOctokit(), { repoOwner, repoName, number: submission.issue_number! }, triggers);
+  return triggerLabelEvents(await getOctokit(), { repoOwner, repoName, number: submission.issue_number! }, triggers, submission.retry_event_id);
 }
 
 async function terminalMillis(submission: TaskSubmission, database: Knex): Promise<number | null> {
@@ -50,15 +50,17 @@ export async function submissionRetryAdmissibleAt(submission: TaskSubmission, da
 /**
  * The trigger events, oldest first, the submission admits as a fresh run:
  * any before its initial dispatch, and afterwards those after the latest
- * consumed trigger that a retry of its terminal work admits. A consumed
- * trigger the history no longer shows leaves only the latest event to tell.
+ * consumed trigger that a retry of its terminal work admits. A history that
+ * does not show the consumed trigger admits none: it may predate it, as a
+ * stale read does, so none of its events is known to come after it.
  */
 export async function admittedSubmissionTriggers(submission: TaskSubmission, events: TriggerLabelEvent[], database: Knex = db): Promise<TriggerLabelEvent[]> {
   if (!submission.dispatch_complete) return events;
   const terminalTime = await terminalMillis(submission, database);
   if (terminalTime === null) return [];
   const consumed = submission.retry_event_id ? events.findIndex(event => String(event.id) === submission.retry_event_id) : -1;
-  const unconsumed = submission.retry_event_id && consumed === -1 ? events.slice(-1) : events.slice(consumed + 1);
+  if (submission.retry_event_id && consumed === -1) return [];
+  const unconsumed = events.slice(consumed + 1);
   // GitHub truncates event times to seconds. Within the terminal second,
   // a different consumed identity distinguishes a relabel from redelivery.
   const terminalSecond = Math.floor(terminalTime / 1000) * 1000;
@@ -69,7 +71,7 @@ export async function admittedSubmissionTriggers(submission: TaskSubmission, eve
   });
 }
 
-/** The trigger events of the submission's issue, oldest first, read afresh. */
+/** The trigger events of the submission's issue, oldest first, read afresh, with its consumed trigger, however it is labelled now. */
 export async function submissionTriggerEvents(
   submission: TaskSubmission,
   getOctokit = getAuthenticatedOctokit,

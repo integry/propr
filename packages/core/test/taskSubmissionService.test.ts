@@ -169,10 +169,17 @@ test('a deliberate label retry after terminal work is distinct from delayed init
     let timestamp = '2026-09-22T09:59:00Z';
     let label = 'AI';
     let labels = ['AI', 'implement'];
-    const octokit = async () => ({ request: async () => ({ data: [{ id: eventId, event: 'labeled', created_at: timestamp, label: { name: label }, actor: { id: 123 } }] }) }) as never;
+    // The timeline keeps every earlier label event; the latest is labelled `label`.
+    const earlier: Array<{ id: number; event: string; created_at: string; label: { name: string }; actor: { id: number } }> = [];
+    const octokit = async () => ({ request: async () => ({ data: [...earlier,
+      { id: eventId, event: 'labeled', created_at: timestamp, label: { name: label }, actor: { id: 123 } }] }) }) as never;
+    const relabel = (id: number, at: string) => {
+      earlier.push({ id: eventId, event: 'labeled', created_at: timestamp, label: { name: label }, actor: { id: 123 } });
+      eventId = id; timestamp = at;
+    };
     const read = async () => (await database('task_submissions').first())!;
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
-    eventId = 2; timestamp = '2026-09-22T10:01:00Z';
+    relabel(2, '2026-09-22T10:01:00Z');
     assert.deepEqual(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), { eventId: '2' });
     await associateSubmissionTask(database, row.id, 'retry-task');
     assert.equal((await read()).task_id, 'initial-task');
@@ -180,17 +187,18 @@ test('a deliberate label retry after terminal work is distinct from delayed init
     await database('task_history').insert({ task_id: 'retry-task', state: 'processing', timestamp: '2026-09-22T10:01:30Z' });
     await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '2' });
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
-    eventId = 3; timestamp = '2026-09-22T10:02:00Z';
+    relabel(3, '2026-09-22T10:02:00Z');
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
     await database('task_history').insert({ task_id: 'retry-task', state: 'completed', timestamp: '2026-09-22T10:01:30Z' });
     assert.deepEqual(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), { eventId: '3' });
     label = 'implement';
     assert.deepEqual(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), { eventId: '3' });
+    // The consumed trigger's label is no longer a processing label, but it still orders the later trigger.
     labels = ['replacement']; label = 'replacement';
     assert.deepEqual(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), { eventId: '3' });
     await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '3' });
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
-    eventId = 4; label = 'unrelated';
+    relabel(4, timestamp); label = 'unrelated';
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
     label = 'AI';
     assert.equal(await resolveTaskSubmissionRetry(await read(), database, octokit, async () => labels), null);
@@ -214,7 +222,7 @@ test('an older unconsumed trigger stays admitted beside a newer one, and a consu
     await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '3' });
     assert.deepEqual(await admitted(), [], 'a run consumes the triggers before the one it recorded');
     await database('task_submissions').where({ id: row.id }).update({ retry_event_id: '99' });
-    assert.deepEqual(await admitted(), [3], 'an unknown consumed trigger leaves only the latest to tell');
+    assert.deepEqual(await admitted(), [], 'a history that does not show the consumed trigger admits none of its events');
   } finally { await database.destroy(); }
 });
 

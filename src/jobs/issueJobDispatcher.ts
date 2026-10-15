@@ -306,6 +306,20 @@ async function settleAcceptedRequest(issueRef: IssueJobData, submission: Submiss
 }
 
 /**
+ * A deferred delivery runs and consumes nothing: its triggers stay unconsumed,
+ * so a later delivery dispatches once a held request's outcome is known, or
+ * once the history it reads shows the submission's consumed trigger.
+ */
+function deferredDispatch(issueRef: IssueJobData, submission: Submission, run: Extract<RetryRun, { deferred: unknown }>): JobResult {
+    logger.warn({ issue: issueRef.number, retryCommentId: run.deferred?.commentId, receipt: submission?.retry_event_id }, !run.deferred
+        ? 'The issue\'s history does not show the trigger the submission\'s dispatch receipt records yet; deferring dispatch'
+        : run.unordered
+        ? 'Another dispatch accepted a held retry request\'s run through a trigger the issue\'s history does not show yet; deferring dispatch'
+        : 'A held retry request may own the trigger but its publication is unreconciled; deferring dispatch');
+    return { status: 'skipped', reason: run.deferred ? 'retry_request_unreconciled' : 'trigger_history_unordered', issueNumber: issueRef.number };
+}
+
+/**
  * A queued issue-only request runs only on its own trigger, by the rules
  * recovery uses; a delivery whose selection is not it runs nothing. A retry
  * of the dispatch that enqueued its run finds the request carried. Any
@@ -355,13 +369,7 @@ async function enqueueChildren(
 export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: DispatcherDeps): Promise<JobResult> {
     const { id: jobId, name: jobName, data: issueRef } = job;
     const { submission, run, trigger } = await resolveCurrentRun(issueRef, deps);
-    if ('deferred' in run) {
-        // Its trigger stays unconsumed, so a later delivery retries once its outcome is known.
-        logger.warn({ issue: issueRef.number, retryCommentId: run.deferred.commentId }, run.unordered
-            ? 'Another dispatch accepted a held retry request\'s run through a trigger the issue\'s history does not show yet; deferring dispatch'
-            : 'A held retry request may own the trigger but its publication is unreconciled; deferring dispatch');
-        return { status: 'skipped', reason: 'retry_request_unreconciled', issueNumber: issueRef.number };
-    }
+    if ('deferred' in run) return deferredDispatch(issueRef, submission, run);
     const unowned = unownedRequest(issueRef, submission, run);
     if (unowned) return unowned;
     const retry = submission?.dispatch_complete ? trigger : null;
@@ -451,7 +459,8 @@ export async function handleDispatchWithDeps(job: Job<IssueJobData>, deps: Dispa
         }
         const jobsEnqueued = children.length;
 
-        if (submission) await deps.recordDispatch(submission.id, receiptEventId, receiptFence(submission, deps, { admitted: true }));
+        // Ordered on the history the run was selected on, which shows the receipt it read.
+        if (submission) await deps.recordDispatch(submission.id, receiptEventId, receiptFence(submission, deps, { events: run.events }));
         await releaseRetryRequest(issueRef, retryRequest, deps);
         correlatedLogger.info({ jobId, issue: issueRef.number, jobsEnqueued }, 'Matrix dispatcher job complete.');
         return { status: 'dispatched', jobsEnqueued, issueNumber: issueRef.number };

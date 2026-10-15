@@ -48,7 +48,7 @@ async function resolveConfirmedRun(issueRef: IssueJobData, submission: Submissio
     const resolved = await resolveRun(issueRef, submission, deps);
     if (!('deferred' in resolved.run) || !deps.retryRequests) return resolved;
     const request = resolved.run.deferred;
-    if (request.publication !== 'pending' || request.publishedAt === null) return resolved;
+    if (request?.publication !== 'pending' || request.publishedAt === null) return resolved;
     const outcome = confirmsPublication(issueRef, request) ? 'possible' : await deps.retryRequests.evidence(issueRef, request);
     if (!outcome) return resolved;
     logger.info({ issue: issueRef.number, retryCommentId: request.commentId, outcome }, 'Recording the retry trigger outcome its publication left');
@@ -110,9 +110,13 @@ const RECEIPT_SELECTIONS = 3;
  * another dispatch may record its own meanwhile; a selection made on the
  * receipt read before admits triggers that receipt now covers, so the run is
  * selected again on the receipt read afresh, and none of the stale
- * selection's children are added. An issue-only delivery has no receipt: its
- * selection already ordered the latest trigger against the trigger each
- * carried request's run consumed, which settling them does not change.
+ * selection's children are added. That selection admits only triggers a
+ * history showing that receipt places after it, so a history read from
+ * before it, however the requests that consumed it were settled, defers the
+ * delivery rather than run a trigger it covers. An issue-only delivery has no
+ * receipt: its selection already ordered the latest trigger against the
+ * trigger each carried request's run consumed, which settling them does not
+ * change.
  */
 export async function resolveCurrentRun(issueRef: IssueJobData, deps: DispatcherDeps): Promise<{ submission: Submission } & Awaited<ReturnType<typeof resolveRun>>> {
     let submission = await deps.findSubmission(issueRef);

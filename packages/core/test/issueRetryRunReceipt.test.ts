@@ -63,7 +63,7 @@ test('a write that meets an intermediate receipt still advances to its later tri
   await withSubmission(String(E0.id), async (database, id) => {
     await database('task_submissions').where({ id }).update({ retry_event_id: String(E1.id) });
     const { history } = reader(() => [E0, E1, E2, E3]);
-    assert.equal(await recordIssueRetryRunReceipt(database, id, String(E3.id), { observedEventId: String(E0.id), events: [E0, E1, E2, E3], history, admitted: true }), 'recorded');
+    assert.equal(await recordIssueRetryRunReceipt(database, id, String(E3.id), { observedEventId: String(E0.id), events: [E0, E1, E2, E3], history }), 'recorded');
     assert.equal((await receiptOf(database, id)).retry_event_id, String(E3.id));
   });
 });
@@ -100,16 +100,17 @@ test('a receipt the history cannot order the trigger against is neither overwrit
   });
 });
 
-test('a dispatch\'s own admitted trigger advances the receipt it read without another history read, but a conflict is still ordered', async () => {
-  // The consumed trigger is gone from the history, so admission took only the latest event, by its time.
-  await withSubmission('gone', async (database, id) => {
-    const { reads, history } = reader(() => [E1, E2]);
-    assert.equal(await recordIssueRetryRunReceipt(database, id, String(E2.id), { observedEventId: 'gone', history, admitted: true }), 'recorded');
-    assert.equal(reads.count, 0);
-    assert.equal((await receiptOf(database, id)).retry_event_id, String(E2.id));
-    // A dispatch that admitted E1 against the same receipt meets E2: its admission says nothing about E2.
-    assert.equal(await recordIssueRetryRunReceipt(database, id, String(E1.id), { observedEventId: 'gone', history, admitted: true }), 'covered');
-    assert.equal((await receiptOf(database, id)).retry_event_id, String(E2.id));
+test('a dispatch\'s trigger from a history read before the receipt it read never moves the receipt back, however it was admitted', async () => {
+  await withSubmission(String(E3.id), async (database, id) => {
+    // The dispatch's history was answered through E2, before the E3 it read as the receipt; the fresh one shows E3.
+    let fresh = [E0, E1, E2];
+    const { reads, history } = reader(() => fresh);
+    await assert.rejects(recordIssueRetryRunReceipt(database, id, String(E2.id), { observedEventId: String(E3.id), events: [E0, E1, E2], history }), /cannot order/);
+    assert.equal((await receiptOf(database, id)).retry_event_id, String(E3.id), 'a history that never shows the receipt fails the write');
+    assert.equal(reads.count, 1, 'after one fresh read');
+    fresh = [E0, E1, E2, E3];
+    assert.equal(await recordIssueRetryRunReceipt(database, id, String(E2.id), { observedEventId: String(E3.id), events: [E0, E1, E2], history }), 'covered');
+    assert.equal((await receiptOf(database, id)).retry_event_id, String(E3.id), 'one that does places E2 before it');
   });
 });
 

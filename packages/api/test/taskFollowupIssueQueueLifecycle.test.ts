@@ -16,7 +16,8 @@
  * later trigger, one whose run another worker accepted past an independent
  * relabel, recovery dispatches whose history predates such a run, or whose
  * history read is answered after it was settled, a fresh poll after the
- * request's run, and the run's transaction
+ * request's run, also once another issue's follow-up discarded closed
+ * requests past their retention, and the run's transaction
  * itself: replies lost after or before Redis ran it, adds that fail inside it,
  * adds that write a job but never queue it, a partly accepted matrix, foreign
  * payloads, reused request IDs and children that cannot be built. GitHub, the request records and the child runs'
@@ -47,7 +48,7 @@ import {
 } from './taskFollowupIssueDispatch.js';
 
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
-const { redisRetryOutcomeEvidence } = await import('../../core/src/services/issueRetryRequest.js');
+const { redisRetryOutcomeEvidence, reserveIssueRetryRequest } = await import('../../core/src/services/issueRetryRequest.js');
 const { enqueueIssueRetryRun, queueRetryRunEvidence } = await import('../../core/src/services/issueRetryRun.js');
 type RetryRunChild = import('../../core/src/services/issueRetryRun.js').RetryRunChild;
 const { processDetectedIssue } = await import('../../core/src/daemon/issueDetection.js');
@@ -1003,6 +1004,69 @@ for (const [routing, backed, later] of [['issue-only', false, false], ['issue-on
     });
   });
 }
+
+test('an issue-only retry\'s consumed trigger stays settled for fresh polls after another issue\'s follow-up discards closed requests past their retention, and a later trigger still runs once', { skip, timeout: 60_000 }, async () => {
+  await onIssue(false, 'live-retention', async () => {
+    await withLiveQueue(async live => {
+      live.startWorker();
+      assert.equal((await postFollowup({ body: 'First instructions' }, 'failed-issue-task')).json.state, 'queued');
+      await assertDispatched(await live.settled(), live.children.at(-1), { requester: 'user-1', commentId: FIRST_COMMENT_ID, instructions: /First instructions/ });
+      assert.equal((await live.childSettled()).event, 'completed');
+      await live.drained();
+      const childId = await requestChildId();
+      assert.equal(await live.queue.getJob(childId), undefined, 'the finished child is removed');
+      assert.deepEqual(await openRequests(), [], 'the request is recorded consumed');
+      assert.equal((await retiredRecords()).length, 1, 'its run\'s record is retired as its tombstone');
+
+      // Ordinary polls, carrying no request, keep finding the issue's unchanged trigger.
+      const poll = async () => {
+        await owned.del(dedupKey);
+        assert.equal((await livePoll()).status, 'accepted');
+        const polled = await live.settled();
+        assert.deepEqual([polled.job.data.retryCommentId, polled.job.data.retryRequesterId], [undefined, undefined], 'the poll carries no retry metadata');
+        return polled;
+      };
+      state.now += 60_000;
+      assertCompleted(await poll(), alreadyDispatched(false));
+
+      // An older consumed request of the issue and a released request of another issue are past their retention too.
+      const old = { repo_owner: 'integry', repo_name: 'propr', requester_id: 'user-0', publication: 'possible', recorded_at: state.now - DAY_MS };
+      await database('issue_retry_request_states').insert([
+        { ...old, issue_number: 14, comment_id: 4_000_001, requested_at: state.now - 2 * DAY_MS, consumed_at: state.now - DAY_MS },
+        { ...old, issue_number: 16, comment_id: 4_000_002, requested_at: state.now - 2 * DAY_MS },
+      ]);
+      // Eight days later, a follow-up on another issue reserves it, discarding closed requests past their retention.
+      state.now += 8 * DAY_MS;
+      const reservation = await reserveIssueRetryRequest(database, { repoOwner: 'integry', repoName: 'propr', number: 15 },
+        { requesterId: 'user-3', requestedAt: state.now, afterEventId: null }, { events: [], now: state.now });
+      assert.ok('reserved' in reservation);
+      const kept = await database('issue_retry_request_states').whereNot({ issue_number: 15 }).orderBy('id').select('issue_number', 'comment_id');
+      assert.deepEqual(kept.map(row => [row.issue_number, Number(row.comment_id)]), [[14, FIRST_COMMENT_ID]],
+        'only the issue\'s latest consumed request outlives its retention');
+      assert.equal((await retiredRecords()).length, 1, 'the run\'s tombstone is still there');
+
+      // A poll after the cleanup still finds the trigger consumed, and runs nothing for anyone.
+      assertCompleted(await poll(), alreadyDispatched(false));
+      await live.drained();
+      assert.equal(live.runs.length, 1, 'the consumed trigger did not run again');
+      assert.deepEqual(live.children.map(child => child.jobId), [childId]);
+
+      // A genuinely later trigger still runs once, as an ordinary run of the issue.
+      state.now += 60_000;
+      applyLabels(['AI'], HUMAN_ACTOR_ID);
+      const later = await poll();
+      assert.equal(later.event === 'completed' && later.result.status, 'dispatched');
+      assert.equal((await live.childSettled()).event, 'completed');
+      await live.drained();
+      assert.equal(live.runs.length, 2);
+      assertChildRun(live.runs[0], { jobId: childId, requester: 'user-1', commentId: FIRST_COMMENT_ID, instructions: /First instructions/ });
+      const ordinary = live.runs[1];
+      assert.equal(ordinary.jobId, 'issue-integry-propr-14-claude-claude-opus-5-5-main', 'an ordinary run of the issue');
+      assert.deepEqual([ordinary.data.userId, ordinary.data.retryRequesterId, ordinary.data.retryCommentId], ['99', undefined, undefined]);
+      assert.doesNotMatch(ordinary.prompt, /First instructions/);
+    });
+  });
+});
 
 /** A dispatch suspended once its selection has read a request's run record that shows a run, until `resume` runs. */
 function suspendedAtRunRead(): { reached: Promise<void>; resume: () => void } {
