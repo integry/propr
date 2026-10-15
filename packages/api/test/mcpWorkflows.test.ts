@@ -242,7 +242,8 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         // Worker boundary: a queued job creates the task; read/followup then use
         // the real handlers against its persisted row and history.
         const taskId = `issue-fixture-implementation-${modern}`;
-        await db('tasks').insert({ task_id: taskId, repository, issue_number: issueNumber, task_type: 'issue' });
+        // A completed implementation records the PR it created; follow-ups continue there.
+        await db('tasks').insert({ task_id: taskId, repository, issue_number: issueNumber, pr_number: 42, task_type: 'issue' });
         await db('task_history').insert({ task_id: taskId, state: 'completed' });
         const changes = await call('get_task_changes', { repository, taskId, detail: 'diff', path: 'src/retry.ts' });
         assert.equal(changes.files[0].diff, '+Handle transient failures\n'); assert.equal(cacheReads.at(-1), taskId);
@@ -256,7 +257,7 @@ test('both SDK eras drive persisted goal, TODO, notification, settings and guard
         const registration = /<!-- propr-api-followup:([a-f0-9-]{36}) -->$/.exec(postedBody);
         assert.ok(registration, 'API follow-ups register the posted comment');
         assert.deepEqual(JSON.parse(redisValues.get(`api-followup:${registration[1]}`)!), {
-          owner: 'acme', repo: 'repo', prNumber: issueNumber, body: postedBody,
+          owner: 'acme', repo: 'repo', prNumber: 42, body: postedBody,
         });
         const followupJob = issueJobs.at(-1)!;
         assert.equal(followupJob.name, 'processPullRequestComment');

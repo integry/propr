@@ -21,6 +21,7 @@ export const state = {
   existingJobs: [] as unknown[], queueFails: false, acceptBeforeFailure: false,
   webhookFirst: false, prState: 'open', commentPostError: undefined as unknown,
   startLoopFails: false, pendingReview: false,
+  issueState: 'open', issueLabels: ['AI', 'llm-claude-opus-5-5'] as string[], labelFails: false,
 };
 
 const claims = new Map<string, string>();
@@ -43,7 +44,7 @@ const redis = {
 };
 const acceptedJobs = new Map<string, CommentJobData>();
 const add = mock.fn(async (...args: [string, CommentJobData, JobsOptions]) => {
-  assert.equal(args[0], 'processPullRequestComment');
+  assert.ok(['processPullRequestComment', 'processGitHubIssue'].includes(args[0]));
   if (!state.queueFails || state.acceptBeforeFailure) acceptedJobs.set(args[2].jobId!, args[1]);
   if (state.queueFails) throw new Error('connection lost');
 });
@@ -70,6 +71,10 @@ const request = mock.fn(async (route: string, options: { body?: string }) => {
     created_at: '2026-10-13T00:00:00Z', updated_at: '2026-10-13T00:00:00Z',
   } };
   if (route.startsWith('GET') && route.includes('/pulls/')) return { data: { state: state.prState, head: { ref: 'acceptance' }, labels: [] } };
+  if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
+    return { data: { state: state.issueState, labels: state.issueLabels.map(name => ({ name })) } };
+  }
+  if (route.includes('/labels') && state.labelFails) throw Object.assign(new Error('label write failed'), { status: 500 });
   return { data: {} };
 });
 const authModule = await import('../../core/src/auth/githubAuth.js');
@@ -101,6 +106,7 @@ setUltrafixDeps({
 });
 beforeEach(() => {
   state.startLoopFails = false; state.prState = 'open'; state.commentPostError = undefined;
+  state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
   claims.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();
   for (const fn of [add, request, invalidate, startLoop, clearState, updateLabels, redis.rpush]) fn.mock.resetCalls();
 });
@@ -115,11 +121,27 @@ await database.schema.createTable('tasks', table => {
   table.integer('issue_number').nullable();
   table.integer('pr_number').nullable();
   table.text('task_type').notNullable();
+  table.text('replay_job_data').nullable();
+});
+await database.schema.createTable('task_history', table => {
+  table.increments('history_id');
+  table.text('task_id').notNullable();
+  table.text('state').notNullable();
 });
 await database('tasks').insert([
   { task_id: 'completed-task', repository: 'integry/propr', issue_number: 12, pr_number: 7, task_type: 'issue' },
   { task_id: 'task-without-pr', repository: 'integry/propr', issue_number: null, pr_number: null, task_type: 'issue' },
   { task_id: 'issue-task-without-pr', repository: 'integry/propr', issue_number: 12, pr_number: null, task_type: 'issue' },
+  { task_id: 'failed-issue-task', repository: 'integry/propr', issue_number: 14, pr_number: null, task_type: 'issue',
+    replay_job_data: JSON.stringify({ triggeringLabel: 'AI', agentAlias: 'claude', modelName: 'claude-opus-5-5' }) },
+  { task_id: 'running-issue-task', repository: 'integry/propr', issue_number: 15, pr_number: null, task_type: 'issue' },
+  { task_id: 'issue-task-with-pr', repository: 'integry/propr', issue_number: 16, pr_number: 7, task_type: 'issue' },
+  { task_id: 'pr-comment-task', repository: 'integry/propr', issue_number: 7, pr_number: null, task_type: 'pr-comment' },
+]);
+await database('task_history').insert([
+  { task_id: 'failed-issue-task', state: 'processing' },
+  { task_id: 'failed-issue-task', state: 'failed' },
+  { task_id: 'running-issue-task', state: 'processing' },
 ]);
 
 after(async () => {
@@ -138,7 +160,7 @@ export async function postFollowup(body: Record<string, unknown>, taskId = 'task
     status(code: number) { result.status = code; return this; },
     json(payload: unknown) { result.json = payload as Record<string, unknown>; return this; },
   } as unknown as Response;
-  await createTaskRoutes({ db: database }).postFollowup({
+  await createTaskRoutes({ db: database, processingLabels: async () => ['AI'] }).postFollowup({
     params: { taskId },
     body,
     user: { id: 'user-1' },

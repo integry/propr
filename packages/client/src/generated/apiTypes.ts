@@ -419,6 +419,10 @@ export interface TaskFollowupResult {
   commentId: number;
   jobId?: string;
   sourceTaskId: string;
+  /** Present when a failed implementation without a pull request was retried on its issue. */
+  intent?: "issue";
+  /** The issue a retry was queued on. */
+  issueNumber?: number;
   /** Explains a refusal, failure, or uncertain submission. */
   message?: string;
 }
@@ -458,6 +462,10 @@ export interface TaskReviewResult {
   commentId?: number;
   jobId?: string;
   sourceTaskId: string;
+  /** Present when a failed implementation without a pull request was retried on its issue. */
+  intent?: "issue";
+  /** The issue a retry was queued on. */
+  issueNumber?: number;
   /** Explains a refusal, failure, or uncertain submission. */
   message?: string;
   commandMode: "review";

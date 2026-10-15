@@ -119,14 +119,15 @@ export const TASK_ROUTE_DOCS: Record<string, RouteDoc> = {
   'POST /api/tasks/:taskId/followup': {
     operationId: 'postTaskFollowup',
     summary: 'Post a follow-up instruction on a task',
-    description: 'Posts the comment on the task\'s pull request (or issue) and queues a follow-up run for it.',
+    description: 'Posts the comment on the task\'s pull request and queues a follow-up run for it. A failed implementation that has no pull request is retried on its issue instead: the comment is posted there and a new issue run is queued.',
     tags: ['Tasks'],
     pathParams: { taskId: TASK_ID },
     requestBody: { schema: TaskFollowupRequest },
     responses: {
       202: { description: 'The comment was posted; the outcome distinguishes queued, batched, handled, refused, failed and unknown submissions.', schema: TaskFollowupResult },
-      400: { description: 'The comment body or target is invalid.' },
+      400: { description: 'The comment body or target is invalid, or a pull request command was sent for a task without a pull request.' },
       404: { description: 'Task not found.' },
+      409: { description: 'The issue cannot be retried: the run has not failed, the issue is closed or done, or a run is already queued.' },
     },
   },
   'POST /api/task/:taskId/stop': {
