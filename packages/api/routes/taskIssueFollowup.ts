@@ -35,6 +35,8 @@ interface IssueData {
   labels?: Array<{ name?: string } | string>;
 }
 
+type Octokit = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+
 // Bounds the wait for the retry second when the database clock runs ahead.
 const MAX_ADMISSION_WAIT_MS = 2000;
 
@@ -77,6 +79,30 @@ async function waitUntil(deps: IssueFollowupDeps, time: number): Promise<boolean
   const wait = Math.min(time - now(), MAX_ADMISSION_WAIT_MS);
   if (wait > 0) await (deps.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms))))(wait);
   return now() >= time;
+}
+
+/**
+ * Whether a trigger write the label helper reported as failed landed anyway:
+ * a lost response does not mean GitHub refused it. Undefined when the issue
+ * cannot be read to tell.
+ */
+async function triggerPresent(octokit: Octokit, input: IssueFollowupInput, trigger: string): Promise<boolean | undefined> {
+  try {
+    const { data } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+      owner: input.owner, repo: input.repo, issue_number: input.issueNumber, per_page: 100,
+    }) as { data: Array<{ name?: string } | string> };
+    return data.some(label => (typeof label === 'string' ? label : label.name) === trigger);
+  } catch (error) {
+    console.warn(`[followup] Could not confirm the retry trigger on #${input.issueNumber}: ${(error as Error).message}`);
+    return undefined;
+  }
+}
+
+/** Re-applies the trigger; undefined when GitHub may have applied it without confirming. */
+async function reapplyTrigger(context: Parameters<typeof safeAddLabel>[0] & { octokit: Octokit }, input: IssueFollowupInput, present: boolean, trigger: string): Promise<boolean | undefined> {
+  // A failed removal publishes no trigger event, so nothing can start from it.
+  if (present && !await safeRemoveLabel(context, trigger)) return false;
+  return await safeAddLabel(context, trigger) || triggerPresent(context.octokit, input, trigger);
 }
 
 async function checkRetryable(db: Knex, input: IssueFollowupInput): Promise<FollowupResult | null> {
@@ -171,22 +197,29 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
     return notStarted();
   }
 
+  const jobId = `issue-${owner}-${repo}-${issueNumber}`;
+  const unconfirmed = (message: string): FollowupResult => ({ status: 202, body: { success: false, state: 'unknown', jobId, ...posted, message } });
+
   const context = { octokit, owner, repo, issueNumber, logger: logger.withCorrelation(correlationId) };
-  if (!(labels.includes(trigger) ? await safeRemoveLabel(context, trigger) : true) || !await safeAddLabel(context, trigger)) {
+  const applied = await reapplyTrigger(context, input, labels.includes(trigger), trigger);
+  if (applied === undefined) {
+    // GitHub may have applied the trigger, whose relabel delivery or polling
+    // recovers the run; the held request keeps its requester and instructions.
+    return unconfirmed(`Comment posted, but whether the '${trigger}' label was applied could not be confirmed, so the retry may still start. Inspect issue #${issueNumber} before retrying.`);
+  }
+  if (!applied) {
     await settleIssueRetryRequest(redis, issueKey, retryRequest).catch(() => undefined);
     await redis.del(dedupeKey);
     return notStarted();
   }
 
-  const jobId = `issue-${owner}-${repo}-${issueNumber}`;
   try {
     await (deps.enqueueIssue ?? enqueueIssueImplementationJob)({ owner, repo, issueNumber, userId, retryRequesterId: userId, retryCommentId: commentId, triggeringLabel: trigger, correlationId });
   } catch (error) {
     // The queue may have accepted the job before failing; the trigger label
     // stays for polling, and the held request lets that recovery run it.
     console.warn(`[followup] Issue retry dispatch failed: ${(error as Error).message}`);
-    return { status: 202, body: { success: false, state: 'unknown', jobId, ...posted,
-      message: 'Comment posted, but submission could not be confirmed. Inspect the comment and any job receipt before retrying.' } };
+    return unconfirmed('Comment posted, but submission could not be confirmed. Inspect the comment and any job receipt before retrying.');
   }
   return { status: 202, body: { success: true, state: 'queued', jobId, ...posted, message: `Retry queued on issue #${issueNumber}.` } };
 }

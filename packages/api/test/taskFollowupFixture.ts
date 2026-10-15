@@ -22,6 +22,8 @@ export const state = {
   webhookFirst: false, prState: 'open', commentPostError: undefined as unknown,
   startLoopFails: false, pendingReview: false,
   issueState: 'open', issueLabels: ['AI', 'llm-claude-opus-5-5'] as string[], labelFails: false,
+  // How GitHub answers the trigger add: applied but its response lost, or refused; and whether labels can be read back.
+  labelAdd: 'ok' as 'ok' | 'lost' | 'rejected', labelReadFails: false,
   // GitHub's clock and the issue timeline it stamps label events on, to the second.
   now: Date.parse('2026-10-15T10:00:00.700Z'), sleeps: [] as number[],
   timeline: [] as Array<{ id: number; event: string; created_at: string; label: { name: string } }>,
@@ -78,16 +80,31 @@ const request = mock.fn(async (route: string, options: { body?: string }) => {
   if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
     return { data: { state: state.issueState, labels: state.issueLabels.map(name => ({ name })) } };
   }
-  if (route.includes('/labels') && state.labelFails) throw Object.assign(new Error('label write failed'), { status: 500 });
-  if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
-    const created_at = new Date(Math.floor(state.now / 1000) * 1000).toISOString();
-    for (const name of (options as { labels?: string[] }).labels ?? []) {
-      state.timeline.push({ id: state.timeline.length + 1, event: 'labeled', created_at, label: { name } });
-    }
-  }
+  if (route.includes('/labels')) return { data: labelRequest(route, options as { name?: string; labels?: string[] }) };
   if (route.endsWith('/timeline')) return { data: state.timeline };
   return { data: {} };
 });
+/** The issue's label endpoints; an add is applied before its response can be lost. */
+function labelRequest(route: string, options: { name?: string; labels?: string[] }) {
+  if (route === 'GET /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+    if (state.labelReadFails) throw new Error('read ECONNRESET');
+    return state.issueLabels.map(name => ({ name }));
+  }
+  if (state.labelFails) throw Object.assign(new Error('label write failed'), { status: 500 });
+  if (route === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
+    state.issueLabels = state.issueLabels.filter(name => name !== options.name);
+  }
+  if (route === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+    if (state.labelAdd === 'rejected') throw Object.assign(new Error('Validation Failed'), { status: 422 });
+    const created_at = new Date(Math.floor(state.now / 1000) * 1000).toISOString();
+    for (const name of options.labels ?? []) {
+      state.timeline.push({ id: state.timeline.length + 1, event: 'labeled', created_at, label: { name } });
+      if (!state.issueLabels.includes(name)) state.issueLabels = [...state.issueLabels, name];
+    }
+    if (state.labelAdd === 'lost') throw new Error('socket hang up');
+  }
+  return {};
+}
 const authModule = await import('../../core/src/auth/githubAuth.js');
 await mock.module('../../core/src/auth/githubAuth.js', {
   namedExports: { ...authModule, getAuthenticatedOctokit: async () => ({ request, paginate: async () => [] }) },
@@ -118,6 +135,7 @@ setUltrafixDeps({
 beforeEach(() => {
   state.startLoopFails = false; state.prState = 'open'; state.commentPostError = undefined;
   state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
+  state.labelAdd = 'ok'; state.labelReadFails = false;
   state.now = Date.parse('2026-10-15T10:00:00.700Z'); state.sleeps = [];
   state.timeline = [{ id: 1, event: 'labeled', created_at: '2026-10-15T09:59:00Z', label: { name: 'AI' } }];
   claims.clear(); state.existingJobs = []; state.queueFails = false; state.pendingReview = false; state.webhookFirst = false; state.acceptBeforeFailure = false; acceptedJobs.clear();

@@ -308,6 +308,80 @@ test('a trigger that cannot be re-applied reports a failed dispatch and releases
   assert.equal(claims.has('issue:dedup:integry:propr:14'), false);
 });
 
+/** GitHub applies the trigger but its response is lost and the labels cannot be read back; the relabel arrives after the shared window. */
+async function recoverLostTrigger(body: string) {
+  state.labelAdd = 'lost';
+  state.labelReadFails = true;
+  const result = await postFollowup({ body }, 'failed-issue-task');
+  assert.equal(result.status, 202);
+  assert.equal(result.json.success, false);
+  assert.equal(result.json.state, 'unknown', 'a trigger that may have landed is not reported as not started');
+  assert.match(String(result.json.message), /may still start/);
+  assert.equal(add.mock.callCount(), 0);
+  assert.ok(claims.has(retryRequestKey), 'the request survives an unconfirmed trigger');
+  assert.ok(claims.has('issue:dedup:integry:propr:14'), 'the window still holds back a second run');
+  assert.deepEqual(await relabelWebhook(), { status: 'ignored', reason: 'duplicate_delivery' });
+  claims.delete('issue:dedup:integry:propr:14');
+  assert.notEqual((await relabelWebhook()).status, 'ignored');
+  assert.equal(add.mock.callCount(), 1);
+  const [, recovered] = add.mock.calls[0].arguments as unknown as [string, IssueJobData];
+  assert.equal(recovered.retryCommentId, undefined, 'the relabel delivery carries no retry metadata');
+  return dispatchQueued(0);
+}
+
+test('a submission retry whose trigger response was lost runs for the requester with their instructions when its relabel recovers it', async () => {
+  const row = await insertTaskSubmission(database, { user_id: 'submitter', submission_key: 'retry-trigger-response-lost',
+    payload_hash: 'hash', repository: 'integry/propr', payload: '{}', attachments: '[]' });
+  try {
+    await database('task_submissions').where({ id: row.id }).update({ issue_number: 14, task_id: 'failed-issue-task', dispatch_complete: true });
+    const { dispatched, children } = await recoverLostTrigger('Retry with the rotated token');
+    assert.equal(dispatched.status, 'dispatched');
+    const [{ data: child }] = children;
+    assert.equal(child.userId, 'user-1', 'the recovered retry runs for the requester, not the submitter');
+    assert.equal(child.retryCommentId, 6157569382);
+    const prompt = await promptFor(child);
+    assert.match(prompt, /Retry with the rotated token/);
+    assert.doesNotMatch(prompt, /An unrelated bot note/);
+    assert.equal(claims.has(retryRequestKey), false, 'the request is released once a dispatch carries it');
+  } finally {
+    await database('task_submissions').where({ id: row.id }).delete();
+  }
+});
+
+test('an issue-only retry whose trigger response was lost runs for the requester with their instructions when its relabel recovers it', async () => {
+  const { children } = await recoverLostTrigger('Retry without the cache');
+  const [{ data: child }] = children;
+  assert.equal(child.userId, 'user-1', 'not the app account that re-applied the label');
+  assert.match(await promptFor(child), /Retry without the cache/);
+  assert.equal(claims.has(retryRequestKey), false);
+});
+
+test('a lost trigger response that the issue confirms queues the retry once for the requester', async () => {
+  state.labelAdd = 'lost';
+  const result = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
+  assert.equal(result.json.success, true);
+  assert.equal(result.json.state, 'queued');
+  assert.equal(add.mock.callCount(), 1);
+  const [, job] = add.mock.calls[0].arguments as unknown as [string, IssueJobData];
+  assert.equal(job.retryRequesterId, 'user-1');
+  assert.equal(job.retryCommentId, 6157569382);
+  assert.deepEqual(await relabelWebhook(), { status: 'ignored', reason: 'duplicate_delivery' });
+  assert.equal(add.mock.callCount(), 1);
+});
+
+test('a trigger GitHub refused reports the retry as not started and releases the request and window', async () => {
+  state.labelAdd = 'rejected';
+  const result = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
+  assert.equal(result.status, 202);
+  assert.equal(result.json.success, false);
+  assert.equal(result.json.state, 'failed');
+  assert.match(String(result.json.message), /could not be started/);
+  assert.ok(routes().includes('GET /repos/{owner}/{repo}/issues/{issue_number}/labels'), 'the refusal is confirmed against the issue');
+  assert.equal(add.mock.callCount(), 0);
+  assert.equal(claims.has(retryRequestKey), false);
+  assert.equal(claims.has('issue:dedup:integry:propr:14'), false);
+});
+
 test('a queue failure after relabelling reports an unconfirmed submission with its job ID', async () => {
   state.queueFails = true;
   const result = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
