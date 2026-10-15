@@ -173,10 +173,18 @@ const walkFiles = async root => {
 // Token prefixes must start at a token boundary. The desktop profile journal
 // stores base64url ciphertext as one printable run, and uniformly random
 // base64url bytes spell `gh?_` mid-run by chance; a real token is never
-// preceded by another identifier or base64url character.
+// preceded by another identifier or base64url character. Serialized text
+// escapes the whitespace that bounds a token: a JSON log stores a newline or
+// tab before a token as `\n`, `\t` or `\u000a`, a URL-encoded one as `%0A`,
+// so a prefix right after an escape sequence or a percent-encoded byte is at a
+// boundary once decoded. Neither a backslash nor a percent sign is a token or
+// base64url character, so this excludes no mid-ciphertext coincidence. The
+// scan does not decode text: an escape that decodes to a token character is
+// taken for a boundary too, erring toward detection.
+const TOKEN_BOUNDARY = String.raw`(?:(?<![A-Za-z0-9_-])|(?<=\\[A-Za-z0-9]|\\u[0-9A-Fa-f]{4}|\\x[0-9A-Fa-f]{2}|%[0-9A-Fa-f]{2}))`;
 const genericSecretPatterns = [
-  /(?<![A-Za-z0-9_-])propr_it_[A-Za-z0-9_-]{20,}/g,
-  /(?<![A-Za-z0-9_-])gh[pousr]_[A-Za-z0-9_]{20,}/g,
+  new RegExp(String.raw`${TOKEN_BOUNDARY}propr_it_[A-Za-z0-9_-]{20,}`, 'g'),
+  new RegExp(String.raw`${TOKEN_BOUNDARY}gh[pousr]_[A-Za-z0-9_]{20,}`, 'g'),
   /Bearer\s+[A-Za-z0-9._~-]{16,}/gi,
   /(?:token|secret|password|private[_-]?key)\s*[=:]\s*[^\s"']{8,}/gi,
 ];

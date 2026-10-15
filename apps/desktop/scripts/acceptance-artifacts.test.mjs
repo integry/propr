@@ -683,6 +683,100 @@ describe('packaged acceptance artifact contract', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('catches tokens bounded by serialized whitespace escapes through the artifact scan, raw binary runs, trace sanitization and the manifest contract, while mid-ciphertext prefixes and exact sentinel checks stay as they are', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-acceptance-contract-escaped-scan-'));
+    const log = join(root, 'desktop', 'packaged-process.log');
+    // Synthetic token shapes; neither is a real credential.
+    const token = `ghp_${'b'.repeat(36)}`;
+    const internal = `propr_it_${'T'.repeat(43)}`;
+    // Ciphertext whose random-looking bytes spell both prefixes mid-run, each right after a base64url character.
+    const ciphertext = `${'Qm'.repeat(40)}nghp_${'x'.repeat(36)}${'-_'.repeat(20)}Apropr_it_${'Y'.repeat(43)}${'Qm'.repeat(40)}`;
+    try {
+      await mkdir(join(root, 'desktop'), { recursive: true });
+      // A serialized log escapes the whitespace that bounds a token; the scan does not decode it, yet must see
+      // the token after the escape, as it does after the decoded whitespace itself.
+      for (const serialized of [
+        String.raw`{"level":"error","message":"request failed\n${token}"}`,
+        String.raw`{"level":"error","message":"request failed\t${internal}"}`,
+        String.raw`{"level":"error","message":"request failed\r\n${token}"}`,
+        String.raw`{"level":"error","message":"request failed\u000a${internal}"}`,
+        String.raw`{"level":"error","message":"{\"nested\":\"request failed\\n${token}\"}"}`,
+        String.raw`error: request failed\x0a${token}`,
+        `GET /callback?error=%0A${internal} HTTP/1.1`,
+        `{"level":"error","message":"request failed\n${token}"}`,
+        `{"level":"error","message":"request failed\t${internal}"}`,
+      ]) {
+        await writeFile(log, `${serialized}\n`);
+        await assert.rejects(scanAcceptancePaths([root]), /Secret-shaped value/, serialized);
+      }
+      // The same escapes before ciphertext do not turn its mid-run coincidences into tokens: a prefix is still
+      // excluded whenever a base64url character precedes it.
+      for (const record of [
+        `P${JSON.stringify({ version: 2, generation: '7', encryptedPayload: ciphertext, checksum: 'f'.repeat(64) })}`,
+        String.raw`{"level":"debug","message":"journal\n${ciphertext}"}`,
+        String.raw`{"level":"debug","message":"journal\u000a${ciphertext}"}`,
+        `{"level":"debug","message":"journal\n${ciphertext}"}`,
+      ]) {
+        await writeFile(log, `${record}\n`);
+        await scanAcceptancePaths([root]);
+      }
+      // An exact forbidden value is matched raw, before any shape, whatever serialized whitespace precedes it.
+      await writeFile(log, String.raw`{"level":"error","message":"request failed\n${internal}"}` + '\n');
+      await assert.rejects(scanAcceptancePaths([root], [internal]), /Secret sentinel/);
+
+      // The raw scanner sees the same boundary inside a printable run of a binary file.
+      const database = join(root, 'key4.db');
+      await writeFile(database, Buffer.concat([
+        Buffer.from('SQLite format 3\0', 'ascii'),
+        Buffer.from([0x00, 0x80, 0xff]),
+        Buffer.from(String.raw`{"message":"failed\n${token}"}`, 'ascii'),
+        Buffer.from([0x00, 0x02]),
+      ]));
+      await assert.rejects(scanAcceptancePaths([database]), /Secret-shaped value/);
+
+      // A traced response body with a token after a newline is serialized with the escape; the published trace is
+      // rejected until it is sanitized, which replaces only the token and keeps the escape.
+      const trace = join(root, 'sanitized-trace.zip');
+      const network = JSON.stringify({
+        type: 'resource-snapshot',
+        snapshot: {
+          request: { url: 'http://127.0.0.2:41731/api/queue/stats' },
+          response: { status: 401, content: { text: `authorization failed\n${token}` } },
+        },
+      });
+      assert.ok(network.includes(String.raw`\n${token}`), 'the trace entry carries the escaped newline before the token');
+      await writeFile(trace, zipFixture('trace.network', network));
+      await assert.rejects(scanAcceptancePaths([trace]), /Secret-shaped value/);
+      await sanitizeAcceptanceTrace(trace);
+      await scanAcceptancePaths([trace]);
+      const event = JSON.parse(readSingleZipEntry(await readFile(trace)).toString('utf8'));
+      assert.equal(event.snapshot.response.content.text, `authorization failed\n${ACCEPTANCE_REDACTION_PLACEHOLDER}`);
+      assert.equal(event.snapshot.request.url, 'http://127.0.0.2:41731/api/queue/stats');
+
+      // Through the artifact contract itself: a complete, manifest-consistent artifact set whose trace still carries
+      // the escaped-newline token fails verification on the scan, not on the manifest, and passes once sanitized.
+      // The fixture stores its entry uncompressed, so the scan of the ZIP's own bytes is what rejects it.
+      const parent = await mkdtemp(join(tmpdir(), 'propr-acceptance-contract-escaped-artifacts-'));
+      const artifactRoot = join(parent, ACCEPTANCE_ARTIFACT_LEAF);
+      try {
+        await createCompleteArtifactSet(artifactRoot);
+        const publishedTrace = join(artifactRoot, 'sanitized-trace.zip');
+        const republish = async bytes => {
+          await writeFile(publishedTrace, bytes);
+          const manifest = JSON.parse(await readFile(join(artifactRoot, 'manifest.json'), 'utf8'));
+          manifest.supporting = manifest.supporting.map(entry => entry.name === 'sanitized-trace.zip'
+            ? { ...entry, bytes: bytes.length, sha256: sha256(bytes) } : entry);
+          await writeFile(join(artifactRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+        };
+        await republish(zipFixture('trace.network', network));
+        await assert.rejects(verifyAcceptanceArtifacts(artifactRoot, { ocr: async () => '' }), /Secret-shaped value found in .*sanitized-trace\.zip/);
+        await sanitizeAcceptanceTrace(publishedTrace);
+        await republish(await readFile(publishedTrace));
+        await verifyAcceptanceArtifacts(artifactRoot, { ocr: async () => '' });
+      } finally { await rm(parent, { recursive: true, force: true }); }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('sanitizes traced network secrets so sentinel and generic scans pass deterministically', async () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-acceptance-contract-trace-'));
     const trace = join(root, 'sanitized-trace.zip');

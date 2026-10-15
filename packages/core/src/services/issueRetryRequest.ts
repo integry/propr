@@ -20,7 +20,8 @@ export { redisRetryOutcomeEvidence, type RetryOutcomeEvidence } from './issueRet
  * event read just before its trigger write began, after its comment was
  * posted), within the publication window that opens at `publishedAt`, when
  * that write begins. `requestedAt` only times the reservation, which expires
- * unless publication begins within that window.
+ * unless publication begins within that window; it is read before the
+ * reservation is taken, so it does not order requests, `id` does.
  *
  * A request is `reserved` until its trigger write is attempted, then `pending`
  * until the route records the write's outcome: `possible` (applied, or not
@@ -267,16 +268,29 @@ function stranded(request: IssueRetryRequest, history: TriggerHistory): boolean 
   return request.publication === 'refused' || !windowOpen(request, history.now);
 }
 
-/** The issue's open requests, oldest first. */
+/**
+ * Requests are ordered by `id`, the sequence their reservations were inserted
+ * in: an issue's requests are reserved one at a time, through its unique open
+ * slot, so a request with a greater `id` was reserved, and so ran, after one
+ * with a lesser. `requestedAt` is read before the reservation, which may wait
+ * on a claim or be suspended, so a later reservation can carry an earlier
+ * `requestedAt`; it is kept as provenance, and orders nothing.
+ */
+const RESERVATION_ORDER = 'id';
+
+/** The issue's open requests, oldest reservation first. */
 export async function findIssueRetryRequests(database: Knex, issue: IssueKey): Promise<IssueRetryRequest[]> {
-  const rows = await database(TABLE).where({ owed_issue: owedIssue(issue) }).orderBy('requested_at').select() as RequestRow[];
+  const rows = await database(TABLE).where({ owed_issue: owedIssue(issue) }).orderBy(RESERVATION_ORDER).select() as RequestRow[];
   return rows.map(parseRow);
 }
 
-/** The issue's requests a dispatch recorded consumed, oldest first: the latest is never discarded, older ones may be. */
+/**
+ * The issue's requests a dispatch recorded consumed, oldest reservation first:
+ * the latest reserved is never discarded, earlier ones may be.
+ */
 async function findConsumedIssueRetryRequests(database: Knex, issue: IssueKey): Promise<IssueRetryRequest[]> {
   const rows = await database(TABLE).where({ repo_owner: issue.repoOwner, repo_name: issue.repoName, issue_number: issue.number })
-    .whereNull('owed_issue').whereNotNull('consumed_at').orderBy('requested_at').select() as RequestRow[];
+    .whereNull('owed_issue').whereNotNull('consumed_at').orderBy(RESERVATION_ORDER).select() as RequestRow[];
   return rows.map(parseRow);
 }
 
@@ -291,11 +305,13 @@ export type RetryReservation = { reserved: IssueRetryRequest } | { owed: IssueRe
  * closed before `cutoff`, except each issue's latest consumed request, which
  * is kept however old: an issue-only delivery, which has no receipt, finds
  * the trigger its run consumed only through it, by the queue's retired record
- * of that run, so without it the trigger would run again as any other.
+ * of that run, so without it the trigger would run again as any other. The
+ * latest is the latest reserved, by `id`, as `latestConsumedRun` selects it:
+ * a request reserved later ran later, whatever its `requestedAt`.
  */
 async function discardClosedRequests(trx: Knex, cutoff: number): Promise<void> {
   const sameIssue = `later.repo_owner = ${TABLE}.repo_owner and later.repo_name = ${TABLE}.repo_name and later.issue_number = ${TABLE}.issue_number`;
-  const laterRequest = `(later.requested_at > ${TABLE}.requested_at or (later.requested_at = ${TABLE}.requested_at and later.id > ${TABLE}.id))`;
+  const laterRequest = `later.${RESERVATION_ORDER} > ${TABLE}.${RESERVATION_ORDER}`;
   await trx(TABLE).whereNull('owed_issue').where('recorded_at', '<', cutoff).where(discarded => discarded.whereNull('consumed_at')
     .orWhereExists(trx(`${TABLE} as later`).select(trx.raw('1')).whereRaw(sameIssue).whereNotNull('later.consumed_at').whereRaw(laterRequest))).delete();
 }
@@ -725,7 +741,11 @@ async function consumedRunTriggers(
   return consumed === undefined ? [] : [consumed];
 }
 
-/** The latest consumed request whose run the queue accepted, by its retired record, with that run. */
+/**
+ * The latest consumed request whose run the queue accepted, by its retired
+ * record, with that run: the latest reserved, as retention keeps it, since
+ * an issue's requests are reserved, and run, one after another.
+ */
 async function latestConsumedRun(
   issue: IssueKey, accepted: RetryRunDelivery['accepted'], database: Knex,
 ): Promise<{ request: IssueRetryRequest; run: RetryRunReceipt } | null> {
