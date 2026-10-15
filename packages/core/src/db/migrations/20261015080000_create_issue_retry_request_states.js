@@ -1,19 +1,32 @@
 /**
- * Durable state of a requested issue retry, keyed by its posted comment.
+ * Requested issue retries: who asked, the comment carrying their instructions,
+ * and the trigger write that publishes them.
  *
- * The request itself is held in Redis, which is also what fails when the
- * outcome of its trigger write cannot be recorded. Recording that outcome, and
- * the dispatch that consumed the request, here lets recovery tell a published
- * request from a refused or already dispatched one across a Redis failure.
+ * A request is recorded before its trigger is written and stays open until a
+ * dispatch carries it into a run or it is known to be owed none, however long
+ * that takes, so a recovering delivery can always tell its trigger apart. An
+ * issue owes at most one open request: `owed_issue` is unique while set.
  */
 export async function up(knex) {
   if (await knex.schema.hasTable('issue_retry_request_states')) return;
   await knex.schema.createTable('issue_retry_request_states', (table) => {
-    table.bigInteger('comment_id').primary();
-    // 'possible' when the trigger write was applied or may still be; 'refused' when GitHub refused it.
-    table.string('publication', 16).nullable();
+    table.increments('id').primary();
+    table.string('repo_owner').notNullable();
+    table.string('repo_name').notNullable();
+    table.integer('issue_number').notNullable();
+    table.string('requester_id').notNullable();
+    // Set once the request is posted, before its trigger is written.
+    table.bigInteger('comment_id').nullable().unique();
+    table.bigInteger('actor_id').nullable();
+    table.bigInteger('requested_at').notNullable();
+    table.string('after_event_id').nullable();
+    // 'reserved' before the trigger write, 'pending' while its outcome is unknown, then 'possible' or 'refused'.
+    table.string('publication', 16).notNullable();
     table.bigInteger('consumed_at').nullable();
+    // The issue while the request may still be owed a run; cleared once it is known not to be.
+    table.string('owed_issue').nullable().unique();
     table.bigInteger('recorded_at').notNullable();
+    table.index(['repo_owner', 'repo_name', 'issue_number']);
     table.index('recorded_at');
   });
 }

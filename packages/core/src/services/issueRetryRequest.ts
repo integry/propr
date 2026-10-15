@@ -1,129 +1,89 @@
 import type { Knex } from 'knex';
-import type { Redis } from 'ioredis';
 import { db } from '../db/connection.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrimaryProcessingLabels } from '../config/configManager.js';
 
 /**
  * The requester and posted instructions of a requested issue retry. The job
- * the route submits carries them, but a relabel delivery that recovers a
- * failed submission cannot, so they are held per issue until a dispatch has
- * carried them into the run.
+ * the route submits carries them, but a relabel delivery or poll that recovers
+ * a failed submission cannot, so they are recorded durably per issue before
+ * the trigger is written, and kept until a dispatch carries them into the run
+ * or the request is known to be owed none. Elapsed time alone releases nothing.
  *
- * A held request belongs only to the trigger it published: the first trigger
- * the route's GitHub identity labels after `afterEventId` (the latest trigger
+ * A request belongs only to the trigger it published: the first trigger the
+ * route's GitHub identity labels after `afterEventId` (the latest trigger
  * event before the request), within the publication window of `requestedAt`.
- * A request whose trigger was dispatched therefore cannot be adopted by a
- * later, independent trigger even when releasing it failed.
  *
- * A request is held `pending` before its trigger is written. The route then
- * records the write's outcome, durably and here: `possible` (applied, or not
- * refused) lets recovery adopt it, and a refusal makes it unadoptable. While
- * neither record exists the outcome is unknown, and recovery defers the
- * request's trigger rather than run it with or without the request.
+ * A request is `reserved` until its trigger write is attempted, then `pending`
+ * until the route records the write's outcome: `possible` (applied, or not
+ * refused) lets recovery adopt it, and a refusal releases it. While it is
+ * pending the outcome is unknown, and dispatch defers the request's trigger
+ * rather than run it with or without the request.
  */
 export interface IssueRetryRequest {
+  id: number;
   requesterId: string;
-  commentId: number;
+  commentId: number | null;
   requestedAt: number;
   afterEventId: string | null;
   actorId: number | null;
-  publication: 'pending' | 'possible';
+  publication: 'reserved' | 'pending' | 'possible' | 'refused';
 }
-
-/** The durable record of a request: its trigger write's outcome, and whether a dispatch consumed it. */
-export interface IssueRetryRequestState { publication?: 'possible' | 'refused'; consumed: boolean }
 
 export interface TriggerLabelEvent { id?: number; event: string; created_at?: string; label?: { name: string }; actor?: { id?: number } }
 
 interface IssueKey { repoOwner: string; repoName: string; number: number }
-type RetryRequestRedis = Pick<Redis, 'get' | 'eval'>;
 type Octokit = Pick<Awaited<ReturnType<typeof getAuthenticatedOctokit>>, 'request'>;
 interface TimelineDeps { getOctokit?: () => Promise<Octokit>; processingLabels?: () => Promise<string[]> }
-/** The issue's trigger history as read at `now`. */
-export interface TriggerHistory { events: TriggerLabelEvent[]; now: number }
+/**
+ * The issue's trigger history as read at `now`, and the latest trigger its
+ * submission consumed, when it has one.
+ */
+export interface TriggerHistory { events: TriggerLabelEvent[]; now: number; consumedEventId?: string | null }
 interface SelectionDeps extends TimelineDeps { database?: Knex; now?: () => number }
 
 /**
- * What a delivery runs for the issue's held requests: a request on its own
- * trigger, nothing of theirs (the delivery's own trigger runs without one), or
+ * What a delivery runs for the issue's open request: the request on its own
+ * trigger, nothing of its (the delivery's own trigger runs without it), or
  * nothing at all while a request that may own an admitted trigger cannot be
- * reconciled yet. `latestTriggerEventId` is the latest trigger the run consumes.
+ * reconciled yet. `latestTriggerEventId` is the latest trigger the run
+ * consumes. A delivery that admits triggers also learns, from the same
+ * history, the latest admitted trigger it runs without a request.
  */
 export type RetryRun =
-  | { request: IssueRetryRequest; triggerEventId?: string; latestTriggerEventId?: string }
-  | { request: null }
+  | { request: IssueRetryRequest; triggerEventId: string; latestTriggerEventId?: string }
+  | { request: null; trigger?: { eventId: string } | null }
   | { deferred: IssueRetryRequest };
 
 export interface RetryRunDelivery {
-  /** The request a direct job names. */
-  commentId?: number;
   /** The trigger events a submission admits as a fresh run; an issue-only run admits every one. */
   admitted?: (events: TriggerLabelEvent[]) => Promise<TriggerLabelEvent[]>;
 }
 
-// Outlasts webhook redelivery and the polling fallback for the trigger label.
-const RETRY_REQUEST_TTL_SECONDS = 24 * 60 * 60;
 // A trigger write whose response was lost lands within this; a first trigger
-// after it is not the request's, so a request that was never published expires.
+// after it is not the request's, so a request that was never published is owed nothing.
 const PUBLICATION_WINDOW_MS = 10 * 60 * 1000;
-// Outlasts the requests the durable records describe.
-const STATE_RETENTION_MS = 2 * RETRY_REQUEST_TTL_SECONDS * 1000;
-const STATES_TABLE = 'issue_retry_request_states';
-const MAX_UPDATE_ATTEMPTS = 5;
-// Replaces the issue's held requests only if they are still the ones read.
-const REPLACE_SCRIPT = `
-local held = redis.call('GET', KEYS[1]) or ''
-if held ~= ARGV[1] then return 0 end
-if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3]) end
-return 1
-`;
+// How long requests known to be owed nothing are kept for inspection.
+const CLOSED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const TABLE = 'issue_retry_request_states';
 
-const retryRequestKey = (issue: IssueKey) => `issue:retry-request:${issue.repoOwner}:${issue.repoName}:${issue.number}`;
-const serialize = (requests: IssueRetryRequest[]) => requests.length === 0 ? '' : JSON.stringify(requests.map(request => ({
-  requesterId: request.requesterId, commentId: request.commentId, requestedAt: request.requestedAt,
-  afterEventId: request.afterEventId, actorId: request.actorId, publication: request.publication,
-})));
+const owedIssue = (issue: IssueKey) => `${issue.repoOwner}/${issue.repoName}#${issue.number}`;
 
-function parseRequest(value: Partial<IssueRetryRequest>): IssueRetryRequest | null {
-  const { requesterId, commentId, requestedAt, afterEventId, actorId, publication } = value;
-  if (typeof requesterId !== 'string' || typeof commentId !== 'number' || typeof requestedAt !== 'number') return null;
+interface RequestRow {
+  id: number; requester_id: string; comment_id: number | string | null; requested_at: number | string;
+  after_event_id: string | null; actor_id: number | string | null; publication: string;
+}
+
+function parseRow(row: RequestRow): IssueRetryRequest {
+  const publication = ['reserved', 'pending', 'possible', 'refused'].includes(row.publication) ? row.publication as IssueRetryRequest['publication'] : 'pending';
   return {
-    requesterId, commentId, requestedAt,
-    afterEventId: typeof afterEventId === 'string' ? afterEventId : null,
-    actorId: typeof actorId === 'number' ? actorId : null,
-    publication: publication === 'possible' ? 'possible' : 'pending',
+    id: Number(row.id), requesterId: row.requester_id, requestedAt: Number(row.requested_at),
+    commentId: row.comment_id === null ? null : Number(row.comment_id),
+    afterEventId: row.after_event_id, actorId: row.actor_id === null ? null : Number(row.actor_id), publication,
   };
 }
 
-function parse(raw: string): IssueRetryRequest[] {
-  try {
-    const value = JSON.parse(raw) as unknown;
-    return (Array.isArray(value) ? value : []).map(item => parseRequest(item as Partial<IssueRetryRequest>)).filter(item => item !== null);
-  } catch {
-    return [];
-  }
-}
-
-/** Rewrites the issue's held requests unless `change` declines; false when it declined. */
-async function updateRequests(
-  redis: RetryRequestRedis,
-  issue: IssueKey,
-  change: (requests: IssueRetryRequest[]) => IssueRetryRequest[] | null,
-): Promise<boolean> {
-  const key = retryRequestKey(issue);
-  for (let attempt = 0; attempt < MAX_UPDATE_ATTEMPTS; attempt++) {
-    const raw = await redis.get(key) ?? '';
-    const next = change(parse(raw));
-    if (next === null) return false;
-    const nextRaw = serialize(next);
-    if (nextRaw === raw) return true;
-    if (Number(await redis.eval(REPLACE_SCRIPT, 1, key, raw, nextRaw, String(RETRY_REQUEST_TTL_SECONDS))) === 1) return true;
-  }
-  throw new Error(`Retry requests for #${issue.number} kept changing`);
-}
-
-/** The issue's processing-label events, oldest first. */
+/** The issue's trigger-label events, oldest first. */
 export async function triggerLabelEvents(octokit: Octokit, issue: IssueKey, triggers: Set<string>): Promise<TriggerLabelEvent[]> {
   const events: TriggerLabelEvent[] = [];
   for (let page = 1; ; page++) {
@@ -136,117 +96,141 @@ export async function triggerLabelEvents(octokit: Octokit, issue: IssueKey, trig
   return events;
 }
 
-/** The trigger event the request published, or null while none can be told apart as its own. */
-export function retryRequestTrigger(request: IssueRetryRequest, events: TriggerLabelEvent[]): string | null {
+/**
+ * The trigger event the request published: null when it has none, or
+ * undefined when its baseline is gone from the history, so none can be told
+ * apart as its own.
+ */
+export function retryRequestTrigger(request: IssueRetryRequest, events: TriggerLabelEvent[]): string | null | undefined {
   const start = request.afterEventId === null ? 0 : events.findIndex(event => String(event.id) === request.afterEventId) + 1;
-  // Without its baseline the request's own trigger cannot be identified.
-  if (start === 0 && request.afterEventId !== null) return null;
+  if (start === 0 && request.afterEventId !== null) return undefined;
   const published = events.slice(start).find(event => request.actorId === null || event.actor?.id === request.actorId);
   const publishedAt = Date.parse(published?.created_at ?? '');
   if (!published?.id || !Number.isFinite(publishedAt) || publishedAt > request.requestedAt + PUBLICATION_WINDOW_MS) return null;
   return String(published.id);
 }
 
-/** Whether the request's trigger write may still land: none of its own is on the issue yet, within the publication window. */
-function publicationUnresolved(request: IssueRetryRequest, events: TriggerLabelEvent[], now: number): boolean {
-  return retryRequestTrigger(request, events) === null && now <= request.requestedAt + PUBLICATION_WINDOW_MS;
-}
-
-/** Requests still worth holding: unexpired, and either published or still able to be. */
-function heldRequests(requests: IssueRetryRequest[], events: TriggerLabelEvent[], now: number): IssueRetryRequest[] {
-  return requests.filter(request => now <= request.requestedAt + RETRY_REQUEST_TTL_SECONDS * 1000
-    && (retryRequestTrigger(request, events) !== null || publicationUnresolved(request, events, now)));
-}
-
 /**
- * Whether an earlier request's trigger write may still land. A second request
- * then could not be told apart from it, so it waits for that outcome.
+ * Whether the request may still be owed a run: its trigger write is in
+ * progress or may still land, or it published a trigger no dispatch has
+ * consumed. A request whose write never landed within the publication window,
+ * or whose trigger the submission consumed, is owed none.
  */
-export async function hasUnresolvedIssueRetryRequest(redis: RetryRequestRedis, issue: IssueKey, { events, now }: TriggerHistory): Promise<boolean> {
-  return (await findIssueRetryRequests(redis, issue)).some(request => publicationUnresolved(request, events, now));
+function mayBeOwed(request: IssueRetryRequest, { events, now, consumedEventId }: TriggerHistory): boolean {
+  if (request.publication === 'refused') return false;
+  const windowOpen = now <= request.requestedAt + PUBLICATION_WINDOW_MS;
+  if (request.publication === 'reserved') return windowOpen;
+  const own = retryRequestTrigger(request, events);
+  if (own === undefined) return true;
+  if (own === null) return windowOpen;
+  const consumed = consumedEventId ? events.findIndex(event => String(event.id) === consumedEventId) : -1;
+  // Dispatch only runs past a request's admitted trigger by running the request.
+  return consumed < events.findIndex(event => String(event.id) === own);
+}
+
+/** The issue's open requests, oldest first. */
+export async function findIssueRetryRequests(database: Knex, issue: IssueKey): Promise<IssueRetryRequest[]> {
+  const rows = await database(TABLE).where({ owed_issue: owedIssue(issue) }).orderBy('requested_at').select() as RequestRow[];
+  return rows.map(parseRow);
 }
 
 /**
- * Holds the request alongside earlier requests whose triggers were published,
- * unless an earlier publication is still unresolved. False when it is.
+ * Reserves the issue for a new request, before anything of it is posted or
+ * published, unless an earlier request may still be owed a run: a second
+ * request could not then be told apart from it, and running either would
+ * consume the other's trigger. Requests known to be owed nothing are released.
+ * Null when the issue is still owed an earlier request.
  */
 export async function reserveIssueRetryRequest(
-  redis: RetryRequestRedis, issue: IssueKey, request: IssueRetryRequest, { events, now }: TriggerHistory,
+  database: Knex,
+  issue: IssueKey,
+  request: Pick<IssueRetryRequest, 'requesterId' | 'requestedAt' | 'afterEventId'>,
+  history: TriggerHistory,
+): Promise<IssueRetryRequest | null> {
+  return database.transaction(async trx => {
+    // Only requests known to be owed nothing are ever discarded.
+    await trx(TABLE).whereNull('owed_issue').where('recorded_at', '<', history.now - CLOSED_RETENTION_MS).delete();
+    const open = await findIssueRetryRequests(trx, issue);
+    if (open.some(held => mayBeOwed(held, history))) return null;
+    if (open.length > 0) await trx(TABLE).whereIn('id', open.map(held => held.id)).update({ owed_issue: null, recorded_at: history.now });
+    // The unique open slot refuses a concurrent reservation the read above could not see.
+    const [id] = await trx(TABLE).insert({
+      repo_owner: issue.repoOwner, repo_name: issue.repoName, issue_number: issue.number, owed_issue: owedIssue(issue),
+      requester_id: request.requesterId, requested_at: request.requestedAt, after_event_id: request.afterEventId,
+      publication: 'reserved', recorded_at: history.now,
+    }) as number[];
+    return { ...request, id: Number(id), commentId: null, actorId: null, publication: 'reserved' as const };
+  });
+}
+
+/**
+ * Records the posted request just before its trigger is written. False when
+ * the reservation was released meanwhile, so the trigger must not be written.
+ */
+export async function beginIssueRetryPublication(
+  database: Knex, request: IssueRetryRequest, posted: Pick<IssueRetryRequest, 'commentId' | 'actorId'>, now = Date.now(),
 ): Promise<boolean> {
-  return updateRequests(redis, issue, requests => requests.some(held => publicationUnresolved(held, events, now))
-    ? null
-    : [...heldRequests(requests, events, now), { ...request, publication: 'pending' }]);
+  const updated = await database(TABLE).where({ id: request.id, publication: 'reserved' }).whereNotNull('owed_issue')
+    .update({ comment_id: posted.commentId, actor_id: posted.actorId, publication: 'pending', recorded_at: now });
+  return Number(updated) === 1;
 }
 
-/** Lets recovery adopt the request: its trigger write was applied, or may still be. */
-export async function reportIssueRetryPublication(redis: RetryRequestRedis, issue: IssueKey, request: IssueRetryRequest): Promise<void> {
-  await updateRequests(redis, issue, requests => requests.map(held => held.commentId === request.commentId ? { ...held, publication: 'possible' } : held));
+/** Releases a reservation whose trigger was never written. */
+export async function releaseIssueRetryReservation(database: Knex, request: IssueRetryRequest): Promise<void> {
+  await database(TABLE).where({ id: request.id, publication: 'reserved' }).delete();
 }
 
-export async function findIssueRetryRequests(redis: RetryRequestRedis, issue: IssueKey): Promise<IssueRetryRequest[]> {
-  const raw = await redis.get(retryRequestKey(issue));
-  return raw ? parse(raw) : [];
-}
-
-/** Durably records the outcome of the request's trigger write, independently of the store holding the request. */
+/**
+ * Records the outcome of the request's trigger write: `possible` lets recovery
+ * adopt it, and a refusal, which published no trigger of the request, releases
+ * it whoever else labels the issue.
+ */
 export async function recordIssueRetryPublication(
-  database: Knex, request: Pick<IssueRetryRequest, 'commentId'>, publication: 'possible' | 'refused', now = Date.now(),
+  database: Knex, request: Pick<IssueRetryRequest, 'id'>, publication: 'possible' | 'refused', now = Date.now(),
 ): Promise<void> {
-  await database(STATES_TABLE).where('recorded_at', '<', now - STATE_RETENTION_MS).delete();
-  await database(STATES_TABLE).insert({ comment_id: request.commentId, publication, recorded_at: now }).onConflict('comment_id').merge(['publication']);
+  await database(TABLE).where({ id: request.id, publication: 'pending' }).whereNotNull('owed_issue')
+    .update({ publication, recorded_at: now, ...(publication === 'refused' ? { owed_issue: null } : {}) });
 }
 
-/** Durably records that a dispatch carried the request into its run. */
-export async function consumeIssueRetryRequest(database: Knex, request: Pick<IssueRetryRequest, 'commentId'>, now = Date.now()): Promise<void> {
-  await database(STATES_TABLE).insert({ comment_id: request.commentId, consumed_at: now, recorded_at: now }).onConflict('comment_id').merge(['consumed_at']);
-}
-
-export async function issueRetryRequestStates(database: Knex, requests: Array<Pick<IssueRetryRequest, 'commentId'>>): Promise<Map<number, IssueRetryRequestState>> {
-  if (requests.length === 0) return new Map();
-  const rows = await database(STATES_TABLE).whereIn('comment_id', requests.map(request => request.commentId))
-    .select('comment_id', 'publication', 'consumed_at') as Array<{ comment_id: number | string; publication: string | null; consumed_at: number | string | null }>;
-  return new Map(rows.map(row => [Number(row.comment_id), {
-    publication: row.publication === 'possible' || row.publication === 'refused' ? row.publication : undefined,
-    consumed: row.consumed_at !== null,
-  }]));
+/** Records that a dispatch carried the request into its run, which releases it. */
+export async function consumeIssueRetryRequest(database: Knex, request: Pick<IssueRetryRequest, 'id'>, now = Date.now()): Promise<void> {
+  await database(TABLE).where({ id: request.id }).update({ consumed_at: now, owed_issue: null, recorded_at: now });
 }
 
 /**
  * Selects the run a delivery dispatches, by the same rules for a direct job
- * and a recovering relabel or poll. Held requests are served oldest first,
- * each only on its own trigger while that trigger is admitted and the request
- * unconsumed, so a newer, independent trigger does not strand one. A request
- * whose write GitHub refused is passed over. One whose outcome is unknown, or
- * whose trigger write may still land, defers the delivery: dispatching
- * another trigger would consume its trigger, and dispatching its own would
- * either drop its requester or adopt a request that may have been refused.
+ * and a recovering relabel or poll: an open request runs only on its own
+ * trigger while that trigger is admitted, so a newer, independent trigger
+ * does not strand it. One whose outcome is unknown, or whose trigger write may
+ * still land, defers the delivery: dispatching another trigger would consume
+ * its trigger, and dispatching its own would either drop its requester or
+ * adopt a request that may have been refused.
  *
- * A direct job names its request, which the route only enqueues once its
- * write was applied. An issue-only run consumes no trigger, so that job runs
- * its request whether or not the timeline shows the trigger yet.
+ * The open requests are read after the history, so one still reserved then
+ * had written no trigger the history shows, and a delivery that admits
+ * triggers takes its own from that same history.
  */
 export async function selectRetryRun(
   issue: IssueKey,
-  requests: IssueRetryRequest[],
-  { commentId, admitted }: RetryRunDelivery,
+  { admitted }: RetryRunDelivery,
   { getOctokit = getAuthenticatedOctokit, processingLabels = loadPrimaryProcessingLabels, database = db, now = Date.now }: SelectionDeps = {},
 ): Promise<RetryRun> {
-  const at = now();
-  const states = await issueRetryRequestStates(database, requests);
-  const live = requests.filter(request => !states.get(request.commentId)?.consumed && at <= request.requestedAt + RETRY_REQUEST_TTL_SECONDS * 1000);
-  const named = live.find(request => request.commentId === commentId);
-  if (named && !admitted) return { request: named };
-  if (live.length === 0) return { request: null };
+  // An issue-only delivery consumes no trigger, so without a request it needs no history.
+  if (!admitted && (await findIssueRetryRequests(database, issue)).length === 0) return { request: null };
   const events = await triggerLabelEvents(await getOctokit(), issue, new Set(await processingLabels()));
-  const admissible = new Set((admitted ? await admitted(events) : events).map(event => String(event.id)));
-  const latest = events.at(-1)?.id;
-  for (const request of [...live].sort((a, b) => a.requestedAt - b.requestedAt)) {
-    const publication = request === named || request.publication === 'possible' ? 'possible' : states.get(request.commentId)?.publication;
-    const owed = owedRun(request, publication, { events, admissible, now: at });
+  const open = await findIssueRetryRequests(database, issue);
+  const at = now();
+  const admittedEvents = admitted ? await admitted(events) : events;
+  const admissible = new Set(admittedEvents.map(event => String(event.id)));
+  const latest = events.at(-1);
+  for (const request of open) {
+    const owed = owedRun(request, { events, admissible, now: at });
     if (owed === 'defer') return { deferred: request };
-    if (owed !== null) return { request, triggerEventId: owed, latestTriggerEventId: latest === undefined ? undefined : String(latest) };
+    // An issue owes one open request at a time, so no other request's trigger is consumed with it.
+    if (owed !== null) return { request, triggerEventId: owed, latestTriggerEventId: latest?.id === undefined ? undefined : String(latest.id) };
   }
-  return { request: null };
+  if (!admitted) return { request: null };
+  return { request: null, trigger: latest?.id && admittedEvents.at(-1) === latest ? { eventId: String(latest.id) } : null };
 }
 
 /**
@@ -256,16 +240,11 @@ export async function selectRetryRun(
  */
 function owedRun(
   request: IssueRetryRequest,
-  publication: IssueRetryRequestState['publication'],
-  { events, admissible, now }: TriggerHistory & { admissible: Set<string> },
+  { events, admissible, now }: Omit<TriggerHistory, 'consumedEventId'> & { admissible: Set<string> },
 ): string | 'defer' | null {
-  if (publication === 'refused') return null;
+  if (request.publication === 'reserved' || request.publication === 'refused' || request.commentId === null) return null;
   const own = retryRequestTrigger(request, events);
-  if (own !== null && admissible.has(own)) return publication === 'possible' ? own : 'defer';
+  if (own === undefined) return 'defer';
+  if (own !== null && admissible.has(own)) return request.publication === 'possible' ? own : 'defer';
   return own === null && now <= request.requestedAt + PUBLICATION_WINDOW_MS ? 'defer' : null;
-}
-
-/** Releases the request only; other requests held for the issue survive. */
-export async function settleIssueRetryRequest(redis: RetryRequestRedis, issue: IssueKey, request: IssueRetryRequest): Promise<void> {
-  await updateRequests(redis, issue, requests => requests.filter(held => held.commentId !== request.commentId));
 }

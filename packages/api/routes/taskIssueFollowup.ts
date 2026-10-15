@@ -3,7 +3,7 @@ import type { Redis } from 'ioredis';
 import {
   getAuthenticatedOctokit, getIssueQueue, loadPrimaryProcessingLabels, parseSlashCommand,
   safeRemoveLabel, generateCorrelationId, logger, findIssueSubmission, submissionRetryAdmissibleAt,
-  reserveIssueRetryRequest, reportIssueRetryPublication, recordIssueRetryPublication, settleIssueRetryRequest, hasUnresolvedIssueRetryRequest, triggerLabelEvents,
+  reserveIssueRetryRequest, beginIssueRetryPublication, releaseIssueRetryReservation, recordIssueRetryPublication, retryRequestTrigger, triggerLabelEvents,
   type IssueRetryRequest, type TriggerHistory, type TriggerLabelEvent,
 } from '@propr/core';
 import { enqueueIssueImplementationJob } from './planIssueHelpers.js';
@@ -68,13 +68,18 @@ async function issueRunPending(owner: string, repo: string, issueNumber: number)
   });
 }
 
-/** A submission-backed issue only reruns on a trigger event its dispatcher admits as a retry. */
-async function retryAdmissibleAt(db: Knex, owner: string, repo: string, issueNumber: number): Promise<number | null> {
+/**
+ * When a submission-backed issue's dispatcher admits a new trigger event as a
+ * retry, and the latest trigger it consumed.
+ */
+async function retryAdmission(db: Knex, owner: string, repo: string, issueNumber: number): Promise<{ admissibleAt: number | null; consumedEventId: string | null }> {
   const submission = await findIssueSubmission({ repoOwner: owner, repoName: repo, number: issueNumber }, db);
-  return submission ? submissionRetryAdmissibleAt(submission, db) : 0;
+  if (!submission) return { admissibleAt: 0, consumedEventId: null };
+  return { admissibleAt: await submissionRetryAdmissibleAt(submission, db), consumedEventId: submission.retry_event_id ?? null };
 }
 
 const clock = (deps: IssueFollowupDeps) => deps.now ?? Date.now;
+const issueKeyOf = (input: IssueFollowupInput) => ({ repoOwner: input.owner, repoName: input.repo, number: input.issueNumber });
 
 /** Waits a bounded time for `time`, reporting whether it has arrived. */
 async function waitUntil(deps: IssueFollowupDeps, time: number): Promise<boolean> {
@@ -85,16 +90,14 @@ async function waitUntil(deps: IssueFollowupDeps, time: number): Promise<boolean
 }
 
 /**
- * Whether a trigger write the label helper reported as failed landed anyway:
- * a lost response does not mean GitHub refused it. Undefined when the issue
- * cannot be read to tell.
+ * Whether the request's own trigger is on the issue: the first trigger its
+ * GitHub identity labelled after its baseline, by the rules recovery uses. A
+ * trigger someone else applied is not its publication. Undefined when the
+ * history cannot be read to tell.
  */
-async function triggerPresent(octokit: Octokit, input: IssueFollowupInput, trigger: string): Promise<boolean | undefined> {
+async function ownTriggerPresent(octokit: Octokit, input: IssueFollowupInput, request: IssueRetryRequest, triggers: string[]): Promise<boolean | undefined> {
   try {
-    const { data } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-      owner: input.owner, repo: input.repo, issue_number: input.issueNumber, per_page: 100,
-    }) as { data: Array<{ name?: string } | string> };
-    return data.some(label => (typeof label === 'string' ? label : label.name) === trigger);
+    return typeof retryRequestTrigger(request, await triggerLabelEvents(octokit, issueKeyOf(input), new Set(triggers))) === 'string';
   } catch (error) {
     console.warn(`[followup] Could not confirm the retry trigger on #${input.issueNumber}: ${(error as Error).message}`);
     return undefined;
@@ -102,11 +105,13 @@ async function triggerPresent(octokit: Octokit, input: IssueFollowupInput, trigg
 }
 
 /**
- * Adds the trigger; undefined when GitHub may still apply it. Only a refusal
- * GitHub answered proves no write: a lost or timed-out write can land after a
- * read that does not show it yet.
+ * Adds the trigger; undefined when GitHub may still apply it. A refusal
+ * GitHub answered proves no write of the request, whoever else labels the
+ * issue meanwhile. A lost or timed-out write can land after a read that does
+ * not show it yet, so only the request's own trigger confirms it.
  */
-async function addTrigger(octokit: Octokit, input: IssueFollowupInput, trigger: string): Promise<boolean | undefined> {
+async function addTrigger(octokit: Octokit, input: IssueFollowupInput, publication: Publication): Promise<boolean | undefined> {
+  const { trigger } = publication;
   try {
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
       owner: input.owner, repo: input.repo, issue_number: input.issueNumber, labels: [trigger],
@@ -115,22 +120,24 @@ async function addTrigger(octokit: Octokit, input: IssueFollowupInput, trigger: 
   } catch (error) {
     const status = (error as { status?: unknown }).status;
     console.warn(`[followup] Adding '${trigger}' to #${input.issueNumber} failed (${status ?? 'no response'}): ${(error as Error).message}`);
-    if (await triggerPresent(octokit, input, trigger)) return true;
-    return typeof status === 'number' && status >= 400 && status < 500 ? false : undefined;
+    if (typeof status === 'number' && status >= 400 && status < 500) return false;
+    return await ownTriggerPresent(octokit, input, publication.request, publication.triggers) ? true : undefined;
   }
 }
 
+interface Publication { request: IssueRetryRequest; trigger: string; triggers: string[] }
+
 /** Re-applies the trigger; undefined when GitHub may have applied it without confirming. */
-async function reapplyTrigger(context: Parameters<typeof safeRemoveLabel>[0] & { octokit: Octokit }, input: IssueFollowupInput, present: boolean, trigger: string): Promise<boolean | undefined> {
+async function reapplyTrigger(context: Parameters<typeof safeRemoveLabel>[0] & { octokit: Octokit }, input: IssueFollowupInput, present: boolean, publication: Publication): Promise<boolean | undefined> {
   // A failed removal publishes no trigger event, so nothing can start from it.
-  if (present && !await safeRemoveLabel(context, trigger)) return false;
-  return addTrigger(context.octokit, input, trigger);
+  if (present && !await safeRemoveLabel(context, publication.trigger)) return false;
+  return addTrigger(context.octokit, input, publication);
 }
 
 /** The trigger history, whose latest event is the one after which the request's own trigger is the first its identity labels. */
 async function triggerBaseline(octokit: Octokit, input: IssueFollowupInput, triggers: string[]): Promise<{ events: TriggerLabelEvent[]; afterEventId: string | null } | null> {
   try {
-    const events = await triggerLabelEvents(octokit, { repoOwner: input.owner, repoName: input.repo, number: input.issueNumber }, new Set(triggers));
+    const events = await triggerLabelEvents(octokit, issueKeyOf(input), new Set(triggers));
     const latest = events.at(-1);
     return { events, afterEventId: latest?.id === undefined ? null : String(latest.id) };
   } catch (error) {
@@ -147,60 +154,45 @@ async function postRequest(octokit: Octokit, input: IssueFollowupInput, body: st
   return { commentId: comment.id, actorId: typeof comment.user?.id === 'number' ? comment.user.id : null };
 }
 
-const issueKeyOf = (input: IssueFollowupInput) => ({ repoOwner: input.owner, repoName: input.repo, number: input.issueNumber });
-
 /**
  * Claims the label-event window the relabel's webhook shares, so it does not
- * queue a second run without the requesting user. Refuses, releasing it,
- * while an earlier request's trigger write may still land: that request keeps
- * its requester and instructions until it does or cannot, and a second
- * request then could not be told apart from it.
+ * queue a second run without the requesting user, and reserves the issue for
+ * the request before anything of it is posted. Refuses, releasing the window,
+ * while an earlier request may still be owed a run: that request keeps its
+ * requester, instructions and trigger until it runs or cannot, and a second
+ * request could not be told apart from it.
  */
-async function claimRetryWindow(input: IssueFollowupInput, history: TriggerHistory, { dedupeKey, correlationId }: { dedupeKey: string; correlationId: string }): Promise<FollowupResult | null> {
+async function claimRetry(
+  db: Knex, input: IssueFollowupInput, history: TriggerHistory,
+  { dedupeKey, correlationId, request }: { dedupeKey: string; correlationId: string; request: Pick<IssueRetryRequest, 'requesterId' | 'requestedAt' | 'afterEventId'> },
+): Promise<FollowupResult | IssueRetryRequest> {
   if (!await input.redis.set(dedupeKey, correlationId, 'EX', 30, 'NX')) {
     return refused(409, `A run for issue #${input.issueNumber} was just requested. Refresh the task before retrying.`);
   }
-  let unresolved: boolean;
+  let reserved: IssueRetryRequest | null;
   try {
-    unresolved = await hasUnresolvedIssueRetryRequest(input.redis, issueKeyOf(input), history);
+    reserved = await reserveIssueRetryRequest(db, issueKeyOf(input), request, history);
   } catch (error) {
     await input.redis.del(dedupeKey);
-    throw error;
+    console.warn(`[followup] Could not record the retry request: ${(error as Error).message}`);
+    return refused(503, `The retry of issue #${input.issueNumber} could not be recorded, so nothing was posted. Try again.`);
   }
-  if (!unresolved) return null;
+  if (reserved) return reserved;
   await input.redis.del(dedupeKey);
   return refused(409, `An earlier retry of issue #${input.issueNumber} may still start. Inspect the issue and try again in a few minutes.`);
-}
-
-/** Holds the request pending its trigger write; false when it cannot be held. */
-async function holdRequest(input: IssueFollowupInput, request: IssueRetryRequest, events: TriggerLabelEvent[]): Promise<boolean> {
-  try {
-    return await reserveIssueRetryRequest(input.redis, issueKeyOf(input), request, { events, now: request.requestedAt });
-  } catch (error) {
-    console.warn(`[followup] Could not record the retry request: ${(error as Error).message}`);
-    return false;
-  }
 }
 
 /**
  * Records the trigger write's outcome for recovery: `possible` once it was
  * applied or may still be, or a refusal, which published no trigger of the
- * request. The durable record survives a failure of the store holding the
- * request; with neither record the outcome stays unknown, and recovery defers
- * the request's trigger rather than run it with or without the request.
- * Releasing a refused request is cleanup.
+ * request and releases it. Without the record the outcome stays unknown, and
+ * recovery defers the request's trigger rather than run it with or without
+ * the request.
  */
-async function recordTriggerOutcome(db: Knex, input: IssueFollowupInput, request: IssueRetryRequest, { applied, now }: { applied: boolean | undefined; now: number }): Promise<void> {
+async function recordTriggerOutcome(db: Knex, request: IssueRetryRequest, { applied, now }: { applied: boolean | undefined; now: number }): Promise<void> {
   const publication = applied === false ? 'refused' : 'possible';
   await recordIssueRetryPublication(db, request, publication, now).catch((error: Error) => {
-    console.warn(`[followup] Could not durably record the retry trigger as ${publication}: ${error.message}`);
-  });
-  if (applied === false) {
-    await settleIssueRetryRequest(input.redis, issueKeyOf(input), request).catch(() => undefined);
-    return;
-  }
-  await reportIssueRetryPublication(input.redis, issueKeyOf(input), request).catch((error: Error) => {
-    console.warn(`[followup] Could not report the retry trigger as published: ${error.message}`);
+    console.warn(`[followup] Could not record the retry trigger as ${publication}: ${error.message}`);
   });
 }
 
@@ -239,7 +231,7 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   }) as { data: IssueData };
   if (issue.pull_request) return refused(409, `#${issueNumber} is a pull request, not the task's issue.`);
   if (issue.state !== 'open') return refused(409, `Issue #${issueNumber} is closed. Reopen it before retrying.`);
-  const admissibleAt = await retryAdmissibleAt(db, owner, repo, issueNumber);
+  const { admissibleAt, consumedEventId } = await retryAdmission(db, owner, repo, issueNumber);
   if (admissibleAt === null) {
     return refused(409, `Issue #${issueNumber}'s latest run is not recorded as finished, so a new trigger would not start a run. Refresh the task before retrying.`);
   }
@@ -267,15 +259,26 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
 
   const correlationId = generateCorrelationId();
   const dedupeKey = `issue:dedup:${owner}:${repo}:${issueNumber}`;
-  const unclaimed = await claimRetryWindow(input, { events: baseline.events, now: clock(deps)() }, { dedupeKey, correlationId });
-  if (unclaimed) return unclaimed;
+  // Reserved before anything is posted or published: a relabel delivery that
+  // recovers a failed enqueue carries neither the requester nor the comment to
+  // exempt, and it is bound to the trigger it publishes, so a later,
+  // independent trigger cannot adopt it.
+  const requestedAt = clock(deps)();
+  const claimed = await claimRetry(db, input, { events: baseline.events, now: requestedAt, consumedEventId },
+    { dedupeKey, correlationId, request: { requesterId: userId, requestedAt, afterEventId: baseline.afterEventId } });
+  if ('status' in claimed) return claimed;
+  const reservation = claimed;
+  const abandon = async () => {
+    await releaseIssueRetryReservation(db, reservation).catch(() => undefined);
+    await redis.del(dedupeKey);
+  };
 
   let commentId: number;
   let actorId: number | null;
   try {
     ({ commentId, actorId } = await postRequest(octokit, input, body));
   } catch (error) {
-    await redis.del(dedupeKey);
+    await abandon();
     throw error;
   }
   console.log(`[followup] Posted retry request (ID: ${commentId}) to ${owner}/${repo}#${issueNumber}`);
@@ -284,13 +287,15 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   const notStarted = (): FollowupResult => ({ status: 202, body: { success: false, state: 'failed', ...posted,
     message: `Comment posted, but the retry could not be started. Make sure issue #${issueNumber} has the '${trigger}' label, then try again.` } });
 
-  // Held before the trigger is published: a relabel delivery that recovers a
-  // failed enqueue carries neither the requester nor the comment to exempt.
-  // It is bound to the trigger it publishes, so if releasing it fails a
-  // later, independent trigger cannot adopt it.
-  const retryRequest: IssueRetryRequest = { requesterId: userId, commentId, requestedAt: clock(deps)(), afterEventId: baseline.afterEventId, actorId, publication: 'pending' };
-  if (!await holdRequest(input, retryRequest, baseline.events)) {
-    await redis.del(dedupeKey);
+  // The request is recorded with its comment before its trigger is written,
+  // or the trigger is not written at all.
+  const retryRequest: IssueRetryRequest = { ...reservation, commentId, actorId, publication: 'pending' };
+  const publishing = await beginIssueRetryPublication(db, reservation, { commentId, actorId }, clock(deps)()).catch((error: Error) => {
+    console.warn(`[followup] Could not record the retry request: ${error.message}`);
+    return false;
+  });
+  if (!publishing) {
+    await abandon();
     return notStarted();
   }
 
@@ -298,8 +303,8 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   const unconfirmed = (message: string): FollowupResult => ({ status: 202, body: { success: false, state: 'unknown', jobId, ...posted, message } });
 
   const context = { octokit, owner, repo, issueNumber, logger: logger.withCorrelation(correlationId) };
-  const applied = await reapplyTrigger(context, input, labels.includes(trigger), trigger);
-  await recordTriggerOutcome(db, input, retryRequest, { applied, now: clock(deps)() });
+  const applied = await reapplyTrigger(context, input, labels.includes(trigger), { request: retryRequest, trigger, triggers });
+  await recordTriggerOutcome(db, retryRequest, { applied, now: clock(deps)() });
   if (applied === undefined) {
     // GitHub may have applied the trigger or may still apply it, and its
     // relabel delivery or polling recovers the run; the held request keeps

@@ -1,7 +1,7 @@
 import type { Redis } from 'ioredis';
 import type { Job } from 'bullmq';
 import type { IssueJobData } from '../../core/src/queue/taskQueue.types.js';
-import { state, add, request, redis, database } from './taskFollowupFixture.js';
+import { state, add, request, redis, database, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
 
 const { processDetectedIssue } = await import('../../core/src/daemon/issueDetection.js');
 const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispatcher.js');
@@ -9,11 +9,13 @@ const { findIssueSubmission } = await import('../../core/src/services/taskSubmis
 const { resolveTaskSubmissionRetry, admittedSubmissionTriggers } = await import('../../core/src/services/taskSubmissionRetry.js');
 const { fetchIssueComments } = await import('../../../src/jobs/issueJob/github.js');
 const { generateClaudePrompt } = await import('../../core/src/claude/prompts/promptGenerator.js');
-const { findIssueRetryRequests, settleIssueRetryRequest, selectRetryRun, consumeIssueRetryRequest } = await import('../../core/src/services/issueRetryRequest.js');
+const { selectRetryRun, consumeIssueRetryRequest } = await import('../../core/src/services/issueRetryRequest.js');
 type IssueRetryRequest = import('../../core/src/services/issueRetryRequest.js').IssueRetryRequest;
 type Submission = Awaited<ReturnType<typeof findIssueSubmission>>;
 
-export const retryRequestKey = 'issue:retry-request:integry:propr:14';
+/** The retry requests issue 14 may still owe a run, oldest first. */
+export const openRequests = async () => database('issue_retry_request_states').where({ issue_number: 14 }).whereNotNull('owed_issue')
+  .orderBy('requested_at').select('comment_id', 'requester_id', 'requested_at', 'publication') as Promise<Array<{ comment_id: number | null; requester_id: string; requested_at: number; publication: string }>>;
 export const routes = () => request.mock.calls.map(call => call.arguments[0]);
 export const postedComments = () => request.mock.calls.filter(call => call.arguments[0].endsWith('/comments'));
 
@@ -26,12 +28,13 @@ export const relabelWebhook = () => processDetectedIssue({
 
 const timelineOctokit = async () => ({ request: async () => ({ data: state.timeline }) }) as never;
 export const retryRequestStore = {
-  find: (issue: IssueJobData) => findIssueRetryRequests(redis as unknown as Redis, issue),
-  select: (issue: IssueJobData, held: IssueRetryRequest[], { commentId, submission }: { commentId?: number; submission: Submission }) =>
-    selectRetryRun(issue, held, { commentId, ...(submission ? { admitted: events => admittedSubmissionTriggers(submission, events, database) } : {}) },
+  select: (issue: IssueJobData, { submission }: { submission: Submission }) =>
+    selectRetryRun(issue, submission ? { admitted: events => admittedSubmissionTriggers(submission, events, database) } : {},
       { getOctokit: timelineOctokit, processingLabels: async () => ['AI'], database, now: () => state.now }),
-  consume: (_issue: IssueJobData, held: IssueRetryRequest) => consumeIssueRetryRequest(database, held, state.now),
-  settle: (issue: IssueJobData, held: IssueRetryRequest) => settleIssueRetryRequest(redis as unknown as Redis, issue, held),
+  consume: async (_issue: IssueJobData, held: IssueRetryRequest) => {
+    if (state.consumeFails) throw new Error('SQLITE_BUSY: database is locked');
+    await consumeIssueRetryRequest(database, held, state.now);
+  },
 };
 
 /** Runs the matrix dispatcher on the parent job the queue received at `index`. */
@@ -59,12 +62,11 @@ export async function dispatchQueued(index: number) {
   return { dispatched, children };
 }
 
-/** The comments a run on issue 14 reads into its prompt, after the app posted the request. */
+/** The comments a run on issue 14 reads into its prompt, after the app posted every request. */
 export async function promptFor(child: IssueJobData) {
-  const [posted] = postedComments();
   const issueComments = [
     { id: 1, body: 'An unrelated bot note', user: { login: 'other-app[bot]', type: 'Bot' } },
-    { id: 6157569382, body: posted.arguments[1].body!, user: { login: 'propr-dev[bot]', type: 'Bot' } },
+    ...postedComments().map((posted, index) => ({ id: FIRST_COMMENT_ID + index, body: posted.arguments[1].body!, user: { login: 'propr-dev[bot]', type: 'Bot' } })),
   ];
   const octokit = { request: async () => ({ data: issueComments, headers: {} }) };
   const comments = await fetchIssueComments(octokit as never, child, { warn: () => undefined } as never);

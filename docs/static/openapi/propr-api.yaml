@@ -7713,7 +7713,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/LegacyError"
         "409":
-          description: "The issue cannot be retried: the run has not failed, the issue is closed or done, or a run is already queued."
+          description: "The issue cannot be retried: the run has not failed, the issue is closed or done, a run is already queued, or an earlier retry may still start."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "503":
+          description: The issue retry could not be recorded, so nothing was posted.
           content:
             application/json:
               schema:
