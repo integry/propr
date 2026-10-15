@@ -1,5 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import {
   PROVIDER_AUTHORITY_CONTRACT, PROVIDER_CATALOG_REVISION, PROVIDER_CATALOG, PROVIDER_AUTHORITY_MAX_LEASE_MS as MAX_LEASE_MS,
   authorityIdentitySchema, canonicalAuthority as canonical, immutableAuthority as immutable,
@@ -11,12 +10,8 @@ import {
   authorityStateSchema, validateAuthorityState, type AuthorityState, type AuthorityRecord,
 } from './state.js';
 import type { HostedAuthorityPorts, ProviderGrant, LocalProviderCapability as Capability } from './ports.js';
+import { same, hash, copy, custodySchema, commitmentSchema, PURPOSE_SOURCES } from './authorityHelpers.js';
 
-const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
-const hash = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex');
-const copy = <T>(value: T): T => structuredClone(value);
-const custodySchema = z.strictObject({ locator: z.string().min(1).max(8192) });
-const commitmentSchema = z.strictObject({ keyId: z.string().min(1).max(160), digest: z.string().regex(/^[0-9a-f]{64}$/) });
 /** No filesystem, provider, config, process or Fleet dependencies. The only
  * persistence path is the explicitly injected permissioned control-root port. */
 class HostedProviderAuthority {
@@ -124,12 +119,7 @@ class HostedProviderAuthority {
       if (!resource || !binding.issuer.resources.includes(resource.key)) return refuse();
       if (binding.category === 'provider-sessions' ? purpose !== 'provider-launch'
         : !['config-mutation', 'credential-writer', 'credential-use'].includes(purpose)) return refuse();
-      const sources: Record<Purpose, readonly string[]> = {
-        'config-mutation': ['config'], 'credential-writer': ['login', 'run', 'migration'],
-        'credential-use': ['login', 'run', 'probe', 'migration'],
-        'provider-launch': ['login', 'run', 'probe', 'migration', 'retry', 'callback'],
-      };
-      if (!sources[purpose]?.includes(binding.issuer.sourceKind)
+      if (!PURPOSE_SOURCES[purpose]?.includes(binding.issuer.sourceKind)
         || (binding.issuer.sourceKind === 'retry' && !binding.replacementOf)) return refuse();
       if (state.records.some(r => same(r.binding.identity, binding.identity) && r.binding.issuer.issuerId === binding.issuer.issuerId
         && r.binding.category === binding.category && r.binding.resourceKey === binding.resourceKey
