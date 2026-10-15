@@ -104,6 +104,27 @@ test('a first retry within the failure second relabels after it, so the submissi
   }
 });
 
+test('a failure recorded beyond the bounded wait is refused before posting or relabelling', async () => {
+  const row = await insertTaskSubmission(database, { user_id: 'submitter', submission_key: 'retry-clock-behind',
+    payload_hash: 'hash', repository: 'integry/propr', payload: '{}', attachments: '[]' });
+  // The database clock runs five seconds ahead of the API clock.
+  await database('task_history').where({ task_id: 'failed-issue-task', state: 'failed' }).update({ timestamp: '2026-10-15T10:00:05.700Z' });
+  try {
+    await database('task_submissions').where({ id: row.id }).update({ issue_number: 14, task_id: 'failed-issue-task', dispatch_complete: true });
+    const result = await postFollowup({ body: 'Retry' }, 'failed-issue-task');
+    assert.equal(result.status, 409);
+    assert.match(String(result.json.error), /would not start a run yet/);
+    assert.deepEqual(state.sleeps, [2000], 'the wait stays bounded');
+    assert.equal(postedComments().length, 0);
+    assert.deepEqual(routes().filter(route => route.includes('/labels')), []);
+    assert.equal(add.mock.callCount(), 0);
+    assert.equal(claims.has('issue:dedup:integry:propr:14'), false, 'a refusal holds no dedup window');
+  } finally {
+    await database('task_history').where({ task_id: 'failed-issue-task', state: 'failed' }).update({ timestamp: '2026-10-15T10:00:00.500Z' });
+    await database('task_submissions').where({ id: row.id }).delete();
+  }
+});
+
 test('a submission whose latest run has not finished is refused before posting', async () => {
   const row = await insertTaskSubmission(database, { user_id: 'submitter', submission_key: 'retry-while-running',
     payload_hash: 'hash', repository: 'integry/propr', payload: '{}', attachments: '[]' });

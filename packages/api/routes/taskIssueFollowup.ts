@@ -70,9 +70,12 @@ async function retryAdmissibleAt(db: Knex, owner: string, repo: string, issueNum
   return submission ? submissionRetryAdmissibleAt(submission, db) : 0;
 }
 
-async function waitUntil(deps: IssueFollowupDeps, time: number): Promise<void> {
-  const wait = Math.min(time - (deps.now ?? Date.now)(), MAX_ADMISSION_WAIT_MS);
+/** Waits a bounded time for `time`, reporting whether it has arrived. */
+async function waitUntil(deps: IssueFollowupDeps, time: number): Promise<boolean> {
+  const now = deps.now ?? Date.now;
+  const wait = Math.min(time - now(), MAX_ADMISSION_WAIT_MS);
   if (wait > 0) await (deps.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms))))(wait);
+  return now() >= time;
 }
 
 async function checkRetryable(db: Knex, input: IssueFollowupInput): Promise<FollowupResult | null> {
@@ -122,6 +125,15 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
     return refused(409, `Issue #${issueNumber} is marked ${labels.includes(`${trigger}-done`) ? 'done' : 'cancelled'}; remove that label before retrying.`);
   }
 
+  // Re-applying records a trigger after the failure; an already present label
+  // would emit no event, and submission-backed issues only rerun on a new one.
+  // GitHub stamps that event to the second, so it must land after the
+  // failure's second for the dispatcher to tell it from the initial trigger.
+  // Waiting before posting means a refusal leaves no partial follow-up.
+  if (!await waitUntil(deps, admissibleAt)) {
+    return refused(409, `Issue #${issueNumber}'s failure is recorded later than this server's clock, so a new trigger would not start a run yet. Try again in a few seconds.`);
+  }
+
   // Shares the label-event window, so the relabel's webhook does not queue a
   // second run without the requesting user.
   const correlationId = generateCorrelationId();
@@ -143,11 +155,6 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
   console.log(`[followup] Posted retry request (ID: ${commentId}) to ${owner}/${repo}#${issueNumber}`);
   const posted = { posted: true, commentId, sourceTaskId: task.task_id, intent: 'issue', issueNumber };
 
-  // Re-applying records a trigger after the failure; an already present label
-  // would emit no event, and submission-backed issues only rerun on a new one.
-  // GitHub stamps that event to the second, so it must land after the
-  // failure's second for the dispatcher to tell it from the initial trigger.
-  await waitUntil(deps, admissibleAt);
   const context = { octokit, owner, repo, issueNumber, logger: logger.withCorrelation(correlationId) };
   if (!(labels.includes(trigger) ? await safeRemoveLabel(context, trigger) : true) || !await safeAddLabel(context, trigger)) {
     await redis.del(dedupeKey);
