@@ -11,7 +11,12 @@
  * work) and installation family converged. Reconnecting
  * the WebSocket never completes a resync by itself; a lost completion response
  * is answered by resending the persisted completion identity, not by rerunning
- * reconciliation. Frame handling is serialized; reconciliation runs outside that
+ * reconciliation. Every send path reads only a completion whose save succeeded
+ * (or that was loaded from validated durable state), never the live record, so
+ * a duplicate frame or reconnect during the completion write cannot leak an
+ * identity that might not survive. A failed save at a control boundary is
+ * exposed in `lastError` and retried, never left reconciling with no work
+ * scheduled. Frame handling is serialized; reconciliation runs outside that
  * queue so a superseding generation can abort it.
  */
 
@@ -25,6 +30,7 @@ import {
     parseResumeResyncFrame,
     type ResumeResyncFrame,
     type ResyncAcceptedFrame,
+    type ResyncCompletion,
 } from './routingResumeResyncProtocol.js';
 import { buildResyncEvidence, describeResyncError, runResyncAttempt, type ResumeResyncReconciler } from './routingResumeResyncRun.js';
 import type { ResumeResyncRecord, ResumeResyncStore } from './routingResumeResyncStore.js';
@@ -75,6 +81,9 @@ export class RoutingResumeResyncCoordinator {
     private queue: Promise<void> = Promise.resolve();
     private saveChain: Promise<void> = Promise.resolve();
     private retryTimer: NodeJS.Timeout | null = null;
+    private persistRetryTimer: NodeJS.Timeout | null = null;
+    /** The only completion a send path may use: durably saved for `record`. */
+    private durableCompletion: { record: ResumeResyncRecord; completion: ResyncCompletion } | null = null;
     private running: { promise: Promise<void>; controller: AbortController } | null = null;
     private sender: ResyncFrameSender | null = null;
     private lastRejection: FrameRejection | null = null;
@@ -103,7 +112,7 @@ export class RoutingResumeResyncCoordinator {
                 // A restart is an explicit operator signal to try again.
                 record.state = 'reconciling';
                 record.consecutiveFailures = 0;
-                await this.persist(record);
+                await this.persistBoundary(record, 'restart');
             }
             if (record.state === 'reconciling') this.scheduleRun(0);
             else if (record.state === 'partial') this.scheduleRun(this.delayUntil(record.nextRetryAt));
@@ -143,6 +152,7 @@ export class RoutingResumeResyncCoordinator {
     async stop(): Promise<void> {
         this.stopped = true;
         this.sender = null;
+        this.clearPersistRetry();
         await this.abortRun();
         await this.saveChain;
     }
@@ -160,6 +170,11 @@ export class RoutingResumeResyncCoordinator {
         try {
             this.record = await this.store.load(this.installationId);
             this.loaded = true;
+            // The codec validated this row, so its completion is durable and sendable.
+            const completion = this.record?.completion;
+            if (completion && (this.record?.state === 'completed' || this.record?.state === 'acknowledged')) {
+                this.durableCompletion = { record: this.record, completion: structuredClone(completion) };
+            }
             return true;
         } catch (error) {
             logger.error({ error: describeResyncError(error) }, 'Failed to load persisted routing resume-resync state');
@@ -201,7 +216,9 @@ export class RoutingResumeResyncCoordinator {
             completion: null, acknowledgedAt: null, updatedAt: new Date(this.now()).toISOString(),
         };
         this.lastCompletionSentAt = null;
-        await this.persist(this.record);
+        this.durableCompletion = null;
+        this.clearPersistRetry();
+        await this.persistBoundary(this.record, 'generation');
         logger.info({ ...generationLog(frame), state: this.record.state }, 'Recorded routing installation resume gap');
         if (required) this.scheduleRun(0);
     }
@@ -216,13 +233,13 @@ export class RoutingResumeResyncCoordinator {
             case 'pending':
                 record.gapEndedAt = frame.gapEndedAt;
                 record.state = 'reconciling';
-                await this.persist(record);
+                await this.persistBoundary(record, 'unsuspended');
                 this.scheduleRun(0);
                 return;
             case 'failed':
                 record.state = 'reconciling';
                 record.consecutiveFailures = 0;
-                await this.persist(record);
+                await this.persistBoundary(record, 'resume_failed');
                 this.scheduleRun(0);
                 return;
             case 'reconciling':
@@ -233,7 +250,8 @@ export class RoutingResumeResyncCoordinator {
                 if (!this.running && !this.retryTimer) this.scheduleRun(this.delayUntil(record.nextRetryAt));
                 return;
             default:
-                // completed/acknowledged: our completion response was lost.
+                // completed/acknowledged: our completion response was lost. A
+                // completion whose save is still pending is not sent here.
                 this.sendCompletion();
         }
     }
@@ -248,7 +266,7 @@ export class RoutingResumeResyncCoordinator {
         if (record.state === 'acknowledged') return;
         record.state = 'acknowledged';
         record.acknowledgedAt = new Date(this.now()).toISOString();
-        await this.persist(record);
+        await this.persistBoundary(record, 'acknowledgement');
         logger.info(generationLog(record), 'Routing accepted resume resync completion; routed intake resumes');
     }
 
@@ -290,7 +308,16 @@ export class RoutingResumeResyncCoordinator {
         record.startedAt ??= nowIso;
         record.lastAttemptAt = nowIso;
         record.nextRetryAt = null;
-        await this.persist(record);
+        try {
+            await this.persist(record);
+        } catch (error) {
+            // launchRun schedules the bounded retry once the slot is released.
+            if (this.record === record && !controller.signal.aborted) {
+                const exhausted = this.settlePartial(record, `persist_attempt: ${describeResyncError(error)}`, null);
+                if (exhausted) this.schedulePersistRetry(record, 1, null);
+            }
+            return;
+        }
         const correlationId = generateCorrelationId();
         logger.info({ ...generationLog(record), attempt: record.attempts, correlationId }, 'Reconciling GitHub state after routing suspension gap');
 
@@ -307,7 +334,8 @@ export class RoutingResumeResyncCoordinator {
         if (this.record !== record || controller.signal.aborted) return;
         if (result.complete) return this.complete(record);
         this.settlePartial(record, result.error ?? 'repositories_unreconciled', result.rateLimitRetryAt);
-        await this.persist(record);
+        // Keep the attempt's diagnosis; a partial retry re-saves, a failed record is retried.
+        await this.persistBoundary(record, 'settle', false);
     }
 
     private async complete(record: ResumeResyncRecord): Promise<void> {
@@ -324,33 +352,40 @@ export class RoutingResumeResyncCoordinator {
             await this.persist(record);
         } catch (error) {
             record.completion = null;
-            this.settlePartial(record, `persist_completion: ${describeResyncError(error)}`, null);
+            const exhausted = this.settlePartial(record, `persist_completion: ${describeResyncError(error)}`, null);
+            if (exhausted) this.schedulePersistRetry(record, 1, null);
             return;
         }
+        // persist() skips a superseded record without writing, so only publish our own.
+        if (this.record !== record || !record.completion) return;
+        this.durableCompletion = { record, completion: structuredClone(record.completion) };
         logger.info({ ...generationLog(record), evidence: record.completion.evidence }, 'Routing suspension gap reconciled');
         this.sendCompletion();
     }
 
-    private settlePartial(record: ResumeResyncRecord, error: string, rateLimitRetryAt: number | null): void {
+    /** Returns true when the retry budget is exhausted and the record turned `failed`. */
+    private settlePartial(record: ResumeResyncRecord, error: string, rateLimitRetryAt: number | null): boolean {
         record.consecutiveFailures += 1;
         record.lastError = error.slice(0, MAX_PERSISTED_ERROR_LENGTH);
         if (record.consecutiveFailures >= this.maxConsecutiveFailures) {
             record.state = 'failed';
             record.nextRetryAt = null;
             logger.error({ ...generationLog(record), error }, 'Routing resume resync failed; waiting for a new resync_required or restart');
-            return;
+            return true;
         }
         const backoff = Math.min(this.retryBaseDelayMs * 2 ** (record.consecutiveFailures - 1), this.retryMaxDelayMs);
         const retryAt = Math.max(this.now() + backoff, rateLimitRetryAt ?? 0);
         record.state = 'partial';
         record.nextRetryAt = new Date(retryAt).toISOString();
         logger.warn({ ...generationLog(record), error, nextRetryAt: record.nextRetryAt }, 'Routing resume resync partial; retrying');
+        return false;
     }
 
     private sendCompletion(): void {
         const record = this.record;
-        if (!record?.completion || record.gapEndedAt === null || !this.sender) return;
-        const frame = buildResyncCompleteFrame(record, { gapStartedAt: record.gapStartedAt, gapEndedAt: record.gapEndedAt }, record.completion);
+        const durable = this.durableCompletion;
+        if (!record || durable?.record !== record || record.gapEndedAt === null || !this.sender) return;
+        const frame = buildResyncCompleteFrame(record, { gapStartedAt: record.gapStartedAt, gapEndedAt: record.gapEndedAt }, durable.completion);
         if (this.sender(frame)) {
             this.lastCompletionSentAt = new Date(this.now()).toISOString();
             this.notify();
@@ -372,6 +407,58 @@ export class RoutingResumeResyncCoordinator {
 
     private delayUntil(iso: string | null): number {
         return iso ? Math.max(0, Date.parse(iso) - this.now()) : 0;
+    }
+
+    /**
+     * Persist a control-boundary mutation. A failure is exposed in `lastError`;
+     * a runnable record is re-saved by its next attempt (the caller schedules it),
+     * any other state gets a bounded-backoff persistence retry.
+     */
+    private async persistBoundary(record: ResumeResyncRecord, boundary: string, expose = true): Promise<void> {
+        try {
+            await this.persist(record);
+        } catch (error) {
+            const exposed = expose ? this.recordPersistFailure(record, boundary, error) : null;
+            if (!expose) logger.error({ ...generationLog(record), boundary, error: describeResyncError(error) }, 'Failed to persist routing resume-resync state; retrying');
+            if (!RUNNABLE_STATES.has(record.state)) this.schedulePersistRetry(record, 1, exposed);
+        }
+    }
+
+    private recordPersistFailure(record: ResumeResyncRecord, boundary: string, error: unknown): string {
+        const message = `persist_${boundary}: ${describeResyncError(error)}`;
+        record.lastError = message.slice(0, MAX_PERSISTED_ERROR_LENGTH);
+        logger.error({ ...generationLog(record), error: message }, 'Failed to persist routing resume-resync state; retrying');
+        this.notify();
+        return record.lastError;
+    }
+
+    /** `exposed` is the persistence error this retry clears once a save succeeds. */
+    private schedulePersistRetry(record: ResumeResyncRecord, failures: number, exposed: string | null): void {
+        if (this.stopped || this.record !== record) return;
+        this.clearPersistRetry();
+        const delay = Math.min(this.retryBaseDelayMs * 2 ** (failures - 1), this.retryMaxDelayMs);
+        this.persistRetryTimer = setTimeout(() => {
+            this.persistRetryTimer = null;
+            void this.enqueue(async () => {
+                if (this.stopped || this.record !== record) return;
+                // A recovered save clears only the persistence error it is retrying.
+                if (exposed !== null && record.lastError === exposed) record.lastError = null;
+                try {
+                    await this.persist(record);
+                } catch (error) {
+                    // Never overwrite a reconciliation diagnosis (e.g. why the record failed).
+                    const next = record.lastError === null ? this.recordPersistFailure(record, 'retry', error) : null;
+                    if (next === null) logger.error({ ...generationLog(record), error: describeResyncError(error) }, 'Failed to persist routing resume-resync state; retrying');
+                    this.schedulePersistRetry(record, failures + 1, next);
+                }
+            });
+        }, delay);
+        this.persistRetryTimer.unref?.();
+    }
+
+    private clearPersistRetry(): void {
+        if (this.persistRetryTimer) clearTimeout(this.persistRetryTimer);
+        this.persistRetryTimer = null;
     }
 
     /** Persist a snapshot in order; skipped for a record that was superseded. */
