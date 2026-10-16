@@ -6,7 +6,8 @@ import { isFailingCheckRunConclusion, postCiFailureFollowup, type CiFailureEvide
 /**
  * Reconcile failures observed while waiting for CI, including missed webhooks.
  * Strict (the Routing resume resync): an unreadable repository configuration
- * throws instead of reading as "disabled" or "no non-blocking checks".
+ * throws instead of reading as "disabled" or "no non-blocking checks", and a
+ * follow-up suppressed by another producer's claim counts only once it exists.
  */
 // eslint-disable-next-line max-params -- the existing positional signature plus the strict-catch-up options
 export async function recoverCiFailureFollowups(
@@ -55,6 +56,10 @@ export async function recoverCiFailureFollowups(
             return;
         }
         // Shares the webhook's atomic claim and durable comment deduplication.
-        await postCiFailureFollowup({ owner, repo, prNumber, evidence }, `ci-recovery-${prNumber}`, { isEnabled });
+        const result = await postCiFailureFollowup({ owner, repo, prNumber, evidence }, `ci-recovery-${prNumber}`, { isEnabled, strict: options.strict });
+        // Strict: a claim is exclusion, not publication; retry once it publishes or its lease lapses.
+        if (options.strict && result.reason === 'in_flight') {
+            throw new Error(`Failed-CI follow-up for ${owner}/${repo}#${prNumber} (${evidence.source}) is claimed but not yet published`);
+        }
     }
 }

@@ -11,6 +11,14 @@ import { findCancellationProvenance, type LoadProprCancelledRuns } from './ciCan
 export const CI_FAILURE_FOLLOWUP_MARKER_PREFIX = '<!-- propr:ci-failure-followup';
 const CI_FAILURE_FOLLOWUP_MARKER_RE = /\n?<!-- propr:ci-failure-followup key="[a-f0-9]{64}" -->/gu;
 const DEDUPE_TTL_SECONDS = 30 * 24 * 60 * 60;
+/**
+ * An unfinished producer's claim is a short lease, so a producer that died
+ * between claiming and posting stops suppressing the follow-up once it lapses.
+ * Comfortably longer than one claim-to-post pass (comment scan, annotations, a
+ * retried POST); a published follow-up upgrades the claim to the full TTL.
+ */
+const CLAIM_LEASE_SECONDS = 15 * 60;
+const POSTED_CLAIM_PREFIX = 'posted:';
 const MAX_EXCERPT_LENGTH = 1800;
 
 const FAILING_CHECK_RUN_CONCLUSIONS = new Set([
@@ -61,11 +69,19 @@ export interface CiFailureFollowupDependencies {
     getOctokit?: () => Promise<CiFailureOctokit>;
     redisClient?: DedupeRedis;
     loadProprCancelledRuns?: LoadProprCancelledRuns;
+    /**
+     * The Routing resume resync: an existing claim counts as a duplicate only
+     * with evidence the follow-up was published (a published claim or the bot's
+     * marked comment). An unfinished claim reports `in_flight` instead, and an
+     * unreadable comment list throws rather than being skipped.
+     */
+    strict?: boolean;
 }
 
 export interface CiFailureFollowupResult {
     posted: boolean;
-    reason: 'posted' | 'disabled' | 'duplicate' | 'cancellation_induced';
+    /** `in_flight` (strict only): another producer holds the claim and nothing is published yet. */
+    reason: 'posted' | 'disabled' | 'duplicate' | 'cancellation_induced' | 'in_flight';
     body?: string;
 }
 
@@ -194,32 +210,32 @@ export async function postCiFailureFollowup(
     const dedupeKey = buildCiFailureDedupeKey(request);
     const redis = dependencies.redisClient ?? getUltrafixStateRedis();
     const redisKey = `ci-failure-followup:${dedupeKey}`;
-    // This read is only a cheap pre-check. Concurrent first deliveries still
-    // need provenance followed by the atomic NX claim below.
-    try {
-        if (await redis.get(redisKey) !== null) return { posted: false, reason: 'duplicate' };
-    } catch (error) {
-        log.warn({ error: (error as Error).message }, 'Could not pre-check failed-CI follow-up claim');
-    }
+    const claimContext: ClaimContext = { octokit, request, dedupeKey, redis, redisKey, log };
+    const existing = await precheckClaim(claimContext, dependencies.strict);
+    if (existing) return existing;
     if (await isCancellationInduced(octokit, request, dependencies, log)) {
         return { posted: false, reason: 'cancellation_induced' };
     }
     let claimed = false;
 
     try {
-        const claim = await redis.set(redisKey, Date.now().toString(), 'EX', DEDUPE_TTL_SECONDS, 'NX');
+        const claim = await redis.set(redisKey, Date.now().toString(), 'EX', CLAIM_LEASE_SECONDS, 'NX');
         if (claim !== 'OK') {
             log.debug({ ...failureLogContext(request), dedupeKey }, 'Automatic failed-CI follow-up already claimed');
-            return { posted: false, reason: 'duplicate' };
+            if (!dependencies.strict) return { posted: false, reason: 'duplicate' };
+            return await claimedOutcome(await redis.get(redisKey), claimContext);
         }
         claimed = true;
 
         try {
             if (await hasExistingFollowupComment(octokit, request, dedupeKey)) {
                 log.debug({ ...failureLogContext(request), dedupeKey }, 'Automatic failed-CI follow-up comment already exists');
+                await markPublished(redis, redisKey, log);
                 return { posted: false, reason: 'duplicate' };
             }
         } catch (error) {
+            // Strict: an unread comment list is not evidence either way.
+            if (dependencies.strict) throw error;
             // The atomic Redis claim still protects concurrent/redelivered
             // events. A transient comment-list failure should not hide a new CI
             // failure from the agent.
@@ -251,6 +267,7 @@ export async function postCiFailureFollowup(
         );
 
         log.info({ ...failureLogContext(request), dedupeKey }, 'Posted automatic failed-CI follow-up comment');
+        await markPublished(redis, redisKey, log);
         return { posted: true, reason: 'posted', body };
     } catch (error) {
         if (claimed) {
@@ -261,6 +278,61 @@ export async function postCiFailureFollowup(
             }
         }
         throw error;
+    }
+}
+
+interface ClaimContext {
+    octokit: CiFailureOctokit;
+    request: CiFailureFollowupRequest;
+    dedupeKey: string;
+    redis: DedupeRedis;
+    redisKey: string;
+    log: ReturnType<typeof logger.withCorrelation>;
+}
+
+/**
+ * This read is only a cheap pre-check. Concurrent first deliveries still need
+ * provenance followed by the atomic NX claim. Strict: an unreadable claim throws.
+ */
+async function precheckClaim(context: ClaimContext, strict?: boolean): Promise<CiFailureFollowupResult | null> {
+    try {
+        const existingClaim = await context.redis.get(context.redisKey);
+        if (existingClaim === null) return null;
+        if (!strict) return { posted: false, reason: 'duplicate' };
+        return await claimedOutcome(existingClaim, context);
+    } catch (error) {
+        if (strict) throw error;
+        context.log.warn({ error: (error as Error).message }, 'Could not pre-check failed-CI follow-up claim');
+        return null;
+    }
+}
+
+/**
+ * Strict: what an existing claim proves. A published claim or the bot's marked
+ * comment is a completed follow-up; anything else is a producer that has not
+ * published (still running, or died before posting until its lease lapses), so
+ * the caller retries without taking the claim over.
+ */
+async function claimedOutcome(claim: string | null, context: ClaimContext): Promise<CiFailureFollowupResult> {
+    if (claim?.startsWith(POSTED_CLAIM_PREFIX)) return { posted: false, reason: 'duplicate' };
+    if (await hasExistingFollowupComment(context.octokit, context.request, context.dedupeKey)) {
+        if (claim !== null) await markPublished(context.redis, context.redisKey, context.log);
+        return { posted: false, reason: 'duplicate' };
+    }
+    context.log.info({ ...failureLogContext(context.request), dedupeKey: context.dedupeKey }, 'Failed-CI follow-up is claimed but not yet published');
+    return { posted: false, reason: 'in_flight' };
+}
+
+/**
+ * Records that the follow-up exists. Best effort: the posted comment itself is
+ * the durable evidence, and a failed upgrade only leaves the lease to lapse
+ * into the comment scan.
+ */
+async function markPublished(redis: DedupeRedis, redisKey: string, log: ReturnType<typeof logger.withCorrelation>): Promise<void> {
+    try {
+        await redis.set(redisKey, `${POSTED_CLAIM_PREFIX}${Date.now()}`, 'EX', DEDUPE_TTL_SECONDS);
+    } catch (error) {
+        log.warn({ error: (error as Error).message }, 'Could not record the published failed-CI follow-up claim');
     }
 }
 

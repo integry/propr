@@ -55,20 +55,25 @@ const { pollForPullRequestComments } = await import('../src/polling/prCommentPol
 
 /** Admission records (comment → job ID) the strict enqueue writes before adding a job. */
 const admissions = new Map<string, string>();
+/** Keys written with a TTL; `expireTimedKeys` lets that TTL elapse. */
+const expiring = new Set<string>();
 const redisClient = {
     get: async (key: string) => tracked.get(key) ?? null,
     mget: async (...keys: string[]) => keys.map(key => admissions.get(key) ?? null),
     pipeline: () => {
-        const entries: Array<[string, string]> = [];
+        const entries: Array<[string, string, number | null]> = [];
         return {
-            setex: (key: string, _ttl: number, value: string) => { entries.push([key, value]); },
-            exec: async () => entries.map(([key, value]) => {
+            set: (key: string, value: string) => { entries.push([key, value, null]); },
+            setex: (key: string, ttl: number, value: string) => { entries.push([key, value, ttl]); },
+            exec: async () => entries.map(([key, value, ttl]) => {
                 if (key.startsWith('pr-comment-admitted:')) {
                     admissions.set(key, value);
-                    return [null, 'OK'];
+                } else {
+                    if (trackingError) return [trackingError, null];
+                    tracked.set(key, '1');
                 }
-                if (trackingError) return [trackingError, null];
-                tracked.set(key, '1');
+                if (ttl === null) expiring.delete(key);
+                else expiring.add(key);
                 return [null, 'OK'];
             }),
         };
@@ -78,6 +83,13 @@ const redisClient = {
 /** The worker finishes every queued job. */
 function completeQueuedJobs(): void {
     completed.push(...delayed.splice(0));
+}
+
+/** Every TTL'd marker lapses and BullMQ drops completed jobs (removeOnComplete: 24h). */
+function expireTimedKeys(): void {
+    for (const key of expiring) { tracked.delete(key); admissions.delete(key); }
+    expiring.clear();
+    completed.length = 0;
 }
 
 const octokit = {
@@ -100,7 +112,7 @@ function poll(strict: boolean) {
 const trackingKey = 'pr-comment-processed:acme:widgets:5:101';
 
 beforeEach(() => {
-    delayed.length = 0; completed.length = 0; added.length = 0; tracked.clear(); admissions.clear();
+    delayed.length = 0; completed.length = 0; added.length = 0; tracked.clear(); admissions.clear(); expiring.clear();
     addError = null; trackingError = null; rememberError = null;
     gateDecision = { allowed: true, reason: 'gate_disabled' };
 });
@@ -150,6 +162,31 @@ test('a job the worker completes after a tracking-write failure is not admitted 
     await poll(true);
     assert.equal(added.length, 1, 'the completed first admission still covers the comment');
     assert.ok(tracked.has(trackingKey));
+});
+
+test('a comment admitted by an unfinished resync is not admitted again after a day-long restart', async () => {
+    await poll(true);
+    assert.equal(added.length, 1);
+    // Another family fails; the job runs and BullMQ drops it; the daemon restarts a day later.
+    completeQueuedJobs();
+    expireTimedKeys();
+    await poll(true); // the same recoveryStartedAt window rescans comment 101
+    assert.equal(added.length, 1, 'the recovered comment keeps its admission evidence');
+    assert.ok(tracked.has(trackingKey));
+});
+
+test('a recovered comment found in an in-flight job keeps its evidence past the job and the day', async () => {
+    delayed.push({ name: 'processPullRequestComment', data: { pullRequestNumber: 5, repoOwner: 'acme', repoName: 'widgets', comments: [{ id: 101 }] } });
+    await poll(true);
+    completeQueuedJobs();
+    expireTimedKeys();
+    await poll(true);
+    assert.deepEqual(added, []);
+});
+
+test('ordinary polling keeps its expiring processed markers', async () => {
+    await poll(false);
+    assert.ok(expiring.has(trackingKey));
 });
 
 test('a recorded admission whose job never reached the queue is admitted again', async () => {

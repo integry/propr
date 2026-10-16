@@ -53,9 +53,20 @@ export function commentAdmissionKey(owner: string, repo: string, prNumber: numbe
     return `pr-comment-admitted:${owner}:${repo}:${prNumber}:${commentId}`;
 }
 
+const TRACKING_TTL_SECONDS = 86400;
+
+/**
+ * Strict markers never expire: an unfinished resync rescans from its original
+ * recovery start however long it stays unfinished (retries, restarts, inherited
+ * gaps), so admission evidence must not lapse while that window still covers
+ * the comment. Only recovered trigger comments get them.
+ */
 async function writeKeys(redisClient: Redis, entries: Array<[key: string, value: string]>, what: string, strict?: boolean): Promise<void> {
     const pipeline = redisClient.pipeline();
-    for (const [key, value] of entries) pipeline.setex(key, 86400, value);
+    for (const [key, value] of entries) {
+        if (strict) pipeline.set(key, value);
+        else pipeline.setex(key, TRACKING_TTL_SECONDS, value);
+    }
     const results = await pipeline.exec();
     if (!strict) return;
     // A pipeline reports per-command failures in its results instead of throwing.

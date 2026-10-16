@@ -127,7 +127,7 @@ describe('automatic failed-CI follow-up', () => {
         ]);
         assert.strictEqual(results.filter(result => result.posted).length, 1);
         assert.strictEqual(results.filter(result => result.reason === 'duplicate').length, 1);
-        assert.strictEqual(redis.set.mock.callCount(), 2);
+        assert.strictEqual(redis.set.mock.calls.filter(call => call.arguments.includes('NX')).length, 2);
         assert.strictEqual(redis.del.mock.callCount(), 0);
     });
 
