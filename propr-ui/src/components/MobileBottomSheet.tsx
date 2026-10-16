@@ -27,7 +27,8 @@ interface BottomSheetProps {
 // Escape or the backdrop closes it, and the page behind does not scroll. The
 // scrim dims and blurs the page so a white sheet never floats on a white
 // dashboard. The bottom padding keeps the last row 20px clear of the
-// home-gesture bar.
+// home-gesture bar. The close button is a 44px touch target; its negative
+// margins keep the header the same height.
 const BottomSheet: React.FC<BottomSheetProps> = ({ id, title, titleIcon, closeLabel, onClose, onBack, backLabel = 'Back', children }) => {
   const sheetRef = useRef<HTMLDivElement>(null);
 
@@ -104,7 +105,7 @@ const BottomSheet: React.FC<BottomSheetProps> = ({ id, title, titleIcon, closeLa
           <button
             type="button"
             onClick={onClose}
-            className="ml-auto rounded-md p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+            className="-my-1 -mr-1 ml-auto inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             aria-label={closeLabel}
           >
             <X className="h-5 w-5" aria-hidden="true" />

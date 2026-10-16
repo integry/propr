@@ -80,8 +80,8 @@ for (const { name, viewport, textScale } of cases) {
     expect(layout.titleClipped).toBe(false);
     // The existing mark keeps its own proportions.
     expect(layout.logo.width / layout.logo.height).toBeCloseTo(layout.ratio, 1);
-    expect(layout.close.width).toBeGreaterThanOrEqual(36 - SUBPIXEL);
-    expect(layout.close.height).toBeGreaterThanOrEqual(36 - SUBPIXEL);
+    expect(layout.close.width).toBeGreaterThanOrEqual(44 - SUBPIXEL);
+    expect(layout.close.height).toBeGreaterThanOrEqual(44 - SUBPIXEL);
     await expect(sheet.getByRole('link', { name: 'Goals' })).toBeVisible();
     await capture(page, `mobile-propr-menu-${name}`);
 
