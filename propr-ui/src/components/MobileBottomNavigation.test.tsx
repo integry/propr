@@ -110,13 +110,15 @@ describe('MobileBottomNavigation', () => {
       renderNavigation(route);
       fireEvent.click(screen.getByRole('button', { name: 'Create' }));
       const sheet = screen.getByRole('dialog', { name: 'Create' });
-      const actions = within(sheet).getAllByRole('link', { name: /^New / });
+      const actions = within(sheet).getAllByRole('listitem').map(row => row.querySelector('a, button')!);
       expect(actions.map(action => [action.textContent, action.getAttribute('href')])).toEqual([
         ['New Task', '/tasks/new'],
         ['New Goal', '/goals?new=1'],
         ['New Plan', '/studio/new'],
         ['New Automation', '/automations/new'],
+        ['New To-do', null],
       ]);
+      expect(within(sheet).getByRole('button', { name: 'New To-do' })).toHaveAttribute('aria-expanded', 'false');
     },
   );
 

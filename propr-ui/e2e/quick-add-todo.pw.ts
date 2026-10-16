@@ -52,7 +52,7 @@ for (const [device, viewport] of Object.entries({
       const submissions = await fixture(page);
       await page.goto('/inbox');
       if (device !== 'desktop') await page.getByRole('button', { name: 'Create', exact: true }).click();
-      const trigger = page.getByRole('button', { name: 'Quick add to-do' }).filter({ visible: true });
+      const trigger = page.getByRole('button', { name: device === 'desktop' ? 'Quick add to-do' : 'New To-do' }).filter({ visible: true });
       await trigger.click();
       const panel = trigger.locator('..').locator(':scope > div');
       await panel.getByRole('button', { name: 'acme/alpha' }).click();

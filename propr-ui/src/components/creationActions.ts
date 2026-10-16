@@ -8,6 +8,10 @@ export const creationActions = [
   { id: 'automation', label: 'New Automation', to: '/automations/new', icon: Workflow },
 ] as const;
 
+// To-do creation opens the inline quick-add form instead of a route, so it
+// sits outside the navigable list; the label matches the desktop New To-do.
+export const todoCreationAction = { id: 'todo', label: 'New To-do' } as const;
+
 // Match whole route segments, including detail pages, using router semantics.
 // Add future sections here; unmatched pages keep task creation as the default.
 const routeActions = [

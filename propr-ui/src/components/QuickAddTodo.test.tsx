@@ -16,7 +16,7 @@ const categories: RepoTodoCategory[] = [{
 
 async function openForm(layout: 'popover' | 'inline' = 'popover') {
   render(<MemoryRouter initialEntries={['/summaries/acme/alpha']}><QuickAddTodo layout={layout} /></MemoryRouter>);
-  fireEvent.click(screen.getByRole('button', { name: 'Quick add to-do' }));
+  fireEvent.click(screen.getByRole('button', { name: layout === 'inline' ? 'New To-do' : 'Quick add to-do' }));
   fireEvent.click(await screen.findByRole('button', { name: 'acme/alpha' }));
   fireEvent.click(screen.getByRole('button', { name: 'acme/beta' }));
   await screen.findByRole('button', { name: 'Uncategorized' });
