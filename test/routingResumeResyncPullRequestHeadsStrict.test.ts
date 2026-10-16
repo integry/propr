@@ -358,3 +358,31 @@ test('pending checks on every open PR are a converged pull_request_heads observa
     assert.equal(result.completions.length, 1);
     assert.deepEqual([hookCalls, merges], [[], []]);
 });
+
+test('reevaluatePRAutoMerge: unresolved mergeability throws when strict; a definite refusal is a strict outcome', async () => {
+    for (const unresolved of [{ mergeable: null, mergeable_state: 'unknown' }, { mergeable: true, mergeable_state: 'unknown' }]) {
+        greenRepository(pullRequest(unresolved));
+        assert.equal(await handler.reevaluatePRAutoMerge('acme', 'widgets', 7, 'resync'), 'not_mergeable');
+        await assert.rejects(handler.reevaluatePRAutoMerge('acme', 'widgets', 7, 'resync', { strict: true }), /Mergeability of acme\/widgets#7 is still unknown/);
+    }
+    for (const refused of [{ mergeable: false, mergeable_state: 'dirty' }, { mergeable: true, mergeable_state: 'blocked' }]) {
+        greenRepository(pullRequest(refused));
+        assert.equal(await handler.reevaluatePRAutoMerge('acme', 'widgets', 7, 'resync', { strict: true }), 'not_mergeable');
+    }
+    assert.deepEqual(merges, []);
+});
+
+test('pull_request_heads completes only after a reevaluation once GitHub resolves mergeability', async () => {
+    const step = pullRequestHeadsStep();
+    greenRepository(pullRequest({ mergeable: null, mergeable_state: 'unknown' }));
+    const pending = await runResyncGeneration({ steps: { pull_request_heads: step } });
+    assert.equal(pending.state, 'failed');
+    assert.deepEqual([pending.completions, merges], [[], []]);
+    assert.match(pending.lastError ?? '', /pull_request_heads: Mergeability of acme\/widgets#7 is still unknown/);
+
+    greenRepository();
+    const resolved = await runResyncGeneration({ steps: { pull_request_heads: step } });
+    assert.equal(resolved.state, 'completed', resolved.lastError ?? undefined);
+    assert.equal(resolved.completions.length, 1);
+    assert.deepEqual(merges, [7]);
+});

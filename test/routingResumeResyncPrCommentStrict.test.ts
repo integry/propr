@@ -12,9 +12,11 @@ after(async () => {
     await closeConnection();
 });
 
-type FakeJob = { name: string; data: Record<string, unknown> };
+type FakeJob = { id?: string; name: string; data: Record<string, unknown> };
 const delayed: FakeJob[] = [];
-const added: Array<{ name: string; data: Record<string, unknown> }> = [];
+/** Jobs the worker already finished; BullMQ keeps them, but not in the lists the enqueue scans. */
+const completed: FakeJob[] = [];
+const added: FakeJob[] = [];
 const tracked = new Map<string, string>();
 let addError: Error | null = null;
 let trackingError: Error | null = null;
@@ -25,10 +27,11 @@ const queue = {
     getActive: async () => [],
     getWaiting: async () => [],
     getDelayed: async () => delayed,
-    add: async (name: string, data: Record<string, unknown>) => {
+    getJob: async (id: string) => [...delayed, ...completed].find(job => job.id === id),
+    add: async (name: string, data: Record<string, unknown>, opts: { jobId: string }) => {
         if (addError) throw addError;
-        added.push({ name, data });
-        delayed.push({ name, data });
+        added.push({ id: opts.jobId, name, data });
+        delayed.push({ id: opts.jobId, name, data });
     },
 };
 
@@ -50,13 +53,20 @@ await mock.module('@propr/core', { namedExports: {
 
 const { pollForPullRequestComments } = await import('../src/polling/prCommentPolling.js');
 
+/** Admission records (comment → job ID) the strict enqueue writes before adding a job. */
+const admissions = new Map<string, string>();
 const redisClient = {
     get: async (key: string) => tracked.get(key) ?? null,
+    mget: async (...keys: string[]) => keys.map(key => admissions.get(key) ?? null),
     pipeline: () => {
-        const keys: string[] = [];
+        const entries: Array<[string, string]> = [];
         return {
-            setex: (key: string) => { keys.push(key); },
-            exec: async () => keys.map(key => {
+            setex: (key: string, _ttl: number, value: string) => { entries.push([key, value]); },
+            exec: async () => entries.map(([key, value]) => {
+                if (key.startsWith('pr-comment-admitted:')) {
+                    admissions.set(key, value);
+                    return [null, 'OK'];
+                }
                 if (trackingError) return [trackingError, null];
                 tracked.set(key, '1');
                 return [null, 'OK'];
@@ -64,6 +74,11 @@ const redisClient = {
         };
     },
 } as never;
+
+/** The worker finishes every queued job. */
+function completeQueuedJobs(): void {
+    completed.push(...delayed.splice(0));
+}
 
 const octokit = {
     paginate: async (endpoint: string) => {
@@ -85,7 +100,7 @@ function poll(strict: boolean) {
 const trackingKey = 'pr-comment-processed:acme:widgets:5:101';
 
 beforeEach(() => {
-    delayed.length = 0; added.length = 0; tracked.clear();
+    delayed.length = 0; completed.length = 0; added.length = 0; tracked.clear(); admissions.clear();
     addError = null; trackingError = null; rememberError = null;
     gateDecision = { allowed: true, reason: 'gate_disabled' };
 });
@@ -124,6 +139,26 @@ test('a tracking-write failure propagates; the retry finds the queued job and co
     trackingError = null;
     await poll(true);
     assert.equal(added.length, 1, 'no duplicate job');
+    assert.ok(tracked.has(trackingKey));
+});
+
+test('a job the worker completes after a tracking-write failure is not admitted twice on retry', async () => {
+    trackingError = new Error('OOM command not allowed');
+    await assert.rejects(poll(true), /Failed to record 1 processed PR comment marker/);
+    completeQueuedJobs();
+    trackingError = null;
+    await poll(true);
+    assert.equal(added.length, 1, 'the completed first admission still covers the comment');
+    assert.ok(tracked.has(trackingKey));
+});
+
+test('a recorded admission whose job never reached the queue is admitted again', async () => {
+    addError = new Error('redis queue unavailable');
+    await assert.rejects(poll(true), /redis queue unavailable/);
+    assert.ok(admissions.has('pr-comment-admitted:acme:widgets:5:101'), 'recorded before the add');
+    addError = null;
+    await poll(true);
+    assert.deepEqual(added.map(job => (job.data.comments as Array<{ id: number }>).map(comment => comment.id)), [[101]]);
     assert.ok(tracked.has(trackingKey));
 });
 

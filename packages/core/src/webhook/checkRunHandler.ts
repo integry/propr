@@ -235,6 +235,10 @@ async function processPRAutoMerge(ctx: PRContext, headSha: string): Promise<PRAu
     // Requiring the authoritative clean state prevents an unrelated fast check
     // from opening a premature merge window for an App that can bypass rules.
     if (prInfo.mergeable !== true || prInfo.mergeableState !== 'clean') {
+        // Strict: GitHub has not finished computing mergeability, which is no
+        // observed refusal; the family is retried until it resolves.
+        const unresolved = prInfo.mergeable === null || (prInfo.mergeable === true && prInfo.mergeableState === 'unknown');
+        if (ctx.strict && unresolved) throw new Error(`Mergeability of ${owner}/${repoName}#${prNumber} is still unknown`);
         log.debug({
             owner,
             repoName,

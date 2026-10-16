@@ -43,25 +43,69 @@ function jobCommentIds(data: CommentJobData): Set<number> {
     return ids;
 }
 
-async function writeTrackingKeys(redisClient: Redis, keys: string[], strict?: boolean): Promise<void> {
+/**
+ * Strict only: the job a recovered comment was handed to, written before that
+ * job is added. It outlives the job's completion, so a retry after a failed
+ * tracking write recognizes the first admission instead of queueing the
+ * comment again under a new timestamp-named job.
+ */
+export function commentAdmissionKey(owner: string, repo: string, prNumber: number, commentId: number): string {
+    return `pr-comment-admitted:${owner}:${repo}:${prNumber}:${commentId}`;
+}
+
+async function writeKeys(redisClient: Redis, entries: Array<[key: string, value: string]>, what: string, strict?: boolean): Promise<void> {
     const pipeline = redisClient.pipeline();
-    for (const key of keys) pipeline.setex(key, 86400, Date.now().toString());
+    for (const [key, value] of entries) pipeline.setex(key, 86400, value);
     const results = await pipeline.exec();
     if (!strict) return;
     // A pipeline reports per-command failures in its results instead of throwing.
-    const failed = results === null ? keys.length : results.filter(([error]) => error).length;
-    if (failed > 0) throw new Error(`Failed to record ${failed} processed PR comment marker(s)`);
+    const failed = results === null ? entries.length : results.filter(([error]) => error).length;
+    if (failed > 0) throw new Error(`Failed to record ${failed} ${what} marker(s)`);
+}
+
+async function writeTrackingKeys(redisClient: Redis, keys: string[], strict?: boolean): Promise<void> {
+    const now = Date.now().toString();
+    await writeKeys(redisClient, keys.map(key => [key, now]), 'processed PR comment', strict);
+}
+
+type IssueQueue = Awaited<ReturnType<typeof getIssueQueue>>;
+
+/**
+ * Strict: the comments an earlier attempt already handed to a job that still
+ * exists in any state, including completed or failed. A recorded admission
+ * whose job is gone never reached the queue, so that comment is admitted again.
+ */
+async function previouslyAdmitted(issueQueue: IssueQueue, redisClient: Redis, comments: UnprocessedComment[], key: (id: number) => string): Promise<Set<number>> {
+    if (comments.length === 0) return new Set();
+    const jobIds = await redisClient.mget(...comments.map(comment => key(comment.id)));
+    const admitted = new Set<number>();
+    for (const [index, jobId] of jobIds.entries()) {
+        if (jobId && await issueQueue.getJob(jobId)) admitted.add(comments[index].id);
+    }
+    return admitted;
 }
 
 export async function enqueuePRCommentJob(
     jobDetails: EnqueueJobDetails,
     options: EnqueueOptions
 ): Promise<void> {
-    const { unprocessedComments, selectedLlm, userId, pr, owner, repo } = jobDetails;
+    const { selectedLlm, userId, pr, owner, repo } = jobDetails;
     const { repoFullName, correlationId, redisClient, strict } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
+    const trackingKey = (commentId: number) => commentTrackingKey(owner, repo, pr.number, commentId);
+    const admissionKey = (commentId: number) => commentAdmissionKey(owner, repo, pr.number, commentId);
 
     const issueQueue = await getIssueQueue();
+    let unprocessedComments = jobDetails.unprocessedComments;
+    if (strict) {
+        const admitted = await previouslyAdmitted(issueQueue, redisClient, unprocessedComments, admissionKey);
+        if (admitted.size > 0) {
+            // Durable in that job; record them like the first attempt meant to.
+            await writeTrackingKeys(redisClient, [...admitted].map(trackingKey), true);
+            unprocessedComments = unprocessedComments.filter(comment => !admitted.has(comment.id));
+            if (unprocessedComments.length === 0) return;
+        }
+    }
     const activeJobs = await issueQueue.getActive();
     const waitingJobs = await issueQueue.getWaiting();
     const delayedJobs = await issueQueue.getDelayed();
@@ -80,7 +124,7 @@ export async function enqueuePRCommentJob(
                 throw new Error(`PR #${pr.number} has a comment job in flight that does not carry ${uncovered.length} newly discovered comment(s); retrying after it settles`);
             }
             // Already durable in the existing job; record them like an enqueue would.
-            await writeTrackingKeys(redisClient, unprocessedComments.map(comment => commentTrackingKey(owner, repo, pr.number, comment.id)), true);
+            await writeTrackingKeys(redisClient, unprocessedComments.map(comment => trackingKey(comment.id)), true);
             return;
         }
         correlatedLogger.info({
@@ -105,12 +149,13 @@ export async function enqueuePRCommentJob(
     const jobId = `pr-comments-batch-${owner}-${repo}-${pr.number}-${timestamp}`;
 
     try {
+        if (strict) await writeKeys(redisClient, unprocessedComments.map(comment => [admissionKey(comment.id), jobId]), 'PR comment admission', true);
         await issueQueue.add('processPullRequestComment', jobData, {
             jobId,
             delay: COMMENT_BATCH_DELAY_MS
         });
 
-        await writeTrackingKeys(redisClient, unprocessedComments.map(comment => commentTrackingKey(owner, repo, pr.number, comment.id)), strict);
+        await writeTrackingKeys(redisClient, unprocessedComments.map(comment => trackingKey(comment.id)), strict);
 
         correlatedLogger.info({
             jobId,
