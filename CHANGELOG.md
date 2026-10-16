@@ -14,8 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installation it suspended, ProPR reconciles current GitHub state for every
   configured repository (labelled issues, task intents, PR comments, PR heads
   and CI, merge conflicts, Ultrafix continuations) and acknowledges the exact
-  resume generation. Progress survives restarts; partial or rate-limited
-  reconciliations retry and are never acknowledged. `propr system status`,
+  resume generation. Repositories that lost installation access or left the
+  configuration during the gap keep being tracked through their queued work,
+  and that work is cancelled locally. Every family is strict: a failed read,
+  enqueue or marker write is retried rather than counted as done. Progress
+  survives restarts; malformed stored state is rejected; partial or
+  rate-limited reconciliations retry and are never acknowledged. `propr system status`,
   `propr check` and `/api/status` show the gap, progress and whether routed
   intake is waiting.
 - **Epic merge progress**: when a child PR merges into an epic branch, ProPR

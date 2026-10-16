@@ -128,7 +128,7 @@ async function defaultHasTaskForPullRequest(repository: string, prNumber: number
  * Human pull requests have none of these and stay untouched.
  */
 export async function isProprManagedPullRequest(
-    options: { repository: string; prNumber: number; labels: unknown },
+    options: { repository: string; prNumber: number; labels: unknown; strict?: boolean },
     deps: MergeConflictDetectionDeps = {}
 ): Promise<boolean> {
     const labelNames = normalizeLabelNames(options.labels);
@@ -141,6 +141,7 @@ export async function isProprManagedPullRequest(
     try {
         return await (deps.hasTaskForPullRequest ?? defaultHasTaskForPullRequest)(options.repository, options.prNumber);
     } catch (error) {
+        if (options.strict) throw error;
         logger.warn({ repository: options.repository, pullNumber: options.prNumber, error: (error as Error).message }, 'Merge conflict detection: task lookup failed; treating PR as not ProPR-managed');
         return false;
     }
@@ -190,6 +191,8 @@ export interface MaybeQueueConflictResolutionOptions {
     pullRequest?: ConflictPullRequest;
     octokit?: Octokit;
     deps?: MergeConflictDetectionDeps;
+    /** Throw on an undecidable PR (unknown mergeability, failed task lookup) instead of skipping it. */
+    strict?: boolean;
 }
 
 function skip(
@@ -276,7 +279,7 @@ export async function maybeQueueConflictResolution(options: MaybeQueueConflictRe
     if (first.state !== 'open') return skip(log, context, 'pull_request_closed');
     if (first.draft) return skip(log, context, 'draft_pull_request');
     if (!first.head.repo) return skip(log, context, 'fork_pull_request', { headRef: first.head.ref });
-    if (!await isProprManagedPullRequest({ repository, prNumber, labels: first.labels }, deps)) {
+    if (!await isProprManagedPullRequest({ repository, prNumber, labels: first.labels, strict: options.strict }, deps)) {
         return skip(log, context, 'not_propr_pull_request', { labels: normalizeLabelNames(first.labels) });
     }
 
@@ -285,6 +288,7 @@ export async function maybeQueueConflictResolution(options: MaybeQueueConflictRe
     // Polling may return a newer read; the PR can be converted to draft meanwhile.
     if (pr.draft) return skip(log, context, 'draft_pull_request');
     if (mergeability === 'unknown') {
+        if (options.strict) throw new Error(`Mergeability of ${repository}#${prNumber} is still unknown`);
         return skip(log, context, 'mergeability_unknown', { mergeableState: pr.mergeable_state ?? null, headSha: pr.head.sha, baseSha: pr.base.sha });
     }
     if (mergeability === 'clean') {
@@ -402,8 +406,13 @@ export async function evaluateOpenPullRequests(options: {
     correlationId: string;
     setting?: EffectiveAutoResolveMergeConflicts;
     deps?: MergeConflictDetectionDeps;
+    /**
+     * Every open PR (not one rotating page) is evaluated, and a failed read or
+     * evaluation of any one of them is rethrown instead of logged.
+     */
+    strict?: boolean;
 }): Promise<ConflictDetectionResult[]> {
-    const { owner, repoName, baseBranch, trigger, redisClient, correlationId, deps } = options;
+    const { owner, repoName, baseBranch, trigger, redisClient, correlationId, deps, strict } = options;
     const repository = `${owner}/${repoName}`;
     const log = logger.withCorrelation(correlationId);
 
@@ -414,7 +423,11 @@ export async function evaluateOpenPullRequests(options: {
     }
 
     const octokit = await getAuthenticatedOctokit();
-    const candidates = await listFanoutPage(octokit, { owner, repoName, baseBranch, redisClient }, log);
+    const candidates = strict
+        ? await octokit.paginate('GET /repos/{owner}/{repo}/pulls', {
+            owner, repo: repoName, state: 'open', per_page: 100, ...(baseBranch ? { base: baseBranch } : {}),
+        }) as Array<{ number: number }>
+        : await listFanoutPage(octokit, { owner, repoName, baseBranch, redisClient }, log);
     log.info({ repository, baseBranch, trigger, prCount: candidates.length }, 'Merge conflict auto-resolve: evaluating open pull requests');
 
     const primed = new Map<number, ConflictPullRequest>();
@@ -422,6 +435,7 @@ export async function evaluateOpenPullRequests(options: {
         try {
             primed.set(candidate.number, await fetchPullRequest(octokit, owner, repoName, candidate.number));
         } catch (error) {
+            if (strict) throw error;
             log.warn({ repository, pullNumber: candidate.number, trigger, error: (error as Error).message }, 'Merge conflict auto-resolve: failed to prime mergeability');
         }
     }
@@ -431,9 +445,10 @@ export async function evaluateOpenPullRequests(options: {
         try {
             results.push(await maybeQueueConflictResolution({
                 owner, repoName, prNumber: candidate.number, trigger, redisClient, correlationId,
-                setting, octokit, deps, pullRequest: primed.get(candidate.number),
+                setting, octokit, deps, pullRequest: primed.get(candidate.number), strict,
             }));
         } catch (error) {
+            if (strict) throw error;
             log.error({ repository, pullNumber: candidate.number, trigger, error: (error as Error).message }, 'Merge conflict auto-resolve: error evaluating pull request');
         }
     }
@@ -450,7 +465,7 @@ export async function sweepConflictedPullRequests(options: {
     redisClient: MergeConflictRedis;
     correlationId?: string;
     deps?: MergeConflictDetectionDeps;
-    /** Rethrow a repository failure instead of logging and continuing. */
+    /** Rethrow a repository or per-PR failure instead of logging and continuing (see evaluateOpenPullRequests). */
     strict?: boolean;
 }): Promise<ConflictDetectionResult[]> {
     const correlationId = options.correlationId ?? generateCorrelationId();
@@ -471,6 +486,7 @@ export async function sweepConflictedPullRequests(options: {
         try {
             results.push(...await evaluateOpenPullRequests({
                 owner, repoName, trigger: 'sweep', redisClient: options.redisClient, correlationId, setting, deps: options.deps,
+                strict: options.strict,
             }));
         } catch (error) {
             log.error({ repository, trigger: 'sweep', error: (error as Error).message }, 'Merge conflict sweep failed for repository');

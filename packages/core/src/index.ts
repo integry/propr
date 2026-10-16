@@ -170,9 +170,10 @@ export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, Conn
 export { RoutingResumeResyncCoordinator, type RoutingResumeResyncCoordinatorOptions, type ResyncFrameSender } from './intake/routingResumeResyncCoordinator.js';
 export type { RoutingResumeResyncStatus } from './intake/routingResumeResyncStatus.js';
 export { INSTALLATION_RESUME_RESYNC_CAPABILITY, RESUME_RESYNC_FRAME_VERSION } from './intake/routingResumeResyncProtocol.js';
-export { createKnexResumeResyncStore, InMemoryResumeResyncStore, type ResumeResyncStore, type ResumeResyncRecord, type ResumeResyncState } from './intake/routingResumeResyncStore.js';
-export { RESUME_RESYNC_RECONCILIATION_MATRIX, RESYNC_REPOSITORY_FAMILIES, RESYNC_INSTALLATION_FAMILIES, ResyncRepositoryInaccessibleError, type ResyncFamily } from './intake/routingResumeResyncMatrix.js';
-export type { ResumeResyncReconciler, ResyncRepositoryStep, ResyncInstallationStep, ResyncRepositoryStepContext, ResyncInstallationStepContext } from './intake/routingResumeResyncRun.js';
+export { createKnexResumeResyncStore, InMemoryResumeResyncStore, type ResumeResyncStore, type ResumeResyncRecord, type ResumeResyncState, type RepositoryAccess, type RepositoryResyncProgress } from './intake/routingResumeResyncStore.js';
+export { MAX_RESYNC_REPOSITORIES } from './intake/routingResumeResyncCodec.js';
+export { RESUME_RESYNC_RECONCILIATION_MATRIX, RESYNC_REPOSITORY_FAMILIES, RESYNC_INSTALLATION_FAMILIES, RESYNC_GITHUB_DEPENDENT_FAMILIES, ResyncRepositoryInaccessibleError, type ResyncFamily } from './intake/routingResumeResyncMatrix.js';
+export type { ResumeResyncReconciler, ResyncRepositoryStep, ResyncInstallationStep, ResyncRepositoryStepContext, ResyncRepositoryStepResult, ResyncInstallationStepContext } from './intake/routingResumeResyncRun.js';
 // The routing wire-protocol primitives (BoundedDeliverySet, BoundedTokenCache,
 // DeliveryTracker, URL/payload/token helpers) are internal to the intake service
 // and are intentionally NOT part of the package's public API. Tests import them
@@ -627,6 +628,7 @@ export { executeWithRepositoryWorkflow, buildRepositoryValidationReport, REPOSIT
 export { withRepositoryWorkflowSlot, releaseRepositoryWorkflowSlot, reconcileRepositoryWorkflowSlot, forgetRepositoryWorkflowWaiter, RepositoryWorkflowCapacityError, RepositoryWorkflowLeaseLostError } from './workflow/workflowConcurrency.js';
 export * from './services/taskCancellation.js';
 export * from './services/taskIntent.js';
+export { listIntentRepositories, invalidateRepositoryIntents, REPOSITORY_UNAVAILABLE_REASON } from './services/repositoryIntentInvalidation.js';
 export * from './services/taskPlanning/epicExecutionQueue.js';
 export * from './services/agents/agentDefinitionStore.js';
 export * from './services/agents/agentRunStore.js';

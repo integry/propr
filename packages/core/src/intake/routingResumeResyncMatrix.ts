@@ -12,11 +12,15 @@
 
 import type { WebhookEventType } from '../webhook/webhookHandler.js';
 
-/** Per-repository families, run in this order for every configured repository. */
+/** Per-repository families, run in this order for every tracked repository. */
 export const RESYNC_REPOSITORY_FAMILIES = [
-    /** Installation repository access: a revoked repository is reported inaccessible. */
+    /** Installation repository access, recorded as authoritative current state (never a skip). */
     'repository_access',
-    /** Durable task intents: closures, trigger-label removals, unmerged PR closures. */
+    /**
+     * Durable task intents: closures, trigger-label removals, unmerged PR
+     * closures. Runs for every repository; one that lost access or left the
+     * configuration is invalidated locally, without GitHub.
+     */
     'task_intents',
     /** Eligible open AI-labelled issues (new, reapplied, or restorable triggers). */
     'labelled_issues',
@@ -35,6 +39,15 @@ export const RESYNC_INSTALLATION_FAMILIES = [
 ] as const;
 
 export type ResyncRepositoryFamily = (typeof RESYNC_REPOSITORY_FAMILIES)[number];
+
+/**
+ * Families that need GitHub access to a configured repository. Only these may be
+ * classified inapplicable, and only with recorded evidence (access lost or the
+ * repository is no longer configured); every other family always runs.
+ */
+export const RESYNC_GITHUB_DEPENDENT_FAMILIES: readonly ResyncRepositoryFamily[] = [
+    'labelled_issues', 'pull_request_comments', 'pull_request_heads', 'merge_conflicts',
+];
 export type ResyncInstallationFamily = (typeof RESYNC_INSTALLATION_FAMILIES)[number];
 export type ResyncFamily = ResyncRepositoryFamily | ResyncInstallationFamily;
 
@@ -82,7 +95,11 @@ export const RESUME_RESYNC_RECONCILIATION_MATRIX: readonly ResyncMatrixEntry[] =
         note: 'Conflicts introduced by base pushes are detected on every open PR.' },
 ];
 
-/** Thrown by a `repository_access` step when the installation can no longer read a repository. */
+/**
+ * Thrown by a `repository_access` step when the installation can no longer read
+ * a repository. The runner records it as authoritative access state; from any
+ * other family it is an ordinary (retried) failure.
+ */
 export class ResyncRepositoryInaccessibleError extends Error {
     constructor(repository: string, status?: number) {
         super(`Repository ${repository} is not accessible to the installation${status ? ` (HTTP ${status})` : ''}`);

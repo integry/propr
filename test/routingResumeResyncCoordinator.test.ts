@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import {
     closeConnection,
     InMemoryResumeResyncStore,
-    ResyncRepositoryInaccessibleError,
+    MAX_RESYNC_REPOSITORIES,
     RoutingResumeResyncCoordinator,
     type ResumeResyncReconciler,
     type ResyncFamily,
@@ -20,8 +20,16 @@ const REPO_FAMILIES = ['repository_access', 'task_intents', 'labelled_issues', '
 
 type StepFailure = (repository: string, family: ResyncFamily, call: number) => unknown;
 
-function makeReconciler(repositories: string[], fail: StepFailure = () => undefined) {
+interface ReconcilerOptions {
+    /** Current configuration; read on every attempt. */
+    configured?: () => string[];
+    referenced?: () => string[];
+    access?: (repository: string) => 'accessible' | 'inaccessible';
+}
+
+function makeReconciler(repositories: string[], fail: StepFailure = () => undefined, options: ReconcilerOptions = {}) {
     const calls: string[] = [];
+    const contexts: Array<{ call: string; access: string | null; configured: boolean }> = [];
     const counts = new Map<string, number>();
     const record = (key: string, repository: string, family: ResyncFamily) => {
         const call = (counts.get(key) ?? 0) + 1;
@@ -31,23 +39,28 @@ function makeReconciler(repositories: string[], fail: StepFailure = () => undefi
         if (error) throw error;
     };
     const reconciler: ResumeResyncReconciler = {
-        listRepositories: () => repositories,
+        listRepositories: options.configured ?? (() => repositories),
+        listReferencedRepositories: options.referenced ?? (() => []),
         repositorySteps: REPO_FAMILIES.map(family => ({
             family,
-            run: async (ctx) => record(`${ctx.repository}:${family}`, ctx.repository, family),
+            run: async (ctx) => {
+                contexts.push({ call: `${ctx.repository}:${family}`, access: ctx.access, configured: ctx.configured });
+                record(`${ctx.repository}:${family}`, ctx.repository, family);
+                return family === 'repository_access' ? { access: options.access?.(ctx.repository) ?? 'accessible' } : undefined;
+            },
         })),
         installationSteps: [{
             family: 'ultrafix_continuations',
             run: async () => record('installation:ultrafix_continuations', '*', 'ultrafix_continuations'),
         }],
     };
-    return { reconciler, calls };
+    return { reconciler, calls, contexts };
 }
 
 function frame(type: string, overrides: Record<string, unknown> = {}) {
-    const base: Record<string, unknown> = {
-        type, version: 1, installationId: INSTALLATION, routingGeneration: 1, resumeGeneration: 1, gapStartedAt: GAP_START,
-    };
+    const base: Record<string, unknown> = { type, version: 1, installationId: INSTALLATION, routingGeneration: 1, resumeGeneration: 1 };
+    // Exact wire shapes: an acceptance carries no gap, and only resync_required has an end.
+    if (type !== 'resync_accepted') base.gapStartedAt = GAP_START;
     if (type === 'resync_required') base.gapEndedAt = GAP_END;
     return { ...base, ...overrides };
 }
@@ -64,16 +77,16 @@ async function waitFor(predicate: () => boolean, label: string, timeoutMs = 2000
     }
 }
 
-function setup(options: { repositories?: string[]; fail?: StepFailure; store?: InMemoryResumeResyncStore; maxConsecutiveFailures?: number } = {}) {
+function setup(options: { repositories?: string[]; fail?: StepFailure; store?: InMemoryResumeResyncStore; maxConsecutiveFailures?: number } & ReconcilerOptions = {}) {
     const store = options.store ?? new InMemoryResumeResyncStore();
-    const { reconciler, calls } = makeReconciler(options.repositories ?? ['acme/api', 'acme/web'], options.fail);
+    const { reconciler, calls, contexts } = makeReconciler(options.repositories ?? ['acme/api', 'acme/web'], options.fail, options);
     const coordinator = new RoutingResumeResyncCoordinator({
         installationId: INSTALLATION, store, reconciler, retryBaseDelayMs: 20, retryMaxDelayMs: 40,
         maxConsecutiveFailures: options.maxConsecutiveFailures ?? 8,
     });
     const sent: Record<string, unknown>[] = [];
     const completions = () => sent.filter(item => item.type === 'resync_complete');
-    return { store, coordinator, calls, sent, completions, attach: () => coordinator.attach(item => { sent.push(item); return true; }) };
+    return { store, coordinator, calls, contexts, sent, completions, attach: () => coordinator.attach(item => { sent.push(item); return true; }) };
 }
 
 test('resume_pending records the gap, holds intake and never completes on reconnect alone', async () => {
@@ -113,7 +126,7 @@ test('resync_required reconciles every repository family, then sends one exact-g
     assert.equal(complete.gapStartedAt, GAP_START);
     assert.equal(complete.gapEndedAt, GAP_END);
     const evidence = complete.evidence as { repositories: unknown; attempts: number; digest: string };
-    assert.deepEqual(evidence.repositories, { total: 2, reconciled: 2, inaccessible: 0 });
+    assert.deepEqual(evidence.repositories, { total: 2, reconciled: 2, inaccessible: 0, unconfigured: 0 });
     assert.equal(evidence.attempts, 1);
     assert.match(evidence.digest, /^[0-9a-f]{64}$/);
     assert.ok(!JSON.stringify(complete).includes('acme/'), 'repository names stay local');
@@ -275,15 +288,132 @@ test('an exhausted retry budget turns failed; a duplicate resync_required resume
     await ctx.coordinator.stop();
 });
 
-test('inaccessible repositories are reported in evidence instead of blocking forever', async () => {
-    const ctx = setup({ fail: (repository, family) => (repository === 'acme/web' && family === 'repository_access' ? new ResyncRepositoryInaccessibleError(repository, 404) : undefined) });
+const GITHUB_FAMILIES = ['labelled_issues', 'pull_request_comments', 'pull_request_heads', 'merge_conflicts'];
+
+test('lost access is authoritative state: local task invalidation still runs, GitHub families are inapplicable with evidence', async () => {
+    const ctx = setup({ access: repository => (repository === 'acme/web' ? 'inaccessible' : 'accessible') });
     await ctx.coordinator.start();
     ctx.attach();
     await deliver(ctx.coordinator, frame('resync_required'));
     await waitFor(() => ctx.completions().length === 1, 'completion');
-    assert.deepEqual((ctx.completions()[0].evidence as { repositories: unknown }).repositories, { total: 2, reconciled: 1, inaccessible: 1 });
-    assert.ok(!ctx.calls.includes('acme/web:task_intents'));
+    assert.deepEqual(ctx.calls.filter(call => call.startsWith('acme/web:')), ['acme/web:repository_access', 'acme/web:task_intents']);
+    assert.deepEqual(ctx.contexts.find(item => item.call === 'acme/web:task_intents'), { call: 'acme/web:task_intents', access: 'inaccessible', configured: true });
+    assert.deepEqual((ctx.completions()[0].evidence as { repositories: unknown }).repositories, { total: 2, reconciled: 1, inaccessible: 1, unconfigured: 0 });
+    const web = (await ctx.store.load(INSTALLATION))?.repositories['acme/web'];
+    assert.equal(web?.status, 'inaccessible');
+    assert.equal(web?.access, 'inaccessible');
+    assert.deepEqual(web?.completedFamilies, ['repository_access', 'task_intents']);
+    assert.deepEqual(web?.inapplicableFamilies, GITHUB_FAMILIES);
     await ctx.coordinator.stop();
+});
+
+test('a failed local invalidation after access loss never completes; the retry resumes only unfinished families', async () => {
+    const ctx = setup({
+        access: repository => (repository === 'acme/web' ? 'inaccessible' : 'accessible'),
+        fail: (repository, family, call) => (repository === 'acme/web' && family === 'task_intents' && call === 1 ? new Error('state store unavailable') : undefined),
+    });
+    await ctx.coordinator.start();
+    ctx.attach();
+    await deliver(ctx.coordinator, frame('resync_required'));
+    await waitFor(() => ctx.coordinator.getStatus().state === 'partial', 'partial');
+    assert.deepEqual(ctx.completions(), [], 'an inaccessible repository is not converged before its local invalidation');
+    await waitFor(() => ctx.completions().length === 1, 'completion after retry');
+    assert.equal(ctx.calls.filter(call => call === 'acme/web:repository_access').length, 1, 'access is not re-proved');
+    assert.equal(ctx.calls.filter(call => call === 'acme/web:task_intents').length, 2);
+    assert.equal(ctx.calls.filter(call => call === 'acme/api:task_intents').length, 1);
+    assert.ok(!ctx.calls.some(call => GITHUB_FAMILIES.some(family => call === `acme/web:${family}`)));
+    await ctx.coordinator.stop();
+});
+
+test('a GitHub 404 inside a later family re-proves access, and lost access re-runs local invalidation', async () => {
+    let lost = false;
+    const notFound = Object.assign(new Error('Not Found'), { status: 404 });
+    const ctx = setup({
+        repositories: ['acme/web'],
+        access: () => (lost ? 'inaccessible' : 'accessible'),
+        fail: (_repository, family, call) => {
+            if (family === 'pull_request_comments' && call === 1) { lost = true; return notFound; }
+            return undefined;
+        },
+    });
+    await ctx.coordinator.start();
+    ctx.attach();
+    await deliver(ctx.coordinator, frame('resync_required'));
+    await waitFor(() => ctx.completions().length === 1, 'completion');
+    assert.deepEqual(ctx.calls, [
+        'acme/web:repository_access', 'acme/web:task_intents', 'acme/web:labelled_issues', 'acme/web:pull_request_comments',
+        'acme/web:repository_access', 'acme/web:task_intents',
+        'installation:ultrafix_continuations',
+    ]);
+    assert.deepEqual((ctx.completions()[0].evidence as { repositories: unknown }).repositories, { total: 1, reconciled: 0, inaccessible: 1, unconfigured: 0 });
+    await ctx.coordinator.stop();
+});
+
+test('repositories removed from configuration stay tracked through referenced work and persisted progress', async () => {
+    let configured = ['acme/api', 'acme/web'];
+    const ctx = setup({
+        configured: () => configured,
+        referenced: () => ['acme/legacy'],
+        fail: (repository, family, call) => (repository === 'acme/web' && family === 'labelled_issues' && call === 1 ? new Error('GitHub 502') : undefined),
+    });
+    await ctx.coordinator.start();
+    ctx.attach();
+    await deliver(ctx.coordinator, frame('resync_required'));
+    await waitFor(() => ctx.coordinator.getStatus().state === 'partial', 'partial');
+    configured = ['acme/api']; // acme/web leaves the configuration during the gap
+    await waitFor(() => ctx.completions().length === 1, 'completion');
+
+    assert.deepEqual(ctx.calls.filter(call => call.startsWith('acme/legacy:')), ['acme/legacy:repository_access', 'acme/legacy:task_intents']);
+    assert.deepEqual(ctx.contexts.filter(item => item.call === 'acme/web:task_intents').map(item => item.configured), [true, false],
+        'the removed repository re-runs task invalidation as unconfigured');
+    assert.deepEqual((ctx.completions()[0].evidence as { repositories: unknown }).repositories, { total: 3, reconciled: 1, inaccessible: 0, unconfigured: 2 });
+    const persisted = await ctx.store.load(INSTALLATION);
+    assert.deepEqual(Object.keys(persisted?.repositories ?? {}).sort(), ['acme/api', 'acme/legacy', 'acme/web']);
+    assert.deepEqual(persisted?.repositories['acme/web'].inapplicableFamilies, GITHUB_FAMILIES);
+    await ctx.coordinator.stop();
+});
+
+test('an unreadable referenced-repository scan or an oversized repository set never completes', async () => {
+    const unreadable = setup({ maxConsecutiveFailures: 1, referenced: () => { throw new Error('queue unavailable'); } });
+    await unreadable.coordinator.start();
+    unreadable.attach();
+    await deliver(unreadable.coordinator, frame('resync_required'));
+    await waitFor(() => unreadable.coordinator.getStatus().state === 'failed', 'failed');
+    assert.deepEqual(unreadable.completions(), []);
+    assert.deepEqual(unreadable.calls, []);
+    assert.match(unreadable.coordinator.getStatus().lastError ?? '', /queue unavailable/);
+    await unreadable.coordinator.stop();
+
+    const many = Array.from({ length: MAX_RESYNC_REPOSITORIES + 1 }, (_, index) => `acme/repo-${index}`);
+    const oversized = setup({ maxConsecutiveFailures: 1, repositories: many });
+    await oversized.coordinator.start();
+    oversized.attach();
+    await deliver(oversized.coordinator, frame('resync_required'));
+    await waitFor(() => oversized.coordinator.getStatus().state === 'failed', 'failed');
+    assert.deepEqual(oversized.completions(), []);
+    assert.match(oversized.coordinator.getStatus().lastError ?? '', /repository_set_exceeds_bound/);
+    await oversized.coordinator.stop();
+});
+
+test('a corrupt persisted completion is never resent', async () => {
+    const store = new InMemoryResumeResyncStore();
+    const first = setup({ store });
+    await first.coordinator.start();
+    await deliver(first.coordinator, frame('resync_required'));
+    await waitFor(() => first.coordinator.getStatus().state === 'completed', 'completed');
+    await first.coordinator.stop();
+
+    const row = await store.load(INSTALLATION);
+    // Progress rewritten behind the completion: the digest no longer matches.
+    const progress = { repositories: { ...row?.repositories, 'acme/api': { ...row?.repositories['acme/api'], completedFamilies: ['repository_access'] } }, installationFamilies: row?.installationFamilies, consecutiveFailures: 0 };
+    store.corrupt(INSTALLATION, { progress_json: JSON.stringify(progress) });
+    const second = setup({ store });
+    await second.coordinator.start();
+    second.attach();
+    await deliver(second.coordinator, frame('resync_required'));
+    assert.equal(second.coordinator.getStatus().lastRejection?.reason, 'state_unavailable');
+    assert.deepEqual(second.completions(), []);
+    await second.coordinator.stop();
 });
 
 test('a newer generation supersedes unfinished work and restarts reconciliation', async () => {

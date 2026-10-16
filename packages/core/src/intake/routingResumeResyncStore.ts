@@ -7,6 +7,7 @@
 
 import type { Knex } from 'knex';
 import type { ResumeGenerationIdentity, ResyncCompletion } from './routingResumeResyncProtocol.js';
+import { decodeResumeResyncRow, encodeResumeResyncRecord, type ResumeResyncRow } from './routingResumeResyncCodec.js';
 
 export type ResumeResyncState =
     /** Suspended (or not yet unsuspended): GitHub is unreachable, nothing to reconcile yet. */
@@ -24,10 +25,22 @@ export type ResumeResyncState =
 
 export type RepositoryResyncStatus = 'pending' | 'reconciled' | 'inaccessible' | 'failed';
 
+/** Authoritative current installation access, proved by the `repository_access` family. */
+export type RepositoryAccess = 'accessible' | 'inaccessible';
+
 export interface RepositoryResyncProgress {
     status: RepositoryResyncStatus;
     /** Families already reconciled for this repository in this generation. */
     completedFamilies: string[];
+    /**
+     * GitHub-dependent families classified inapplicable, with `access` or
+     * `configured` as their evidence. Never contains a local family.
+     */
+    inapplicableFamilies: string[];
+    /** Null until `repository_access` proves it in this generation. */
+    access: RepositoryAccess | null;
+    /** False for a repository referenced only by durable local work or earlier progress. */
+    configured: boolean;
     attempts: number;
     lastError: string | null;
     updatedAt: string | null;
@@ -60,79 +73,6 @@ export interface ResumeResyncStore {
 
 const TABLE = 'routing_resume_resyncs';
 
-interface ResumeResyncRow {
-    installation_id: number | string;
-    routing_generation: number | string;
-    resume_generation: number | string;
-    state: string;
-    gap_started_at: string;
-    gap_ended_at: string | null;
-    attempts: number;
-    started_at: string | null;
-    last_attempt_at: string | null;
-    next_retry_at: string | null;
-    last_error: string | null;
-    progress_json: string;
-    completion_json: string | null;
-    acknowledged_at: string | null;
-    updated_at: string;
-}
-
-const STATES: readonly ResumeResyncState[] = ['pending', 'reconciling', 'partial', 'failed', 'completed', 'acknowledged'];
-
-function toRow(record: ResumeResyncRecord): ResumeResyncRow {
-    return {
-        installation_id: record.installationId,
-        routing_generation: record.routingGeneration,
-        resume_generation: record.resumeGeneration,
-        state: record.state,
-        gap_started_at: record.gapStartedAt,
-        gap_ended_at: record.gapEndedAt,
-        attempts: record.attempts,
-        started_at: record.startedAt,
-        last_attempt_at: record.lastAttemptAt,
-        next_retry_at: record.nextRetryAt,
-        last_error: record.lastError,
-        progress_json: JSON.stringify({
-            repositories: record.repositories,
-            installationFamilies: record.installationFamilies,
-            consecutiveFailures: record.consecutiveFailures,
-        }),
-        completion_json: record.completion ? JSON.stringify(record.completion) : null,
-        acknowledged_at: record.acknowledgedAt,
-        updated_at: record.updatedAt,
-    };
-}
-
-function fromRow(row: ResumeResyncRow): ResumeResyncRecord {
-    const state = row.state as ResumeResyncState;
-    // A corrupt row must not be guessed into a state that could acknowledge.
-    if (!STATES.includes(state)) throw new Error(`Unrecognized persisted resume-resync state "${row.state}"`);
-    const progress = JSON.parse(row.progress_json) as Pick<ResumeResyncRecord, 'repositories' | 'installationFamilies' | 'consecutiveFailures'>;
-    if (typeof progress !== 'object' || progress === null || typeof progress.repositories !== 'object' || progress.repositories === null) {
-        throw new Error('Unrecognized persisted resume-resync progress');
-    }
-    return {
-        installationId: Number(row.installation_id),
-        routingGeneration: Number(row.routing_generation),
-        resumeGeneration: Number(row.resume_generation),
-        state,
-        gapStartedAt: row.gap_started_at,
-        gapEndedAt: row.gap_ended_at,
-        attempts: Number(row.attempts),
-        startedAt: row.started_at,
-        lastAttemptAt: row.last_attempt_at,
-        nextRetryAt: row.next_retry_at,
-        lastError: row.last_error,
-        repositories: progress.repositories,
-        installationFamilies: Array.isArray(progress.installationFamilies) ? progress.installationFamilies : [],
-        consecutiveFailures: Number.isSafeInteger(progress.consecutiveFailures) ? progress.consecutiveFailures : 0,
-        completion: row.completion_json ? JSON.parse(row.completion_json) as ResyncCompletion : null,
-        acknowledgedAt: row.acknowledged_at,
-        updatedAt: row.updated_at,
-    };
-}
-
 /** SQLite-backed store; `getDb` defaults to the shared connection, resolved lazily. */
 export function createKnexResumeResyncStore(getDb?: () => Knex | Promise<Knex>): ResumeResyncStore {
     const resolveDb = getDb ?? (async () => (await import('../db/connection.js')).db);
@@ -140,28 +80,37 @@ export function createKnexResumeResyncStore(getDb?: () => Knex | Promise<Knex>):
         async load(installationId) {
             const db = await resolveDb();
             const row = await db<ResumeResyncRow>(TABLE).where({ installation_id: installationId }).first();
-            return row ? fromRow(row as ResumeResyncRow) : null;
+            return row ? decodeResumeResyncRow(row as ResumeResyncRow) : null;
         },
         async save(record) {
             const db = await resolveDb();
-            await db(TABLE).insert(toRow(record)).onConflict('installation_id').merge();
+            await db(TABLE).insert(encodeResumeResyncRecord(record)).onConflict('installation_id').merge();
         },
     };
 }
 
-/** Process-local store for tests and embedders without a database. */
+/**
+ * Process-local store for tests and embedders without a database. Records go
+ * through the same row codec, so it fails closed exactly like the SQLite store.
+ */
 export class InMemoryResumeResyncStore implements ResumeResyncStore {
-    private readonly records = new Map<number, string>();
+    private readonly rows = new Map<number, ResumeResyncRow>();
     saves = 0;
 
     async load(installationId: number): Promise<ResumeResyncRecord | null> {
-        const raw = this.records.get(installationId);
-        return raw ? JSON.parse(raw) as ResumeResyncRecord : null;
+        const row = this.rows.get(installationId);
+        return row ? decodeResumeResyncRow({ ...row }) : null;
     }
 
     async save(record: ResumeResyncRecord): Promise<void> {
         this.saves += 1;
-        // Serialize so callers cannot mutate persisted state by reference.
-        this.records.set(record.installationId, JSON.stringify(record));
+        // Serialized, so callers cannot mutate persisted state by reference.
+        this.rows.set(record.installationId, encodeResumeResyncRecord(record));
+    }
+
+    /** Overwrite raw persisted columns (tests simulating corruption). */
+    corrupt(installationId: number, columns: Partial<Record<keyof ResumeResyncRow, unknown>>): void {
+        const row = this.rows.get(installationId);
+        if (row) this.rows.set(installationId, { ...row, ...columns } as ResumeResyncRow);
     }
 }

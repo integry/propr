@@ -239,7 +239,7 @@ async function listSweepCandidates(redisClient: Redis, fullScan?: boolean): Prom
 export async function sweepUltrafixResumeCandidates(
     redisClient: Redis,
     createLogger: () => Logger,
-    options: { fullScan?: boolean; leaseMs?: number; strict?: boolean } = {},
+    options: { fullScan?: boolean; leaseMs?: number; strict?: boolean; excludeRepositories?: readonly string[] } = {},
 ): Promise<Array<{ prId: PrRef; result: ContinuationResult }>> {
     if (options.leaseMs !== undefined && !await acquireUltrafixResumeSweepLease(redisClient, sweepLeaseTtlMs(options.leaseMs))) {
         return [];
@@ -247,8 +247,11 @@ export async function sweepUltrafixResumeCandidates(
     const { refs, indexed } = await listSweepCandidates(redisClient, options.fullScan);
     const outcomes: Array<{ prId: PrRef; result: ContinuationResult }> = [];
     const failures: unknown[] = [];
+    // Repositories the resume resync found unconfigured or inaccessible: their work was invalidated locally.
+    const excluded = new Set((options.excludeRepositories ?? []).map(name => name.toLowerCase()));
     for (const prId of refs) {
         const { owner, repo, pr } = prId;
+        if (excluded.has(`${owner}/${repo}`.toLowerCase())) continue;
         const deferred = await loadDeferredContinuation(redisClient, owner, repo, pr);
         const retry = deferred ? null : await loadRearmRetry(redisClient, owner, repo, pr);
         if (!deferred && !retry) {

@@ -11,7 +11,8 @@ import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { clearUltrafixLoopState, getUltrafixStateRedis } from '../webhook/checkRunHelpers.js';
 import { WITHDRAWAL_CLEANUP_KEY, openIssueCleanupStep, releaseWithdrawalCleanup, retainWithdrawalCleanup, type CleanupRedis, type CleanupVerdict, type RetainedCleanup } from './withdrawalCleanup.js';
 export { releaseWithdrawalCleanup } from './withdrawalCleanup.js';
-import { stopTaskExecution, type StopTaskRedisClient } from './taskCancellation.js';
+import { stopTaskExecution } from './taskCancellation.js';
+import { jobIntentTarget, nonTerminalTasks, redisAdapter } from './intentScan.js';
 
 export type IntentCancellationReason = 'cancelled_issue_closed' | 'cancelled_label_removed' | 'cancelled_pr_closed';
 export interface IntentTarget {
@@ -128,21 +129,6 @@ export async function isIssueClosureProtected(target: IntentTarget, task: TaskSt
 }
 
 // Queue names are authoritative even when legacy job payloads have no type.
-function jobIntentTarget(job: { name: string; data: unknown }): IntentTarget | null {
-    const type = { processGitHubIssue: 'issue', processPullRequestComment: 'pr-comment', processMergeConflict: 'merge_conflict' }[job.name];
-    return type ? taskIntentTarget(job.data as Record<string, unknown>, type) : null;
-}
-
-/** Pages through every non-terminal task state; stopping iteration stops the scan. */
-async function* nonTerminalTasks() {
-    let cursor = '0';
-    do {
-        const page = await getStateManager().scanNonTerminalTasks(cursor);
-        yield* page.tasks;
-        cursor = page.nextCursor;
-    } while (cursor !== '0');
-}
-
 function sameResource(a: IntentTarget, b: IntentTarget): boolean {
     return a.kind === b.kind && a.number === b.number
         && a.repoOwner.toLowerCase() === b.repoOwner.toLowerCase()
@@ -178,15 +164,6 @@ export function withdrawnIntentReason(target: IntentTarget, current: CurrentTask
     const labels = (current.labels ?? []).map(label => typeof label === 'string' ? label : label.name);
     const required = target.triggeringLabel ? [target.triggeringLabel] : triggers;
     return required.some(label => labels.includes(label)) ? null : 'cancelled_label_removed';
-}
-
-function redisAdapter(redis: Redis): StopTaskRedisClient {
-    return {
-        get: key => redis.get(key),
-        set: (key, value, options) => options?.EX ? redis.set(key, value, 'EX', options.EX) : redis.set(key, value),
-        rPush: (key, value) => redis.rpush(key, value),
-        del: key => redis.del(key),
-    };
 }
 
 async function clearUserStoppedProcessingLabel(target: IntentTarget, taskId?: string): Promise<void> {

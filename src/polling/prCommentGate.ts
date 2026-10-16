@@ -25,8 +25,12 @@ interface GatedComment {
  * one refused because the assignees could not be read is not. A refusal that
  * cannot be recorded is not definitive: it posts no notice, and the next poll
  * asks the gate again.
+ *
+ * `strict` (the Routing resume resync) cannot leave a comment for a next poll
+ * that may never see it, so an unreadable assignment or an unrecorded refusal
+ * throws instead, and the catch-up is retried.
  */
-export function createPollingGate(prNumber: number, commentContext: GateContext, redisClient: Redis) {
+export function createPollingGate(prNumber: number, commentContext: GateContext, redisClient: Redis, options: { strict?: boolean } = {}) {
     const { owner, repo, correlationId } = commentContext;
     const pullRequest = { repoOwner: owner, repoName: repo, pullRequestNumber: prNumber };
     let evaluator: Promise<FollowupGateEvaluator> | null = null;
@@ -43,10 +47,14 @@ export function createPollingGate(prNumber: number, commentContext: GateContext,
         if (decision.allowed) return true;
         // An unreadable assignment is ProPR's outage, not a verdict on the
         // author: leave the comment unremembered so the next poll asks again.
-        if (decision.reason !== 'author_not_assigned') return false;
+        if (decision.reason !== 'author_not_assigned') {
+            if (options.strict) throw new Error(`Follow-up assignment for PR #${prNumber} is unavailable (${decision.reason}); comment ${comment.id} is undecided`);
+            return false;
+        }
         try {
             await rememberRefusedComment(redisClient, { owner, repo, prNumber, commentId: comment.id });
         } catch (error) {
+            if (options.strict) throw error;
             // Not remembered, so not definitive: tell nobody it was refused,
             // and let the next poll ask the gate about it again.
             logger.withCorrelation(correlationId).warn({ pullRequestNumber: prNumber, commentId: comment.id, error: (error as Error).message }, 'Failed to record a refused PR comment');

@@ -10,6 +10,7 @@ import {
 } from '../packages/core/src/intake/routingResumeResyncProtocol.js';
 import {
     RESUME_RESYNC_RECONCILIATION_MATRIX,
+    RESYNC_GITHUB_DEPENDENT_FAMILIES,
     RESYNC_INSTALLATION_FAMILIES,
     RESYNC_REPOSITORY_FAMILIES,
     ResyncRepositoryInaccessibleError,
@@ -39,7 +40,7 @@ test('advertises a versioned capability name', () => {
 });
 
 test('parses resume_pending, resync_required and resync_accepted frames into fresh objects', () => {
-    const pending = parse({ ...required, type: 'resume_pending', gapEndedAt: undefined, relayInternal: 'x' });
+    const pending = parse({ ...required, type: 'resume_pending', gapEndedAt: undefined });
     assert.deepEqual(pending, {
         ok: true,
         frame: { type: 'resume_pending', installationId: 42, routingGeneration: 3, resumeGeneration: 7, gapStartedAt: '2026-10-10T00:00:00.000Z' },
@@ -69,6 +70,11 @@ test('rejects malformed, unversioned, regressed-interval and oversized frames (f
         [{ ...required, type: 'resume_pending' }, 'unexpected_gap_ended_at'],
         [{ type: 'resync_accepted', version: 1, installationId: 42, routingGeneration: 3, resumeGeneration: 7, completionId: '' }, 'invalid_completion_id'],
         [{ ...required, type: 'event' }, 'unknown_type'],
+        // Strict shapes: an unknown relay field rejects the whole frame.
+        [{ ...required, relayInternal: 'x' }, 'unknown_field'],
+        [{ ...required, type: 'resume_pending', gapEndedAt: undefined, completionId: 'c-1' }, 'unknown_field'],
+        [{ type: 'resync_accepted', version: 1, installationId: 42, routingGeneration: 3, resumeGeneration: 7, completionId: 'c-1', gapStartedAt: required.gapStartedAt }, 'unknown_field'],
+        [{ type: 'resync_accepted', version: 1, installationId: 42, routingGeneration: 3, resumeGeneration: 7, completionId: 'c-1', evidence: {} }, 'unknown_field'],
     ];
     for (const [frame, reason] of cases) {
         assert.deepEqual(parse(frame), { ok: false, reason }, JSON.stringify(frame));
@@ -83,14 +89,14 @@ test('builds an exact-generation resync_complete frame with bounded evidence', (
         {
             completionId: 'c-1',
             completedAt: '2026-10-12T01:00:00.000Z',
-            evidence: { repositories: { total: 2, reconciled: 1, inaccessible: 1 }, families: ['repository_access'], attempts: 2, digest: 'abc' },
+            evidence: { repositories: { total: 3, reconciled: 1, inaccessible: 1, unconfigured: 1 }, families: ['repository_access'], attempts: 2, digest: 'abc' },
         },
     );
     assert.deepEqual(frame, {
         type: 'resync_complete', version: 1, installationId: 42, routingGeneration: 3, resumeGeneration: 7,
         completionId: 'c-1', gapStartedAt: required.gapStartedAt, gapEndedAt: required.gapEndedAt,
         completedAt: '2026-10-12T01:00:00.000Z',
-        evidence: { repositories: { total: 2, reconciled: 1, inaccessible: 1 }, families: ['repository_access'], attempts: 2, digest: 'abc' },
+        evidence: { repositories: { total: 3, reconciled: 1, inaccessible: 1, unconfigured: 1 }, families: ['repository_access'], attempts: 2, digest: 'abc' },
     });
 });
 
@@ -116,6 +122,12 @@ test('every supported webhook event is recovered or explicitly documented as unr
         if (family === 'repository_access') continue;
         assert.ok(RESUME_RESYNC_RECONCILIATION_MATRIX.some(row => row.family === family), `${family} is undocumented`);
     }
+});
+
+test('only GitHub-dependent families may be classified inapplicable; local invalidation always runs', () => {
+    assert.deepEqual([...RESYNC_GITHUB_DEPENDENT_FAMILIES], ['labelled_issues', 'pull_request_comments', 'pull_request_heads', 'merge_conflicts']);
+    assert.ok(!RESYNC_GITHUB_DEPENDENT_FAMILIES.includes('task_intents'));
+    assert.ok(!RESYNC_GITHUB_DEPENDENT_FAMILIES.includes('repository_access'));
 });
 
 test('classifies inaccessible repositories, rate limits and other failures', () => {

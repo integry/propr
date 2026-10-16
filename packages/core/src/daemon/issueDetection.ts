@@ -58,6 +58,8 @@ async function resolveLabelApplierCached(opts: {
     staleMarkers: string[];
     appliedMarkers?: string[];
     log?: Logger;
+    /** Rethrow a failed lookup: an unknown actor is not a proved absence. */
+    strict?: boolean;
 }): Promise<TriggerEvidence | null> {
     const cacheKey = getLabelApplierCacheKey(opts);
     const cached = labelApplierCache.get(cacheKey);
@@ -86,6 +88,8 @@ async function resolveLabelApplierCached(opts: {
         }
         return result;
     } catch (err) {
+        // A strict catch-up must not read the failure as "no applier" and skip.
+        if (opts.strict) throw err;
         // Transient API error (rate limit, network blip). Return null but do NOT
         // cache so the issue is retried on the next poll cycle. The caller fails
         // closed when actor identity is required for whitelist authorization.
@@ -158,18 +162,26 @@ async function pollingTriggerEvidence(labels: string[], triggers: string[], read
 }
 
 // A closure whose `-cancelled` marker failed to publish still withdraws intent:
-// reopening alone must not admit the issue. Settlement failures fail closed.
-async function settleIssueWithdrawalCleanup(issue: DetectedIssue, redisClient: Redis, log: Logger): Promise<CleanupVerdict> {
+// reopening alone must not admit the issue. Settlement failures fail closed:
+// ordinary intake skips the issue; a strict reconciliation propagates them.
+async function settleIssueWithdrawalCleanup(issue: DetectedIssue, redisClient: Redis, log: Logger, strict?: boolean): Promise<CleanupVerdict> {
     try {
         return await settleWithdrawalCleanups(redisClient, target => target.number === issue.number
             && `${target.repoOwner}/${target.repoName}`.toLowerCase() === `${issue.repoOwner}/${issue.repoName}`.toLowerCase());
     } catch (error) {
+        if (strict) throw error;
         log.warn({ issueNumber: issue.number, error: (error as Error).message }, 'Could not settle retained cancellation exclusion; skipping issue');
         return { idle: true };
     }
 }
 
-export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis): Promise<DeliveryDisposition> {
+/**
+ * `strict` (the Routing resume resync) propagates settlement and admission
+ * failures instead of reporting the issue idle, and does not trust another
+ * producer's dedupe window: the deterministic job ID makes enqueueing idempotent.
+ */
+export async function processDetectedIssue(issue: DetectedIssue, correlationId: string, redisClient: Redis,
+    options: { strict?: boolean } = {}): Promise<DeliveryDisposition> {
     const correlatedLogger: Logger = logger.withCorrelation(correlationId);
     const repoFullName = `${issue.repoOwner}/${issue.repoName}`;
 
@@ -223,7 +235,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
         return { status: 'ignored', reason: 'issue_has_terminal_label' };
     }
 
-    const cleanup = await settleIssueWithdrawalCleanup(issue, redisClient, correlatedLogger);
+    const cleanup = await settleIssueWithdrawalCleanup(issue, redisClient, correlatedLogger, options.strict);
     if (cleanup.idle) return { status: 'ignored', reason: 'intent_not_current' };
     // Settlement released the closure obligation on fresh evidence of a trigger
     // applied after the closure. That trigger requested this job unless the
@@ -237,7 +249,7 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
     const dedupeTTL = 30; // seconds - enough time for label events to consolidate
     const acquired = await redisClient.set(dedupeKey, correlationId, 'EX', dedupeTTL, 'NX');
 
-    if (!acquired) {
+    if (!acquired && !options.strict) {
         correlatedLogger.debug({
             issueNumber: issue.number,
             repository: repoFullName,
@@ -348,7 +360,9 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
 /**
  * `throwOnError` rethrows instead of returning `[]`, for callers (such as the
- * Routing resume resync) that must not mistake a failed fetch for no issues.
+ * Routing resume resync) that must not mistake a failed fetch for no issues. It
+ * is strict through the nested timeline lookups too: a failed label-applier
+ * read fails the fetch instead of skipping the issue.
  */
 export async function fetchIssuesForRepo(
     octokit: PaginatedOctokitInstance,
@@ -445,7 +459,8 @@ export async function fetchIssuesForRepo(
                     targetLabels,
                     staleMarkers: staleFor ? staleTriggerMarkers(staleFor, primaryProcessingLabels) : [],
                     appliedMarkers: staleFor ? labels : [],
-                    log: correlatedLogger
+                    log: correlatedLogger,
+                    strict: options.throwOnError,
                 }));
                 // Reopening a cancelled issue is not renewed intent: restoration
                 // requires the trigger to have been reapplied after its stale

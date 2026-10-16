@@ -62,6 +62,7 @@ function makeService(options: { resync?: boolean; reconciler?: ResumeResyncRecon
     const steps: string[] = [];
     const reconciler: ResumeResyncReconciler = options.reconciler ?? {
         listRepositories: () => ['acme/api'],
+        listReferencedRepositories: () => [],
         repositorySteps: [{ family: 'labelled_issues', run: async ctx => { steps.push(ctx.repository); } }],
         installationSteps: [],
     };
@@ -131,6 +132,7 @@ test('events right after unsuspension overlap safely with catch-up and later rep
     const { service, dispatched } = makeService({
         reconciler: {
             listRepositories: () => ['acme/api'],
+            listReferencedRepositories: () => [],
             repositorySteps: [{ family: 'labelled_issues', run: async () => { await gate; } }],
             installationSteps: [],
         },

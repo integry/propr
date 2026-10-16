@@ -16,7 +16,7 @@
  *     installation, its routing generation, the resume generation and the gap
  *     start. GitHub is still unreachable, so the backend only records it.
  *   - `resync_required`: the installation was unsuspended. Adds the gap end.
- *     The backend reconciles every configured repository, then answers with
+ *     The backend reconciles every tracked repository, then answers with
  *     `resync_complete` for exactly this generation. Routing keeps the
  *     installation in `resync_required` (and keeps caching post-resume events)
  *     until it accepts that completion.
@@ -27,8 +27,9 @@
  *   - `resync_complete`: exact-generation completion with bounded, non-secret
  *     evidence. Re-sent byte-for-byte (same `completionId`) until accepted.
  *
- * Frames are validated strictly and copied into new objects so unknown relay
- * fields never reach persistence, status, or logs.
+ * Frames are validated strictly: a frame carrying any field outside its type's
+ * exact shape is rejected (`unknown_field`), and accepted frames are copied into
+ * new objects so nothing from the relay reaches persistence, status, or logs.
  */
 
 import { isAccountStatusTimestamp } from '@propr/shared';
@@ -85,8 +86,13 @@ export type ResumeResyncFrameParseResult =
 
 /** Bounded, non-secret evidence carried by `resync_complete`. */
 export interface ResyncCompletionEvidence {
-    repositories: { total: number; reconciled: number; inaccessible: number };
-    /** Reconciliation families that ran for every reconciled repository. */
+    /**
+     * `reconciled`: accessible and configured; `inaccessible`: access lost, local
+     * work invalidated; `unconfigured`: accessible but no longer configured,
+     * local work invalidated. They sum to `total`.
+     */
+    repositories: { total: number; reconciled: number; inaccessible: number; unconfigured: number };
+    /** Reconciliation families settled (run, or inapplicable with evidence) for every repository. */
     families: string[];
     /** Reconciliation attempts this generation needed. */
     attempts: number;
@@ -99,6 +105,18 @@ export interface ResyncCompletion {
     completionId: string;
     completedAt: string;
     evidence: ResyncCompletionEvidence;
+}
+
+const IDENTITY_FIELDS = ['type', 'version', 'installationId', 'routingGeneration', 'resumeGeneration'];
+const FRAME_FIELDS: Record<ResumeResyncFrameType, readonly string[]> = {
+    resume_pending: [...IDENTITY_FIELDS, 'gapStartedAt'],
+    resync_required: [...IDENTITY_FIELDS, 'gapStartedAt', 'gapEndedAt'],
+    resync_accepted: [...IDENTITY_FIELDS, 'completionId'],
+};
+
+/** JSON never decodes to `undefined`, so an undefined-valued key is an absent one. */
+function hasUnknownField(frame: Record<string, unknown>, allowed: readonly string[]): boolean {
+    return Object.keys(frame).some(key => frame[key] !== undefined && !allowed.includes(key));
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {
@@ -118,9 +136,7 @@ function parseIdentity(frame: Record<string, unknown>): ResumeGenerationIdentity
 
 function parseGap(frame: Record<string, unknown>, requireEnd: boolean): { gapStartedAt: string; gapEndedAt?: string } | string {
     if (!isAccountStatusTimestamp(frame.gapStartedAt)) return 'invalid_gap_started_at';
-    if (!requireEnd) {
-        return frame.gapEndedAt === undefined ? { gapStartedAt: frame.gapStartedAt } : 'unexpected_gap_ended_at';
-    }
+    if (!requireEnd) return { gapStartedAt: frame.gapStartedAt };
     if (!isAccountStatusTimestamp(frame.gapEndedAt)) return 'invalid_gap_ended_at';
     if (Date.parse(frame.gapEndedAt) < Date.parse(frame.gapStartedAt)) return 'gap_ends_before_start';
     return { gapStartedAt: frame.gapStartedAt, gapEndedAt: frame.gapEndedAt };
@@ -135,6 +151,8 @@ export function parseResumeResyncFrame(frame: Record<string, unknown>, frameByte
     if (!isResumeResyncFrameType(frame.type)) return { ok: false, reason: 'unknown_type' };
     if (frameBytes > MAX_RESUME_RESYNC_FRAME_BYTES) return { ok: false, reason: 'oversized_frame' };
     if (frame.version !== RESUME_RESYNC_FRAME_VERSION) return { ok: false, reason: 'unsupported_version' };
+    if (frame.type === 'resume_pending' && frame.gapEndedAt !== undefined) return { ok: false, reason: 'unexpected_gap_ended_at' };
+    if (hasUnknownField(frame, FRAME_FIELDS[frame.type])) return { ok: false, reason: 'unknown_field' };
     const identity = parseIdentity(frame);
     if (typeof identity === 'string') return { ok: false, reason: identity };
 

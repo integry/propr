@@ -105,23 +105,26 @@ A seat is a distinct developer whose GitHub activity starts ProPR work through t
 
 ProPR Connect may suspend the GitHub App installation after a long, high-confidence streak of GitHub activity that no ProPR stack consumed. While an installation is suspended GitHub blocks both API access and webhook delivery, so the stack cannot simply reconnect and continue. Connect only does this for stacks that advertise the `installation_resume_resync_v1` capability in their routing `hello`; a stack that does not advertise it keeps the previous behavior.
 
-When Connect unsuspends the installation it sends a `resync_required` frame naming the installation, its routing generation, the resume generation and the gap interval. ProPR then reconciles current GitHub state for every configured repository:
+When Connect unsuspends the installation it sends a `resync_required` frame naming the installation, its routing generation, the resume generation and the gap interval. ProPR then reconciles current GitHub state for every configured repository, and also for every repository that queued or running work, retained cleanup, or earlier progress for this generation still references, so a repository removed from the configuration or from the installation during the gap is not silently dropped:
 
 | Family | Recovers |
 | --- | --- |
-| `repository_access` | Repositories the installation can no longer read are reported as inaccessible. |
-| `task_intents` | Queued or running work whose issue was closed, whose trigger label was removed, or whose PR was closed is withdrawn. |
+| `repository_access` | Records whether the installation can still read the repository (only a 404 counts as lost access). |
+| `task_intents` | Queued or running work whose issue was closed, whose trigger label was removed, or whose PR was closed is withdrawn. For a repository that lost access or is no longer configured, all of its queued and running work is cancelled locally instead. |
 | `labelled_issues` | Open issues carrying a processing label are picked up with the same trigger-evidence checks polling uses. |
 | `pull_request_comments` | Issue and review comments created on open PRs since the gap started, even when PR comment polling is off. |
 | `pull_request_heads` | Current check runs and statuses on each open PR head: CI-failure follow-ups, auto-merge and Ultrafix readiness. |
 | `merge_conflicts` | The merge-conflict safety sweep for repositories with auto-resolve enabled. |
 | `ultrafix_continuations` | Deferred Ultrafix/CI continuations and retry obligations; a loop whose label was removed stops. |
 
+For a repository that lost access or is no longer configured, the families that need GitHub (`labelled_issues`, `pull_request_comments`, `pull_request_heads`, `merge_conflicts`, and its Ultrafix continuations) are recorded as not applicable, with the access or configuration state as evidence. `task_intents` still runs for it.
+
 This converges on current state. It does not replay the webhook stream, so some transitions inside the gap cannot be reconstructed: comment edits and deletions, merge-time side effects of a PR merged during the gap (epic follow-up PRs, plan PR tracking, closed-PR CI cancellation), and plan issue status updates. The next event for that issue or PR, or the existing retry sweeps, pick those up.
 
-Only when every repository and family has converged does ProPR send `resync_complete` for exactly that generation, with bounded evidence (counts, family list, attempts and a digest; no repository names, tokens or payloads). Connect keeps the installation in `resync_required` and keeps caching new events until it accepts the completion, then replays them; already-processed delivery ids are re-acknowledged without being processed again.
+Every family runs in a strict mode. A failed GitHub read (including timeline lookups for a label applier), a failed queue write or processed-comment marker, an open PR whose mergeability is still unknown, or a PR comment job already in flight that does not include a newly found comment leaves the family unfinished, and it is retried. None of these count as converged. Only when every repository and family has converged does ProPR send `resync_complete` for exactly that generation, with bounded evidence (counts, family list, attempts and a digest; no repository names, tokens or payloads). Connect keeps the installation in `resync_required` and keeps caching new events until it accepts the completion, then replays them; already-processed delivery ids are re-acknowledged without being processed again.
 
-- Progress is stored in the database, so a restarted daemon resumes the same generation without rerunning finished families.
+- Progress is stored in the database, so a restarted daemon resumes the same generation without rerunning finished families. A malformed or inconsistent stored record is rejected rather than repaired. That includes completion evidence that does not match the stored progress. While it is rejected, no completion is sent. At most 1000 repositories are tracked per generation; a larger set fails the attempt.
+- Control frames must have exactly the documented fields; a frame with any unknown field is rejected.
 - A lost completion response is answered by resending the same completion identity, not by reconciling again.
 - Stale, foreign, malformed or conflicting generations are rejected and change nothing.
 - A failed or rate-limited repository leaves the resync `partial` with a scheduled retry, honoring GitHub's rate-limit reset. After repeated failures it turns `failed`; a new `resync_required`, a reconnect that resends it, or a daemon restart resumes it.

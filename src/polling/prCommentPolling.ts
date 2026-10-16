@@ -1,7 +1,6 @@
 import { logger } from '@propr/core';
-import { generateCorrelationId } from '@propr/core';
 import { handleError } from '@propr/core';
-import { getIssueQueue, COMMENT_BATCH_DELAY_MS, type CommentJobData, type UnprocessedComment } from '@propr/core';
+import type { UnprocessedComment } from '@propr/core';
 import { filterCommentByAuthor, checkCommentTrigger } from '@propr/core';
 import { extractLlmFromLabels, resolveModelAlias } from '@propr/core';
 import { hasValidTriggerLabel, wasRefused } from '@propr/core';
@@ -9,6 +8,7 @@ import { getCheckRunsStatusForRepo, getCurrentPRHead, triggerUltrafixCheckRunHoo
 import type { Redis } from 'ioredis';
 import { hasUltrafixResumeCandidate } from '../jobs/ultrafixResumeClaim.js';
 import { createPollingGate } from './prCommentGate.js';
+import { commentTrackingKey, enqueuePRCommentJob } from './prCommentEnqueue.js';
 
 type Octokit = {
     paginate: <T>(endpoint: string, options: Record<string, unknown>) => Promise<T[]>;
@@ -41,7 +41,11 @@ interface PollingConfig {
     GITHUB_BOT_USERNAME?: string;
     PR_FOLLOWUP_TRIGGER_KEYWORDS: string[];
     MODEL_LABEL_PATTERN: string;
-    /** Rethrow failures instead of logging them (the Routing resume resync must see them). */
+    /**
+     * Strict catch-up (the Routing resume resync): rethrow failures instead of
+     * logging them, treat an unreadable assignment gate as a failure, and count
+     * a comment only once a durable job carries it (see prCommentEnqueue.ts).
+     */
     throwOnError?: boolean;
     /** Skip the Ultrafix CI pass, for a caller that reconciles PR heads separately. */
     skipUltrafixReconcile?: boolean;
@@ -67,21 +71,6 @@ interface CollectResult {
     unprocessedComments: UnprocessedComment[];
     selectedLlm: string | null;
     userId?: string;
-}
-
-interface EnqueueJobDetails {
-    unprocessedComments: UnprocessedComment[];
-    selectedLlm: string | null;
-    userId?: string;
-    pr: PullRequest;
-    owner: string;
-    repo: string;
-}
-
-interface EnqueueOptions {
-    repoFullName: string;
-    correlationId: string;
-    redisClient: Redis;
 }
 
 export async function pollForPullRequestComments(
@@ -253,7 +242,7 @@ async function processPullRequestComments(
     if (unprocessedComments.length > 0) {
         await enqueuePRCommentJob(
             { unprocessedComments, selectedLlm, userId, pr, owner, repo },
-            { repoFullName, correlationId, redisClient: config.redisClient }
+            { repoFullName, correlationId, redisClient: config.redisClient, strict: config.throwOnError }
         );
     }
 }
@@ -284,7 +273,7 @@ async function collectUnprocessedComments(
 
     const hasProcessingLabel = await prHasProcessingLabel(pr);
     let selectedLlm: string | null = extractModelFromPRLabels(pr, MODEL_LABEL_PATTERN, correlationId);
-    const mayFollowUp = createPollingGate(pr.number, commentContext, redisClient);
+    const mayFollowUp = createPollingGate(pr.number, commentContext, redisClient, { strict: config.throwOnError });
 
     for (const comment of commentsByTime) {
         const commentAuthor = comment.user.login;
@@ -295,9 +284,8 @@ async function collectUnprocessedComments(
         const triggerResult = checkCommentTrigger(comment.body || '', correlationId);
         if (!hasProcessingLabel && !triggerResult.isTriggered) continue;
 
-        const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${pr.number}:${comment.id}`;
         const [alreadyQueued, alreadyRefused] = await Promise.all([
-            redisClient.get(commentTrackingKey),
+            redisClient.get(commentTrackingKey(owner, repo, pr.number, comment.id)),
             wasRefused(redisClient, { owner, repo, prNumber: pr.number, commentId: comment.id }),
         ]);
 
@@ -393,81 +381,4 @@ function buildEnhancedCommentBody(comment: PRComment, triggerKeywords: string[])
         }
     }
     return enhancedCommentBody;
-}
-
-async function enqueuePRCommentJob(
-    jobDetails: EnqueueJobDetails,
-    options: EnqueueOptions
-): Promise<void> {
-    const { unprocessedComments, selectedLlm, userId, pr, owner, repo } = jobDetails;
-    const { repoFullName, correlationId, redisClient } = options;
-    const correlatedLogger = logger.withCorrelation(correlationId);
-
-    const issueQueue = await getIssueQueue();
-    const activeJobs = await issueQueue.getActive();
-    const waitingJobs = await issueQueue.getWaiting();
-    const delayedJobs = await issueQueue.getDelayed();
-    const existingJobs = [...activeJobs, ...waitingJobs, ...delayedJobs];
-
-    const jobExists = existingJobs.some(job =>
-        job.name === 'processPullRequestComment' &&
-        (job.data as CommentJobData).pullRequestNumber === pr.number &&
-        (job.data as CommentJobData).repoOwner === owner &&
-        (job.data as CommentJobData).repoName === repo
-    );
-
-    if (jobExists) {
-        correlatedLogger.info({
-            pullRequestNumber: pr.number,
-            repository: repoFullName
-        }, 'A job for this PR is already active, waiting, or delayed, skipping new job creation.');
-        return;
-    }
-
-    const jobData: CommentJobData = {
-        ...(userId ? { userId } : {}),
-        pullRequestNumber: pr.number,
-        comments: unprocessedComments,
-        repoOwner: owner,
-        repoName: repo,
-        branchName: pr.head.ref,
-        llm: selectedLlm,
-        correlationId: generateCorrelationId(),
-    };
-
-    const timestamp = Date.now();
-    const jobId = `pr-comments-batch-${owner}-${repo}-${pr.number}-${timestamp}`;
-
-    try {
-        await issueQueue.add('processPullRequestComment', jobData, {
-            jobId,
-            delay: COMMENT_BATCH_DELAY_MS
-        });
-
-        const pipeline = redisClient.pipeline();
-        for (const comment of unprocessedComments) {
-            const trackingKey = `pr-comment-processed:${owner}:${repo}:${pr.number}:${comment.id}`;
-            pipeline.setex(trackingKey, 86400, Date.now().toString());
-        }
-        await pipeline.exec();
-
-        correlatedLogger.info({
-            jobId,
-            pullRequestNumber: pr.number,
-            commentsCount: unprocessedComments.length,
-            commentIds: unprocessedComments.map(c => c.id),
-            commentTypes: unprocessedComments.map(c => c.type),
-            delayMs: COMMENT_BATCH_DELAY_MS
-        }, `Successfully added batch PR comments job (${unprocessedComments.length} comments)`);
-    } catch (error) {
-        const err = error as Error;
-        if (err.message?.includes('Job already exists')) {
-            correlatedLogger.debug({
-                pullRequestNumber: pr.number,
-                commentsCount: unprocessedComments.length,
-            }, 'PR comments batch job already in queue, skipping');
-        } else {
-            handleError(error, `Failed to add PR comments batch to queue`, { correlationId });
-        }
-    }
 }

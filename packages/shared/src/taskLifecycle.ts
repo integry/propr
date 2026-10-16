@@ -23,6 +23,7 @@ export function formatTaskTerminalReason(reason: string): string {
     case 'cancelled_issue_closed': return 'Cancelled because the issue was closed.';
     case 'cancelled_label_removed': return 'Cancelled because the processing trigger label was removed.';
     case 'cancelled_pr_closed': return 'Cancelled because the pull request was closed without merging.';
+    case 'cancelled_repository_unavailable': return 'Cancelled because the repository is no longer configured or accessible to the GitHub App installation.';
     // `user_cancelled` is the legacy job-result code for the same stop.
     case 'cancelled_by_user': case 'user_cancelled': return 'Cancelled by a user.';
     case 'timed_out': return 'The task exceeded its time limit.';

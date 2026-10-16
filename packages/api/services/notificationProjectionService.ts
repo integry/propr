@@ -29,7 +29,7 @@ const DEFAULT_STALLED_AFTER_MS = 30 * 60 * 1000;
 const MIN_STALLED_CHECK_INTERVAL_MS = 5_000;
 const MAX_STALLED_CHECK_INTERVAL_MS = 60_000;
 const CANCELLATION_REASONS = new Set([
-  'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_by_user', 'pr_merged',
+  'cancelled_issue_closed', 'cancelled_label_removed', 'cancelled_pr_closed', 'cancelled_repository_unavailable', 'cancelled_by_user', 'pr_merged',
 ]);
 
 function isNotifiableCancellation(payload: TaskUpdatePayload): boolean {

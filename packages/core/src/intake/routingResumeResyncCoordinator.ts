@@ -7,7 +7,8 @@
  * conflicting generations fail closed and change nothing), runs bounded
  * current-state reconciliation once Routing reports the installation
  * unsuspended, and answers with an exact-generation `resync_complete` only after
- * every configured repository and installation family converged. Reconnecting
+ * every tracked repository (configured, or still referenced by durable local
+ * work) and installation family converged. Reconnecting
  * the WebSocket never completes a resync by itself; a lost completion response
  * is answered by resending the persisted completion identity, not by rerunning
  * reconciliation. Frame handling is serialized; reconciliation runs outside that
@@ -27,6 +28,7 @@ import {
 } from './routingResumeResyncProtocol.js';
 import { buildResyncEvidence, describeResyncError, runResyncAttempt, type ResumeResyncReconciler } from './routingResumeResyncRun.js';
 import type { ResumeResyncRecord, ResumeResyncStore } from './routingResumeResyncStore.js';
+import { MAX_PERSISTED_ERROR_LENGTH } from './routingResumeResyncCodec.js';
 import { buildResumeResyncStatus, type RoutingResumeResyncStatus } from './routingResumeResyncStatus.js';
 
 export type { RoutingResumeResyncStatus } from './routingResumeResyncStatus.js';
@@ -331,7 +333,7 @@ export class RoutingResumeResyncCoordinator {
 
     private settlePartial(record: ResumeResyncRecord, error: string, rateLimitRetryAt: number | null): void {
         record.consecutiveFailures += 1;
-        record.lastError = error;
+        record.lastError = error.slice(0, MAX_PERSISTED_ERROR_LENGTH);
         if (record.consecutiveFailures >= this.maxConsecutiveFailures) {
             record.state = 'failed';
             record.nextRetryAt = null;

@@ -3,20 +3,23 @@ import type { Logger } from 'pino';
 import { parseTruthyEnvValue } from '@propr/shared';
 import {
     RoutingResumeResyncCoordinator,
-    ResyncRepositoryInaccessibleError,
     createKnexResumeResyncStore,
     fetchIssuesForRepo,
     getAuthenticatedOctokit,
     getRepos,
+    invalidateRepositoryIntents,
+    listIntentRepositories,
     logger,
     processDetectedIssue,
     reconcileTaskIntents,
     recoverCiFailureFollowups,
     reevaluatePRAutoMerge,
+    settleWithdrawalCleanups,
     sweepConflictedPullRequests,
     type ResumeResyncReconciler,
     type ResumeResyncStore,
     type ResyncRepositoryStepContext,
+    type ResyncRepositoryStepResult,
 } from '@propr/core';
 import { pollForPullRequestComments, reconcileUltrafixForPR } from '../polling/prCommentPolling.js';
 import { sweepUltrafixResumeCandidates } from '../jobs/ultrafixLoopContinuation.js';
@@ -28,7 +31,10 @@ import { sweepUltrafixResumeCandidates } from '../jobs/ultrafixLoopContinuation.
  *
  * Every step reuses the existing idempotent polling/sweep path for its family,
  * in a strict mode that throws instead of logging, so a failed repository can
- * never be mistaken for a converged one.
+ * never be mistaken for a converged one. The repository set includes every
+ * repository durable local work still references; one that lost access or left
+ * the configuration has its task intents invalidated locally (the runner marks
+ * its GitHub-dependent families inapplicable).
  */
 
 type Octokit = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
@@ -45,17 +51,36 @@ export interface ResumeResyncReconcilerDeps {
     PR_FOLLOWUP_TRIGGER_KEYWORDS: string[];
     MODEL_LABEL_PATTERN: string;
     getOctokit?: () => Promise<Octokit>;
-    listRepositories?: () => string[];
+    listRepositories?: () => string[] | Promise<string[]>;
+    listReferencedRepositories?: () => string[] | Promise<string[]>;
 }
 
-async function checkRepositoryAccess(octokit: Octokit, ctx: ResyncRepositoryStepContext): Promise<void> {
+/** Current access as authoritative state: only a 404 proves the installation lost the repository. */
+async function checkRepositoryAccess(octokit: Octokit, ctx: ResyncRepositoryStepContext): Promise<ResyncRepositoryStepResult> {
     try {
         await octokit.request('GET /repos/{owner}/{repo}', { owner: ctx.owner, repo: ctx.repo });
+        return { access: 'accessible' };
     } catch (error) {
-        // Only "not found" proves the installation lost the repository; a 403
-        // may still be the suspension itself or a rate limit, so it retries.
-        if ((error as { status?: number }).status === 404) throw new ResyncRepositoryInaccessibleError(ctx.repository, 404);
+        // A 403 may still be the suspension itself or a rate limit, so it retries.
+        if ((error as { status?: number }).status === 404) return { access: 'inaccessible' };
         throw error;
+    }
+}
+
+/**
+ * GitHub-checked withdrawal for a configured, accessible repository; local
+ * invalidation otherwise. An accessible repository that left the configuration
+ * still settles its retained withdrawal cleanups on GitHub; an inaccessible one
+ * keeps them, which only keeps its issues out of discovery until access returns.
+ */
+async function reconcileRepositoryIntents(redisClient: Redis, ctx: ResyncRepositoryStepContext): Promise<void> {
+    if (ctx.access !== 'inaccessible' && ctx.configured) {
+        await reconcileTaskIntents(redisClient, [ctx.repository], { strict: true });
+        return;
+    }
+    await invalidateRepositoryIntents(redisClient, ctx.repository);
+    if (ctx.access === 'accessible') {
+        await settleWithdrawalCleanups(redisClient, target => `${target.repoOwner}/${target.repoName}`.toLowerCase() === ctx.repository.toLowerCase());
     }
 }
 
@@ -77,14 +102,15 @@ export function createResumeResyncReconciler(deps: ResumeResyncReconcilerDeps): 
     const { redisClient } = deps;
     return {
         listRepositories: deps.listRepositories ?? getRepos,
+        listReferencedRepositories: deps.listReferencedRepositories ?? (() => listIntentRepositories(redisClient)),
         repositorySteps: [
             { family: 'repository_access', run: async ctx => checkRepositoryAccess(await getOctokit(), ctx) },
-            { family: 'task_intents', run: ctx => reconcileTaskIntents(redisClient, [ctx.repository], { strict: true }) },
+            { family: 'task_intents', run: ctx => reconcileRepositoryIntents(redisClient, ctx) },
             {
                 family: 'labelled_issues',
                 run: async ctx => {
                     const issues = await fetchIssuesForRepo(await getOctokit(), ctx.repository, ctx.correlationId, { throwOnError: true });
-                    for (const issue of issues) await processDetectedIssue(issue, ctx.correlationId, redisClient);
+                    for (const issue of issues) await processDetectedIssue(issue, ctx.correlationId, redisClient, { strict: true });
                 },
             },
             {
@@ -110,8 +136,10 @@ export function createResumeResyncReconciler(deps: ResumeResyncReconcilerDeps): 
         installationSteps: [
             {
                 family: 'ultrafix_continuations',
-                run: async () => {
-                    await sweepUltrafixResumeCandidates(redisClient, () => logger as unknown as Logger, { fullScan: true, strict: true });
+                run: async ctx => {
+                    await sweepUltrafixResumeCandidates(redisClient, () => logger as unknown as Logger, {
+                        fullScan: true, strict: true, excludeRepositories: ctx.unavailableRepositories,
+                    });
                 },
             },
         ],
