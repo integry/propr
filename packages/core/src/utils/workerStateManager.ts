@@ -12,7 +12,7 @@ import {
     buildTaskStateTransition, buildTaskStateMutation, compareAndSetTaskStateData,
     compareAndSetTaskState, publishTaskStateTransition,
 } from './workerStateTransition.js';
-import { scanNonTerminalTaskStates } from './workerStateScan.js';
+import { scanNonTerminalTaskStates, type NonTerminalTaskScanOptions } from './workerStateScan.js';
 
 const MAX_ATOMIC_UPDATE_ATTEMPTS = 8;
 const TERMINAL_TASK_STATES = new Set<TaskState>([
@@ -485,8 +485,8 @@ export class WorkerStateManager {
      * Reads one bounded Redis SCAN page for crash recovery without blocking
      * Redis with KEYS. Callers retain nextCursor between reconciliation runs.
      */
-    async scanNonTerminalTasks(cursor = '0', count = 100): Promise<NonTerminalTaskScanResult> {
-        return scanNonTerminalTaskStates(this.redis, this.keyPrefix, cursor, count);
+    async scanNonTerminalTasks(cursor = '0', count = 100, options: Pick<NonTerminalTaskScanOptions, 'strict'> = {}): Promise<NonTerminalTaskScanResult> {
+        return scanNonTerminalTaskStates(this.redis, this.keyPrefix, cursor, { count, strict: options.strict });
     }
 
     /**

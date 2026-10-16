@@ -32,9 +32,11 @@ export interface ResyncRepositoryStepContext {
     repository: string;
     owner: string;
     repo: string;
-    /** The suspension gap being reconciled; windows history-bounded families. */
+    /** The suspension gap being reconciled (this generation's exact interval). */
     gapStartedAt: string;
     gapEndedAt: string | null;
+    /** Start of every gap still unreconciled (<= gapStartedAt); windows history-bounded families. */
+    recoveryStartedAt: string;
     /** Access proved by `repository_access` in this generation (null before it ran). */
     access: RepositoryAccess | null;
     /** False when only durable local work (or earlier progress) still references the repository. */
@@ -214,6 +216,7 @@ async function reconcileRepository(repository: string, opts: ResyncAttemptOption
         try {
             result = await step.run({
                 repository, owner, repo, gapStartedAt: opts.record.gapStartedAt, gapEndedAt: opts.record.gapEndedAt,
+                recoveryStartedAt: opts.record.recoveryStartedAt,
                 access: progress.access, configured: progress.configured, correlationId: opts.correlationId, signal: opts.signal,
             });
         } catch (error) {
@@ -275,13 +278,19 @@ export async function runResyncAttempt(opts: ResyncAttemptOptions): Promise<Resy
     await opts.persist();
 
     const queue = repositories.filter(repository => !isConverged(opts.record.repositories[repository], opts.reconciler));
+    let crash: { error: unknown } | null = null;
     const worker = async (): Promise<void> => {
-        while (queue.length > 0 && !stopRequested(opts, state)) {
+        while (queue.length > 0 && !crash && !stopRequested(opts, state)) {
             await reconcileRepository(queue.shift() as string, opts, state);
         }
     };
     const workers = Math.max(1, Math.min(opts.concurrency, queue.length));
-    await Promise.all(Array.from({ length: workers }, worker));
+    // Drain every worker before settling: one still awaiting a step would
+    // otherwise mutate (and persist) this record under the next attempt.
+    await Promise.all(Array.from({ length: workers }, () => worker().catch((error: unknown) => {
+        crash ??= { error };
+    })));
+    if (crash) throw (crash as { error: unknown }).error;
 
     const repositoriesConverged = Object.values(opts.record.repositories).every(progress => isConverged(progress, opts.reconciler));
     if (!repositoriesConverged || opts.signal.aborted) {

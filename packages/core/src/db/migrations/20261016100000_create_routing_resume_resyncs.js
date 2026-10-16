@@ -1,7 +1,8 @@
 /**
  * The Routing-managed installation suspension gap this Core is reconciling, one
  * row per installation. It records the exact routing/resume generation, the gap
- * interval, reconciliation state and per-repository progress, and the completion
+ * interval (and the earlier recovery start it inherited from unfinished
+ * superseded generations), reconciliation state and per-repository progress, and the completion
  * identity sent to Routing, so a daemon restart resumes the same work and a lost
  * completion response is retried with the same identity instead of rerunning
  * completed side effects.
@@ -15,6 +16,9 @@ export async function up(knex) {
     // 'pending' | 'reconciling' | 'partial' | 'failed' | 'completed' | 'acknowledged'
     table.string('state', 16).notNullable();
     table.string('gap_started_at').notNullable();
+    // Effective discovery start: no later than gap_started_at, earlier when
+    // this generation superseded unfinished predecessors it must still cover.
+    table.string('recovery_started_at').notNullable();
     table.string('gap_ended_at').nullable();
     table.integer('attempts').notNullable().defaultTo(0);
     table.string('started_at').nullable();

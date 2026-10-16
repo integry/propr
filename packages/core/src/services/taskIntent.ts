@@ -360,12 +360,13 @@ export function intentJobTaskId(job: { id?: string; data: Record<string, unknown
 }
 
 /** Cancel only work on this resource; an issue's already-opened PR is independent. */
-export async function cancelWithdrawnIntent(target: IntentTarget, reason: IntentCancellationReason, redis: Redis): Promise<void> {
+export async function cancelWithdrawnIntent(target: IntentTarget, reason: IntentCancellationReason, redis: Redis,
+    options: { strict?: boolean } = {}): Promise<void> {
     const manager = getStateManager();
     const queue = await getIssueQueue();
     const candidates = new Map<string, { taskId: string; target: IntentTarget }>();
     const matches = (candidate: IntentTarget | null): candidate is IntentTarget => !!candidate && sameResource(candidate, target);
-    for await (const task of nonTerminalTasks()) {
+    for await (const task of nonTerminalTasks(options)) {
         const candidate = taskIntentTarget(task.issueRef);
         if (matches(candidate)) candidates.set(task.taskId, { taskId: task.taskId, target: candidate });
     }
@@ -419,7 +420,10 @@ export async function checkCurrentTaskIntent(target: IntentTarget): Promise<Inte
 }
 
 /** Poll active and queued resources directly: closed/unlabeled issues disappear from discovery queries. */
-/** `strict` rethrows the first per-target failure after the pass, so a caller cannot mistake it for convergence. */
+/**
+ * `strict` rethrows the first per-target failure after the pass, and fails on an
+ * unreadable task state, so a caller cannot mistake it for convergence.
+ */
 export async function reconcileTaskIntents(redis: Redis, repositories: string[], options: { strict?: boolean } = {}): Promise<void> {
     const failures: unknown[] = [];
     const targets = new Map<string, IntentTarget>();
@@ -428,14 +432,14 @@ export async function reconcileTaskIntents(redis: Redis, repositories: string[],
             targets.set(`${target.repoOwner}/${target.repoName}/${target.kind}/${target.number}/${target.triggeringLabel ?? ''}`, target);
         }
     };
-    for await (const task of nonTerminalTasks()) add(taskIntentTarget(task.issueRef, task.issueRef.type));
+    for await (const task of nonTerminalTasks({ strict: options.strict })) add(taskIntentTarget(task.issueRef, task.issueRef.type));
     for (const job of await (await getIssueQueue()).getJobs(['waiting', 'delayed', 'active', 'prioritized', 'waiting-children'])) {
         if (['processGitHubIssue', 'processPullRequestComment', 'processMergeConflict'].includes(job.name)) add(jobIntentTarget(job));
     }
     for (const target of targets.values()) {
         try {
             const reason = await checkCurrentTaskIntent(target);
-            if (reason) await cancelWithdrawnIntent(target, reason, redis);
+            if (reason) await cancelWithdrawnIntent(target, reason, redis, { strict: options.strict });
         } catch (error) {
             failures.push(error);
             logger.warn({ target, error }, 'Failed to reconcile task intent; will retry next poll');

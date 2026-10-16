@@ -33,7 +33,7 @@ import {
     type ResyncCompletion,
 } from './routingResumeResyncProtocol.js';
 import { buildResyncEvidence, describeResyncError, runResyncAttempt, type ResumeResyncReconciler } from './routingResumeResyncRun.js';
-import type { ResumeResyncRecord, ResumeResyncStore } from './routingResumeResyncStore.js';
+import { inheritedRecoveryStart, type ResumeResyncRecord, type ResumeResyncStore } from './routingResumeResyncStore.js';
 import { MAX_PERSISTED_ERROR_LENGTH } from './routingResumeResyncCodec.js';
 import { buildResumeResyncStatus, type RoutingResumeResyncStatus } from './routingResumeResyncStatus.js';
 
@@ -210,6 +210,7 @@ export class RoutingResumeResyncCoordinator {
             resumeGeneration: frame.resumeGeneration,
             state: required ? 'reconciling' : 'pending',
             gapStartedAt: frame.gapStartedAt,
+            recoveryStartedAt: inheritedRecoveryStart(previous, frame.gapStartedAt),
             gapEndedAt: required ? frame.gapEndedAt : null,
             attempts: 0, startedAt: null, lastAttemptAt: null, nextRetryAt: null, lastError: null,
             repositories: {}, installationFamilies: [], consecutiveFailures: 0,
@@ -294,8 +295,11 @@ export class RoutingResumeResyncCoordinator {
             logger.error({ error: describeResyncError(error) }, 'Routing resume-resync attempt crashed');
         }).finally(() => {
             if (this.running?.promise === promise) this.running = null;
-            // Retries are scheduled only once the attempt released the run slot.
-            if (this.record === record && record.state === 'partial') this.scheduleRun(this.delayUntil(record.nextRetryAt));
+            // Retries, and work a supersession or restart deferred while this
+            // attempt drained, are scheduled only once it released the run slot.
+            const next = this.record;
+            const deferred = next !== record || controller.signal.aborted || next.state === 'partial';
+            if (next && deferred && RUNNABLE_STATES.has(next.state)) this.scheduleRun(next.state === 'partial' ? this.delayUntil(next.nextRetryAt) : 0);
             this.notify();
         });
         this.running = { promise, controller };
@@ -400,9 +404,10 @@ export class RoutingResumeResyncCoordinator {
         const running = this.running;
         if (!running) return;
         running.controller.abort();
+        // An attempt that does not yield keeps the run slot until it settles,
+        // so no later attempt overlaps its mutations of the same record.
         await drainWithTimeout([running.promise], this.stopTimeoutMs, () =>
             logger.warn({ timeoutMs: this.stopTimeoutMs }, 'Routing resume-resync attempt did not yield before the deadline'));
-        if (this.running === running) this.running = null;
     }
 
     private delayUntil(iso: string | null): number {

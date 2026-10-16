@@ -130,7 +130,8 @@ export function createResumeResyncReconciler(deps: ResumeResyncReconcilerDeps): 
                     MODEL_LABEL_PATTERN: deps.MODEL_LABEL_PATTERN,
                     throwOnError: true,
                     skipUltrafixReconcile: true,
-                    createdSince: ctx.gapStartedAt,
+                    // Includes unfinished superseded gaps, not just this generation's.
+                    createdSince: ctx.recoveryStartedAt,
                 }),
             },
             { family: 'pull_request_heads', run: async ctx => reconcilePullRequestHeads(await getOctokit(), ctx, redisClient) },

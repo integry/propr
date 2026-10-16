@@ -34,13 +34,14 @@ function retainedCleanupTargets(members: string[]): IntentTarget[] {
 
 /**
  * Repositories referenced by nonterminal durable work: task states, queued and
- * active intent jobs, and retained withdrawal cleanups. Read failures propagate,
- * so a caller never mistakes a partial scan for the complete set.
+ * active intent jobs, and retained withdrawal cleanups. Read failures (including
+ * an unreadable task-state record) propagate, so a caller never mistakes a
+ * partial scan for the complete set.
  */
 export async function listIntentRepositories(redis: CleanupRedis): Promise<string[]> {
     const repositories = new Set<string>();
     const add = (target: IntentTarget | null) => { if (target) repositories.add(repositoryOf(target)); };
-    for await (const task of nonTerminalTasks()) add(taskIntentTarget(task.issueRef, task.issueRef.type));
+    for await (const task of nonTerminalTasks({ strict: true })) add(taskIntentTarget(task.issueRef, task.issueRef.type));
     for (const job of await (await getIssueQueue()).getJobs(PENDING_INTENT_JOB_STATES)) {
         if (INTENT_JOB_NAMES.includes(job.name)) add(jobIntentTarget(job));
     }
@@ -52,7 +53,7 @@ interface Candidate { taskId: string; target: IntentTarget }
 
 async function collectCandidates(repository: string): Promise<Map<string, Candidate>> {
     const candidates = new Map<string, Candidate>();
-    for await (const task of nonTerminalTasks()) {
+    for await (const task of nonTerminalTasks({ strict: true })) {
         const target = taskIntentTarget(task.issueRef, task.issueRef.type);
         if (target && sameRepository(target, repository)) candidates.set(task.taskId, { taskId: task.taskId, target });
     }
@@ -70,7 +71,7 @@ async function collectCandidates(repository: string): Promise<Map<string, Candid
 /** Work still pending after the stops: nonterminal task states and unstarted jobs. */
 async function remainingWork(repository: string): Promise<number> {
     let remaining = 0;
-    for await (const task of nonTerminalTasks()) {
+    for await (const task of nonTerminalTasks({ strict: true })) {
         const target = taskIntentTarget(task.issueRef, task.issueRef.type);
         if (target && sameRepository(target, repository)) remaining += 1;
     }

@@ -17,11 +17,14 @@ export function jobIntentTarget(job: { name: string; data: unknown }): IntentTar
     return type ? taskIntentTarget(job.data as Record<string, unknown>, type) : null;
 }
 
-/** Pages through every non-terminal task state; stopping iteration stops the scan. */
-export async function* nonTerminalTasks() {
+/**
+ * Pages through every non-terminal task state; stopping iteration stops the scan.
+ * `strict` throws on a record that exists but cannot be read, instead of skipping it.
+ */
+export async function* nonTerminalTasks(options: { strict?: boolean } = {}) {
     let cursor = '0';
     do {
-        const page = await getStateManager().scanNonTerminalTasks(cursor);
+        const page = await getStateManager().scanNonTerminalTasks(cursor, 100, { strict: options.strict });
         yield* page.tasks;
         cursor = page.nextCursor;
     } while (cursor !== '0');

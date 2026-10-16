@@ -36,6 +36,14 @@ await mock.module('@propr/core', { namedExports: {
     },
 } });
 
+const realPolling = await import('../src/polling/prCommentPolling.js') as Record<string, unknown>;
+await mock.module('../src/polling/prCommentPolling.js', { namedExports: {
+    ...realPolling,
+    pollForPullRequestComments: async (_octokit: unknown, repository: string, _correlationId: string, options: { createdSince?: string; throwOnError?: boolean }) => {
+        calls.push(`pollForPullRequestComments:${repository}:${String(options.createdSince)}:${String(options.throwOnError)}`);
+    },
+} });
+
 const { createResumeResyncReconciler, createRoutingResumeResync, resolveResumeResyncInstallationId } = await import('../src/daemon/routingResumeResync.js');
 
 after(async () => {
@@ -58,6 +66,7 @@ function stepContext(repository: string, overrides: { access?: 'accessible' | 'i
     const [owner, repo] = repository.split('/');
     return {
         repository, owner, repo, gapStartedAt: '2026-10-10T00:00:00.000Z', gapEndedAt: '2026-10-12T00:00:00.000Z',
+        recoveryStartedAt: '2026-10-10T00:00:00.000Z',
         access: 'accessible' as const, configured: true, correlationId: 'test', signal: new AbortController().signal, ...overrides,
     };
 }
@@ -118,4 +127,9 @@ test('the capability is created only with a known installation and can be opted 
     assert.equal(coordinator?.getStatus().installationId, 42);
     assert.equal(resolveResumeResyncInstallationId({ GH_INSTALLATION_ID: '4x2' }), null);
     assert.equal(resolveResumeResyncInstallationId({ GH_INSTALLATION_ID: ' 7 ' }), 7);
+});
+
+test('pull_request_comments discovers from the effective recovery start, not just this generation\'s gap', async () => {
+    await step('pull_request_comments').run({ ...stepContext('acme/api'), gapStartedAt: '2026-10-11T00:00:00.000Z', recoveryStartedAt: '2026-10-10T00:00:00.000Z' });
+    assert.deepEqual(calls, ['pollForPullRequestComments:acme/api:2026-10-10T00:00:00.000Z:true']);
 });

@@ -31,6 +31,10 @@ const redisSets = new Map<string, Set<string>>();
 const githubCalls: string[] = [];
 let failMarkCancelled = false;
 let failQueueScan = false;
+/** A task-state record that exists but cannot be read: the real scan skips it unless strict. */
+let unreadableTask = false;
+let unreadableAfterCancel = false;
+const strictScans: boolean[] = [];
 
 const redis = {
     get: async (key: string) => (key.startsWith('worker:state:') ? (states.has(key.slice(13)) ? JSON.stringify(states.get(key.slice(13))) : null) : redisValues.get(key) ?? null),
@@ -44,13 +48,18 @@ const redis = {
 const terminal = (state: FakeState) => ['completed', 'failed', 'cancelled'].includes(state.state);
 const manager = {
     getTaskState: async (id: string) => states.get(id) ?? null,
-    scanNonTerminalTasks: async () => ({ tasks: [...states.values()].filter(state => !terminal(state)), nextCursor: '0' }),
+    scanNonTerminalTasks: async (_cursor?: string, _count?: number, options: { strict?: boolean } = {}) => {
+        strictScans.push(!!options.strict);
+        if (unreadableTask && options.strict) throw new Error('Unreadable task state worker:state:hidden: READONLY');
+        return { tasks: [...states.values()].filter(state => !terminal(state)), nextCursor: '0' };
+    },
     createTaskStateIfAbsent: async (id: string, issueRef: Record<string, unknown>) => {
         if (!states.has(id)) states.set(id, { taskId: id, state: 'pending', issueRef, history: [{ state: 'pending' }] });
         return states.get(id);
     },
     markTaskCancelled: async (id: string, _by: string, metadata: { historyMetadata?: { cancellationReason?: string } }) => {
         if (failMarkCancelled) throw new Error('state store unavailable');
+        if (unreadableAfterCancel) unreadableTask = true;
         const state = states.get(id);
         if (!state) throw new Error('missing state');
         state.state = 'cancelled';
@@ -85,6 +94,7 @@ await mockModule('../packages/core/src/webhook/checkRunHelpers.js', {
 });
 
 const { invalidateRepositoryIntents, listIntentRepositories } = await import('../packages/core/src/services/repositoryIntentInvalidation.js');
+const { reconcileTaskIntents } = await import('../packages/core/src/services/taskIntent.js');
 const { WITHDRAWAL_CLEANUP_KEY } = await import('../packages/core/src/services/withdrawalCleanup.js');
 const { runResyncGeneration } = await import('./helpers/resumeResyncHarness.js');
 
@@ -107,7 +117,7 @@ function seed() {
 
 beforeEach(() => {
     states.clear(); jobs.length = 0; redisValues.clear(); redisSets.clear(); githubCalls.length = 0; clearedLoops.length = 0;
-    failMarkCancelled = false; failQueueScan = false;
+    failMarkCancelled = false; failQueueScan = false; unreadableTask = false; unreadableAfterCancel = false; strictScans.length = 0;
 });
 
 test('referenced repositories include tasks, queued jobs and retained withdrawal cleanups', async () => {
@@ -178,4 +188,28 @@ test('a repository removed from configuration is still reconciled from its refer
     assert.deepEqual(gone.map(ctx => `${ctx.family}:${ctx.configured}`), ['repository_access:false', 'task_intents:false']);
     assert.deepEqual((result.completions[0].evidence as { repositories: unknown }).repositories, { total: 2, reconciled: 1, inaccessible: 0, unconfigured: 1 });
     assert.equal(states.get('pr-task-12')?.state, 'cancelled');
+});
+
+test('an unreadable task state fails repository discovery and local invalidation instead of reading as absent', async () => {
+    seed();
+    unreadableTask = true;
+    await assert.rejects(listIntentRepositories(redis as never), /Unreadable task state/, 'discovery never omits unreadable work');
+    await assert.rejects(invalidateRepositoryIntents(redis as never, 'acme/gone'), /Unreadable task state/, 'candidate collection is strict');
+    assert.equal(states.get('pr-task-12')?.state, 'processing', 'nothing is cancelled from a partial candidate set');
+    assert.ok(strictScans.length > 0 && strictScans.every(Boolean), 'every resync task-state scan is strict');
+});
+
+test('an unreadable task state during cancellation verification fails invalidation', async () => {
+    seed();
+    unreadableAfterCancel = true;
+    await assert.rejects(invalidateRepositoryIntents(redis as never, 'acme/gone'), /Unreadable task state/,
+        'remaining-work verification cannot report convergence without reading every state');
+});
+
+test('strict task-intent reconciliation fails on an unreadable task state; ordinary polling stays tolerant', async () => {
+    unreadableTask = true;
+    await assert.rejects(reconcileTaskIntents(redis as never, ['acme/api'], { strict: true }), /Unreadable task state/);
+    strictScans.length = 0;
+    await reconcileTaskIntents(redis as never, ['acme/api']);
+    assert.deepEqual(strictScans, [false], 'ordinary recovery callers keep the tolerant scan');
 });

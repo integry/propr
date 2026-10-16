@@ -49,6 +49,7 @@ export interface ResumeResyncRow {
     resume_generation: number | string;
     state: string;
     gap_started_at: string;
+    recovery_started_at: string;
     gap_ended_at: string | null;
     attempts: number;
     started_at: string | null;
@@ -237,6 +238,7 @@ function checkStateInvariants(record: ResumeResyncRecord): void {
     const completed = record.state === 'completed' || record.state === 'acknowledged';
     if (record.state === 'pending' ? record.gapEndedAt !== null : record.gapEndedAt === null) corrupt('gap');
     if (record.gapEndedAt !== null && Date.parse(record.gapEndedAt) < Date.parse(record.gapStartedAt)) corrupt('gap');
+    if (Date.parse(record.recoveryStartedAt) > Date.parse(record.gapStartedAt)) corrupt('recovery start');
     if (completed !== (record.completion !== null)) corrupt('completion state');
     if ((record.state === 'acknowledged') !== (record.acknowledgedAt !== null)) corrupt('acknowledgement');
     if (!record.completion) return;
@@ -262,6 +264,7 @@ export function encodeResumeResyncRecord(record: ResumeResyncRecord): ResumeResy
         resume_generation: record.resumeGeneration,
         state: record.state,
         gap_started_at: record.gapStartedAt,
+        recovery_started_at: record.recoveryStartedAt,
         gap_ended_at: record.gapEndedAt,
         attempts: record.attempts,
         started_at: record.startedAt,
@@ -289,6 +292,7 @@ export function decodeResumeResyncRow(row: ResumeResyncRow): ResumeResyncRecord 
         resumeGeneration: identity(row.resume_generation, 'resume generation'),
         state: row.state as ResumeResyncState,
         gapStartedAt: timestamp(row.gap_started_at, 'gap'),
+        recoveryStartedAt: timestamp(row.recovery_started_at, 'recovery start'),
         gapEndedAt: optionalTimestamp(row.gap_ended_at, 'gap'),
         attempts: counter(row.attempts, 'attempts'),
         startedAt: optionalTimestamp(row.started_at, 'timestamps'),

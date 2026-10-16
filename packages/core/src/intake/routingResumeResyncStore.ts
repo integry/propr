@@ -49,6 +49,12 @@ export interface RepositoryResyncProgress {
 export interface ResumeResyncRecord extends ResumeGenerationIdentity {
     state: ResumeResyncState;
     gapStartedAt: string;
+    /**
+     * Where gap-windowed discovery starts: `gapStartedAt`, or earlier when this
+     * generation superseded unfinished predecessors whose gaps it must still
+     * cover. Never sent; the completion reports this generation's exact gap.
+     */
+    recoveryStartedAt: string;
     /** Unknown until `resync_required` reports the unsuspension. */
     gapEndedAt: string | null;
     attempts: number;
@@ -64,6 +70,17 @@ export interface ResumeResyncRecord extends ResumeGenerationIdentity {
     completion: ResyncCompletion | null;
     acknowledgedAt: string | null;
     updatedAt: string;
+}
+
+/**
+ * Recovery start for a generation superseding `previous`: one that never
+ * completed may have left part of its gaps unreconciled, so the new generation
+ * also covers them. A completed predecessor reconciled them; its successor
+ * starts at its own gap.
+ */
+export function inheritedRecoveryStart(previous: ResumeResyncRecord | null, gapStartedAt: string): string {
+    if (!previous || previous.state === 'completed' || previous.state === 'acknowledged') return gapStartedAt;
+    return Date.parse(previous.recoveryStartedAt) < Date.parse(gapStartedAt) ? previous.recoveryStartedAt : gapStartedAt;
 }
 
 export interface ResumeResyncStore {

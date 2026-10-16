@@ -45,7 +45,7 @@ function completedRecord(): ResumeResyncRecord {
 function record(overrides: Partial<ResumeResyncRecord> = {}): ResumeResyncRecord {
     return {
         installationId: 42, routingGeneration: 3, resumeGeneration: 7, state: 'partial',
-        gapStartedAt: '2026-10-10T00:00:00.000Z', gapEndedAt: '2026-10-12T00:00:00.000Z',
+        gapStartedAt: '2026-10-10T00:00:00.000Z', recoveryStartedAt: '2026-10-10T00:00:00.000Z', gapEndedAt: '2026-10-12T00:00:00.000Z',
         attempts: 2, startedAt: '2026-10-12T00:01:00.000Z', lastAttemptAt: '2026-10-12T00:05:00.000Z',
         nextRetryAt: '2026-10-12T00:06:00.000Z', lastError: 'acme/api labelled_issues: GitHub 502',
         repositories: {
@@ -123,6 +123,8 @@ test('malformed or out-of-bound persisted records fail closed instead of manufac
         ['fractional generation', { ...partial, resume_generation: 1.5 }],
         ['malformed gap timestamp', { ...partial, gap_started_at: '2026-10-10' }],
         ['gap ends before it starts', { ...partial, gap_ended_at: '2026-10-09T00:00:00.000Z' }],
+        ['missing recovery start', { ...partial, recovery_started_at: null as unknown as string }],
+        ['recovery starts after the gap', { ...partial, recovery_started_at: '2026-10-11T00:00:00.000Z' }],
         ['pending with a gap end', { ...partial, state: 'pending' }],
         ['malformed retry timestamp', { ...partial, next_retry_at: 'soon' }],
         ['attempts out of bound', { ...partial, attempts: 10_000_000 }],
