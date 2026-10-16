@@ -116,3 +116,59 @@ for (const [device, viewport] of Object.entries({
     });
   });
 }
+
+// The expanded inline form belongs to the Create sheet: pressing the sheet's
+// own controls must not collapse it, which would shrink the bottom-anchored
+// sheet and move the pressed control out from under the tap.
+async function openSheetForm(page: Page) {
+  await page.goto('/inbox');
+  await page.getByRole('button', { name: 'Create', exact: true }).tap();
+  const sheet = page.getByRole('dialog', { name: 'Create' });
+  await sheet.getByRole('button', { name: 'New To-do' }).tap();
+  await expect(sheet.getByRole('textbox')).toBeVisible();
+  await sheet.getByRole('textbox').fill('Draft that is never submitted');
+  return sheet;
+}
+
+for (const [device, viewport] of Object.entries({
+  mobile: { width: 390, height: 844 },
+  'mobile-small': { width: 320, height: 640 },
+})) {
+  test.describe(`${device} Create sheet with the To-do form expanded`, () => {
+    test.use({ viewport, isMobile: true, hasTouch: true });
+
+    test('one tap on the header close button closes the whole sheet', async ({ page }) => {
+      const submissions = await fixture(page);
+      const sheet = await openSheetForm(page);
+      await sheet.getByRole('button', { name: 'Close Create menu' }).tap();
+      await expect(sheet).toBeHidden();
+      expect(new URL(page.url()).pathname).toBe('/inbox');
+      expect(submissions).toEqual([]);
+    });
+
+    test('one tap on another creation link navigates to it', async ({ page }) => {
+      const submissions = await fixture(page);
+      const sheet = await openSheetForm(page);
+      await sheet.getByRole('link', { name: 'New Task' }).tap();
+      await expect(page).toHaveURL(/\/tasks\/new$/);
+      await expect(sheet).toBeHidden();
+      expect(submissions).toEqual([]);
+    });
+  });
+}
+
+test.describe('desktop toolbar popover', () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('closes on a click outside it', async ({ page }) => {
+    const submissions = await fixture(page);
+    await page.goto('/inbox');
+    const trigger = page.getByRole('button', { name: 'Quick add to-do' }).filter({ visible: true });
+    await trigger.click();
+    const textbox = page.getByPlaceholder('Describe your idea...');
+    await expect(textbox).toBeVisible();
+    await page.mouse.click(720, 600);
+    await expect(textbox).toBeHidden();
+    expect(submissions).toEqual([]);
+  });
+});

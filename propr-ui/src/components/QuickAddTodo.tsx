@@ -77,17 +77,20 @@ const QuickAddTodo: React.FC<QuickAddTodoProps> = ({ externalOpen, onExternalOpe
     onExternalOpenHandled?.();
   }, [disabled, externalOpen, isOpen, onExternalOpenHandled]);
 
-  // Click outside to close
+  // Click outside to close the toolbar popover. The inline form follows its
+  // containing sheet instead: the sheet unmounts it on dismissal or navigation,
+  // and collapsing it on press would move the sheet's controls mid-tap.
   useEffect(() => {
+    if (!isOpen || layout === 'inline') return;
     const handler = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setIsOpen(false);
         resetForm();
       }
     };
-    if (isOpen) document.addEventListener('mousedown', handler);
+    document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [isOpen]);
+  }, [isOpen, layout]);
 
   // Load categories when selected repo changes
   useEffect(() => {

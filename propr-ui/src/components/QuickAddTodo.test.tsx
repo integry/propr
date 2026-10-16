@@ -56,6 +56,12 @@ describe.each(['popover', 'inline'] as const)('QuickAddTodo %s', layout => {
     expect(screen.getByText('To-Do added')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Add another' })).toBeVisible();
     fireEvent.mouseDown(document.body);
+    if (layout === 'inline') {
+      // The inline form follows its containing sheet, so a press outside it
+      // (on the sheet's own controls) leaves it in place; its trigger closes it.
+      expect(screen.getByText('To-Do added')).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: 'New To-do' }));
+    }
     expect(screen.queryByText('To-Do added')).not.toBeInTheDocument();
   });
 
